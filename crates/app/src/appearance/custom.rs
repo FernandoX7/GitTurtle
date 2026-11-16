@@ -501,7 +501,10 @@ impl Palette {
     }
 
     /// Every pair in the readability rules that falls below its minimum, grouped by rule.
-    /// Empty for every built-in palette; advisory for custom palettes.
+    /// Empty for every built-in palette; advisory for custom palettes. It measures the palette
+    /// it is given and never applies More contrast (`Palette::with_more_contrast`), so the theme
+    /// editor lists the issues of the draft as it will be saved while its live preview, applied
+    /// through `Palette::apply`, shows the draft adjusted.
     pub fn readability_issues(self) -> Vec<ReadabilityIssue> {
         use ReadabilityBackground::SelectedRowHover;
         use TokenKind::*;
@@ -557,6 +560,9 @@ impl Palette {
         );
         // Focus ring, caret and list active border.
         rule(&[Accent], &SURFACES, GRAPHIC);
+        // The keyboard ring of a refused write's box, on the operation
+        // error banner's removed background.
+        rule(&[Accent], &[token(RemovedBackground)], GRAPHIC);
         // Selection, hover and dividers remain distinguishable surfaces.
         rule(&[Selected], &[token(Panel)], SELECTED_SURFACE);
         rule(&[Hover], &[token(Panel)], HOVER_SURFACE);
@@ -625,7 +631,7 @@ pub const THEME_DOCUMENT_VERSION: u64 = 1;
 /// key 16, a quoted token value 9).
 pub const MAX_MESSAGE_FRAGMENT_CHARS: usize = 64;
 
-/// One document-derived fragment, clamped for a message on a character
+/// One document-derived fragment, clamped for a message on a grapheme-cluster
 /// boundary and marked with an ellipsis when anything was dropped. Theme
 /// names are bounded at 128 bytes, not 64 characters, so the import notice
 /// clamps the two it interpolates through this as well: two full-length names
@@ -634,11 +640,11 @@ pub fn fragment(text: &str) -> std::borrow::Cow<'_, str> {
     fragment_within(text, MAX_MESSAGE_FRAGMENT_CHARS)
 }
 
-/// `fragment` with an explicit allowance: `allowance` characters, then an
-/// ellipsis when anything was dropped.
+/// `fragment` with an explicit allowance: the whole grapheme clusters within
+/// `allowance` characters, then an ellipsis when anything was dropped.
 fn fragment_within(text: &str, allowance: usize) -> std::borrow::Cow<'_, str> {
-    match text.char_indices().nth(allowance) {
-        Some((end, _)) => std::borrow::Cow::Owned(format!("{}…", &text[..end])),
+    match crate::text_cut::within_characters(text, allowance) {
+        Some(end) => std::borrow::Cow::Owned(format!("{}…", &text[..end])),
         None => std::borrow::Cow::Borrowed(text),
     }
 }
@@ -1252,6 +1258,28 @@ mod tests {
     use ReadabilityBackground::SelectedRowHover;
     use TokenKind::*;
 
+    /// A document's fragment is clamped between whole grapheme clusters: a
+    /// letter with its combining marks, a ZWJ emoji sequence or a flag at
+    /// the cut is left out whole rather than split.
+    #[test]
+    fn a_fragment_is_clamped_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        for (case, cluster) in CLUSTERS {
+            let text = format!(
+                "{}{cluster}zz",
+                "a".repeat(super::MAX_MESSAGE_FRAGMENT_CHARS - 1)
+            );
+            let shown = super::fragment(&text);
+            let kept = shown.strip_suffix('…').expect("a clamped fragment");
+            assert_whole_prefix(&text, kept, case);
+            assert_eq!(
+                kept,
+                "a".repeat(super::MAX_MESSAGE_FRAGMENT_CHARS - 1),
+                "{case}"
+            );
+        }
+    }
+
     type Pair = (ReadabilityForeground, ReadabilityBackground, f64);
 
     fn expected(
@@ -1312,6 +1340,55 @@ mod tests {
         );
     }
 
+    /// The accent, which a refused write's box draws its keyboard ring in on
+    /// the operation error banner, is judged at 3:1 on the removed
+    /// background as well as on the six surfaces: a removed background in
+    /// the accent's own colour is reported, with its ratio. The banner's
+    /// ring went unmeasured on its surface.
+    #[test]
+    fn the_accent_is_judged_on_the_removed_background() {
+        let midnight = ThemeChoice::Midnight.palette();
+        let palette = Palette {
+            removed_background: midnight.accent,
+            ..midnight
+        };
+        let issue = palette
+            .readability_issues()
+            .into_iter()
+            .find(|issue| {
+                issue.foreground == ReadabilityForeground::Token(Accent)
+                    && issue.background == ReadabilityBackground::Token(RemovedBackground)
+            })
+            .expect("the accent on the removed background is judged");
+        assert_eq!(
+            issue,
+            expected(
+                palette,
+                ReadabilityForeground::Token(Accent),
+                ReadabilityBackground::Token(RemovedBackground),
+                GRAPHIC
+            )
+        );
+    }
+
+    /// Every built-in palette, and on Linux every Omarchy fixture, keeps
+    /// every rule with More contrast off and on, the accent's 3:1 on the
+    /// removed background among them: More contrast can move the removed
+    /// line tint (`Palette::with_more_contrast`), the fill a refused write's
+    /// keyboard ring is drawn on, and only the palettes as given were judged.
+    #[test]
+    fn every_palette_keeps_its_rules_with_more_contrast_off_and_on() {
+        for (name, palette) in crate::appearance::test_palettes() {
+            for (more, palette) in [("off", palette), ("on", palette.with_more_contrast())] {
+                assert_eq!(
+                    palette.readability_issues(),
+                    Vec::new(),
+                    "{name}, More contrast {more}"
+                );
+            }
+        }
+    }
+
     /// Every issue marks exactly the tokens its measure reads, derived from
     /// `readability_issues` rather than copied from it: each token is changed
     /// alone, one channel at a time through every value, and an issue reads a
@@ -1369,12 +1446,12 @@ mod tests {
             .iter()
             .filter(|issue| matches!(issue.foreground, ReadabilityForeground::Lane(_)))
             .count();
-        // Every contrast pair in the rules, 77 token pairs and 24 lane pairs:
+        // Every contrast pair in the rules, 78 token pairs and 24 lane pairs:
         // a new rule changes this count, and one that passes at 1:1 (a
         // minimum of 1 or less) is left out and needs its own start palette.
         assert_eq!(
             gray_issues.len(),
-            101,
+            102,
             "the gray palette fails every contrast pair"
         );
         assert_eq!(lanes, 6 * 4, "every lane fails on every gray row state");
@@ -1651,12 +1728,26 @@ mod tests {
             "Selected against Hover differs by 3 of 255 in one channel, needs 6"
         );
         // Kanagawa Wave's `selected` (upstream waveBlue1, lightened only to the panel rule)
-        // lifts less from its panel than `hover` does, so its pressed button steps by hue, at
-        // least 17 in one channel on every surface, rather than by a further lift. This rule
-        // counts that step, so Wave keeps its values.
+        // lifts only a little further from its panel than `hover`, darkened so a hovered row
+        // never reads heavier than the selected one, so its pressed button steps mostly by hue
+        // rather than by a further lift. This rule counts that step, so Wave keeps its values.
         let wave = ThemeChoice::KanagawaWave.palette();
-        assert!(contrast(wave.selected, wave.panel) < contrast(wave.hover, wave.panel));
+        assert!(contrast(wave.hover, wave.panel) < contrast(wave.selected, wave.panel));
         assert!(wave.readability_issues().is_empty());
+        // A custom palette whose pressed state steps by hue alone, lifting no further from the
+        // panel than its hover: Kanagawa Wave as it shipped before the hover rule, hover
+        // sumiInk5 `#363646`, which lifts further than the selected row `#24364e`. The rule
+        // counts the hue step, at least 17 in one channel on every surface, so it raises no
+        // pressed-step issue.
+        let hue_only = Palette {
+            hover: 0x363646,
+            ..wave
+        };
+        assert!(
+            contrast(hue_only.selected, hue_only.panel) < contrast(hue_only.hover, hue_only.panel)
+        );
+        assert!(hue_only.pressed_step() >= 17);
+        assert!(hue_only.readability_issues().is_empty());
     }
 
     #[test]

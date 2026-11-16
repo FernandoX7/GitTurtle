@@ -54,7 +54,7 @@ class PackageFixtures(unittest.TestCase):
         self.reviews = []
         self.generated = dict(CFBundleIconFile="AppIcon", CFBundleIconName="AppIcon")
         self.xcode = "Xcode 26.0\nBuild version FIXTURE\n"
-        self.signature = "Executable=/private/fixture/GitTurtle.app/Contents/MacOS/gitturtle\nSignature=adhoc\nIdentifier=com.gitturtle.desktop\n"
+        self.signature = "Executable=/private/fixture/GitTurtle.app/Contents/MacOS/gitturtle\nSignature=adhoc\nIdentifier=com.gitturtle.GitTurtle\n"
         self.catalog = '[{"Name": "AppIcon", "AssetType": "Icon Stack"}]'
         self.probe = mock.patch.object(package.identity, "probe", side_effect=lambda path: dict(self.compiled))
         self.probe.start()
@@ -181,7 +181,7 @@ class PackageFixtures(unittest.TestCase):
         self.assertNotEqual(package.tree_digest(self.bundle), old)
 
     def test_local_development_preserves_missing_notice_record(self):
-        self.reviews = ["mac 0.1.1", "ufbx 0.11.3"]
+        self.reviews = ["block-0.1.6", "objc_exception-0.1.2"]
         self.invoke()
         self.assertTrue((self.bundle / "Contents/Resources/licenses/REVIEW_REQUIRED.md").is_file())
         value = package.identity.read_json(self.bundle.with_name("GitTurtle.app.build-info.json"))
@@ -190,7 +190,7 @@ class PackageFixtures(unittest.TestCase):
 
     def test_strict_notice_failure_preserves_existing_bundle(self):
         old = self.legacy_bundle()
-        self.reviews = ["mac 0.1.1"]
+        self.reviews = ["block-0.1.6"]
         with self.assertRaisesRegex(package.PackageError, "Complete notices"):
             self.invoke("--distribution")
         self.assertEqual(package.tree_digest(self.bundle), old)
@@ -199,7 +199,7 @@ class PackageFixtures(unittest.TestCase):
         self.assertEqual(len(list(self.bundle.parent.glob(".gitturtle-package-*/failure.txt"))), 1)
 
     def test_incomplete_inventory_cannot_bypass_collector(self):
-        self.reviews = ["mac 0.1.1"]
+        self.reviews = ["block-0.1.6"]
         original = self.fake_run
         def broken_collector(command, **kwargs):
             if len(command) > 1 and str(command[1]).endswith("collect-third-party-licenses.py"):

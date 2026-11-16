@@ -81,14 +81,18 @@ impl GitRepository {
     /// Read all effective profile keys in one bounded Git invocation. Includes
     /// and worktree overrides retain Git's normal last-value precedence.
     pub(super) fn profile_config(&self) -> Result<GitProfile> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").args(["config", "--null", "--get-regexp", "^(user\\.(name|email|signingkey)|commit\\.gpgsign|tag\\.(gpgsign|forcesignannotated)|gpg\\.format|extensions\\.worktreeconfig)$"]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success() || output.status.code() == Some(1),
-            "Unable to read Git identity configuration: {}",
-            text(&output.stderr).trim()
-        );
+        if !(output.status.success() || output.status.code() == Some(1)) {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to read Git identity configuration: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
         let mut profile = GitProfile::default();
         for item in output
             .stdout
@@ -202,17 +206,21 @@ impl GitRepository {
         // winning over the chosen profile.
         let mut overrides = String::from("\n# Identity explicitly applied by GitTurtle\n");
         for (key, value) in values {
-            let mut command = normal_command(&self.path);
+            let mut command = normal_command(self.target());
             command
                 .args(["config", "--file"])
                 .arg(&lock.0)
                 .args(["--unset-all", key]);
             let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
-            ensure!(
-                output.status.success() || output.status.code() == Some(5),
-                "Could not prepare profile configuration: {}",
-                text(&output.stderr)
-            );
+            if !(output.status.success() || output.status.code() == Some(5)) {
+                return Err(git_failure(
+                    &output.stderr,
+                    format!(
+                        "Could not prepare profile configuration: {}",
+                        reported(&output.stderr)
+                    ),
+                ));
+            }
             let (section, name) = key
                 .split_once('.')
                 .context("Invalid profile configuration key")?;
@@ -249,6 +257,7 @@ impl GitRepository {
         Ok(WriteOutcome {
             message: format!("Profile applied. {suffix}"),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }

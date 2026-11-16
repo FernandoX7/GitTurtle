@@ -1,10 +1,17 @@
 //! Explicit recovery operations. Preparation is passive and pins the selected
 //! worktree, branch, index, commit, and stash identities before any write.
 use super::*;
+use crate::history::{ReadEnd, stream_history};
 
 const MAX_STASH_LOG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STASH_ENTRIES: usize = 50_000;
 const MAX_RECOVERY_WORK_BYTES: usize = 256 * 1024 * 1024;
+/// The most a recovery write accepts, a commit message or a stash's name,
+/// and so the furthest a recovery plan reads a commit's message: to one byte
+/// past this, which tells a message at the limit from one over it.
+pub const MAX_RECOVERY_MESSAGE_BYTES: usize = 64 * 1024;
+const NOT_UTF8_MESSAGE: &str =
+    "This commit message is not UTF-8; use Git with its original encoding to preserve its text";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryHead {
@@ -29,6 +36,8 @@ pub struct RecoveryCommit {
     pub parents: Vec<String>,
     pub subject: String,
     /// Exact UTF-8 message from the raw commit, including final newlines.
+    /// Empty on an Amend plan's target whose message is over the limit
+    /// ([`CommitRecoveryPlan::message_too_long`]).
     pub message: String,
 }
 
@@ -37,6 +46,12 @@ pub struct CommitRecoveryPlan {
     pub kind: RecoveryKind,
     pub current: RecoveryHead,
     pub target: RecoveryCommit,
+    /// Whether an Amend plan's target message is over
+    /// [`MAX_RECOVERY_MESSAGE_BYTES`], the most Amend can submit, so executing
+    /// the plan is refused. Then only `target.subject` keeps any of it, from
+    /// a read that stopped one byte past the limit. Always false for the
+    /// other kinds, which read the whole commit.
+    pub message_too_long: bool,
     /// One-based parent choice, required explicitly for merge replay/revert.
     pub mainline: Option<usize>,
     pub affected_paths: Vec<PathBuf>,
@@ -147,7 +162,14 @@ impl GitRepository {
                 target_oid.context("Choose a commit for this operation")?
             }
         };
-        let target = self.recovery_commit(target_oid)?;
+        // Only Amend loads the message into a form, so only its plan stops
+        // reading at what it can submit; the others keep the whole-object
+        // read and each of its refusals.
+        let (target, message_too_long) = if kind == RecoveryKind::Amend {
+            self.amend_target(target_oid)?
+        } else {
+            (self.recovery_commit(target_oid)?, false)
+        };
         let known_published_refs = self.recovery_published_refs(&target.oid)?;
         let staged_paths = sorted_paths(
             status
@@ -159,7 +181,7 @@ impl GitRepository {
         );
         let affected_paths = match kind {
             RecoveryKind::Amend => {
-                let mut paths = recovery_change_paths(&self.changes_with_renames(&target.oid, 0)?);
+                let mut paths = recovery_change_paths(&self.amend_target_changes(&target)?);
                 paths.extend(
                     status
                         .entries
@@ -196,6 +218,7 @@ impl GitRepository {
             kind,
             current,
             target,
+            message_too_long,
             mainline,
             affected_paths,
             staged_paths,
@@ -306,7 +329,7 @@ impl GitRepository {
             !self.bare,
             "Open a working copy to perform recovery operations"
         );
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let mut input = None;
         let creates_commit;
         match operation {
@@ -346,6 +369,10 @@ impl GitRepository {
             }
             RecoveryCommand::Amend { plan, message } => {
                 self.validate_commit_recovery(plan, RecoveryKind::Amend)?;
+                ensure!(
+                    !plan.message_too_long,
+                    "This commit's message is too long to amend here"
+                );
                 validate_recovery_message(message, "Enter a commit message")?;
                 command.args(["commit", "--amend", "--cleanup=verbatim", "--file=-"]);
                 input = Some(message.as_bytes().to_vec());
@@ -400,6 +427,7 @@ impl GitRepository {
                 message
             },
             commit_oid,
+            up_to_date: false,
         })
     }
 
@@ -411,7 +439,7 @@ impl GitRepository {
         if output.status.success() {
             return Ok(output);
         }
-        let conflicted = run_git(&self.path, &["ls-files", "--unmerged", "-z"])
+        let conflicted = run_git(self.target(), &["ls-files", "--unmerged", "-z"])
             .map(|entries| !entries.is_empty());
         // Stash apply does not remove entries. Recheck the saved object rather
         // than its old ordinal, since another worktree can add a stash meanwhile.
@@ -440,7 +468,7 @@ impl GitRepository {
         // claiming it proves the cause or removing another writer's lock.
         let index_locked = !matches!(conflicted, Ok(true))
             && run_git(
-                &self.path,
+                self.target(),
                 &[
                     "rev-parse",
                     "--path-format=absolute",
@@ -457,15 +485,23 @@ impl GitRepository {
         } else {
             ""
         };
-        // Keep both original streams, including stdout-only merge diagnostics.
-        // The leading sentence is suitable for the compact operation error bar;
+        // Keep both streams, including stdout-only merge diagnostics,
+        // redacted and then as a terminal leaves them (`reported_redacted`),
+        // as every other write's failure reads them: stash apply runs
+        // configured filters, whose output can hold a credential.
+        // The leading sentence is the compact operation error bar's own line;
         // Details retains the full diagnostic content and actual exit status.
-        bail!(
-            "{summary} {saved}\n\n{guidance}{local_state}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
-            output.status,
-            text(&output.stdout),
-            text(&output.stderr),
-        )
+        let headline = format!("{summary} {saved}");
+        Err(git_failure_summarized(
+            &output.stderr,
+            Some(headline.clone()),
+            format!(
+                "{headline}\n\n{guidance}{local_state}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
+                output.status,
+                reported_redacted(&output.stdout, authentication::redact_current),
+                reported_redacted(&output.stderr, authentication::redact_current),
+            ),
+        ))
     }
 
     fn recovery_head(&self) -> Result<(RecoveryHead, RepositoryStatus)> {
@@ -474,17 +510,37 @@ impl GitRepository {
             "Open a working copy to perform recovery operations"
         );
         let status = self.status()?;
-        ensure!(
-            status.operation.is_none()
-                && !status.entries.iter().any(|entry| entry.conflicted)
-                && self.operation_state()?.is_none(),
-            "Finish the current operation and resolve conflicts before starting another recovery action"
-        );
+        let paused =
+            if status.operation.is_some() || status.entries.iter().any(|entry| entry.conflicted) {
+                // Named from the status's own marker, which a merge, rebase,
+                // cherry-pick or revert leaves, and otherwise from the full
+                // operation read (a sequencer step without its HEAD file);
+                // conflicts with neither, as a stash restoration leaves,
+                // refuse in their own words. The full read, a second status
+                // read among others, runs only where the marker is missing.
+                let named = status.operation.as_deref().and_then(|label| {
+                    OperationKind::ALL
+                        .into_iter()
+                        .find(|kind| kind.label() == label)
+                });
+                Some(named.or_else(|| {
+                    self.operation_state()
+                        .ok()
+                        .flatten()
+                        .map(|operation| operation.kind)
+                }))
+            } else {
+                self.operation_state()?
+                    .map(|operation| Some(operation.kind))
+            };
+        if let Some(operation) = paused {
+            bail!(paused_recovery_refusal(operation));
+        }
         let head = status
             .head
             .clone()
             .context("Create the first commit before using this recovery action")?;
-        let index = run_git(&self.path, &["ls-files", "--stage", "--debug", "-z"])?;
+        let index = run_git(self.target(), &["ls-files", "--stage", "--debug", "-z"])?;
         Ok((
             RecoveryHead {
                 branch: status
@@ -536,20 +592,8 @@ impl GitRepository {
     pub(super) fn recovery_commit(&self, oid: &str) -> Result<RecoveryCommit> {
         validate_oid(oid)?;
         let bytes = self.read_object(oid, "commit")?;
-        let separator = bytes
-            .windows(2)
-            .position(|pair| pair == b"\n\n")
-            .context("Malformed commit object")?;
-        let headers = &bytes[..separator];
-        let mut parents = Vec::new();
-        for line in headers.split(|byte| *byte == b'\n') {
-            if let Some(parent) = line.strip_prefix(b"parent ") {
-                let parent = std::str::from_utf8(parent).context("Invalid commit parent")?;
-                validate_oid(parent)?;
-                parents.push(parent.into());
-            }
-        }
-        let message = String::from_utf8(bytes[separator + 2..].to_vec()).context("This commit message is not UTF-8; use Git with its original encoding to preserve its text")?;
+        let (parents, start) = recovery_commit_parts(&bytes)?;
+        let message = String::from_utf8(bytes[start..].to_vec()).context(NOT_UTF8_MESSAGE)?;
         let subject = message.lines().next().unwrap_or_default().to_owned();
         Ok(RecoveryCommit {
             oid: oid.into(),
@@ -559,10 +603,93 @@ impl GitRepository {
         })
     }
 
+    /// The commit `oid` for an Amend plan, its message read no further than
+    /// one byte past [`MAX_RECOVERY_MESSAGE_BYTES`], and whether that byte
+    /// is there: a message over the limit is left out of the commit, whose
+    /// subject is then from what the read reached.
+    fn amend_target(&self, oid: &str) -> Result<(RecoveryCommit, bool)> {
+        validate_oid(oid)?;
+        self.ensure_commit_object(oid)?;
+        let bytes = self.commit_through_message_limit(oid)?;
+        let (parents, start) = recovery_commit_parts(&bytes)?;
+        let read = &bytes[start..];
+        let too_long = read.len() > MAX_RECOVERY_MESSAGE_BYTES;
+        let text = &read[..read.len().min(MAX_RECOVERY_MESSAGE_BYTES)];
+        let text = match std::str::from_utf8(text) {
+            Ok(text) => text,
+            // The limit can fall inside a character; only what comes before
+            // it is used, and no more of the message was read to complete it.
+            Err(cut) if too_long && cut.error_len().is_none() => {
+                std::str::from_utf8(&text[..cut.valid_up_to()]).expect("checked up to the cut")
+            }
+            Err(error) => return Err(error).context(NOT_UTF8_MESSAGE),
+        };
+        Ok((
+            RecoveryCommit {
+                oid: oid.into(),
+                parents,
+                subject: text.lines().next().unwrap_or_default().to_owned(),
+                message: if too_long {
+                    String::new()
+                } else {
+                    text.to_owned()
+                },
+            },
+            too_long,
+        ))
+    }
+
+    /// Refuses `oid` unless the object reader has it as a commit, in the
+    /// reader's own words for a missing object or another type, asking for
+    /// its header alone. `git cat-file commit` would read through a tag to
+    /// the commit it names, and say only that it failed for a missing one.
+    fn ensure_commit_object(&self, oid: &str) -> Result<()> {
+        let mut guard = self
+            .batch
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Object reader lock was poisoned"))?;
+        if guard.is_none() {
+            *guard = Some(BatchReader::spawn(self.target())?);
+        }
+        let result = guard
+            .as_mut()
+            .expect("initialized above")
+            .request_header("info", oid, "commit");
+        // As every request of the shared reader: a failed one may leave
+        // unread protocol bytes, so the next starts a new process.
+        if result.is_err() {
+            *guard = None;
+        }
+        result.map(drop)
+    }
+
+    /// The raw commit `oid` through one byte past
+    /// [`MAX_RECOVERY_MESSAGE_BYTES`] of its message, where the read stops
+    /// however long the message is: `read_object` would take the whole
+    /// object first. Streamed, so its deadline and pipe cleanup are the ones
+    /// every streamed read has.
+    fn commit_through_message_limit(&self, oid: &str) -> Result<Vec<u8>> {
+        let mut command = git_command(self.target());
+        command.args(["cat-file", "commit", oid]);
+        let mut commit = CommitThroughMessageLimit::default();
+        let end = stream_history(
+            command,
+            None,
+            &HistoryCancellation::default(),
+            GIT_TIMEOUT,
+            |chunk| commit.take(chunk),
+        )?;
+        ensure!(
+            end != ReadEnd::TimedOut,
+            "Reading this commit exceeded its time limit"
+        );
+        Ok(commit.bytes)
+    }
+
     fn recovery_published_refs(&self, oid: &str) -> Result<Vec<BranchReference>> {
         validate_oid(oid)?;
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "for-each-ref",
                 "--format=%(refname)%00%(objectname)",
@@ -595,8 +722,23 @@ impl GitRepository {
     fn recovery_tree_changes(&self, old: &str, new: &str) -> Result<Vec<FileChange>> {
         validate_oid(old)?;
         validate_oid(new)?;
+        self.recovery_diff_tree([old, new])
+    }
+
+    /// What Amend's `target` changed against its first parent, or added
+    /// where it is a root commit, from the parents it already holds:
+    /// `changes_with_renames` would read the whole commit again to find
+    /// them, however long its message is.
+    fn amend_target_changes(&self, target: &RecoveryCommit) -> Result<Vec<FileChange>> {
+        match target.parents.first() {
+            Some(parent) => self.recovery_tree_changes(parent, &target.oid),
+            None => self.recovery_diff_tree(["--root", &target.oid]),
+        }
+    }
+
+    fn recovery_diff_tree(&self, sides: [&str; 2]) -> Result<Vec<FileChange>> {
         parse_changes(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "diff-tree",
                 "--no-commit-id",
@@ -608,8 +750,8 @@ impl GitRepository {
                 "--no-textconv",
                 "--find-renames=50%",
                 "-l1000",
-                old,
-                new,
+                sides[0],
+                sides[1],
                 "--",
             ],
         )?)
@@ -617,7 +759,7 @@ impl GitRepository {
 
     fn recovery_stash_entries(&self) -> Result<Vec<StashEntry>> {
         let exists = run_git_output(
-            &self.path,
+            self.target(),
             &["rev-parse", "--verify", "--quiet", "refs/stash"],
         )?;
         ensure!(
@@ -628,7 +770,7 @@ impl GitRepository {
             return Ok(Vec::new());
         }
         let bytes = run_git(
-            &self.path,
+            self.target(),
             &[
                 "log",
                 "--walk-reflogs",
@@ -720,7 +862,7 @@ impl GitRepository {
         );
         // Ignored files do not appear in porcelain status. Protect any existing
         // affected path that is absent from the current index as well.
-        let tracked = run_git(&self.path, &["ls-files", "-z"])?;
+        let tracked = run_git(self.target(), &["ls-files", "-z"])?;
         let tracked: std::collections::HashSet<_> = tracked
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
@@ -801,6 +943,47 @@ impl GitRepository {
     }
 }
 
+/// Why every recovery plan refuses while `operation` is paused, or while
+/// conflicts remain with no operation to continue (`None`, as a conflicted
+/// stash restoration leaves them): it names the paused operation and the
+/// two ways its banner ends it, Continue (Complete merge for a merge) and
+/// Abort. A client that refuses before asking, from the pause it read
+/// last, uses the same words, and [`is_paused_recovery_refusal`] tells
+/// them apart from any other reason.
+pub const fn paused_recovery_refusal(operation: Option<OperationKind>) -> &'static str {
+    match operation {
+        Some(OperationKind::Merge) => {
+            "A merge is paused. Complete or abort it before another recovery action."
+        }
+        Some(OperationKind::Rebase) => {
+            "A rebase is paused. Continue or abort it before another recovery action."
+        }
+        Some(OperationKind::CherryPick) => {
+            "A cherry-pick is paused. Continue or abort it before another recovery action."
+        }
+        Some(OperationKind::Revert) => {
+            "A revert is paused. Continue or abort it before another recovery action."
+        }
+        None => {
+            "Conflicts remain in this working copy. Resolve them before another recovery action."
+        }
+    }
+}
+
+/// The pause `reason` refuses for, where it is one of the
+/// [`paused_recovery_refusal`]s: the operation it names, or `None` for
+/// conflicts alone.
+pub fn paused_recovery_operation(reason: &str) -> Option<Option<OperationKind>> {
+    std::iter::once(None)
+        .chain(OperationKind::ALL.map(Some))
+        .find(|operation| paused_recovery_refusal(*operation) == reason)
+}
+
+/// Whether `reason` is one of the [`paused_recovery_refusal`]s.
+pub fn is_paused_recovery_refusal(reason: &str) -> bool {
+    paused_recovery_operation(reason).is_some()
+}
+
 fn recovery_parent(commit: &RecoveryCommit, mainline: Option<usize>) -> Result<usize> {
     if commit.parents.len() > 1 {
         let parent = mainline.context(
@@ -823,10 +1006,62 @@ fn recovery_parent(commit: &RecoveryCommit, mainline: Option<usize>) -> Result<u
 fn validate_recovery_message(message: &str, empty: &str) -> Result<()> {
     ensure!(!message.trim().is_empty(), "{empty}");
     ensure!(
-        message.len() <= 64 * 1024 && !message.contains('\0'),
+        message.len() <= MAX_RECOVERY_MESSAGE_BYTES && !message.contains('\0'),
         "Text must be at most 64 KiB and contain no NUL bytes"
     );
     Ok(())
+}
+
+/// A raw commit as Git streams it: its headers, through the blank line that
+/// ends them and within the object limit a whole-object read keeps, and its
+/// message's first [`MAX_RECOVERY_MESSAGE_BYTES`] and one byte.
+#[derive(Default)]
+struct CommitThroughMessageLimit {
+    bytes: Vec<u8>,
+    /// Where the headers end, once their blank line has arrived.
+    separator: Option<usize>,
+}
+
+impl CommitThroughMessageLimit {
+    /// Takes the next `chunk` from Git and says whether to read another.
+    fn take(&mut self, chunk: &[u8]) -> Result<bool> {
+        // The blank line can straddle two chunks.
+        let from = self.bytes.len().saturating_sub(1);
+        self.bytes.extend_from_slice(chunk);
+        if self.separator.is_none() {
+            self.separator = self.bytes[from..]
+                .windows(2)
+                .position(|pair| pair == b"\n\n")
+                .map(|at| from + at);
+            ensure!(
+                self.separator.is_some() || self.bytes.len() <= MAX_BLOB_BYTES,
+                "This commit's headers are over the object limit"
+            );
+        }
+        let Some(separator) = self.separator else {
+            return Ok(true);
+        };
+        let through_limit = separator + 2 + MAX_RECOVERY_MESSAGE_BYTES + 1;
+        self.bytes.truncate(through_limit);
+        Ok(self.bytes.len() < through_limit)
+    }
+}
+
+/// A raw commit's parents and the offset of its message.
+fn recovery_commit_parts(bytes: &[u8]) -> Result<(Vec<String>, usize)> {
+    let separator = bytes
+        .windows(2)
+        .position(|pair| pair == b"\n\n")
+        .context("Malformed commit object")?;
+    let mut parents = Vec::new();
+    for line in bytes[..separator].split(|byte| *byte == b'\n') {
+        if let Some(parent) = line.strip_prefix(b"parent ") {
+            let parent = std::str::from_utf8(parent).context("Invalid commit parent")?;
+            validate_oid(parent)?;
+            parents.push(parent.into());
+        }
+    }
+    Ok((parents, separator + 2))
 }
 
 fn sorted_paths(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -855,4 +1090,76 @@ fn reference_names(references: &[BranchReference]) -> String {
         names.push_str(&format!(", and {} more", references.len() - 8));
     }
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADERS: &[u8] = b"tree x\n\n";
+
+    #[test]
+    fn a_commit_read_stops_one_byte_past_the_message_limit() {
+        let mut commit = CommitThroughMessageLimit::default();
+        assert!(commit.take(HEADERS).unwrap(), "headers alone go on");
+        assert!(
+            commit
+                .take(&vec![b'x'; MAX_RECOVERY_MESSAGE_BYTES])
+                .unwrap(),
+            "a message at the limit may yet end there"
+        );
+        assert!(
+            !commit.take(&[b'x'; 8192]).unwrap(),
+            "past the limit the read stops"
+        );
+        assert_eq!(
+            commit.bytes.len(),
+            HEADERS.len() + MAX_RECOVERY_MESSAGE_BYTES + 1,
+            "keeping one byte of the chunk that took it past"
+        );
+    }
+
+    #[test]
+    fn a_blank_line_across_two_chunks_ends_a_commits_headers() {
+        let mut commit = CommitThroughMessageLimit::default();
+        assert!(commit.take(b"tree x\n").unwrap());
+        assert_eq!(commit.separator, None);
+        assert!(commit.take(b"\nmessage").unwrap());
+        assert_eq!(commit.separator, Some(6));
+    }
+
+    /// Status refuses a HEAD whose commit is gone, so through a plan only a
+    /// commit removed after that read reaches Amend's; this drives that read.
+    #[test]
+    fn amend_says_when_its_target_is_not_available() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(temp.path())
+            .args(["init", "-q"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", null_device())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let repository = GitRepository::open(temp.path()).unwrap();
+        let missing = "1".repeat(40);
+        let error = repository.amend_target(&missing).unwrap_err().to_string();
+        assert!(
+            error.contains("is not available locally (automatic fetching is disabled)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_commits_headers_stay_within_the_object_limit() {
+        let mut commit = CommitThroughMessageLimit::default();
+        let error = commit.take(&vec![b'a'; MAX_BLOB_BYTES + 1]).unwrap_err();
+        assert!(
+            error.to_string().contains("over the object limit"),
+            "{error}"
+        );
+    }
 }

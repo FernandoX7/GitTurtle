@@ -207,6 +207,103 @@ async fn open_remote_manager<'a>(
     (app, list, cx)
 }
 
+/// Opens the branch chooser or the remote manager from History's list, as a
+/// read that has yet to answer and then lands, and checks the dialog's whole
+/// keyboard route: nothing opens and focus stays while the list is read; the
+/// frame the dialog opens has focus on its search field with the field's
+/// ring whole; `stops` Tabs come round to the field, on none of the page's
+/// controls; and Escape gives focus back to the list. Each dialog once
+/// opened with focus on its shell, which draws no ring.
+async fn assert_opens_on_its_search(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    remotes: bool,
+    name: &str,
+    stops: usize,
+) {
+    let opener = app.read_with(cx, |app, _| app.focus.clone());
+    let root = app.read_with(cx, |app, _| app.app_focus.clone());
+    cx.update(|window, cx| window.focus(&opener, cx));
+    draw(cx);
+
+    let read =
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_manager(remotes, window, cx)));
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{name}: nothing opens while its list is read"
+    );
+    assert!(
+        cx.update(|window, _| opener.is_focused(window)),
+        "{name}: focus stays on the opener while its list is read"
+    );
+    read.expect("the list is read").await;
+    let query = app
+        .read_with(cx, |app, _| app.branch_actions.query.clone())
+        .expect("the dialog's search field");
+    let search = cx.read(|cx| query.read(cx).focus_handle(cx));
+    assert!(
+        cx.update(|window, _| search.is_focused(window)),
+        "{name}: the search field holds focus before the first frame"
+    );
+    draw(cx);
+    cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+    draw(cx);
+    let text = cx.read(|cx| query.read(cx).input_bounds());
+    crate::focus_ring::assert_input_ringed(cx, text, name);
+
+    for stop in 1..stops {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let focused = cx.update(|window, cx| window.focused(cx));
+        assert!(
+            focused.is_some() && focused != Some(search.clone()),
+            "{name}: Tab {stop} moves to another control of the dialog"
+        );
+        assert!(
+            focused != Some(opener.clone()) && focused != Some(root.clone()),
+            "{name}: Tab {stop} stays inside the dialog"
+        );
+    }
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    assert!(
+        cx.update(|window, _| search.is_focused(window)),
+        "{name}: Tab comes round to the search field after {stops} stops"
+    );
+
+    cx.simulate_keystrokes("escape");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    draw(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{name}: Escape closes it"
+    );
+    assert!(
+        cx.update(|window, _| opener.is_focused(window)),
+        "{name}: closing gives focus back to the opener"
+    );
+}
+
+/// The branch manager opens on its search field: its three rows, Use first
+/// match and Cancel follow it round.
+#[gpui::test]
+async fn the_branch_manager_opens_on_its_search(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (_repo, app, cx) = small_window_with_branches(cx, fixture.path(), 2);
+    assert_opens_on_its_search(&app, cx, false, "the branch manager", 6).await;
+}
+
+/// The remote manager opens on its search field: Add remote…, each remote's
+/// Edit… and Remove… and Done follow it round.
+#[gpui::test]
+async fn the_remote_manager_opens_on_its_search(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (repo, app, cx) = small_window_with_branches(cx, fixture.path(), 0);
+    add_remotes(fixture.path(), &repo, 2);
+    assert_opens_on_its_search(&app, cx, true, "the remote manager", 7).await;
+}
+
 /// The branch chooser's 30 rows overflow its list at 1000 × 680, and its
 /// scrollbar's thumb follows the list's offset in a gutter clear of every
 /// ring.
@@ -273,4 +370,1223 @@ async fn remote_manager_that_fits_paints_no_thumb(cx: &mut TestAppContext) {
         px(0.),
         &selectors("managed-remote", 2),
     );
+}
+
+/// Asks for the open branch or remote form's review, as its button does,
+/// lets its preparation fail and returns the node that announces why: the
+/// form opens again with the reason, which holds `reason`, in its line
+/// beneath the fields, `line`, an alert announced at once.
+async fn review_fails(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    line: &str,
+    reason: &str,
+) -> String {
+    cx.update(|window, cx| {
+        window.dispatch_action(
+            Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+            cx,
+        )
+    });
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the review is prepared").await;
+    draw(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{line}: the form opens again"
+    );
+    assert!(
+        cx.debug_bounds(line.to_owned().leak()).is_some(),
+        "{line}: the form draws why"
+    );
+    let mut announced = native_accessibility::written::announced_from(&format!("{line}-"));
+    assert_eq!(
+        announced.len(),
+        1,
+        "{line}: one line announced: {announced:?}"
+    );
+    let (node, how) = announced.pop().unwrap();
+    assert_eq!(
+        how,
+        native_accessibility::written::Announced::ASSERTIVE,
+        "{line}: announced at once"
+    );
+    // The reason is its name, which AT-SPI announces, and its value, which
+    // macOS does.
+    let written = native_accessibility::written::get(&node).expect("the line's node");
+    let (name, value) = (written.node.label(), written.node.value());
+    assert!(
+        name.is_some_and(|name| name.contains(reason)) && value == name,
+        "{line}: named and valued by why: {name:?}, {value:?}"
+    );
+    node
+}
+
+/// A branch or remote form whose review cannot be prepared opens again with
+/// the reason beneath its fields, an alert announced at once, as Rename
+/// branch… does for the branch's own name and Edit remote for a remote
+/// removed meanwhile. Opened again with that line already there, after
+/// another review fails the same way, the line is a fresh node, announced
+/// again as when it first appeared. The line was no live region, so neither
+/// was announced; and a form that closes and opens again within a frame, as
+/// a quick preparation can, keeps its nodes, which assistive technology
+/// does not announce again.
+#[gpui::test]
+async fn a_reopened_branch_or_remote_form_announces_why_afresh(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (repo, app, cx) = small_window_with_branches(cx, fixture.path(), 1);
+    // Rename branch… starts with the branch's own name, which the core
+    // refuses.
+    let plan = Arc::new(repo.branch_plan("feature-00").unwrap());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_branch_form(BranchFormMode::Rename(plan), window, cx)
+        })
+    });
+    draw(cx);
+    let named = "is already named 'feature-00'";
+    let first = review_fails(&app, cx, "branch-form-error", named).await;
+    let second = review_fails(&app, cx, "branch-form-error", named).await;
+    assert_ne!(
+        first, second,
+        "Rename branch…: a fresh node announces it again"
+    );
+    cx.update(|window, cx| window.close_dialog(cx));
+    draw(cx);
+
+    // Edit remote for a remote removed after the form opened.
+    let bare = fixture.path().join("upstream.git");
+    git(
+        fixture.path(),
+        &["init", "--quiet", "--bare", bare.to_str().unwrap()],
+    );
+    git(
+        repo.path(),
+        &["remote", "add", "upstream", bare.to_str().unwrap()],
+    );
+    let expected = repo
+        .remote_configs()
+        .unwrap()
+        .into_iter()
+        .find(|remote| remote.name == "upstream")
+        .expect("the remote");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_remote_form(Some(Arc::new(expected)), window, cx)
+        })
+    });
+    draw(cx);
+    git(repo.path(), &["remote", "remove", "upstream"]);
+    let gone = "This remote no longer exists";
+    let first = review_fails(&app, cx, "remote-form-error", gone).await;
+    let second = review_fails(&app, cx, "remote-form-error", gone).await;
+    assert_ne!(
+        first, second,
+        "Edit remote: a fresh node announces it again"
+    );
+}
+
+/// One Enter key event as the platform delivers it, with no idle pass after
+/// it: a key-down, marked held or not, or with `None` its key-up. The other
+/// dialog forms' held-Return tests drive their fields with it too.
+pub(crate) fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+    let keystroke = gpui::Keystroke::parse("enter").expect("a keystroke");
+    let input = match down {
+        Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke,
+            is_held,
+            prefer_character_input: false,
+        }),
+        None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+    };
+    cx.update(|window, cx| window.dispatch_event(input, cx));
+}
+
+/// A held Return's repeats after its first key-down: as X11 sends them,
+/// fresh presses with no key-up between them, a release and its press
+/// together, as an input method such as fcitx5 sends them on Wayland and as
+/// X11 can, and as GPUI marks them held on macOS and Wayland.
+pub(crate) const REPEATS: [(&str, &[Option<bool>]); 4] = [
+    ("an X11 repeat", &[Some(false)]),
+    ("another X11 repeat", &[Some(false)]),
+    ("a release and its press", &[None, Some(false)]),
+    ("a held repeat", &[Some(true)]),
+];
+
+/// A held Return in Rename branch…'s name asks for one review, or gives one
+/// refusal, per press, under X11 too, through the dialog's default action
+/// alone: refused in place, for a repository that changed under the form,
+/// the form says why once, on one node announced once, and an empty name is
+/// refused once the same way; a review begun closes the form, and its
+/// failure opens it again with why, the hold asking for nothing more. After
+/// the key-up a new press is answered again, and heard again. The field's
+/// own `PressEnter` submitted the form as well: after the default action
+/// began a review it was refused as another operation running, and after a
+/// refusal each repeat refused again.
+#[gpui::test]
+async fn a_held_return_in_a_branch_form_reviews_once_per_press(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (repo, app, cx) = small_window_with_branches(cx, fixture.path(), 1);
+    let plan = Arc::new(repo.branch_plan("feature-00").unwrap());
+    let here = Some(repo.path().to_owned());
+    let line = || {
+        let mut lines = native_accessibility::written::announced_from("branch-form-error-");
+        assert!(lines.len() <= 1, "one line at most: {lines:?}");
+        lines.pop().map(|(node, _)| node)
+    };
+    // Each case: the form's repository and name, whether the form stays
+    // open as it is answered, and the reviews it begins and the refusals it
+    // gives per press.
+    let moved = Some(fixture.path().join("moved"));
+    let cases = [
+        ("a refused review", moved, "renamed", (true, 0, 1)),
+        ("an empty name", here.clone(), "", (true, 0, 1)),
+        // The core refuses the branch's own name as it prepares the review.
+        ("a review that fails", here, "feature-00", (false, 1, 0)),
+    ];
+    for (case, path, name, (stays, begun, refused)) in cases {
+        let form = cx.update(|window, cx| {
+            app.update(cx, |_, cx| {
+                let owner = cx.entity().downgrade();
+                let mode = BranchFormMode::Rename(plan.clone());
+                let form = cx.new(|cx| BranchForm::new(owner, path, mode, name.into(), window, cx));
+                show_branch_form(form.clone(), window, cx);
+                form
+            })
+        });
+        let focus_field = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| form.read(cx).name.focus_handle(cx).focus(window, cx));
+            draw(cx);
+        };
+        focus_field(cx);
+        let seen = |cx: &mut VisualTestContext| {
+            let begun = app.read_with(cx, |app, _| app.branch_actions.generation);
+            (begun, form.read_with(cx, |form, _| form.refusals))
+        };
+        for press in ["the first press", "a new press after the key-up"] {
+            let before = seen(cx);
+            let after = (before.0 + begun, before.1 + refused);
+            let why = |cx: &mut VisualTestContext| form.read_with(cx, |form, _| form.error.clone());
+            let said_before = why(cx);
+            native_accessibility::written::forget();
+            enter(cx, Some(false));
+            assert_eq!(
+                seen(cx),
+                after,
+                "{case}, {press}: one review or refusal is asked for"
+            );
+            if stays {
+                draw(cx);
+            } else {
+                assert_eq!(
+                    why(cx),
+                    said_before,
+                    "{case}, {press}: nothing refuses the review begun"
+                );
+                let read = app.update(cx, |app, _| app.branch_actions.task.take());
+                read.expect("the review is prepared").await;
+                draw(cx);
+                let reason = why(cx).unwrap_or_default();
+                assert!(
+                    reason.contains("is already named 'feature-00'"),
+                    "{case}, {press}: the form opens again with why: {reason:?}"
+                );
+                focus_field(cx);
+            }
+            let said = line();
+            assert!(said.is_some(), "{case}, {press}: the form says why");
+            for (repeat, events) in REPEATS {
+                for down in events {
+                    enter(cx, *down);
+                }
+                draw(cx);
+                cx.update(|window, cx| {
+                    assert!(
+                        window.has_active_dialog(cx),
+                        "{case}, {repeat}: the dialog stays"
+                    );
+                    assert!(
+                        form.read(cx).name.focus_handle(cx).is_focused(window),
+                        "{case}, {repeat}: focus stays in the field"
+                    );
+                });
+                assert!(
+                    app.read_with(cx, |app, _| app.branch_actions.task.is_none()),
+                    "{case}, {repeat}: no review is prepared"
+                );
+                assert_eq!(
+                    seen(cx),
+                    after,
+                    "{case}, {repeat}: nothing more is asked for or refused"
+                );
+                assert_eq!(line(), said, "{case}, {repeat}: nothing more is said");
+            }
+            enter(cx, None);
+            draw(cx);
+        }
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+    }
+}
+
+/// A held Return in the branch chooser's search uses its first match once
+/// per press, under X11 too: refused while a write runs, the press chooses
+/// nothing, and once the write ends during the hold the key's repeats
+/// (`REPEATS`) still choose nothing, the chooser open with focus in its
+/// search; after the key-up a new press chooses the first match. The
+/// search's own `PressEnter`, which it sends for every Enter key-down,
+/// chose the first match as well as the dialog's default action, so the
+/// first repeat after the write ended chose it.
+#[gpui::test]
+async fn a_held_return_in_the_branch_chooser_chooses_once_per_press(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, _, cx) = open_branch_chooser(cx, fixture.path(), 2).await;
+    let search = app
+        .read_with(cx, |app, _| app.branch_actions.query.clone())
+        .expect("the chooser's search");
+    cx.update(|window, cx| search.read(cx).focus_handle(cx).focus(window, cx));
+    draw(cx);
+    let open = |cx: &mut VisualTestContext| cx.debug_bounds("branch-chooser-list").is_some();
+    let focused = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| search.read(cx).focus_handle(cx).is_focused(window))
+    };
+    let busy = |cx: &mut VisualTestContext, busy: bool| {
+        app.update(cx, |app, cx| {
+            app.operation_busy = busy.then_some("Testing");
+            cx.notify();
+        });
+        draw(cx);
+    };
+    // A write runs as the key goes down and ends during the hold.
+    busy(cx, true);
+    enter(cx, Some(false));
+    draw(cx);
+    assert!(open(cx) && focused(cx), "the write refuses the choice");
+    busy(cx, false);
+    for (repeat, events) in REPEATS {
+        for down in events {
+            enter(cx, *down);
+        }
+        draw(cx);
+        assert!(open(cx), "{repeat}: the held key chooses nothing");
+        assert!(focused(cx), "{repeat}: focus stays in the search");
+    }
+    enter(cx, None);
+    draw(cx);
+    enter(cx, Some(false));
+    draw(cx);
+    assert!(!open(cx), "a new press chooses the first match");
+    enter(cx, None);
+    draw(cx);
+}
+
+/// A branch preparation that has ended no longer runs, so Changes opened
+/// after it drops no plan: a plan is dropped only while its preparation runs
+/// (`dismiss_branch_action`), as a recovery's is. The ended task stayed, and
+/// each later Changes marked a plan dropped that nothing was preparing.
+#[gpui::test]
+async fn changes_after_a_branch_preparation_ends_drops_no_plan(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = tagged_repository(fixture.path());
+    let (app, cx) = window(cx, &repo);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.choose_branch(ChoicePurpose::Manage, window, cx)
+        })
+    });
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_busy),
+        Some(PREPARING)
+    );
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.operation_busy, None, "the preparation ended");
+        assert!(app.branch_actions.task.is_none(), "it no longer runs");
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    assert!(
+        !app.read_with(cx, |app, _| app.branch_actions.dismissed),
+        "Changes drops no plan"
+    );
+}
+
+/// History of three commits on `main` with the menu keys bound, a branch
+/// `review` checked out in a linked worktree, read again as Refresh reads
+/// it so the app knows that worktree, and the repository's path.
+async fn with_held_branch(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    std::path::PathBuf,
+) {
+    use crate::views::tests::{fixture_git, history_script};
+    let (fixture, app, cx) =
+        crate::views::tests::history_window_from(cx, history_script(3, 1)).await;
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    fixture_git(&repository, &["branch", "review"]);
+    let linked = fixture.path().join("linked");
+    fixture_git(
+        &repository,
+        &["worktree", "add", "-q", linked.to_str().unwrap(), "review"],
+    );
+    reopen(&app, cx, &repository).await;
+    (fixture, app, cx, repository)
+}
+
+/// Reads `repository` again as History's Refresh does.
+async fn reopen(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, repository: &std::path::Path) {
+    let repository = repository.to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open(repository, None, window, cx)));
+    crate::views::tests::settle(app, cx).await;
+}
+
+/// The branch picker's menu keeps a branch another worktree has checked
+/// out in the keys' order, as every row that says why it is unavailable
+/// (`native_accessibility::detailed_item`): drawn as the branch's name with
+/// "Another worktree" beside it in secondary text and named "review,
+/// another worktree" and the way to it, Down from Find or create a branch…
+/// rests the cursor on the current branch, which says so, and the next Down
+/// on it, drawn there; Enter there switches nothing and leaves the menu
+/// open with the cursor on it; the next Down moves on to Current branch
+/// settings…, and Up comes back. Decided by the coordinator, by the rule to
+/// say why something is unavailable: drawn as "review · another worktree",
+/// one disabled label, it was passed over, Down going from Find or create a
+/// branch… straight to Current branch settings…, so a screen reader never
+/// reached why the branch could not be switched to.
+#[gpui::test]
+async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mut TestAppContext) {
+    use crate::views::tests::fixture_git_output;
+    const FIND: &str = "menu-item: Find or create a branch… · MenuItem";
+    const CURRENT: &str = "menu-item: main, current branch · MenuItemCheckBox True disabled";
+    const HELD: &str = "menu-item: review, another worktree. Open that worktree from Worktrees… · MenuItemCheckBox False disabled";
+    const SETTINGS: &str = "menu-item: Current branch settings… · MenuItem";
+    let (_fixture, app, cx, repository) = with_held_branch(cx).await;
+    let head = || {
+        let output = fixture_git_output(&repository, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    assert_eq!(head(), "main");
+
+    let picker = rendered(cx, "current-branch");
+    cx.simulate_click(picker.center(), gpui::Modifiers::default());
+    draw(cx);
+    let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
+    let reason = format!(
+        "menu-detail: Another worktree · {:?}",
+        gpui::Rgba::from(muted)
+    );
+    assert!(
+        cx.debug_bounds(reason.leak()).is_some(),
+        "the reason is drawn beside the branch in secondary text"
+    );
+    let cursor = |cx: &mut VisualTestContext| {
+        let fill = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
+        });
+        [FIND, CURRENT, HELD, SETTINGS]
+            .into_iter()
+            .filter(|item| {
+                let bounds = cx
+                    .debug_bounds(item)
+                    .unwrap_or_else(|| panic!("{item} drawn"));
+                crate::appearance::painted_row(cx, bounds).0.contains(&fill)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(cursor(cx), Vec::<&str>::new(), "a click opens no cursor");
+
+    for (key, on) in [("down", FIND), ("down", CURRENT), ("down", HELD)] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(cursor(cx), [on], "after {key}");
+    }
+    cx.simulate_keystrokes("enter");
+    crate::views::tests::settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.operation_busy.is_none()
+            && app.operation_task.is_none()),
+        "Enter on the held branch starts no write"
+    );
+    assert_eq!(head(), "main", "Enter switches nothing");
+    assert_eq!(cursor(cx), [HELD], "the menu stays open on the branch");
+
+    for (key, on) in [
+        ("down", SETTINGS),
+        ("up", HELD),
+        ("up", CURRENT),
+        ("up", FIND),
+    ] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(cursor(cx), [on], "after {key}");
+    }
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+}
+
+/// The branch picker's open menu keeps keyboard focus, as a dialog does
+/// (decided 2026-11-07): it is one stop, so Tab and Shift+Tab, pressed on
+/// past its last and its first stop, leave focus on the menu and the keys'
+/// cursor on its row, and the menu stays drawn; Escape closes it and gives
+/// focus back to the picker that opened it. At 13 pt in a 461 × 490 half
+/// tile QA-106e tabbed from the open menu to Main Menu, the tab and its
+/// close button behind it while it stayed drawn; the same at 1480 × 973.
+#[gpui::test]
+async fn tab_and_shift_tab_stay_inside_the_open_branch_chooser(cx: &mut TestAppContext) {
+    const FIND: &str = "menu-item: Find or create a branch… · MenuItem";
+    const CURRENT: &str = "menu-item: main, current branch · MenuItemCheckBox True disabled";
+    const HELD: &str = "menu-item: review, another worktree. Open that worktree from Worktrees… · MenuItemCheckBox False disabled";
+    let (_fixture, _app, cx, _repository) = with_held_branch(cx).await;
+    // The rows that draw the keys' cursor.
+    let cursor = |cx: &mut VisualTestContext| {
+        let fill = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
+        });
+        [FIND, CURRENT, HELD]
+            .into_iter()
+            .filter(|item| {
+                cx.debug_bounds(item).is_some_and(|bounds| {
+                    crate::appearance::painted_row(cx, bounds).0.contains(&fill)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+    let press = |cx: &mut VisualTestContext, keys: &str| {
+        cx.simulate_keystrokes(keys);
+        draw(cx);
+    };
+    let drawn = |cx: &mut VisualTestContext| cx.debug_bounds(FIND).is_some();
+    // Tabs on to the picker, as QA-106e reached it, and opens the chooser
+    // with Space, returning the picker's focus: the menu button whose Space
+    // draws the chooser. A press does not focus a Button.
+    let open_from_the_picker = |cx: &mut VisualTestContext, at: &str| {
+        for _ in 0..80 {
+            let on_a_menu_button = cx.update(|window, _| {
+                (window.context_stack().iter()).any(|context| context.contains("PopoverTrigger"))
+            });
+            if on_a_menu_button {
+                let opener = focused(cx).expect("the menu button holds focus");
+                press(cx, "space");
+                if drawn(cx) {
+                    return opener;
+                }
+                // Another button's menu: Escape gives focus back to it.
+                if focused(cx).as_ref() != Some(&opener) {
+                    press(cx, "escape");
+                }
+            }
+            press(cx, "tab");
+        }
+        panic!("{at}: Tab never reached the branch picker");
+    };
+    for (width, height) in [(461., 490.), (1480., 973.)] {
+        let at = format!("13 pt in {width} × {height}");
+        cx.simulate_resize(size(px(width), px(height)));
+        draw(cx);
+        let opener = open_from_the_picker(cx, &at);
+        let menu = focused(cx).unwrap_or_else(|| panic!("{at}: focus in the chooser"));
+        assert_ne!(menu, opener, "{at}: the chooser takes focus");
+        press(cx, "down");
+        press(cx, "down");
+        assert_eq!(cursor(cx), [HELD], "{at}: the keys rest on the held branch");
+        for key in [
+            "tab",
+            "tab",
+            "tab",
+            "shift-tab",
+            "shift-tab",
+            "shift-tab",
+            "shift-tab",
+        ] {
+            press(cx, key);
+            assert_eq!(
+                focused(cx).as_ref(),
+                Some(&menu),
+                "{at}: focus stays in the chooser after {key}"
+            );
+            assert!(drawn(cx), "{at}: the chooser stays drawn after {key}");
+            assert_eq!(cursor(cx), [HELD], "{at}: {key} moves no cursor");
+        }
+        press(cx, "escape");
+        assert!(!drawn(cx), "{at}: Escape closes the chooser");
+        assert_eq!(
+            focused(cx).as_ref(),
+            Some(&opener),
+            "{at}: Escape gives focus back to the picker"
+        );
+    }
+}
+
+/// In a 461 × 490 half tile, at 13 and 18 pt, Tab from the branch chooser's
+/// filter through its 30 rows and Shift+Tab back shows each row whole with
+/// its ring, inside every clip around it, the dialog's among them. Laid out
+/// at full height in the dialog's scrolling body, the list ran below the
+/// dialog's fold: a row inside the list's view but past the fold took focus
+/// where nothing showed it.
+#[gpui::test]
+async fn a_half_tile_reveals_every_branch_chooser_row(cx: &mut TestAppContext) {
+    use crate::tags::tests::{content_mask, holds, set_interface_text_size};
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, list, cx) = open_branch_chooser(cx, fixture.path(), 29).await;
+    let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+    let rows: Vec<_> = (0..30)
+        .map(|index| control("branch-choice", index))
+        .collect();
+    let shown = |cx: &mut VisualTestContext, key: &str, (id, row): &(ElementId, &'static str)| {
+        assert_eq!(
+            cx.update(|window, _| list.focused(window)).as_ref(),
+            Some(id),
+            "{key} focuses {row}"
+        );
+        let mask = content_mask(cx, row);
+        let ring = rendered(cx, row).dilate(room);
+        assert!(
+            holds(mask, ring),
+            "after {key}, {row} and its ring {ring:?} lie outside what the dialog shows, {mask:?}"
+        );
+    };
+    // The half tile at both sizes, then shorter windows at 18 pt, where the
+    // detail line, the filter and the list's two-row floor come nearest the
+    // dialog's cap.
+    for (height, text) in [(490., 13), (490., 18), (400., 18), (360., 18)] {
+        cx.simulate_resize(size(px(461.), px(height)));
+        draw(cx);
+        set_interface_text_size(cx, &app, text);
+        let text = format!("{text} pt in 461 × {height}");
+        focus_filter(cx, &list, &rows[0]);
+        for row in &rows {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            shown(cx, &format!("tab at {text}"), row);
+        }
+        for row in rows.iter().rev().skip(1) {
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            shown(cx, &format!("shift-tab at {text}"), row);
+        }
+        // Back onto the filter, for the next size.
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+    }
+    set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+}
+
+/// Every item the branch picker's menu refuses says why, by the rule that
+/// a nearby disabled reason is heard as well as seen: each is drawn with its
+/// reason beside its command, named by both, and the menu keys rest on it
+/// (`PopupMenuItem::reason_stated`). At rest that is the current branch,
+/// "main, current branch", and a branch another worktree has checked out,
+/// "review, another worktree" and the way to it; while a write runs, also
+/// every item the write refuses, named by the write. The current branch was
+/// ticked and refused with nothing to say why, so the keys passed over it
+/// and a screen reader never heard which branch was current.
+#[gpui::test]
+async fn every_item_the_branch_picker_refuses_says_why(cx: &mut TestAppContext) {
+    const CURRENT: &str = "main, current branch";
+    const HELD: &str = "review, another worktree. Open that worktree from Worktrees…";
+    let (_fixture, app, cx, _repository) = with_held_branch(cx).await;
+    let open = |cx: &mut VisualTestContext| {
+        PICKER_ITEMS.with(|items| items.borrow_mut().clear());
+        let picker = rendered(cx, "current-branch");
+        cx.simulate_click(picker.center(), gpui::Modifiers::default());
+        draw(cx);
+    };
+    // Each refused item's accessible name, once it is drawn under it and
+    // says more than its command.
+    let refused = |cx: &mut VisualTestContext| -> Vec<String> {
+        let items = PICKER_ITEMS.with(|items| items.borrow().clone());
+        assert!(!items.is_empty(), "the menu is built");
+        items
+            .into_iter()
+            .filter(|item| item.disabled)
+            .map(|item| {
+                let name = item.name.clone().unwrap_or_else(|| item.label.clone());
+                assert!(
+                    item.reason_stated && name.starts_with(&format!("{}, ", item.label)),
+                    "{item:?} says why it is refused"
+                );
+                let (role, ticked) = match item.checked {
+                    Some(true) => ("MenuItemCheckBox", " True"),
+                    Some(false) => ("MenuItemCheckBox", " False"),
+                    None => ("MenuItem", ""),
+                };
+                let drawn = format!("menu-item: {name} · {role}{ticked} disabled");
+                assert!(cx.debug_bounds(drawn.clone().leak()).is_some(), "{drawn}");
+                name
+            })
+            .collect()
+    };
+
+    open(cx);
+    assert_eq!(refused(cx), [CURRENT, HELD]);
+    let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
+    let reason = format!(
+        "menu-detail: Current branch · {:?}",
+        gpui::Rgba::from(muted)
+    );
+    assert!(
+        cx.debug_bounds(reason.leak()).is_some(),
+        "the current branch's reason is drawn beside it in secondary text"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+
+    app.update(cx, |app, cx| {
+        app.operation_busy = Some("Fetching remote…");
+        cx.notify();
+    });
+    draw(cx);
+    open(cx);
+    let during = refused(cx);
+    let waiting = during
+        .iter()
+        .filter(|name| name.ends_with(", available when fetching remote finishes"))
+        .count();
+    assert!(
+        during.contains(&CURRENT.to_owned()) && during.contains(&HELD.to_owned()) && waiting > 1,
+        "the branches keep their own reasons, and the write's are named: {during:?}"
+    );
+    cx.simulate_keystrokes("escape");
+    app.update(cx, |app, _| app.operation_busy = None);
+    draw(cx);
+}
+
+/// The actions a branch's or a remote branch's dialog can draw.
+const DIALOG_ACTIONS: [&str; 9] = [
+    "rename-branch",
+    "choose-upstream",
+    "remove-upstream",
+    "delete-branch",
+    "merge-selected-branch",
+    "rebase-selected-branch",
+    "track-remote-branch",
+    "merge-remote-branch",
+    "rebase-remote-branch",
+];
+
+/// Closes the dialog open, if any, and forgets what it drew.
+fn close_dialog(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.close_dialog(cx));
+    draw(cx);
+    native_accessibility::written::forget();
+}
+
+/// Opens local branch `name`'s dialog, as the branch picker and the chooser
+/// do, in place of the one open.
+async fn open_branch(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, name: &str) {
+    close_dialog(cx);
+    let name = name.to_owned();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_contextual_branch(name, false, window, cx)
+        })
+    });
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the branch is read").await;
+}
+
+/// Whether the pointer resting on action `id` shows the tooltip `text`, as
+/// the window draws it under the pointer; the pointer then leaves the window
+/// until the tooltip has gone.
+fn hover_shows(cx: &mut VisualTestContext, id: &'static str, text: &str) -> bool {
+    const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+    let action = rendered(cx, id);
+    cx.simulate_mouse_move(action.center(), None, gpui::Modifiers::default());
+    cx.executor().advance_clock(SHOW_DELAY);
+    draw(cx);
+    let shown = cx
+        .debug_bounds(format!("{id}/tooltip/{text}").leak())
+        .is_some();
+    cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, gpui::Modifiers::default());
+    cx.executor().advance_clock(SHOW_DELAY);
+    draw(cx);
+    shown
+}
+
+/// Each action the open dialog draws refused, with why, once the tooltip a
+/// pointer resting on it shows says the same as its description; an action
+/// it offers says neither.
+fn refused_actions(cx: &mut VisualTestContext) -> Vec<(&'static str, String)> {
+    use crate::tags::tests::hovered_tooltips;
+    draw(cx);
+    let drawn: Vec<_> = DIALOG_ACTIONS
+        .into_iter()
+        .filter_map(|id| Some((id, native_accessibility::written::get(id)?.node)))
+        .collect();
+    assert!(!drawn.is_empty(), "the dialog draws its actions");
+    drawn
+        .into_iter()
+        .filter_map(|(id, node)| {
+            let description = node.description().map(str::to_owned);
+            if !node.is_disabled() {
+                assert_eq!(description, None, "{id} is offered");
+                assert_eq!(hovered_tooltips(cx, id), 0, "{id} is offered");
+                return None;
+            }
+            let why = description.unwrap_or_else(|| panic!("{id} describes why"));
+            assert!(hover_shows(cx, id, &why), "{id}: its tooltip says {why:?}");
+            Some((id, why))
+        })
+        .collect()
+}
+
+/// Every action a branch's or a remote branch's dialog refuses says why,
+/// and the way to it, in its tooltip and its accessible description, which
+/// are the same words, as New theme… does at its bound; an action it offers
+/// gives none. A branch another worktree has checked out is renamed and
+/// tracked from there, its upstream, once it has one, removed from there,
+/// and deleted once that worktree has switched away; a branch with no
+/// upstream, held elsewhere or the current one, has none to remove; a
+/// branch with a commit the current branch lacks keeps that work; a remote
+/// branch merges or rebases only onto a branch. Those actions were dimmed
+/// with nothing to say why, and the dialog's note named only the deletion's
+/// reason.
+#[gpui::test]
+async fn every_action_a_branch_dialog_refuses_says_why(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_git_output};
+    let (_fixture, app, cx, repository) = with_held_branch(cx).await;
+    // The dialogs slide in on the real clock: at rest from their first
+    // frame, each action lies where the pointer rests on it.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    // `ahead` holds a commit `main` lacks.
+    let commit = fixture_git_output(
+        &repository,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit-tree",
+            "main^{tree}",
+            "-p",
+            "main",
+            "-m",
+            "ahead",
+        ],
+    );
+    let ahead = String::from_utf8_lossy(&commit.stdout).trim().to_owned();
+    fixture_git(&repository, &["branch", "ahead", &ahead]);
+    reopen(&app, cx, &repository).await;
+    let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+    let checked_out = |name: &str| {
+        let plan = repo.branch_plan(name).unwrap();
+        format!(
+            "Checked out in {}. Switch that worktree to another branch before deleting.",
+            path_list(&plan.checked_out_in)
+        )
+    };
+    let remote = |cx: &mut VisualTestContext| {
+        close_dialog(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let reference = "refs/remotes/origin/feature".to_owned();
+                app.show_remote_branch(reference, ahead.clone(), window, cx)
+            })
+        });
+    };
+
+    let unset = "No upstream is set. Change upstream… sets one.".to_owned();
+    let elsewhere = "Checked out in another worktree.";
+    let held = |cleared: String| {
+        [
+            (
+                "rename-branch",
+                format!("{elsewhere} Rename it from that worktree."),
+            ),
+            (
+                "choose-upstream",
+                format!("{elsewhere} Change its upstream from that worktree."),
+            ),
+            ("remove-upstream", cleared),
+            ("delete-branch", checked_out("review")),
+        ]
+    };
+    open_branch(&app, cx, "review").await;
+    assert_eq!(refused_actions(cx), held(unset.clone()));
+    fixture_git(&repository, &["branch", "--set-upstream-to=main", "review"]);
+    open_branch(&app, cx, "review").await;
+    assert_eq!(
+        refused_actions(cx),
+        held(format!(
+            "{elsewhere} Remove its upstream from that worktree."
+        ))
+    );
+
+    open_branch(&app, cx, "main").await;
+    assert_eq!(
+        refused_actions(cx),
+        [
+            ("remove-upstream", unset.clone()),
+            ("delete-branch", checked_out("main")),
+        ]
+    );
+
+    open_branch(&app, cx, "ahead").await;
+    assert_eq!(
+        refused_actions(cx),
+        [
+            ("remove-upstream", unset),
+            (
+                "delete-branch",
+                "1 commit is outside main. Merge or preserve that work before deleting this branch."
+                    .to_owned()
+            ),
+        ]
+    );
+
+    remote(cx);
+    assert_eq!(refused_actions(cx), Vec::<(&str, String)>::new());
+    fixture_git(&repository, &["checkout", "--quiet", "--detach"]);
+    reopen(&app, cx, &repository).await;
+    remote(cx);
+    let detached = "HEAD is detached. Switch to a branch first.".to_owned();
+    assert_eq!(
+        refused_actions(cx),
+        [
+            ("merge-remote-branch", detached.clone()),
+            ("rebase-remote-branch", detached),
+        ]
+    );
+    close_dialog(cx);
+}
+
+/// A tracking branch created through its form with Switch to the new branch
+/// cleared confirms in place (DESIGN.md's Git feedback in place): no control
+/// reads a word, as the picker still names the branch it named, so the
+/// outcome, "Created kept · tracks origin/kept", is announced once and
+/// recorded in the status line while the window-wide notice stays down. The
+/// form's choice reaches the review, which says the current branch stays
+/// selected and offers Create branch, and Git creates the branch without
+/// switching to it.
+#[gpui::test]
+async fn a_tracking_branch_created_without_the_switch_confirms_in_place(cx: &mut TestAppContext) {
+    use crate::copy_feedback::tests::announced;
+    use crate::views::tests::{fixture_git, history_script, settle};
+    let (fixture, app, cx) =
+        crate::views::tests::history_window_from(cx, history_script(3, 1)).await;
+    // The form's dialog slides in on the real clock: at rest from its first
+    // frame, its checkbox lies where the click lands.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let remote = fixture.path().join("remote.git");
+    fixture_git(
+        fixture.path(),
+        &[
+            "init",
+            "--bare",
+            "--quiet",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    fixture_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    // Pushing to the named remote also stores its remote-tracking ref.
+    fixture_git(
+        &repository,
+        &["push", "--quiet", "origin", "main:refs/heads/kept"],
+    );
+    reopen(&app, cx, &repository).await;
+    let confirm = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx), "a dialog is open");
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        })
+    };
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let reference = "refs/remotes/origin/kept".to_owned();
+            app.open_branch_form(BranchFormMode::Track(reference), window, cx)
+        })
+    });
+    draw(cx);
+    let switch = rendered(cx, "checkout-new-tracking-branch");
+    cx.simulate_click(switch.center(), gpui::Modifiers::default());
+    draw(cx);
+    confirm(cx);
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the review is prepared").await;
+    draw(cx);
+    let consequences = native_accessibility::written::get("operation-consequences")
+        .and_then(|written| written.node.value().map(str::to_owned))
+        .unwrap_or_default();
+    assert!(
+        consequences.starts_with("Create local branch kept at ")
+            && consequences.contains("The current branch stays selected."),
+        "the review keeps the form's choice: {consequences:?}"
+    );
+    // Every announcement and alert takes the next generation, which names
+    // its node (`copy_feedback::announcement`): from one said just before
+    // the review is confirmed, the outcome's node is the next one only if
+    // nothing else, the outcome again included, was said in between.
+    let latest = |cx: &mut VisualTestContext| match announced(cx) {
+        Some((ElementId::NamedInteger(_, generation), text)) => (generation, text),
+        other => panic!("an announcement is drawn: {other:?}"),
+    };
+    cx.update(|window, cx| crate::copy_feedback::announce(window, cx, "Before the review"));
+    draw(cx);
+    let (before, _) = latest(cx);
+    confirm(cx);
+    draw(cx);
+    let write = app
+        .update(cx, |app, _| app.operation_task.take())
+        .expect("the write");
+    write.await;
+    settle(&app, cx).await;
+
+    let outcome = "Created kept · tracks origin/kept";
+    let (after, said) = latest(cx);
+    assert_eq!(
+        (after - before, said.as_str()),
+        (1, outcome),
+        "the outcome is announced once, and nothing else is"
+    );
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.operation_error, None);
+        assert_eq!(
+            app.operation_notice, None,
+            "the window-wide notice stays down"
+        );
+        assert_eq!(app.status_line(), outcome, "the status line records it");
+        let branch = app.work_status.as_ref().and_then(|s| s.branch.as_deref());
+        assert_eq!(branch, Some("main"), "Git switched nothing");
+    });
+    assert!(cx.debug_bounds("operation-notice-summary").is_none());
+    let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+    let kept = repo.branch_plan("kept").expect("the branch was created");
+    assert_eq!(kept.upstream.as_deref(), Some("refs/remotes/origin/kept"));
+}
+
+/// The branch picker's label, accessible name and tooltip are built only
+/// when what they follow from changes ([`PickerInputs`]): the branch, HEAD's
+/// commit where none is checked out, and a switch's confirmation. Each frame
+/// cloned the branch's name and formatted its label, name and tooltip,
+/// however steady. Frames at rest build none of it; another branch and a
+/// detached HEAD build it once each; and the compact bar's forms are kept
+/// with the full bar's, so the compact row at 18 pt in 700 × 490, whose
+/// picker names the commit, and in 461 × 490, where it says "Detached" in
+/// the line's place and carries the line's advice, build none of it. Each
+/// is drawn as it now reads.
+#[gpui::test]
+async fn the_branch_picker_builds_its_text_only_when_what_it_shows_changes(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{history_window, hold_quiet_reads_for_test};
+    const SWITCH: &str = "Switch branch and repository actions";
+    // The thread's kept text from an earlier run, as another seed's, would
+    // hold this run's branch and commit already.
+    PICKER_TEXTS.with_borrow_mut(|texts| *texts = crate::views::Measured::new());
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    cx.simulate_resize(size(px(1480.), px(800.)));
+    draw(cx);
+    let built = || PICKER_TEXTS_BUILT.get();
+    let at_rest = |at: &str, cx: &mut VisualTestContext| {
+        let before = built();
+        for _ in 0..3 {
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+        }
+        assert_eq!(built() - before, 0, "{at}: frames at rest build none of it");
+    };
+    // What the picker draws, its label and tooltip, and the accessible name
+    // its node is written with, the same in every form.
+    let drawn = |cx: &mut VisualTestContext| {
+        let label = PICKER_LABEL.with(|label| label.borrow().clone());
+        let tooltip = crate::views::CONTROL_TOOLTIPS
+            .with(|tooltips| tooltips.borrow().get("current-branch").cloned());
+        let picker = app.clone();
+        let node = crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            let button = picker.update(cx, |app, cx| app.branch_picker(false, false, None, cx));
+            let element =
+                gpui::RenderOnce::render(button.base(window, cx), window, cx).into_element();
+            let mut node =
+                gpui::accesskit::Node::new(element.a11y_role().expect("the picker's role"));
+            element.write_a11y_info(&mut node);
+            node
+        });
+        (label, tooltip, node.label().map(str::to_owned))
+    };
+    fn status(app: &mut GitTurtle) -> &mut gitturtle_core::RepositoryStatus {
+        Arc::make_mut(app.work_status.as_mut().expect("the status is read"))
+    }
+    let size_to = |cx: &mut VisualTestContext, text: u8, width: f32, height: f32| {
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        draw(cx);
+    };
+
+    at_rest("History at 1480 × 800", cx);
+    let before = built();
+    app.update(cx, |app, cx| {
+        status(app).branch = Some("topic".into());
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(built() - before, 1, "another branch builds it once");
+    assert_eq!(
+        drawn(cx),
+        (
+            Some("topic".into()),
+            Some(format!("topic · {SWITCH}")),
+            Some("Current branch: topic. Switch or manage branches".into()),
+        ),
+        "the picker reads the new branch"
+    );
+    at_rest("another branch", cx);
+
+    let head = app.read_with(cx, |app, _| {
+        (app.work_status.as_ref())
+            .and_then(|status| status.head.clone())
+            .expect("HEAD has a commit")
+    });
+    let short = &head[..7];
+    let named = format!("Current branch: Detached HEAD at {short}. Switch or manage branches");
+    let before = built();
+    app.update(cx, |app, cx| {
+        status(app).branch = None;
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(built() - before, 1, "a detached HEAD builds it once");
+    assert_eq!(
+        drawn(cx),
+        (
+            Some("Detached HEAD".into()),
+            Some(format!("Detached HEAD at {short} · {SWITCH}")),
+            Some(named.clone()),
+        ),
+        "the full bar's picker names the commit in its tooltip and name"
+    );
+    at_rest("a detached HEAD", cx);
+
+    let before = built();
+    size_to(cx, 18, 700., 490.);
+    let compact = drawn(cx);
+    size_to(cx, 18, 461., 490.);
+    let narrow = drawn(cx);
+    assert_eq!(built() - before, 0, "the compact forms build none of it");
+    assert_eq!(
+        compact,
+        (
+            Some(short.to_owned()),
+            Some(format!("Detached HEAD at {short} · {SWITCH}")),
+            Some(named.clone()),
+        ),
+        "the compact row's picker is labelled by the commit"
+    );
+    assert_eq!(
+        narrow,
+        (
+            Some(crate::empty_state::DETACHED.to_owned()),
+            Some(format!(
+                "Detached HEAD at {short} · Create a branch here to keep new commits on it · {SWITCH}"
+            )),
+            Some(named),
+        ),
+        "where the line leaves, the picker says its word and carries its advice"
+    );
+    at_rest("the compact row in 461 × 490", cx);
+    size_to(cx, 13, 1480., 800.);
+}
+
+/// Until an Open's status is read, the branch picker's menu lists the
+/// branch the accepted snapshot found checked out, the one the picker
+/// names, as the current branch: ticked, "topic, current branch", with
+/// "Current branch settings…", which opens it, and never as a branch to
+/// switch to. It listed it unticked among the branches to switch to, with
+/// no current branch and no settings for it, while the picker named it.
+#[gpui::test]
+async fn the_branch_menu_names_the_current_branch_until_the_status_is_read(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let topic = fixture_repository(fixture.path().join("topic"));
+    fixture_git(
+        topic.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Topic"],
+    );
+    fixture_git(topic.path(), &["switch", "-q", "-c", "topic"]);
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(topic.path().to_owned(), window, cx)
+        })
+    });
+    for _ in 0..16 {
+        let installed = app.read_with(cx, |app, _| {
+            app.repository.as_ref().map(|repo| repo.git_dir()) == Some(topic.git_dir())
+        });
+        if installed {
+            break;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+    }
+    draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.working_status_unread()),
+        "its status read waits"
+    );
+    assert_eq!(
+        PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
+        Some("topic"),
+        "the picker names it"
+    );
+    PICKER_ITEMS.with(|items| items.borrow_mut().clear());
+    let picker = rendered(cx, "current-branch");
+    cx.simulate_click(picker.center(), gpui::Modifiers::default());
+    draw(cx);
+    let items = PICKER_ITEMS.with(|items| items.borrow().clone());
+    let topic_items: Vec<_> = (items.iter())
+        .filter(|item| item.label == "topic")
+        .collect();
+    assert_eq!(topic_items.len(), 1, "listed once: {items:?}");
+    assert_eq!(topic_items[0].checked, Some(true), "ticked");
+    assert_eq!(
+        topic_items[0].name.as_deref(),
+        Some("topic, current branch"),
+        "as the current branch"
+    );
+    assert!(
+        (items.iter()).any(|item| item.label == "main" && item.checked == Some(false)),
+        "main to switch to: {items:?}"
+    );
+    let settings = (items.iter())
+        .position(|item| item.label == "Current branch settings…")
+        .expect("its settings offered");
+    assert!(!items[settings].disabled, "its settings offered");
+    assert!(
+        !(items.iter()).any(|item| item.label == "Merge a branch…"),
+        "no integration before the read says none is in progress"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.branch_menu_action(MenuAction::ManageCurrent, window, cx)
+        })
+    });
+    assert!(
+        app.read_with(cx, |app, _| app.branch_actions.task.is_some()),
+        "its settings read the branch"
+    );
+    drop(held);
+    crate::views::tests::settle(&app, cx).await;
 }

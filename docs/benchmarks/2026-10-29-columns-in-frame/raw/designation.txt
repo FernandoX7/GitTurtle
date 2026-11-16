@@ -1,0 +1,8 @@
+Designated before any measured launch, 2026-10-30T01:48:23Z:
+base 5f7b078ca1b0281ffac42a93449563616556f02d sha256 4d95805f538b62efd57f3c20ab9f49e89e5f118f1096899864aa2e52e2f3a362
+candidate 5e128852bd46e79fd0f6b7fbd91259cdca40f887 sha256 e581ae28a6462695c756a14b488d824bd01d6b8cb7bb9ac8aaa2959af11a1114
+display check: Fri Oct 30 01:48:23 AM UTC 2026 pgrep gitturtle: [] hyprctl gitturtle windows: [0]
+Plan fixed 2026-10-30T02:14:02Z, before the first recorded launch: tools/run-all.sh 1 4. Rounds 1-4: cells L13 L18 S13 S18
+(drive.py), base first in rounds 1 and 3, candidate first in rounds 2 and 4 (ABBA). Changes cells many-13 and many-18
+(changes/tools/drive.py, WARM=1 WRITES=10 RESIZES=4) in rounds 1-2, same order. Trials (raw/trial*, raw/x) are not results.
+Release Fri Oct 30 03:36:01 AM UTC 2026: pgrep -a gitturtle -> none (exit 1); hyprctl GitTurtle/filler windows -> []

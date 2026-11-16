@@ -1,8 +1,15 @@
 //! Stable, visible file selection; row indices are never write targets.
 use crate::*;
-use gitturtle_core::{ChangeArea, RepositoryStatus, WriteCommand};
+
+/// Whether two repository paths name one file: every byte the same, so
+/// `sub` and `sub/`, which `Path` holds equal, as a deleted `sub` and an
+/// untracked repository at `sub/` are, name two.
+pub(crate) fn same_path(one: &Path, other: &Path) -> bool {
+    one.as_os_str() == other.as_os_str()
+}
+use gitturtle_core::{ChangeArea, RepositoryStatus, StatusEntry, WriteCommand};
 use gpui_kit::prelude::FluentBuilder;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Key {
@@ -54,6 +61,38 @@ impl Selection {
         self.selected.clear();
         self.anchor = None;
     }
+    /// The selected paths in `visible` order, each once: a file selected in
+    /// both Staged and Unstaged is one path.
+    fn paths<'a>(&self, visible: &'a [Key]) -> Vec<&'a Path> {
+        let mut seen = BTreeSet::new();
+        visible
+            .iter()
+            .filter(|key| self.selected.contains(*key))
+            .map(|key| key.path.as_path())
+            .filter(|path| seen.insert(*path))
+            .collect()
+    }
+    /// Whether [`Self::choose`] of `key`, with no toggle, would change the
+    /// selected set.
+    fn choice_changes(&self, key: &Key, visible: &[Key], range: bool) -> bool {
+        let mut chosen = Self {
+            selected: self.selected.clone(),
+            anchor: self.anchor.clone(),
+            grouped: self.grouped,
+        };
+        chosen.choose(key.clone(), visible, false, range);
+        chosen.selected != self.selected
+    }
+    /// The row of `from` has become the row of `to`, its file having changed
+    /// group: selected there too, and a Shift range goes on from it.
+    fn follow(&mut self, from: &Key, to: Key) {
+        if self.selected.remove(from) {
+            self.selected.insert(to.clone());
+        }
+        if self.anchor.as_ref() == Some(from) {
+            self.anchor = Some(to);
+        }
+    }
     fn retain_visible(&mut self, visible: &[Key]) {
         let visible: BTreeSet<_> = visible.iter().collect();
         self.selected.retain(|key| visible.contains(key));
@@ -67,6 +106,17 @@ impl Selection {
     }
 }
 
+/// What the Working rows being prepared are for, which a row's menu, its
+/// items refused meanwhile, states (`GitTurtle::working_rows_wait`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Preparation {
+    /// The rows of a newer status, as a read of it lands.
+    #[default]
+    Status,
+    /// The rows the filter's query or the Directories grouping shows.
+    Filter,
+}
+
 /// Status snapshots and the prepared index are shared; query changes do not
 /// copy or normalize every path on the UI thread.
 #[derive(Default)]
@@ -75,11 +125,23 @@ pub(super) struct FilterState {
     index: Option<Arc<path_filter::Index>>,
     task: Option<Task<()>>,
     pub pending: bool,
+    /// What the rows prepared while `pending` are for, as the latest
+    /// preparation was asked.
+    pub preparation: Preparation,
     pub error: Option<String>,
     pub staged_count: usize,
     pub visible_count: usize,
     pub conflicted: bool,
+    /// While the rows of a newer status are prepared, the status the shown
+    /// rows index and the cursor among them as it was: the list keeps
+    /// drawing them, with the counts above, until the new rows land.
+    retained: Option<Shown>,
 }
+/// The status shown rows index and the cursor among them.
+pub(super) type Shown = (Arc<RepositoryStatus>, Option<(usize, ChangeArea)>);
+/// The shown rows' counts: the staged files, the filter's matches and
+/// whether any file is conflicted.
+pub(super) type Counts = (usize, usize, bool);
 impl FilterState {
     pub fn reset(&mut self) {
         self.cancellation
@@ -91,6 +153,55 @@ impl FilterState {
         self.staged_count = 0;
         self.visible_count = 0;
         self.conflicted = false;
+        self.retained = None;
+    }
+
+    /// A status with other entries replaces the one the index and the shown
+    /// rows were built from. Where rows are shown (`shown`: the status they
+    /// index and the cursor among them), they and their counts stay until
+    /// the new status's rows land, so the list neither empties nor moves
+    /// while the filter prepares them (DESIGN.md, "Motion"); with none shown
+    /// this is `reset`.
+    pub fn supersede(&mut self, shown: Option<Shown>) {
+        let Some(shown) = shown else {
+            self.reset();
+            return;
+        };
+        self.cancellation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.index = None;
+        self.task = None;
+        self.pending = false;
+        self.error = None;
+        // Rows kept from an earlier status still index that one.
+        self.retained.get_or_insert(shown);
+    }
+
+    /// Whether the shown rows index an earlier status than the window's,
+    /// while that status's rows are prepared.
+    pub fn retains_rows(&self) -> bool {
+        self.retained.is_some()
+    }
+
+    /// The shown rows' counts, which a retained tab keeps with its rows.
+    pub fn counts(&self) -> Counts {
+        (self.staged_count, self.visible_count, self.conflicted)
+    }
+
+    /// What the shown rows wait for, where they are not yet the status's
+    /// own for the query and grouping: rows being prepared, for what they
+    /// were asked, or, after a filter error, the filter's again. A tab left
+    /// meanwhile prepares them again as it returns, and otherwise keeps
+    /// them as they are.
+    pub fn unprepared(&self) -> Option<Preparation> {
+        (self.pending || self.error.is_some()).then_some(self.preparation)
+    }
+
+    /// Shows a returning tab's counts with its rows until the filter's land.
+    pub fn restore_counts(&mut self, (staged, visible, conflicted): Counts) {
+        self.staged_count = staged;
+        self.visible_count = visible;
+        self.conflicted = conflicted;
     }
 }
 
@@ -164,8 +275,362 @@ fn rows(
 }
 
 impl GitTurtle {
-    fn visible_working_keys(&self) -> Vec<Key> {
+    /// The status the shown rows index: while a newer status's rows are
+    /// prepared, the earlier one they were built from.
+    pub(super) fn shown_working_status(&self) -> Option<&RepositoryStatus> {
+        match &self.working_paths.retained {
+            Some((status, _)) => Some(status),
+            None => self.work_status.as_deref(),
+        }
+    }
+
+    /// The cursor among the shown rows, in their status's indices.
+    pub(super) fn shown_working_cursor(&self) -> Option<(usize, ChangeArea)> {
+        match &self.working_paths.retained {
+            Some((_, cursor)) => *cursor,
+            None => self.working_selected,
+        }
+    }
+
+    /// The rows the cursor, keys, selection, copying and menus act on. While
+    /// the filter prepares new rows there are none: the rows still shown are
+    /// the previous result's, drawn so that the list holds its place, and a
+    /// key or a click on them must not act on what is being replaced.
+    ///
+    /// A marked tab's rows are those of the last status read, which its
+    /// Changes does not draw (`workspace::GitTurtle::render_working_inspector`),
+    /// so they are none too.
+    pub(super) fn actionable_working_rows(&self) -> &[workspace::WorkingRow] {
+        if self.working_paths.pending || self.shown_tab_unavailable() {
+            &[]
+        } else {
+            &self.working_rows
+        }
+    }
+
+    /// Whether the list draws a file's row, its own or one kept while new
+    /// rows are prepared: an arrow or Select All on a list that draws none,
+    /// clean or matching no filter, has nothing to act on and refuses
+    /// nothing, while on rows being replaced it is refused
+    /// ([`Self::refuse_working_press`]).
+    pub(super) fn working_files_drawn(&self) -> bool {
+        !self.shown_tab_unavailable()
+            && self
+                .working_rows
+                .iter()
+                .any(|row| matches!(row, workspace::WorkingRow::File(..)))
+    }
+
+    /// The element ID of the shown rows' row of the `index`th file in
+    /// `area`, made once per row of the status they show
+    /// (`workspace::WorkingRowIds`).
+    pub(super) fn working_row_key(&self, index: usize, area: ChangeArea) -> ElementId {
+        let status = match &self.working_paths.retained {
+            Some((status, _)) => status,
+            None => self.work_status.as_ref().expect("the status the rows show"),
+        };
+        self.working_row_ids.borrow_mut().get(status, index, area)
+    }
+
+    /// Where `path`'s row in `area` stands among the actionable rows, with
+    /// the file as it now stands there. A row menu acts on its file by path
+    /// and finds the row's place when it acts, since rows coming or going
+    /// before it move that place.
+    fn working_row_entry(&self, path: &Path, area: ChangeArea) -> Option<(usize, &StatusEntry)> {
+        let status = self.work_status.as_ref()?;
+        self.actionable_working_rows()
+            .iter()
+            .enumerate()
+            .find_map(|(position, row)| match *row {
+                workspace::WorkingRow::File(index, at) if at == area => status
+                    .entries
+                    .get(index)
+                    .filter(|entry| same_path(&entry.path, path))
+                    .map(|entry| (position, entry)),
+                _ => None,
+            })
+    }
+
+    /// Where `path`'s row in `area` stands among the actionable rows.
+    pub(super) fn working_row_position(&self, path: &Path, area: ChangeArea) -> Option<usize> {
+        self.working_row_entry(path, area)
+            .map(|(position, _)| position)
+    }
+
+    /// Keeps the file list's keyboard menu, while it is a Working Changes
+    /// row's (`file_menu_row`), with that row as installed rows move it:
+    /// drawn beside the row where it now stands, and built again where the
+    /// file's status changed, so its items act on what the row now shows,
+    /// its keyboard cursor kept on its item, or resting on none while that
+    /// item cannot act (`KeyboardMenu::rebuild`); or, where the row went,
+    /// as a refresh after its file was committed, staged away, reverted or
+    /// deleted outside the app takes it, closed, focus returning to the
+    /// list. Kept by the row's place, the menu stayed there, beside
+    /// whichever row moved into it, and its items still acted on the file
+    /// that left; kept as it opened, it offered to delete an untracked file
+    /// that had since been added, which the delete refused.
+    ///
+    /// A write's start or end runs it too (`KeyboardMenu::followed_by`),
+    /// which builds the menu again from the row's file as it then stands:
+    /// built again from the file as the menu opened, it brought back Delete
+    /// untracked file… for a file a refresh had found added. While rows are
+    /// being prepared there is none to act on, and the rows landing run it;
+    /// a write that starts meanwhile builds the menu again at once, from the
+    /// file as it last found it, every item refused, where it once kept
+    /// offering what that write refused until the rows landed, and a menu
+    /// built so is built again as the reason it states changes
+    /// (`working_rows_wait`), as that write ends or a newer status lands
+    /// while the filter's rows are prepared, which `followed_by` runs it for
+    /// too: the rows the filter then prepares are that status's, and the
+    /// menu once kept saying "Filtering…" until they landed.
+    pub(super) fn follow_working_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(followed) = &self.file_menu_row else {
+            return;
+        };
+        if self.working_paths.pending {
+            let waiting = self.working_rows_wait();
+            if (followed.wait.is_none() && self.write_unsettled())
+                || (followed.waiting.is_some() && followed.waiting != waiting)
+            {
+                let items = self.working_menu_items(cx);
+                if let (Some(items), Some(menu)) = (items, &mut self.file_menu) {
+                    menu.rebuild(items, window, cx);
+                }
+            }
+            return;
+        }
+        let target = &followed.target;
+        let Some((row, entry)) = self.working_row_entry(&target.entry.path, target.area()) else {
+            self.dismiss_file_menu(window, cx);
+            return;
+        };
+        let changed = (*entry != target.entry).then(|| entry.clone());
+        let rebuild =
+            changed.is_some() || followed.wait != self.menu_wait() || followed.waiting.is_some();
+        if let (Some(entry), Some(followed)) = (changed, self.file_menu_row.as_mut()) {
+            followed.target.entry = entry;
+        }
+        let items = if rebuild {
+            self.working_menu_items(cx)
+        } else {
+            None
+        };
+        let Some(menu) = &mut self.file_menu else {
+            return;
+        };
+        menu.follow_row(row);
+        if let Some(items) = items {
+            menu.rebuild(items, window, cx);
+        }
+    }
+
+    /// Where the cursor stood, its group and its place among that group's
+    /// file rows in the shown rows, as the rows of a newer status that no
+    /// longer lists its file land, while focus is in the list or in a menu
+    /// opened from it: the person's place, which
+    /// [`Self::select_working_neighbour`] keeps. `None` where the cursor's
+    /// file is still listed, the list does not hold focus, or no rows were
+    /// shown.
+    fn vacated_working_place(&self, window: &Window, cx: &App) -> Option<(ChangeArea, usize)> {
+        let (_, Some(cursor)) = self.working_paths.retained.as_ref()? else {
+            return None;
+        };
+        let focused = self.file_focus.contains_focused(window, cx)
+            || self
+                .file_menu
+                .as_ref()
+                .is_some_and(|menu| menu.has_focus(window, cx));
+        if self.working_selected.is_some() || self.mode != WorkspaceMode::Working || !focused {
+            return None;
+        }
+        let (_, group) = *cursor;
         self.working_rows
+            .iter()
+            .filter(|row| matches!(row, workspace::WorkingRow::File(_, area) if *area == group))
+            .position(|row| matches!(row, workspace::WorkingRow::File(index, area) if (*index, *area) == *cursor))
+            .map(|place| (group, place))
+    }
+
+    /// Whether the person has scrolled the list away from the cursor's row:
+    /// the rows drawn hold it and no part of it lies in the list's viewport.
+    /// A write's landing then keeps the list's offset, so the row they
+    /// pressed and its confirmation stay in view: with the cursor on row 5,
+    /// a Stage pressed at row 50 moved the list back to row 5. A passive
+    /// read's rows then stay on the rows the person was reading. `false`
+    /// where no such row is drawn or the list was never laid out, which no
+    /// scroll of theirs explains.
+    fn working_cursor_scrolled_away(&self, window: &Window) -> bool {
+        let Some(position) = self.shown_cursor_row() else {
+            return false;
+        };
+        let scroll = self.working_scroll.0.borrow();
+        let Some(size) = scroll.last_item_size else {
+            return false;
+        };
+        let row = window.pixel_snap(px(self.settings.density.file_row_height()));
+        let (top, start) = (-scroll.base_handle.offset().y, row * position as f32);
+        start + row <= top || start >= top + size.item.height
+    }
+
+    /// The selection's key for the cursor's row among the shown rows.
+    fn shown_cursor_key(&self) -> Option<Key> {
+        let (index, area) = self.shown_working_cursor()?;
+        let entry = self.shown_working_status()?.entries.get(index)?;
+        Some(Key::new(entry.path.clone(), area))
+    }
+
+    /// The rows of a newer status have landed, and the cursor's file, whose
+    /// key among the rows before them was `shown`, may stand in the other
+    /// group now, as a file staged by any means does: the selection goes
+    /// with it to its new row. Keyed by group, it was dropped with the row
+    /// that left, and the cursor stood on a row drawn unselected.
+    fn selection_follows_cursor(&mut self, shown: Option<Key>) {
+        let (Some(shown), Some((index, area))) = (shown, self.working_selected) else {
+            return;
+        };
+        if shown.staged == (area == ChangeArea::Staged) {
+            return;
+        }
+        let entry = self
+            .work_status
+            .as_ref()
+            .and_then(|status| status.entries.get(index));
+        if let Some(entry) = entry.filter(|entry| same_path(&entry.path, &shown.path)) {
+            let moved = Key::new(entry.path.clone(), area);
+            self.working_selection.follow(&shown, moved);
+        }
+    }
+
+    /// Takes the rows that just landed as laid out, so that a change in their
+    /// number, which brings the selected row into view as the list is next
+    /// drawn (`render_working_inspector`), leaves the list where it is. A
+    /// partly staged file's row leaving Unstaged takes one row away, and the
+    /// list moved back to a cursor the person had scrolled away from; a file
+    /// made outside the app, adding a row, moved it back the same way.
+    fn keep_working_offset(&self, window: &Window) {
+        let height = window.pixel_snap(px(self.settings.density.file_row_height()))
+            * self.working_rows.len() as f32;
+        if let Some(size) = self.working_scroll.0.borrow_mut().last_item_size.as_mut() {
+            size.contents.height = height;
+        }
+    }
+
+    /// The cursor's row left the list while the person was in it, as a file
+    /// deleted outside the app takes away the row a menu is open on: the
+    /// cursor goes to the file row that took its place in its group, Staged
+    /// or Unstaged, or to that group's row before it where its row was the
+    /// last, so the keys go on from where they were, among changes of the
+    /// same kind ([`Self::neighbour_in_group`]). It once restarted at the top, where Down selected the second
+    /// row. Where other files stay selected, as after Command- or
+    /// Control-clicks, only the cursor moves: the selection keeps them, with
+    /// the anchor the rows landing left it (`reconcile_working_selection`
+    /// drops an anchor whose row went, as Shift ranges then start afresh),
+    /// so Stage selected acts on the files the person picked. Chosen as a
+    /// click chooses, the neighbour replaced them, and Stage selected acted
+    /// on a file nobody picked. Only a selection that held the vacated file
+    /// alone, now empty, takes the neighbour.
+    fn select_working_neighbour(
+        &mut self,
+        vacated: (ChangeArea, usize),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let files: Vec<_> = self
+            .working_rows
+            .iter()
+            .filter_map(|row| match row {
+                workspace::WorkingRow::File(index, area) => Some((*index, *area)),
+                _ => None,
+            })
+            .collect();
+        let neighbour = Self::neighbour_in_group(&files, vacated);
+        let Some((index, area)) = neighbour else {
+            return;
+        };
+        if self.working_selection.selected.is_empty() {
+            self.choose_working_selection(index, area, false, false, window, cx);
+        } else {
+            self.select_working(index, area, window, cx);
+        }
+    }
+
+    /// Among `files`, the landed file rows in list order, the neighbour of a
+    /// row that stood at `place` in `group`'s files: the row that took that
+    /// place in the group, or the group's last; where the group is now
+    /// empty, the first row of the group that followed it, else the last of
+    /// the group before. Decided by the coordinator: the group says what
+    /// Stage or Unstage would do, so the cursor crosses its heading only
+    /// where the group has no row left; taken from all the rows, the
+    /// neighbour of the last staged file was the first unstaged one.
+    fn neighbour_in_group(
+        files: &[(usize, ChangeArea)],
+        (group, place): (ChangeArea, usize),
+    ) -> Option<(usize, ChangeArea)> {
+        // The groups as the list orders them (`rows`).
+        let rank = |area: ChangeArea| match area {
+            ChangeArea::Staged => 0,
+            ChangeArea::Unstaged => 1,
+        };
+        let within: Vec<_> = files.iter().filter(|(_, area)| *area == group).collect();
+        within
+            .get(place)
+            .or(within.last())
+            .copied()
+            .or_else(|| files.iter().find(|(_, area)| rank(*area) > rank(group)))
+            .or_else(|| {
+                files
+                    .iter()
+                    .rev()
+                    .find(|(_, area)| rank(*area) < rank(group))
+            })
+            .copied()
+    }
+
+    /// No rows to show: the status is gone, or the filter failed and its
+    /// error replaces the list. A row control holding focus leaves with its
+    /// row, and focus goes to the list as the rows go, so the frame that
+    /// first draws the list without them draws its ring
+    /// ([`Self::release_departed_row_control`]).
+    pub(super) fn clear_working_rows(&mut self, window: &mut Window, cx: &mut App) {
+        self.working_rows.clear();
+        self.working_paths.retained = None;
+        self.release_departed_row_control(window, cx);
+    }
+
+    /// The filter is preparing the first rows, with no earlier result to
+    /// show meanwhile: only then does "Filtering working paths…" show.
+    pub(super) fn working_filter_waiting(&self) -> bool {
+        self.working_paths.pending && self.working_rows.is_empty()
+    }
+
+    /// Whether the shown rows are a path filter's that matched nothing: the
+    /// status they index has entries and none of them is listed. It follows
+    /// the shown rows rather than the field, so while a new query's rows are
+    /// prepared the list keeps showing what it showed.
+    pub(super) fn working_no_match(&self) -> bool {
+        self.working_paths.error.is_none()
+            && !self.working_rows.is_empty()
+            && self
+                .shown_working_status()
+                .is_some_and(|status| !status.entries.is_empty())
+            && !self
+                .working_rows
+                .iter()
+                .any(|row| matches!(row, workspace::WorkingRow::File(..)))
+    }
+
+    /// Empties the path filter, as the no-match state's Clear filter does,
+    /// and moves focus to the list, which shows every file again.
+    pub(super) fn clear_working_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.working_filter
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.filter_working_paths(window, cx);
+        window.focus(&self.file_focus, cx);
+        cx.notify();
+    }
+
+    fn visible_working_keys(&self) -> Vec<Key> {
+        self.actionable_working_rows()
             .iter()
             .filter_map(|row| match row {
                 workspace::WorkingRow::File(index, area) => self
@@ -185,9 +650,28 @@ impl GitTurtle {
         let visible = self.visible_working_keys();
         self.working_selection.retain_visible(&visible);
     }
+    /// What Copy Selected List Item takes from Working Changes: the selected
+    /// files' repository paths, one per line, else the highlighted row's.
+    pub(super) fn working_copy_paths(&self) -> Option<String> {
+        let visible = self.visible_working_keys();
+        let paths = self.working_selection.paths(&visible);
+        if !paths.is_empty() {
+            return Some(
+                paths
+                    .iter()
+                    .map(|path| path.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        let (index, _) = self.working_selected?;
+        let entry = self.work_status.as_ref()?.entries.get(index)?;
+        Some(entry.path.to_string_lossy().into_owned())
+    }
+    /// Whether the shown row of `index` in `area` is among the selected
+    /// files; `index` is in the shown rows' status.
     pub(super) fn working_is_selected(&self, index: usize, area: ChangeArea) -> bool {
-        self.work_status
-            .as_ref()
+        self.shown_working_status()
             .and_then(|s| s.entries.get(index))
             .is_some_and(|entry| {
                 self.working_selection
@@ -195,6 +679,46 @@ impl GitTurtle {
                     .contains(&Key::new(entry.path.clone(), area))
             })
     }
+    /// Whether the Working list refuses a choice of its rows: a write runs,
+    /// the rows drawn are being replaced, or the filter failed. Its busy
+    /// look, the header's Refreshing… or the filter's error, drawn where it
+    /// refuses, says why; a click, Enter or Select All then changes nothing.
+    pub(super) fn working_list_refuses(&self) -> bool {
+        self.operation_busy.is_some()
+            || self.working_paths.pending
+            || self.working_paths.error.is_some()
+    }
+
+    /// [`Self::working_list_refuses`] for a press on the list, a click on a
+    /// row, Enter, an arrow or Select All: where work in flight refuses it, a
+    /// write or the rows being prepared, the busy spell's look shows at once
+    /// ([`Self::show_busy_look`]), so the reason comes in the frame of the
+    /// refusal rather than the spell's delay later. The filter's error says
+    /// why in the list already, and a status read running meanwhile refuses
+    /// no press: one refused for the error alone during such a read once
+    /// showed the read's look at once, dimming what the person had not
+    /// touched for a reason that was not why.
+    pub(super) fn refuse_working_press(&mut self, cx: &mut Context<Self>) -> bool {
+        self.refuse_busy_press(cx) || self.working_paths.error.is_some()
+    }
+
+    /// Whether work in flight, a write or the rows being prepared, refuses
+    /// a press on the list or on a control that acts on the files it lists,
+    /// Stage all, Unstage all, the selection's Stage and Unstage, and
+    /// Commit, whatever it looks like yet: where it does, the busy spell's
+    /// look shows at once ([`Self::show_busy_look`]), so the control dims
+    /// and says why (`rows_wait`) in the frame of the refusal, as a press on
+    /// the list does ([`Self::refuse_working_press`]). A pointer press on
+    /// one of those controls in the look's delay was once refused with
+    /// nothing to show for it.
+    pub(super) fn refuse_busy_press(&mut self, cx: &mut Context<Self>) -> bool {
+        let refused = self.operation_busy.is_some() || self.working_paths.pending;
+        if refused {
+            self.show_busy_look(cx);
+        }
+        refused
+    }
+
     pub(super) fn choose_working_selection(
         &mut self,
         index: usize,
@@ -204,10 +728,7 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.operation_busy.is_some()
-            || self.working_paths.pending
-            || self.working_paths.error.is_some()
-        {
+        if self.working_list_refuses() {
             return;
         }
         let Some(entry) = self.work_status.as_ref().and_then(|s| s.entries.get(index)) else {
@@ -218,11 +739,27 @@ impl GitTurtle {
         self.working_selection.choose(key, &visible, toggle, range);
         self.select_working(index, area, window, cx);
     }
+    /// Whether an arrow's choice of the row `(index, area)`, extending the
+    /// selection where `range` says so, would move anything: the cursor, or
+    /// the selected set. One that moves neither, at an end of the list,
+    /// leaves focus and the list where they stand.
+    pub(super) fn working_choice_moves(&self, index: usize, area: ChangeArea, range: bool) -> bool {
+        if self.working_selected != Some((index, area)) {
+            return true;
+        }
+        let Some(entry) = self.work_status.as_ref().and_then(|s| s.entries.get(index)) else {
+            return true;
+        };
+        let key = Key::new(entry.path.clone(), area);
+        self.working_selection
+            .choice_changes(&key, &self.visible_working_keys(), range)
+    }
     pub(super) fn select_all_working(&mut self, cx: &mut Context<Self>) {
+        // With no file drawn there is nothing to select or refuse, so no
+        // busy look either (`working_files_drawn`).
         if self.mode != WorkspaceMode::Working
-            || self.operation_busy.is_some()
-            || self.working_paths.pending
-            || self.working_paths.error.is_some()
+            || !self.working_files_drawn()
+            || self.refuse_working_press(cx)
         {
             return;
         }
@@ -235,8 +772,14 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // As a plain arrow: refused, it extends and scrolls nothing, and
+        // the busy look says why at once (`move_working_selection`). It once
+        // scrolled to the row it would have added, showing no look.
+        if !self.working_files_drawn() || self.refuse_working_press(cx) {
+            return;
+        }
         let files: Vec<_> = self
-            .working_rows
+            .actionable_working_rows()
             .iter()
             .filter_map(|row| match row {
                 workspace::WorkingRow::File(i, a) => Some((*i, *a)),
@@ -256,26 +799,41 @@ impl GitTurtle {
             current.saturating_sub(1)
         };
         let (index, area) = files[next];
+        let on_stop = self.row_control_focused(window, cx);
+        // As a plain arrow: with nothing to move, focus and the list stay
+        // (`working_choice_moves`).
+        if on_stop && !self.working_choice_moves(index, area, true) {
+            return;
+        }
         self.choose_working_selection(index, area, false, true, window, cx);
         if let Some(position) = self
-            .working_rows
+            .actionable_working_rows()
             .iter()
             .position(|r| matches!(r,workspace::WorkingRow::File(i,a) if *i==index&&*a==area))
         {
             self.working_scroll
                 .scroll_to_item(position, ScrollStrategy::Nearest);
+            self.follow_selection_with_row_stop(on_stop, position, window, cx);
         }
     }
     pub(super) fn working_scroll_anchor(&self, window: &Window) -> Option<ScrollAnchor> {
         let offset = self.working_scroll.0.borrow().base_handle.offset();
         let height = f32::from(window.pixel_snap(px(self.settings.density.file_row_height())));
         let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
+        // The row at the top of the list as drawn, kept from an earlier
+        // status while a newer one's rows are prepared.
         let (path, area) = match self.working_rows.get(top)? {
             workspace::WorkingRow::Heading(area, _) | workspace::WorkingRow::Directory(_, area) => {
                 (None, *area)
             }
             workspace::WorkingRow::File(index, area) => (
-                Some(self.work_status.as_ref()?.entries.get(*index)?.path.clone()),
+                Some(
+                    self.shown_working_status()?
+                        .entries
+                        .get(*index)?
+                        .path
+                        .clone(),
+                ),
                 *area,
             ),
         };
@@ -291,13 +849,24 @@ impl GitTurtle {
     pub(super) fn filter_working_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.working_selection.clear();
         self.working_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        self.schedule_working_filter(None, false, window, cx);
+        self.schedule_working_filter(None, false, None, Preparation::Filter, window, cx);
     }
 
+    /// Prepares the rows the filter shows of the window's status, for
+    /// `preparation`, off the UI thread. `aloud` says they are those of a
+    /// read that is not a quiet one, a write's own or Refresh's; `anchor`
+    /// keeps the rows being read in place, for a read from outside the app
+    /// or a write's quiet one. Whichever read brings them, the selected file stays
+    /// selected at its new row. `follow` is how the list then brings that
+    /// row into view, where it was in view as these land
+    /// (`workspace::working_follow`); where the person had scrolled it out
+    /// of view, the list stays where it is.
     pub(super) fn schedule_working_filter(
         &mut self,
         anchor: Option<ScrollAnchor>,
-        center_selected: bool,
+        aloud: bool,
+        follow: Option<ScrollStrategy>,
+        preparation: Preparation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -310,8 +879,15 @@ impl GitTurtle {
         self.working_paths.task = None;
         self.working_paths.error = None;
         self.working_paths.pending = false;
-        self.working_rows.clear();
+        // The shown rows stay, drawn where they are, until the new ones land:
+        // a list that empties for the frames the filter takes moves every
+        // row and the controls beside it, and a row that a Stage moves would
+        // vanish before it travels (DESIGN.md, "Motion").
+        self.interrupt_working_travel();
+        let departure = self.working_departure();
         let Some(status) = self.work_status.clone() else {
+            self.clear_working_rows(window, cx);
+            self.follow_working_menu(window, cx);
             cx.notify();
             return;
         };
@@ -342,6 +918,8 @@ impl GitTurtle {
                 (Some(index), matches)
             };
             let rows = rows(&status, &matches, grouped, &cancellation, ticket)?;
+            let landing = departure
+                .and_then(|(path, from)| crate::motion::landing(&status, &rows, &path, from));
             let staged = status
                 .entries
                 .iter()
@@ -349,9 +927,10 @@ impl GitTurtle {
                 .count();
             let conflicted = status.entries.iter().any(|entry| entry.conflicted);
             path_filter::checkpoint(&cancellation, ticket)?;
-            Ok((index, rows, staged, conflicted, matches.len()))
+            Ok((index, rows, staged, conflicted, matches.len(), landing))
         });
         self.working_paths.pending = true;
+        self.working_paths.preparation = preparation;
         self.working_paths.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -359,41 +938,68 @@ impl GitTurtle {
                 this.working_paths.pending = false;
                 this.working_paths.task = None;
                 match result {
-                    Ok(Ok((index, rows, staged, conflicted, visible_count))) => {
+                    Ok(Ok((index, rows, staged, conflicted, visible_count, landing))) => {
                         this.working_paths.index = index;
                         this.working_paths.staged_count = staged;
                         this.working_paths.visible_count = visible_count;
                         this.working_paths.conflicted = conflicted;
+                        let vacated = this.vacated_working_place(window, cx);
+                        // Asked of the rows still drawn, before these replace
+                        // them, for a write's rows and a passive read's alike.
+                        let scrolled_away = (aloud || anchor.is_some()) && this.working_cursor_scrolled_away(window);
+                        let shown_cursor = this.shown_cursor_key();
                         this.working_rows = rows;
+                        this.working_paths.retained = None;
+                        this.release_departed_row_control(window, cx);
+                        this.selection_follows_cursor(shown_cursor);
                         this.reconcile_working_selection();
                         let selected = this.working_selected.and_then(|(i, a)| this.working_rows.iter().position(|r| matches!(r, workspace::WorkingRow::File(index, area) if *index == i && *area == a)));
                         if this.working_selected.is_some() && selected.is_none() {
                             this.working_selected = None;
                             if this.mode == WorkspaceMode::Working {
                                 this.invalidate_read(); this.clear_preview(); this.files.clear(); this.file_paths.reset(); this.selected_file = None;
+                                // The stopped read puts a running quiet read
+                                // back to wait; nothing else here starts it.
+                                this.try_automatic_refresh(window, cx);
                             }
                         }
-                        if let Some(anchor) = anchor {
-                            if let Some(next_top) = this.working_rows.iter().position(|row| match row {
+                        if let Some(vacated) = vacated {
+                            this.select_working_neighbour(vacated, window, cx);
+                        }
+                        if let Some(anchor) = anchor
+                            && let Some(next_top) = this.working_rows.iter().position(|row| match row {
                                 workspace::WorkingRow::Heading(area, _) | workspace::WorkingRow::Directory(_, area) => anchor.path.is_none() && *area == anchor.area,
-                                workspace::WorkingRow::File(index, area) => *area == anchor.area && this.work_status.as_ref().and_then(|status| status.entries.get(*index)).is_some_and(|entry| Some(&entry.path) == anchor.path.as_ref()),
-                            }) {
-                                let height = f32::from(window.pixel_snap(px(this.settings.density.file_row_height())));
-                                this.working_scroll.0.borrow().base_handle.set_offset(anchor.reanchored_offset(next_top, height));
-                            }
-                        } else if center_selected && let Some(position) = selected {
-                            this.working_scroll.scroll_to_item(position, ScrollStrategy::Center);
+                                workspace::WorkingRow::File(index, area) => *area == anchor.area && this.work_status.as_ref().and_then(|status| status.entries.get(*index)).is_some_and(|entry| anchor.path.as_deref().is_some_and(|path| same_path(&entry.path, path))),
+                            })
+                        {
+                            let height = f32::from(window.pixel_snap(px(this.settings.density.file_row_height())));
+                            this.working_scroll.0.borrow().base_handle.set_offset(anchor.reanchored_offset(next_top, height));
                         }
+                        if !scrolled_away && let (Some(strategy), Some(position)) = (follow, selected) {
+                            this.working_scroll.scroll_to_item(position, strategy);
+                        }
+                        // A cursor the person scrolled away from has no say in
+                        // how far a confirming heading moves the list.
+                        if aloud { this.reveal_confirming_heading(selected.filter(|_| !scrolled_away), window, cx); }
+                        if scrolled_away { this.keep_working_offset(window); }
+                        this.rows_moved_under_pointer(window, cx);
+                        this.land_working_row(landing, cx);
                     }
-                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.working_selection.clear(); }
-                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.working_selection.clear(); }
+                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.clear_working_rows(window, cx); this.working_selection.clear(); this.land_working_row(None, cx); }
+                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.clear_working_rows(window, cx); this.working_selection.clear(); this.land_working_row(None, cx); }
                 }
+                this.follow_working_menu(window, cx);
                 cx.notify();
             });
         }));
         cx.notify();
     }
-    fn apply_selected_files(&mut self, staged: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn apply_selected_files(
+        &mut self,
+        staged: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.operation_busy.is_some()
             || self.working_paths.pending
             || self.working_paths.error.is_some()
@@ -410,7 +1016,11 @@ impl GitTurtle {
             if key.staged != staged {
                 continue;
             }
-            let Some(entry) = status.entries.iter().find(|entry| entry.path == key.path) else {
+            let Some(entry) = status
+                .entries
+                .iter()
+                .find(|entry| same_path(&entry.path, &key.path))
+            else {
                 return;
             };
             if entry.conflicted {
@@ -461,66 +1071,152 @@ impl GitTurtle {
             cx,
         );
     }
-    pub(super) fn render_working_selection(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The selected staged and unstaged entries, which Unstage and Stage
+    /// count.
+    pub(super) fn selection_counts(&self) -> (usize, usize) {
         let staged = self
             .working_selection
             .selected
             .iter()
             .filter(|key| key.staged)
             .count();
-        let unstaged = self.working_selection.selected.len() - staged;
+        (staged, self.working_selection.selected.len() - staged)
+    }
+
+    /// The selection's Stage, or where `staged` its Unstage, as the
+    /// selection's controls draw it (`render_working_selection`), `compact`
+    /// with only its icon: labelled by how many of the selected files it
+    /// acts on, refused while there are none, and refused at once by a
+    /// write in flight or rows being prepared, dimmed once the spell looks
+    /// busy, which a refused press shows at once (`refuse_busy_press`).
+    /// While only the rows being prepared
+    /// refuse it, its name and tooltip say why once it dims (`rows_wait`).
+    pub(super) fn selection_action(
+        &self,
+        staged: bool,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let (selected_staged, selected_unstaged) = self.selection_counts();
+        let (key, verb, icon, detail, count) = if staged {
+            (
+                "unstage-selection",
+                "Unstage",
+                "minus",
+                "Unstage the selected files",
+                selected_staged,
+            )
+        } else {
+            (
+                "stage-selection",
+                "Stage",
+                "plus",
+                "Stage the selected files",
+                selected_unstaged,
+            )
+        };
+        let spell = self.operation_busy.is_some() || self.working_paths.pending;
+        let unavailable = (spell && self.busy_shown()) || self.working_paths.error.is_some();
+        let refused = spell || self.working_paths.error.is_some();
+        let label = format!("{verb} {count}");
+        let (named, tooltip) = self.rows_wait(
+            key,
+            count == 0,
+            &label,
+            compact.then(|| format!("{label} · {detail}")),
+        );
+        if compact {
+            crate::views::compact_control_label(button(key, "", icon, false), key, label)
+        } else {
+            button(key, label, "", false)
+        }
+        .when_some(tooltip, |control, tooltip| {
+            crate::workspace::waiting_tooltip(control, key, tooltip)
+        })
+        .when_some(named, |control, named| control.accessibility_label(named))
+        .debug_selector(move || key.into())
+        .map(|control| {
+            crate::workspace::refusing(
+                control,
+                move || key.into(),
+                count == 0 || refused,
+                count == 0 || unavailable,
+            )
+        })
+        .on_click(cx.listener(move |this, _, window, cx| {
+            // Refused at once, its look showing why (`refuse_busy_press`).
+            if !this.refuse_busy_press(cx) {
+                this.apply_selected_files(staged, window, cx)
+            }
+        }))
+    }
+
+    /// The filter and the selection's controls. Stage and Unstage stay
+    /// together, wrapping below Directories as a pair; `compact`, where the
+    /// pair does not fit a row of its own labelled (`WorkingForms`), the
+    /// three keep only their icons on one row, with their accessible names
+    /// and tooltips that lead with those names.
+    pub(super) fn render_working_selection(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::native_accessibility::DrawnButton as _;
+        let (staged, unstaged) = self.selection_counts();
+        let grouped = self.working_selection.grouped;
+        let directories = if compact {
+            crate::views::compact_control_name(
+                button("group-working", "", "folder", grouped),
+                "group-working",
+                "Directories",
+            )
+            .tooltip("Directories · Group the files by folder")
+        } else {
+            button("group-working", "Directories", "", grouped)
+        };
         div()
             .px_3()
             .py_2()
             .flex()
             .flex_col()
             .gap_1()
-            .child(Input::new(&self.working_filter).text_size(crate::appearance::ui_text(12.)))
+            .child(
+                div()
+                    .debug_selector(|| "working-filter".into())
+                    .relative()
+                    .child(
+                        Input::new(&self.working_filter)
+                            .aria_label(crate::workspace::FILTER_NAME)
+                            .text_size(crate::appearance::ui_text(12.)),
+                    )
+                    // Painted after the field, it fits its placeholder.
+                    .child(self.fit_filter_placeholder()),
+            )
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap_1()
                     .child(
-                        button(
-                            "group-working",
-                            "Directories",
-                            "",
-                            self.working_selection.grouped,
-                        )
-                        .toggled(self.working_selection.grouped)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.working_selection.grouped = !this.working_selection.grouped;
-                            this.filter_working_paths(window, cx);
-                        })),
-                    )
-                    .child(
-                        button("stage-selection", format!("Stage {unstaged}"), "", false)
-                            .disabled(
-                                unstaged == 0
-                                    || self.operation_busy.is_some()
-                                    || self.working_paths.pending
-                                    || self.working_paths.error.is_some(),
-                            )
+                        directories
+                            .debug_selector(|| "group-working".into())
+                            .toggled(grouped)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.apply_selected_files(false, window, cx)
+                                this.working_selection.grouped = !this.working_selection.grouped;
+                                this.filter_working_paths(window, cx);
                             })),
                     )
                     .child(
-                        button("unstage-selection", format!("Unstage {staged}"), "", false)
-                            .disabled(
-                                staged == 0
-                                    || self.operation_busy.is_some()
-                                    || self.working_paths.pending
-                                    || self.working_paths.error.is_some(),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.apply_selected_files(true, window, cx)
-                            })),
+                        div()
+                            .flex()
+                            .gap_1()
+                            .child(self.selection_action(false, compact, cx).node_recorded())
+                            .child(self.selection_action(true, compact, cx).node_recorded()),
                     ),
             )
             .child(
                 div()
+                    .debug_selector(|| "working-selection-count".into())
                     .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(palette(cx).muted))
                     .child(format!(
@@ -528,38 +1224,24 @@ impl GitTurtle {
                         staged + unstaged
                     )),
             )
-            .when(self.working_paths.pending, |el| {
+            // Only before the first rows: later the shown rows stay until
+            // the new ones land, and the line would move them down.
+            .when(self.working_filter_waiting(), |el| {
                 el.child(
-                    div()
-                        .id("working-filter-pending")
-                        .role(Role::Label)
-                        .text_size(crate::appearance::ui_text(11.))
-                        .child("Filtering working paths…"),
+                    native_accessibility::text(
+                        "working-filter-pending",
+                        "Filtering working paths…",
+                    )
+                    .text_size(crate::appearance::ui_text(11.)),
                 )
             })
-            .when(
-                !self.working_paths.pending
-                    && self.working_paths.error.is_none()
-                    && self.working_paths.visible_count == 0
-                    && !self.working_filter.read(cx).value().is_empty(),
-                |el| {
-                    el.child(
-                        div()
-                            .id("working-filter-empty")
-                            .role(Role::Label)
-                            .text_size(crate::appearance::ui_text(11.))
-                            .child("No working paths match this filter"),
-                    )
-                },
-            )
+            // A filter that matches nothing says so inside the list
+            // (`working_no_match`), so nothing here moves the list down.
             .when_some(self.working_paths.error.clone(), |el, error| {
                 el.child(
-                    div()
-                        .id("working-filter-error")
-                        .role(Role::Label)
+                    native_accessibility::text("working-filter-error", error)
                         .text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(palette(cx).warning))
-                        .child(error),
+                        .text_color(rgb(palette(cx).warning)),
                 )
             })
             .into_any_element()
@@ -602,26 +1284,13 @@ mod tests {
         use crate::{path_filter, workspace::WorkingRow};
         use gitturtle_core::GitRepository;
         use std::{fs, path::PathBuf, process::Command, sync::atomic::AtomicU64};
-        struct Fixture(PathBuf);
-        impl Drop for Fixture {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let fixture = Fixture(std::env::temp_dir().join(format!(
-                "gitturtle-working-filter-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            )));
-        fs::create_dir(&fixture.0).unwrap();
+        // In this process's test root, named by its process-wide sequence.
+        let fixture = crate::preferences::test_directories::TestDirectory::new("working-filter");
         let git = |args: &[&str]| {
             let mut command = Command::new("git");
             command
                 .arg("-C")
-                .arg(&fixture.0)
+                .arg(fixture.path())
                 .args([
                     "-c",
                     "user.name=Filter Fixture",
@@ -655,18 +1324,22 @@ mod tests {
             );
         };
         git(&["init", "--quiet"]);
-        fs::create_dir(fixture.0.join("old")).unwrap();
-        fs::create_dir(fixture.0.join("new")).unwrap();
-        fs::write(fixture.0.join("old/École.rs"), "one\ntwo\nthree\n").unwrap();
+        fs::create_dir(fixture.path().join("old")).unwrap();
+        fs::create_dir(fixture.path().join("new")).unwrap();
+        fs::write(fixture.path().join("old/École.rs"), "one\ntwo\nthree\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "--quiet", "-m", "baseline"]);
-        fs::rename(fixture.0.join("old/École.rs"), fixture.0.join("new/🐢.rs")).unwrap();
+        fs::rename(
+            fixture.path().join("old/École.rs"),
+            fixture.path().join("new/🐢.rs"),
+        )
+        .unwrap();
         git(&["add", "."]);
-        fs::write(fixture.0.join("new/🐢.rs"), "one\ntwo\nthree\nextra\n").unwrap();
-        fs::write(fixture.0.join("unrelated.txt"), "preserved\n").unwrap();
-        let repo = GitRepository::open(&fixture.0).unwrap();
+        fs::write(fixture.path().join("new/🐢.rs"), "one\ntwo\nthree\nextra\n").unwrap();
+        fs::write(fixture.path().join("unrelated.txt"), "preserved\n").unwrap();
+        let repo = GitRepository::open(fixture.path()).unwrap();
         let status = repo.status().unwrap();
-        let index_before = fs::read(fixture.0.join(".git/index")).unwrap();
+        let index_before = fs::read(fixture.path().join(".git/index")).unwrap();
         let cancellation = AtomicU64::new(3);
         let index = path_filter::prepare_paths(
             status
@@ -708,11 +1381,11 @@ mod tests {
         );
         assert!(super::rows(&status, &matched, true, &cancellation, 2).is_err());
         assert_eq!(
-            fs::read(fixture.0.join(".git/index")).unwrap(),
+            fs::read(fixture.path().join(".git/index")).unwrap(),
             index_before
         );
         assert_eq!(
-            fs::read_to_string(fixture.0.join("unrelated.txt")).unwrap(),
+            fs::read_to_string(fixture.path().join("unrelated.txt")).unwrap(),
             "preserved\n"
         );
         assert_eq!(repo.status().unwrap(), status);
@@ -735,6 +1408,46 @@ mod tests {
         assert_eq!(state.visible_count, 0);
     }
 
+    /// A status with other entries cancels the index built from the earlier
+    /// one, as a reset does, but rows on screen keep their counts and the
+    /// status they index, the first one kept while later statuses arrive,
+    /// until a reset; with no rows shown it is a reset.
+    #[test]
+    fn a_new_status_keeps_the_shown_rows_with_their_status_and_counts() {
+        use gitturtle_core::{ChangeArea, RepositoryStatus};
+        use std::sync::{Arc, atomic::Ordering};
+        let status = |branch: &str| {
+            Arc::new(RepositoryStatus {
+                branch: Some(branch.into()),
+                ..Default::default()
+            })
+        };
+        let mut state = super::FilterState {
+            index: Some(Arc::new(vec![["old path".into(), String::new()]])),
+            staged_count: 2,
+            visible_count: 3,
+            conflicted: true,
+            ..Default::default()
+        };
+        let ticket = state.cancellation.load(Ordering::Relaxed);
+        let cursor = Some((1, ChangeArea::Unstaged));
+        state.supersede(Some((status("shown"), cursor)));
+        assert!(crate::path_filter::checkpoint(&state.cancellation, ticket).is_err());
+        assert!(state.index.is_none());
+        assert_eq!(state.counts(), (2, 3, true));
+        assert!(state.retains_rows());
+        state.supersede(Some((status("later"), None)));
+        let (kept, kept_cursor) = state.retained.clone().unwrap();
+        assert_eq!(kept.branch.as_deref(), Some("shown"));
+        assert_eq!(kept_cursor, cursor);
+        state.reset();
+        assert!(!state.retains_rows());
+        assert_eq!(state.counts(), (0, 0, false));
+        state.restore_counts((4, 5, false));
+        state.supersede(None);
+        assert_eq!(state.counts(), (0, 0, false));
+    }
+
     #[test]
     fn range_toggle_and_filtered_refresh_never_leave_hidden_targets() {
         let keys = keys();
@@ -752,6 +1465,26 @@ mod tests {
         s.clear();
         assert!(s.selected.is_empty());
         assert!(s.anchor.is_none());
+    }
+    #[test]
+    fn copied_paths_follow_the_list_once_each() {
+        let key = |path: &str, area| Key::new(path.into(), area);
+        let visible = [
+            key("b", ChangeArea::Staged),
+            key("a", ChangeArea::Unstaged),
+            key("b", ChangeArea::Unstaged),
+            key("c", ChangeArea::Unstaged),
+        ];
+        let mut selection = Selection::default();
+        assert!(selection.paths(&visible).is_empty());
+        for index in [3, 2, 0] {
+            selection.choose(visible[index].clone(), &visible, true, false);
+        }
+        let paths: Vec<_> = selection.paths(&visible);
+        assert_eq!(
+            paths,
+            [std::path::Path::new("b"), std::path::Path::new("c")]
+        );
     }
     #[test]
     fn staged_and_unstaged_versions_are_distinct_and_removed_rows_are_dropped() {

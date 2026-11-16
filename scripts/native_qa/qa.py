@@ -238,16 +238,18 @@ def privacy_scan(args) -> int:
         if not args.font:
             raise SystemExit("--text needs --font (the face the app draws with, for example Ubuntu)")
         templates = privacy.render_templates(args.text, args.font, args.size or [13])
-    report = privacy.scan(args.frames, templates, args.threshold, args.engine, args.jobs)
-    write_json(args.json, report)
-    matched = sum(1 for result in report.values() if result["hits"])
-    if args.redacted:
-        # Automated callers: the frame and a verdict only, never a template's name, score or place.
-        for frame, result in report.items():
-            print(f"{frame}: {'MATCH' if result['hits'] else 'clean'}")
-        print(f"privacy scan: {len(report)} image(s), {matched} matched a template")
-        return 1 if matched else 0
-    for frame, result in report.items():
+    # Each frame's lines are printed, and flushed, when its scan ends, in the order given: a long scan shows
+    # how far it is, and one that is cancelled shows what it finished.
+    report = {}
+    for frame, result in privacy.scan_each(args.frames, templates, args.threshold, args.engine, args.jobs):
+        repeated = frame in report  # a frame given twice still has one entry and one line
+        report[frame] = result
+        if repeated:
+            continue
+        if args.redacted:
+            # Automated callers: the frame and a verdict only, never a template's name, score or place.
+            print(f"{frame}: {'MATCH' if result['hits'] else 'clean'}", flush=True)
+            continue
         best = max(result["templates"].items(), key=lambda item: item[1]["best"])
         where = f" in frame {best[1]['frame']}" if result["frames"] > 1 else ""
         if best[1].get("magnified"):
@@ -257,6 +259,11 @@ def privacy_scan(args) -> int:
         for name, found in result["templates"].items():
             for x, y, score in found["hit_list"]:
                 print(f"    HIT {name} at ({x},{y}) ncc {score:+.3f}")
+        sys.stdout.flush()
+    write_json(args.json, report)
+    matched = sum(1 for result in report.values() if result["hits"])
+    if args.redacted:
+        print(f"privacy scan: {len(report)} image(s), {matched} matched a template")
     return 1 if matched else 0
 
 

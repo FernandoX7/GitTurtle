@@ -1,0 +1,33 @@
+Designated before any measured launch, 2026-10-30T14:42:32Z:
+base 5e128852bd46e79fd0f6b7fbd91259cdca40f887 (gitturtle-5e12885, the 2026-10-29 record's candidate) sha256 e581ae28a6462695c756a14b488d824bd01d6b8cb7bb9ac8aaa2959af11a1114
+candidate aeab555a2805617f1d23226ac972477d0b3e442a (gitturtle-aeab555, the I line: 3e9aa590, 876a1b6d, eaa93062) sha256 819bf2d618fc2a418bcaf1fe2720e486539f63f7b9a06646866502d15108518b
+Both: --build-info source_tree clean, release, aarch64-unknown-linux-gnu, rustc 1.99.0; each embeds its own full sha and not the other's (strings | grep).
+Cells: L13 (1480 x 980 floating, 13 pt), L18 (1480 x 980, 18 pt), S13 (461 x 490 tiled, 13 pt, History only), S18 (461 x 490 tiled, 18 pt).
+Mode: width steps only (tools/drive.py BIN CELL LABEL steps): History, then text Compare on long.txt (HEAD), then image Compare on photo.png (HEAD~1), four steps each with the settle check.
+Order: tools/run-all.sh 1 4. Four rounds; in each round cells L13 L18 S13 S18, both builds per cell; base first in rounds 1 and 3, candidate first in rounds 2 and 4.
+Rounds: 4. Estimate from trial-aeab555-L13 (80 s per L launch): about 9.5 min per round, about 40 min for four, under the 60 min hold limit. Trials (raw/trial-*) are not results.
+Quiet: .local/build-slots/quiet touched just before the first launch; AT-SPI IsEnabled false; omarchy-shell notifications DND set on (was off) before designation.
+display check:
+$ date -u
+Fri Oct 30 02:42:41 PM UTC 2026
+$ pgrep -af '^([^ ]*/)?[Gg]it[Tt]urtle[^/ ]*( |$)'  # GitTurtle executables
+(nothing, exit 1)
+$ pgrep -af '^([^ ]*/)?(python3?|bash|timeout)( [^ ]+)* [^ ]*(tools/drive\.py|tools/run-all\.sh)'  # drivers
+(nothing, exit 1)
+$ hyprctl clients -j  # GitTurtle or qa-filler windows
+[]
+quiet touched 2026-10-30T14:42:44Z; plan fixed: tools/run-all.sh 1 4
+Release (all launches exited, run-all.sh finished 2026-10-30T15:21:43Z; quiet file removed by run-all's caller):
+$ date -u
+Fri Oct 30 03:23:23 PM UTC 2026
+$ pgrep -af '^([^ ]*/)?[Gg]it[Tt]urtle[^/ ]*( |$)'  # GitTurtle executables
+4039821 <checkout>/.local/target-coord/debug/deps/gitturtle-e98073a41b26998d
+$ pgrep -af '^([^ ]*/)?(python3?|bash|timeout)( [^ ]+)* [^ ]*(tools/drive\.py|tools/run-all\.sh)'  # drivers
+(nothing, exit 1)
+$ hyprctl clients -j  # GitTurtle or qa-filler windows
+[]
+$ ls .local/build-slots
+1 2 3 
+$ omarchy-shell notifications isDnd  # restored
+off
+Note: pid 4039821 above is not a launch of this run: a debug test executable in .local/target-coord, started after the quiet file was removed (run-all.sh ended 15:21:43Z); no GitTurtle window is open.

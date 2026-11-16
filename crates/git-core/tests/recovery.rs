@@ -1,7 +1,7 @@
 //! Recovery mutations run only in disposable repositories and local remotes.
 use gitturtle_core::{
-    ConflictResolution, GitRepository, IntegrationCommand, OperationKind, RecoveryCommand,
-    RecoveryKind, WriteCommand, WriteOutcome,
+    ConflictResolution, GitRepository, IntegrationCommand, MAX_RECOVERY_MESSAGE_BYTES,
+    OperationKind, RecoveryCommand, RecoveryKind, WriteCommand, WriteOutcome,
 };
 use std::{
     fs,
@@ -177,6 +177,12 @@ fn failed_stash_apply_reports_git_lock_failure_without_claiming_conflicts() {
         diagnostic.starts_with("Stash restoration did not complete. The stash remains saved."),
         "{diagnostic}"
     );
+    // The headline is the banner's line, never Git's later `fatal:` or `error:`.
+    assert_eq!(
+        gitturtle_core::failure_summary(&error).as_deref(),
+        Some("Stash restoration did not complete. The stash remains saved."),
+        "{diagnostic}"
+    );
     assert!(!diagnostic.contains("produced conflicts"));
     assert!(diagnostic.contains("Git stderr:"));
     assert!(
@@ -224,6 +230,49 @@ fn failed_stash_restore_keeps_untracked_collision_and_saved_entry() {
     assert_eq!(f.head(), head);
     assert_eq!(f.read("untracked.txt"), b"new independent content\n");
     assert_eq!(f.read("other.txt"), b"keep this too\n");
+    assert_eq!(
+        f.repo().stash_list(0, 20).unwrap().entries[0].oid,
+        stash.oid
+    );
+}
+
+/// Stash restoration runs configured filters, so its failure reads Git's
+/// streams as every other write's failure does, redacted and then as a
+/// terminal leaves them: a smudge filter that writes a credential marker, a
+/// carriage return and its secret, then fails, showed the secret alone,
+/// which no marker then names.
+#[cfg(unix)]
+#[test]
+fn failed_stash_restore_never_shows_a_filter_s_secret() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.write(".gitattributes", "file.txt filter=leak\n");
+    f.base();
+    f.write("file.txt", "saved changes\n");
+    let stash = create_stash(&f, "Filtered", false);
+    f.write(".git/leaked", b"password=\rSECRET1\n");
+    let leaked = f.root.join(".git/leaked");
+    f.write(
+        ".git/smudge",
+        format!("#!/bin/sh\ncat '{}' >&2\nexit 1\n", leaked.display()),
+    );
+    let smudge = f.root.join(".git/smudge");
+    fs::set_permissions(&smudge, fs::Permissions::from_mode(0o755)).unwrap();
+    f.git(&["config", "filter.leak.clean", "cat"]);
+    f.git(&["config", "filter.leak.smudge", smudge.to_str().unwrap()]);
+    f.git(&["config", "filter.leak.required", "true"]);
+    let plan = f.repo().stash_apply_plan(&stash, false).unwrap();
+    let error = f.recover(RecoveryCommand::ApplyStash { plan }).unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.starts_with("Stash restoration did not complete. The stash remains saved."),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("SECRET1"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("\n\nGit stderr:\npassword=[redacted]\n"),
+        "{diagnostic}"
+    );
     assert_eq!(
         f.repo().stash_list(0, 20).unwrap().entries[0].oid,
         stash.oid
@@ -626,6 +675,18 @@ impl Fixture {
     }
     fn recover(&self, command: RecoveryCommand) -> anyhow::Result<WriteOutcome> {
         self.repo().execute(&WriteCommand::Recovery(command.into()))
+    }
+    /// A commit on top of HEAD whose message is `message`, byte for byte,
+    /// which the branch then points at. It changes a file, so that amending
+    /// it does not make it empty.
+    fn commit_with_message(&self, message: &[u8]) -> String {
+        self.write("amended.txt", format!("{} bytes\n", message.len()));
+        self.git(&["add", "--all"]);
+        let (head, tree) = (self.head(), self.git(&["write-tree"]));
+        let oid = self.git_input(&["commit-tree", "-F", "-", "-p", &head, &tree], message);
+        let oid = String::from_utf8(oid).unwrap().trim().to_owned();
+        self.git(&["update-ref", "HEAD", &oid]);
+        oid
     }
     fn raw_message(&self, oid: &str) -> Vec<u8> {
         let commit = self.git_input(&["cat-file", "commit", oid], b"");
@@ -1045,6 +1106,85 @@ fn cherry_pick_and_revert_abort_restore_preoperation_files_and_preserve_untracke
     }
 }
 
+/// A recovery plan refused while an operation is paused names that
+/// operation and how to end it; conflicts with no operation say so.
+#[test]
+fn recovery_refusals_name_the_paused_operation() {
+    fn diverged(rebase: bool) -> Fixture {
+        let f = Fixture::new();
+        f.base();
+        f.git(&["switch", "-c", "other"]);
+        f.write("file.txt", "other side\n");
+        f.commit("other change");
+        f.git(&["switch", "main"]);
+        f.write("file.txt", "main side\n");
+        f.commit("main change");
+        let args: &[&str] = if rebase {
+            &["rebase", "other"]
+        } else {
+            &["merge", "other"]
+        };
+        assert!(!f.output(args).status.success());
+        f
+    }
+    let stashed = || {
+        let f = Fixture::new();
+        f.base();
+        f.write("file.txt", "stashed conflicting change\n");
+        let stash = create_stash(&f, "Conflict", false);
+        f.write("file.txt", "new committed change\n");
+        f.commit("diverged after stash");
+        let plan = f.repo().stash_apply_plan(&stash, false).unwrap();
+        assert!(f.recover(RecoveryCommand::ApplyStash { plan }).is_err());
+        f
+    };
+    for (f, operation, words) in [
+        (
+            diverged(false),
+            Some(OperationKind::Merge),
+            "A merge is paused. Complete or abort it before another recovery action.",
+        ),
+        (
+            diverged(true),
+            Some(OperationKind::Rebase),
+            "A rebase is paused. Continue or abort it before another recovery action.",
+        ),
+        (
+            conflicted_recovery(RecoveryKind::CherryPick).0,
+            Some(OperationKind::CherryPick),
+            "A cherry-pick is paused. Continue or abort it before another recovery action.",
+        ),
+        (
+            conflicted_recovery(RecoveryKind::Revert).0,
+            Some(OperationKind::Revert),
+            "A revert is paused. Continue or abort it before another recovery action.",
+        ),
+        (
+            stashed(),
+            None,
+            "Conflicts remain in this working copy. Resolve them before another recovery action.",
+        ),
+    ] {
+        let repo = f.repo();
+        assert_eq!(
+            repo.operation_state().unwrap().map(|state| state.kind),
+            operation
+        );
+        for refused in [
+            repo.recovery_plan(RecoveryKind::Undo, None, None).map(drop),
+            repo.stash_create_plan(false).map(drop),
+        ] {
+            let reason = format!("{:#}", refused.unwrap_err());
+            assert_eq!(reason, words, "{operation:?}");
+            assert_eq!(gitturtle_core::paused_recovery_refusal(operation), words);
+            assert!(gitturtle_core::is_paused_recovery_refusal(&reason));
+        }
+    }
+    assert!(!gitturtle_core::is_paused_recovery_refusal(
+        "Create the first commit before using this recovery action"
+    ));
+}
+
 #[test]
 fn cherry_pick_and_revert_abort_still_protect_independently_staged_work() {
     for kind in [RecoveryKind::CherryPick, RecoveryKind::Revert] {
@@ -1186,4 +1326,214 @@ fn linked_worktree_recovery_changes_only_its_own_head_and_index() {
         b"linked committed\n"
     );
     assert_eq!(f.read("file.txt"), b"base\n");
+}
+
+const TITLE: &str = "Title\n\n";
+
+/// A message of exactly `length` bytes: `TITLE` and then `x`s.
+fn message_of(length: usize) -> String {
+    format!("{TITLE}{}", "x".repeat(length - TITLE.len()))
+}
+
+#[test]
+fn a_recovery_plan_loads_a_message_at_the_limit_whole() {
+    let f = Fixture::new();
+    f.base();
+    let message = message_of(MAX_RECOVERY_MESSAGE_BYTES);
+    let tip = f.commit_with_message(message.as_bytes());
+    assert_eq!(f.raw_message(&tip).len(), MAX_RECOVERY_MESSAGE_BYTES);
+    let plan = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap();
+    assert!(!plan.message_too_long, "the limit itself is not over it");
+    assert_eq!(plan.target.message, message, "held whole");
+    assert_eq!(plan.target.subject, "Title");
+    let unchanged = plan.target.message.clone();
+    f.recover(RecoveryCommand::Amend {
+        plan,
+        message: unchanged,
+    })
+    .unwrap();
+    assert_eq!(f.raw_message(&f.head()), message.as_bytes(), "it submits");
+}
+
+#[test]
+fn a_recovery_plan_leaves_out_a_message_past_the_limit() {
+    let f = Fixture::new();
+    let base = f.base();
+    let message = message_of(MAX_RECOVERY_MESSAGE_BYTES + 1);
+    let tip = f.commit_with_message(message.as_bytes());
+    let plan = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap();
+    assert!(plan.message_too_long);
+    assert_eq!(plan.target.message, "", "none of the message is held");
+    assert_eq!(plan.target.oid, tip);
+    assert_eq!(plan.target.subject, "Title", "the read reached its subject");
+    assert_eq!(plan.target.parents, [base], "and the whole of its headers");
+}
+
+#[test]
+fn amend_refuses_a_plan_whose_message_was_too_long_to_read() {
+    let f = Fixture::new();
+    f.base();
+    let tip = f.commit_with_message(message_of(MAX_RECOVERY_MESSAGE_BYTES + 1).as_bytes());
+    let plan = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap();
+    assert!(plan.message_too_long);
+    // A replacement within the limit: only the plan can be what refuses it.
+    let refused = f
+        .recover(RecoveryCommand::Amend {
+            plan,
+            message: "Short\n".into(),
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("too long to amend"), "{refused}");
+    assert_eq!(f.head(), tip, "the refusal changed nothing");
+}
+
+#[test]
+fn amend_refuses_a_replacement_message_over_the_limit() {
+    let f = Fixture::new();
+    f.base();
+    let tip = f.commit_with_message(message_of(MAX_RECOVERY_MESSAGE_BYTES).as_bytes());
+    let plan = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap();
+    assert!(!plan.message_too_long, "this plan holds its message");
+    let refused = f
+        .recover(RecoveryCommand::Amend {
+            plan,
+            message: message_of(MAX_RECOVERY_MESSAGE_BYTES + 1),
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("at most 64 KiB"), "{refused}");
+    assert_eq!(f.head(), tip, "the refusal changed nothing");
+}
+
+/// The recovery kinds that never edit the message, which keep the
+/// whole-object read and each of its refusals.
+const WHOLE_READ_KINDS: [RecoveryKind; 3] = [
+    RecoveryKind::Undo,
+    RecoveryKind::Revert,
+    RecoveryKind::CherryPick,
+];
+
+#[test]
+fn undo_revert_and_cherry_pick_refuse_a_message_over_the_object_limit() {
+    let f = Fixture::new();
+    f.base();
+    let tip = f.commit_with_message(message_of(65 * 1024 * 1024).as_bytes());
+    for kind in WHOLE_READ_KINDS {
+        let refused = f
+            .repo()
+            .recovery_plan(kind, Some(&tip), None)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("preview limit"), "{kind:?}: {refused}");
+    }
+}
+
+#[test]
+fn undo_revert_and_cherry_pick_refuse_a_non_utf8_byte_past_the_message_limit() {
+    let f = Fixture::new();
+    f.base();
+    // Under its default encoding Git would have repaired the byte as Latin-1.
+    f.git(&["config", "i18n.commitEncoding", "ISO-8859-1"]);
+    let mut message = message_of(MAX_RECOVERY_MESSAGE_BYTES + 16).into_bytes();
+    *message.last_mut().unwrap() = 0xff;
+    let tip = f.commit_with_message(&message);
+    for kind in WHOLE_READ_KINDS {
+        let refused = f
+            .repo()
+            .recovery_plan(kind, Some(&tip), None)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("not UTF-8"), "{kind:?}: {refused}");
+    }
+}
+
+#[test]
+fn amend_says_when_its_target_is_a_tag() {
+    let f = Fixture::new();
+    f.base();
+    f.git(&["tag", "-a", "-m", "annotated", "v1"]);
+    let tag = f.git(&["rev-parse", "refs/tags/v1"]);
+    // Git refuses to point a branch at a tag, so only a hand-edited ref can.
+    let branch = f.git(&["symbolic-ref", "HEAD"]);
+    f.write(&format!(".git/{branch}"), format!("{tag}\n"));
+    let refused = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("is a tag, not a commit"), "{refused}");
+}
+
+#[test]
+fn a_recovery_plan_reads_a_message_past_the_object_limit_only_to_its_limit() {
+    let f = Fixture::new();
+    f.base();
+    // Over the object limit the whole-object read refuses, which only a
+    // read that stops at the message limit plans past.
+    let message = message_of(65 * 1024 * 1024);
+    let tip = f.commit_with_message(message.as_bytes());
+    let plan = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap();
+    assert!(plan.message_too_long);
+    assert_eq!(plan.target.oid, tip);
+    assert_eq!(plan.target.subject, "Title");
+}
+
+#[test]
+fn a_recovery_plan_on_a_root_commit_lists_what_it_added() {
+    let f = Fixture::new();
+    f.base();
+    let plan = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap();
+    assert_eq!(
+        plan.affected_paths,
+        [PathBuf::from("file.txt"), PathBuf::from("independent.txt")]
+    );
+}
+
+#[test]
+fn a_cut_inside_a_character_is_not_a_failure_of_the_message() {
+    let f = Fixture::new();
+    f.base();
+    // Two-byte characters from the odd offset after the title put the limit
+    // between one character's two bytes.
+    let body = "é".repeat(MAX_RECOVERY_MESSAGE_BYTES / 2 + 1);
+    let message = format!("{TITLE}{body}");
+    assert!(!message.is_char_boundary(MAX_RECOVERY_MESSAGE_BYTES));
+    f.commit_with_message(message.as_bytes());
+    let plan = f
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap();
+    assert!(plan.message_too_long);
+    assert_eq!(plan.target.subject, "Title");
+    // A message that is not UTF-8 before the limit is still refused. Under
+    // its default encoding Git would have repaired the byte as Latin-1.
+    let g = Fixture::new();
+    g.base();
+    g.git(&["config", "i18n.commitEncoding", "ISO-8859-1"]);
+    g.commit_with_message(b"Title\n\n\xff not UTF-8\n");
+    let refused = g
+        .repo()
+        .recovery_plan(RecoveryKind::Amend, None, None)
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("not UTF-8"), "{refused}");
 }

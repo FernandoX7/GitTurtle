@@ -66,25 +66,26 @@ fn parse_hex(value: &str) -> Option<Hsla> {
     )
 }
 
-/// Formats a color as `#RRGGBB`, or `#RRGGBBAA` when it is translucent.
-fn hex_string(color: Hsla) -> String {
+/// GitTurtle patch: a color's red, green, blue and alpha, each rounded to its
+/// nearest step, as a value saved as RGB keeps them.
+pub fn color_channels(color: Hsla) -> [u32; 4] {
     let rgba = Rgba::from(color);
-    let channel = |value: f32| (value * 255.) as u32;
-    if rgba.a < 1. {
-        format!(
-            "#{:02X}{:02X}{:02X}{:02X}",
-            channel(rgba.r),
-            channel(rgba.g),
-            channel(rgba.b),
-            channel(rgba.a)
-        )
+    [rgba.r, rgba.g, rgba.b, rgba.a].map(|channel| (channel.clamp(0., 1.) * 255.).round() as u32)
+}
+
+/// Formats a color as `#RRGGBB`, or `#RRGGBBAA` when it is translucent.
+///
+/// GitTurtle patch: each channel is rounded ([`color_channels`]), as a value
+/// saved as RGB is, so what a field shows, a screen reader says and a save
+/// writes agree, and formatting a parsed value gives it back. Upstream
+/// truncated, so committing a field's text unedited saved a step lower each
+/// time.
+pub fn color_hex(color: Hsla) -> String {
+    let [r, g, b, a] = color_channels(color);
+    if a < 255 {
+        format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
     } else {
-        format!(
-            "#{:02X}{:02X}{:02X}",
-            channel(rgba.r),
-            channel(rgba.g),
-            channel(rgba.b)
-        )
+        format!("#{r:02X}{g:02X}{b:02X}")
     }
 }
 
@@ -436,7 +437,7 @@ impl ColorPickerState {
     /// back through `Hsla` → hex → `Hsla` and lose precision to.
     fn write_hex_input(&mut self, value: Option<Hsla>, window: &mut Window, cx: &mut App) {
         self.suppress_input_change = true;
-        let text = value.map(hex_string).unwrap_or_default();
+        let text = value.map(color_hex).unwrap_or_default();
         self.hex_input
             .update(cx, |input, cx| input.set_value(text, window, cx));
     }
@@ -630,6 +631,7 @@ pub struct ColorSwatch {
     tab_index: isize,
     tab_stop: bool,
     role: RoleOverride,
+    provided_focus_handle: Option<FocusHandle>,
 }
 
 impl ColorSwatch {
@@ -649,7 +651,16 @@ impl ColorSwatch {
             tab_index: 0,
             tab_stop: true,
             role: RoleOverride::Implicit,
+            provided_focus_handle: None,
         }
+    }
+
+    /// GitTurtle patch: uses a caller-owned focus handle instead of creating
+    /// keyed state, as [`crate::Switch::track_focus`] does, so a picker can
+    /// move focus among its swatches with the arrow keys.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.provided_focus_handle = Some(focus_handle.clone());
+        self
     }
 
     /// The color this swatch represents.
@@ -739,11 +750,13 @@ impl RenderOnce for ColorSwatch {
         let selected = self.selected;
         let label = self
             .accessibility_label
-            .unwrap_or_else(|| hex_string(color).into());
-        let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+            .unwrap_or_else(|| color_hex(color).into());
+        let focus_handle = self.provided_focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
 
         self.base
             .when_some(self.role.resolve(|| Role::RadioButton), |this, role| {
@@ -797,7 +810,7 @@ mod tests {
     #[test]
     fn parses_every_supported_hex_width() {
         let white = parse_hex("#fff").unwrap();
-        assert_eq!(hex_string(white), "#FFFFFF");
+        assert_eq!(color_hex(white), "#FFFFFF");
         assert_eq!(parse_hex("ffffff"), Some(white));
 
         let half = parse_hex("#ff000080").unwrap();
@@ -814,8 +827,21 @@ mod tests {
 
     #[test]
     fn formats_alpha_only_when_translucent() {
-        assert_eq!(hex_string(hsla(0., 1., 0.5, 1.)), "#FF0000");
-        assert_eq!(hex_string(hsla(0., 1., 0.5, 0.5)), "#FF00007F");
+        assert_eq!(color_hex(hsla(0., 1., 0.5, 1.)), "#FF0000");
+        assert_eq!(color_hex(hsla(0., 1., 0.5, 0.5)), "#FF000080");
+    }
+
+    /// GitTurtle patch: a value formatted after parsing is the value parsed,
+    /// so committing a field's unedited text changes nothing.
+    #[test]
+    fn formatting_a_parsed_value_gives_it_back() {
+        for hex in ["#EF4444", "#3B82F6", "#0B0908", "#FF000080"] {
+            assert_eq!(color_hex(parse_hex(hex).unwrap()), hex);
+        }
+        for step in 0..=255_u32 {
+            let hex = format!("#{step:02X}{:02X}{:02X}", 255 - step, step / 2);
+            assert_eq!(color_hex(parse_hex(&hex).unwrap()), hex);
+        }
     }
 
     fn state(cx: &mut TestAppContext) -> (Entity<ColorPickerState>, &mut gpui::VisualTestContext) {

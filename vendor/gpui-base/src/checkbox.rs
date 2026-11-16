@@ -1,8 +1,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
-    IntoElement, ParentElement, Refineable as _, RenderOnce, Role, SharedString, Stateful,
+    A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId, FocusHandle,
+    GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId,
+    ParentElement, Pixels, Refineable as _, RenderOnce, Role, SharedString, Stateful,
     StatefulInteractiveElement, StyleRefinement, Styled, Toggled, Window, div,
     prelude::FluentBuilder as _,
 };
@@ -50,6 +51,7 @@ pub struct Checkbox {
     semantic_styles: CheckboxStyles,
     state: CheckboxState,
     disabled: bool,
+    accessibility_disabled: bool,
     children: SmallVec<[AnyElement; 2]>,
     on_change: Option<ChangeHandler>,
     accessibility_label: Option<SharedString>,
@@ -70,6 +72,7 @@ impl Checkbox {
             semantic_styles: CheckboxStyles::default(),
             state: CheckboxState::Unchecked,
             disabled: false,
+            accessibility_disabled: false,
             children: SmallVec::new(),
             on_change: None,
             accessibility_label: None,
@@ -116,6 +119,16 @@ impl Checkbox {
     /// Sets whether pointer and keyboard activation are ignored.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// GitTurtle patch: reports the checkbox disabled to assistive
+    /// technology while it keeps its enabled look and input, for a control
+    /// its application refuses in its own handler before it dims it, as the
+    /// Button's matching setter does. A disabled checkbox is reported
+    /// disabled either way.
+    pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
+        self.accessibility_disabled = disabled;
         self
     }
 
@@ -365,11 +378,13 @@ impl RenderOnce for Checkbox {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus_handle = self.focus_handle(window, cx);
         let disabled = self.disabled;
+        let reported_disabled = disabled || self.accessibility_disabled;
         let next_state = self.state.activated();
         let style = self.resolved_style();
         let on_change = self.on_change;
 
-        self.base
+        let content = self
+            .base
             .when_some(self.role.resolve(|| Role::CheckBox), |this, role| {
                 this.role(role)
             })
@@ -399,7 +414,90 @@ impl RenderOnce for Checkbox {
                 },
             )
             .children(self.children)
-            .refine_style(&style)
+            .refine_style(&style);
+        AccessibleCheckbox {
+            content,
+            disabled: reported_disabled,
+        }
+    }
+}
+
+// GitTurtle patch: GPUI's Div lacks an aria-disabled setter, so a disabled
+// checkbox was announced as available as an enabled one. Preserve the
+// existing element and caller-provided synthetic subtree, adding only the
+// disabled property when the toolkit writes this rendered checkbox's node:
+// for a disabled checkbox, or one `accessibility_disabled` reports disabled
+// alone, as the Button's own wrapper does (`button::AccessibleButton`).
+struct AccessibleCheckbox {
+    content: Stateful<Div>,
+    disabled: bool,
+}
+
+impl IntoElement for AccessibleCheckbox {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for AccessibleCheckbox {
+    type RequestLayoutState = <Stateful<Div> as Element>::RequestLayoutState;
+    type PrepaintState = <Stateful<Div> as Element>::PrepaintState;
+    fn id(&self) -> Option<ElementId> {
+        Element::id(&self.content)
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.content.source_location()
+    }
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.content.request_layout(id, inspector, window, cx)
+    }
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.content
+            .prepaint(id, inspector, bounds, layout, window, cx)
+    }
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content
+            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+    }
+    fn a11y_role(&self) -> Option<Role> {
+        self.content.a11y_role()
+    }
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.content.write_a11y_info(node);
+        if self.disabled {
+            node.set_disabled();
+        }
+    }
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        Element::a11y_synthetic_children(&mut self.content, prepaint, builder);
     }
 }
 
@@ -646,7 +744,7 @@ mod tests {
 
     #[gpui::test]
     fn accessibility_exposes_role_label_and_all_toggle_states(cx: &mut TestAppContext) {
-        type Captured = Arc<Mutex<Option<[accesskit::Node; 4]>>>;
+        type Captured = Arc<Mutex<Option<[accesskit::Node; 5]>>>;
 
         struct A11yProbe {
             captured: Captured,
@@ -686,6 +784,11 @@ mod tests {
                                     .disabled(true)
                                     .on_change(|_, _, _, _| {}),
                             ),
+                            info(
+                                Checkbox::new("announced-disabled")
+                                    .accessibility_disabled(true)
+                                    .on_change(|_, _, _, _| {}),
+                            ),
                         ]);
                     },
                     |_, _, _, _| {},
@@ -697,7 +800,8 @@ mod tests {
         let result = captured.clone();
         let (_, cx) = cx.add_window_view(move |_, _| A11yProbe { captured });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let [unchecked, checked, mixed, disabled] = result.lock().unwrap().take().unwrap();
+        let [unchecked, checked, mixed, disabled, announced] =
+            result.lock().unwrap().take().unwrap();
 
         assert_eq!(unchecked.role(), Role::CheckBox);
         assert_eq!(unchecked.label(), Some("Remember me"));
@@ -706,5 +810,46 @@ mod tests {
         assert_eq!(mixed.toggled(), Some(Toggled::Mixed));
         assert!(unchecked.supports_action(accesskit::Action::Click));
         assert!(!disabled.supports_action(accesskit::Action::Click));
+        // GitTurtle patch: a disabled checkbox is reported disabled, and so
+        // is one `accessibility_disabled` reports disabled alone, which
+        // keeps its click; an enabled one is not.
+        assert!(!unchecked.is_disabled());
+        assert!(disabled.is_disabled());
+        assert!(announced.is_disabled());
+        assert!(announced.supports_action(accesskit::Action::Click));
+    }
+
+    /// GitTurtle patch: a checkbox `accessibility_disabled` reports disabled
+    /// keeps its input and its enabled styles, for the application's handler
+    /// to refuse the press.
+    #[gpui::test]
+    fn an_accessibility_disabled_checkbox_keeps_its_input_and_look(cx: &mut TestAppContext) {
+        struct Announced {
+            changes: Rc<RefCell<Vec<CheckboxState>>>,
+        }
+
+        impl Render for Announced {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let changes = self.changes.clone();
+                Checkbox::new("announced")
+                    .accessibility_disabled(true)
+                    .size(px(100.))
+                    .on_change(move |state, _, _, _| changes.borrow_mut().push(state))
+            }
+        }
+
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let changes = changes.clone();
+            move |_, _| Announced { changes }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+        assert_eq!(&*changes.borrow(), &[CheckboxState::Checked]);
+
+        let styled = Checkbox::new("announced-style")
+            .accessibility_disabled(true)
+            .styles(|styles| styles.disabled(|style| style.opacity(0.5)));
+        assert_eq!(styled.resolved_style().opacity, None);
     }
 }

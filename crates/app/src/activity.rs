@@ -1,6 +1,6 @@
 //! Bounded app activity, separate from Git's reflog and external-tool history.
 use crate::*;
-use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
+use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,6 +43,10 @@ struct Entry {
 pub(super) struct State {
     entries: Vec<Entry>,
     pub error: Option<String>,
+    /// Saves of the list, which share one job on the preference writer.
+    saver: commit_drafts::CoalescingSaver<(), Vec<Entry>>,
+    /// The wait before asking again after a full queue refused the job.
+    retry: Option<Task<()>>,
 }
 
 fn safe(value: &str, limit: usize) -> String {
@@ -107,11 +111,11 @@ impl State {
         match Self::read() {
             Ok(entries) => Self {
                 entries,
-                error: None,
+                ..Self::default()
             },
             Err(error) => Self {
-                entries: vec![],
                 error: Some(format!("Activity history unavailable: {error:#}")),
+                ..Self::default()
             },
         }
     }
@@ -194,10 +198,10 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
     use gitturtle_core::*;
     match command {
         WriteCommand::DownloadLfs(plan) => format!(
-            "{} · sha256:{} · {} bytes from remote {}",
+            "{} · sha256:{} · {} from remote {}",
             plan.target.path.display(),
             plan.oid,
-            plan.size,
+            crate::counted(plan.size, "byte", "bytes"),
             plan.remote
         ),
         WriteCommand::Stage { paths } | WriteCommand::Unstage { paths } => format!(
@@ -284,6 +288,12 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
 }
 
 impl GitTurtle {
+    /// Saves the whole list, each write asking at its start and its end. The
+    /// person asked for none of these, so a writer that is merely behind is
+    /// not a failure: they share one job, and one that a full queue refuses
+    /// asks again until there is room, where a refusal once left "Could not
+    /// save activity" in the Activity browser for the window's life and the
+    /// newest list unsaved until the next write.
     pub(super) fn save_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .activity
@@ -294,18 +304,31 @@ impl GitTurtle {
             return;
         }
         let entries = self.activity.entries.clone();
-        let response = self.preferences_writer.submit(move || {
-            let path = preferences::settings_path()?.with_file_name("activity.json");
-            let bytes = serde_json::to_vec(&entries)?;
-            anyhow::ensure!(
-                bytes.len() as u64 <= BYTE_LIMIT,
-                "Activity history exceeds its byte limit"
-            );
-            preferences::atomic_write(&path, &bytes)
-        });
+        let response =
+            self.activity
+                .saver
+                .queue_with(&self.preferences_writer, (), entries, |entries| {
+                    let Some(entries) = entries.get(&()) else {
+                        return Ok(());
+                    };
+                    let path = preferences::settings_path()?.with_file_name("activity.json");
+                    let bytes = serde_json::to_vec(entries)?;
+                    anyhow::ensure!(
+                        bytes.len() as u64 <= BYTE_LIMIT,
+                        "Activity history exceeds its byte limit"
+                    );
+                    preferences::atomic_write(&path, &bytes)
+                });
+        let Some(response) = response else {
+            return;
+        };
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Err(error)) = response.await {
-                let _ = this.update_in(cx, |this, _, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if error.is::<operations::Busy>() {
+                        this.ask_again_to_save_activity(window, cx);
+                        return;
+                    }
                     this.activity.error = Some(format!("Could not save activity: {error:#}"));
                     cx.notify();
                 });
@@ -313,24 +336,49 @@ impl GitTurtle {
         })
         .detach();
     }
+    /// Asks again, after the wait, to save the list a full queue refused.
+    fn ask_again_to_save_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.activity.retry.is_some() {
+            return;
+        }
+        let retry = self.retry_refused_save(window, cx, |this, window, cx| {
+            this.activity.retry = None;
+            if this.activity.saver.is_pending() {
+                this.save_activity(window, cx);
+            }
+        });
+        self.activity.retry = Some(retry);
+    }
     pub(super) fn open_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let owner = cx.entity();
         let browser = cx.new(|cx| ActivityBrowser {
             owner: owner.downgrade(),
             _observer: cx.observe(&owner, |_, _, cx| cx.notify()),
+            body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
         });
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let shown = browser.clone();
+            // In the dialog's content, as the profile form is: the body
+            // takes what the cap leaves it and scrolls the rest, revealing
+            // the action Tab moves onto, with the ring's room below it,
+            // which the footer's gap gives back, rather than rely on the
+            // dialog's own scrolling body, which reveals nothing.
             dialog
                 .title("GitTurtle activity")
-                .width(px(760.))
-                .child(browser.clone())
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .width(appearance::dialog_width(px(760.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 }
 struct ActivityBrowser {
     owner: WeakEntity<GitTurtle>,
     _observer: Subscription,
+    /// The body's scroll, which reveals the action Tab moves onto: below
+    /// its fold in a half tile at 18 pt.
+    body: crate::focus_reveal::FocusReveal,
 }
 impl Render for ActivityBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -344,13 +392,36 @@ impl Render for ActivityBrowser {
         let progress = app.operation_progress();
         let entries = app.activity.entries.clone();
         let error = app.activity.error.clone();
-        div().id("activity-browser-content").max_h(body_height).overflow_y_scroll().flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
+        // Its actions, ghost Buttons at the dialog's text edge, stand the
+        // label of each line's first on that edge, their frames their pull
+        // before it (DESIGN.md, "One left edge"); the body keeps the pull
+        // with the ring's room on its left, and the ring's room on its
+        // right, given back through its margins, so its clip cuts neither.
+        // It keeps the ring's room above and below them too, and a wrapper
+        // keeps the room below inside the dialog's clip.
+        let room = appearance::button_ring_room(cx);
+        let lead = crate::ghost_pull(window) + room;
+        // An action Tab moves onto scrolls into view with its ring's room
+        // (`focus_reveal`).
+        self.body.reveal(window, cx);
+        let [refresh, reflog] =
+            ["activity-refresh", "activity-reflog"].map(|id| self.body.focus(id, cx));
+        let cue = crate::tags::ScrollCue::revealing(&self.body, room);
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("activity-browser-content").max_h(body_height + room * 2.).min_h_0().overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).pl(lead).ml(-lead).flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
             .child(div().text_color(rgb(p.muted)).child("The latest 200 operations submitted by GitTurtle, across repositories. This is not a complete record of work performed by Git or other tools. Reflog recovery is available separately."))
-            .child(div().flex().gap_2()
-                .child(button("activity-refresh","Refresh current repository","",false).disabled(app.operation_busy.is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
-                .child(button("activity-reflog","Browse reflog…","",false).disabled(app.operation_busy.is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
+            .child(crate::edge_row(window).on_children_prepainted(self.body.controls(vec![Some(refresh.clone()), Some(reflog.clone())], room))
+                .child(crate::workspace::refusing(crate::edge_button("activity-refresh","Refresh current repository").track_focus(&refresh).debug_selector(||"activity-refresh".into()),||"activity-refresh".into(),app.operation_busy.is_some(),app.operation_shown().is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+                    // Refused at once while a write runs, before it looks so.
+                    if app.operation_busy.is_some() { return; }
+                    window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
+                .child(crate::workspace::refusing(crate::edge_button("activity-reflog","Browse reflog…").track_focus(&reflog).debug_selector(||"activity-reflog".into()),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+                    // Refused at once while a write runs, before it looks so,
+                    // and Activity stays open: `open_reflog_browser` refuses
+                    // then, and closing first left neither dialog.
+                    if app.operation_busy.is_some() { return; }
+                    window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
             .children(error.map(|error|div().text_color(rgb(p.warning)).child(error)))
-            .child(div().id("activity-entries").h(list_height).flex_shrink_0().overflow_y_scroll().flex().flex_col().gap_2()
+            .child(crate::native_accessibility::clips_children(div().id("activity-entries").h(list_height).flex_shrink_0().overflow_y_scroll().flex().flex_col().gap_2()
                 .children(entries.into_iter().rev().map(|entry|{
                     let timestamp=chrono::DateTime::from_timestamp(entry.time,0).map(|t|t.with_timezone(&chrono::Local).format("%b %d %H:%M:%S").to_string()).unwrap_or_default();
                     let heading=format!("{} · {} · {}",entry.operation,entry.outcome.label(),timestamp);
@@ -360,15 +431,176 @@ impl Render for ActivityBrowser {
                         .child(div().child(format!("{} · {}",entry.repository,entry.target)))
                         .child(div().text_color(rgb(p.muted)).child(if entry.outcome==Outcome::Running{progress.clone().unwrap_or(entry.explanation)}else{entry.explanation}))
                 }))
-                .when(app.activity.entries.is_empty(),|el|el.child(div().p_3().child("No GitTurtle operations recorded yet."))))
-            .into_any_element()
+                .when(app.activity.entries.is_empty(),|el|el.child(div().p_3().child("No GitTurtle operations recorded yet."))))), "activity-scrollbar").min_h_0()).into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{LIMIT, Outcome, State, target};
+    use crate::{GitTurtle, workspace::REFUSED_SAVE_RETRY};
+    use gpui_kit::{Entity, VisualTestContext, gpui};
     use std::path::Path;
+
+    /// Records an operation in the list and asks for the list to be saved.
+    fn recorded(app: &Entity<GitTurtle>, operation: &str, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.activity.begin(Path::new("/fixture"), operation, "main");
+                app.save_activity(window, cx);
+            })
+        });
+        cx.executor().run_until_parked();
+    }
+
+    fn writer_answers(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    }
+
+    /// How many entries of the stored list record `operation`.
+    fn stored(operation: &str) -> usize {
+        State::read()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.operation == operation)
+            .count()
+    }
+
+    /// Each write asks twice for the list to be saved, and the person asked
+    /// for neither, so a preference writer that is merely behind is not a
+    /// failure: a queue other saves have filled refuses the job in silence
+    /// and it asks again until the newest list is stored, and any number of
+    /// saves behind a stalled writer keep one slot of the queue. A refusal
+    /// once left "Could not save activity" in the Activity browser for the
+    /// window's life.
+    #[gpui::test]
+    async fn a_writer_that_is_behind_never_fails_an_activity_save(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let error = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.activity.error.clone())
+        };
+
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        recorded(&app, "Refused", cx);
+        assert_eq!(error(&app, cx), None);
+        // Still full: refused again, and still nothing to report.
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        assert_eq!(error(&app, cx), None);
+
+        drop(held);
+        writer_answers(&app, cx);
+        assert_eq!(stored("Refused"), 0, "only asking again brings it");
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert_eq!(stored("Refused"), 1, "the newest list reaches the store");
+        assert_eq!(error(&app, cx), None);
+
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        for _ in 0..9 {
+            recorded(&app, "Behind", cx);
+        }
+        let others: Vec<_> = (0..7)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut other in others {
+            assert!(
+                matches!(other.try_recv(), Ok(None)),
+                "the saves keep one slot of the queue"
+            );
+        }
+        drop(held);
+        writer_answers(&app, cx);
+        assert_eq!(stored("Behind"), 9, "the newest list reaches the store");
+        assert_eq!(error(&app, cx), None);
+    }
+
+    /// A store no write can replace is a real failure and no busy writer.
+    #[gpui::test]
+    async fn an_activity_save_that_fails_still_reports(cx: &mut gpui_kit::TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let path = crate::preferences::settings_path()
+            .unwrap()
+            .with_file_name("activity.json");
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        recorded(&app, "Failed", cx);
+        writer_answers(&app, cx);
+        let error = app
+            .read_with(cx, |app, _| app.activity.error.clone())
+            .expect("the failure is reported");
+        assert!(error.starts_with("Could not save activity:"), "{error}");
+    }
+
+    /// A writer whose thread has stopped can never take the save, so asking
+    /// again could not help: the Activity browser says so.
+    #[gpui::test]
+    async fn a_stopped_writer_still_reports_an_activity_save(cx: &mut gpui_kit::TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.preferences_writer = crate::operations::SerialExecutor::stopped("stopped");
+            })
+        });
+        recorded(&app, "Stopped", cx);
+        let error = app
+            .read_with(cx, |app, _| app.activity.error.clone())
+            .expect("the failure is reported");
+        assert!(error.starts_with("Could not save activity:"), "{error}");
+        assert!(
+            app.read_with(cx, |app, _| app.activity.retry.is_none()),
+            "nothing asks again"
+        );
+    }
+
+    /// A refused save's wait that ends with nothing left to save writes
+    /// nothing: a later write's save took the refused list along, as the
+    /// recent-project save's wait already found.
+    #[gpui::test]
+    async fn a_refused_activity_save_asks_again_only_while_one_waits(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        recorded(&app, "Refused", cx);
+        drop(held);
+        writer_answers(&app, cx);
+
+        recorded(&app, "Later", cx);
+        writer_answers(&app, cx);
+        assert_eq!(stored("Refused"), 1, "the later save took the list along");
+        assert_eq!(stored("Later"), 1);
+
+        let path = crate::preferences::settings_path()
+            .unwrap()
+            .with_file_name("activity.json");
+        std::fs::remove_file(&path).unwrap();
+        cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert!(!path.exists(), "nothing waited, so the wait saves nothing");
+    }
+
     #[test]
     fn activity_is_bounded_and_does_not_retain_commit_messages() {
         let mut state = State::default();

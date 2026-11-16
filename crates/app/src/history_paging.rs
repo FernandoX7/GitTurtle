@@ -10,6 +10,21 @@ pub struct State {
     pub scope: Option<gitturtle_core::HistoryScope>,
     pub offset: usize,
     pub next_offset: Option<usize>,
+    /// The scope of the page read under way where it is not `scope`, as a
+    /// restore's saved scope is: the window takes it with that page's rows
+    /// as they land (`receive_history_page`), so a page refused or failed
+    /// leaves paging as it was. Pinned as the page was asked for, a scope
+    /// whose page never came stayed under the snapshot's rows, and Older
+    /// then continued it there. Each page read sets it after
+    /// `GitTurtle::request`, which ends any earlier read's, and only that
+    /// read's landing page takes it, so a page compares only its own read's
+    /// scope. A read that replaces it, fails or is dropped (`request`), and
+    /// a search or another tab that takes paging over meanwhile
+    /// ([`Self::take_settled`]), clear it; a read ended otherwise, by
+    /// `invalidate_read` or a bare generation bump, leaves it set until the
+    /// next page read sets it again, harmless, as no page of that read
+    /// lands.
+    reading: Option<gitturtle_core::HistoryScope>,
 }
 
 impl State {
@@ -18,7 +33,22 @@ impl State {
             scope: Some(snapshot.history_scope.clone()),
             offset: snapshot.history_offset,
             next_offset: snapshot.history_next_offset,
+            reading: None,
         }
+    }
+
+    /// Ends the page read under way's claim on the window, as that read
+    /// ends without its rows.
+    pub fn end_read(&mut self) {
+        self.reading = None;
+    }
+
+    /// Paging as a search or a tab left takes it over, without the page read
+    /// under way, whose reply then never lands.
+    pub fn take_settled(&mut self) -> Self {
+        let mut taken = std::mem::take(self);
+        taken.end_read();
+        taken
     }
 
     pub fn is_deep(&self, rows: usize) -> bool {
@@ -61,19 +91,51 @@ fn retained_bytes(commits: &[Commit], graph: &[graph::GraphRow]) -> usize {
 }
 
 impl GitTurtle {
+    /// Reads the ordinary-history page at `offset` in the window's scope.
+    /// Returns whether it asked for it: refused while a read, a search or a
+    /// write runs, or with no repository or captured scope.
     pub(super) fn request_history_page(
         &mut self,
         offset: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        self.read_history_page(None, offset, window, cx)
+    }
+
+    /// Reads the page at `offset` in `scope`, a restore's saved scope, which
+    /// the window takes only with the page's rows: refused as
+    /// [`Self::request_history_page`] is, or failed, the page leaves paging
+    /// on the scope the window shows, and a cold tab's restore then ends
+    /// (`finish_tab_snapshot`).
+    pub(super) fn request_history_page_in(
+        &mut self,
+        scope: gitturtle_core::HistoryScope,
+        offset: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.read_history_page(Some(scope), offset, window, cx)
+    }
+
+    fn read_history_page(
+        &mut self,
+        reading: Option<gitturtle_core::HistoryScope>,
+        offset: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.loading.is_some() || self.history_search_active() || self.operation_busy.is_some() {
-            return;
+            return false;
         }
-        let (Some(repo), Some(scope)) =
-            (self.repository.clone(), self.history_paging.scope.clone())
+        let Some(repo) = self.repository.clone() else {
+            return false;
+        };
+        let Some(scope) = reading
+            .clone()
+            .or_else(|| self.history_paging.scope.clone())
         else {
-            return;
+            return false;
         };
         self.interaction_started = Some(Instant::now());
         self.request(
@@ -87,6 +149,9 @@ impl GitTurtle {
             window,
             cx,
         );
+        // After `request`, which ends any earlier read's.
+        self.history_paging.reading = reading;
+        true
     }
 
     pub(super) fn receive_history_page(
@@ -95,7 +160,17 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let reading = self.history_paging.reading.take();
         if self.history_search_active() {
+            // A search the person started meanwhile ends a cold tab's restore
+            // waiting for this page, as a read that replaces it does, and
+            // History's search asked for before it goes with it
+            // (`end_replaced_restore`). Defensive: `history_query_changed`
+            // ends the restore before it sets the search's progress, and
+            // replies are generation-checked, so no read reaches this.
+            if self.repository_tabs.restoring.take().is_some() {
+                self.repository_tabs.drop_pending_search();
+            }
             return;
         }
         let worker::HistoryPageResult {
@@ -104,12 +179,40 @@ impl GitTurtle {
             graph_notice,
             elapsed,
         } = result;
-        if page.commits.is_empty()
-            && page.offset == self.history_paging.next_offset.unwrap_or(usize::MAX)
-        {
-            self.history_paging.next_offset = None;
-            self.status = "Reached the end of this captured history".into();
+        if page.commits.is_empty() {
+            let end = page.offset;
+            if reading.is_none() && Some(end) == self.history_paging.next_offset {
+                self.history_paging.next_offset = None;
+                self.status = "Reached the end of this captured history".into();
+                self.end_restore_in_history(window, cx);
+                return;
+            }
+            // The page asked for lies past its history's end, `end`, as a
+            // restored tab's saved page does where a fetch at a shallower
+            // depth cut that history since: the last page's worth of rows up
+            // to the end shows in its place, in the same scope, and a
+            // restore goes on from it to its saved selection. Shown as it
+            // came, the empty page emptied History's window.
+            if end > 0 && self.read_history_page(reading, end.saturating_sub(PAGE_SIZE), window, cx)
+            {
+                return;
+            }
+            // A scope with no commits, or that page refused: paging stays as
+            // it was, and a restore ends in History. Left set, a restore
+            // waited for a page that never came, and held History's search
+            // asked for meanwhile.
+            self.end_restore_in_history(window, cx);
             return;
+        }
+        // A page in another scope, as a restore's saved one, replaces the
+        // window whatever its offset: appended where its offset continued the
+        // snapshot's rows, it joined two histories, skipping or repeating
+        // commits at the seam, and Older went on in the saved scope.
+        let same_scope = reading
+            .as_ref()
+            .is_none_or(|scope| self.history_paging.scope.as_ref() == Some(scope));
+        if let Some(scope) = reading {
+            self.history_paging.scope = Some(scope);
         }
         let selected = self
             .selected_commit
@@ -123,11 +226,12 @@ impl GitTurtle {
                 self.graph.remove(index);
             }
         }
-        let append = page.offset
-            == self
-                .history_paging
-                .offset
-                .saturating_add(self.commits.len())
+        let append = same_scope
+            && page.offset
+                == self
+                    .history_paging
+                    .offset
+                    .saturating_add(self.commits.len())
             && fits_window(
                 self.commits.len(),
                 retained_bytes(&self.commits, &self.graph),
@@ -283,9 +387,9 @@ mod tests {
         assert!(!fits_window(5000, 1024, 1, 1024));
         assert!(!fits_window(1, MAX_WINDOW_BYTES - 1, 1, 2));
         let deep = State {
-            scope: None,
             offset: 100_000,
             next_offset: Some(100_500),
+            ..State::default()
         };
         assert!(deep.is_deep(500));
         assert_eq!(deep.next_offset, Some(100_500));

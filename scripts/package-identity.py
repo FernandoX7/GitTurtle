@@ -23,7 +23,7 @@ import tempfile
 import time
 import tomllib
 
-APP_ID = "com.gitturtle.desktop"
+APP_ID = "com.gitturtle.GitTurtle"
 LINUX_TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 TARGETS = (*LINUX_TARGETS, "aarch64-apple-darwin")
 ELF_MACHINES = dict(zip(LINUX_TARGETS, (62, 183)))  # EM_X86_64, EM_AARCH64

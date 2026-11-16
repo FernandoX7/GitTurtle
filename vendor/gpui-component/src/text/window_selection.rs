@@ -1867,6 +1867,12 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (Entity<ModalScopeTestView>, &mut VisualTestContext) {
         cx.update(crate::init);
+        // GitTurtle patch: modals open at rest. GPUI times an animation
+        // that is not synced from the wall clock, not the test clock, so a
+        // dialog's 250 ms slide (`dialog.rs`, `slide-down`) went on in real
+        // time between the frame whose bounds a test read and the frames
+        // its drag hit, and a loaded host moved the dialog under the press.
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (root, cx) = cx.add_window_view(|window, cx| {
             let view = cx.new(ModalScopeTestView::new);
             Root::new(view, window, cx)
@@ -1884,9 +1890,12 @@ mod tests {
         (view, cx)
     }
 
-    /// Advance past the modal open animation so it reaches its resting position,
-    /// then redraw so its TextViews register and their bounds are stable for the
-    /// subsequent drag.
+    /// Redraw so a modal's TextViews register and their bounds are stable for
+    /// the subsequent drag. Advancing the test clock first runs the work the
+    /// open queued, the TextView's background parse and the update it sends
+    /// back among it, and any executor timer due within 500 ms. It does not
+    /// move the modal, which GPUI animates from the wall clock and which is
+    /// at rest in its first frame, since [`setup_modal`] reduces motion.
     fn settle(cx: &mut VisualTestContext) {
         cx.executor().advance_clock(Duration::from_millis(500));
         cx.update(|window, cx| {
@@ -2003,10 +2012,12 @@ mod tests {
 
     /// A behind-the-modal selectable TextView covered by a full-window
     /// occluding overlay (mirroring a Dialog/Sheet overlay), plus a `front`
-    /// TextView marked with an opaque modal scope and painted on top of the
-    /// overlay. This reproduces the modal stacking at fixed coordinates without a
-    /// real modal's open animation (which cannot be settled under the test
-    /// clock).
+    /// TextView painted on top of the overlay and marked with the opaque
+    /// scope Root gives a dialog or sheet it opens without mounting its layer
+    /// ([`activate_dialog_scope`], [`activate_sheet_scope`]). This reproduces
+    /// the modal stacking at fixed coordinates, drawn where it stays from the
+    /// first frame, with no open animation; the tests of real modals open
+    /// them at rest by reducing motion ([`setup_modal`]).
     struct SyntheticModalView {
         focus_handle: FocusHandle,
         behind: Entity<TextViewState>,

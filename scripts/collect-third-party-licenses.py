@@ -16,6 +16,18 @@ import tarfile
 
 LEGAL_NAME = re.compile(r"^(license|licence|notice|copying|copyright|ofl)(?:[._-]|$)", re.I)
 MAX_NOTICE_BYTES = 4 * 1024 * 1024
+# A supplement text is either fetched, when `url` serves its exact bytes, or
+# composed by this project from a standard license text: no URL serves a
+# composed text, so it names that `standard_text` and says what was filled in.
+SUPPLEMENT_SOURCES = ({"url"}, {"standard_text", "composed"})
+
+
+def supplement_source(notice, label):
+    stated = {key: notice[key] for key in ("url", "standard_text", "composed") if key in notice}
+    if (set(stated) not in SUPPLEMENT_SOURCES
+            or any(not isinstance(value, str) or not value.strip() for value in stated.values())):
+        raise ValueError(f"Supplemental notice needs either a fetch url or a composed record: {label}")
+    return stated
 
 
 def copy_notice(source, destination):
@@ -76,6 +88,10 @@ def collect(args):
         (entry["name"], entry["version"]): entry
         for entry in json.loads((supplements_root / "dependencies.json").read_text())
     }
+    # Every record is checked, not only this target's, before anything is written.
+    for (name, version), supplement in supplements.items():
+        for notice in supplement["files"]:
+            supplement_source(notice, f"{name}-{version}")
     destination.mkdir(parents=True, exist_ok=True)
     for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
         copy_notice(root / name, destination / name)
@@ -139,17 +155,23 @@ def collect(args):
             })
         supplement = supplements.get((package["name"], package["version"]))
         if supplement:
+            provenance = [supplement["note"]] if supplement.get("note") else []
             for number, notice in enumerate(supplement["files"]):
                 source = supplements_root / notice["path"]
                 if not source.resolve().is_relative_to(supplements_root.resolve()):
                     raise ValueError("Supplemental notice escapes its source directory")
-                target = directory / f"upstream-{number + 1}.txt"
+                origin = supplement_source(notice, label)
+                # Only fetched bytes are upstream's; a composed text says so by name.
+                kind = "composed" if "composed" in origin else "upstream"
+                target = directory / f"{kind}-{number + 1}.txt"
                 digest = copy_notice(source, target)
                 if digest != notice["sha256"]:
                     raise ValueError(f"Supplemental notice checksum changed: {label}")
-                entry["notices"].append({"path": str(target.relative_to(destination)), "sha256": digest, "url": notice["url"]})
-            if supplement.get("note"):
-                entry["notice_provenance"] = supplement["note"]
+                entry["notices"].append({"path": str(target.relative_to(destination)), "sha256": digest, **origin})
+                if kind == "composed":
+                    provenance.append(f"{target.name}: {origin['composed']} Standard text: {origin['standard_text']}")
+            if provenance:
+                entry["notice_provenance"] = " ".join(provenance)
         if crate.is_relative_to(root / "vendor"):
             for patch_name in ("GITTURTLE-PATCH.md", "README.gitturtle.md"):
                 if (crate / patch_name).is_file():

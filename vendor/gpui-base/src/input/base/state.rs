@@ -279,6 +279,10 @@ pub struct InputAccessibility {
     pub placeholder: Option<SharedString>,
     pub author_id: Option<SharedString>,
     pub expose_value: bool,
+    /// GitTurtle patch: the field's accessible description, such as the
+    /// helper text drawn beside it, which assistive technology reads after
+    /// its name, role and value.
+    pub description: Option<SharedString>,
 }
 
 /// The shared text-editing engine behind [`crate::input::InputState`],
@@ -296,6 +300,13 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) extras: M::Extras,
     pub(super) focus_handle: FocusHandle,
     accessibility_presentation: Option<InputAccessibility>,
+    /// GitTurtle patch: the text segmented for assistive technology, kept
+    /// only while a client is active and rebuilt when the text changes
+    /// ([`Self::accessible_text`]).
+    accessible_text: Option<Rc<super::accessible_text::Cache>>,
+    /// GitTurtle patch: counts every change of [`Self::text`], so the text
+    /// segmented for assistive technology is rebuilt only when it changed.
+    text_revision: u64,
     pub(super) mode: LayoutMode,
     pub(super) text: Rope,
     pub(super) display_map: DisplayMap,
@@ -373,6 +384,9 @@ pub struct InputBaseState<M: InputModeKind> {
     /// its default mask when the user has not made an explicit choice.
     pub(super) mask_pattern_set: bool,
     pub(super) placeholder: SharedString,
+    /// GitTurtle patch: what chooses the placeholder for the width the
+    /// field's text is laid out at ([`Self::set_placeholder_fit`]).
+    pub(super) placeholder_fit: Option<PlaceholderFit>,
 
     /// Diagnostic currently requested by pointer hover; applications render it.
     pub(super) diagnostic_popover: Option<Rc<crate::input::DiagnosticEntry>>,
@@ -381,6 +395,10 @@ pub struct InputBaseState<M: InputModeKind> {
         Rc<dyn Fn(NativeMenu, InputContextMenuCapabilities, Point<Pixels>, &mut Window, &mut App)>,
     >,
     pending_context_menu: Option<(Point<Pixels>, usize)>,
+    /// GitTurtle patch: a blur held back while a completion or code-action
+    /// menu is open, watching the input's notifications for the menu to
+    /// close (`on_blur`, `run_held_blur`).
+    held_blur: Option<Subscription>,
 
     /// Whether the context menu that shows on right-click is enabled.
     ///
@@ -418,6 +436,19 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) auto_scroll: AutoScroll,
 }
 
+/// GitTurtle patch: how a field fits its placeholder to the width its text
+/// is laid out at ([`InputBaseState::set_placeholder_fit`]).
+#[derive(Clone)]
+pub struct PlaceholderFit {
+    /// The placeholder whole, which the field reports as its accessible
+    /// placeholder at every width: no width bounds what a screen reader
+    /// reads, and a choice from the width a frame lays the text out at is
+    /// made after the frame has given the field its accessible metadata.
+    pub whole: SharedString,
+    /// The placeholder the field shows with its text laid out this wide.
+    pub fit: Rc<dyn Fn(Pixels, &Window) -> SharedString>,
+}
+
 /// Read-only styling data exposed to presentation facades.
 ///
 /// The fields are private and read through the methods below, so that a new
@@ -433,6 +464,9 @@ pub struct InputPresentation {
     code_editor: bool,
     text_align: TextAlign,
     placeholder: SharedString,
+    /// GitTurtle patch: the placeholder the field reports to assistive
+    /// technology ([`Self::accessible_placeholder`]).
+    accessible_placeholder: SharedString,
     mask_placeholder: Option<String>,
 }
 
@@ -480,6 +514,14 @@ impl InputPresentation {
         &self.placeholder
     }
 
+    /// GitTurtle patch: the placeholder the field reports to assistive
+    /// technology: its placeholder, or where it fits one to its width
+    /// ([`InputBaseState::set_placeholder_fit`]), the fit's whole form, the
+    /// same at every width.
+    pub fn accessible_placeholder(&self) -> &SharedString {
+        &self.accessible_placeholder
+    }
+
     /// The placeholder derived from the mask pattern, e.g.: `(___) ___-____`.
     pub fn mask_placeholder(&self) -> Option<&str> {
         self.mask_placeholder.as_deref()
@@ -518,6 +560,10 @@ impl<M: InputModeKind> InputBaseState<M> {
             code_editor: self.is_code_editor(),
             text_align: self.text_align,
             placeholder: self.placeholder.clone(),
+            accessible_placeholder: self
+                .placeholder_fit
+                .as_ref()
+                .map_or_else(|| self.placeholder.clone(), |fit| fit.whole.clone()),
             mask_placeholder: self.mask_pattern.placeholder(),
         }
     }
@@ -532,6 +578,50 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.accessibility_presentation = Some(presentation);
             cx.notify();
         }
+    }
+
+    /// GitTurtle patch: what this field writes to assistive technology in a
+    /// frame drawn with a client `active`, as its render does: its text
+    /// whole with the runs and selection AccessKit's adapters read it
+    /// through, or `None` for a frame drawn with none, or for a field that
+    /// shows them no value: a masked field, one its styled input presents
+    /// as secret (a password), and one no styled input presents. It keeps
+    /// what it segmented while a client is active, and segments the text
+    /// again only when the text changed; a frame drawn with none drops it.
+    pub fn accessible_text(
+        &mut self,
+        active: bool,
+    ) -> Option<super::accessible_text::AccessibleText> {
+        let exposed = active
+            && !self.masked
+            && self
+                .accessibility_presentation
+                .as_ref()
+                .is_some_and(|presentation| presentation.expose_value);
+        if !exposed {
+            self.accessible_text = None;
+            return None;
+        }
+        let cache = match &self.accessible_text {
+            Some(cache) if cache.revision() == self.text_revision => cache.clone(),
+            _ => {
+                let cache = Rc::new(super::accessible_text::Cache::new(
+                    self.text_revision,
+                    &self.text,
+                ));
+                self.accessible_text = Some(cache.clone());
+                cache
+            }
+        };
+        let Selection { start, end } = self.selected_range;
+        let (anchor, focus) = if self.selection_reversed {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        Some(super::accessible_text::AccessibleText::new(
+            cache, anchor, focus,
+        ))
     }
 
     /// Whether this input spans more than one line.
@@ -622,17 +712,17 @@ impl<M: InputModeKind> InputBaseState<M> {
         let _subscriptions = vec![
             // Observe the blink cursor to repaint the view when it changes.
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            // Blink the cursor when the window is active, pause when it's not.
-            cx.observe_window_activation(window, |input, window, cx| {
-                if window.is_window_active() {
-                    let focus_handle = input.focus_handle.clone();
-                    if focus_handle.is_focused(window) {
-                        input.blink_cursor.update(cx, |blink_cursor, cx| {
-                            blink_cursor.start(cx);
-                        });
-                    }
-                }
-            }),
+            // GitTurtle patch: no window-activation observer starts the
+            // blink. GPUI reports focus in the first frame it draws after the
+            // window turns active, and a blur in the first after it turns
+            // inactive, to an input focused and drawn in that frame, so
+            // `on_focus` gives a drawn input its caret back and `on_blur`
+            // stops it. Upstream's observer started the cursor of any input
+            // that held the window's focus as the window turned active,
+            // drawn or not: one on a tab not shown or in a dialog closed
+            // with its state kept, or focused from code and left before a
+            // frame, began blinking with no blur to stop it, notifying the
+            // input twice a second until it was next focused and left.
             cx.on_focus(&focus_handle, window, Self::on_focus),
             cx.on_blur(&focus_handle, window, Self::on_blur),
         ];
@@ -643,6 +733,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             extras: M::Extras::default(),
             focus_handle: focus_handle.clone(),
             accessibility_presentation: None,
+            accessible_text: None,
+            text_revision: 0,
             text: "".into(),
             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
             search_session: super::SearchSession::default(),
@@ -686,6 +778,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             deferred_scroll_row: None,
             preferred_column: None,
             placeholder: SharedString::default(),
+            placeholder_fit: None,
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             editor_style: InputEditorStyle::default(),
@@ -693,6 +786,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             diagnostic_popover: None,
             context_menu_handler: None,
             pending_context_menu: None,
+            held_blur: None,
             enable_context_menu: true,
             completion_inserting: false,
             overlay_action_handler: None,
@@ -818,6 +912,18 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) {
         self.placeholder = placeholder.into();
         cx.notify();
+    }
+
+    /// GitTurtle patch: chooses the placeholder from the width the field's
+    /// text is laid out at, as the field is prepainted, in the frame that
+    /// lays it out at that width. A placeholder chosen from that width once
+    /// the field had been painted showed the earlier width's choice in the
+    /// first frame at a new width and asked for another. The choice is kept
+    /// as the field's placeholder; the field's accessible placeholder is the
+    /// fit's whole form ([`InputPresentation::accessible_placeholder`]).
+    /// `None` leaves the placeholder as set.
+    pub fn set_placeholder_fit(&mut self, fit: Option<PlaceholderFit>) {
+        self.placeholder_fit = fit;
     }
 
     /// Find which line and sub-line the given offset belongs to, along with the position within that sub-line.
@@ -1141,6 +1247,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
         let text: SharedString = value.into();
         self.text = Rope::from(self.normalize_input(&text).as_ref());
+        self.text_revision += 1;
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
@@ -1212,11 +1319,21 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// Focus the input field.
+    ///
+    /// GitTurtle patch: the caret starts blinking as GPUI reports the focus
+    /// (`on_focus`), after the frame that focuses the field; that frame draws
+    /// the caret shown, as a new or stopped cursor leaves it. Upstream also
+    /// started it here, before any frame, so a field focused here and left
+    /// before a frame never had the blur that stops it and blinked, redrawing
+    /// the window, until it was next focused and left. A field focused
+    /// already, whose focus GPUI reports no more, has its blink paused, so
+    /// its caret shows at once and holds: edits pause the caret themselves,
+    /// as the clear button's `clean` before its `focus` does, and this pause
+    /// still shows the caret of a focused field focused again with no edit;
+    /// a pause starts no cursor that has not started.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
-        });
+        self.blink_cursor.update(cx, |cursor, cx| cursor.pause(cx));
     }
 
     /// Refresh the input, so the next render re-runs syntax highlighting and
@@ -1694,7 +1811,19 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.propagate();
     }
 
-    /// Show the right-click context menu as a native OS menu.
+    /// Show the right-click context menu through the handler the component
+    /// installs: the OS's own menu on macOS and Windows, and on Linux a menu
+    /// the kit draws in the window.
+    ///
+    /// GitTurtle patch: upstream said a native OS menu on every platform.
+    /// `on_mouse_up` calls this only for a right-button release over this
+    /// input that ends a right-press begun on it, with no press outside the
+    /// input's bounds, other left or right release or blur GPUI reported of
+    /// this input between them, and only while this input holds focus,
+    /// which that press gave it, as GPUI focuses a focusable element under
+    /// any mouse-down; so the menu's actions, which go to the window's
+    /// focus, act on this input, as on macOS. The press's offset is clipped
+    /// to a character boundary of the text as it now stands.
     pub(crate) fn handle_right_click_menu(
         &mut self,
         position: Point<Pixels>,
@@ -1708,6 +1837,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         if crate::GlobalState::is_in_deferred_context(cx) {
             return;
         }
+        // GitTurtle patch: the offset was found as the press went down, and
+        // the text may have changed since; a caret placed inside a
+        // character split it at the next keystroke.
+        let offset = self.text.clip_offset(offset, Bias::Left);
 
         if !self.selected_range.contains(offset) {
             self.move_to(offset, None, cx);
@@ -1790,9 +1923,23 @@ impl<M: InputModeKind> InputBaseState<M> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // GitTurtle patch: upstream opened the menu for any pending press
+        // a right release found here, and only that release cleared it, so
+        // a press that ended any other way stayed pending, and the menu,
+        // whose actions go to the window's focus, opened at its old point
+        // for a later release of a press begun elsewhere, over whichever
+        // field then held focus. A release of either button ends the
+        // press, as a macOS Control-click whose Control is let go first
+        // ends with a left release, and only a right one, while this input
+        // holds the focus its press gave it, opens the menu. A press
+        // outside, a release outside and a blur end it too
+        // (`drop_pending_context_menu`, `on_blur`).
+        let pending = self.pending_context_menu.take();
         if event.button == MouseButton::Right {
-            if let Some((position, offset)) = self.pending_context_menu.take() {
-                self.handle_right_click_menu(position, offset, window, cx);
+            if let Some((position, offset)) = pending {
+                if self.focus_handle.is_focused(window) {
+                    self.handle_right_click_menu(position, offset, window, cx);
+                }
             }
         }
         if self.selected_range.is_empty() {
@@ -1801,6 +1948,18 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.selecting = false;
         self.selected_word_range = None;
         self.auto_scroll.stop();
+    }
+
+    /// GitTurtle patch: a press that begins outside this input, or a left
+    /// or right release outside it, ends a right-press pending here, which
+    /// then opens no menu.
+    pub(super) fn drop_pending_context_menu<E>(
+        &mut self,
+        _: &E,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        self.pending_context_menu = None;
     }
 
     pub(super) fn on_mouse_move(
@@ -2196,6 +2355,9 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub fn select_all(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.undo_manager.break_transaction_coalescing();
         self.selected_range = (0..self.text.len()).into();
+        // GitTurtle patch: a selection moves the caret, so it pauses it, as
+        // `select_to_with_affinity` does.
+        self.pause_blink_cursor(cx);
         cx.notify();
     }
 
@@ -2216,6 +2378,23 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.selection_reversed = false;
         self.selected_word_range = None;
         self.select_to(end, cx);
+        // GitTurtle patch: a single-line field's next layout scrolls the
+        // caret into view. `scroll_to` above measures against the last
+        // layout, which holds the text from before a `set_value` just made,
+        // and so kept the start that `set_value` asks for: a long value
+        // restored with its caret at the end, as a repository tab's return
+        // restores History's search field, drew with the caret clipped past
+        // the field's end, and the element, which follows the caret only
+        // when the selection changes, used that change up in the same
+        // frame. Dropping the deferred offset and the record of the last
+        // selection lets the layout that holds the new text follow the
+        // caret, in that frame. A multi-line field keeps `scroll_to`'s
+        // offset: its layout follows the caret by a line a frame.
+        if self.is_single_line() {
+            self.deferred_scroll_offset = None;
+            self.deferred_scroll_row = None;
+            self.last_selected_range = None;
+        }
     }
 
     /// Resolve a mouse position to a byte offset in the text.
@@ -2353,6 +2532,12 @@ impl<M: InputModeKind> InputBaseState<M> {
         if self.selected_range.is_empty() {
             self.update_preferred_column();
         }
+        // GitTurtle patch: the selection's moving end is the caret, so a
+        // selection pauses it as a move does: it shows at once after
+        // Shift+arrow, a Shift-click or a drag, and holds through the drag.
+        // Upstream paused only moves, so a caret hidden in its blink stayed
+        // hidden as a selection grew from it.
+        self.pause_blink_cursor(cx);
         cx.notify()
     }
 
@@ -2443,6 +2628,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        // GitTurtle patch: focus reported back ends a blur held back while
+        // a menu was open; the start below blinks the caret as any focus
+        // does.
+        self.held_blur = None;
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.start(cx);
         });
@@ -2450,10 +2639,47 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // GitTurtle patch: a right-press pending here ends once this input
+        // loses focus, as GPUI reports when another element takes it, the
+        // input leaves the drawn frame or the window goes inactive.
+        self.pending_context_menu = None;
         if M::is_context_menu_open(self, cx) {
+            // GitTurtle patch: the blur waits for the menu, which may have
+            // taken focus for a click on one of its items, and runs as the
+            // menu closes unless focus has come back to the input by then.
+            // Upstream returned here for good, so a menu closed with focus
+            // elsewhere left the caret blinking, its timer redrawing the
+            // unfocused input twice a second. A close outside a draw
+            // notifies the input, which the watch sees at once; one during a
+            // draw, whose notifications reach no observer, it sees at the
+            // next blink, which notifies the input too, at most an interval
+            // later. No close runs during a draw today.
+            let input = cx.entity();
+            self.held_blur = Some(cx.observe_in(&input, window, |this, _, window, cx| {
+                this.run_held_blur(window, cx)
+            }));
             return;
         }
+        self.blurred(window, cx);
+    }
 
+    /// GitTurtle patch: runs a blur held back while a menu was open
+    /// (`on_blur`) once the menu has closed, unless the input holds focus in
+    /// an active window, where GPUI reports its focus in the frame it next
+    /// draws, which ends the watch (`on_focus`).
+    fn run_held_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if M::is_context_menu_open(self, cx)
+            || (self.focus_handle.is_focused(window) && window.is_window_active())
+        {
+            return;
+        }
+        self.held_blur = None;
+        self.blurred(window, cx);
+    }
+
+    /// What a blur does: ends the caret's blink and the hover, diagnostic
+    /// and inline-completion state, clamps a number, and emits `Blur`.
+    fn blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.undo_manager.break_transaction_coalescing();
 
         // NOTE: Do not cancel select, when blur.
@@ -2819,9 +3045,14 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
         }
         let selection_before = self.selected_range;
 
-        if self.blink_cursor.read(cx).visible() {
-            self.pause_blink_cursor(cx);
-        }
+        // GitTurtle patch: every edit pauses the caret, shown or hidden in
+        // its blink, so it shows at once and holds a whole interval. Upstream
+        // paused only a shown caret, so an edit by a bound action, which no
+        // key-down reaches (cut, paste, undo, redo), made while the caret was
+        // hidden drew none until the blink came round. A pause starts no
+        // cursor that has not started, so text set in an unfocused field
+        // still never starts it blinking.
+        self.pause_blink_cursor(cx);
 
         // NOTE: The normalization keeps the UTF-16 length, but may change the
         // UTF-8 byte length, so all the byte-offset calculations below must
@@ -2840,6 +3071,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
 
         let old_text = self.text.clone();
         self.text.replace(range.clone(), new_text);
+        self.text_revision += 1;
 
         let mut new_offset = (range.start + new_text.len()).min(self.text.len());
 
@@ -2858,6 +3090,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 && self.is_valid_input(&old_text.to_string(), cx)
             {
                 self.text = old_text;
+                self.text_revision += 1;
                 return;
             }
 
@@ -2865,6 +3098,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 let mask_text = self.mask_pattern.mask(&pending_text);
                 mask_changed = mask_text.as_str() != pending_text;
                 self.text = Rope::from(mask_text.as_str());
+                self.text_revision += 1;
                 let new_text_len =
                     (new_text.len() + mask_text.len()).saturating_sub(pending_text.len());
                 new_offset = (range.start + new_text_len).min(mask_text.len());
@@ -2959,6 +3193,10 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             return;
         }
         let selection_before = self.selected_range;
+        // GitTurtle patch: an input method's composition is an edit, and
+        // pauses the caret as `replace_text_in_range` does; under Wayland's
+        // text input its updates arrive with no key-down to pause it.
+        self.pause_blink_cursor(cx);
 
         let starts_composition = self.ime_marked_range.is_none();
         if starts_composition {
@@ -2982,6 +3220,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
 
         let old_text = self.text.clone();
         self.text.replace(range.clone(), new_text);
+        self.text_revision += 1;
 
         if self.is_single_line() {
             let pending_text = self.text.to_string();
@@ -2990,6 +3229,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 && self.is_valid_input(&old_text.to_string(), cx)
             {
                 self.text = old_text;
+                self.text_revision += 1;
                 if starts_composition {
                     self.undo_manager.commit_transaction();
                 }
@@ -3132,6 +3372,19 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
 
         None
     }
+
+    /// A text the user cannot change (read-only or disabled) takes no text
+    /// input, so the platform leaves its keys to the application: Wayland
+    /// keeps its text input off while it is focused, so keys and held repeats
+    /// come from GPUI's own repeat timer rather than an input method, and
+    /// macOS sends printable keys to bindings before the input method of a
+    /// non-ASCII source (GPUI derives `prefers_ime_for_printable_keys` from
+    /// this). Selection, copy, Find and caret keys are bindings, not text
+    /// input, and are unaffected. It is read at each query, so a text made
+    /// editable again takes text input in the frame the change is drawn in.
+    fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        self.is_editable()
+    }
 }
 
 impl<M: InputModeKind> Focusable for InputBaseState<M> {
@@ -3169,10 +3422,10 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
         let accessibility = self.accessibility_presentation.clone();
         // Only an active accessibility client needs a text snapshot. Secret
         // content types stay hidden even when a visual mask is toggled off.
-        let accessibility_value = (window.is_a11y_active()
-            && !self.masked
-            && accessibility.as_ref().is_some_and(|a| a.expose_value))
-        .then(|| self.text.to_string());
+        // GitTurtle patch: the snapshot holds the text runs AccessKit's
+        // adapters read a field's text through, as well as its value.
+        let accessible_text = self.accessible_text(window.is_a11y_active());
+        let accessibility_value = accessible_text.as_ref().map(|text| text.value());
         let disabled = self.disabled;
         let readonly = self.readonly;
         let accessibility_state = entity.clone();
@@ -3189,6 +3442,9 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                     .when_some(accessibility.placeholder, |this, placeholder| {
                         this.aria_placeholder(placeholder)
                     })
+                    .when_some(accessibility.description, |this, description| {
+                        this.aria_description(description)
+                    })
                     .when_some(accessibility_value, |this, value| this.aria_value(value))
                     .a11y_synthetic_children(move |builder| {
                         if disabled {
@@ -3196,6 +3452,9 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                         }
                         if readonly {
                             builder.parent_node().set_read_only();
+                        }
+                        if let Some(text) = &accessible_text {
+                            text.write(builder);
                         }
                     })
                     .when(!disabled && !readonly, |this| {
@@ -3280,6 +3539,17 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                 MouseButton::Right,
                 window.listener_for(&entity, InputBaseState::on_mouse_up),
             )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                window.listener_for(&entity, InputBaseState::drop_pending_context_menu),
+            )
+            .on_mouse_up_out(
+                MouseButton::Right,
+                window.listener_for(&entity, InputBaseState::drop_pending_context_menu),
+            )
+            .on_mouse_down_out(
+                window.listener_for(&entity, InputBaseState::drop_pending_context_menu),
+            )
             .on_mouse_move(window.listener_for(&entity, InputBaseState::on_mouse_move))
             .on_scroll_wheel(window.listener_for(&entity, InputBaseState::on_scroll_wheel))
             .when(!self.disabled, |this| this.cursor_text())
@@ -3309,7 +3579,7 @@ mod tests {
     use super::*;
 
     use crate::theme::Theme;
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
 
     use crate::input::{EditorMode, InputMode, TextareaMode};
 
@@ -3446,6 +3716,624 @@ mod tests {
         assert_eq!(calls.get(), 1);
     }
 
+    /// Two single-line inputs, A above B in 200 × 30 slots 10 px apart,
+    /// and blank space beside and below them. A's slot stays, empty, while
+    /// `show_a` is off.
+    struct TwoInputs {
+        a: Entity<InputBaseState<InputMode>>,
+        b: Entity<InputBaseState<InputMode>>,
+        show_a: bool,
+    }
+
+    impl Render for TwoInputs {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let a = self.show_a.then(|| self.a.clone());
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(div().flex().w(px(200.)).h(px(30.)).children(a))
+                .child(div().flex().w(px(200.)).h(px(30.)).child(self.b.clone()))
+        }
+    }
+
+    /// Where the right-click menu tests press and release.
+    struct MenuPoints {
+        a: Point<Pixels>,
+        b: Point<Pixels>,
+        blank: Point<Pixels>,
+    }
+
+    /// Opens [`TwoInputs`], each input's context-menu handler logging its
+    /// name as the component's handler would open its menu.
+    fn two_inputs(
+        cx: &mut TestAppContext,
+    ) -> (
+        &mut VisualTestContext,
+        Entity<TwoInputs>,
+        [Entity<InputBaseState<InputMode>>; 2],
+        MenuPoints,
+        std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+        cx.update(crate::init);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (root, cx) = cx.add_window_view({
+            let log = log.clone();
+            move |window, cx| {
+                cx.set_global(Theme::default());
+                let mut input = |name: &'static str, cx: &mut Context<TwoInputs>| {
+                    let log = log.clone();
+                    cx.new(|cx| {
+                        let mut state = crate::input::InputState::new(window, cx);
+                        state.on_context_menu(Rc::new(move |_, _, _, _, _| {
+                            log.borrow_mut().push(name);
+                        }));
+                        state
+                    })
+                };
+                let a = input("A", cx);
+                let b = input("B", cx);
+                TwoInputs { a, b, show_a: true }
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let (a, b) = root.read_with(cx, |root, _| (root.a.clone(), root.b.clone()));
+        let center = |input: &Entity<InputBaseState<InputMode>>, cx: &mut VisualTestContext| {
+            input.read_with(cx, |state, _| {
+                state.last_bounds.expect("the input is drawn").center()
+            })
+        };
+        let points = MenuPoints {
+            a: center(&a, cx),
+            b: center(&b, cx),
+            blank: point(px(320.), px(160.)),
+        };
+        (cx, root, [a, b], points, log)
+    }
+
+    /// A right-button press at `from`, dragged to `to` and released there.
+    fn right_drag(cx: &mut VisualTestContext, from: Point<Pixels>, to: Point<Pixels>) {
+        cx.simulate_mouse_move(from, None, Modifiers::default());
+        cx.simulate_mouse_down(from, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_move(to, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(to, MouseButton::Right, Modifiers::default());
+        // The input shows its menu in a deferred callback.
+        cx.run_until_parked();
+    }
+
+    /// A right-button press at `at` whose release does not follow.
+    fn right_press(cx: &mut VisualTestContext, at: Point<Pixels>) {
+        cx.simulate_mouse_move(at, None, Modifiers::default());
+        cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    }
+
+    /// A right-button release at `at` whose press neither input saw, as when
+    /// an element before them stops the press in its capture phase: a menu
+    /// it opens is one an earlier press left pending.
+    fn unseen_right_release(cx: &mut VisualTestContext, at: Point<Pixels>) {
+        cx.simulate_mouse_move(at, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    /// GitTurtle patch: a right-release over an input opens its menu only
+    /// for a right-press that began on it. A press in A dragged out and
+    /// released over blank space left A's press pending, so a later
+    /// right-press on blank space dragged into A and released there opened
+    /// A's menu at the old point, with B holding focus after a click in it,
+    /// and the menu, whose actions go to the window's focus, cut from and
+    /// pasted into B; with A holding focus, it opened a menu no right-click
+    /// in A had asked for.
+    #[gpui::test]
+    fn a_right_release_opens_no_menu_for_a_press_begun_elsewhere(cx: &mut TestAppContext) {
+        let (cx, _, [a, b], at, log) = two_inputs(cx);
+        let focused = |input: &Entity<InputBaseState<InputMode>>, cx: &mut VisualTestContext| {
+            let handle = input.read_with(cx, |state, _| state.focus_handle.clone());
+            cx.update(|window, _| handle.is_focused(window))
+        };
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+        assert!(focused(&a, cx), "the right-click's press focused A");
+
+        right_drag(cx, at.a, at.blank);
+        assert_eq!(*log.borrow(), ["A"], "a press in A released outside it");
+        cx.simulate_click(at.b, Modifiers::default());
+        assert!(focused(&b, cx), "a click in B focused B");
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(
+            *log.borrow(),
+            ["A"],
+            "a release over A of a press begun on blank space, B focused"
+        );
+        assert!(focused(&b, cx), "focus stays in B");
+
+        cx.simulate_click(at.a, Modifiers::default());
+        right_drag(cx, at.a, at.blank);
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(
+            *log.borrow(),
+            ["A"],
+            "a release over A of a press begun on blank space, A focused"
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(
+            *log.borrow(),
+            ["A", "A"],
+            "a right-click in A still opens it"
+        );
+    }
+
+    /// GitTurtle patch: a right-press in A whose release over A comes once
+    /// focus has gone elsewhere, as Tab or a shortcut moves it while the
+    /// button is held, opens no menu: its actions, which go to the window's
+    /// focus, would have acted on the field that took it.
+    #[gpui::test]
+    fn a_right_release_opens_no_menu_once_focus_has_left_the_input(cx: &mut TestAppContext) {
+        let (cx, _, [a, b], at, log) = two_inputs(cx);
+        let (a_focus, b_focus) = cx.update(|_, cx| {
+            (
+                a.read(cx).focus_handle.clone(),
+                b.read(cx).focus_handle.clone(),
+            )
+        });
+
+        cx.simulate_mouse_move(at.a, None, Modifiers::default());
+        cx.simulate_mouse_down(at.a, MouseButton::Right, Modifiers::default());
+        assert!(
+            cx.update(|window, _| a_focus.is_focused(window)),
+            "the right-press focused A"
+        );
+        cx.update(|window, cx| window.focus(&b_focus, cx));
+        cx.simulate_mouse_up(at.a, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            log.borrow().is_empty(),
+            "a release over A with B focused opened {:?}",
+            log.borrow()
+        );
+        assert!(
+            cx.update(|window, _| b_focus.is_focused(window)),
+            "focus stays in B"
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// GitTurtle patch: a release of either button ends a right-press,
+    /// wherever it lands. A macOS Control-click whose Control is let go
+    /// before the button is a right press and a left release, so neither
+    /// right-button handler ran and the press stayed pending; while A kept
+    /// focus, a later right release over A opened A's menu at the old
+    /// point.
+    #[gpui::test]
+    fn a_release_of_either_button_ends_a_right_press(cx: &mut TestAppContext) {
+        let (cx, _, _, at, log) = two_inputs(cx);
+        let none = || -> Vec<&'static str> { Vec::new() };
+
+        right_press(cx, at.a);
+        cx.simulate_mouse_up(at.a, MouseButton::Left, Modifiers::default());
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a left release over A ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_mouse_move(at.blank, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at.blank, MouseButton::Left, Modifiers::default());
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a left release outside A ended it");
+
+        right_drag(cx, at.a, at.blank);
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a right release outside A ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_mouse_up(at.a, MouseButton::Left, Modifiers::default());
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(
+            *log.borrow(),
+            none(),
+            "a right-drag from blank space into A after a Control-click on A"
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// GitTurtle patch: a press that begins outside an input ends its
+    /// right-press, and so does a left-click on it. A right press whose
+    /// release the window never received, as when the platform loses one,
+    /// stayed pending, and a right-drag from blank space into A then opened
+    /// A's menu at the old point.
+    #[gpui::test]
+    fn a_press_outside_or_a_left_click_ends_a_right_press(cx: &mut TestAppContext) {
+        let (cx, _, _, at, log) = two_inputs(cx);
+        let none = || -> Vec<&'static str> { Vec::new() };
+
+        right_press(cx, at.a);
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(*log.borrow(), none(), "a press on blank space ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_click(at.a, Modifiers::default());
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a left-click on A ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_click(at.a, Modifiers::default());
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(
+            *log.borrow(),
+            none(),
+            "a right-drag from blank space into A after a left-click on A"
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// Activates the test's window: GPUI reports focus changes, a blur
+    /// among them, only in an active window, as a window being clicked in
+    /// is.
+    fn activate(cx: &mut VisualTestContext) {
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, _| window.is_window_active()),
+            "the window is active"
+        );
+    }
+
+    /// Draws the test's window, which reports focus changes.
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// GitTurtle patch: an input that loses focus ends its right-press, so
+    /// focus that moves to another field and back while the button is held
+    /// leaves no menu for the release over it.
+    #[gpui::test]
+    fn an_input_that_loses_focus_ends_its_right_press(cx: &mut TestAppContext) {
+        let (cx, _, [a, b], at, log) = two_inputs(cx);
+        activate(cx);
+        let (a_focus, b_focus) = cx.update(|_, cx| {
+            (
+                a.read(cx).focus_handle.clone(),
+                b.read(cx).focus_handle.clone(),
+            )
+        });
+
+        right_press(cx, at.a);
+        cx.update(|window, cx| window.focus(&b_focus, cx));
+        draw(cx);
+        cx.update(|window, cx| window.focus(&a_focus, cx));
+        draw(cx);
+        cx.simulate_mouse_up(at.a, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            log.borrow().is_empty(),
+            "focus leaving A while the button was held ended it, yet {:?} opened",
+            log.borrow()
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// GitTurtle patch: an input taken out of the drawn frame while its
+    /// right-press is held, as a page change takes it away, runs none of
+    /// its handlers for the release, and GPUI reports its blur instead,
+    /// which ends the press: drawn again, still holding focus, it opens no
+    /// menu for a later right release over it.
+    #[gpui::test]
+    fn an_input_taken_out_of_the_frame_ends_its_right_press(cx: &mut TestAppContext) {
+        let (cx, root, [a, _], at, log) = two_inputs(cx);
+        activate(cx);
+        let a_focus = cx.update(|_, cx| a.read(cx).focus_handle.clone());
+        let show_a = |show: bool, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| {
+                root.show_a = show;
+                cx.notify();
+            });
+            draw(cx);
+        };
+
+        right_press(cx, at.a);
+        show_a(false, cx);
+        cx.simulate_mouse_move(at.blank, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at.blank, MouseButton::Right, Modifiers::default());
+        show_a(true, cx);
+        assert!(
+            cx.update(|window, _| a_focus.is_focused(window)),
+            "A, drawn again, holds focus"
+        );
+        unseen_right_release(cx, at.a);
+        assert!(
+            log.borrow().is_empty(),
+            "A leaving the drawn frame ended it, yet {:?} opened",
+            log.borrow()
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// Counts the notifications of `input`'s blink cursor, each a blink
+    /// that redraws the input.
+    fn count_blinks<M: InputModeKind>(
+        input: &Entity<InputBaseState<M>>,
+        cx: &mut VisualTestContext,
+    ) -> std::rc::Rc<std::cell::Cell<usize>> {
+        let blinks = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = blinks.clone();
+        let cursor = input.read_with(cx, |state, _| state.blink_cursor.clone());
+        cx.update(|_, cx| {
+            cx.observe(&cursor, move |_, _| counted.set(counted.get() + 1))
+                .detach()
+        });
+        blinks
+    }
+
+    /// Lets `seconds` pass on the test's clock.
+    fn wait(cx: &mut VisualTestContext, seconds: u64) {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(seconds));
+        cx.run_until_parked();
+    }
+
+    /// GitTurtle patch: a window turned active again gives the caret back,
+    /// blinking, to the focused input drawn in it, through the focus GPUI
+    /// reports in the first frame it draws active, and starts nothing for an
+    /// input that holds the window's focus without being drawn, taken out of
+    /// the frame as a tab not shown or a dialog closed with its state kept
+    /// takes it. Upstream's window-activation observer started the cursor of
+    /// whichever input held the window's focus, drawn or not, and with no
+    /// blur to stop it, that input blinked, ten notifications in five
+    /// seconds, until it was next focused and left.
+    #[gpui::test]
+    fn window_activation_blinks_only_the_drawn_focused_input(cx: &mut TestAppContext) {
+        let (cx, root, [a, _], _, _) = two_inputs(cx);
+        activate(cx);
+        let a_focus = cx.update(|_, cx| a.read(cx).focus_handle.clone());
+        let a_blinks = count_blinks(&a, cx);
+
+        // A drawn and focused blinks; inactive, it stops; active again and
+        // drawn, it blinks once more.
+        cx.update(|window, cx| window.focus(&a_focus, cx));
+        draw(cx);
+        wait(cx, 5);
+        assert!(a_blinks.get() >= 9, "A, focused and drawn, blinks");
+        cx.deactivate_window();
+        draw(cx);
+        a_blinks.set(0);
+        wait(cx, 5);
+        assert_eq!(a_blinks.get(), 0, "A stops in an inactive window");
+        activate(cx);
+        draw(cx);
+        wait(cx, 5);
+        assert!(
+            a_blinks.get() >= 9,
+            "A, drawn in the window turned active, blinks again: {} blinks",
+            a_blinks.get()
+        );
+
+        // A taken out of the frame while focused, its blur reported, and the
+        // window turned inactive and active again.
+        root.update(cx, |root, cx| {
+            root.show_a = false;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            cx.update(|window, _| a_focus.is_focused(window)),
+            "A, not drawn, holds the window's focus"
+        );
+        cx.deactivate_window();
+        draw(cx);
+        activate(cx);
+        draw(cx);
+        a_blinks.set(0);
+        wait(cx, 5);
+        assert_eq!(
+            a_blinks.get(),
+            0,
+            "A, focused but not drawn, starts nothing as the window turns active"
+        );
+    }
+
+    /// A code editor above a single-line input, for the tests of a blur an
+    /// open completion menu holds back.
+    struct EditorAndInput {
+        editor: Entity<InputBaseState<EditorMode>>,
+        input: Entity<InputBaseState<InputMode>>,
+    }
+
+    impl Render for EditorAndInput {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .w(px(200.))
+                        .h(px(80.))
+                        .child(self.editor.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .w(px(200.))
+                        .h(px(30.))
+                        .child(self.input.clone()),
+                )
+        }
+    }
+
+    /// GitTurtle patch: a blur that comes while the code editor's completion
+    /// menu is open waits for the menu, and runs as the menu closes with
+    /// focus elsewhere: the caret is not drawn, its blink stops and nothing
+    /// redraws the editor at rest, and `Blur` is emitted once. Upstream's
+    /// blur returned for good, so the caret blinked on unfocused, its timer
+    /// redrawing the editor twice a second. Where focus comes back to the
+    /// editor as its menu closes, as a click on an item gives it back, no
+    /// blur runs and the caret blinks as any focus starts it, held a whole
+    /// interval before it first blinks off.
+    #[gpui::test]
+    fn a_menu_closed_with_focus_elsewhere_stops_the_caret(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc, time::Duration};
+        // The blink cursor's interval.
+        let interval = Duration::from_millis(500);
+        cx.update(crate::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            cx.set_global(Theme::default());
+            EditorAndInput {
+                editor: cx.new(|cx| crate::input::EditorState::new(window, cx)),
+                input: cx.new(|cx| crate::input::InputState::new(window, cx)),
+            }
+        });
+        draw(cx);
+        activate(cx);
+        let (editor, input) =
+            root.read_with(cx, |root, _| (root.editor.clone(), root.input.clone()));
+        let editor_focus = editor.read_with(cx, |state, _| state.focus_handle.clone());
+        let input_focus = input.read_with(cx, |state, _| state.focus_handle.clone());
+        let blurs = Rc::new(Cell::new(0));
+        let redraws = Rc::new(Cell::new(0));
+        cx.update(|_, cx| {
+            let blurred = blurs.clone();
+            cx.subscribe(&editor, move |_, event: &InputEvent, _| {
+                if matches!(event, InputEvent::Blur) {
+                    blurred.set(blurred.get() + 1);
+                }
+            })
+            .detach();
+            let redrawn = redraws.clone();
+            cx.observe(&editor, move |_, _| redrawn.set(redrawn.get() + 1))
+                .detach();
+        });
+        let blinks = count_blinks(&editor, cx);
+        let caret = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| editor.read(cx).show_cursor(window, cx))
+        };
+        let open_menu = |cx: &mut VisualTestContext| {
+            editor.update(cx, |state, cx| {
+                state.present_completion_items(
+                    0,
+                    "",
+                    vec![lsp_types::CompletionItem {
+                        label: "select".into(),
+                        ..Default::default()
+                    }],
+                    cx,
+                )
+            });
+            assert!(
+                editor.read_with(cx, |state, cx| state.is_context_menu_open(cx)),
+                "the completion menu is open"
+            );
+        };
+        let focus = |handle: &FocusHandle, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.focus(handle, cx));
+            draw(cx);
+        };
+
+        focus(&editor_focus, cx);
+        open_menu(cx);
+        focus(&input_focus, cx);
+        wait(cx, 5);
+        assert_eq!(blurs.get(), 0, "the blur waits for the open menu");
+        assert!(blinks.get() >= 9, "and the caret blinks on meanwhile");
+
+        editor.update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+        cx.run_until_parked();
+        assert_eq!(blurs.get(), 1, "the menu's close runs the blur once");
+        assert!(!caret(cx), "the unfocused editor draws no caret");
+        draw(cx);
+        blinks.set(0);
+        redraws.set(0);
+        wait(cx, 5);
+        assert_eq!(blinks.get(), 0, "its blink has stopped");
+        assert_eq!(redraws.get(), 0, "and nothing redraws it at rest");
+
+        // Focus given back to the editor before its menu closes.
+        focus(&editor_focus, cx);
+        open_menu(cx);
+        focus(&input_focus, cx);
+        cx.update(|window, cx| {
+            window.focus(&editor_focus, cx);
+            editor.update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(blurs.get(), 1, "focus back on the close runs no blur");
+        draw(cx);
+        assert!(caret(cx), "the caret shows as focus is reported back");
+        cx.executor()
+            .advance_clock(interval - Duration::from_millis(1));
+        cx.run_until_parked();
+        assert!(caret(cx), "held until an interval has passed");
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        assert!(!caret(cx), "then blinks off");
+        blinks.set(0);
+        wait(cx, 5);
+        assert!(blinks.get() >= 9, "and blinks on: {} blinks", blinks.get());
+        assert_eq!(blurs.get(), 1, "with no blur run late");
+        // Focus leaving it again blurs it once: the focus reported back
+        // ended the watch, so a later notification of the editor, outside a
+        // draw, runs no second blur.
+        focus(&input_focus, cx);
+        assert_eq!(blurs.get(), 2, "focus leaving it blurs it once");
+        editor.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(blurs.get(), 2, "and a later notification runs no blur");
+    }
+
+    /// GitTurtle patch: the menu places the caret at the press's offset
+    /// clipped to a character boundary of the text as it stands when the
+    /// menu opens. A press past the end of "abcdef" stores offset 6; with
+    /// the text changed to "aéééé" before the release, a caret at 6 lay
+    /// inside the third "é", and typing split it.
+    #[gpui::test]
+    fn a_right_click_places_the_caret_on_a_character_boundary(cx: &mut TestAppContext) {
+        let (cx, _, [a, _], at, log) = two_inputs(cx);
+        cx.update(|window, cx| a.update(cx, |state, cx| state.set_value("abcdef", window, cx)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let end = a.read_with(cx, |state, _| {
+            let bounds = state.last_bounds.expect("A is drawn");
+            point(bounds.right() - px(4.), at.a.y)
+        });
+
+        right_press(cx, end);
+        a.read_with(cx, |state, _| {
+            assert_eq!(
+                (state.selected_range.start, state.selected_range.end),
+                (6, 6),
+                "the press past the text's end put the caret at its end"
+            )
+        });
+        cx.update(|window, cx| a.update(cx, |state, cx| state.set_value("aéééé", window, cx)));
+        cx.simulate_mouse_up(end, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(*log.borrow(), ["A"], "the right-click opens A's menu");
+
+        cx.update(|window, cx| {
+            a.update(cx, |state, cx| {
+                state.replace_text_in_range(None, "x", window, cx);
+            })
+        });
+        assert_eq!(
+            a.read_with(cx, |state, _| state.value().to_string()),
+            "aééxéé",
+            "typing after the menu opened inserts between whole characters"
+        );
+    }
+
     #[gpui::test]
     fn test_readonly_rejects_user_edits_only(cx: &mut TestAppContext) {
         let input_view = InputView::new(cx);
@@ -3502,6 +4390,77 @@ mod tests {
                 assert_eq!(state.value(), "!changed");
             });
         });
+    }
+
+    /// What the platform's input handler, built as the text element builds it
+    /// in paint, answers for a state: whether it takes text input, and whether
+    /// it wants printable keys sent to an input method first.
+    fn text_input<M: InputModeKind>(
+        input: &Entity<InputBaseState<M>>,
+        cx: &mut VisualTestContext,
+    ) -> (bool, bool) {
+        use gpui::InputHandler as _;
+        cx.update(|window, cx| {
+            let mut handler = gpui::ElementInputHandler::new(Bounds::default(), input.clone());
+            (
+                handler.accepts_text_input(window, cx),
+                handler.prefers_ime_for_printable_keys(window, cx),
+            )
+        })
+    }
+
+    fn only_editable_text_accepts_text_input<M: InputModeKind>(
+        input: Entity<InputBaseState<M>>,
+        cx: &mut VisualTestContext,
+    ) {
+        assert_eq!(
+            text_input(&input, cx),
+            (true, true),
+            "an editable text takes text input"
+        );
+
+        for (readonly, disabled) in [(true, false), (false, true), (true, true)] {
+            cx.update(|_, cx| {
+                input.update(cx, |state, cx| {
+                    state.set_readonly(readonly, cx);
+                    state.set_disabled(disabled, cx);
+                })
+            });
+            assert_eq!(
+                text_input(&input, cx),
+                (false, false),
+                "a text that is read-only ({readonly}) or disabled ({disabled}) refuses text input"
+            );
+
+            // Made editable again, it takes text input at once: the platform
+            // asks again each frame, and no frame has to pass first.
+            cx.update(|_, cx| {
+                input.update(cx, |state, cx| {
+                    state.set_readonly(false, cx);
+                    state.set_disabled(false, cx);
+                })
+            });
+            assert_eq!(
+                text_input(&input, cx),
+                (true, true),
+                "a text made editable again takes text input before it is drawn"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn only_an_editable_text_accepts_text_input(cx: &mut TestAppContext) {
+        let editor = InputView::new(cx);
+        let mut editor_cx = VisualTestContext::from_window(editor.window_handle.into(), cx);
+        only_editable_text_accepts_text_input(editor.input, &mut editor_cx);
+
+        let field = InputView::build(cx, |state| state);
+        let mut field_cx = VisualTestContext::from_window(field.window_handle.into(), cx);
+        only_editable_text_accepts_text_input(field.input, &mut field_cx);
+
+        let textarea = InputView::build_textarea(cx, |state| state);
+        let mut textarea_cx = VisualTestContext::from_window(textarea.window_handle.into(), cx);
+        only_editable_text_accepts_text_input(textarea.input, &mut textarea_cx);
     }
 
     /// Regression test: `scroll_to` at end-of-buffer must produce a deferred
@@ -4457,6 +5416,55 @@ mod tests {
                     "long value should display from its start, not its tail"
                 );
             });
+        });
+    }
+
+    /// GitTurtle patch: a focused single-line field that held a short value,
+    /// given a value longer than it and then a caret at that value's end, as
+    /// a repository tab's return restores History's search field, draws the
+    /// caret inside the field in the first frame it lays the value out in.
+    /// The selection's `scroll_to` measured against the short value's
+    /// layout and kept the start `set_value` asks for, and the element
+    /// followed the caret only for a changed selection, which that frame
+    /// used up: the caret stayed past the field's end until the next key.
+    #[gpui::test]
+    fn a_caret_set_after_a_long_value_is_drawn_inside_the_field(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("short", window, cx);
+                state.focus_handle.focus(window, cx);
+            })
+        });
+        draw(&mut cx);
+
+        let value = format!("https://example.com/v1/users?{}", "x=1&".repeat(120));
+        let len = value.len();
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value(value.clone(), window, cx);
+                state.set_selected_range(len..len, cx);
+            })
+        });
+        draw(&mut cx);
+
+        input.read_with(&cx, |state, _| {
+            let field = state.input_bounds;
+            let (caret, _) = state.cursor_layout().expect("the caret is laid out");
+            assert!(
+                state.scroll_size.width > field.size.width,
+                "the value must overflow the field or this test is vacuous"
+            );
+            assert!(
+                caret.left() >= field.left() && caret.right() <= field.right(),
+                "the caret {caret:?} lies outside the field {field:?}"
+            );
+            assert_eq!(state.selected_range, Selection::new(len, len));
         });
     }
 

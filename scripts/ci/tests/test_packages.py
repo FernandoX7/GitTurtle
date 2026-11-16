@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import struct
@@ -195,16 +196,27 @@ class ArchiveTests(unittest.TestCase):
 
 class NoticeTests(unittest.TestCase):
     def test_only_exact_strict_result_and_documented_gaps_can_withhold(self):
-        target = "x86_64-unknown-linux-gnu"
+        target = "aarch64-apple-darwin"
         value = dict(target=target, cargo_lock_sha256="a" * 64, dependencies=[{}], review_required=[])
         self.assertTrue(packages.notice_state(0, value, target, "a" * 64))
-        for missing in (["mac-0.1.1"], ["ufbx-0.11.3", "mac-0.1.1"]):
+        for missing in (["block-0.1.6"], ["leaky-cow-0.1.1", "block-0.1.6", "leak-0.1.2", "objc_exception-0.1.2"]):
             value["review_required"] = missing
             self.assertFalse(packages.notice_state(2, value, target, "a" * 64))
-        for code, missing in [(1, ["mac-0.1.1"]), (0, ["mac-0.1.1"]), (2, []), (2, ["new-gap-1.0"]), (2, None)]:
+        # The resolved `mac` and the long-replaced `ufbx` 0.11.3 would be new gaps again.
+        for code, missing in [(1, ["block-0.1.6"]), (0, ["block-0.1.6"]), (2, []), (2, ["new-gap-1.0"]),
+                              (2, ["mac-0.1.1"]), (2, ["block-0.1.6", "ufbx-0.11.3"]), (2, None)]:
             value["review_required"] = missing
             with self.subTest(code=code, missing=missing), self.assertRaises(packages.Error):
                 packages.notice_state(code, value, target, "a" * 64)
+
+    def test_linux_has_no_known_gap_so_any_missing_notice_fails(self):
+        for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
+            value = dict(target=target, cargo_lock_sha256="a" * 64, dependencies=[{}], review_required=[])
+            self.assertTrue(packages.notice_state(0, value, target, "a" * 64))
+            for missing in (["mac-0.1.1"], ["ufbx-0.11.3"], ["block-0.1.6"]):
+                value["review_required"] = missing
+                with self.subTest(target=target, missing=missing), self.assertRaisesRegex(packages.Error, "new gaps"):
+                    packages.notice_state(2, value, target, "a" * 64)
 
     def test_strict_inventory_target_lock_and_dependency_failure(self):
         value = dict(target="x86_64-unknown-linux-gnu", cargo_lock_sha256="a" * 64,
@@ -215,27 +227,30 @@ class NoticeTests(unittest.TestCase):
 
 
 class PayloadTests(unittest.TestCase):
+    # The Linux bundle under test: its target, the label in its name and its ELF machine (EM_X86_64).
+    TARGET, LABEL, ELF_MACHINE = "x86_64-unknown-linux-gnu", "linux-x86_64", 62
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.stem = "GitTurtle-0.1.0-aaaaaaaaaaaa-linux-x86_64-release"
+        self.stem = f"GitTurtle-0.1.0-aaaaaaaaaaaa-{self.LABEL}-release"
         self.payload = self.root / "source" / self.stem
         (self.payload / "licenses").mkdir(parents=True)
         header = bytearray(32)
         header[:6] = b"\x7fELF\x02\x01"
-        header[18:20] = (62).to_bytes(2, "little")
+        header[18:20] = self.ELF_MACHINE.to_bytes(2, "little")
         self.binary = bytes(header) + b"unit-test fixture, not an executable"
         (self.payload / "bin").mkdir()
         (self.payload / "bin/gitturtle").write_bytes(self.binary)
         self.compiled = dict(application="GitTurtle", source_revision="a" * 40, version="0.1.0",
-                             target="x86_64-unknown-linux-gnu", profile="release", source_tree="clean",
+                             target=self.TARGET, profile="release", source_tree="clean",
                              rustc="rustc fixture", build_unix_seconds="1")
         self.inventory = dict(target=self.compiled["target"], cargo_lock_sha256="b" * 64, review_required=[],
                               dependencies=[dict(name="fixture", notices=[dict(path="fixture-LICENSE", sha256=sha(b"full notice"))])])
         for name, data in {"LICENSE": b"project notice", "THIRD_PARTY_NOTICES.md": b"index", "fixture-LICENSE": b"full notice"}.items():
             (self.payload / "licenses" / name).write_bytes(data)
         (self.payload / "licenses/dependencies.json").write_text(json.dumps(self.inventory))
-        self.package = dict(format=2, application="GitTurtle", bundle_id="com.gitturtle.desktop",
+        self.package = dict(format=2, application="GitTurtle", bundle_id="com.gitturtle.GitTurtle",
                             target=self.compiled["target"], compiled_identity=self.compiled,
                             packaged_from_revision="a" * 40, packaging_tree_status="clean", release_built_by_packager=False,
                             binary_sha256=sha(self.binary), input_binary_sha256=sha(self.binary), cargo_lock_sha256="b" * 64,
@@ -263,8 +278,12 @@ class PayloadTests(unittest.TestCase):
     def test_roundtrip_checks_real_archive_and_explicit_cross_platform_no_probe(self):
         with patch.object(packages.identity, "probe", return_value=self.compiled) as probe:
             payload, binary, package = packages.verify_payload(self.root, self.expected, complete=True)
+            # A Linux bundle: one root directory named as the archive, the executable under bin/.
+            self.assertEqual(payload, self.root / "extracted" / self.stem)
+            self.assertEqual(binary, payload / "bin/gitturtle")
             self.assertEqual(binary.read_bytes(), self.binary)
             self.assertEqual(package, self.package)
+            self.assertEqual(package["target"], self.TARGET)
             probe.assert_called_once_with(binary)
         shutil.rmtree(self.root / "extracted")
         with patch.object(packages.identity, "probe", side_effect=AssertionError("must not execute foreign binary")):
@@ -328,43 +347,123 @@ class PayloadTests(unittest.TestCase):
             packages.verify_payload(self.root, self.expected, complete=True, probe=False)
 
 
+class ArmLinuxPayloadTests(PayloadTests):
+    """Every payload check again for the AArch64 Linux bundle (EM_AARCH64), which is a Linux bundle too."""
+    TARGET, LABEL, ELF_MACHINE = "aarch64-unknown-linux-gnu", "linux-aarch64", 183
+
+
+class PlatformCheckTests(unittest.TestCase):
+    def test_both_linux_targets_get_the_install_checks_of_a_linux_bundle(self):
+        self.assertEqual(packages.identity.LINUX_TARGETS, ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"))
+        for target in packages.identity.LINUX_TARGETS:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                payload = directory / "bundle"
+                package = {"target": target, "compiled_identity": {"version": "0.1.0"}}
+                tools = []
+                def command(command, **kwargs):
+                    names = [Path(str(argument)).name for argument in command]
+                    tools.append(names[1] if names[0] == Path(os.sys.executable).name else names[0])
+                    if kwargs.get("allowed") == (1,):
+                        return 1, "GitTurtle needs a Wayland or X11 desktop session"
+                    return 0, ""
+                with patch.object(packages, "run", side_effect=command), \
+                        patch.object(packages.identity, "digest", return_value="d" * 64), \
+                        patch.object(packages.identity, "probe", return_value=package["compiled_identity"]):
+                    packages.platform_checks(payload, payload / "bin/gitturtle", package, directory)
+                # The installer fixtures, an installation, its desktop entry and libraries, and a no-display start.
+                self.assertEqual(tools, ["test-install-linux.py", "install.py", "desktop-file-validate", "ldd",
+                                         "gitturtle"])
+
+
 class PrepareTests(unittest.TestCase):
+    LINUX, ARM, MAC = "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"
+    LINUX_LABELS = {LINUX: "linux-x86_64", ARM: "linux-aarch64"}
+    NOBODY, EVERYBODY = frozenset(), frozenset({"linux", "macos"})
+    MAC_HELD = "the macOS upload is held until macOS distribution is decided"
+    INCOMPLETE = ("**Download unavailable: C0 license notices are incomplete; C3 hosted transfer remains open.** "
+                  "The development archive is withheld from public upload. Verified strict refusal: "
+                  "`block-0.1.6`, `leak-0.1.2`, `leaky-cow-0.1.1`, `objc_exception-0.1.2`.")
+
+    @staticmethod
+    def held(platform):
+        return (f"Complete notices verified. **Download unavailable: the {platform} upload is held until {platform} "
+                "distribution is decided; C3 hosted transfer remains open.** The verified complete-notice archive "
+                "stays in this job and is not uploaded.\n")
+
+    @staticmethod
+    def uploaded(report):
+        return ("Complete notices verified. This job uploads the archive next as the Actions artifact "
+                f"`{report['artifact_name']}`, kept 7 days, then downloads and verifies that artifact. "
+                "It is an early-development CI build, not a release.\n")
+
+    def prepare(self, target, missing, *, uploads=None, refusal=None, event="pull_request"):
+        """Run `prepare` over stand-in tools; `missing` is what strict collection reports.
+
+        `uploads` replaces the set of uploading platforms for this run; None leaves it as shipped.
+        """
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        binary = root / "target" / target / "release/gitturtle"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"fixture input")
+        args = argparse.Namespace(target=target, revision="a" * 40, directory=root / "work",
+                                  event=event, run_id="123", attempt="2", output=root / "github-output",
+                                  summary=root / "summary.md", report=root / "report.json")
+        calls = []
+        def command(command, **kwargs):
+            command = list(map(str, command))
+            calls.append([argument.replace(str(root), "ROOT") for argument in command])
+            if "--require-complete" in command:
+                notices = Path(command[-1])
+                notices.mkdir()
+                (notices / "dependencies.json").write_text(json.dumps(dict(
+                    target=target, cargo_lock_sha256="b" * 64, dependencies=[{}], review_required=missing)))
+                return (2 if missing else 0), ""
+            stem = f"GitTurtle-0.1.0-aaaaaaaaaaaa-{packages.TARGETS[target]}-release"
+            archive = root / "work/prepared" / (stem + (".tar.gz" if target.endswith("linux-gnu") else ".zip"))
+            for suffix in ("", ".sha256", ".manifest.json"):
+                Path(str(archive) + suffix).write_bytes(b"unit fixture" + suffix.encode())
+            return 0, ""
+        package = {"signing": "unsigned" if target.endswith("linux-gnu") else "ad-hoc"}
+        with patch.object(packages, "HOSTED_UPLOAD_PLATFORMS",
+                          packages.HOSTED_UPLOAD_PLATFORMS if uploads is None else uploads), \
+                patch.object(packages, "ROOT", root), \
+                patch.object(packages.identity, "expectations", return_value=("a" * 40, "0.1.0", "b" * 64, "clean")), \
+                patch.object(packages.identity, "probe", return_value={}), \
+                patch.object(packages.identity, "validate_identity"), \
+                patch.object(packages, "run", side_effect=command), \
+                patch.object(packages, "verify_payload", return_value=(root, binary, package)) as verify, \
+                patch.object(packages, "platform_checks") as checks, patch("builtins.print"):
+            if refusal:
+                with self.assertRaisesRegex(packages.Error, refusal):
+                    packages.prepare(args)
+            else:
+                packages.prepare(args)
+        return root, calls, verify, checks
+
+    def left_behind(self, root):
+        """What a finished `prepare` leaves for the workflow and for its readers."""
+        return (json.loads((root / "report.json").read_text()), (root / "github-output").read_text(),
+                (root / "summary.md").read_text())
+
     def test_each_platform_packages_once_and_incomplete_notices_never_publish(self):
+        # The upload path on every platform, which only a listed platform reaches: all are listed here.
         for target in packages.TARGETS:
+            # A target with no known gap left has no development path: any gap fails it.
+            known = sorted(packages.KNOWN_GAPS[target])[:1]
             for complete in (False, True):
-                with self.subTest(target=target, complete=complete), tempfile.TemporaryDirectory() as temporary:
-                    root = Path(temporary)
-                    binary = root / "target" / target / "release/gitturtle"
-                    binary.parent.mkdir(parents=True)
-                    binary.write_bytes(b"fixture input")
-                    args = argparse.Namespace(target=target, revision="a" * 40, directory=root / "work",
-                                              event="pull_request", run_id="123", attempt="2",
-                                              output=root / "github-output", summary=None, report=root / "report.json")
-                    calls = []
-                    def command(command, **kwargs):
-                        command = list(map(str, command))
-                        calls.append(command)
-                        if "--require-complete" in command:
-                            notices = Path(command[-1])
-                            notices.mkdir()
-                            (notices / "dependencies.json").write_text(json.dumps(dict(
-                                target=target, cargo_lock_sha256="b" * 64, dependencies=[{}],
-                                review_required=[] if complete else ["mac-0.1.1"])))
-                            return (0 if complete else 2), ""
-                        stem = f"GitTurtle-0.1.0-aaaaaaaaaaaa-{packages.TARGETS[target]}-release"
-                        archive = root / "work/prepared" / (stem + (".tar.gz" if target.endswith("linux-gnu") else ".zip"))
-                        for suffix in ("", ".sha256", ".manifest.json"):
-                            Path(str(archive) + suffix).write_bytes(b"unit fixture")
-                        return 0, ""
-                    package = {"signing": "unsigned" if target.endswith("linux-gnu") else "ad-hoc"}
-                    with patch.object(packages, "ROOT", root), \
-                            patch.object(packages.identity, "expectations", return_value=("a" * 40, "0.1.0", "b" * 64, "clean")), \
-                            patch.object(packages.identity, "probe", return_value={}), \
-                            patch.object(packages.identity, "validate_identity"), \
-                            patch.object(packages, "run", side_effect=command), \
-                            patch.object(packages, "verify_payload", return_value=(root, binary, package)) as verify, \
-                            patch.object(packages, "platform_checks"), patch("builtins.print"):
-                        packages.prepare(args)
+                with self.subTest(target=target, complete=complete):
+                    if not complete and not known:
+                        root, calls, verify, _ = self.prepare(target, ["new-gap-1.0"], uploads=self.EVERYBODY,
+                                                              refusal="new gaps")
+                        self.assertEqual(len(calls), 1)  # the strict collector; nothing is packaged
+                        verify.assert_not_called()
+                        for withheld in ("work/prepared", "work/publish", "report.json", "github-output"):
+                            self.assertFalse((root / withheld).exists(), withheld)
+                        continue
+                    root, calls, verify, _ = self.prepare(target, [] if complete else known, uploads=self.EVERYBODY)
                     self.assertEqual(len(calls), 2)  # one strict collector, one no-build packager
                     self.assertIn("--no-build", calls[1])
                     self.assertEqual("--distribution" in calls[1], complete)
@@ -376,6 +475,332 @@ class PrepareTests(unittest.TestCase):
                     self.assertEqual(report["hosted_transfer"], "not-performed")
                     self.assertEqual(report["native_smoke"], "not-performed")
                     self.assertEqual(report["upload_eligible"], complete)
+
+    def test_the_shipped_upload_set_is_linux_alone(self):
+        self.assertEqual(packages.HOSTED_UPLOAD_PLATFORMS, frozenset({"linux"}))
+        # Every declared target has exactly one platform, so none can upload unlisted.
+        self.assertEqual({target: packages.platform_of(target) for target in packages.TARGETS},
+                         {self.LINUX: "linux", self.ARM: "linux", self.MAC: "macos"})
+        self.assertEqual(set(packages.PLATFORM_NAMES), self.EVERYBODY)
+        for undeclared in ("riscv64gc-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "linux", ""):
+            with self.subTest(target=undeclared), self.assertRaisesRegex(packages.Error, "no declared package platform"):
+                packages.platform_of(undeclared)
+
+    def test_both_linux_architectures_are_declared_under_their_own_labels(self):
+        # The label is in the archive's and the artifact's names, and the release assets read it too.
+        self.assertEqual(packages.TARGETS, {**self.LINUX_LABELS, self.MAC: "macos-arm64"})
+        self.assertEqual(len(set(packages.TARGETS.values())), len(packages.TARGETS))
+        # Every Linux target the packager can build is declared here, and nothing else is Linux.
+        self.assertEqual({target for target in packages.TARGETS if packages.platform_of(target) == "linux"},
+                         set(packages.identity.LINUX_TARGETS))
+        self.assertEqual(set(packages.KNOWN_GAPS), set(packages.TARGETS))
+
+    def test_as_shipped_complete_linux_notices_upload_the_verified_archive(self):
+        cases = [(target, event, trust) for target in self.LINUX_LABELS
+                 for event, trust in (("pull_request", "untrusted-pr"), ("push", "ci-build"),
+                                      ("workflow_dispatch", "ci-build"))]
+        names = set()
+        for target, event, trust in cases:
+            with self.subTest(target=target, event=event):
+                root, calls, verify, checks = self.prepare(target, [], event=event)
+                # The upload follows the same strict collection, complete-notice package and checks.
+                self.assertEqual(len(calls), 2)
+                self.assertIn("--require-complete", calls[0])
+                self.assertEqual(calls[0][calls[0].index("--target") + 1], target)
+                self.assertEqual(calls[1][0], "ROOT/scripts/package-linux.sh")
+                self.assertIn("--distribution", calls[1])
+                self.assertIs(verify.call_args.kwargs["complete"], True)
+                checks.assert_called_once()
+                report, output, summary = self.left_behind(root)
+                self.assertIs(report["upload_eligible"], True)
+                self.assertIs(report["release_input"], False)
+                self.assertEqual(report["target"], target)
+                self.assertEqual(report["license_review_required"], [])
+                self.assertEqual(report["local_archive_checks"], "passed")
+                self.assertEqual(report["hosted_transfer"], "not-performed")
+                # A pull request's artifact, a fork's included, says so in its name.
+                stem = f"GitTurtle-0.1.0-aaaaaaaaaaaa-{self.LINUX_LABELS[target]}-release"
+                self.assertEqual(report["archive"], stem + ".tar.gz")
+                self.assertEqual(report["artifact_name"], f"{stem}-{trust}-123-2")
+                names.add(report["artifact_name"])
+                self.assertEqual(output, f"eligible=true\nartifact-name={report['artifact_name']}\n")
+                self.assertTrue(summary.startswith(f"### {self.LINUX_LABELS[target]} CI package\n"), summary)
+                self.assertTrue(summary.endswith(self.uploaded(report)), summary)
+                self.assertNotIn("Download unavailable", summary)
+                # The upload directory holds the three archive files and the record, and nothing else.
+                published = {report["archive"] + suffix for suffix in ("", ".sha256", ".manifest.json")}
+                self.assertEqual({path.name for path in (root / "work/publish").iterdir()},
+                                 published | {"ci-provenance.json"})
+                self.assertEqual(json.loads((root / "work/publish/ci-provenance.json").read_text()), report)
+                self.assertEqual(json.loads((root / "work/prepared.json").read_text()), report)
+        # In one run the two Linux legs share the event, run and attempt: only the label keeps their artifacts apart.
+        self.assertEqual(len(names), 4)
+
+    def test_as_shipped_macos_stays_held_even_with_complete_notices(self):
+        # macOS's notices are not complete today; this is the day they are.
+        root, calls, verify, checks = self.prepare(self.MAC, [])
+        # The hold skips neither the strict collection nor the complete-notice package.
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--require-complete", calls[0])
+        self.assertIn("--distribution", calls[1])
+        self.assertIs(verify.call_args.kwargs["complete"], True)
+        checks.assert_called_once()
+        report, output, summary = self.left_behind(root)
+        self.assertIs(report["upload_eligible"], False)
+        self.assertEqual(report["license_review_required"], [])
+        self.assertEqual(report["local_archive_checks"], "passed")
+        self.assertEqual(report["hosted_transfer"], "not-performed")
+        self.assertEqual(output, f"eligible=false\nartifact-name={report['artifact_name']}\n")
+        self.assertFalse((root / "work/publish").exists())
+        self.assertTrue(summary.endswith(self.held("macOS")), summary)
+        self.assertNotIn("uploads the archive", summary)
+        self.assertNotIn("incomplete", summary)
+        # The download verifier refuses the held record, so nothing can stand in for the upload.
+        self.assertEqual(json.loads((root / "work/prepared.json").read_text()), report)
+        refused = argparse.Namespace(expected=root / "work/prepared.json", directory=root / "work/prepared",
+                                     artifact_id="1", report=root / "transfer.json", summary=None)
+        with self.assertRaisesRegex(packages.Error, "upload-eligible CI package"):
+            packages.verify(refused)
+        self.assertFalse((root / "transfer.json").exists())
+
+    def test_its_entry_in_the_set_alone_separates_a_held_platform_from_an_uploading_one(self):
+        # Each platform's shipped state beside the other one: Linux unlisted, macOS listed.
+        for target, platform, unlisted, listed in ((self.LINUX, "Linux", self.NOBODY, None),
+                                                   (self.ARM, "Linux", self.NOBODY, None),
+                                                   (self.MAC, "macOS", None, self.EVERYBODY)):
+            with self.subTest(target=target):
+                held_root, held_calls, held_verify, _ = self.prepare(target, [], uploads=unlisted)
+                root, calls, verify, _ = self.prepare(target, [], uploads=listed)
+                # Same collection, same package, same verification.
+                self.assertEqual(calls, held_calls)
+                self.assertEqual(verify.call_args.kwargs, held_verify.call_args.kwargs)
+                held_report, held_output, held_summary = self.left_behind(held_root)
+                report, output, summary = self.left_behind(root)
+                self.assertEqual(report.keys(), held_report.keys())
+                self.assertEqual({key for key in report if report[key] != held_report[key]}, {"upload_eligible"})
+                self.assertIs(report["upload_eligible"], True)
+                self.assertEqual(output, f"eligible=true\nartifact-name={report['artifact_name']}\n")
+                self.assertEqual(held_output, output.replace("eligible=true", "eligible=false"))
+                self.assertTrue(summary.endswith(self.uploaded(report)), summary)
+                self.assertEqual(held_summary.removesuffix(self.held(platform)),
+                                 summary.removesuffix(self.uploaded(report)))
+                # On disk only the upload's own directory differs: the three archive files and the record.
+                published = {report["archive"] + suffix for suffix in ("", ".sha256", ".manifest.json")}
+                self.assertEqual({path.name for path in (root / "work/publish").iterdir()},
+                                 published | {"ci-provenance.json"})
+                for name in published:
+                    self.assertEqual((root / "work/publish" / name).read_bytes(),
+                                     (root / "work/prepared" / name).read_bytes())
+                self.assertEqual(json.loads((root / "work/publish/ci-provenance.json").read_text()), report)
+                def outside_publish(base):
+                    return {str(path.relative_to(base)) for path in base.rglob("*") if "publish" not in path.parts}
+                self.assertEqual(outside_publish(held_root), outside_publish(root))
+                self.assertFalse((held_root / "work/publish").exists())
+
+    def test_missing_linux_notice_fails_whatever_the_upload_set_lists(self):
+        for target, uploads in ((target, uploads) for target in self.LINUX_LABELS
+                                for uploads in (None, self.NOBODY, self.EVERYBODY)):
+            for missing in (["mac-0.1.1"], ["new-gap-1.0"]):
+                with self.subTest(target=target, uploads=uploads, missing=missing):
+                    root, calls, verify, checks = self.prepare(target, missing, uploads=uploads, refusal="new gaps")
+                    self.assertEqual(len(calls), 1)  # the strict collector; nothing is packaged
+                    self.assertIn("--require-complete", calls[0])
+                    verify.assert_not_called()
+                    checks.assert_not_called()
+                    for withheld in ("work/prepared", "work/publish", "work/prepared.json", "report.json",
+                                     "github-output", "summary.md"):
+                        self.assertFalse((root / withheld).exists(), withheld)
+
+    def test_macos_known_gaps_withhold_the_archive_whatever_the_upload_set_lists(self):
+        gaps = sorted(packages.KNOWN_GAPS[self.MAC])
+        self.assertEqual(gaps, ["block-0.1.6", "leak-0.1.2", "leaky-cow-0.1.1", "objc_exception-0.1.2"])
+        seen = []
+        # As shipped the summary also says that completing the notices would not start an upload.
+        for uploads, ending in ((None, f"{self.INCOMPLETE} Separately, {self.MAC_HELD}.\n"),
+                                (self.EVERYBODY, f"{self.INCOMPLETE}\n")):
+            with self.subTest(uploads=uploads):
+                root, calls, verify, _ = self.prepare(self.MAC, gaps, uploads=uploads)
+                self.assertEqual(len(calls), 2)
+                self.assertNotIn("--distribution", calls[1])
+                self.assertIs(verify.call_args.kwargs["complete"], False)
+                self.assertFalse((root / "work/publish").exists())
+                report, output, summary = self.left_behind(root)
+                self.assertIs(report["upload_eligible"], False)
+                self.assertEqual(report["license_review_required"], gaps)
+                self.assertEqual(output, f"eligible=false\nartifact-name={report['artifact_name']}\n")
+                self.assertTrue(summary.endswith(ending), summary)
+                self.assertNotIn("Complete notices verified", summary)
+                seen.append((calls, report, output, summary.removesuffix(ending)))
+        self.assertEqual(seen[0], seen[1])
+
+
+class QualityUploadTests(unittest.TestCase):
+    """What quality.yml does with `prepare`'s answer; read as text (no YAML dependency)."""
+
+    ELIGIBLE = "steps.package.outputs.eligible == 'true'"
+    # A step's own `outcome` is its result before `continue-on-error` hides a failure from the job.
+    AFTER_FIRST = f"{ELIGIBLE} && steps.download-first.outcome == 'failure'"
+    AFTER_BOTH = f"{AFTER_FIRST} && steps.download-second.outcome == 'failure'"
+    CHAIN = ["Upload verified early-development CI package",
+             "Download this exact uploaded artifact from Actions",
+             "Wait about 15 s for the run's artifact listing and empty the download directory",
+             "Download this exact uploaded artifact from Actions, second attempt",
+             "Wait about 45 s more for the run's artifact listing and empty the download directory",
+             "Download this exact uploaded artifact from Actions, third and last attempt",
+             "Verify downloaded bytes and installation"]
+
+    def steps(self):
+        text = (packages.ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+        job = re.split(r"^  ([a-z][a-z0-9-]*):\n", text.split("\njobs:\n", 1)[1], flags=re.M)
+        release = dict(zip(job[1::2], job[2::2]))["rust-release"]
+        return release, release.split("\n    steps:\n", 1)[1].split("\n      - ")
+
+    def chain(self):
+        """The steps from the upload to the verification, in the job's order: each one's own keys, then the
+        lines of its `with:`, `env:` and `run:` blocks. Comments are not read."""
+        release, steps = self.steps()
+        names = [step.splitlines()[0] for step in steps]
+        steps = steps[names.index(f"name: {self.CHAIN[0]}"):names.index(f"name: {self.CHAIN[-1]}") + 1]
+        read = []
+        for step in steps:
+            lines = [line for line in ("        " + step).splitlines() if not line.lstrip().startswith("#")]
+            own = dict(re.fullmatch(r"        ([a-z-]+):(?: (.*))?", line).groups() for line in lines if line[8:9].strip())
+            read.append((own, [line.strip() for line in lines if line.startswith("          ")]))
+        return release, read
+
+    def test_only_prepare_decides_the_upload_and_its_summary_states_the_real_retention(self):
+        release, steps = self.steps()
+        gated = [step for step in steps if "outputs.eligible" in step]
+        self.assertEqual(release.count("eligible =="), len(gated))
+        # The upload, then the download with its retries, then the verification: nothing else reads the answer.
+        self.assertEqual([step.splitlines()[0] for step in gated], [f"name: {name}" for name in self.CHAIN])
+        for step in gated:
+            with self.subTest(step=step.splitlines()[0]):
+                # Every one of them needs the answer; a retry also needs the earlier attempts' failures.
+                condition, = re.findall(r"^ +if: (.*)$", step, re.M)
+                self.assertIn(condition, (self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_BOTH))
+        upload = gated[0]
+        self.assertEqual(re.findall(r"^ +if: (.*)$", upload, re.M), [self.ELIGIBLE])
+        self.assertIn("\n          name: ${{ steps.package.outputs.artifact-name }}\n", upload)
+        # Only the directory `prepare` fills for an eligible package is ever uploaded as a package.
+        self.assertEqual(re.findall(r"^ +path: (.*)$", upload, re.M), ["${{ runner.temp }}/ci-package/publish/*"])
+        self.assertEqual(re.findall(r"^ +retention-days: (.*)$", upload, re.M), [str(packages.UPLOAD_RETENTION_DAYS)])
+        self.assertEqual(packages.UPLOAD_RETENTION_DAYS, 7)
+        # No run-time input reaches the decision: the job reads no workflow input or repository variable.
+        for override in ("inputs.", "vars.", "github.event.inputs"):
+            self.assertNotIn(override, release)
+        package = next(step for step in steps if "\n        id: package\n" in step)
+        self.assertEqual(sorted(set(re.findall(r"--[a-z-]+", package.split("packages.py prepare", 1)[1]))),
+                         ["--attempt", "--directory", "--event", "--output", "--report", "--revision", "--run-id",
+                          "--summary", "--target"])
+
+    def test_every_declared_target_has_one_release_leg_on_its_own_architecture(self):
+        release, _ = self.steps()
+        self.assertIn("\n    name: Rust release · ${{ matrix.os }}\n    runs-on: ${{ matrix.os }}\n", "\n" + release)
+        legs = re.findall(r"^          - os: (\S+)\n            target: (\S+)$", release, re.M)
+        self.assertEqual(legs, [("macos-26", "aarch64-apple-darwin"), ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
+                                ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu")])
+        # The names the release preflight requires of a Quality run.
+        self.assertEqual([f"Rust release · {runner}" for runner, _ in legs],
+                         ["Rust release · macos-26", "Rust release · ubuntu-24.04", "Rust release · ubuntu-24.04-arm"])
+        # One leg per declared target: none is packaged twice and none is left out.
+        self.assertEqual(sorted(target for _, target in legs), sorted(packages.TARGETS))
+        # A failed leg keeps the others' results, and no leg waits for another.
+        self.assertIn("\n      fail-fast: false\n", release)
+        self.assertEqual(re.findall(r"^      max-parallel: (\d+)$", release, re.M), [str(len(legs))])
+        # Each leg builds, packages and bounds the cache of its own matrix target.
+        self.assertEqual(release.count("PACKAGE_TARGET: ${{ matrix.target }}"), 3)
+        self.assertEqual(re.findall(r"^          target: (.*)$", release, re.M), ["${{ matrix.target }}"])
+        # Nothing but the Xcode selection depends on the runner, so the AArch64 Linux leg skips no step that
+        # the x86-64 one runs: the same setup, build, strict notices, package, upload and verification.
+        # The download's retries wait on that download's own failures, which no runner is named in.
+        self.assertEqual(sorted(set(re.findall(r"^        if: (.*)$", release, re.M))),
+                         ["always()", "runner.os == 'macOS'", self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_BOTH])
+        for selector in ("runner.arch ==", "runner.arch !=", "matrix.os ==", "matrix.os !=", "matrix.target ==",
+                         "matrix.target !=", "contains(matrix.", "startsWith(matrix."):
+            self.assertNotIn(selector, release)
+        # The two Linux legs share a job id and an OS: only the architecture keeps their diagnostics apart.
+        self.assertEqual(re.findall(r"^          name: (ci-diagnostics-.*)$", release, re.M),
+                         ["ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-"
+                          "${{ github.run_id }}-${{ github.run_attempt }}"])
+
+    def test_every_download_attempt_takes_the_uploaded_id_alone_with_the_same_pinned_action(self):
+        release, chain = self.chain()
+        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
+        attempts = [(own, inputs) for own, inputs in chain if "uses" in own][1:]
+        self.assertEqual([own["name"] for own, _ in attempts], self.CHAIN[1::2])
+        for own, inputs in attempts:
+            with self.subTest(step=own["name"]):
+                self.assertEqual(own["uses"],
+                                 "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2")
+                # One exact ID and a refused digest mismatch on every attempt; no name, pattern, run or token input.
+                self.assertEqual(inputs, ["artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}",
+                                          "path: ${{ runner.temp }}/ci-package-download",
+                                          "merge-multiple: true", "digest-mismatch: error"])
+        # That ID is the output of this job's one upload, and nothing else in the job downloads an artifact.
+        upload, _ = chain[0]
+        self.assertEqual((upload["id"], upload["uses"]),
+                         ("uploaded", "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2"))
+        ids = re.findall(r"^        id: (.*)$", release, re.M)
+        self.assertEqual(sorted(ids), sorted(set(ids)))
+        self.assertEqual(len(re.findall(r"^ +(?:- )?uses: .*download-artifact", release, re.M)), len(attempts))
+
+    def test_a_later_download_attempt_follows_only_failures_its_wait_and_an_emptied_directory(self):
+        _, chain = self.chain()
+        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
+        # At once; the second only after the first failed; the third only after both did. A wait runs with
+        # the attempt it precedes, and the conditions name the two attempts whose failure they read.
+        self.assertEqual([own["if"] for own, _ in chain[1:6]],
+                         [self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_FIRST, self.AFTER_BOTH, self.AFTER_BOTH])
+        self.assertEqual([own.get("id") for own, _ in chain[1:6]], ["download-first", None, "download-second", None, None])
+        # About 15 s, then about 45 s more. Each wait also removes the directory that every attempt downloads
+        # into and the verification reads, so a failed attempt leaves nothing for the next one or for the verifier.
+        for (own, script), seconds in ((chain[2], 15), (chain[4], 45)):
+            with self.subTest(step=own["name"]):
+                self.assertEqual(sorted(own), ["if", "name", "run"])
+                self.assertEqual(script, [f"sleep {seconds}", 'rm -rf -- "$RUNNER_TEMP/ci-package-download"'])
+        for own, inputs in chain[1:6:2]:
+            self.assertIn("path: ${{ runner.temp }}/ci-package-download", inputs)
+        self.assertIn('--directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \\', chain[6][1])
+
+    def test_only_the_last_download_attempt_can_fail_the_job_and_the_verification_is_unchanged(self):
+        release, chain = self.chain()
+        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
+        # The first two attempts may fail; the upload, both waits, the last attempt and the verification may not.
+        self.assertEqual([own.get("continue-on-error") for own, _ in chain], [None, "true", None, "true", None, None, None])
+        # Nothing else in the job tolerates a failure, and the job itself does not.
+        self.assertEqual(len(re.findall(r"^ +continue-on-error:", release, re.M)), 2)
+        # The verification runs on the answer alone, so on every eligible job that no step failed, and its
+        # command is the one that ran before the download had retries.
+        own, lines = chain[6]
+        self.assertEqual(own, {"name": self.CHAIN[6], "if": self.ELIGIBLE, "env": None, "run": "|"})
+        self.assertEqual(lines, [
+            "PACKAGE_ARTIFACT_ID: ${{ steps.uploaded.outputs.artifact-id }}",
+            'python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \\',
+            'python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \\',
+            '--directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \\',
+            '--report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"'])
+
+    def test_the_verification_fails_on_a_download_directory_no_attempt_filled(self):
+        # What stands behind the tolerated attempts: the verify command exits non-zero by itself when the
+        # directory is absent, empty or partly filled, and records no transfer.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = "GitTurtle-0.1.0-aaaaaaaaaaaa-linux-x86_64-release.tar.gz"
+            expected = dict(format=1, upload_eligible=True, release_input=False, archive=archive)
+            (root / "prepared.json").write_text(json.dumps(expected))
+            (root / "empty").mkdir()
+            (root / "partial").mkdir()
+            (root / "partial/ci-provenance.json").write_text(json.dumps(expected))
+            for directory in ("absent", "empty", "partial"):
+                with self.subTest(directory=directory):
+                    status, diagnostic = packages.run(
+                        [os.sys.executable, "-B", packages.ROOT / "scripts/ci/packages.py", "verify",
+                         "--expected", root / "prepared.json", "--directory", root / directory,
+                         "--artifact-id", "1", "--report", root / "transfer.json"], allowed=(1,))
+                    self.assertEqual(status, 1)
+                    self.assertTrue(diagnostic.startswith("CI package verification failed: "), diagnostic)
+                    self.assertFalse((root / "transfer.json").exists())
 
 
 class CommandTests(unittest.TestCase):

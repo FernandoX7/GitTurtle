@@ -74,8 +74,8 @@ pub(super) fn prepare(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<Pr
     let decoded = animation::decode_gif(bytes, animation::MAX_EDGE, &check)?;
     let mut image = decoded.frames[0].image.clone();
     image.format = format!(
-        "GIF · {} frames{}",
-        decoded.frames.len(),
+        "GIF · {}{}",
+        crate::counted(decoded.frames.len(), "frame", "frames"),
         if decoded.truncated {
             " · bounded animation segment"
         } else {

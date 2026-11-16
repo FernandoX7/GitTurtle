@@ -5,6 +5,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "success",
       "rust-arch": "success",
       "agent-tooling": "success",
@@ -18,6 +19,7 @@
     "results": {
       "rust-format": "skipped",
       "rust-debug": "skipped",
+      "rust-clippy": "skipped",
       "rust-release": "skipped",
       "rust-arch": "skipped",
       "agent-tooling": "skipped",
@@ -31,6 +33,7 @@
     "results": {
       "rust-format": "skipped",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "success",
       "rust-arch": "success",
       "agent-tooling": "success",
@@ -44,6 +47,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "failure",
+      "rust-clippy": "success",
       "rust-release": "success",
       "rust-arch": "success",
       "agent-tooling": "success",
@@ -57,6 +61,62 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "cancelled",
+      "rust-clippy": "success",
+      "rust-release": "success",
+      "rust-arch": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-clippy failure cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "rust-clippy": "failure",
+      "rust-release": "success",
+      "rust-arch": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-clippy cancelled cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "rust-clippy": "cancelled",
+      "rust-release": "success",
+      "rust-arch": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "rust-clippy skipped cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
+      "rust-clippy": "skipped",
+      "rust-release": "success",
+      "rust-arch": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "missing Clippy result cannot pass",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "success",
       "rust-release": "success",
       "rust-arch": "success",
       "agent-tooling": "success",
@@ -70,6 +130,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "failure",
       "rust-arch": "success",
       "agent-tooling": "success",
@@ -83,6 +144,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "cancelled",
       "rust-arch": "success",
       "agent-tooling": "success",
@@ -96,6 +158,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "skipped",
       "rust-arch": "success",
       "agent-tooling": "success",
@@ -109,6 +172,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-arch": "success",
       "agent-tooling": "success",
       "website": "success"
@@ -121,6 +185,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "success",
       "rust-arch": "failure",
       "agent-tooling": "success",
@@ -134,6 +199,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "success",
       "rust-arch": "cancelled",
       "agent-tooling": "success",
@@ -147,6 +213,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "success",
       "rust-arch": "skipped",
       "agent-tooling": "success",
@@ -160,6 +227,7 @@
     "results": {
       "rust-format": "success",
       "rust-debug": "success",
+      "rust-clippy": "success",
       "rust-release": "success",
       "agent-tooling": "success",
       "website": "success"
@@ -182,6 +250,7 @@
     "results": {
       "rust-format": "cancelled",
       "rust-debug": "skipped",
+      "rust-clippy": "skipped",
       "rust-release": "skipped",
       "rust-arch": "skipped",
       "agent-tooling": "skipped",

@@ -1,4 +1,8 @@
 mod repository_identity;
+#[cfg(test)]
+mod snapshot_bench;
+#[cfg(test)]
+mod working_bench;
 use repository_identity::RepositoryIdentity;
 
 use crate::{graph, text::PatchPresentation};
@@ -6,16 +10,16 @@ use anyhow::{Result, anyhow, ensure};
 use futures::channel::oneshot;
 use gitturtle_core::{Branch, Commit, FileChange, GitRepository, TextPreview, Worktree};
 use gitturtle_preview::{
-    ImagePreview, MAX_INPUT_BYTES, decode_image, detect_lfs_pointer, is_image_path, metadata,
+    ImagePreview, MAX_INPUT_BYTES, detect_lfs_pointer, is_image_path, metadata,
 };
-use gpui_kit::RenderImage;
+use gpui_kit::{RenderImage, SharedString};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -36,16 +40,152 @@ pub struct Snapshot {
     pub history_next_offset: Option<usize>,
     pub graph: Vec<graph::GraphRow>,
     pub graph_notice: Option<String>,
-    pub refs: HashMap<String, Vec<String>>,
+    /// Each commit's local and remote branches, HEAD's first, then its tags.
+    pub refs: HistoryReferences,
     pub elapsed: Duration,
     /// An explicit Open whose branch or worktree scope no longer resolves
     /// reads All history instead and names the vanished scope here once.
     pub vanished_scope: Option<VanishedScope>,
+    /// Whether the repository may be shallow, which a quiet read finds out:
+    /// deepening it outside the app gives commits new parents, and can bring
+    /// new rows, while every reference and the page stay as they were. Only
+    /// a quiet read's snapshot reads it, and one that cannot says `true`.
+    pub shallow: bool,
+}
+
+/// Every commit's references as History shows them, prepared with the
+/// snapshot on the worker: a row reads its commit's and shares their
+/// strings, and a frame reads the most any commit has, so neither joins,
+/// formats or counts anything.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryReferences {
+    by_commit: HashMap<String, CommitReferences>,
+    /// The most references any commit has, which narrow History's compact
+    /// pill is sized for.
+    widest: usize,
+}
+
+impl HistoryReferences {
+    /// Each commit's `branches`, HEAD's first and the others in Git's order,
+    /// then its `tags` in Git's order, by name. A tag names the commit it
+    /// peels to; one of a tree, a blob or another tag names no row.
+    fn new(branches: &[Branch], tags: &[gitturtle_core::Tag]) -> Self {
+        let mut names: HashMap<&str, (Vec<&str>, Vec<&str>)> = HashMap::new();
+        for branch in branches {
+            let (branches, _) = names.entry(&branch.oid).or_default();
+            if branch.current {
+                branches.insert(0, &branch.name);
+            } else {
+                branches.push(&branch.name);
+            }
+        }
+        for tag in tags.iter().filter(|tag| tag.target_kind == "commit") {
+            names.entry(&tag.target_oid).or_default().1.push(&tag.name);
+        }
+        let by_commit: HashMap<_, _> = names
+            .into_iter()
+            .map(|(oid, (branches, tags))| {
+                (oid.to_owned(), CommitReferences::new(&branches, &tags))
+            })
+            .collect();
+        Self {
+            widest: by_commit
+                .values()
+                .map(|refs| refs.names.len())
+                .max()
+                .unwrap_or(0),
+            by_commit,
+        }
+    }
+
+    /// The references of the commit `oid`, if it has any.
+    pub fn get(&self, oid: &str) -> Option<&CommitReferences> {
+        self.by_commit.get(oid)
+    }
+
+    /// The most references any commit has.
+    pub fn widest(&self) -> usize {
+        self.widest
+    }
+
+    /// Every commit's references.
+    #[cfg(test)]
+    pub fn commits(&self) -> impl Iterator<Item = &CommitReferences> {
+        self.by_commit.values()
+    }
+
+    /// The bytes these references keep, for a retained tab's accounting.
+    pub fn retained_bytes(&self) -> usize {
+        self.by_commit
+            .iter()
+            .map(|(oid, refs)| oid.capacity() + refs.retained_bytes())
+            .sum()
+    }
+}
+
+/// One commit's references as History shows them, prepared with the
+/// snapshot on the worker, so a row's badge, pill, tooltip and accessible
+/// name share these strings rather than joining them per row and frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitReferences {
+    /// Its branches, HEAD's first and the others in Git's order, then its
+    /// tags.
+    pub names: Vec<SharedString>,
+    /// How many of `names`, from the first, are branches.
+    pub branches: usize,
+    /// "+N" for the names after the first, which the badge counts.
+    pub more: Option<SharedString>,
+    /// Every name on its own line, a tag's as "tag ‹name›": the badge's and
+    /// the pill's tooltip.
+    pub lines: SharedString,
+    /// Every name, comma-separated, a tag's as "tag ‹name›", as the row's
+    /// accessible name says them.
+    pub listed: SharedString,
+}
+
+impl CommitReferences {
+    fn new(branches: &[&str], tags: &[&str]) -> Self {
+        let count = branches.len() + tags.len();
+        // A tag is said as one, so it reads apart from a branch of its name.
+        let said: Vec<String> = branches
+            .iter()
+            .map(|name| (*name).to_owned())
+            .chain(tags.iter().map(|name| format!("tag {name}")))
+            .collect();
+        Self {
+            more: (count > 1).then(|| format!("+{}", count - 1).into()),
+            lines: said.join("\n").into(),
+            listed: said.join(", ").into(),
+            branches: branches.len(),
+            names: branches
+                .iter()
+                .chain(tags)
+                .map(|name| SharedString::from((*name).to_owned()))
+                .collect(),
+        }
+    }
+
+    /// Whether the first name, which the badge and the pill show, is a tag.
+    pub fn leads_with_tag(&self) -> bool {
+        self.branches == 0
+    }
+
+    /// The bytes these strings keep, for a retained tab's accounting.
+    pub fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.names.capacity() * std::mem::size_of::<SharedString>()
+            + self.names.iter().map(|name| name.len()).sum::<usize>()
+            + self.more.as_ref().map_or(0, |more| more.len())
+            + self.lines.len()
+            + self.listed.len()
+    }
 }
 
 pub struct ImageSide {
     pub animation: Option<Arc<crate::gif_playback::Timeline>>,
     pub captured: Option<Arc<[u8]>>,
+    /// Whether the captured bytes offer the open action, decided with them.
+    pub system_preview: Option<crate::system_preview::Offer>,
     pub literal_source: Option<Arc<str>>,
     pub image: Option<ImagePreview>,
     /// BGRA conversion happens on the worker; the UI only shares this allocation.
@@ -55,6 +195,14 @@ pub struct ImageSide {
     /// Retain only a bounded missing pointer so an explicit download can review
     /// the exact object. Normal preview construction remains entirely passive.
     pub lfs_pointer: Option<Vec<u8>>,
+}
+
+impl ImageSide {
+    /// Whether its literal source is a Git LFS pointer's text: the one
+    /// literal source kept with no captured bytes to open.
+    pub(crate) fn literal_is_pointer(&self) -> bool {
+        self.literal_source.is_some() && self.captured.is_none()
+    }
 }
 
 pub enum Content {
@@ -70,6 +218,15 @@ pub enum Content {
         split: Arc<crate::split_diff::SplitPresentation>,
         partial: Option<Arc<crate::partial_view::PartialActions>>,
         partial_unavailable: Option<String>,
+        /// Which sides, old then new, are Git LFS pointers whose object the
+        /// local store does not hold, as the reading found them: a pointer's
+        /// text cannot say, since its object can be local and unreadable as
+        /// text, and only a missing one is called missing or offered.
+        lfs_missing: [bool; 2],
+        /// Which sides, old then new, are Git LFS pointers whose object could
+        /// not be used, and why: each says so in its own words and offers no
+        /// download, which could not help.
+        lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
     },
     Images {
         old: Box<ImageSide>,
@@ -94,6 +251,8 @@ impl Content {
                 split,
                 partial,
                 partial_unavailable,
+                lfs_missing: _,
+                lfs_failed: _,
             } => {
                 diagrams
                     .as_ref()
@@ -257,6 +416,18 @@ pub enum Job {
         path: PathBuf,
         scope: Option<Scope>,
         limit: usize,
+        /// The work-tree root a tab's passive reopen (Refresh, Show latest,
+        /// a scope chosen, a restored tab, a worktree's row) must find at
+        /// `path` again, captured when the person opened the tab; `None`
+        /// for an explicit open, which may land on the work tree enclosing
+        /// `path` (`RepositorySession::open`).
+        root: Option<PathBuf>,
+        /// The Git directories the tab captured at `root` when the person
+        /// opened it, which a passive reopen must find there again: a `.git`
+        /// swapped for another repository's gitfile, or a `commondir`
+        /// re-pointed, is another repository. `None` for an explicit open
+        /// and a worktree's row.
+        git_dir: Option<GitDirectories>,
     },
     Changes {
         repo: GitRepository,
@@ -283,6 +454,14 @@ pub enum Output {
     FileHistory(gitturtle_core::FileHistoryPage),
     QuietRefresh(Box<QuietRefresh>),
     WorkingPreview(FileChange, Arc<Content>, Duration),
+    /// A Quick Open source's read (`Job::TrackedPreview`): its content and
+    /// the file's mode as read, the working file's own where the source is
+    /// the working tree, where a `chmod +x` shows before anything is staged.
+    TrackedPreview {
+        mode: String,
+        content: Arc<Content>,
+        elapsed: Duration,
+    },
     Snapshot(Snapshot),
     Changes(Vec<FileChange>, Duration),
     Preview(Arc<Content>, Duration),
@@ -307,11 +486,41 @@ pub struct WorkingState {
     pub profile: Result<gitturtle_core::GitProfile>,
     pub remotes: Result<Vec<gitturtle_core::Remote>>,
     pub operation: Result<Option<gitturtle_core::OperationState>>,
+    /// The Git directories of the handle that read this state, the one the
+    /// window held as it asked for the read (`refresh_worktree`,
+    /// `try_automatic_refresh`): the shown status is labelled with them
+    /// (`GitTurtle::working_identity`), never with whichever handle the
+    /// window holds as the read lands.
+    pub read_from: GitDirectories,
 }
 
 impl WorkingState {
+    /// The working state of the shown tab's repository, read on the
+    /// operation thread, as Changes' Refresh and a write's reload read it.
+    /// A repository no longer at its path fails with [`RepositoryGone`]:
+    /// checked from the filesystem before the read, starting no process
+    /// (`GitRepository::verify_at_path`), and again from the read's own
+    /// failure, since every command is confined to the repository and, its
+    /// `.git` gone, fails as "not a git repository" instead of reading the
+    /// work tree enclosing it.
     pub fn read(repo: &GitRepository) -> Result<Self> {
-        Self::read_with_checkpoint(repo, || Ok(()))
+        ensure_found_at_path(repo)?;
+        let state = Self::read_with_checkpoint(repo, || Ok(()))
+            .map_err(|error| confined_failure(repo, error))?;
+        state.confirmed(repo)
+    }
+
+    /// This state, unless a part of it failed because its repository went
+    /// away while it was read: its `.git` gone after the status, a later
+    /// part fails as "not a git repository", and the repository gone is the
+    /// answer ([`RepositoryGone`]), not an "Operation state: …" banner
+    /// beside the tab's mark. Checked from the filesystem, and only when a
+    /// part failed.
+    fn confirmed(self, repo: &GitRepository) -> Result<Self> {
+        if self.operation.is_err() || self.profile.is_err() || self.remotes.is_err() {
+            ensure_found_at_path(repo)?;
+        }
+        Ok(self)
     }
 
     fn read_with_checkpoint(
@@ -332,6 +541,7 @@ impl WorkingState {
             profile,
             remotes,
             operation,
+            read_from: GitDirectories::of(repo),
         })
     }
 }
@@ -356,6 +566,9 @@ pub enum QuietHistory {
     Retained {
         metadata: Snapshot,
         error: String,
+        /// The line of `error` that says what went wrong, where its failure
+        /// carries one (`gitturtle_core::failure_summary`).
+        summary: Option<String>,
         /// The scope that vanished, when that is why the read failed; the
         /// view reports one vanished scope once.
         vanished: Option<VanishedScope>,
@@ -382,22 +595,238 @@ struct Queue {
     pending: Option<Request>,
     closed: bool,
     startup_error: Option<String>,
-    active: Option<gitturtle_core::HistoryCancellation>,
+    active: Option<Active>,
+    /// Test-only: the reader thread holds a request it has not finished,
+    /// answered or skipped ([`Worker::wait_idle`]).
+    #[cfg(test)]
+    running: bool,
+    /// Test-only: the reader takes no request while a test holds it
+    /// ([`Worker::hold`]).
+    #[cfg(test)]
+    held: bool,
+}
+
+impl Queue {
+    /// Whether the reader waits rather than taking the pending request.
+    fn waits(&self) -> bool {
+        #[cfg(test)]
+        let held = self.held;
+        #[cfg(not(test))]
+        let held = false;
+        self.pending.is_none() || held
+    }
+
+    /// Supersedes the request the reader is running: its token is
+    /// cancelled, so it stops at its next check and the Git processes it runs
+    /// are terminated. A comparison preview's preparation inside a phase that
+    /// checks nothing until it ends ([`Cancellation::unobserved`]) is only
+    /// marked superseded and kept, with its token, so a request for the same
+    /// preview can take it over ([`Worker::submit`]); a request that took it
+    /// over earlier is no longer answered.
+    fn supersede_active(&mut self) {
+        match self.active.take() {
+            Some(Active::Read(history)) => history.cancel(),
+            Some(Active::Preview {
+                key,
+                preparation,
+                history,
+                ..
+            }) => {
+                if preparation.supersede() {
+                    self.active = Some(Active::Preview {
+                        key,
+                        preparation,
+                        history,
+                        adopted: None,
+                    });
+                } else {
+                    history.cancel();
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// The request the reader is running, which a newer request supersedes.
+enum Active {
+    /// Stops at its next check; the Git processes it runs are terminated.
+    Read(gitturtle_core::HistoryCancellation),
+    /// A comparison preview's preparation (`Job::Preview`), with its token.
+    /// It stays here until the reader finishes it unless a newer request
+    /// stops it, so that a request for the same preview can take it over
+    /// inside a phase that checks nothing: its reply then goes to `adopted`.
+    Preview {
+        key: Box<PreviewKey>,
+        preparation: Arc<Preparation>,
+        history: gitturtle_core::HistoryCancellation,
+        adopted: Option<oneshot::Sender<Result<Output>>>,
+    },
+}
+
+/// Where a comparison preview's preparation stands. Its work checks the
+/// request's cancellation as it goes, as any read's does, and a newer
+/// request stops it at once, its token cancelled
+/// ([`Queue::supersede_active`]), except inside a phase that checks nothing
+/// until it ends, an image decoded in this process
+/// ([`Cancellation::unobserved`]). There a newer request only marks it
+/// superseded, and a request for the same preview made before the phase
+/// ends takes it over ([`Worker::submit`]), so a file chosen again while its
+/// image is decoded, even after another file was chosen, has its bytes
+/// decoded once. A phase that ends superseded stops the preparation and
+/// cancels its token.
+#[derive(Default)]
+struct Preparation(AtomicU8);
+
+impl Preparation {
+    /// Checking as it goes: a newer request stops it.
+    const OBSERVING: u8 = 0;
+    /// Inside a phase that checks nothing until it ends.
+    const UNOBSERVED: u8 = 1;
+    /// Superseded inside such a phase.
+    const SUPERSEDED: u8 = 2;
+    const STOPPED: u8 = 3;
+
+    /// Moves to the state `next` gives for the current one, atomically, and
+    /// returns the state it left.
+    fn update(&self, next: impl Fn(u8) -> u8) -> u8 {
+        let mut state = self.0.load(Ordering::Acquire);
+        loop {
+            match self.0.compare_exchange_weak(
+                state,
+                next(state),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(left) => return left,
+                Err(actual) => state = actual,
+            }
+        }
+    }
+
+    /// A newer request for other work supersedes the preparation: true where
+    /// it is only marked superseded, inside a phase that checks nothing, and
+    /// false where it stops.
+    fn supersede(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::UNOBSERVED | Self::SUPERSEDED => Self::SUPERSEDED,
+            _ => Self::STOPPED,
+        });
+        matches!(left, Self::UNOBSERVED | Self::SUPERSEDED)
+    }
+
+    /// A request for the same preview takes the preparation over: true only
+    /// inside a phase that checks nothing, superseded there or not.
+    fn take_over(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::UNOBSERVED | Self::SUPERSEDED => Self::UNOBSERVED,
+            other => other,
+        });
+        matches!(left, Self::UNOBSERVED | Self::SUPERSEDED)
+    }
+
+    /// Enters a phase that checks nothing: false once stopped.
+    fn enter(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::OBSERVING => Self::UNOBSERVED,
+            other => other,
+        });
+        left != Self::STOPPED
+    }
+
+    /// Leaves that phase: false where it ends superseded, which stops the
+    /// preparation.
+    fn leave(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::OBSERVING | Self::UNOBSERVED => Self::OBSERVING,
+            _ => Self::STOPPED,
+        });
+        matches!(left, Self::OBSERVING | Self::UNOBSERVED)
+    }
+
+    /// The preparation's own check: whether it still answers a request. A
+    /// check that finds it superseded stops it.
+    fn check(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::SUPERSEDED => Self::STOPPED,
+            other => other,
+        });
+        matches!(left, Self::OBSERVING | Self::UNOBSERVED)
+    }
+}
+
+/// Keeps a [`Worker`]'s reader from taking requests until it drops
+/// ([`Worker::hold`]).
+#[cfg(test)]
+#[must_use = "the reader is released as soon as the guard drops"]
+pub struct ReaderHeld {
+    queue: Arc<(Mutex<Queue>, Condvar)>,
+}
+
+#[cfg(test)]
+impl Drop for ReaderHeld {
+    fn drop(&mut self) {
+        let (lock, ready) = &*self.queue;
+        lock.lock().unwrap_or_else(|error| error.into_inner()).held = false;
+        ready.notify_all();
+    }
 }
 
 struct Cancellation {
     generation: u64,
     latest: Arc<AtomicU64>,
     history: gitturtle_core::HistoryCancellation,
+    /// A comparison preview's preparation, which a newer request stops
+    /// through its [`Preparation`] and its token rather than the generation,
+    /// so that a request for the same preview can take over a phase that
+    /// checks nothing ([`Self::unobserved`]).
+    preparation: Option<Arc<Preparation>>,
 }
 
 impl Cancellation {
     fn check(&self) -> Result<()> {
+        let current = match &self.preparation {
+            Some(preparation) => {
+                if !preparation.check() {
+                    self.history.cancel();
+                }
+                !self.history.is_cancelled()
+            }
+            None => {
+                self.latest.load(Ordering::Acquire) == self.generation
+                    && !self.history.is_cancelled()
+            }
+        };
         ensure!(
-            self.latest.load(Ordering::Acquire) == self.generation && !self.history.is_cancelled(),
+            current,
             "Repository request superseded by a newer selection"
         );
         Ok(())
+    }
+
+    /// Runs `work`, which checks nothing until it ends, such as an image
+    /// decoded in this process. Meanwhile a newer request only marks a
+    /// comparison preview's preparation superseded ([`Preparation`]), so a
+    /// request for the same preview can still take it over; one still
+    /// superseded as `work` ends stops then, its token cancelled, and this
+    /// answers that. Work that checks as it goes runs outside this, where a
+    /// newer request stops it at once.
+    fn unobserved<T>(&self, work: impl FnOnce() -> T) -> Result<T> {
+        let Some(preparation) = &self.preparation else {
+            return Ok(work());
+        };
+        ensure!(
+            preparation.enter(),
+            "Repository request superseded by a newer selection"
+        );
+        let done = work();
+        if !preparation.leave() {
+            self.history.cancel();
+            return Err(anyhow!(
+                "Repository request superseded by a newer selection"
+            ));
+        }
+        Ok(done)
     }
 }
 
@@ -414,6 +843,22 @@ pub struct Worker {
     /// assert that a path submits none.
     #[cfg(test)]
     submissions: AtomicU64,
+    /// Test-only: the Working file previews among them
+    /// ([`Self::working_previews`]).
+    #[cfg(test)]
+    working_previews: AtomicU64,
+    /// Test-only: the comparison previews among them (`Job::Preview`)
+    /// ([`Self::previews`]).
+    #[cfg(test)]
+    previews: AtomicU64,
+    /// Test-only: Quick Open's source reads among them
+    /// (`Job::TrackedPreview`) ([`Self::tracked_previews`]).
+    #[cfg(test)]
+    tracked_previews: AtomicU64,
+    /// Test-only: the comparison previews the reader started preparing
+    /// ([`Self::preparations`]).
+    #[cfg(test)]
+    preparations: Arc<AtomicU64>,
 }
 
 impl Default for Worker {
@@ -443,37 +888,76 @@ impl Worker {
                 closed: false,
                 startup_error: None,
                 active: None,
+                #[cfg(test)]
+                running: false,
+                #[cfg(test)]
+                held: false,
             }),
             Condvar::new(),
         ));
         let latest = Arc::new(AtomicU64::new(0));
         let worker_queue = Arc::clone(&queue);
         let worker_latest = Arc::clone(&latest);
+        #[cfg(test)]
+        let preparations = Arc::new(AtomicU64::new(0));
+        #[cfg(test)]
+        let worker_preparations = Arc::clone(&preparations);
         let spawn = std::thread::Builder::new()
             .name("gitturtle-reader".into())
             .spawn(move || {
                 let mut cache = PreviewCache::default();
                 loop {
-                    let request = {
+                    let (request, preparation) = {
                         let (lock, ready) = &*worker_queue;
                         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
-                        while state.pending.is_none() && !state.closed {
+                        // The request taken last has answered or was skipped.
+                        #[cfg(test)]
+                        {
+                            state.running = false;
+                            ready.notify_all();
+                        }
+                        while state.waits() && !state.closed {
                             state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
                         }
                         if state.closed {
                             break;
                         }
                         let request = state.pending.take().expect("pending request checked above");
-                        state.active = Some(request.cancellation.clone());
-                        request
+                        if request.reply.is_canceled()
+                            && !matches!(request.job, Job::ReleaseHistory)
+                        {
+                            continue;
+                        }
+                        let preparation = match PreviewKey::of(&request.job) {
+                            Some(key) => {
+                                let preparation = Arc::new(Preparation::default());
+                                state.active = Some(Active::Preview {
+                                    key: Box::new(key),
+                                    preparation: Arc::clone(&preparation),
+                                    history: request.cancellation.clone(),
+                                    adopted: None,
+                                });
+                                #[cfg(test)]
+                                worker_preparations.fetch_add(1, Ordering::AcqRel);
+                                Some(preparation)
+                            }
+                            None => {
+                                state.active = Some(Active::Read(request.cancellation.clone()));
+                                None
+                            }
+                        };
+                        #[cfg(test)]
+                        {
+                            state.running = true;
+                        }
+                        (request, preparation)
                     };
-                    if request.reply.is_canceled() && !matches!(request.job, Job::ReleaseHistory) {
-                        continue;
-                    }
+                    let previewed = preparation.is_some();
                     let cancellation = Cancellation {
                         generation: request.generation,
                         latest: Arc::clone(&worker_latest),
                         history: request.cancellation,
+                        preparation,
                     };
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         cancellation.check()?;
@@ -490,7 +974,24 @@ impl Worker {
                             ))
                         }
                     };
-                    let _ = request.reply.send(result);
+                    // A preview's preparation answers the request that took
+                    // it over, if one did, in place of the one that started it.
+                    let reply = if previewed {
+                        let mut state = worker_queue
+                            .0
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        match state.active.take() {
+                            Some(Active::Preview {
+                                adopted: Some(adopted),
+                                ..
+                            }) => adopted,
+                            _ => request.reply,
+                        }
+                    } else {
+                        request.reply
+                    };
+                    let _ = reply.send(result);
                 }
             });
         if let Err(error) = spawn {
@@ -503,6 +1004,14 @@ impl Worker {
             latest,
             #[cfg(test)]
             submissions: AtomicU64::new(0),
+            #[cfg(test)]
+            working_previews: AtomicU64::new(0),
+            #[cfg(test)]
+            previews: AtomicU64::new(0),
+            #[cfg(test)]
+            tracked_previews: AtomicU64::new(0),
+            #[cfg(test)]
+            preparations,
         }
     }
 
@@ -513,15 +1022,89 @@ impl Worker {
         self.submissions.load(Ordering::Acquire)
     }
 
+    /// Test-only: the Working file previews (`Job::WorkingPreview`)
+    /// submitted so far, so a test can assert that a path reads none while
+    /// other reads run around it.
+    #[cfg(test)]
+    pub fn working_previews(&self) -> u64 {
+        self.working_previews.load(Ordering::Acquire)
+    }
+
+    /// Test-only: the comparison previews (`Job::Preview`) submitted so
+    /// far, a restored comparison's included.
+    #[cfg(test)]
+    pub fn previews(&self) -> u64 {
+        self.previews.load(Ordering::Acquire)
+    }
+
+    /// Test-only: Quick Open's source reads (`Job::TrackedPreview`)
+    /// submitted so far.
+    #[cfg(test)]
+    pub fn tracked_previews(&self) -> u64 {
+        self.tracked_previews.load(Ordering::Acquire)
+    }
+
+    /// Test-only: the comparison previews (`Job::Preview`) the reader has
+    /// started preparing so far: requests it skipped, or that took over a
+    /// preparation under way, start none.
+    #[cfg(test)]
+    pub fn preparations(&self) -> u64 {
+        self.preparations.load(Ordering::Acquire)
+    }
+
+    /// Test-only: keeps the reader from taking a request until the
+    /// returned guard drops, as a slow read ahead of it would, so a request
+    /// submitted meanwhile stays pending, where a newer one or
+    /// [`Self::cancel`] drops it unanswered.
+    #[cfg(test)]
+    pub fn hold(&self) -> ReaderHeld {
+        self.queue
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .held = true;
+        ReaderHeld {
+            queue: Arc::clone(&self.queue),
+        }
+    }
+
+    /// Test-only: blocks until the reader thread has answered or skipped
+    /// every request submitted so far, holding the test clock: it waits on
+    /// the reader's own thread, which `run_until_parked` cannot wait for,
+    /// and a GPUI test then parks to handle the reply on its own thread. A
+    /// read that has not answered within `operations::test_wait` fails the
+    /// test at the caller's line.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn wait_idle(&self) {
+        self.wait_idle_within(crate::operations::test_wait());
+    }
+
+    /// [`wait_idle`](Self::wait_idle), failing after `limit`.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn wait_idle_within(&self, limit: Duration) {
+        let (lock, ready) = &*self.queue;
+        let state = lock.lock().unwrap_or_else(|error| error.into_inner());
+        let (state, waited) = ready
+            .wait_timeout_while(state, limit, |state| {
+                (state.pending.is_some() || state.running) && !state.closed
+            })
+            .unwrap_or_else(|error| error.into_inner());
+        drop(state);
+        assert!(
+            !waited.timed_out(),
+            "the repository reader did not answer or skip its requests within {limit:?}: a read never answered or is still held"
+        );
+    }
+
     /// Invalidate mutable reads even when there is no replacement file to load.
     /// Active work stops at its next checkpoint; queued work is dropped now.
     pub fn cancel(&self) {
         let (lock, _) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
         self.latest.fetch_add(1, Ordering::AcqRel);
-        if let Some(active) = state.active.take() {
-            active.cancel();
-        }
+        state.supersede_active();
         state.pending = None;
     }
 
@@ -534,6 +1117,18 @@ impl Worker {
     pub fn submit(&self, job: Job) -> oneshot::Receiver<Result<Output>> {
         #[cfg(test)]
         self.submissions.fetch_add(1, Ordering::AcqRel);
+        #[cfg(test)]
+        if matches!(job, Job::WorkingPreview { .. }) {
+            self.working_previews.fetch_add(1, Ordering::AcqRel);
+        }
+        #[cfg(test)]
+        if matches!(job, Job::Preview { .. }) {
+            self.previews.fetch_add(1, Ordering::AcqRel);
+        }
+        #[cfg(test)]
+        if matches!(job, Job::TrackedPreview { .. }) {
+            self.tracked_previews.fetch_add(1, Ordering::AcqRel);
+        }
         let (reply, receiver) = oneshot::channel();
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
@@ -550,18 +1145,463 @@ impl Worker {
         // Allocate the sequence while holding the queue lock, so concurrent
         // submitters cannot replace a newer request with an older sequence.
         let generation = self.latest.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
-        if let Some(active) = state.active.take() {
-            active.cancel();
+        let queue = &mut *state;
+        // The same comparison preview, still decoding its image, whatever
+        // was asked for since: that preparation answers this request, so a
+        // file chosen again has its bytes decoded once. Nothing waits behind
+        // it any more.
+        if let Some(Active::Preview {
+            key,
+            preparation,
+            adopted,
+            ..
+        }) = &mut queue.active
+            && PreviewKey::of(&job).is_some_and(|wanted| wanted == **key)
+            && preparation.take_over()
+        {
+            *adopted = Some(reply);
+            queue.pending = None;
+            ready.notify_all();
+            return receiver;
         }
+        queue.supersede_active();
         state.pending = Some(Request {
             job,
             generation,
             reply,
             cancellation: gitturtle_core::HistoryCancellation::default(),
         });
-        ready.notify_one();
+        // All: a test waiting for the reader to settle (`wait_idle`) waits
+        // on this condition too, and must not take the reader's wake-up.
+        ready.notify_all();
         receiver
     }
+}
+
+/// A tab's repository that a passive read no longer finds at its path: Git
+/// finds another repository there, the work tree enclosing it once its
+/// `.git` is gone (deleted, moved, a failed clone cleaned up), or none.
+/// The tab stays on the repository the person opened, marked unavailable
+/// with this reason (`GitTurtle::tab_repository_gone`), and never shows
+/// the other one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryGone {
+    /// The tab's repository, its work-tree root.
+    pub path: PathBuf,
+    /// The repository Git finds there now, by its root, if any.
+    pub found: Option<PathBuf>,
+}
+
+impl std::fmt::Display for RepositoryGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "The repository at {} is gone. ", self.path.display())?;
+        match &self.found {
+            Some(found) => write!(
+                f,
+                "Git now finds the repository at {} there, which this tab does not open.",
+                found.display()
+            )?,
+            None => write!(f, "Git finds no repository there.")?,
+        }
+        write!(
+            f,
+            " Restore its .git and refresh, or choose a repository with Open Repository."
+        )
+    }
+}
+
+impl std::error::Error for RepositoryGone {}
+
+/// A tab with no Git directories captured, as an older session saved every
+/// tab, whose folder Git finds inside another repository. That may be all it
+/// ever was: such a session kept the folder the person chose, so there may
+/// be no `.git` to restore and "is gone" leaves nothing to do. It says what
+/// the person can do: Open Repository on the folder takes the tab to the
+/// repository found there, by the fresh capture a marked tab's own folder
+/// gets (`GitTurtle::recapture_marked_tab`). The read itself opens nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoRepositoryOfItsOwn {
+    /// The tab's folder.
+    pub path: PathBuf,
+    /// The repository Git finds there, by its root.
+    pub found: PathBuf,
+}
+
+impl std::fmt::Display for NoRepositoryOfItsOwn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "This tab's folder {} has no repository of its own: Git finds the repository at {} there, which this tab does not open. To open that repository here, choose this folder with Open Repository; otherwise close this tab.",
+            self.path.display(),
+            self.found.display()
+        )
+    }
+}
+
+impl std::error::Error for NoRepositoryOfItsOwn {}
+
+/// The Git directories a tab captured at its root as its snapshot was
+/// accepted, which a passive reopen of that root must find there again
+/// ([`RepositorySession::open`]): the Git directory Git reported and its
+/// common directory ([`GitRepository::git_dir`],
+/// [`GitRepository::common_dir`]). A `.git` swapped for another
+/// repository's gitfile changes the first; a linked worktree's `commondir`
+/// re-pointed at another repository keeps the root and the first, yet its
+/// refs and objects, and every write's, are that other repository's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitDirectories {
+    pub git_dir: PathBuf,
+    pub common: PathBuf,
+    /// Their inodes as captured at the repository's open, which a session
+    /// saves beside these paths.
+    pub inodes: DirectoryInodes,
+    /// Whether these came from a saved session. Only such a tab compares
+    /// [`Self::inodes`] with the directories it finds: a tab opened in this
+    /// run, or one whose reopen was accepted, holds [`Self::of`]'s.
+    pub restored: bool,
+}
+
+/// The inodes of a tab's [`GitDirectories`], each with its birth time where
+/// the filesystem records one ([`GitRepository::git_dir_birth`]), which
+/// tells a directory from one created after it was deleted that took its
+/// inode number, and with its device, which tells the same inode number on
+/// another filesystem ([`GitRepository::git_dir_device`]). `None` where a
+/// session saved none, as every older session (one saved before birth
+/// times were kept has its inodes alone), and where the platform or
+/// filesystem has none: there is then nothing to compare, or the inode
+/// alone. A session never saves a device, which can change across boots and
+/// rollbacks (decided 2026-11-08), so only a comparison within the run has
+/// one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirectoryInodes {
+    pub git_dir: Option<u64>,
+    pub common: Option<u64>,
+    pub git_dir_birth: Option<Duration>,
+    pub common_birth: Option<Duration>,
+    pub git_dir_device: Option<u64>,
+    pub common_device: Option<u64>,
+}
+
+impl GitDirectories {
+    pub fn of(repository: &GitRepository) -> Self {
+        Self {
+            git_dir: repository.git_dir().to_owned(),
+            common: repository.common_dir().to_owned(),
+            inodes: DirectoryInodes {
+                git_dir: repository.git_dir_inode(),
+                common: repository.common_dir_inode(),
+                git_dir_birth: repository.git_dir_birth(),
+                common_birth: repository.common_dir_birth(),
+                git_dir_device: repository.git_dir_device(),
+                common_device: repository.common_dir_device(),
+            },
+            restored: false,
+        }
+    }
+
+    /// The directory of `repository` that differs from these, by its path
+    /// or, for a restored tab, by the inode it saved or, where both these
+    /// and the open have one, the birth time, the Git directory before the
+    /// common one; `None` where both match. A session never saves the
+    /// device, so a restored tab has none to compare: in a run, the app
+    /// compares it only in `repository_tabs::same_git_directories` and
+    /// `RepositoryIdentity`, and core before a write (`Identity::replaced`). Reads what the repository's open captured, so it
+    /// touches no filesystem.
+    fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
+        let differs = |saved: Option<u64>, found: Option<u64>| {
+            self.restored && saved.is_some_and(|saved| found != Some(saved))
+        };
+        fn apart<T: PartialEq>(restored: bool, saved: Option<T>, found: Option<T>) -> bool {
+            restored
+                && saved
+                    .zip(found)
+                    .is_some_and(|(saved, found)| saved != found)
+        }
+        let restored = self.restored;
+        if repository.git_dir() != self.git_dir
+            || differs(self.inodes.git_dir, repository.git_dir_inode())
+            || apart(
+                restored,
+                self.inodes.git_dir_birth,
+                repository.git_dir_birth(),
+            )
+        {
+            Some(repository.git_dir().to_owned())
+        } else if repository.common_dir() != self.common
+            || differs(self.inodes.common, repository.common_dir_inode())
+            || apart(
+                restored,
+                self.inodes.common_birth,
+                repository.common_dir_birth(),
+            )
+        {
+            Some(repository.common_dir().to_owned())
+        } else {
+            None
+        }
+    }
+}
+
+/// The folders above a tab's captured root as they resolve now, where they
+/// resolve to other folders than the ones captured: a root saved through a
+/// linked folder (macOS reaches every temporary folder through `/var`, a
+/// link to `/private/var`; a person's projects folder can be a link in
+/// their home), or one whose folder was moved and linked back from its old
+/// place. A passive reopen compares the tab's root and Git directories
+/// through them, on the worker as it reads the repository, never at launch;
+/// the root's own name and everything below those folders are compared as
+/// captured, so a root turned into a link to another repository, a `.git`
+/// swapped for another repository's, or a re-pointed `commondir` is still
+/// another repository ([`RepositorySession::open`]). Compared as captured,
+/// every such root was another repository, its tab marked " ·
+/// unavailable" where it opened before.
+struct FoldersAbove {
+    captured: PathBuf,
+    now: PathBuf,
+}
+
+impl FoldersAbove {
+    /// `None` where `root` is reached as captured, as every root Git
+    /// reported is (it is `canonical`, the folder the reopen asked for
+    /// resolved), and where its folders cannot be resolved.
+    fn of(root: &Path, canonical: &Path) -> Option<Self> {
+        if root == canonical {
+            return None;
+        }
+        root.file_name()?;
+        let captured = root.parent()?;
+        let now = captured.canonicalize().ok()?;
+        (now != captured).then(|| Self {
+            captured: captured.to_owned(),
+            now,
+        })
+    }
+
+    /// `path` reached through these folders as they resolve now; as
+    /// captured where it lies outside them, as a linked worktree's Git
+    /// directories in another folder do.
+    fn through(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix(&self.captured) {
+            Ok(rest) if rest.as_os_str().is_empty() => self.now.clone(),
+            Ok(rest) => self.now.join(rest),
+            Err(_) => path.to_owned(),
+        }
+    }
+}
+
+/// Fails with [`RepositoryGone`] where `repo` is no longer the repository
+/// at its path: its `.git` gone, swapped for another repository's, or its
+/// root turned into a link to another folder. From the filesystem alone
+/// while it holds; Git is asked only once it does not, to name what it
+/// finds, or for a repository whose commands cannot be confined.
+fn ensure_found_at_path(repo: &GitRepository) -> Result<()> {
+    let found = match repo.verify_at_path()? {
+        gitturtle_core::FoundAtPath::Same => return Ok(()),
+        gitturtle_core::FoundAtPath::Other(found) => Some(found),
+        gitturtle_core::FoundAtPath::None => None,
+    };
+    Err(RepositoryGone {
+        path: repo.path().to_owned(),
+        found,
+    }
+    .into())
+}
+
+/// An open of `requested` that core refused, as the reader reports it: a
+/// repository that changed while it was opened is [`RepositoryGone`], and so
+/// is a tab's root whose work tree now lies outside its folder, where an
+/// explicit open of such a layout says so in its own words. One that Git
+/// still reports at its path, only the capture having failed, stays
+/// [`gitturtle_core::ChangedWhileOpening`]: it once read "is gone. Git now
+/// finds the repository at P there", the one path twice, of a healthy
+/// repository.
+fn refused_open(requested: &Path, passive: bool, error: anyhow::Error) -> anyhow::Error {
+    let error = match error.downcast::<gitturtle_core::ChangedWhileOpening>() {
+        Ok(changed) if changed.found.as_ref() == Some(&changed.path) => return changed.into(),
+        Ok(changed) => {
+            return RepositoryGone {
+                path: requested.to_owned(),
+                found: changed.found,
+            }
+            .into();
+        }
+        Err(error) => error,
+    };
+    match error.downcast::<gitturtle_core::WorkTreeOutside>() {
+        Ok(outside) if passive => RepositoryGone {
+            path: requested.to_owned(),
+            found: Some(outside.work_tree),
+        }
+        .into(),
+        Ok(outside) => outside.into(),
+        Err(error) => error,
+    }
+}
+
+/// What a failed open says: `repository_access::explain`'s reasons, but for
+/// a refusal that says what happened in its own words.
+fn worded_open_failure(path: &Path, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>()
+        || error.is::<NoRepositoryOfItsOwn>()
+        || error.is::<gitturtle_core::WorkTreeOutside>()
+        || error.is::<gitturtle_core::ChangedWhileOpening>()
+    {
+        error
+    } else {
+        crate::repository_access::explain(path, error)
+    }
+}
+
+/// A tab's Open that found its repository gone, as [`NoRepositoryOfItsOwn`]
+/// where the tab captured no Git directories (`uncaptured`) and Git finds a
+/// repository enclosing its folder. Any other failure is left as it is.
+fn no_repository_of_its_own(uncaptured: bool, error: anyhow::Error) -> anyhow::Error {
+    if !uncaptured {
+        return error;
+    }
+    match error.downcast::<RepositoryGone>() {
+        Ok(RepositoryGone {
+            path,
+            found: Some(found),
+        }) if path
+            .canonicalize()
+            .is_ok_and(|inside| inside != found && inside.starts_with(&found)) =>
+        {
+            NoRepositoryOfItsOwn { path, found }.into()
+        }
+        Ok(gone) => gone.into(),
+        Err(error) => error,
+    }
+}
+
+/// A read of `repo` that failed as "not a git repository", as
+/// [`RepositoryGone`]: its commands are confined to it, so that is how a
+/// read fails once its `.git` went away, and the diagnosis names what Git
+/// finds there now. Any other failure stays its own, with no process.
+pub(crate) fn confined_failure(repo: &GitRepository, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>() || !gitturtle_core::finds_no_repository(&error) {
+        return error;
+    }
+    let found = match repo.found_at_path() {
+        Ok(gitturtle_core::FoundAtPath::Other(found)) => Some(found),
+        Ok(gitturtle_core::FoundAtPath::None) => None,
+        Ok(gitturtle_core::FoundAtPath::Same) | Err(_) => return error,
+    };
+    RepositoryGone {
+        path: repo.path().to_owned(),
+        found,
+    }
+    .into()
+}
+
+/// Any failure of a read of `repo` as [`RepositoryGone`] where `repo` is
+/// gone or no longer the repository at its path, for reads whose steps can
+/// fail in other words as its `.git` moves while they run, as the watcher's
+/// setup resolving the directories Git reported. A "not a git repository"
+/// failure is Git's to decide ([`confined_failure`]): a `.git` half removed
+/// (its HEAD deleted, the folder and `config` left) still holds for the
+/// filesystem check, which kept the failure its own and the tab unmarked.
+/// Any other failure is checked from the filesystem first
+/// ([`GitRepository::verify_at_path`]). A repository still there keeps the
+/// failure its own. Unlike [`confined_failure`], it checks whatever the
+/// failure, so it is for reads that rarely fail, never a hot path.
+pub(crate) fn gone_unless_found(repo: &GitRepository, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>() {
+        return error;
+    }
+    if gitturtle_core::finds_no_repository(&error) {
+        return confined_failure(repo, error);
+    }
+    let found = match repo.verify_at_path() {
+        Ok(gitturtle_core::FoundAtPath::Other(found)) => Some(found),
+        Ok(gitturtle_core::FoundAtPath::None) => None,
+        Ok(gitturtle_core::FoundAtPath::Same) | Err(_) => return error,
+    };
+    RepositoryGone {
+        path: repo.path().to_owned(),
+        found,
+    }
+    .into()
+}
+
+/// A quiet read's failed reopen of `repo`, as [`RepositoryGone`] with
+/// nothing found where Git now finds no repository at its path, so the tab
+/// is read as Refresh reads it, whose Open says why
+/// (`repository_access::explain`). Any other failure, as a deadline or an
+/// access error, stays its own. Git is asked only once the reopen failed,
+/// and not at all when the reopen already says the repository is gone.
+fn nothing_found_is_gone(repo: &GitRepository, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>() {
+        return error;
+    }
+    match repo.found_at_path() {
+        Ok(gitturtle_core::FoundAtPath::None) => RepositoryGone {
+            path: repo.path().to_owned(),
+            found: None,
+        }
+        .into(),
+        _ => error,
+    }
+}
+
+/// A marked tab's Changes read that failed, with why its repository cannot
+/// be opened now, in an Open's own words ([`with_current_mark_reason`]). The
+/// read's own failure stays whole, for a mark gone by the time it lands.
+#[derive(Debug)]
+pub(crate) struct MarkedReadFailed {
+    pub(crate) reason: String,
+    pub(crate) read: anyhow::Error,
+}
+
+impl std::fmt::Display for MarkedReadFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.read)
+    }
+}
+
+impl std::error::Error for MarkedReadFailed {}
+
+/// A marked tab's failed Changes read, with the reason its Open would give
+/// now ([`MarkedReadFailed`]): the reasons only an Open can give
+/// (`repository_access::explain`), by the same passive reopen of the tab's
+/// captured root, which keeps nothing it opens and can never open another
+/// repository there. No reason for a folder that could not be checked, or
+/// one the reopen found after all: the mark then stays as it is. Runs on
+/// the read's own thread, only once that read failed.
+pub(crate) fn with_current_mark_reason(
+    error: anyhow::Error,
+    path: &Path,
+    root: &Path,
+    git_dir: Option<&GitDirectories>,
+) -> anyhow::Error {
+    if gitturtle_core::could_not_check(&error) {
+        return error;
+    }
+    match RepositorySession::default().open(path, Some(root), git_dir) {
+        Err(reopen) if !gitturtle_core::could_not_check(&reopen) => MarkedReadFailed {
+            reason: format!("{:#}", worded_open_failure(path, reopen)),
+            read: error,
+        }
+        .into(),
+        _ => error,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs at each checkpoint of a quiet read's working read on this
+    /// thread: a test moves a repository's `.git` part way through.
+    static QUIET_CHECKPOINT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn quiet_checkpoint() {
+    QUIET_CHECKPOINT.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
 }
 
 struct RetainedRepository {
@@ -587,8 +1627,53 @@ struct OrdinaryHistory {
 }
 
 impl RepositorySession {
-    fn open(&mut self, requested: &Path) -> Result<GitRepository> {
-        let canonical = requested.canonicalize()?;
+    /// The repository at `requested`. An explicit open (`captured` `None`)
+    /// takes what Git discovery finds, the work tree enclosing a folder
+    /// inside one included. A tab's passive reopen names the root `captured`
+    /// when the person opened it, and finds that root or nothing: where Git
+    /// now finds another repository at `requested`, its `.git` gone and a
+    /// work tree enclosing it, the open fails with [`RepositoryGone`] rather
+    /// than move the tab to another repository; where it finds none, it
+    /// fails as any open of a folder that is not a repository does.
+    ///
+    /// The captured root is compared as it was captured, never resolved
+    /// again, but for the folders above it ([`FoldersAbove`]): a root since
+    /// turned into a link to another repository resolves elsewhere and is
+    /// that other repository, gone from the tab, while one reached through
+    /// a linked folder above it, as macOS reaches every temporary folder
+    /// through `/var`, is the repository it was. At the same root, the Git
+    /// directories found must be `git_dir`, the ones the tab captured
+    /// there, where it names them (through the same folders): not another
+    /// repository's that a swapped `.git` leads to, nor another
+    /// repository's refs and objects that a linked worktree's re-pointed
+    /// `commondir` leads to. The retained repository answers only where its
+    /// own directories are the captured ones; otherwise Git is asked again,
+    /// and a mismatch found fails as `RepositoryGone`, naming the directory
+    /// that differs. A tab restored from a session also compares the inodes
+    /// it saved ([`GitDirectories::restored`]), which the same paths through
+    /// a folder above re-pointed at another repository cannot match; it is
+    /// the open here that reads them, never the launch.
+    fn open(
+        &mut self,
+        requested: &Path,
+        captured: Option<&Path>,
+        git_dir: Option<&GitDirectories>,
+    ) -> Result<GitRepository> {
+        let canonical = requested
+            .canonicalize()
+            .map_err(|error| gitturtle_core::CouldNotCheck::unless_absent(requested, error))?;
+        let folders = captured.and_then(|root| FoldersAbove::of(root, &canonical));
+        let through = |path: &Path| match &folders {
+            Some(folders) => folders.through(path),
+            None => path.to_owned(),
+        };
+        let captured = captured.map(through);
+        let git_dir = git_dir.map(|directories| GitDirectories {
+            git_dir: through(&directories.git_dir),
+            common: through(&directories.common),
+            ..*directories
+        });
+        let git_dir = git_dir.as_ref();
         if self
             .current
             .as_ref()
@@ -599,15 +1684,43 @@ impl RepositorySession {
         }
         if let Some(current) = &self.current
             && current.canonical_root == canonical
+            && captured.as_ref().is_none_or(|root| *root == canonical)
+            && git_dir.is_none_or(|git_dir| git_dir.mismatch(&current.repository).is_none())
         {
             return Ok(current.repository.as_ref().clone());
         }
         // A nested directory needs Git discovery; it may still resolve to the
         // existing root, in which case keep the original persistent reader.
-        let discovered = GitRepository::open(&canonical)?;
+        // Git finding no repository there fails as it always has, with the
+        // reasons `repository_access::explain` gives a folder that is not
+        // one; only another repository found is `RepositoryGone` (see
+        // `refused_open`).
+        let passive = captured.is_some();
+        let discovered = GitRepository::open(&canonical)
+            .map_err(|error| refused_open(requested, passive, error))?;
         let canonical_root = discovered.path().canonicalize()?;
+        if captured
+            .as_ref()
+            .is_some_and(|root| *root != canonical_root)
+        {
+            return Err(RepositoryGone {
+                path: requested.to_owned(),
+                found: Some(discovered.path().to_owned()),
+            }
+            .into());
+        }
+        if let Some(found) = git_dir.and_then(|git_dir| git_dir.mismatch(&discovered)) {
+            return Err(RepositoryGone {
+                path: requested.to_owned(),
+                found: Some(found),
+            }
+            .into());
+        }
         if let Some(current) = &self.current
             && current.canonical_root == canonical_root
+            && GitDirectories::of(&discovered)
+                .mismatch(&current.repository)
+                .is_none()
         {
             return Ok(current.repository.as_ref().clone());
         }
@@ -659,10 +1772,13 @@ impl RepositorySession {
                     .append(&page.commits, GRAPH_LANE_LIMIT, GRAPH_EDGE_LIMIT, || {
                         cancellation.check()
                     })?;
-                ensure!(
-                    page.next_offset.is_some() || history.traversal.offset() == offset,
-                    "Saved history position is past the captured history"
-                );
+                // A position past the history's end, as a restored tab's
+                // saved page is where a shallower fetch cut it, reads as
+                // the empty page at the end, which tells the window where
+                // the history ends (`receive_history_page`).
+                if page.next_offset.is_none() {
+                    break;
+                }
             }
             let page = history.traversal.next_page(
                 limit.clamp(1, gitturtle_core::MAX_HISTORY_PAGE),
@@ -694,12 +1810,10 @@ impl Drop for Worker {
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
         self.latest.fetch_add(1, Ordering::AcqRel);
-        if let Some(active) = state.active.take() {
-            active.cancel();
-        }
+        state.supersede_active();
         state.closed = true;
         state.pending = None;
-        ready.notify_one();
+        ready.notify_all();
     }
 }
 
@@ -731,6 +1845,23 @@ impl PreviewKey {
             preview_edge: PREVIEW_EDGE,
             origins: Default::default(),
         }
+    }
+
+    /// The key of a comparison preview (`Job::Preview`), the whole of what
+    /// it reads, as its cache entry is keyed.
+    fn of(job: &Job) -> Option<Self> {
+        let Job::Preview {
+            repo,
+            file,
+            origins,
+        } = job
+        else {
+            return None;
+        };
+        Some(Self {
+            origins: origins.clone(),
+            ..Self::new(repo.path(), file)
+        })
     }
 }
 
@@ -853,7 +1984,8 @@ fn execute(
         Job::TrackedPreview { repo, entry, scope } => {
             let mut file = repo.tracked_path_change(&entry);
             if matches!(scope, gitturtle_core::PathScope::Revision(_)) {
-                return execute(
+                let mode = file.new_mode.clone();
+                let preview = execute(
                     Job::Preview {
                         repo,
                         file,
@@ -868,17 +2000,26 @@ fn execute(
                     cache,
                     cancellation,
                     session,
-                );
+                )?;
+                let Output::Preview(content, elapsed) = preview else {
+                    anyhow::bail!("A revision's tracked file was read as something else");
+                };
+                return Ok(Output::TrackedPreview {
+                    mode,
+                    content,
+                    elapsed,
+                });
             }
             let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
             cancellation.check()?;
             file.new_mode = mode;
+            let mut lfs = LfsSides::default();
             let mut content = if let Some(content) =
                 supplied_nontext_content(&repo, &file, &[], &bytes, cancellation)?
             {
                 content
             } else if let Some(content) =
-                resolved_lfs_text_content(&repo, &file, &[], &bytes, cancellation)?
+                resolved_lfs_text_content(&repo, &file, &[], &bytes, &mut lfs, cancellation)?
             {
                 content
             } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
@@ -895,7 +2036,8 @@ fn execute(
                 // patch or selected-edit actions are manufactured.
                 prepared_text(String::new(), String::new(), source)
             };
-            attach_mermaid(&mut content, &file, cancellation)?;
+            lfs.mark(&mut content);
+            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
             attach_markdown_assets(
                 &mut content,
                 &repo,
@@ -907,7 +2049,11 @@ fn execute(
                 cancellation,
             )?;
             cancellation.check()?;
-            Ok(Output::Preview(Arc::new(content), start.elapsed()))
+            Ok(Output::TrackedPreview {
+                mode: file.new_mode,
+                content: Arc::new(content),
+                elapsed: start.elapsed(),
+            })
         }
         Job::SearchHistory {
             repo,
@@ -1006,24 +2152,53 @@ fn execute(
             history,
             selected,
         } => {
-            let working = WorkingState::read_with_checkpoint(&repo, || cancellation.check())?;
+            // A quiet read reopens the tab's repository passively: where Git
+            // no longer finds it at its path, every read there would read the
+            // work tree enclosing it, so it reads nothing ([`RepositoryGone`]).
+            // The retained session answers from its filesystem identities
+            // without starting Git while the repository is unchanged. Where
+            // Git finds no repository there at all, the read fails as gone
+            // with nothing found, so the tab is read as Refresh reads it and
+            // its Open gives the reasons any folder that is not a repository
+            // gets; it once said Git's own "not a git repository" as a local
+            // refresh error and left the tab unmarked.
+            let root = Some(repo.path());
+            let captured = GitDirectories::of(&repo);
+            // The handle's own check, before the session's reopen: the
+            // session answers from its directories' and links' identities,
+            // which a `core.worktree` re-pointed in the repository's
+            // configuration leaves as they were while it moves the work
+            // tree; the handle's check compares those configuration files
+            // and asks Git once one changed (`GitRepository::verify_at_path`).
+            ensure_found_at_path(&repo)?;
+            session
+                .open(repo.path(), root, Some(&captured))
+                .map_err(|error| nothing_found_is_gone(&repo, error))?;
+            let working = WorkingState::read_with_checkpoint(&repo, || {
+                #[cfg(test)]
+                quiet_checkpoint();
+                cancellation.check()
+            })
+            .map_err(|error| confined_failure(&repo, error))?;
             cancellation.check()?;
             let snapshot = history.then(|| {
                 match read_snapshot(
                     repo.path().to_owned(),
+                    (root, Some(&captured)),
                     scope.as_ref(),
                     MissingScope::Fail,
                     limit,
                     cancellation,
                     session,
                 ) {
-                    Ok(snapshot) => Ok(QuietHistory::Refreshed(snapshot)),
+                    Ok(snapshot) => Ok(QuietHistory::Refreshed(worker_shallow(snapshot, &repo))),
                     Err(error) => {
                         cancellation.check()?;
                         // A zero-row unscoped snapshot reads current navigation
                         // metadata without loading a replacement history page.
                         let metadata = read_snapshot(
                             repo.path().to_owned(),
+                            (root, Some(&captured)),
                             None,
                             MissingScope::Fail,
                             0,
@@ -1033,6 +2208,7 @@ fn execute(
                         Ok(QuietHistory::Retained {
                             metadata,
                             vanished: error.downcast_ref::<VanishedScope>().cloned(),
+                            summary: gitturtle_core::failure_summary(&error),
                             error: format!("{error:#}"),
                         })
                     }
@@ -1089,6 +2265,22 @@ fn execute(
                 },
             );
             cancellation.check()?;
+            // A read already running when the repository's `.git` went away
+            // fails part way, its commands confined to it: its operation
+            // state, its History or its comparison fails as "not a git
+            // repository", which once showed as an "Operation state: …" or
+            // "History scope changed: …" banner beside the tab's mark. Any
+            // part failed, the repository is checked again (from the
+            // filesystem while it holds), and a repository gone is the whole
+            // read's answer, so the tab is marked and says only that.
+            let working = if matches!(snapshot, Some(Err(_) | Ok(QuietHistory::Retained { .. })))
+                || matches!(preview, Some(Err(_)))
+            {
+                ensure_found_at_path(&repo)?;
+                working
+            } else {
+                working.confirmed(&repo)?
+            };
             Ok(Output::QuietRefresh(Box::new(QuietRefresh {
                 working,
                 snapshot,
@@ -1116,13 +2308,19 @@ fn execute(
             let file = preview.file;
             let mut partial_diff = preview.partial;
             let mut unavailable = preview.partial_unavailable;
+            let mut lfs = LfsSides::default();
             let mut content = if let Some(content) =
                 supplied_nontext_content(&repo, &file, &preview.old, &preview.new, cancellation)?
             {
                 content
-            } else if let Some(content) =
-                resolved_lfs_text_content(&repo, &file, &preview.old, &preview.new, cancellation)?
-            {
+            } else if let Some(content) = resolved_lfs_text_content(
+                &repo,
+                &file,
+                &preview.old,
+                &preview.new,
+                &mut lfs,
+                cancellation,
+            )? {
                 partial_diff = None;
                 unavailable = Some("This view shows verified LFS object content. Partial staging is unavailable because Git stages the underlying pointer; use whole-file staging.".into());
                 content
@@ -1140,7 +2338,9 @@ fn execute(
                         old_bytes,
                         new_bytes,
                     } => Content::Notice(format!(
-                        "Text preview exceeds the display budget · before {old_bytes} bytes · after {new_bytes} bytes."
+                        "Text preview exceeds the display budget · before {} · after {}.",
+                        crate::counted(old_bytes, "byte", "bytes"),
+                        crate::counted(new_bytes, "byte", "bytes")
                     )),
                     TextPreview::Submodule { old_oid, new_oid } => Content::Notice(format!(
                         "Submodule · {} → {}",
@@ -1149,8 +2349,9 @@ fn execute(
                     )),
                 }
             };
+            lfs.mark(&mut content);
             cancellation.check()?;
-            attach_mermaid(&mut content, &file, cancellation)?;
+            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
             let origins = match area {
                 gitturtle_core::ChangeArea::Staged => crate::markdown_view::Origins {
                     old: head.map(gitturtle_core::PreviewAssetScope::Revision),
@@ -1186,19 +2387,35 @@ fn execute(
                 start.elapsed(),
             ))
         }
-        Job::Open { path, scope, limit } => {
+        Job::Open {
+            path,
+            scope,
+            limit,
+            root,
+            git_dir,
+        } => {
             // An explicit Open (Refresh, Show latest, a restored tab) resolves
             // the scope again; a vanished one opens All history, never an
-            // unavailable repository.
+            // unavailable repository. A tab's repository gone from its root
+            // says so in its own words.
             let mut snapshot = read_snapshot(
                 path.clone(),
+                (root.as_deref(), git_dir.as_ref()),
                 scope.as_ref(),
                 MissingScope::AllHistory,
                 limit,
                 cancellation,
                 session,
             )
-            .map_err(|error| crate::repository_access::explain(&path, error))?;
+            .map_err(|error| {
+                // A tab's own saved folder, not a worktree row's reopen of
+                // the worktree it names (`State::reopen_root`): that row is
+                // no tab's folder, and captures no directories either.
+                let uncaptured = root.is_some()
+                    && git_dir.is_none()
+                    && !matches!(&scope, Some(Scope::Worktree { path: tree }) if *tree == path);
+                worded_open_failure(&path, no_repository_of_its_own(uncaptured, error))
+            })?;
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
@@ -1218,25 +2435,27 @@ fn execute(
             if let Some(content) = cache.get(&key) {
                 return Ok(Output::Preview(content, start.elapsed()));
             }
-            let mut content = text_content(&repo, &file, cancellation)?;
+            let mut lfs = LfsSides::default();
+            let mut content = text_content(&repo, &file, &mut lfs, cancellation)?;
             attach_markdown_assets(&mut content, &repo, &file, &origins, cancellation)?;
-            let cacheable = match &content {
-                Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
-                Content::Rich(preview) => {
-                    preview.old.error.is_none() && preview.new.error.is_none()
-                }
-                Content::Text {
-                    old, new, markdown, ..
-                } => {
-                    markdown
-                        .as_ref()
-                        .is_none_or(|markdown| markdown.cacheable())
-                        && ![old, new]
-                            .iter()
-                            .any(|source| detect_lfs_pointer(source.as_bytes()).is_some())
-                }
-                _ => true,
-            };
+            let cacheable = !lfs.store_can_change()
+                && match &content {
+                    Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
+                    Content::Rich(preview) => {
+                        preview.old.error.is_none() && preview.new.error.is_none()
+                    }
+                    Content::Text {
+                        old, new, markdown, ..
+                    } => {
+                        markdown
+                            .as_ref()
+                            .is_none_or(|markdown| markdown.cacheable())
+                            && ![old, new]
+                                .iter()
+                                .any(|source| detect_lfs_pointer(source.as_bytes()).is_some())
+                    }
+                    _ => true,
+                };
             cancellation.check()?;
             let content = Arc::new(content);
             if cacheable {
@@ -1251,8 +2470,12 @@ fn commit_metadata_bytes(commit: &Commit) -> usize {
     commit.history_bytes()
 }
 
+/// The snapshot of the repository at `path`: the one Git discovery finds,
+/// or, for a tab's passive reopen, the one at `root` or none
+/// ([`RepositorySession::open`]).
 fn read_snapshot(
     path: PathBuf,
+    (root, git_dir): (Option<&Path>, Option<&GitDirectories>),
     scope: Option<&Scope>,
     missing: MissingScope,
     limit: usize,
@@ -1261,7 +2484,7 @@ fn read_snapshot(
 ) -> Result<Snapshot> {
     let start = Instant::now();
     cancellation.check()?;
-    let repository = session.open(&path)?;
+    let repository = session.open(&path, root, git_dir)?;
     cancellation.check()?;
     let branches = repository.branches()?;
     cancellation.check()?;
@@ -1279,35 +2502,50 @@ fn read_snapshot(
         Some(oid) => gitturtle_core::HistoryScope::FromCommit(oid.to_owned()),
         None => gitturtle_core::HistoryScope::AllRefs,
     };
-    let (commits, graph, graph_notice, history_scope, history_next_offset) = if limit == 0 {
-        (Vec::new(), Vec::new(), None, scope, None)
-    } else {
-        // An explicit or quiet refresh captures new tips and starts a new
-        // traversal. Ordinary subsequent pages use the immutable returned scope.
-        session.history = None;
-        let result = session.history_page(&repository, &scope, 0, limit, cancellation)?;
-        let pinned = session
-            .history
-            .as_ref()
-            .expect("Live history traversal")
-            .traversal
-            .scope()
-            .clone();
-        (
-            result.page.commits,
-            result.graph,
-            result.graph_notice,
-            pinned,
-            result.page.next_offset,
-        )
-    };
-    cancellation.check()?;
-    let mut refs: HashMap<String, Vec<String>> = HashMap::new();
-    for branch in &branches {
-        refs.entry(branch.oid.clone())
-            .or_default()
-            .push(branch.name.clone());
-    }
+    // The tag read needs nothing from the history page, so one scoped thread
+    // reads the tags and prepares every commit's references while this one
+    // reads the page: a snapshot runs at most one Git read beside its page,
+    // and the scope joins it, whatever the page's outcome, before returning.
+    let ((commits, graph, graph_notice, history_scope, history_next_offset), refs) =
+        std::thread::scope(|threads| -> Result<_> {
+            let references = || history_references(&repository, &branches, cancellation);
+            let beside = std::thread::Builder::new()
+                .name("gitturtle-tags".into())
+                .spawn_scoped(threads, references)
+                .ok();
+            let page = if limit == 0 {
+                (Vec::new(), Vec::new(), None, scope, None)
+            } else {
+                // An explicit or quiet refresh captures new tips and starts a
+                // new traversal. Ordinary subsequent pages use the immutable
+                // returned scope.
+                session.history = None;
+                let result = session.history_page(&repository, &scope, 0, limit, cancellation)?;
+                let pinned = session
+                    .history
+                    .as_ref()
+                    .expect("Live history traversal")
+                    .traversal
+                    .scope()
+                    .clone();
+                (
+                    result.page.commits,
+                    result.graph,
+                    result.graph_notice,
+                    pinned,
+                    result.page.next_offset,
+                )
+            };
+            cancellation.check()?;
+            let refs = match beside {
+                Some(read) => read
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                // A thread the system cannot start reads them after the page.
+                None => references(),
+            };
+            Ok((page, refs?))
+        })?;
     cancellation.check()?;
     Ok(Snapshot {
         repository,
@@ -1322,7 +2560,35 @@ fn read_snapshot(
         refs,
         elapsed: start.elapsed(),
         vanished_scope,
+        shallow: false,
     })
+}
+
+/// `snapshot` with whether `repo` is shallow, `true` where that cannot be
+/// read, as the landing then draws whatever it installs.
+fn worker_shallow(mut snapshot: Snapshot, repo: &GitRepository) -> Snapshot {
+    snapshot.shallow = repo.is_shallow().unwrap_or(true);
+    snapshot
+}
+
+/// Each commit's references in Git's order, HEAD's branch first, then its
+/// tags: History shows the first one in its badge and in narrow History's
+/// pill. A tag list Git cannot give leaves History without tags rather than
+/// without history; the Tags page reports why. The read is the Tags page's
+/// own passive one, within its deadline, and a newer request stops and reaps
+/// its Git process.
+fn history_references(
+    repository: &GitRepository,
+    branches: &[Branch],
+    cancellation: &Cancellation,
+) -> Result<HistoryReferences> {
+    let tags = gitturtle_core::run_cancellable_inspection(cancellation.history.clone(), || {
+        repository.tags()
+    })
+    .map(|list| list.tags)
+    .unwrap_or_default();
+    cancellation.check()?;
+    Ok(HistoryReferences::new(branches, &tags))
 }
 
 fn layout_graph(
@@ -1536,35 +2802,41 @@ fn captured_model_side(
     let Some(pointer) = detect_lfs_pointer(&bytes) else {
         return crate::rich_preview::Side::prepare(bytes, path, || cancellation.check());
     };
-    let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES);
+    let local = repo.local_lfs_read(&pointer.oid, pointer.size, MAX_INPUT_BYTES);
     cancellation.check()?;
+    let absent = matches!(local, Ok(gitturtle_core::LocalLfsObject::Absent));
     let error = match local {
-        Ok(Some(local)) => {
+        Ok(gitturtle_core::LocalLfsObject::Verified(local)) => {
             return crate::rich_preview::Side::prepare(local, path, || cancellation.check());
         }
-        Ok(None) => format!(
-            "This model’s LFS object is unavailable in the local store ({} bytes). No download was attempted.",
-            pointer.size
+        Ok(gitturtle_core::LocalLfsObject::Absent) => format!(
+            "This model’s LFS object is unavailable in the local store ({}). No download was attempted.",
+            crate::counted(pointer.size, "byte", "bytes")
         ),
-        Err(error) => format!(
-            "This model’s local LFS object could not be verified: {error:#}. No download was attempted."
-        ),
+        Ok(gitturtle_core::LocalLfsObject::Failed(failure, _)) => {
+            crate::lfs_download::failure_sentence(failure)
+        }
+        Err(error) => format!("This model’s local LFS object could not be verified: {error:#}."),
     };
     let mut side = crate::rich_preview::Side::unavailable(path, true, Some(error));
+    side.lfs_missing = absent;
     side.metadata = metadata::inspect(&bytes, path);
     side.metadata.format = "Git LFS pointer".into();
     // Keep the captured identity available to Copy and explicit download actions.
     // Its error prevents immutable caching while the local store can change.
     side.metadata.source = std::str::from_utf8(&bytes).ok().map(Arc::from);
-    side.captured = Some(bytes.into());
+    side.capture(bytes.into(), &|| cancellation.check())?;
     Ok(side)
 }
 
+/// A history comparison that is not text, read from both blobs: a side over
+/// the 32 MiB captured preview limit, or that cannot be read, says so beside
+/// the other. Whether the result is cached is `Job::Preview`'s one decision.
 fn nontext_history_content(
     repo: &GitRepository,
     file: &FileChange,
     cancellation: &Cancellation,
-) -> Result<Option<(Content, bool)>> {
+) -> Result<Option<Content>> {
     if !regular_preview(file) {
         return Ok(None);
     }
@@ -1586,18 +2858,7 @@ fn nontext_history_content(
     let new = read(file.new_oid.as_deref());
     cancellation.check()?;
     if let (Ok(old), Ok(new)) = (&old, &new) {
-        return Ok(
-            supplied_nontext_content(repo, file, old, new, cancellation)?.map(|content| {
-                let cacheable = match &content {
-                    Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
-                    Content::Rich(preview) => {
-                        preview.old.error.is_none() && preview.new.error.is_none()
-                    }
-                    _ => true,
-                };
-                (content, cacheable)
-            }),
-        );
+        return supplied_nontext_content(repo, file, old, new, cancellation);
     }
     if image_change(file)
         || [old.as_ref().ok(), new.as_ref().ok()]
@@ -1617,6 +2878,7 @@ fn nontext_history_content(
                     bytes: 0,
                     lfs_pointer: None,
                     captured: None,
+                    system_preview: None,
                     literal_source: None,
                 },
             }
@@ -1625,13 +2887,10 @@ fn nontext_history_content(
         cancellation.check()?;
         let new = side(new, file.new_path.as_deref());
         cancellation.check()?;
-        return Ok(Some((
-            Content::Images {
-                old: Box::new(old),
-                new: Box::new(new),
-            },
-            false,
-        )));
+        return Ok(Some(Content::Images {
+            old: Box::new(old),
+            new: Box::new(new),
+        }));
     }
     let model = [file.old_path.as_deref(), file.new_path.as_deref()]
         .into_iter()
@@ -1657,13 +2916,10 @@ fn nontext_history_content(
             }
         }))
     };
-    Ok(Some((
-        Content::Rich(crate::rich_preview::Comparison {
-            old: side(old, file.old_path.as_deref())?,
-            new: side(new, file.new_path.as_deref())?,
-        }),
-        false,
-    )))
+    Ok(Some(Content::Rich(crate::rich_preview::Comparison {
+        old: side(old, file.old_path.as_deref())?,
+        new: side(new, file.new_path.as_deref())?,
+    })))
 }
 
 fn prepared_text(patch: String, old: String, new: String) -> Content {
@@ -1683,27 +2939,90 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
         split,
         partial: None,
         partial_unavailable: None,
+        lfs_missing: [false; 2],
+        lfs_failed: [None; 2],
+    }
+}
+
+/// What the local store said of each side's Git LFS object
+/// ([`GitRepository::resolved_lfs_text`]), old then new.
+#[derive(Clone, Copy, Default)]
+struct LfsSides {
+    missing: [bool; 2],
+    failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    /// Which sides are stored as pointers, whatever their objects: what a
+    /// side resolved to no longer shows it.
+    pointers: [bool; 2],
+}
+
+impl LfsSides {
+    /// Whether what these sides say could change under the same pointers: a
+    /// missing object can still arrive, and a corrupt object or a store that
+    /// cannot be read can be repaired, so none of them is kept, whatever the
+    /// other side holds, a notice that shows neither side included. Being
+    /// over the preview limit is the pointer's alone.
+    fn store_can_change(self) -> bool {
+        self.missing.contains(&true)
+            || self
+                .failed
+                .iter()
+                .flatten()
+                .any(|failure| *failure != gitturtle_core::LfsObjectFailure::TooLarge)
+    }
+
+    /// Records them on `content`. Text shows each side beside these marks;
+    /// a notice, which shows neither side, says what is wrong with any side
+    /// that failed, so a binary comparison does not hide it.
+    fn mark(self, content: &mut Content) {
+        match content {
+            Content::Text {
+                lfs_missing,
+                lfs_failed,
+                ..
+            } => {
+                *lfs_missing = self.missing;
+                *lfs_failed = self.failed;
+            }
+            Content::Notice(message) => {
+                for (side, failure) in ["Before", "After"].into_iter().zip(self.failed) {
+                    if let Some(failure) = failure {
+                        let words = crate::lfs_download::failure_words(failure);
+                        message.push_str(&format!("\n\n{side}: {words}."));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
 fn attach_mermaid(
     content: &mut Content,
     file: &FileChange,
+    stored_pointers: [bool; 2],
     cancellation: &Cancellation,
 ) -> Result<()> {
     if let Content::Text {
-        old, new, markdown, ..
+        old,
+        new,
+        markdown,
+        lfs_failed,
+        ..
     } = content
         && markdown.is_none()
     {
         *markdown =
-            crate::markdown_view::prepare(old, new, file, || cancellation.check())?.map(Arc::new);
+            crate::markdown_view::prepare(old, new, file, *lfs_failed, stored_pointers, || {
+                cancellation.check()
+            })?
+            .map(Arc::new);
     }
     if let Content::Text {
         old,
         new,
         diagrams,
         markdown,
+        lfs_failed,
         ..
     } = content
         && diagrams.is_none()
@@ -1711,8 +3030,10 @@ fn attach_mermaid(
         *diagrams = if let Some(markdown) = markdown {
             markdown.diagrams().map(Arc::new)
         } else {
-            crate::rich_preview::prepare_mermaid(old, new, file, || cancellation.check())?
-                .map(Arc::new)
+            crate::rich_preview::prepare_mermaid(old, new, file, *lfs_failed, || {
+                cancellation.check()
+            })?
+            .map(Arc::new)
         };
     }
     Ok(())
@@ -1749,6 +3070,8 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 partial: ap,
                 diagrams: ad,
                 markdown: am,
+                lfs_missing: aq,
+                lfs_failed: ar,
                 ..
             },
             Content::Text {
@@ -1759,10 +3082,14 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 partial: bp,
                 diagrams: bd,
                 markdown: bm,
+                lfs_missing: bq,
+                lfs_failed: br,
                 ..
             },
         ) => {
             a == b
+                && aq == bq
+                && ar == br
                 && match (am, bm) {
                     (None, None) => true,
                     (Some(a), Some(b)) => a.same_source(b),
@@ -1807,15 +3134,18 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
     }
 }
 
+/// The history comparison of `file`. `lfs` receives what the local store said
+/// of each side's Git LFS object, for the caller's decision to keep it.
 fn text_content(
     repo: &GitRepository,
     file: &FileChange,
+    lfs: &mut LfsSides,
     cancellation: &Cancellation,
 ) -> Result<Content> {
     let sources = match repo.text_preview_with_sources(file) {
         Ok(sources) => sources,
         Err(error) => {
-            if let Some((content, _)) = nontext_history_content(repo, file, cancellation)? {
+            if let Some(content) = nontext_history_content(repo, file, cancellation)? {
                 return Ok(content);
             }
             return Err(error);
@@ -1823,7 +3153,7 @@ fn text_content(
     };
     cancellation.check()?;
     if matches!(sources.preview, TextPreview::TooLarge { .. }) {
-        if let Some((content, _)) = nontext_history_content(repo, file, cancellation)? {
+        if let Some(content) = nontext_history_content(repo, file, cancellation)? {
             return Ok(content);
         }
     } else if let Some(content) =
@@ -1831,9 +3161,11 @@ fn text_content(
     {
         return Ok(content);
     }
-    if let Some(content) =
-        resolved_lfs_text_content(repo, file, &sources.old, &sources.new, cancellation)?
+    if let Some(mut content) =
+        resolved_lfs_text_content(repo, file, &sources.old, &sources.new, lfs, cancellation)?
     {
+        lfs.mark(&mut content);
+        attach_mermaid(&mut content, file, lfs.pointers, cancellation)?;
         return Ok(content);
     }
     let mut content = match sources.preview {
@@ -1849,18 +3181,30 @@ fn text_content(
             old_oid.as_deref().unwrap_or("Absent"), new_oid.as_deref().unwrap_or("Absent")
         )),
     };
-    attach_mermaid(&mut content, file, cancellation)?;
+    lfs.mark(&mut content);
+    attach_mermaid(&mut content, file, lfs.pointers, cancellation)?;
     Ok(content)
 }
 
+/// The comparison with the Git LFS objects the local store could show, or
+/// `None` to keep the stored texts. `lfs` receives which sides' objects are
+/// truly absent or unusable either way, for the caller to mark on what it
+/// shows before it attaches Mermaid, which reads those marks.
 fn resolved_lfs_text_content(
     repo: &GitRepository,
     file: &FileChange,
     old: &[u8],
     new: &[u8],
+    lfs: &mut LfsSides,
     cancellation: &Cancellation,
 ) -> Result<Option<Content>> {
-    let Some(sources) = repo.resolved_lfs_text(file, old, new)? else {
+    let resolved = repo.resolved_lfs_text(file, old, new)?;
+    *lfs = LfsSides {
+        missing: resolved.missing,
+        failed: resolved.failed,
+        pointers: resolved.pointers,
+    };
+    let Some(sources) = resolved.text else {
         return Ok(None);
     };
     if ([file.old_path.as_deref(), file.new_path.as_deref()]
@@ -1875,14 +3219,12 @@ fn resolved_lfs_text_content(
     {
         return Ok(Some(content));
     }
-    let mut content = match sources.preview {
+    Ok(Some(match sources.preview {
         TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
         TextPreview::Binary => Content::Notice("Verified LFS object downloaded. Its content is binary or not UTF-8 and has no text preview.".into()),
         TextPreview::TooLarge { old_bytes, new_bytes } => Content::Notice(format!("Verified LFS content exceeds the text display limit · {old_bytes} → {new_bytes} bytes.")),
         TextPreview::Submodule { .. } => Content::Notice("Submodules do not have an LFS text preview.".into()),
-    };
-    attach_mermaid(&mut content, file, cancellation)?;
-    Ok(Some(content))
+    }))
 }
 
 fn working_image_side(
@@ -1896,6 +3238,7 @@ fn working_image_side(
         return ImageSide {
             animation: None,
             captured: None,
+            system_preview: None,
             literal_source: None,
             image: None,
             render: None,
@@ -1905,6 +3248,8 @@ fn working_image_side(
         };
     }
     let mut missing_pointer = None;
+    // The side is left holding its pointer's text, not an image's bytes.
+    let mut stays_pointer = false;
     let mut animation = None;
     let mut preview_notice = None;
     let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
@@ -1914,16 +3259,24 @@ fn working_image_side(
             "Image exceeds the 32 MiB input limit"
         );
         if let Some(pointer) = detect_lfs_pointer(&bytes) {
-            let local = repo.local_lfs_object(&pointer.oid, pointer.size, MAX_INPUT_BYTES)?;
-            if local.is_none() {
-                missing_pointer = Some(bytes.clone());
+            // Before the read, so a read that fails outright leaves it too.
+            stays_pointer = true;
+            match repo.local_lfs_read(&pointer.oid, pointer.size, MAX_INPUT_BYTES)? {
+                gitturtle_core::LocalLfsObject::Verified(local) => {
+                    bytes = local;
+                    stays_pointer = false;
+                }
+                gitturtle_core::LocalLfsObject::Absent => {
+                    missing_pointer = Some(bytes.clone());
+                    return Err(anyhow!(
+                        "Git LFS object is unavailable in the local store · {}. No download was attempted.",
+                        crate::counted(pointer.size, "byte", "bytes")
+                    ));
+                }
+                gitturtle_core::LocalLfsObject::Failed(failure, _) => {
+                    return Err(anyhow!(crate::lfs_download::failure_sentence(failure)));
+                }
             }
-            bytes = local.ok_or_else(|| {
-                anyhow!(
-                    "Git LFS object is unavailable in the local store · {} bytes. No download was attempted.",
-                    pointer.size
-                )
-            })?;
         }
         cancellation.check()?;
         if gitturtle_preview::animation::is_gif(&bytes) {
@@ -1941,7 +3294,18 @@ fn working_image_side(
                 }
             }
         }
-        let decoded = decode_image(&bytes, name, PREVIEW_EDGE)?;
+        // AVIF and JPEG 2000 decode in the confined helper on Linux, which
+        // the reader's check kills as soon as a newer request supersedes
+        // this one. An image decoded in this process checks nothing until it
+        // ends, so the same preview asked for again meanwhile takes the
+        // decode over (`Cancellation::unobserved`).
+        let decode =
+            || crate::image_helper::decode(&bytes, name, PREVIEW_EDGE, &|| cancellation.check());
+        let decoded = if decoded_in_process(&bytes) {
+            cancellation.unobserved(decode)??
+        } else {
+            decode()?
+        };
         cancellation.check()?;
         let render = render_image(&decoded)?;
         Ok((decoded, render, bytes.len()))
@@ -1949,12 +3313,19 @@ fn working_image_side(
     let literal_source = (bytes.len() <= gitturtle_preview::MAX_SVG_BYTES)
         .then(|| std::str::from_utf8(&bytes).ok().map(Arc::<str>::from))
         .flatten();
-    let captured = (bytes.len() <= MAX_INPUT_BYTES && missing_pointer.is_none())
-        .then(|| Arc::<[u8]>::from(bytes));
+    let captured =
+        (bytes.len() <= MAX_INPUT_BYTES && !stays_pointer).then(|| Arc::<[u8]>::from(bytes));
+    // A cancelled decision offers nothing; the caller's next check ends the job.
+    let system_preview = captured.as_deref().and_then(|bytes| {
+        crate::system_preview::offer(bytes, &|| cancellation.check())
+            .ok()
+            .flatten()
+    });
     match result {
         Ok((image, render, bytes)) => ImageSide {
             animation,
             captured,
+            system_preview,
             literal_source,
             image: Some(image),
             render: Some(render),
@@ -1965,6 +3336,7 @@ fn working_image_side(
         Err(error) => ImageSide {
             animation: None,
             captured,
+            system_preview,
             literal_source,
             image: None,
             render: None,
@@ -1972,6 +3344,27 @@ fn working_image_side(
             bytes: 0,
             lfs_pointer: missing_pointer,
         },
+    }
+}
+
+/// Whether [`crate::image_helper::decode`] decodes `bytes` in this process,
+/// where it checks nothing until it ends, rather than in the confined helper,
+/// which runs the reader's check at least every 25 ms.
+fn decoded_in_process(bytes: &[u8]) -> bool {
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        gitturtle_preview::confined_image_format(bytes).is_none()
+    }
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    {
+        let _ = bytes;
+        true
     }
 }
 
@@ -2000,6 +3393,8 @@ mod tests {
             path: name.into(),
             scope: None,
             limit: 10,
+            root: None,
+            git_dir: None,
         }
     }
 
@@ -2077,6 +3472,23 @@ mod tests {
             "third"
         );
         assert!(started_rx.try_recv().is_err());
+    }
+
+    /// Waiting for the reader to go idle while a read never answers fails
+    /// rather than waiting for good.
+    #[test]
+    #[should_panic(expected = "the repository reader did not answer or skip its requests")]
+    fn waiting_for_a_read_that_never_answers_fails_rather_than_hangs() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (_release, held) = mpsc::channel::<()>();
+        let worker = Worker::with_executor(move |_, _, _| {
+            started_tx.send(())?;
+            let _ = held.recv();
+            Ok(notice("late"))
+        });
+        let _reply = worker.submit(open_job("held"));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.wait_idle_within(Duration::from_millis(50));
     }
 
     #[test]
@@ -2166,6 +3578,8 @@ mod tests {
             split,
             partial: None,
             partial_unavailable: None,
+            lfs_missing: [false; 2],
+            lfs_failed: [None; 2],
         });
         assert_eq!(content.bytes(), source_bytes + metadata_bytes);
 
@@ -2309,6 +3723,7 @@ mod tests {
             generation: 1,
             latest: Arc::new(AtomicU64::new(1)),
             history: gitturtle_core::HistoryCancellation::default(),
+            preparation: None,
         }
     }
 
@@ -2437,6 +3852,8 @@ mod image_tests {
                 path: fixture.0.clone(),
                 scope: None,
                 limit: 500,
+                root: None,
+                git_dir: None,
             },
             &mut cache,
             &active(),
@@ -2476,6 +3893,14 @@ mod image_tests {
         let previous = read(500, &mut session);
         assert_eq!(previous.page.commits, expected[500..1000]);
         assert_eq!(previous.graph, expected_graph[500..1000]);
+        // A position past the end reads as the empty page at the end, and
+        // the last page's worth of rows up to it keeps its ancestry.
+        let past = read(5000, &mut session);
+        assert!(past.page.commits.is_empty(), "past the end");
+        assert_eq!((past.page.offset, past.page.next_offset), (1203, None));
+        let last = read(703, &mut session);
+        assert_eq!(last.page.commits, expected[703..]);
+        assert_eq!(last.graph, expected_graph[703..]);
         execute(Job::ReleaseHistory, &mut cache, &active(), &mut session).unwrap();
         assert!(session.history.is_none());
     }
@@ -2562,6 +3987,7 @@ mod image_tests {
             generation: 1,
             latest: Arc::new(AtomicU64::new(1)),
             history: gitturtle_core::HistoryCancellation::default(),
+            preparation: None,
         }
     }
 
@@ -2926,6 +4352,7 @@ mod image_tests {
             metadata,
             error,
             vanished,
+            ..
         } = refresh.snapshot.unwrap().unwrap()
         else {
             panic!("missing scopes must retain displayed history")
@@ -2948,8 +4375,8 @@ mod image_tests {
         assert!(
             metadata
                 .refs
-                .values()
-                .flatten()
+                .commits()
+                .flat_map(|refs| &refs.names)
                 .all(|name| name != "departing")
         );
         assert_eq!(metadata.worktrees.len(), 1);
@@ -3125,6 +4552,7 @@ mod image_tests {
             old: ImageSide {
                 animation: None,
                 captured: None,
+                system_preview: None,
                 literal_source: None,
                 image: Some(preview),
                 render: Some(rendered),
@@ -3136,6 +4564,7 @@ mod image_tests {
             new: ImageSide {
                 animation: None,
                 captured: None,
+                system_preview: None,
                 literal_source: None,
                 image: None,
                 render: None,
@@ -3146,6 +4575,232 @@ mod image_tests {
             .into(),
         };
         assert_eq!(content.bytes(), expected_bytes);
+    }
+
+    /// A comparison preview chosen again while its image is still decoded
+    /// in this process, a phase that checks nothing until it ends, is
+    /// answered by that preparation, even after another file was chosen in
+    /// between and superseded it: the reader prepares it once and never
+    /// prepares the file chosen in between. A preparation whose decode ended
+    /// superseded has stopped, so choosing its file again prepares it anew.
+    /// Chosen again, a preview was prepared from the start each time: an
+    /// image's bytes read and decoded twice.
+    #[test]
+    fn a_preview_chosen_again_while_it_is_prepared_is_prepared_once() {
+        use futures::executor::block_on;
+        use std::sync::{atomic::AtomicBool, mpsc};
+
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let preview = |name: &str| Job::Preview {
+            repo: repo.clone(),
+            file: FileChange {
+                old_path: None,
+                new_path: Some(name.into()),
+                old_oid: None,
+                new_oid: Some("2".repeat(40)),
+                status: gitturtle_core::ChangeStatus::Added,
+                old_mode: "000000".into(),
+                new_mode: "100644".into(),
+            },
+            origins: Default::default(),
+        };
+        let shown = |output: Output| match output {
+            Output::Preview(content, _) => match &*content {
+                Content::Notice(name) => name.clone(),
+                _ => panic!("expected the test's notice"),
+            },
+            _ => panic!("expected a preview"),
+        };
+        let (started_tx, started) = mpsc::channel();
+        let (checked_tx, checked) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        // Holds the next preparation of "slow.png" in a phase that checks
+        // nothing until it ends, as an image decoded in this process does,
+        // until released; with `pause` set it then reports whether that
+        // phase ended answering and waits once more before it ends.
+        let hold = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(AtomicBool::new(false));
+        let (held, paused) = (Arc::clone(&hold), Arc::clone(&pause));
+        let worker = Worker::with_executor(move |job, _, cancellation| {
+            let Job::Preview { file, .. } = job else {
+                unreachable!("the test asks for previews only")
+            };
+            let name = file.path().to_string_lossy().into_owned();
+            if name == "slow.png" && held.swap(false, Ordering::AcqRel) {
+                let decoded = cancellation.unobserved(|| {
+                    let _ = started_tx.send(name.clone());
+                    released.recv_timeout(Duration::from_secs(10))
+                });
+                if paused.swap(false, Ordering::AcqRel) {
+                    checked_tx.send(decoded.is_ok())?;
+                    released.recv_timeout(Duration::from_secs(10))?;
+                }
+                decoded??;
+            } else {
+                started_tx.send(name.clone())?;
+            }
+            cancellation.check()?;
+            Ok(Output::Preview(
+                Arc::new(Content::Notice(name)),
+                Duration::ZERO,
+            ))
+        });
+        let next_started = || started.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        // Chosen, another chosen, then chosen again while it is prepared.
+        hold.store(true, Ordering::Release);
+        let first = worker.submit(preview("slow.png"));
+        assert_eq!(next_started(), "slow.png");
+        let mut between = worker.submit(preview("other.png"));
+        let again = worker.submit(preview("slow.png"));
+        assert!(
+            between.try_recv().is_err(),
+            "the file chosen in between is never read"
+        );
+        release.send(()).unwrap();
+        assert_eq!(shown(block_on(again).unwrap().unwrap()), "slow.png");
+        worker.wait_idle();
+        assert_eq!(
+            started.try_iter().collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "slow.png is prepared once, other.png never"
+        );
+        assert!(
+            !matches!(block_on(first), Ok(Ok(_))),
+            "the request the preparation began for is answered no more"
+        );
+        assert_eq!(worker.preparations(), 1);
+
+        // Stopped as its decode ends superseded, a preparation is not taken
+        // over.
+        hold.store(true, Ordering::Release);
+        pause.store(true, Ordering::Release);
+        let first = worker.submit(preview("slow.png"));
+        assert_eq!(next_started(), "slow.png");
+        let _between = worker.submit(preview("other.png"));
+        release.send(()).unwrap();
+        assert!(
+            !checked.recv_timeout(Duration::from_secs(10)).unwrap(),
+            "its decode ends superseded"
+        );
+        let again = worker.submit(preview("slow.png"));
+        release.send(()).unwrap();
+        assert!(
+            block_on(first).unwrap().is_err(),
+            "the stopped preparation ends superseded"
+        );
+        assert_eq!(
+            next_started(),
+            "slow.png",
+            "chosen again, it is prepared anew"
+        );
+        assert_eq!(shown(block_on(again).unwrap().unwrap()), "slow.png");
+        worker.wait_idle();
+        assert_eq!(worker.preparations(), 3);
+    }
+
+    /// A comparison preview's work that watches the request's cancellation
+    /// token, as a Markdown document's local images do as they are captured
+    /// (`markdown_view::capture_assets`: its Git reads, which the token's
+    /// cancellation terminates, and each image's check), stops as soon as
+    /// another file is chosen, as Back cancels the read, and as the window's
+    /// worker goes with its tab: the token is cancelled then, as any read's
+    /// is. Such work is never taken over: choosing its file again prepares it
+    /// anew. Kept as a preparation another request could take over, the
+    /// preview once left the token alone, so the capture ran to its end and
+    /// the next file's preview waited behind it.
+    #[test]
+    fn superseding_back_and_closing_stop_a_previews_token_watching_work() {
+        use futures::executor::block_on;
+        use std::sync::mpsc;
+
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let preview = |name: &str| Job::Preview {
+            repo: repo.clone(),
+            file: FileChange {
+                old_path: None,
+                new_path: Some(name.into()),
+                old_oid: None,
+                new_oid: Some("2".repeat(40)),
+                status: gitturtle_core::ChangeStatus::Added,
+                old_mode: "000000".into(),
+                new_mode: "100644".into(),
+            },
+            origins: Default::default(),
+        };
+        // "capture.md" stands for a document whose images are captured: it
+        // watches only the token, for up to ten seconds, and reports whether
+        // the token was cancelled.
+        let (started_tx, started) = mpsc::channel();
+        let (stopped_tx, stopped) = mpsc::channel();
+        let worker = Worker::with_executor(move |job, _, cancellation| {
+            let Job::Preview { file, .. } = job else {
+                unreachable!("the test asks for previews only")
+            };
+            let name = file.path().to_string_lossy().into_owned();
+            started_tx.send(name.clone())?;
+            if name == "capture.md" {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !cancellation.history.is_cancelled() && Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                stopped_tx.send(cancellation.history.is_cancelled())?;
+            }
+            cancellation.check()?;
+            Ok(Output::Preview(
+                Arc::new(Content::Notice(name)),
+                Duration::ZERO,
+            ))
+        });
+        fn next<T>(receiver: &mpsc::Receiver<T>) -> T {
+            receiver.recv_timeout(Duration::from_secs(20)).unwrap()
+        }
+
+        // Another file chosen, then the first again: the capture stops at
+        // once and its file is prepared anew. Once the capture has stopped
+        // the reader may start the file chosen in between before the first is
+        // chosen again, as it does whenever the test is slow to choose it;
+        // that file is then superseded in turn, and answers, if at all, only
+        // for itself.
+        let first = worker.submit(preview("capture.md"));
+        assert_eq!(next(&started), "capture.md");
+        let between = worker.submit(preview("other.md"));
+        assert!(next(&stopped), "choosing another file stops the capture");
+        let again = worker.submit(preview("capture.md"));
+        assert!(block_on(first).unwrap().is_err());
+        let mut restarted = next(&started);
+        let between_started = restarted == "other.md";
+        if between_started {
+            restarted = next(&started);
+        }
+        assert_eq!(restarted, "capture.md", "chosen again, prepared anew");
+        if let Ok(Ok(Output::Preview(content, _))) = block_on(between) {
+            assert!(
+                matches!(&*content, Content::Notice(name) if name == "other.md"),
+                "the file chosen in between answers only for itself"
+            );
+        }
+        // Back cancels the read.
+        worker.cancel();
+        assert!(next(&stopped), "Back stops the capture");
+        assert!(block_on(again).unwrap().is_err());
+        worker.wait_idle();
+        // The reader counts a preparation as it takes the request and checks
+        // the request before the work starts, so the file chosen in between
+        // may be counted, stopped before it reports starting.
+        let preparations = worker.preparations();
+        assert!(
+            (2 + u64::from(between_started)..=3).contains(&preparations),
+            "{preparations} preparations, the file chosen in between started: {between_started}"
+        );
+
+        // The tab closes, and its worker goes.
+        let _closing = worker.submit(preview("capture.md"));
+        assert_eq!(next(&started), "capture.md");
+        drop(worker);
+        assert!(next(&stopped), "closing the tab stops the capture");
     }
 
     fn added_file(fixture: &Fixture, name: &str, bytes: &[u8]) -> FileChange {
@@ -3524,7 +5179,7 @@ mod image_tests {
                 assert!(unavailable.present && unavailable.model.is_none());
                 let error = unavailable.error.as_deref().unwrap();
                 assert!(error.contains(if corrupt {
-                    "SHA-256 verification"
+                    "local copy of this Git LFS object is damaged"
                 } else {
                     "unavailable in the local store"
                 }));
@@ -3537,6 +5192,12 @@ mod image_tests {
                     Some(pointers[unavailable_side].as_str())
                 );
                 let targets = crate::lfs_download::preview_targets(&content, &file);
+                if corrupt {
+                    // A download is refused for a local object that fails
+                    // verification, so none is offered.
+                    assert!(targets.is_empty());
+                    continue;
+                }
                 assert_eq!(targets.len(), 1);
                 assert_eq!(targets[0].0, unavailable_side);
                 assert_eq!(targets[0].1.pointer, pointers[unavailable_side].as_bytes());
@@ -3823,7 +5484,7 @@ mod image_tests {
                 &gitturtle_core::HistoryCancellation::default(),
             )
             .unwrap();
-        let Output::Preview(quick, _) = execute(
+        let Output::TrackedPreview { content: quick, .. } = execute(
             Job::TrackedPreview {
                 repo,
                 entry: paths.entries[0].clone(),
@@ -3861,6 +5522,45 @@ mod image_tests {
         assert_eq!(new.captured.as_deref(), Some(SVG));
         assert_eq!(new.literal_source.as_deref().unwrap().as_bytes(), SVG);
         assert!(image.bytes() >= SVG.len() * 2 + 8);
+    }
+
+    /// Whether a side offers Open in default app is decided here, with its
+    /// captured bytes and from them alone: a GIF named like a launcher and a
+    /// PDF named like a script offer their own types, and SVG and audio,
+    /// whatever their names, offer nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_default_app_offer_is_decided_with_the_captured_bytes() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let gif = include_bytes!("../../preview/tests/fixtures/disposal-transparency.gif");
+        let content = captured_preview(&repo, added_file(&fixture, "launcher.desktop", gif));
+        let Content::Images { old, new } = &*content else {
+            panic!("GIF magic routes to images")
+        };
+        assert_eq!(old.system_preview, None, "an absent side offers nothing");
+        let offer = new.system_preview.expect("a GIF offers the action");
+        assert!(offer.tooltip().contains(" as a GIF image "));
+        let svg = captured_preview(&repo, added_file(&fixture, "picture.png", SVG));
+        let Content::Images { new, .. } = &*svg else {
+            panic!("content should identify SVG")
+        };
+        assert!(new.captured.is_some());
+        assert_eq!(new.system_preview, None);
+        let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
+        let rich = captured_preview(&repo, added_file(&fixture, "install.sh", pdf));
+        let Content::Rich(preview) = &*rich else {
+            panic!("PDF is a rich side")
+        };
+        let offer = preview.new.system_preview.expect("PDF offers the action");
+        assert!(offer.tooltip().contains(" as a PDF document "));
+        let wav = b"RIFF\x24\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\0\0\0\0";
+        let audio = captured_preview(&repo, added_file(&fixture, "sound.wav", wav));
+        let Content::Rich(preview) = &*audio else {
+            panic!("WAV is captured metadata")
+        };
+        assert!(preview.new.captured.is_some());
+        assert_eq!(preview.new.system_preview, None, "audio offers nothing");
     }
 
     #[test]
@@ -3935,7 +5635,7 @@ mod image_tests {
                 &gitturtle_core::HistoryCancellation::default(),
             )
             .unwrap();
-        let Output::Preview(content, _) = execute(
+        let Output::TrackedPreview { content, .. } = execute(
             Job::TrackedPreview {
                 repo,
                 entry: paths.entries[0].clone(),
@@ -3981,6 +5681,798 @@ mod image_tests {
         assert!(old.message.is_some());
         assert!(new.render.is_some());
         assert_eq!(new.captured.as_deref(), Some(SVG));
+    }
+
+    /// Each side's Git LFS object is judged on its own. One over the preview
+    /// limit or failing verification stays its pointer and says which, and
+    /// the other side keeps its preview, where either once failed the whole
+    /// file. Neither offers a download, which could not help; a side whose
+    /// object is only missing still does. Text that keeps a pointer is never
+    /// cached: the store can change under the pointer.
+    #[test]
+    fn a_failing_lfs_side_leaves_the_other_sides_preview_and_offers_no_download() {
+        use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        // The pointer to `body`, with `stored` as its object in the local store.
+        let pointer = |body: &[u8], stored: Option<&[u8]>| {
+            let oid = format!("{:x}", Sha256::digest(body));
+            if let Some(stored) = stored {
+                let directory = fixture
+                    .0
+                    .join(".git/lfs/objects")
+                    .join(&oid[..2])
+                    .join(&oid[2..4]);
+                fs::create_dir_all(&directory).unwrap();
+                fs::write(directory.join(&oid), stored).unwrap();
+            }
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+                body.len()
+            )
+        };
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        // The right size and the wrong bytes.
+        let corrupt = pointer(b"the true text\n", Some(b"the wrong one\n"));
+        let local_body = "the local object\n";
+        let local = pointer(local_body.as_bytes(), Some(local_body.as_bytes()));
+        let missing = pointer(b"never stored\n", None);
+        let plain = "plain text\n";
+        let (oversize, corrupt, local, missing) = (
+            oversize.as_str(),
+            corrupt.as_str(),
+            local.as_str(),
+            missing.as_str(),
+        );
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let modified = |old: &[u8], new: &[u8]| FileChange {
+            old_path: Some("notes.txt".into()),
+            new_path: Some("notes.txt".into()),
+            old_oid: Some(fixture.blob(old)),
+            new_oid: Some(fixture.blob(new)),
+            status: ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        };
+        type Row<'a> = (
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a str,
+            [bool; 2],
+            [Option<gitturtle_core::LfsObjectFailure>; 2],
+            &'a [usize],
+        );
+        let rows: [Row<'_>; 7] = [
+            (
+                "over the limit first beside plain text",
+                oversize,
+                plain,
+                oversize,
+                plain,
+                [false, false],
+                [Some(TooLarge), None],
+                &[],
+            ),
+            (
+                "corrupt first beside plain text",
+                corrupt,
+                plain,
+                corrupt,
+                plain,
+                [false, false],
+                [Some(Corrupt), None],
+                &[],
+            ),
+            (
+                "plain text first beside a corrupt object",
+                plain,
+                corrupt,
+                plain,
+                corrupt,
+                [false, false],
+                [None, Some(Corrupt)],
+                &[],
+            ),
+            (
+                "corrupt first beside a local object",
+                corrupt,
+                local,
+                corrupt,
+                local_body,
+                [false, false],
+                [Some(Corrupt), None],
+                &[],
+            ),
+            (
+                "a local object first beside one over the limit",
+                local,
+                oversize,
+                local_body,
+                oversize,
+                [false, false],
+                [None, Some(TooLarge)],
+                &[],
+            ),
+            (
+                "over the limit first beside a missing object",
+                oversize,
+                missing,
+                oversize,
+                missing,
+                [false, true],
+                [Some(TooLarge), None],
+                &[1],
+            ),
+            (
+                "both unusable",
+                corrupt,
+                oversize,
+                corrupt,
+                oversize,
+                [false, false],
+                [Some(Corrupt), Some(TooLarge)],
+                &[],
+            ),
+        ];
+        for (name, old, new, shown_old, shown_new, absent, failed, offered) in rows {
+            let file = modified(old.as_bytes(), new.as_bytes());
+            let mut cache = PreviewCache::default();
+            let output = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file: file.clone(),
+                },
+                &mut cache,
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap_or_else(|error| panic!("{name}: the whole preview failed: {error:#}"));
+            let Output::Preview(content, _) = output else {
+                panic!("{name}: expected a preview")
+            };
+            let Content::Text {
+                old: drawn_old,
+                new: drawn_new,
+                lfs_missing,
+                lfs_failed,
+                ..
+            } = &*content
+            else {
+                panic!("{name}: expected text")
+            };
+            assert_eq!(drawn_old, shown_old, "{name}");
+            assert_eq!(drawn_new, shown_new, "{name}");
+            assert_eq!(*lfs_missing, absent, "{name}");
+            assert_eq!(*lfs_failed, failed, "{name}");
+            assert_eq!(
+                crate::lfs_download::preview_targets(&content, &file)
+                    .iter()
+                    .map(|(side, _)| *side)
+                    .collect::<Vec<_>>(),
+                offered,
+                "{name}: only a missing object offers a download"
+            );
+            assert!(cache.entries.is_empty(), "{name}: a pointer stays uncached");
+        }
+        // With no text to show beside the pointer the file is a notice, which
+        // still says what is wrong with the side that failed.
+        let file = modified(oversize.as_bytes(), b"\0binary\n");
+        let Output::Preview(content, _) = execute(
+            Job::Preview {
+                origins: Default::default(),
+                repo,
+                file,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected a preview")
+        };
+        let Content::Notice(message) = &*content else {
+            panic!("expected the binary comparison's notice")
+        };
+        assert!(
+            message.ends_with("\n\nBefore: this Git LFS object is over the 32 MiB preview limit."),
+            "{message}"
+        );
+    }
+
+    /// A notice saying a side's object is corrupt or its store unreadable is
+    /// not kept in the preview cache, since the store can change under the
+    /// same pointer and a repair has to show; one saying the object is over
+    /// the limit depends only on the pointer, so it may be kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_notice_about_the_local_store_is_read_again_and_one_about_the_pointer_is_kept() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let body = b"the true text\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let store = fixture.0.join(".git/lfs");
+        let directory = store.join("objects").join(&oid[..2]).join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        let object = directory.join(&oid);
+        let stored = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let binary = fixture.blob(b"\0binary\n");
+        let notice = |cache: &mut PreviewCache, old: &str| -> String {
+            let file = FileChange {
+                old_path: Some("notes.txt".into()),
+                new_path: Some("notes.txt".into()),
+                old_oid: Some(fixture.blob(old.as_bytes())),
+                new_oid: Some(binary.clone()),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                cache,
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected a preview")
+            };
+            // Once repaired the side resolves, and whatever the file then
+            // shows carries no notice about its object.
+            match &*content {
+                Content::Notice(message) => message.clone(),
+                _ => String::new(),
+            }
+        };
+
+        // Corrupt: the right size, the wrong bytes.
+        fs::write(&object, b"the wrong one\n").unwrap();
+        let mut cache = PreviewCache::default();
+        let says = notice(&mut cache, &stored);
+        assert!(says.contains("\n\nBefore: "), "{says}");
+        assert!(cache.entries.is_empty(), "a corrupt side is read again");
+        // Repaired, the same pointer no longer says so.
+        fs::write(&object, body).unwrap();
+        let repaired = notice(&mut cache, &stored);
+        assert!(!repaired.contains("Before:"), "{repaired}");
+
+        // A store that cannot be read, repaired the same way.
+        let mut cache = PreviewCache::default();
+        let real = fixture.0.join(".git/lfs-real");
+        fs::rename(&store, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &store).unwrap();
+        let says = notice(&mut cache, &stored);
+        assert!(
+            says.contains("the local Git LFS store could not be read"),
+            "{says}"
+        );
+        assert!(
+            cache.entries.is_empty(),
+            "an unreadable store is read again"
+        );
+        fs::remove_file(&store).unwrap();
+        fs::rename(&real, &store).unwrap();
+        let repaired = notice(&mut cache, &stored);
+        assert!(!repaired.contains("Before:"), "{repaired}");
+
+        // Over the limit is the pointer's own, so it may be kept.
+        let mut cache = PreviewCache::default();
+        let says = notice(&mut cache, &oversize);
+        assert!(says.contains("over the 32 MiB preview limit"), "{says}");
+        assert_eq!(cache.entries.len(), 1, "the pointer alone decides this one");
+    }
+
+    /// Whether a Markdown file is stored as a pointer on both sides is judged
+    /// as stored, not from the text a local object resolved to: with one
+    /// object local the other side was the only pointer left in the text, so
+    /// the file gained a Rendered view it never had. With both objects local
+    /// nothing is left a pointer and it renders as it always did, as does a
+    /// file with a side stored as regular text and an added file whose
+    /// object is local.
+    #[test]
+    fn a_markdown_file_stored_as_two_pointers_renders_only_with_both_objects_local() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        // `text`'s pointer, with its object in the local store if `local`.
+        let pointer = |text: &str, local: bool| {
+            let oid = format!("{:x}", Sha256::digest(text));
+            if local {
+                let directory = fixture
+                    .0
+                    .join(".git/lfs/objects")
+                    .join(&oid[..2])
+                    .join(&oid[2..4]);
+                fs::create_dir_all(&directory).unwrap();
+                fs::write(directory.join(&oid), text).unwrap();
+            }
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+                text.len()
+            )
+        };
+        let rendered = |old: Option<&str>, new: &str| {
+            let file = FileChange {
+                old_path: old.map(|_| "README.md".into()),
+                new_path: Some("README.md".into()),
+                old_oid: old.map(|old| fixture.blob(old.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: if old.is_some() {
+                    ChangeStatus::Modified
+                } else {
+                    ChangeStatus::Added
+                },
+                old_mode: if old.is_some() { "100644" } else { "000000" }.into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected a preview")
+            };
+            let Content::Text { markdown, .. } = &*content else {
+                panic!("expected text")
+            };
+            markdown.is_some()
+        };
+        let (before, after) = ("# Before\n", "# After\n");
+        for (name, old, new) in [
+            (
+                "only the old object local",
+                pointer(before, true),
+                pointer("# One\n", false),
+            ),
+            (
+                "only the new object local",
+                pointer("# Two\n", false),
+                pointer(after, true),
+            ),
+            (
+                "neither object local",
+                pointer("# Three\n", false),
+                pointer("# Four\n", false),
+            ),
+        ] {
+            assert!(!rendered(Some(&old), &new), "{name}");
+        }
+        assert!(
+            rendered(None, &pointer(after, true)),
+            "an added file with its object local"
+        );
+        for (name, old, new) in [
+            (
+                "both objects local",
+                pointer(before, true),
+                pointer(after, true),
+            ),
+            (
+                "a regular side beside a local object",
+                before.to_owned(),
+                pointer(after, true),
+            ),
+            (
+                "a regular side beside a missing object",
+                before.to_owned(),
+                pointer("# Five\n", false),
+            ),
+            (
+                "a local object beside a regular side",
+                pointer(before, true),
+                after.to_owned(),
+            ),
+        ] {
+            assert!(rendered(Some(&old), &new), "{name}");
+        }
+    }
+
+    /// An image side that stays its Git LFS pointer, whatever kept its object
+    /// from it, holds a pointer's text and no image, so it offers nothing to
+    /// open and its literal source copies as a pointer. An SVG, whose
+    /// literal source is the image itself, keeps both.
+    #[test]
+    fn an_image_side_that_stays_its_pointer_offers_nothing_to_open() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let body = b"the true object\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&oid), b"a wrong object!\n").unwrap();
+        let corrupt = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let sides = |path: &str, old: &str, new: &str| {
+            let file = FileChange {
+                old_path: Some(path.into()),
+                new_path: Some(path.into()),
+                old_oid: Some(fixture.blob(old.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("expected a preview")
+            };
+            content
+        };
+        for (name, old, new) in [
+            ("over the limit and corrupt", &oversize, &corrupt),
+            ("missing and over the limit", &missing, &oversize),
+        ] {
+            let content = sides("picture.png", old, new);
+            let Content::Images {
+                old: before,
+                new: after,
+            } = &*content
+            else {
+                panic!("{name}: expected the image comparison")
+            };
+            for (side, pointer) in [(before, old), (after, new)] {
+                assert_eq!(
+                    side.literal_source.as_deref(),
+                    Some(pointer.as_str()),
+                    "{name}"
+                );
+                assert!(side.captured.is_none(), "{name}: no bytes to hand over");
+                assert!(side.system_preview.is_none(), "{name}: nothing to open");
+                assert!(side.literal_is_pointer(), "{name}: copies as a pointer");
+                assert_eq!(
+                    crate::image_compare::literal_copy_words(side),
+                    (
+                        "Copy pointer",
+                        "Copy this Git LFS pointer's exact text",
+                        "LFS pointer"
+                    ),
+                    "{name}: its tooltip and feedback say so too"
+                );
+            }
+        }
+        const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";
+        let content = sides("picture.svg", SVG, "<svg/>");
+        let Content::Images { old: svg, .. } = &*content else {
+            panic!("expected the image comparison")
+        };
+        assert!(svg.literal_source.is_some() && svg.captured.is_some());
+        assert!(!svg.literal_is_pointer(), "an SVG's source is its image");
+        assert_eq!(
+            crate::image_compare::literal_copy_words(svg).0,
+            "Copy source"
+        );
+        assert_eq!(crate::image_compare::literal_copy_words(svg).2, "source");
+    }
+
+    /// A failure of the repository itself, as the read of a pointer's object
+    /// meets it, leaves the side its pointer as any other failure does: its
+    /// text is not captured as though it were the image.
+    #[test]
+    fn an_image_side_whose_object_cannot_be_read_at_all_captures_nothing() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        fs::remove_dir_all(fixture.0.join(".git")).unwrap();
+        let side = working_image_side(
+            &repo,
+            pointer.clone().into_bytes(),
+            true,
+            "picture.png",
+            &active(),
+        );
+        assert!(side.message.is_some(), "the read's failure is said");
+        assert!(side.captured.is_none(), "{:?}", side.message);
+        assert!(side.system_preview.is_none(), "nothing to open");
+        assert_eq!(side.literal_source.as_deref(), Some(pointer.as_str()));
+    }
+
+    /// An image's or a model's side whose Git LFS object cannot be used says
+    /// what is wrong in the words every side shares, with no raw error and
+    /// no mention of a download, which could not help.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_image_or_model_side_says_the_shared_words() {
+        use sha2::{Digest, Sha256};
+        const OVER: &str = "This Git LFS object is over the 32 MiB preview limit.";
+        const DAMAGED: &str = "The local copy of this Git LFS object is damaged.";
+        const UNREADABLE: &str = "The local Git LFS store could not be read.";
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let store = fixture.0.join(".git/lfs");
+        let body = b"the true object\n";
+        let oid = format!("{:x}", Sha256::digest(body));
+        let directory = store.join("objects").join(&oid[..2]).join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&oid), b"a wrong object!\n").unwrap();
+        let corrupt = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            body.len()
+        );
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let read = |path: &str, old: &str, new: &str| {
+            let file = FileChange {
+                old_path: Some(path.into()),
+                new_path: Some(path.into()),
+                old_oid: Some(fixture.blob(old.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("{path}: expected a preview")
+            };
+            content
+        };
+        let image = |old: &str, new: &str| {
+            let content = read("picture.png", old, new);
+            let Content::Images { old, new } = &*content else {
+                panic!("expected the image comparison")
+            };
+            (old.message.clone(), new.message.clone())
+        };
+        let model = |old: &str, new: &str| {
+            let content = read("model.glb", old, new);
+            let Content::Rich(comparison) = &*content else {
+                panic!("expected the model comparison")
+            };
+            (comparison.old.error.clone(), comparison.new.error.clone())
+        };
+        let owned = |words: &str| Some(words.to_owned());
+        let expected = (owned(OVER), owned(DAMAGED));
+        assert_eq!(image(&oversize, &corrupt), expected, "image");
+        assert_eq!(model(&oversize, &corrupt), expected, "model");
+        // A store that cannot be read says so of whichever side it reaches.
+        let real = fixture.0.join(".git/lfs-real");
+        fs::rename(&store, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &store).unwrap();
+        let expected = (owned(OVER), owned(UNREADABLE));
+        assert_eq!(image(&oversize, &corrupt), expected, "image, unreadable");
+        assert_eq!(model(&oversize, &corrupt), expected, "model, unreadable");
+    }
+
+    /// Mermaid is attached after the sides are marked, on both the route that
+    /// resolves a side and the one that keeps the stored texts, so Diagrams
+    /// says what is wrong with a failing side rather than that it is absent.
+    #[test]
+    fn a_failing_pointer_beside_mermaid_says_what_is_wrong_in_diagrams() {
+        use sha2::{Digest, Sha256};
+        let fixture = Fixture::new();
+        let oversize = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            "e".repeat(64),
+            33 * 1024 * 1024
+        );
+        let diagram = "flowchart LR\n  A --> B\n";
+        // A local pointer to the diagram, so that side resolves.
+        let oid = format!("{:x}", Sha256::digest(diagram));
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(&oid), diagram).unwrap();
+        let local = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            diagram.len()
+        );
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        for (name, new) in [
+            ("regular text", diagram),
+            ("a resolved object", local.as_str()),
+        ] {
+            let file = FileChange {
+                old_path: Some("flow.mmd".into()),
+                new_path: Some("flow.mmd".into()),
+                old_oid: Some(fixture.blob(oversize.as_bytes())),
+                new_oid: Some(fixture.blob(new.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("{name}: expected a preview")
+            };
+            let Content::Text {
+                diagrams: Some(diagrams),
+                ..
+            } = &*content
+            else {
+                panic!("{name}: the regular side draws")
+            };
+            assert_eq!(
+                diagrams.old.metadata.details,
+                [
+                    "This Git LFS object is over the 32 MiB preview limit; its stored text \
+                  is below."
+                ],
+                "{name}"
+            );
+            assert!(diagrams.new.pages[0].render.is_some(), "{name}");
+        }
+    }
+
+    /// The same stored texts with a side's object failing differently are not
+    /// the same content: what the side says depends on it, and it changes
+    /// without the pointer's text changing.
+    #[test]
+    fn a_change_in_how_an_lfs_side_failed_is_a_content_change() {
+        use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
+        let text = |failed: [Option<gitturtle_core::LfsObjectFailure>; 2]| {
+            let mut content = prepared_text("patch".into(), "old".into(), "new".into());
+            LfsSides {
+                missing: [false; 2],
+                failed,
+                ..Default::default()
+            }
+            .mark(&mut content);
+            content
+        };
+        assert!(content_unchanged(
+            &text([Some(Corrupt), None]),
+            &text([Some(Corrupt), None])
+        ));
+        assert!(!content_unchanged(
+            &text([Some(Corrupt), None]),
+            &text([Some(TooLarge), None])
+        ));
+        assert!(!content_unchanged(
+            &text([None, None]),
+            &text([Some(Corrupt), None])
+        ));
+    }
+
+    /// A Markdown file with one pointer side keeps its Rendered view: the
+    /// regular side renders, and the pointer side stays literal, saying what
+    /// its own object is: absent, or why it cannot be used.
+    #[test]
+    fn a_mixed_markdown_preview_renders_the_regular_side() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let pointer = |size: u64| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n",
+                "b".repeat(64)
+            )
+        };
+        for (name, stored, says, absent) in [
+            (
+                "missing",
+                pointer(42),
+                "This side's Git LFS object is not in the local store, and no download was \
+                 attempted; its stored text is below.",
+                true,
+            ),
+            (
+                "over the limit",
+                pointer(33 * 1024 * 1024),
+                "This Git LFS object is over the 32 MiB preview limit; its stored text \
+                 is below.",
+                false,
+            ),
+        ] {
+            let file = FileChange {
+                old_path: Some("README.md".into()),
+                new_path: Some("README.md".into()),
+                old_oid: Some(fixture.blob(b"# Before\n")),
+                new_oid: Some(fixture.blob(stored.as_bytes())),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let Output::Preview(content, _) = execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file: file.clone(),
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                &mut RepositorySession::default(),
+            )
+            .unwrap() else {
+                panic!("{name}: expected a preview")
+            };
+            let Content::Text {
+                markdown: Some(markdown),
+                lfs_missing,
+                ..
+            } = &*content
+            else {
+                panic!("{name}: a mixed file has a Rendered view")
+            };
+            assert!(
+                markdown.old.literal.is_none(),
+                "{name}: the regular side renders"
+            );
+            assert_eq!(markdown.new.literal.as_deref(), Some(says), "{name}");
+            assert_eq!(*lfs_missing, [false, absent], "{name}");
+            assert_eq!(
+                crate::lfs_download::preview_targets(&content, &file)
+                    .iter()
+                    .map(|(side, _)| *side)
+                    .collect::<Vec<_>>(),
+                if absent { vec![1] } else { Vec::new() },
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -4121,6 +6613,371 @@ mod image_tests {
         assert_eq!(cache.entries.len(), 1);
     }
 
+    /// With one object in the local store and the other missing, the text
+    /// shows the first and keeps the other's pointer, and nothing is cached:
+    /// the missing object can still arrive.
+    #[test]
+    fn lfs_text_preview_resolves_the_side_whose_object_is_local() {
+        let fixture = Fixture::new();
+        let local = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{LFS_OID}\nsize {}\n",
+            SVG.len()
+        );
+        let missing = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let directory = fixture
+            .0
+            .join(".git/lfs/objects")
+            .join(&LFS_OID[..2])
+            .join(&LFS_OID[2..4]);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(LFS_OID), SVG).unwrap();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let file = FileChange {
+            old_path: Some("source.txt".into()),
+            new_path: Some("source.txt".into()),
+            old_oid: Some(fixture.blob(local.as_bytes())),
+            new_oid: Some(fixture.blob(missing.as_bytes())),
+            status: ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        };
+        let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
+        let shown = execute(
+            Job::Preview {
+                origins: Default::default(),
+                repo,
+                file,
+            },
+            &mut cache,
+            &active(),
+            &mut session,
+        )
+        .unwrap();
+        assert!(
+            matches!(shown, Output::Preview(content, _) if matches!(content.as_ref(), Content::Text { old, new, partial, lfs_missing, .. } if old.as_bytes() == SVG && new == &missing && partial.is_none() && *lfs_missing == [false, true]))
+        );
+        assert!(cache.entries.is_empty());
+    }
+
+    /// A pointer whose object the local store lacks, beside a binary blob,
+    /// leaves the comparison a notice that shows neither side; it is not
+    /// cached either, whichever side the pointer is on, so an object that
+    /// arrives is read the next time: the object's text beside the binary
+    /// blob, cached as any comparison whose sides both resolved.
+    #[test]
+    fn a_missing_lfs_side_beside_a_binary_notice_is_not_cached() {
+        use sha2::{Digest, Sha256};
+        let object = b"downloaded text\n";
+        let oid = format!("{:x}", Sha256::digest(object));
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            object.len()
+        );
+        let binary = b"\0\x01\x02binary\xff";
+        for pointer_is_old in [true, false] {
+            let at = if pointer_is_old {
+                "the pointer before"
+            } else {
+                "the pointer after"
+            };
+            let fixture = Fixture::new();
+            let repo = GitRepository::open(&fixture.0).unwrap();
+            let (old, new) = if pointer_is_old {
+                (pointer.as_bytes(), &binary[..])
+            } else {
+                (&binary[..], pointer.as_bytes())
+            };
+            let file = FileChange {
+                old_path: Some("data.bin".into()),
+                new_path: Some("data.bin".into()),
+                old_oid: Some(fixture.blob(old)),
+                new_oid: Some(fixture.blob(new)),
+                status: ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            };
+            let mut cache = PreviewCache::default();
+            let mut session = RepositorySession::default();
+            let mut preview = |cache: &mut PreviewCache| match execute(
+                Job::Preview {
+                    origins: Default::default(),
+                    repo: repo.clone(),
+                    file: file.clone(),
+                },
+                cache,
+                &active(),
+                &mut session,
+            )
+            .unwrap()
+            {
+                Output::Preview(content, _) => content,
+                _ => panic!("{at}: expected a preview"),
+            };
+            let missing = preview(&mut cache);
+            assert!(
+                matches!(missing.as_ref(), Content::Notice(_)),
+                "{at}: the comparison is a notice"
+            );
+            assert!(cache.entries.is_empty(), "{at}: nothing is cached");
+            let directory = fixture
+                .0
+                .join(".git/lfs/objects")
+                .join(&oid[..2])
+                .join(&oid[2..4]);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(&oid), object).unwrap();
+            let resolved = preview(&mut cache);
+            let side = if pointer_is_old { 0 } else { 1 };
+            assert!(
+                matches!(resolved.as_ref(), Content::Rich(preview)
+                    if [&preview.old, &preview.new][side].captured.as_deref() == Some(&object[..])),
+                "{at}: the arrived object is read"
+            );
+            assert_eq!(
+                cache.entries.len(),
+                1,
+                "{at}: both sides resolved are cached"
+            );
+        }
+    }
+
+    /// A committed text file whose working copy is now a Git LFS pointer to
+    /// an object the local store lacks, and that pointer's text.
+    fn working_missing_pointer(fixture: &Fixture) -> String {
+        fs::write(fixture.0.join("notes.txt"), "before\n").unwrap();
+        fixture.git(&["add", "notes.txt"], b"");
+        fixture.git(
+            &["-c", "commit.gpgsign=false", "commit", "-qm", "Notes"],
+            b"",
+        );
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        fs::write(fixture.0.join("notes.txt"), &pointer).unwrap();
+        pointer
+    }
+
+    /// The side a Working preview found absent is marked, so it offers its
+    /// download: unmarked, the action silently goes.
+    #[test]
+    fn a_working_preview_marks_a_missing_lfs_object_and_offers_its_download() {
+        let fixture = Fixture::new();
+        let pointer = working_missing_pointer(&fixture);
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let entry = repo.status().unwrap().entries.remove(0);
+        let Output::WorkingPreview(file, content, _) = execute(
+            Job::WorkingPreview {
+                head: None,
+                repo,
+                entry,
+                area: gitturtle_core::ChangeArea::Unstaged,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected working preview")
+        };
+        let Content::Text {
+            new, lfs_missing, ..
+        } = &*content
+        else {
+            panic!("expected the pointer's text")
+        };
+        assert_eq!(new, &pointer);
+        assert_eq!(*lfs_missing, [false, true]);
+        let targets = crate::lfs_download::preview_targets(&content, &file);
+        assert_eq!(
+            targets.iter().map(|(side, _)| *side).collect::<Vec<_>>(),
+            [1]
+        );
+    }
+
+    /// So is the side Quick Open's working source found absent.
+    #[test]
+    fn quick_open_marks_a_missing_lfs_object_and_offers_its_download() {
+        let fixture = Fixture::new();
+        let pointer = working_missing_pointer(&fixture);
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let paths = repo
+            .search_tracked_paths(
+                &gitturtle_core::PathScope::Worktree,
+                "notes",
+                &gitturtle_core::HistoryCancellation::default(),
+            )
+            .unwrap();
+        let entry = paths.entries[0].clone();
+        let file = repo.tracked_path_change(&entry);
+        let Output::TrackedPreview { content, .. } = execute(
+            Job::TrackedPreview {
+                repo,
+                entry,
+                scope: gitturtle_core::PathScope::Worktree,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap() else {
+            panic!("expected quick source")
+        };
+        let Content::Text {
+            new, lfs_missing, ..
+        } = &*content
+        else {
+            panic!("expected the pointer's text")
+        };
+        assert_eq!(new, &pointer);
+        assert_eq!(*lfs_missing, [false, true]);
+        let targets = crate::lfs_download::preview_targets(&content, &file);
+        assert_eq!(
+            targets.iter().map(|(side, _)| *side).collect::<Vec<_>>(),
+            [1]
+        );
+    }
+
+    /// The same stored texts with another side's object missing are not the
+    /// same content: what the file says and offers depends on it, and it
+    /// changes without the pointer's text changing.
+    #[test]
+    fn a_change_in_which_lfs_object_is_missing_is_a_content_change() {
+        let text = |missing: [bool; 2]| {
+            let mut content = prepared_text("patch".into(), "old".into(), "new".into());
+            LfsSides {
+                missing,
+                ..Default::default()
+            }
+            .mark(&mut content);
+            content
+        };
+        assert!(content_unchanged(
+            &text([true, false]),
+            &text([true, false])
+        ));
+        assert!(!content_unchanged(
+            &text([true, false]),
+            &text([true, true])
+        ));
+    }
+
+    /// A snapshot names each commit's tags after its branches, by name, an
+    /// annotated tag at the commit it peels to; a tag of a blob or a tree
+    /// names no commit. Each commit's strings are prepared once: the
+    /// tooltip's lines and the accessible name's list say "tag ‹name›",
+    /// "+N" counts the tags, and the most references any commit has is kept.
+    #[test]
+    fn snapshots_name_each_commits_tags_after_its_branches() {
+        let fixture = Fixture::new();
+        fixture.git(&["symbolic-ref", "HEAD", "refs/heads/main"], &[]);
+        let tree = fixture.git(&["mktree"], &[]);
+        let first = fixture.git(&["commit-tree", &tree, "-m", "first"], &[]);
+        let second = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "second"], &[]);
+        fixture.git(&["update-ref", "refs/heads/main", &second], &[]);
+        fixture.git(&["update-ref", "refs/heads/side", &first], &[]);
+        fixture.git(&["tag", "v0.1", &first], &[]);
+        fixture.git(&["tag", "-a", "-m", "Release", "v1.0", &second], &[]);
+        fixture.git(&["tag", "a-first", &first], &[]);
+        let blob = fixture.blob(b"notes\n");
+        fixture.git(&["tag", "blob", &blob], &[]);
+        fixture.git(&["tag", "-a", "-m", "Tree", "tree", &tree], &[]);
+        let snapshot = read_snapshot(
+            fixture.0.clone(),
+            (None, None),
+            None,
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap();
+        let names = |oid: &str| {
+            snapshot.refs.get(oid).map(|refs| {
+                refs.names
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(names(&first).unwrap(), ["side", "a-first", "v0.1"]);
+        assert_eq!(names(&second).unwrap(), ["main", "v1.0"]);
+        assert_eq!(names(&blob), None);
+        assert_eq!(names(&tree), None);
+        let first = snapshot.refs.get(&first).unwrap();
+        assert_eq!(first.branches, 1);
+        assert!(!first.leads_with_tag());
+        assert_eq!(first.more.as_deref(), Some("+2"));
+        assert_eq!(first.lines.as_ref(), "side\ntag a-first\ntag v0.1");
+        assert_eq!(first.listed.as_ref(), "side, tag a-first, tag v0.1");
+        assert_eq!(snapshot.refs.widest(), 3);
+
+        // A commit with tags alone leads with a tag.
+        fixture.git(&["update-ref", "-d", "refs/heads/side"], &[]);
+        let snapshot = read_snapshot(
+            fixture.0.clone(),
+            (None, None),
+            None,
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap();
+        let first = snapshot.refs.get(&snapshot.commits[1].oid).unwrap();
+        assert!(first.leads_with_tag());
+        assert_eq!(first.listed.as_ref(), "tag a-first, tag v0.1");
+        assert_eq!(snapshot.refs.widest(), 2);
+    }
+
+    /// The tag read runs beside the history page; a tag list Git cannot give,
+    /// here because of a symbolic tag reference, leaves the snapshot with its
+    /// history and branches and without any tags.
+    #[test]
+    fn a_tag_list_git_cannot_give_leaves_history_without_tags() {
+        let fixture = Fixture::new();
+        fixture.git(&["symbolic-ref", "HEAD", "refs/heads/main"], &[]);
+        let tree = fixture.git(&["mktree"], &[]);
+        let first = fixture.git(&["commit-tree", &tree, "-m", "first"], &[]);
+        let second = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "second"], &[]);
+        fixture.git(&["update-ref", "refs/heads/main", &second], &[]);
+        fixture.git(&["tag", "v1.0", &second], &[]);
+        fixture.git(&["tag", "v0.1", &first], &[]);
+        fixture.git(
+            &["symbolic-ref", "refs/tags/latest", "refs/heads/main"],
+            &[],
+        );
+        let repository = GitRepository::open(&fixture.0).unwrap();
+        assert!(repository.tags().is_err(), "Git cannot give this tag list");
+        let snapshot = read_snapshot(
+            fixture.0.clone(),
+            (None, None),
+            None,
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot
+                .commits
+                .iter()
+                .map(|commit| commit.oid.as_str())
+                .collect::<Vec<_>>(),
+            [second.as_str(), first.as_str()]
+        );
+        let names = snapshot.refs.get(&second).unwrap();
+        assert_eq!(names.names, ["main"]);
+        assert_eq!(names.listed.as_ref(), "main");
+        assert_eq!(snapshot.refs.get(&first), None);
+        assert_eq!(snapshot.refs.widest(), 1);
+    }
+
     #[test]
     fn refreshing_branch_and_worktree_scopes_resolves_external_tip_movement() {
         let fixture = Fixture::new();
@@ -4135,6 +6992,7 @@ mod image_tests {
         let mut session = RepositorySession::default();
         let before = read_snapshot(
             fixture.0.clone(),
+            (None, None),
             Some(&scope),
             MissingScope::Fail,
             10,
@@ -4151,6 +7009,7 @@ mod image_tests {
         for scope in [&scope, &worktree_scope] {
             let refreshed = read_snapshot(
                 fixture.0.clone(),
+                (None, None),
                 Some(scope),
                 MissingScope::Fail,
                 10,
@@ -4165,6 +7024,7 @@ mod image_tests {
         fixture.git(&["update-ref", "-d", "refs/heads/main"], &[]);
         let error = read_snapshot(
             fixture.0.clone(),
+            (None, None),
             Some(&scope),
             MissingScope::Fail,
             10,
@@ -4201,6 +7061,8 @@ mod image_tests {
                     path: fixture.0.clone(),
                     scope: Some(scope),
                     limit: 10,
+                    root: None,
+                    git_dir: None,
                 },
                 &mut PreviewCache::default(),
                 &active(),
@@ -4260,6 +7122,7 @@ mod image_tests {
         // Quiet refresh keeps failing so the displayed history is retained.
         let error = read_snapshot(
             fixture.0.clone(),
+            (None, None),
             Some(&Scope::Branch {
                 name: "departing".into(),
                 remote: false,
@@ -4283,7 +7146,11 @@ mod image_tests {
             let new_blob = replacement.blob(b"replacement repository object\n");
             let mut session = RepositorySession::default();
             assert_eq!(
-                session.open(&fixture.0).unwrap().blob(&old_blob).unwrap(),
+                session
+                    .open(&fixture.0, None, None)
+                    .unwrap()
+                    .blob(&old_blob)
+                    .unwrap(),
                 b"old repository object\n"
             );
             let retained = Arc::downgrade(&session.current.as_ref().unwrap().repository);
@@ -4295,7 +7162,7 @@ mod image_tests {
             };
             fs::rename(&original, preserved.path().join("original")).unwrap();
             fs::rename(&incoming, &original).unwrap();
-            let reopened = session.open(&fixture.0).unwrap();
+            let reopened = session.open(&fixture.0, None, None).unwrap();
             assert_eq!(
                 reopened.blob(&new_blob).unwrap(),
                 b"replacement repository object\n"
@@ -4327,7 +7194,11 @@ mod image_tests {
         fs::write(&git_link, old_pointer).unwrap();
         let mut session = RepositorySession::default();
         assert_eq!(
-            session.open(&fixture.0).unwrap().blob(&old_blob).unwrap(),
+            session
+                .open(&fixture.0, None, None)
+                .unwrap()
+                .blob(&old_blob)
+                .unwrap(),
             b"old linked repository object\n"
         );
         let before = fs::metadata(&git_link).unwrap();
@@ -4342,7 +7213,11 @@ mod image_tests {
         assert_eq!(before.modified().unwrap(), after.modified().unwrap());
         assert!(original.is_dir() && incoming.is_dir());
         assert_eq!(
-            session.open(&fixture.0).unwrap().blob(&new_blob).unwrap(),
+            session
+                .open(&fixture.0, None, None)
+                .unwrap()
+                .blob(&new_blob)
+                .unwrap(),
             b"new linked repository object\n"
         );
     }
@@ -4356,7 +7231,7 @@ mod image_tests {
         fixture.git(&["update-ref", "refs/heads/main", &oid], &[]);
         let blob = fixture.blob(b"retained object reader\n");
         let mut session = RepositorySession::default();
-        let ui_repository = session.open(&fixture.0).unwrap();
+        let ui_repository = session.open(&fixture.0, None, None).unwrap();
         assert_eq!(
             ui_repository.blob(&blob).unwrap(),
             b"retained object reader\n"
@@ -4371,7 +7246,7 @@ mod image_tests {
         let nested = fixture.0.join("nested/directory");
         fs::create_dir_all(&nested).unwrap();
         for path in [&fixture.0, &nested] {
-            let reopened = session.open(path).unwrap();
+            let reopened = session.open(path, None, None).unwrap();
             assert!(Arc::ptr_eq(
                 &retained.upgrade().unwrap(),
                 &session.current.as_ref().unwrap().repository,
@@ -4391,7 +7266,7 @@ mod image_tests {
             ],
             &[],
         );
-        let linked_repo = session.open(&linked).unwrap();
+        let linked_repo = session.open(&linked, None, None).unwrap();
         assert!(
             retained.upgrade().is_none(),
             "old retained owner is released on session replacement"
@@ -4407,7 +7282,7 @@ mod image_tests {
                 .name,
             "feature"
         );
-        let main_repo = session.open(&fixture.0).unwrap();
+        let main_repo = session.open(&fixture.0, None, None).unwrap();
         assert_eq!(
             main_repo
                 .branches()
@@ -4418,5 +7293,1475 @@ mod image_tests {
                 .name,
             "main"
         );
+    }
+
+    /// A tab's passive reopen finds the repository it opened or none. With
+    /// the inner repository's `.git` gone, Git discovery from its root finds
+    /// the work tree enclosing it: an explicit open takes that work tree, as
+    /// a folder inside one opens it, while a quiet read from a session that
+    /// retained the inner repository, Changes' working read and a reopen by
+    /// the captured root each fail as `RepositoryGone`, naming it, and read
+    /// nothing of it, the enclosing repository's working state included.
+    #[test]
+    fn a_reopen_finds_the_repository_it_opened_or_none() {
+        let outer = Fixture::new();
+        let inner = outer.0.join("inner");
+        fs::create_dir(&inner).unwrap();
+        let init = Fixture::command(&inner)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let mut session = RepositorySession::default();
+        let opened = session.open(&inner, None, None).unwrap();
+        let root = opened.path().to_owned();
+        assert_eq!(session.open(&root, Some(&root), None).unwrap().path(), root);
+        assert!(WorkingState::read(&opened).is_ok());
+
+        fs::rename(inner.join(".git"), outer.0.join("inner-git-away")).unwrap();
+        fs::write(outer.0.join("outer-change.txt"), "outer\n").unwrap();
+        let outer_root = outer.0.canonicalize().unwrap();
+        let gone = |error: anyhow::Error| {
+            let gone = error
+                .downcast::<RepositoryGone>()
+                .expect("the repository is gone");
+            assert_eq!(gone.path, root);
+            assert_eq!(
+                gone.found.map(|found| found.canonicalize().unwrap()),
+                Some(outer_root.clone()),
+                "it names the repository Git finds there"
+            );
+        };
+        let quiet = execute(
+            Job::QuietRefresh {
+                repo: opened.clone(),
+                scope: None,
+                limit: 10,
+                history: false,
+                selected: None,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut session,
+        );
+        match quiet {
+            Ok(_) => panic!("a quiet read read the enclosing repository"),
+            Err(error) => gone(error),
+        }
+        match WorkingState::read(&opened) {
+            Ok(_) => panic!("Changes read the enclosing repository"),
+            Err(error) => gone(error),
+        }
+        gone(session.open(&root, Some(&root), None).unwrap_err());
+        let error = execute(
+            Job::Open {
+                path: root.clone(),
+                scope: None,
+                limit: 10,
+                root: Some(root.clone()),
+                git_dir: None,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut session,
+        )
+        .err()
+        .expect("Refresh fails");
+        // A tab with no Git directories captured, as an older session's:
+        // `.git` gone or never there is the same on disk, so it says what
+        // works for both (`NoRepositoryOfItsOwn`).
+        assert!(
+            format!("{error:#}").starts_with(&format!(
+                "This tab's folder {} has no repository of its own: Git finds the repository at ",
+                root.display()
+            )),
+            "said in its own words: {error:#}"
+        );
+        assert_eq!(
+            session
+                .open(&root, None, None)
+                .unwrap()
+                .path()
+                .canonicalize()
+                .unwrap(),
+            outer_root,
+            "an explicit open takes the enclosing work tree"
+        );
+
+        // With the enclosing repository's `.git` gone too, Git finds no
+        // repository at the root: Refresh fails with the reasons any folder
+        // that is not a repository gets, never "is gone", and the working
+        // read still tells Changes the tab's repository is gone, with
+        // nothing found, so it marks the tab through that Open.
+        fs::rename(outer.0.join(".git"), outer.0.join("outer-git-away")).unwrap();
+        let error = execute(
+            Job::Open {
+                path: root.clone(),
+                scope: None,
+                limit: 10,
+                root: Some(root.clone()),
+                git_dir: None,
+            },
+            &mut PreviewCache::default(),
+            &active(),
+            &mut session,
+        )
+        .err()
+        .expect("Refresh fails");
+        assert!(!error.is::<RepositoryGone>(), "not gone: {error:#}");
+        let said = format!("{error:#}");
+        assert!(
+            said.starts_with("This folder is not an available Git repository.")
+                && said.contains(&format!("Folder: {}", root.display())),
+            "repository_access::explain's reasons: {said}"
+        );
+        match WorkingState::read(&opened) {
+            Ok(_) => panic!("Changes read a folder that is not a repository"),
+            Err(error) => assert_eq!(
+                error.downcast::<RepositoryGone>().expect("gone"),
+                RepositoryGone {
+                    path: root.clone(),
+                    found: None
+                }
+            ),
+        }
+    }
+
+    /// A tab's repository is its root and the Git directory Git reported
+    /// when it opened, compared as captured: with its `.git` swapped for
+    /// another repository's gitfile, or its root turned into a link to
+    /// another repository, Changes' working read, a quiet read and a
+    /// reopen by the captured root each fail as `RepositoryGone`, naming
+    /// what Git finds, and read nothing of the other repository; the
+    /// session never adopts it. Restored, the tab reads again.
+    #[cfg(unix)]
+    #[test]
+    fn a_reopen_never_takes_a_swapped_git_entry_or_a_linked_root() {
+        let fixture = Fixture::new();
+        let other = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let other_repository = GitRepository::open(&other.0).unwrap();
+        let gone = |error: anyhow::Error, found: &Path| {
+            let gone = error
+                .downcast::<RepositoryGone>()
+                .expect("the repository is gone");
+            assert_eq!(gone.path, root);
+            assert_eq!(
+                gone.found.map(|found| found.canonicalize().unwrap()),
+                Some(found.to_owned()),
+                "it names what Git finds there"
+            );
+        };
+        let quiet = |session: &mut RepositorySession| {
+            execute(
+                Job::QuietRefresh {
+                    repo: opened.clone(),
+                    scope: None,
+                    limit: 10,
+                    history: false,
+                    selected: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+            .err()
+            .expect("a quiet read reads nothing")
+        };
+
+        let away = fixture.0.with_extension("git-away");
+        fs::rename(fixture.0.join(".git"), &away).unwrap();
+        fs::write(
+            fixture.0.join(".git"),
+            format!("gitdir: {}\n", other_repository.git_dir().display()),
+        )
+        .unwrap();
+        let other_git = other_repository.git_dir();
+        let captured = GitDirectories::of(&opened);
+        gone(WorkingState::read(&opened).err().expect("gone"), other_git);
+        gone(quiet(&mut session), other_git);
+        // A reopen by the tab's captured root and Git directory, warm, and
+        // cold after the session opened another repository: the session
+        // keeps no memory of the tab, which names its own Git directory.
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+            other_git,
+        );
+        let third = Fixture::new();
+        session.open(&third.0, None, None).unwrap();
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+            other_git,
+        );
+        fs::remove_file(fixture.0.join(".git")).unwrap();
+        fs::rename(&away, fixture.0.join(".git")).unwrap();
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap()
+                .path(),
+            root
+        );
+        assert!(WorkingState::read(&opened).is_ok());
+
+        let moved = fixture.0.with_extension("moved");
+        fs::rename(&fixture.0, &moved).unwrap();
+        std::os::unix::fs::symlink(&other.0, &fixture.0).unwrap();
+        let other_root = other_repository.path().canonicalize().unwrap();
+        gone(
+            WorkingState::read(&opened).err().expect("gone"),
+            &other_root,
+        );
+        gone(quiet(&mut session), &other_root);
+        gone(
+            session.open(&root, Some(&root), None).unwrap_err(),
+            &other_root,
+        );
+        fs::remove_file(&fixture.0).unwrap();
+        fs::rename(&moved, &fixture.0).unwrap();
+    }
+
+    /// A tab's root reached through a folder that is a link, as macOS
+    /// reaches every temporary folder through `/var` (a link to
+    /// `/private/var`), is the repository there, warm and cold: saved
+    /// through the link with no Git directories captured yet, and captured
+    /// at its real root with its Git directories, its folder then moved and
+    /// linked back from its old place. Compared as captured, each reopen
+    /// found the repository gone and the tab was marked " · unavailable",
+    /// where it opened before. The root itself turned into a link to
+    /// another repository, reached through the linked folder, is still
+    /// another repository.
+    #[cfg(unix)]
+    #[test]
+    fn a_reopen_through_a_linked_folder_finds_the_repository_it_captured() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let real = base.join("real");
+        let root = real.join("repository");
+        fs::create_dir_all(&root).unwrap();
+        let init = Fixture::command(&root)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let through = link.join("repository");
+        let other = Fixture::new();
+        let mut session = RepositorySession::default();
+        let reopen = |session: &mut RepositorySession,
+                      at: &Path,
+                      git_dir: Option<&GitDirectories>,
+                      cold: bool| {
+            if cold {
+                session.open(&other.0, None, None).unwrap();
+            }
+            session.open(at, Some(at), git_dir)
+        };
+        let opened = reopen(&mut session, &through, None, false)
+            .unwrap_or_else(|error| panic!("saved through the link: {error:#}"));
+        assert_eq!(opened.path(), root, "saved through the link");
+        let captured = GitDirectories::of(&opened);
+        for cold in [false, true] {
+            let reopened = reopen(&mut session, &through, Some(&captured), cold)
+                .unwrap_or_else(|error| panic!("through the link, cold {cold}: {error:#}"));
+            assert_eq!(reopened.path(), root, "through the link, cold {cold}");
+        }
+
+        let moved = base.join("moved");
+        fs::rename(&real, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &real).unwrap();
+        let now = moved.join("repository");
+        for cold in [false, true] {
+            let reopened = reopen(&mut session, &root, Some(&captured), cold)
+                .unwrap_or_else(|error| panic!("moved, cold {cold}: {error:#}"));
+            assert_eq!(reopened.path(), now, "moved, cold {cold}");
+        }
+
+        fs::rename(&now, moved.join("repository-away")).unwrap();
+        std::os::unix::fs::symlink(&other.0, &now).unwrap();
+        let other_root = other.0.canonicalize().unwrap();
+        for git_dir in [None, Some(&captured)] {
+            let gone = reopen(&mut session, &through, git_dir, false)
+                .expect_err("a root turned into a link is another repository")
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.found.as_deref(), Some(other_root.as_path()));
+        }
+    }
+
+    /// A folder made to hold one repository, `git init`ed.
+    #[cfg(unix)]
+    fn init_at(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        let init = Fixture::command(path)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+    }
+
+    /// A restored tab compares the inodes it saved, warm and cold: a folder
+    /// above its root re-pointed to another repository with the root's
+    /// folder name resolves to the same paths through that folder, and is
+    /// refused naming that repository's Git directory, the mark a swapped
+    /// `.git` gets. Moved on the one filesystem and linked back, the
+    /// repository keeps its inodes and reopens. A tab opened in this run
+    /// compares none, and neither does an older session that saved none.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_tab_tells_its_repository_by_the_inodes_it_saved() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let projects = base.join("projects");
+        let root = projects.join("repository");
+        init_at(&root);
+        let other = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&root, None, None).unwrap();
+        let captured = GitDirectories::of(&opened);
+        assert!(!captured.restored, "of compares nothing");
+        assert!(captured.inodes.git_dir.is_some());
+        let restored = GitDirectories {
+            restored: true,
+            ..captured.clone()
+        };
+        let reopen = |session: &mut RepositorySession, named: &GitDirectories, cold: bool| {
+            if cold {
+                session.open(&other.0, None, None).unwrap();
+            }
+            session.open(&root, Some(&root), Some(named))
+        };
+
+        let moved = base.join("moved");
+        fs::rename(&projects, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &projects).unwrap();
+        for cold in [false, true] {
+            let reopened = reopen(&mut session, &restored, cold)
+                .unwrap_or_else(|error| panic!("moved, cold {cold}: {error:#}"));
+            assert_eq!(reopened.path(), moved.join("repository"), "cold {cold}");
+        }
+        fs::remove_file(&projects).unwrap();
+        fs::rename(&moved, &projects).unwrap();
+
+        // The repository kept aside, so its inodes stay taken.
+        let away = base.join("away");
+        fs::rename(&projects, &away).unwrap();
+        let elsewhere = base.join("elsewhere");
+        let found = elsewhere.join("repository");
+        init_at(&found);
+        std::os::unix::fs::symlink(&elsewhere, &projects).unwrap();
+        for cold in [false, true] {
+            let gone = reopen(&mut session, &restored, cold)
+                .expect_err("another repository by the root's folder name")
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.path, root, "cold {cold}");
+            assert_eq!(
+                gone.found.as_deref(),
+                Some(found.join(".git").as_path()),
+                "cold {cold}"
+            );
+        }
+        let older = GitDirectories {
+            inodes: DirectoryInodes::default(),
+            ..restored.clone()
+        };
+        for named in [&captured, &older] {
+            assert_eq!(
+                reopen(&mut session, named, true)
+                    .unwrap_or_else(|error| panic!("{named:?}: {error:#}"))
+                    .path(),
+                found,
+                "{named:?}"
+            );
+        }
+    }
+
+    /// Each saved inode is compared on its own, the Git directory's before
+    /// the common directory's, and the retained repository answers only
+    /// where they match: named with a different one, the reopen asks Git
+    /// and fails as gone, naming that directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_tab_compares_each_directory_s_inode() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        let inode = |inode: Option<u64>| Some(inode.expect("an inode") + 1);
+        let git_dir = GitDirectories {
+            inodes: DirectoryInodes {
+                git_dir: inode(captured.inodes.git_dir),
+                ..captured.inodes
+            },
+            restored: true,
+            ..captured.clone()
+        };
+        let common = GitDirectories {
+            inodes: DirectoryInodes {
+                common: inode(captured.inodes.common),
+                ..captured.inodes
+            },
+            restored: true,
+            ..captured.clone()
+        };
+        for (named, found) in [(&git_dir, &captured.git_dir), (&common, &captured.common)] {
+            let gone = session
+                .open(&root, Some(&root), Some(named))
+                .unwrap_err()
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.found.as_deref(), Some(found.as_path()));
+        }
+        let matching = GitDirectories {
+            restored: true,
+            ..captured
+        };
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&matching))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
+    /// A saved birth time is compared beside the inode, each directory's on
+    /// its own, so a directory created after the saved one was deleted that
+    /// took its inode number (ext4 and XFS reuse them) is another
+    /// repository: here the same inodes with a later birth. A session saved
+    /// before birth times were kept, or a filesystem that records none, has
+    /// the inodes alone, which are still compared.
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_tab_compares_each_directory_s_birth_time() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        if captured.inodes.git_dir_birth.is_none() {
+            // This filesystem records none: the inodes are all there is,
+            // which `a_restored_tab_compares_each_directory_s_inode`
+            // compares. Said, so a run here is not read as a pass.
+            eprintln!(
+                "a_restored_tab_compares_each_directory_s_birth_time skipped: \
+                 the filesystem holding {} records no birth time",
+                root.display()
+            );
+            return;
+        }
+        let later =
+            |birth: Option<Duration>| Some(birth.expect("a birth time") + Duration::from_nanos(1));
+        let restored = |inodes: DirectoryInodes| GitDirectories {
+            inodes,
+            restored: true,
+            ..captured.clone()
+        };
+        let git_dir = restored(DirectoryInodes {
+            git_dir_birth: later(captured.inodes.git_dir_birth),
+            ..captured.inodes
+        });
+        let common = restored(DirectoryInodes {
+            common_birth: later(captured.inodes.common_birth),
+            ..captured.inodes
+        });
+        let older = restored(DirectoryInodes {
+            git_dir_birth: None,
+            common_birth: None,
+            ..captured.inodes
+        });
+        let older_elsewhere = restored(DirectoryInodes {
+            git_dir: captured.inodes.git_dir.map(|inode| inode + 1),
+            ..older.inodes
+        });
+        for (named, found) in [
+            (&git_dir, &captured.git_dir),
+            (&common, &captured.common),
+            (&older_elsewhere, &captured.git_dir),
+        ] {
+            let gone = session
+                .open(&root, Some(&root), Some(named))
+                .unwrap_err()
+                .downcast::<RepositoryGone>()
+                .expect("gone");
+            assert_eq!(gone.found.as_deref(), Some(found.as_path()), "{named:?}");
+        }
+        for named in [&restored(captured.inodes), &older] {
+            assert_eq!(
+                session
+                    .open(&root, Some(&root), Some(named))
+                    .unwrap_or_else(|error| panic!("{named:?}: {error:#}"))
+                    .path(),
+                root
+            );
+        }
+    }
+
+    /// The session's retained repository is dropped once its Git directory
+    /// is born again with the same device and inode, as an overlayfs
+    /// copy-up leaves it (and ext4 or XFS giving a re-clone the deleted
+    /// directory's inode number would), so the next open captures it
+    /// afresh, the new birth time with it. It once compared the device and
+    /// inode alone and returned the handle of its first open, whose birth
+    /// time every capture in the run was then compared with, itself
+    /// included, so only a restart saw the new directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_drops_a_repository_whose_git_directory_was_born_again() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let git_dir = GitRepository::open(&fixture.0)
+            .unwrap()
+            .git_dir()
+            .to_owned();
+        let born = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        repository_identity::born_for_test(Some((git_dir.clone(), born)));
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        let retained = |session: &RepositorySession| {
+            Arc::clone(&session.current.as_ref().expect("retained").repository)
+        };
+        let first = retained(&session);
+        session.open(&root, Some(&root), Some(&captured)).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &retained(&session)),
+            "the same directory keeps the retained repository"
+        );
+
+        let again = born + Duration::from_secs(1);
+        repository_identity::born_for_test(Some((git_dir.clone(), again)));
+        let reopened = session.open(&root, Some(&root), Some(&captured));
+        let holds = (session.current.as_ref()).map(|current| current.identity.is_current());
+        repository_identity::born_for_test(None);
+        assert_eq!(reopened.unwrap().git_dir(), git_dir);
+        assert!(
+            !Arc::ptr_eq(&first, &retained(&session)),
+            "a Git directory born again is captured afresh"
+        );
+        assert_eq!(holds, Some(true), "the new capture read the new birth time");
+    }
+
+    /// A repository cloned again at the tab's path has new inodes, which
+    /// cannot be told from another repository re-pointed there, so a
+    /// restored tab refuses it the same way; an explicit open has no saved
+    /// fields and adopts it, and a tab that then holds its own passes.
+    #[cfg(unix)]
+    #[test]
+    fn a_re_clone_is_refused_to_a_restored_tab_and_adopted_by_an_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("repository");
+        init_at(&root);
+        let mut session = RepositorySession::default();
+        let captured = GitDirectories::of(&session.open(&root, None, None).unwrap());
+        let restored = GitDirectories {
+            restored: true,
+            ..captured.clone()
+        };
+        // Moved aside rather than deleted, which could free the inode for
+        // the new `.git` to take.
+        fs::rename(&root, base.join("before")).unwrap();
+        init_at(&root);
+        let gone = session
+            .open(&root, Some(&root), Some(&restored))
+            .expect_err("a new repository at the path")
+            .downcast::<RepositoryGone>()
+            .expect("gone");
+        assert_eq!(gone.found.as_deref(), Some(root.join(".git").as_path()));
+
+        let adopted = GitDirectories::of(&session.open(&root, None, None).unwrap());
+        assert_ne!(adopted.inodes.git_dir, captured.inodes.git_dir);
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&adopted))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
+    /// An open refused because only the capture failed, Git still
+    /// reporting the repository at its path, says what is true in core's
+    /// words: not gone, and the one path not named twice. One that Git now
+    /// finds elsewhere is the repository gone, as before.
+    #[test]
+    fn an_open_refused_at_its_own_path_is_not_the_repository_gone() {
+        let root = PathBuf::from("/repository");
+        let refused = |found: Option<PathBuf>| {
+            let error = anyhow::Error::from(gitturtle_core::ChangedWhileOpening {
+                path: root.clone(),
+                found,
+            });
+            worded_open_failure(&root, refused_open(&root, false, error))
+        };
+        let same = refused(Some(root.clone()));
+        assert!(same.is::<gitturtle_core::ChangedWhileOpening>(), "{same:#}");
+        assert_eq!(
+            format!("{same:#}"),
+            "The repository at /repository changed while it was opened. Open it again."
+        );
+        let elsewhere = refused(Some(PathBuf::from("/other")));
+        assert!(elsewhere.is::<RepositoryGone>(), "{elsewhere:#}");
+        assert!(
+            format!("{elsewhere:#}").contains("Git now finds the repository at /other there"),
+            "{elsewhere:#}"
+        );
+    }
+
+    /// A repository whose work tree lies outside the folder Git found it
+    /// in: an explicit open says so in core's own words, with no reasons
+    /// around it and nothing to open again, and a tab's passive reopen,
+    /// its work tree re-pointed there, is the repository gone, naming the
+    /// work tree, so the tab is marked as it is for any re-point.
+    #[test]
+    fn a_work_tree_outside_its_folder_is_refused_in_core_s_words() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("repository");
+        let elsewhere = base.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::create_dir(&root).unwrap();
+        let init = Fixture::command(&root)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let configured = Fixture::command(&root)
+            .args(["config", "core.worktree"])
+            .arg(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(configured.status.success());
+        let said = format!(
+            "GitTurtle opens a repository only inside the folder Git found it in: the work tree of the repository at {} is {} (core.worktree).",
+            root.display(),
+            elsewhere.display()
+        );
+        let mut session = RepositorySession::default();
+        let explicit = session.open(&root, None, None).unwrap_err();
+        assert!(
+            explicit.is::<gitturtle_core::WorkTreeOutside>(),
+            "{explicit:#}"
+        );
+        let open = |path_root: Option<PathBuf>, session: &mut RepositorySession| {
+            execute(
+                Job::Open {
+                    path: root.clone(),
+                    scope: None,
+                    limit: 10,
+                    root: path_root,
+                    git_dir: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+            .err()
+            .expect("the open is refused")
+        };
+        let error = open(None, &mut session);
+        assert_eq!(format!("{error:#}"), said);
+        assert!(!error.is::<RepositoryGone>(), "{error:#}");
+
+        let reopened = session.open(&root, Some(&root), None).unwrap_err();
+        assert_eq!(
+            reopened.downcast::<RepositoryGone>().expect("gone"),
+            RepositoryGone {
+                path: root.clone(),
+                found: Some(elsewhere.clone()),
+            }
+        );
+        let error = open(Some(root.clone()), &mut session);
+        assert!(error.is::<RepositoryGone>(), "marks the tab: {error:#}");
+    }
+
+    /// A linked worktree's `commondir` re-pointed at another repository
+    /// keeps its root and its own Git directory, yet its refs and objects,
+    /// and every write's, are that other repository's: a reopen by the
+    /// tab's captured identity, warm or cold, finds the repository gone,
+    /// naming that repository's Git directory, and with `commondir` back it
+    /// opens again. It once compared the root and Git directory alone, so
+    /// the tab took a handle bound to the other repository, and its next
+    /// Stage all and Commit wrote that repository's objects and branch.
+    #[test]
+    fn a_reopen_never_takes_a_re_pointed_commondir() {
+        let fixture = Fixture::new();
+        fixture.git(&["commit", "--quiet", "--allow-empty", "-m", "main"], &[]);
+        let linked = fixture.0.join("linked");
+        fixture.git(
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked",
+                linked.to_str().unwrap(),
+            ],
+            &[],
+        );
+        let mut session = RepositorySession::default();
+        let opened = session.open(&linked, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        assert_ne!(captured.git_dir, captured.common, "a linked worktree");
+        let other = Fixture::new();
+        let other_git = GitRepository::open(&other.0).unwrap().git_dir().to_owned();
+        let commondir = opened.git_dir().join("commondir");
+        let kept = fs::read(&commondir).unwrap();
+        fs::write(&commondir, format!("{}\n", other_git.display())).unwrap();
+        let gone = |error: anyhow::Error| {
+            let gone = error.downcast::<RepositoryGone>().expect("gone");
+            assert_eq!(gone.path, root);
+            assert_eq!(gone.found.as_deref(), Some(other_git.as_path()));
+        };
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+        );
+        let third = Fixture::new();
+        session.open(&third.0, None, None).unwrap();
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+        );
+        fs::write(&commondir, kept).unwrap();
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
+    /// The retained repository answers a reopen only where its own Git
+    /// directories are the ones the tab names: named with another common
+    /// directory, the reopen asks Git, which finds the repository's own,
+    /// and fails as gone rather than hand the retained repository over.
+    #[test]
+    fn a_retained_repository_answers_only_the_directories_it_has() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        let named = GitDirectories {
+            common: fixture.0.join("elsewhere"),
+            ..captured.clone()
+        };
+        let gone = session
+            .open(&root, Some(&root), Some(&named))
+            .unwrap_err()
+            .downcast::<RepositoryGone>()
+            .expect("gone");
+        assert_eq!(gone.found.as_deref(), Some(captured.common.as_path()));
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
+    /// A quiet read with the `.git` swapped for another repository's
+    /// gitfile reads nothing of that repository. And a quiet read already
+    /// running when the `.git`
+    /// moves away (the watcher's setup rescan racing the move) fails part
+    /// way, its working read after the status and its History, confined to
+    /// the repository: the whole read is the repository gone, which marks
+    /// the tab, never an "Operation state: …" or "History scope changed: …"
+    /// banner beside the mark.
+    #[test]
+    fn a_quiet_read_whose_git_moves_part_way_is_the_repository_gone() {
+        let outer = Fixture::new();
+        let inner = outer.0.join("inner");
+        fs::create_dir(&inner).unwrap();
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=GitTurtle Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "inner",
+            ],
+        ] {
+            let output = Fixture::command(&inner).args(args).output().unwrap();
+            assert!(output.status.success());
+        }
+        let mut session = RepositorySession::default();
+        let opened = session.open(&inner, None, None).unwrap();
+        let quiet = |session: &mut RepositorySession, history: bool| {
+            execute(
+                Job::QuietRefresh {
+                    repo: opened.clone(),
+                    scope: None,
+                    limit: 10,
+                    history,
+                    selected: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+        };
+        let gone = |result: Result<Output>| match result {
+            Ok(_) => panic!("the read answered with another repository or a banner"),
+            Err(error) => {
+                let gone = error.downcast::<RepositoryGone>().expect("gone");
+                assert_eq!(gone.path, opened.path());
+            }
+        };
+
+        let other = Fixture::new();
+        let other_git = GitRepository::open(&other.0).unwrap().git_dir().to_owned();
+        let away = outer.0.join("inner-git-away");
+        fs::rename(inner.join(".git"), &away).unwrap();
+        fs::write(
+            inner.join(".git"),
+            format!("gitdir: {}\n", other_git.display()),
+        )
+        .unwrap();
+        gone(quiet(&mut session, false));
+        fs::remove_file(inner.join(".git")).unwrap();
+        fs::rename(&away, inner.join(".git")).unwrap();
+        assert!(quiet(&mut session, true).is_ok());
+
+        let checkpoints = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (git, moved) = (inner.join(".git"), away.clone());
+        let counted = std::rc::Rc::clone(&checkpoints);
+        QUIET_CHECKPOINT.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(move || {
+                counted.set(counted.get() + 1);
+                // After the status, before the rest and History.
+                if counted.get() == 2 {
+                    fs::rename(&git, &moved).unwrap();
+                }
+            }))
+        });
+        let result = quiet(&mut session, true);
+        QUIET_CHECKPOINT.with_borrow_mut(|hook| *hook = None);
+        assert!(checkpoints.get() >= 2, "the move ran part way");
+        gone(result);
+    }
+
+    /// A quiet read checks its own handle before the session's reopen:
+    /// with `core.worktree` re-pointed in the repository's configuration
+    /// after a quiet read, which changes no `.git` entry or directory the
+    /// session's identity holds while the work tree moves elsewhere, the
+    /// next quiet read is the repository gone, never the other folder's
+    /// status. The session alone answered with the moved work tree.
+    #[test]
+    fn a_quiet_read_after_core_worktree_is_re_pointed_is_the_repository_gone() {
+        let outer = Fixture::new();
+        let inner = outer.0.join("inner");
+        fs::create_dir(&inner).unwrap();
+        let elsewhere = outer.0.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::write(elsewhere.join("stray.txt"), "stray\n").unwrap();
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=GitTurtle Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "inner",
+            ],
+        ] {
+            let output = Fixture::command(&inner).args(args).output().unwrap();
+            assert!(output.status.success());
+        }
+        let mut session = RepositorySession::default();
+        let opened = session.open(&inner, None, None).unwrap();
+        let quiet = |session: &mut RepositorySession| {
+            execute(
+                Job::QuietRefresh {
+                    repo: opened.clone(),
+                    scope: None,
+                    limit: 10,
+                    history: true,
+                    selected: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+        };
+        assert!(quiet(&mut session).is_ok());
+        let output = Fixture::command(&inner)
+            .args(["config", "core.worktree", elsewhere.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let error = quiet(&mut session)
+            .err()
+            .expect("the quiet read answered with the moved work tree");
+        let gone = error
+            .downcast::<RepositoryGone>()
+            .unwrap_or_else(|error| panic!("not gone: {error:#}"));
+        assert_eq!(gone.path, opened.path());
+    }
+
+    /// A working read already running when the repository's `.git` moves
+    /// away: its status read, the parts after it fail as "not a git
+    /// repository", its commands confined to the repository. The read is
+    /// then the repository gone, which marks the tab, never an "Operation
+    /// state: …" banner beside the mark.
+    #[test]
+    fn a_working_read_whose_git_moves_part_way_is_the_repository_gone() {
+        let outer = Fixture::new();
+        let inner = outer.0.join("inner");
+        fs::create_dir(&inner).unwrap();
+        let init = Fixture::command(&inner)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let opened = GitRepository::open(&inner).unwrap();
+        let checkpoints = std::cell::Cell::new(0);
+        let state = WorkingState::read_with_checkpoint(&opened, || {
+            checkpoints.set(checkpoints.get() + 1);
+            // After the status, before the rest.
+            if checkpoints.get() == 2 {
+                fs::rename(inner.join(".git"), outer.0.join("inner-git-away")).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+        let operation = format!("{:#}", state.operation.as_ref().expect_err("failed"));
+        assert!(operation.contains("not a git repository"), "{operation}");
+        let gone = state
+            .confirmed(&opened)
+            .err()
+            .expect("the repository is gone")
+            .downcast::<RepositoryGone>()
+            .expect("gone");
+        assert_eq!(gone.path, opened.path());
+        assert_eq!(
+            gone.found.map(|found| found.canonicalize().unwrap()),
+            Some(outer.0.canonicalize().unwrap())
+        );
+    }
+
+    /// The watcher's setup failure is the repository gone whenever the
+    /// repository is gone or no longer one at its path, whatever the words:
+    /// a resolution failing as its `.git` moves is checked from the
+    /// filesystem, and kept its own while the repository is still there; a
+    /// confined "not a git repository" is Git's to decide, so a `.git` half
+    /// removed (HEAD deleted, the folder and `config` left), which the
+    /// filesystem check still takes for the same repository, is gone too.
+    /// That check once kept it the watcher's warning, the tab unmarked.
+    #[test]
+    fn a_watch_setup_failure_is_the_repository_gone_unless_it_is_still_there() {
+        let outer = Fixture::new();
+        let outer_root = outer.0.canonicalize().unwrap();
+        let repository = |name: &str| {
+            let root = outer.0.join(name);
+            fs::create_dir(&root).unwrap();
+            let init = Fixture::command(&root)
+                .args(["init", "--quiet"])
+                .output()
+                .unwrap();
+            assert!(init.status.success());
+            GitRepository::open(&root).unwrap()
+        };
+        let gone = |repo: &GitRepository, error: anyhow::Error, after: &str| {
+            let gone = gone_unless_found(repo, error)
+                .downcast::<RepositoryGone>()
+                .unwrap_or_else(|error| panic!("{after}: not gone: {error:#}"));
+            assert_eq!(gone.path, repo.path(), "{after}");
+            assert_eq!(
+                gone.found.map(|found| found.canonicalize().unwrap()),
+                Some(outer_root.clone()),
+                "{after}: it names the repository Git finds there"
+            );
+        };
+        // As `git_directories` fails resolving a directory moved away.
+        let resolution = || {
+            use anyhow::Context as _;
+            outer
+                .0
+                .join("nowhere")
+                .canonicalize()
+                .context("Resolve Git administration directory")
+                .expect_err("nothing there")
+        };
+
+        let moved = repository("moved");
+        let kept = gone_unless_found(&moved, resolution());
+        assert!(!kept.is::<RepositoryGone>(), "still there: {kept:#}");
+        assert_eq!(format!("{kept:#}"), format!("{:#}", resolution()));
+        fs::rename(moved.path().join(".git"), outer.0.join("moved-git-away")).unwrap();
+        gone(&moved, resolution(), "its .git moved away");
+
+        let half = repository("half");
+        fs::remove_file(half.git_dir().join("HEAD")).unwrap();
+        assert!(half.git_dir().join("config").is_file());
+        let confined = half
+            .git_directories()
+            .expect_err("Git finds no repository there");
+        assert!(
+            gitturtle_core::finds_no_repository(&confined),
+            "{confined:#}"
+        );
+        assert_eq!(
+            half.verify_at_path().unwrap(),
+            gitturtle_core::FoundAtPath::Same,
+            "the filesystem check still holds"
+        );
+        gone(&half, confined, "its HEAD deleted");
+    }
+}
+
+/// Linux AVIF and JPEG 2000 sides through the confined helper's client, with
+/// shell fakes named for each image's bytes (`image_helper::named`).
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) mod helper_image_tests {
+    use crate::pdf_helper::HelperCommand;
+    use crate::views::tests::{draw, history_window_from, settle};
+    use crate::*;
+    use core::prelude::v1::test;
+    use gitturtle_preview::pdf_helper::PROTOCOL_VERSION;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    /// Longer than a test's drains wait: a helper still running when it
+    /// should have been stopped fails the test rather than meet its deadline.
+    const LONG: Duration = Duration::from_secs(60);
+
+    /// A fake that never answers and ends with the test process.
+    pub(crate) const BLOCKS: &str = "while kill -0 $PPID 2>/dev/null; do sleep 0.05; done";
+
+    /// How soon a helper whose check failed is gone, counted once the call
+    /// that failed it has returned: the client checks at least every 25 ms,
+    /// and the bound stays far from a fake's deadline while it leaves a
+    /// loaded host's scheduling room.
+    pub(crate) const PROMPTLY: Duration = Duration::from_secs(1);
+
+    const AVIF: &[u8] = include_bytes!("../../preview/tests/fixtures/half-red-blue.avif");
+    const JP2: &[u8] = include_bytes!("../../preview/tests/fixtures/half-red-blue.jp2");
+    const J2K: &[u8] = include_bytes!("../../preview/tests/fixtures/half-red-blue.j2k");
+    const HEIC: &[u8] = include_bytes!("../../preview/tests/fixtures/half-red-blue.heic");
+
+    /// `base` with `name` after it: bytes of the image's own, so a helper of
+    /// its own, that still sniff as `base`'s format.
+    fn named_bytes(base: &[u8], name: &str) -> Vec<u8> {
+        [base, name.as_bytes()].concat()
+    }
+
+    /// From now on, `bytes` decode through a shell fake that writes its pid
+    /// to `pid` and then runs `script`, stopped at `deadline`.
+    fn name_helper(bytes: &[u8], pid: &Path, script: &str, deadline: Duration) {
+        let script = format!(
+            "PATH=/usr/bin:/bin; printf %s $$ > '{}'; {script}",
+            pid.display()
+        );
+        crate::image_helper::named::name(
+            bytes,
+            HelperCommand::new("/bin/sh", ["-c", script.as_str()]),
+            deadline,
+        );
+    }
+
+    /// A script printing a 4 × 2 image reply that echoes format `code` with
+    /// `flags`, kept as `name` in `directory`.
+    fn image_reply(directory: &Path, name: &str, code: u8, flags: u16) -> String {
+        let mut frame = b"GTIr".to_vec();
+        frame.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+        frame.extend_from_slice(&[0, code]);
+        frame.extend_from_slice(&flags.to_le_bytes());
+        for value in [4u32, 2, 4, 2, 1, 2, 3] {
+            frame.extend_from_slice(&value.to_le_bytes());
+        }
+        frame.extend_from_slice(&[200; 4 * 2 * 4]);
+        printing(directory, name, &frame)
+    }
+
+    /// A script printing an image error reply of wire `code`.
+    fn error_reply(directory: &Path, name: &str, code: u8) -> String {
+        let mut frame = b"GTIr".to_vec();
+        frame.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+        frame.extend_from_slice(&[1, code]);
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        printing(directory, name, &frame)
+    }
+
+    /// A script printing `bytes`, kept as `name` in `directory`.
+    fn printing(directory: &Path, name: &str, bytes: &[u8]) -> String {
+        let path = directory.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        format!("exec cat '{}'", path.display())
+    }
+
+    /// The pid a fake wrote, once it has.
+    pub(crate) fn pid_in(path: &Path) -> libc::pid_t {
+        let started = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|pid| pid.parse().ok())
+            {
+                return pid;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the fake never started"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// The process is gone and reaped: not even a zombie is left.
+    fn reaped(pid: libc::pid_t) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        let result = unsafe { libc::kill(pid, 0) };
+        result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+
+    /// Whether `pid` is reaped [`PROMPTLY`] after `since`, when the call
+    /// that failed its check returned.
+    pub(crate) fn reaped_within(pid: libc::pid_t, since: Instant) -> bool {
+        while since.elapsed() < PROMPTLY {
+            if reaped(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        reaped(pid)
+    }
+
+    /// A `git fast-import` stream of one commit adding `files`.
+    fn added(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut input = b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nimages\n".to_vec();
+        for (path, bytes) in files {
+            input.extend_from_slice(
+                format!("M 100644 inline {path}\ndata {}\n", bytes.len()).as_bytes(),
+            );
+            input.extend_from_slice(bytes);
+            input.push(b'\n');
+        }
+        input.extend_from_slice(b"done\n");
+        input
+    }
+
+    /// Selects the commit's `path`, which enters Compare.
+    fn select(app: &Entity<GitTurtle>, path: &str, cx: &mut VisualTestContext) {
+        let index = app.read_with(cx, |app, _| {
+            app.files
+                .iter()
+                .position(|file| file.path() == Path::new(path))
+                .expect("the commit adds it")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+    }
+
+    /// Compares the commit's `path` once its preview has arrived.
+    async fn compare(app: &Entity<GitTurtle>, path: &str, cx: &mut VisualTestContext) {
+        select(app, path, cx);
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        settle(app, cx).await;
+        draw(cx);
+    }
+
+    /// Whether After's caption draws `details` beneath its name.
+    fn after_says(details: &str, cx: &mut VisualTestContext) -> bool {
+        let selector: &'static str = format!("image-side-details-1: {details}").leak();
+        cx.debug_bounds(selector).is_some()
+    }
+
+    /// What After says in its image's place, read as static text, if it
+    /// draws `reason` there whole.
+    fn after_reason(reason: &str, cx: &mut VisualTestContext) -> Option<String> {
+        crate::native_accessibility::written::forget();
+        draw(cx);
+        let selector: &'static str = format!("image-side-empty-1: {reason}").leak();
+        cx.debug_bounds(selector)?;
+        crate::native_accessibility::written::labels()
+            .into_iter()
+            .find(|(written, _)| written.starts_with("image-side-empty") && written.ends_with('1'))
+            .and_then(|(_, name)| name)
+    }
+
+    /// Captions on Linux are macOS's without "macOS codec", built from the
+    /// reply's format echo and flags: each flag adds its words, the first
+    /// frame of an animation in place of the first image. Each side offers
+    /// Open in default app.
+    #[gpui::test]
+    async fn helper_images_are_captioned_from_their_echo_and_flags(cx: &mut TestAppContext) {
+        let replies = tempfile::tempdir().unwrap();
+        let cases: [(&str, &[u8], u8, u16, &str); 7] = [
+            ("still.avif", AVIF, 1, 0, "AVIF · first image"),
+            (
+                "animation.avif",
+                AVIF,
+                1,
+                1,
+                "AVIF · first frame of an animation",
+            ),
+            (
+                "cropped.avif",
+                AVIF,
+                1,
+                2,
+                "AVIF · first image · crop not applied",
+            ),
+            (
+                "hdr.avif",
+                AVIF,
+                1,
+                4,
+                "AVIF · first image · HDR not tone-mapped",
+            ),
+            (
+                "profile.avif",
+                AVIF,
+                1,
+                8,
+                "AVIF · first image · color profile not applied",
+            ),
+            ("picture.jp2", JP2, 2, 0, "JPEG 2000 / JP2 · first image"),
+            (
+                "codestream.j2k",
+                J2K,
+                3,
+                0,
+                "JPEG 2000 / J2K codestream · first image",
+            ),
+        ];
+        let images: Vec<Vec<u8>> = cases
+            .iter()
+            .map(|(path, base, ..)| named_bytes(base, path))
+            .collect();
+        for ((path, _, code, flags, _), bytes) in cases.iter().zip(&images) {
+            let reply = image_reply(replies.path(), path, *code, *flags);
+            let pid = replies.path().join(format!("{path}.pid"));
+            name_helper(bytes, &pid, &reply, LONG);
+        }
+        let files: Vec<(&str, &[u8])> = cases
+            .iter()
+            .zip(&images)
+            .map(|((path, ..), bytes)| (*path, bytes.as_slice()))
+            .collect();
+        let (_fixture, app, cx) = history_window_from(cx, added(&files)).await;
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        for (path, _, _, _, caption) in cases {
+            compare(&app, path, cx).await;
+            let details = format!("4 × 2 · {caption}");
+            assert!(after_says(&details, cx), "{path} draws {details:?}");
+            assert!(
+                cx.debug_bounds("image-system-preview-1").is_some(),
+                "{path} offers Open in default app"
+            );
+        }
+    }
+
+    /// An image that fails: its path, the bytes it is made from, its fake's
+    /// script and deadline (none for an image no helper is named for) and
+    /// the sentence it says.
+    type Failing<'a> = (&'a str, &'a [u8], Option<(&'a str, Duration)>, &'a str);
+
+    /// Each helper failure and a document error say why where After's image
+    /// would be, drawn and read as static text in the client's fixed words;
+    /// HEIF/HEIC, which Linux never decodes, says so. Each side still offers
+    /// Open in default app, and each helper is reaped.
+    #[gpui::test]
+    async fn helper_failures_say_why_and_keep_open_in_default_app(cx: &mut TestAppContext) {
+        let fakes = tempfile::tempdir().unwrap();
+        let short = Duration::from_millis(200);
+        let grid = error_reply(fakes.path(), "grid", 10);
+        let cases: [Failing<'_>; 6] = [
+            (
+                "slow.avif",
+                AVIF,
+                Some(("exec sleep 30", short)),
+                "The image took longer than 10 seconds to decode and was stopped.",
+            ),
+            (
+                "stopped.jp2",
+                JP2,
+                Some(("exit 3", LONG)),
+                "The image decoder stopped on this image.",
+            ),
+            (
+                "unreadable.j2k",
+                J2K,
+                Some(("exit 0", LONG)),
+                "The image decoder returned an unreadable result.",
+            ),
+            // No helper is named for it, so its helper cannot start.
+            (
+                "unstartable.avif",
+                AVIF,
+                None,
+                "The image decoder could not start.",
+            ),
+            (
+                "grid.avif",
+                AVIF,
+                Some((grid.as_str(), LONG)),
+                "AVIF image grids are not decoded on Linux yet",
+            ),
+            (
+                "photo.heic",
+                HEIC,
+                None,
+                "HEIF / HEIC images are not decoded on Linux",
+            ),
+        ];
+        let images: Vec<Vec<u8>> = cases
+            .iter()
+            .map(|(path, base, ..)| named_bytes(base, path))
+            .collect();
+        for ((path, _, helper, _), bytes) in cases.iter().zip(&images) {
+            if let Some((script, deadline)) = helper {
+                let pid = fakes.path().join(format!("{path}.pid"));
+                name_helper(bytes, &pid, script, *deadline);
+            }
+        }
+        let files: Vec<(&str, &[u8])> = cases
+            .iter()
+            .zip(&images)
+            .map(|((path, ..), bytes)| (*path, bytes.as_slice()))
+            .collect();
+        let (_fixture, app, cx) = history_window_from(cx, added(&files)).await;
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        for (path, _, helper, sentence) in cases {
+            compare(&app, path, cx).await;
+            assert_eq!(
+                after_reason(sentence, cx).as_deref(),
+                Some(sentence),
+                "{path} draws and reads its reason in its image's place"
+            );
+            assert!(
+                cx.debug_bounds("image-system-preview-1").is_some(),
+                "{path} offers Open in default app"
+            );
+            if helper.is_some() {
+                let pid = pid_in(&fakes.path().join(format!("{path}.pid")));
+                assert!(reaped(pid), "{path}'s helper is reaped");
+            }
+        }
+    }
+
+    /// A slow AVIF superseded by another file's selection: its helper is
+    /// killed and reaped promptly, counted from the selection's return so
+    /// the view's own work never counts, its late result never reaches the
+    /// view, and Compare shows the file selected next.
+    #[gpui::test]
+    async fn another_selection_drops_a_slow_image_and_kills_its_helper(cx: &mut TestAppContext) {
+        let fakes = tempfile::tempdir().unwrap();
+        let slow = named_bytes(AVIF, "another selection");
+        let started = fakes.path().join("slow");
+        name_helper(&slow, &started, BLOCKS, LONG);
+        let png = crate::system_preview::tests::png(None);
+        let input = added(&[("figure.png", &png), ("slow.avif", &slow)]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        select(&app, "slow.avif", cx);
+        let helper = pid_in(&started);
+        select(&app, "figure.png", cx);
+        assert!(
+            reaped_within(helper, Instant::now()),
+            "the slow image's helper is killed and reaped as the selection changes"
+        );
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Compare);
+            let Some(Content::Images { new, .. }) = app.content.as_deref() else {
+                panic!("the PNG's comparison is shown");
+            };
+            assert_eq!(
+                new.image.as_ref().map(|image| image.format.as_str()),
+                Some("PNG")
+            );
+        });
+    }
+
+    /// Back while a JP2 decodes: its helper is killed and reaped promptly
+    /// after Back returns, nothing is left loading, and its late result
+    /// never reopens Compare.
+    #[gpui::test]
+    async fn back_drops_a_slow_image_and_never_reopens_compare(cx: &mut TestAppContext) {
+        let fakes = tempfile::tempdir().unwrap();
+        let slow = named_bytes(JP2, "Back");
+        let started = fakes.path().join("slow");
+        name_helper(&slow, &started, BLOCKS, LONG);
+        let (_fixture, app, cx) = history_window_from(cx, added(&[("slow.jp2", &slow)])).await;
+        select(&app, "slow.jp2", cx);
+        let helper = pid_in(&started);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+        assert!(
+            reaped_within(helper, Instant::now()),
+            "the slow image's helper is killed and reaped on Back"
+        );
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History, "Compare stays closed");
+            assert_eq!(app.loading, None);
+            assert!(app.content.is_none(), "no comparison arrives");
+        });
+    }
+
+    /// A switch to another repository tab while an AVIF decodes: its helper
+    /// is killed and reaped promptly after the switch returns, and its late
+    /// result reaches neither tab, so the tab shown stays in History.
+    #[gpui::test]
+    async fn a_tab_switch_drops_a_slow_image_and_kills_its_helper(cx: &mut TestAppContext) {
+        let fakes = tempfile::tempdir().unwrap();
+        let slow = named_bytes(AVIF, "a tab switch");
+        let started = fakes.path().join("slow");
+        name_helper(&slow, &started, BLOCKS, LONG);
+        let (_fixture, app, cx) = history_window_from(cx, added(&[("slow.avif", &slow)])).await;
+        let second = tempfile::tempdir().unwrap();
+        let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+        std::fs::write(repo.path().join("notes.txt"), "second notes\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "notes.txt"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle(&app, cx).await;
+        select(&app, "slow.avif", cx);
+        let helper = pid_in(&started);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        assert!(
+            reaped_within(helper, Instant::now()),
+            "the slow image's helper is killed and reaped as the tab changes"
+        );
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(1));
+            assert!(app.mode == WorkspaceMode::History, "Compare stays closed");
+            assert!(app.content.is_none(), "no comparison arrives");
+        });
     }
 }

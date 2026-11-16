@@ -277,7 +277,7 @@ impl Response {
                 let wait = self
                     .headers
                     .get("retry-after")
-                    .map(|v| format!(" Retry after {v} seconds."))
+                    .map(|v| retry_after(v))
                     .or_else(|| {
                         self.headers
                             .get("x-ratelimit-reset")
@@ -649,16 +649,28 @@ pub(crate) struct Template {
     pub revision: String,
     pub body: String,
 }
+/// The PR templates at `revision` in the local repository, read until
+/// `cancellation` stops them, which ends the read with
+/// [`gitturtle_core::ReadCancelled`].
 pub(crate) fn local_templates(
     repo: &gitturtle_core::GitRepository,
     revision: &str,
+    cancellation: &gitturtle_core::HistoryCancellation,
 ) -> Result<Vec<Template>> {
-    let cancellation = gitturtle_core::HistoryCancellation::default();
     let listing = repo.search_tracked_paths(
         &gitturtle_core::PathScope::Revision(revision.into()),
         "pull_request_template",
-        &cancellation,
+        cancellation,
     )?;
+    read_templates(repo, listing, cancellation)
+}
+/// The templates `listing` names, each read only while `cancellation` lets
+/// it: a cancel arriving after the listing stops before the next template.
+fn read_templates(
+    repo: &gitturtle_core::GitRepository,
+    listing: gitturtle_core::TrackedPaths,
+    cancellation: &gitturtle_core::HistoryCancellation,
+) -> Result<Vec<Template>> {
     let revision = match listing.scope {
         gitturtle_core::PathScope::Revision(oid) => oid,
         _ => unreachable!(),
@@ -688,6 +700,9 @@ pub(crate) fn local_templates(
             });
         if !applicable || !matches!(entry.mode.as_str(), "100644" | "100755") {
             continue;
+        }
+        if cancellation.is_cancelled() {
+            return Err(gitturtle_core::ReadCancelled.into());
         }
         ensure!(
             templates.len() < 32,
@@ -739,10 +754,67 @@ pub(crate) fn validate_text(value: &str, required: bool) -> Result<()> {
     Ok(())
 }
 
+/// What a `retry-after` header says to wait, as a sentence after the
+/// refusal: its seconds agreeing with their noun ("Retry after 1 second.",
+/// where it read "1 seconds"), a decimal number of them with its unit
+/// ("Retry after 1.5 seconds.", where it read "Retry after 1.5."), written
+/// as a number is ("5." as 5 seconds, ".5" as 0.5 seconds), whole seconds
+/// beyond `u64` still in seconds, or the date and time the header can give
+/// instead, as it gives them.
+pub(crate) fn retry_after(value: &str) -> String {
+    let value = value.trim();
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let whole = |seconds: &str| match seconds.parse::<u64>() {
+        Ok(seconds) => crate::counted(seconds, "second", "seconds"),
+        // More seconds than a u64 holds are still seconds.
+        Err(_) => format!("{seconds} seconds"),
+    };
+    // The header's seconds are whole, but a server that sends a fraction
+    // still means seconds; a leading "+" is the number's sign, as the
+    // integer parse once took it.
+    let number = value.strip_prefix('+').unwrap_or(value);
+    let wait = match number.split_once('.') {
+        None if digits(number) => whole(number),
+        Some((seconds, "")) if digits(seconds) => whole(seconds),
+        Some((seconds, fraction))
+            if (seconds.is_empty() || digits(seconds)) && digits(fraction) =>
+        {
+            let seconds = if seconds.is_empty() { "0" } else { seconds };
+            format!("{seconds}.{fraction} seconds")
+        }
+        _ => value.to_owned(),
+    };
+    format!(" Retry after {wait}.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    /// The wait a refusal names agrees with its noun, a decimal wait keeps
+    /// its unit ("1.5" read "Retry after 1.5."), and a date stays a date.
+    #[test]
+    fn retry_after_counts_its_seconds() {
+        assert_eq!(retry_after("1"), " Retry after 1 second.");
+        assert_eq!(retry_after("30"), " Retry after 30 seconds.");
+        assert_eq!(retry_after(" 1.5 "), " Retry after 1.5 seconds.");
+        assert_eq!(retry_after("0.25"), " Retry after 0.25 seconds.");
+        assert_eq!(retry_after("5."), " Retry after 5 seconds.");
+        assert_eq!(retry_after("+5"), " Retry after 5 seconds.");
+        assert_eq!(retry_after("+1.5"), " Retry after 1.5 seconds.");
+        assert_eq!(retry_after("1."), " Retry after 1 second.");
+        assert_eq!(retry_after(".5"), " Retry after 0.5 seconds.");
+        assert_eq!(
+            retry_after("99999999999999999999"),
+            " Retry after 99999999999999999999 seconds."
+        );
+        assert_eq!(retry_after("."), " Retry after ..");
+        assert_eq!(retry_after("1.2.3"), " Retry after 1.2.3.");
+        assert_eq!(
+            retry_after("Wed, 21 Oct 2026 07:28:00 GMT"),
+            " Retry after Wed, 21 Oct 2026 07:28:00 GMT."
+        );
+    }
     #[derive(Default)]
     struct Mock {
         requests: Vec<Request>,
@@ -1021,9 +1093,40 @@ mod tests {
         )
         .unwrap();
         let repo = gitturtle_core::GitRepository::open(temp.path()).unwrap();
-        let templates = local_templates(&repo, "main").unwrap();
+        let templates = local_templates(
+            &repo,
+            "main",
+            &gitturtle_core::HistoryCancellation::default(),
+        )
+        .unwrap();
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].body, "Captured template\n");
         assert_eq!(templates[0].revision.len(), 40);
+
+        // A cancel arriving once the listing has named the templates stops the read
+        // before the next one, as a cancel the person asked for: the panel's Cancel or
+        // the operation bar's while the templates are read. The panel's own test
+        // cancels before the read starts, which stops the listing instead.
+        let cancellation = gitturtle_core::HistoryCancellation::default();
+        let listing = repo
+            .search_tracked_paths(
+                &gitturtle_core::PathScope::Revision("main".into()),
+                "pull_request_template",
+                &cancellation,
+            )
+            .unwrap();
+        assert!(
+            !listing.entries.is_empty(),
+            "the listing names the template"
+        );
+        cancellation.cancel();
+        let error =
+            read_templates(&repo, listing, &cancellation).expect_err("the cancel stops the read");
+        assert!(
+            error
+                .downcast_ref::<gitturtle_core::ReadCancelled>()
+                .is_some(),
+            "{error:#}"
+        );
     }
 }

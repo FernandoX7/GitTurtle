@@ -1,0 +1,30 @@
+== many-13
+ 5f7b078 launches 2 | writes n=20 frames p50 25 p95 26 min 24 max 26 hist {24: 5, 25: 13, 26: 2} woken p50 3 max 3 amb max 1
+   write CPU ms p50 86.323 p95 93.231 max 93.231 | press->1st req p50 3.783 p95 8.381 max 8.381 | last frame max 1559.803
+   draw (write, paced) n=408 p50 2.981 p95 5.306 max 8.254 launch p50s 2.967-2.989 ambiguous [8.439, 8.583, 9.267, 9.361, 9.493, 9.863, 9.998, 10.233, 11.366]
+   resize n=8 frames hist {2: 8} configures {1: 8} paced {1: 8} CPU p50 24.170 p95 29.430 max 29.430 | cfg->1st req p50 19.844 p95 26.594 max 26.594 | draw n=8 p50 3.606 p95 4.190 max 4.190
+   idle frames 0 idle CPU max 0.150 | freq kHz p50 2208000 min 702000 | cpus [4, 5, 7, 8, 9, 10, 11]
+ 5e12885 launches 2 | writes n=20 frames p50 25 p95 26 min 23 max 26 hist {23: 1, 24: 5, 25: 8, 26: 6} woken p50 3 max 3 amb max 1
+   write CPU ms p50 86.739 p95 95.977 max 95.977 | press->1st req p50 3.083 p95 5.642 max 5.642 | last frame max 1561.043
+   draw (write, paced) n=403 p50 2.878 p95 5.153 max 8.009 launch p50s 2.822-2.933 ambiguous [8.443, 8.509, 8.542, 8.638, 8.658, 9.079, 9.119, 9.211, 9.306, 9.52, 9.87, 10.055, 10.104, 10.86, 11.515, 11.568]
+   resize n=8 frames hist {2: 8} configures {1: 8} paced {1: 8} CPU p50 22.990 p95 29.894 max 29.894 | cfg->1st req p50 18.945 p95 23.933 max 23.933 | draw n=8 p50 3.418 p95 5.383 max 5.383
+   idle frames 0 idle CPU max 0.150 | freq kHz p50 2208000 min 1188000 | cpus [4, 5, 6, 7, 8, 9, 10, 11]
+  delta write_draw_p50 -0.103 [-0.206, +0.060]
+  delta write_draw_p95 -0.153 [-0.855, +0.635]
+  delta write_cpu_p50 +0.416 [-3.845, +5.633]
+  delta resize_cpu_p50 -1.180 [-7.341, +2.436]
+== many-18
+ 5f7b078 launches 2 | writes n=20 frames p50 25 p95 27 min 24 max 27 hist {24: 4, 25: 8, 26: 7, 27: 1} woken p50 3 max 3 amb max 1
+   write CPU ms p50 76.619 p95 82.507 max 82.507 | press->1st req p50 2.834 p95 4.809 max 4.809 | last frame max 1561.247
+   draw (write, paced) n=415 p50 2.594 p95 4.837 max 8.187 launch p50s 2.581-2.62 ambiguous [8.371, 8.477, 8.734, 8.761, 8.938, 9.366, 9.951, 10.134, 10.333, 10.917]
+   resize n=8 frames hist {2: 8} configures {1: 8} paced {1: 8} CPU p50 21.429 p95 40.681 max 40.681 | cfg->1st req p50 17.159 p95 31.909 max 31.909 | draw n=8 p50 3.403 p95 7.138 max 7.138
+   idle frames 0 idle CPU max 0.143 | freq kHz p50 2568000 min 1188000 | cpus [4, 5, 6, 7, 8, 9, 10, 11]
+ 5e12885 launches 2 | writes n=20 frames p50 26 p95 27 min 24 max 27 hist {24: 4, 25: 4, 26: 10, 27: 2} woken p50 3 max 3 amb max 1
+   write CPU ms p50 78.223 p95 85.189 max 85.189 | press->1st req p50 2.763 p95 5.487 max 5.487 | last frame max 1565.462
+   draw (write, paced) n=416 p50 2.526 p95 4.680 max 8.307 launch p50s 2.494-2.562 ambiguous [8.395, 8.624, 8.665, 8.768, 8.828, 9.007, 9.309, 9.689, 9.969, 9.997, 10.098, 10.314, 10.68, 10.928]
+   resize n=8 frames hist {2: 8} configures {1: 8} paced {1: 8} CPU p50 21.542 p95 29.837 max 29.837 | cfg->1st req p50 17.896 p95 26.692 max 26.692 | draw n=8 p50 2.827 p95 3.436 max 3.436
+   idle frames 0 idle CPU max 0.141 | freq kHz p50 2208000 min 948000 | cpus [4, 5, 6, 7, 8, 9, 10, 11]
+  delta write_draw_p50 -0.068 [-0.181, +0.052]
+  delta write_draw_p95 -0.157 [-1.724, +0.441]
+  delta write_cpu_p50 +1.604 [-5.467, +4.464]
+  delta resize_cpu_p50 +0.113 [-6.043, +5.153]

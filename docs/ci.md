@@ -87,8 +87,8 @@ by GitHub's existing repository policy; C1 must observe a real approved fork run
 
 ### Stable gate and compatibility
 
-`Quality gate` runs with `always()` after classification, formatting, the debug
-and release platform matrices, the Arch Linux container job, development tooling,
+`Quality gate` runs with `always()` after classification, formatting, the test,
+Clippy and release platform matrices, the Arch Linux container job, development tooling,
 the image privacy scan and the Website call. It requires successful classification
 and success for each required lane and for the image privacy job, whose recorded status it prints. A skipped lane is accepted only when the recorded classification says it is
 unneeded. Failures, cancellations, unexpected skips, absent jobs, mismatched
@@ -96,10 +96,11 @@ outputs or unknown classification versions fail. Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
 diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
-The actual platform work is named `Rust tests and Clippy · <platform>`,
-`Rust release · <platform>` and `Rust tests · archlinux`. `Rust formatting` checks
-the workspace once on Ubuntu. The aggregate cannot pass a product change unless
-both platform matrices, the Arch Linux job, formatting and other required lanes
+The actual platform work is named `Rust tests · <platform>`,
+`Rust Clippy · <platform>`, `Rust release · <platform>` and `Rust tests · archlinux`
+(until November 3, 2026 the first two were one `Rust tests and Clippy · <platform>`
+job). `Rust formatting` checks the workspace once on Ubuntu. The aggregate cannot pass a product change unless
+the three platform matrices, the Arch Linux job, formatting and other required lanes
 succeed; documentation changes may pass after
 justified skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 silently bypassing a failed dependency.
@@ -178,13 +179,86 @@ frames fails as unscannable rather than being sampled. A match
 fails the job and therefore `Quality gate`. The job records one of four statuses,
 and the gate prints it:
 
-- `scanned`: every added or changed image was scanned and none matched.
+- `scanned`: every added or changed image was scanned and none matched (by all
+  eight [shards](#shards) together).
 - `no-images`: the event adds or changes no raster image.
 - `unavailable`: the secret is absent, which is always the case for a fork pull
   request. The job emits a `::notice::` and a step-summary line saying the images
   were **not** scanned; the gate line says so too. It is not a pass.
 - `no-comparison`: manual dispatch, or a main push without a previous commit, has
   nothing to compare, and the notice says the images were not scanned.
+
+#### Shards
+
+The matching is brute force: its cost is the images' pixels times the templates'
+pixels. As one 45-minute job it was cancelled before it finished the 735 images
+(477 megapixels) of a pull request, printing nothing, so `Quality gate` failed
+([Quality 43781503794](https://github.com/FernandoX7/GitTurtle/actions/runs/43781503794)).
+The job is therefore a matrix of eight shards, `Image privacy · 1/8` to
+`Image privacy · 8/8`, with `fail-fast: false` and 90 minutes each. Every shard
+checks out the same commit and makes the same plan; `image_privacy.py slice`
+then gives it every eighth image of the sorted list, counted from its own
+number. The slices are a pure function of the list, the number and the count:
+each image is in exactly one of them, and a directory of large frames spreads
+over all eight. `slice` is told the shard's number and the matrix's real job
+count (`strategy.job-total`) and refuses a number outside 1 to 8, a count other
+than 8, an empty list, and a list that is not sorted and unique, so a matrix
+edited to fewer jobs fails instead of leaving slices that no job scans. The
+shards change which runner scans an image and nothing else: the comparisons,
+suffixes, name refusal, animation-frame rule, templates, threshold, engine and
+`--redacted` are the same, and no image is scanned twice.
+
+A shard whose slice is empty, which happens when fewer than eight images are
+listed, records `scanned` in the slice step and runs neither the Pillow
+installation nor the scan step, so the secret is not mapped into that job. A
+shard with images prints its slice's size and then each image's verdict line,
+`path: clean` or `path: MATCH`, when that image's scan ends. The lines keep the
+list's order, so one waits for the images listed before it while the runner
+scans an image per core. The log of a shard cancelled at its limit therefore
+shows the images it finished; those after its last line were not scanned.
+
+The 90 minutes are a budget, not a measurement of the secret's set, whose size
+is unknown outside the secret. At the cost the
+[tooling guide](../scripts/native_qa/README.md#privacy-templates) records for
+the local set (17.6 s of one core per 1000x680 frame, about 26 core-seconds per
+megapixel), 477 megapixels need about 3.4 core-hours on that faster core,
+before the extra readings of magnified crops. Eight four-core shards of 90
+minutes allow 48. No hosted run of the shards is recorded here yet.
+
+`Quality gate` reads the matrix as the one job `needs.image-privacy`, exactly
+as before, and still requires the result `success` together with one of the
+four statuses ([`gate`](../scripts/ci/changes.py)):
+
+- **Outputs.** GitHub combines a matrix's job outputs from all of its jobs, the
+  last job to set a name overrides the others, an empty value sets nothing, and
+  the jobs run in no guaranteed order
+  ([workflow syntax, `jobs.<job_id>.outputs`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs)).
+  So every shard writes a status that is true of the whole list once all eight
+  succeed. The plan's status is the same in every shard, because each reads the
+  same event, commit and secret. A shard replaces `scan` with `scanned` only
+  when its whole slice was scanned without a match, or was empty; a shard that
+  fails, times out or is cancelled leaves `scan`, which the gate does not
+  accept.
+- **Result.** GitHub's [`needs` context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context)
+  lists `success`, `failure`, `cancelled` and `skipped` for
+  `needs.<job_id>.result` and does not say how a matrix's jobs combine into it.
+  The gate relies here on what it already relies on for the test, Clippy,
+  release and tooling matrices: the result is `success` only when every job of
+  the matrix succeeded. The [validation matrix](validation.md) records both
+  cases on this repository: one failed macOS test job beside a green Ubuntu one
+  failed the gate in Quality 41900575513, and one test job cancelled at its
+  time limit did in Quality 41757534359.
+
+With all eight shards successful, every slice was scanned clean and every shard
+says `scanned`, whichever sets the output last. With one failed, cancelled,
+timed out or skipped, the result is not `success` and the gate fails whatever
+the output says. One limit remains: each shard reads at its own start whether
+the secret exists. Do not create or remove the secret while a Quality run is in
+progress, and re-run the whole run, not only its failed jobs, after changing
+it: shards that disagree about the secret would report `unavailable` and
+`scanned` side by side, and the gate would print whichever was set last.
+
+#### The secret
 
 The secret is safe to hold because GitHub passes secrets only to runs from this
 repository's own branches, whose authors already have write access; a fork pull
@@ -196,9 +270,12 @@ environment, keeps the scanner's temporary files under `$RUNNER_TEMP`, and
 removes the file afterwards. GitHub masks the value in logs; the scan prints no
 template name, score, position or crop, so nothing else derived from it can
 reach a log, and nothing is uploaded or published. Image paths travel
-NUL-delimited in a file, unprintable names fail the job, and the scan output is
-printed with workflow commands stopped, so a crafted file name cannot become a
-workflow command. The owner creates or rotates the secret with the steps in the
+NUL-delimited in a file and unprintable names fail the job. The step stops
+workflow commands before the scanner starts, passes each of the scanner's lines
+to the log as it is read and resumes commands when the scanner has ended,
+with a token the scanner is never given, so a crafted file name cannot become a
+workflow command. A step that is interrupted or fails while it passes lines on
+kills the scanner first, and still removes the file and resumes commands. The owner creates or rotates the secret with the steps in the
 [native-QA tooling guide](../scripts/native_qa/README.md#automated-scans); until
 then every run reports `unavailable` or `no-images`. Locally, `python3
 scripts/gate.py full` runs the same scan when a templates directory is configured.
@@ -209,23 +286,36 @@ After classification, the selected jobs have no build dependencies on each other
 
 - `Rust formatting` checks `cargo fmt --all -- --check` on Ubuntu with the pinned
   workspace toolchain. It installs no native packages and restores no target cache.
-- `Rust tests and Clippy · macos-15` and `· ubuntu-24.04` each restore the **debug**
+- `Rust tests · macos-15` and `· ubuntu-24.04` each restore the **debug**
   cache, install the [pinned cargo-nextest](#test-execution-with-nextest), run
   `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings`, then
-  `cargo test --locked --workspace --timings -- "(line "`, then
-  `cargo clippy --locked --workspace --all-targets --timings -- -D warnings`.
+  `cargo test --locked --workspace --timings -- "(line "`, and save the debug
+  cache on a successful push to `main`.
   nextest builds the same targets as Cargo's default
   [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html) and
   runs its unit and integration tests; the doctest step runs the rest of that
   selection. There is no package, test-name, target or feature filter that removes
   the existing platform-conditional tests.
-- `Rust release · macos-26` and `· ubuntu-24.04` each restore the **release** cache
+- `Rust Clippy · macos-15` and `· ubuntu-24.04` run beside them on the same
+  platforms and trigger. Each restores the same platform's **debug** cache (same
+  profile, runner and environment, so the same key) and runs
+  `cargo clippy --locked --workspace --all-targets --timings -- -D warnings`. It
+  never saves: it has no `finish` phase, so the test job remains the only writer of
+  that entry (see [Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)).
+- `Rust release · macos-26`, `· ubuntu-24.04` and `· ubuntu-24.04-arm` each restore
+  the **release** cache
   and build `gitturtle` with `--release --locked --timings` and an explicit platform
   target. Each job packages that executable without rebuilding it. Linux checks
   archive extraction, isolated installation, installed bytes, notices, desktop
   entry, dynamic libraries and the expected no-display launch failure; macOS
-  checks bundle identity and ad-hoc signatures. Complete license notices enable
-  a same-run artifact upload/download and independent payload verification. Known
+  checks bundle identity and ad-hoc signatures. Complete license notices on a
+  platform in the upload set (Linux; the macOS upload is held) enable
+  a same-run artifact upload/download and independent payload verification. The
+  download asks for the uploaded artifact's exact ID up to three times (at once,
+  then about 15 s and about 45 s more after a failure), because the run's
+  artifact listing can lag the upload; the first two attempts may fail without
+  failing the job, the third fails it, and the verification still requires the
+  downloaded files. Known
   C0 notice gaps explicitly withhold public binaries while development package
   checks continue; other collection or verification errors fail the job. See the
   [artifact runbook](ci-artifacts.md) for exact gates and evidence requirements.
@@ -253,12 +343,41 @@ The existing change classifier owns selection, the setup action owns each cache'
 lifetime, and the gate owns the final result. No new cross-job build artifact or
 mutable shared target directory is introduced. Debug/release use separate fresh
 runners and matching setup/finish profiles; a finish cannot remove another lane's
-inputs. Package/artifact consumers must precede finish because its successful-main
+inputs. The Clippy jobs only read the debug entry, so they cannot race the test
+job's save or leave it an entry without the test build.
+Package/artifact consumers must precede finish because its successful-main
 cleanup can remove the application executable. The final gate requires the
-formatter, **both** platform matrices and the Arch Linux job, in addition to
-tooling/Website according to the recorded plan. A successful debug matrix cannot
-cover a failed, cancelled, missing or unexpectedly skipped release matrix. Removing the transitional mirrors
+formatter, the test, Clippy and release platform matrices and the Arch Linux job, in addition to
+tooling/Website according to the recorded plan. A successful test matrix cannot
+cover a failed, cancelled, missing or unexpectedly skipped Clippy or release matrix. Removing the transitional mirrors
 does not change that dependency or result contract.
+
+### Why separate test and Clippy jobs
+
+On November 3, 2026 Clippy moved out of the test job into `Rust Clippy · <platform>`.
+Quality run [41757534359](https://github.com/FernandoX7/GitTurtle/actions/runs/41757534359)
+on `36d977aa` cancelled `Rust tests and Clippy · macos-15` at its 45-minute limit
+with 1,747 of 1,910 tests passed and none failed. Against the last green run,
+[41745637784](https://github.com/FernandoX7/GitTurtle/actions/runs/41745637784)
+(same `macos-15-arm64` image 20261028.0489, same cache key), its test build took
+17m43s instead of 12m22s and its tests ran 1.8 times slower at the median (4.25
+times at p90): a slow runner, not the code. In that green job the nextest step
+took 1,470 s (about 12.4 minutes of build and 715 s of tests) and Clippy 267 s,
+about 29 minutes in all; the twelve runs before it took 22 to 36 minutes. With
+Clippy beside it, the test job's path is the build and the tests only, and a
+failing test no longer hides Clippy's result (runs 41505789304 and 41525180845
+never reached macOS Clippy after a test failed).
+
+Ubuntu moved too, though its job (about 20 minutes) was not near its limit: one
+matrix keeps a single Clippy definition and one job name per platform instead of
+an OS condition in each job, and standard hosted runners cost nothing for this
+public repository. The cost is runner time off the critical path: each Clippy job
+sets up its own runner and, since the test job no longer runs Clippy, the debug
+entry no longer holds Clippy's checked (metadata-only) dependency outputs, so each
+run checks the dependencies again; build-script and procedural-macro outputs that
+match the test build's are restored rather than rebuilt. A separate cache family
+for the checked outputs would need a new setup-action profile; the next hosted runs
+show whether that time warrants one.
 
 ### Why two compilation lanes per platform
 
@@ -269,18 +388,17 @@ and 7m03s. These are observations from the
 [baseline PR run](https://github.com/FernandoX7/GitTurtle/actions/runs/34992350894),
 not predictions for the new graph.
 
-Release compilation has a distinct profile and can overlap debug work. Keeping
-Clippy with tests avoids another cold debug dependency build and another cache
-reader/writer family; Clippy remains a separate measured step with strict warnings.
-A failing test stops that debug job before doctests and Clippy, as before; the
-independent release job continues to retain its diagnostics. There is no automatic
-retry. The September 15 fan-out judged the short test phase too small to justify
-nextest, partitions or additional test runners. Later warm runs made test execution
-itself visible (see [Test execution with nextest](#test-execution-with-nextest)), and
+Release compilation has a distinct profile and can overlap debug work. Clippy
+stayed in the test job until November 2026 to avoid another cold debug dependency
+build and another cache reader/writer family; it now has its own job, which only
+reads the debug entry (see [above](#why-separate-test-and-clippy-jobs)), so there
+is still one debug writer per platform. A failing test stops the test job before
+doctests; the independent Clippy and release jobs retain their diagnostics. There
+is no automatic retry. The September 15 fan-out judged the short test phase too
+small to justify nextest, partitions or additional test runners. Later warm runs
+made test execution itself visible (see [Test execution with nextest](#test-execution-with-nextest)), and
 the local gate already ran nextest, so the tests step now uses it; there are still
-no partitions or additional test runners. If later measurements
-show Clippy still dominates the warm critical path, compare a separate Clippy lane
-against the extra cold compilation, setup, transfer and runner time before adopting it.
+no partitions or additional test runners.
 
 ### Test execution with nextest
 
@@ -323,7 +441,7 @@ so a flaky test fails the job as before. The status level prints one `PASS`,
 as libtest's `test … ok|ignored` lines did. The inherited default profile reports
 a test running longer than 60 s as slow and terminates it after 120 s; `cargo test`
 had no per-test limit, so a test that hangs now fails with a `TIMEOUT` line
-instead of holding the job until its 45-minute timeout. The profile's JUnit report
+instead of holding the job until its 60-minute timeout. The profile's JUnit report
 (`target/nextest/ci/junit.xml`) is not uploaded: it holds unsanitized captured
 output of failing tests, and the sanitized `tests.log` already lists every result.
 The measurement helper reads nextest's `Summary [ … ]` run duration as the test
@@ -366,7 +484,7 @@ GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null cargo test --locked --workspace -- "(line "
 ```
 
-To check that two runs executed the same tests, download each Rust debug job's
+To check that two runs executed the same tests, download each Rust test job's
 log (`gh api repos/FernandoX7/GitTurtle/actions/jobs/<job-id>/logs`) and compare them:
 
 ```sh
@@ -385,12 +503,26 @@ log before calling the sets different. The dated
 [nextest record](benchmarks/2026-09-27-ci-nextest-tests.md) holds the hosted
 before/after durations and the test-list comparison.
 
-Each Rust matrix has two fixed OS entries, `fail-fast: false`, `max-parallel: 2`
-and a 45-minute job timeout. With the single
-[Arch Linux job](#arch-linux-container-job), also bounded at 45 minutes, at most
-five compilation runners are requested per Quality run, plus the independent
-inexpensive checks. Formatting is bounded
-at five minutes, policy and the final gate at five, and tooling at ten.
+The test and Clippy matrices have two fixed OS entries and `max-parallel: 2`; the release
+matrix has three (macOS 26, Ubuntu 24.04 and Ubuntu 24.04 on ARM) and `max-parallel: 3`.
+All use `fail-fast: false`.
+The test jobs, the [Arch Linux job](#arch-linux-container-job) among them, are
+bounded at 60 minutes, and the Clippy and release jobs at 45. A test job's limit
+only backs up a hung step, since the profile above terminates any test after
+120 s. The test jobs take about 25 to 31 minutes on a normal runner, and
+[quality run 41757534359](https://github.com/FernandoX7/GitTurtle/actions/runs/41757534359)
+met a macOS runner 1.8 times slower at the median: at that pace the Arch job's
+28 minutes become about 50, inside 60 and past the earlier 45 (see
+[Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)). A
+workflow policy test in `scripts/ci/tests/test_nextest.py` holds the Ubuntu and
+macOS test matrix and the Arch Linux job at 60 minutes. With the
+single Arch Linux job, at most eight compilation runners (three on macOS) are
+requested per Quality run, plus the independent inexpensive checks. Formatting is bounded
+at five minutes, policy and the final gate at five, and tooling at ten. The
+[image privacy scan](#shards) adds eight Ubuntu jobs of at most 90 minutes to every
+run. When the plan is `no-images`, `unavailable` or `no-comparison`, each ends after
+its checkout and plan; a shard with an empty slice of a scanned list ends after its
+checkout, plan and slice.
 GitHub may queue those jobs under the repository's existing concurrency
 limits; matrix bounds do not promise simultaneous starts. See the documented
 [matrix controls](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).
@@ -404,8 +536,8 @@ may stop before artifact upload; do not claim a missing report was retained.
 rolling release that picks up new compilers, glibc and native libraries before
 Ubuntu does. It runs on `ubuntu-24.04` inside the official
 `archlinux:base-devel` image whenever the classification requests the product lane,
-and the final gate requires it like the other Rust jobs. It runs the debug jobs'
-commands unchanged: the [pinned cargo-nextest](#test-execution-with-nextest) with
+and the final gate requires it like the other Rust jobs. It runs the Ubuntu and
+macOS test jobs' commands unchanged: the [pinned cargo-nextest](#test-execution-with-nextest) with
 `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings`, then
 `cargo test --locked --workspace --timings -- "(line "`, after the same
 `git pack-refs --all --no-prune`. Clippy, release compilation and packaging stay on
@@ -420,8 +552,12 @@ Steps, in order:
    archlinux-keyring` and `pacman -Su` with the build and
    test packages: `base-devel clang cmake git openssh python rustup ca-certificates`
    plus the GPUI native libraries (`fontconfig freetype2 wayland libxkbcommon
-   libxkbcommon-x11 libx11 libxcb vulkan-icd-loader vulkan-headers openssl zstd`),
-   the Arch counterparts of the Ubuntu jobs' packages. It checks their `pkg-config`
+   libxkbcommon-x11 libx11 libxcb vulkan-icd-loader vulkan-headers openssl zstd`)
+   and `dav1d`, the system AV1 decoder that `dav1d-sys` links, the Arch
+   counterparts of the Ubuntu jobs' packages, and `shared-mime-info`, the
+   MIME database GIO types files with: without it `gio` types every file
+   `application/octet-stream` and the real-GIO check in `system_preview::launch`
+   fails, naming the missing database. It checks the libraries' `pkg-config`
    modules and prints the installed versions of the main packages. Git must be installed
    before checkout, which otherwise downloads a tarball without `.git`.
 2. As root, create a `builder` account with the UID that owns `RUNNER_TEMP` (the
@@ -501,14 +637,16 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
   [helper](../.github/actions/setup-rust/cache.py): the C toolchain and its
   headers (`binutils clang cmake gcc gcc-libs glibc linux-api-headers llvm-libs
   make pkgconf`), and the libraries that build scripts probe or the test binaries
-  link (`fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11 openssl
-  wayland`). `freetype-sys` links the system FreeType, `yeslogic-fontconfig-sys`
-  and `aws-lc-sys` probe pkg-config (the latter for `libcrypto` and `openssl`),
-  and the app links `libxcb` and `libxkbcommon`. The job's other libraries,
-  `vulkan-headers`, `vulkan-icd-loader` and `zstd` (`ARCH_RUNTIME_PACKAGES`), are
-  used only at run time and by its `pkg-config --exists` check. No build script
-  probes them and nothing links them at build time. Nothing else in the rolling
-  inventory is keyed, so an update to, say, `git`, `python`, `systemd` or Vulkan
+  link (`dav1d fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11
+  openssl wayland`). `freetype-sys` links the system FreeType, `dav1d-sys`,
+  `yeslogic-fontconfig-sys` and `aws-lc-sys` probe pkg-config (`dav1d-sys` for
+  the libdav1d it links, `aws-lc-sys` for `libcrypto` and `openssl`), and the app
+  links `libxcb` and `libxkbcommon`. The job's other packages
+  (`ARCH_RUNTIME_PACKAGES`) are used only at run time: `vulkan-headers`,
+  `vulkan-icd-loader` and `zstd` by the tests and its `pkg-config --exists`
+  check, and `shared-mime-info` by the tests, as the MIME database `gio` reads.
+  No build script probes them and nothing links them at build time. Nothing else
+  in the rolling inventory is keyed, so an update to, say, `git`, `python`, `systemd` or Vulkan
   keeps the entry. An update to any listed package gives a new key and a full cold
   build, never objects built against the old libraries. A test compares both
   lists with the job's install line, so a library added to the job but in neither
@@ -786,8 +924,8 @@ Cargo build), doctests, Clippy and release builds request Cargo `--timings`. The
 as sanitized plain text, for example `tests-timing.txt`, instead of retaining an
 executable HTML artifact. Missing or oversized timing artifacts remain unavailable.
 The uploaded diagnostic artifact expires after **three days**. Quality uses
-the pinned [upload-artifact v7.0.1 action](https://github.com/actions/upload-artifact/releases/tag/v7.0.1);
-its [inputs](https://github.com/actions/upload-artifact/blob/043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/action.yml)
+the pinned [upload-artifact v7.0.2 action](https://github.com/actions/upload-artifact/releases/tag/v7.0.2);
+its [inputs](https://github.com/actions/upload-artifact/blob/cf430e030ddbb5b0abf93d22962f4752f3646cd9/action.yml)
 support the explicit retention and exclusion of hidden files used here.
 Each command's JSON captures the run, commit, event and runner context alongside
 its measurements. In PR jobs, `GITHUB_SHA` can identify the tested merge commit;
@@ -1059,14 +1197,16 @@ and [Cargo build timings](https://doc.rust-lang.org/cargo/reference/timings.html
 ## Bounded Rust dependency caching
 
 Quality's [Rust setup action](../.github/actions/setup-rust/action.yml) owns native
-setup and the lifetime of optional compilation caches. Each compilation job,
-including the [Arch Linux container job](#arch-linux-container-job) in its
+setup and the lifetime of optional compilation caches. Each compilation job that
+writes a cache, including the [Arch Linux container job](#arch-linux-container-job) in its
 `container: archlinux` mode, calls its
 `setup` phase before validation and its matching `finish` phase **after every
 consumer of `target`**, including package construction and installation checks.
 Finish may remove compiled outputs to bound a successful main cache. Keep future
-binary/artifact consumers before that boundary. The debug job always runs locked
-workspace tests with nextest, then doctests, and strict all-target Clippy; the separate
+binary/artifact consumers before that boundary. The Clippy jobs call `setup` only:
+they restore their platform's debug entry and never save, so the test job stays its
+only writer. The test job always runs locked workspace tests with nextest, then
+doctests; the Clippy job always runs strict all-target Clippy; the separate
 release job always runs locked optimized compilation, regardless of a cache hit.
 Formatting has no compilation cache or native setup.
 
@@ -1113,8 +1253,8 @@ compatibility is unchanged.
 
 Kept outputs alone would still rebuild. Cargo treats a path package as dirty when
 any source listed in its dep-info is newer than that dep-info, and checkout gives
-every file the current time. Quality's three compilation jobs (`rust-debug`,
-`rust-release` and `rust-arch`) therefore pass the action's `vendor-reuse: true` input, and setup rewinds every tracked file under
+every file the current time. Quality's four compilation jobs (`rust-debug`,
+`rust-clippy`, `rust-release` and `rust-arch`) therefore pass the action's `vendor-reuse: true` input, and setup rewinds every tracked file under
 `vendor/`, and each directory up to `vendor/` (a build script may watch a
 directory), to one fixed time: Cargo's own deterministic registry timestamp,
 2006-07-24. It runs in the prepare step, after the key is computed and before the
@@ -1187,7 +1327,8 @@ builds do not opt into [vendored reuse](#vendored-path-packages).
 
 Setup always restores with saving disabled. Only a successful **push to
 `FernandoX7/GitTurtle`'s `main`** can register the finish save; PRs, fork PRs and
-manual runs are read-only consumers. Failed/cancelled validation cannot save.
+manual runs are read-only consumers, and so are the Clippy jobs on every event.
+Failed/cancelled validation cannot save.
 A main job's finish action checks for the existing exact key without downloading
 again and registers upstream's normal post-job save only when its payload budget
 passes. An existing exact entry is immutable and needs no duplicate save.
@@ -1242,7 +1383,9 @@ show it. The debug limit therefore became 7 GiB (7.52 GB). At the observed ratio
 extra 1.07 GB of payload costs at most about 0.25 GB of archive, so one generation
 stays under about 4.4 GB of the 10 GB quota; the macOS debug lane is far below
 either limit. The helper is part of every lane's cache identity, so the first `main`
-run after the change seeds all four lanes cold.
+run after the change seeds all four lanes cold. The AArch64 Linux release leg added on
+2026-11-15 saves an entry of its own from `main` pushes; its size has not been measured
+against the quota.
 
 The helper projects only the extracted registry package directories that pinned
 [rust-cache registry cleanup](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/cleanup.ts)

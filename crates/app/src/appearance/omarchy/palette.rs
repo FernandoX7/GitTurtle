@@ -367,8 +367,49 @@ impl Judge {
     }
 }
 
-/// The fitted palette for `colors`, before the readability check.
+/// The accent's rule as a graphic: the focus ring, caret and list active border on the six
+/// surfaces, and a refused write's keyboard ring on the removed diff tile.
+const ACCENT_CONTRAST: f64 = 3.0;
+/// The most runs [`fit`] takes for one theme: its first, and one for each removed diff tile
+/// the accent is then tuned on as well.
+const TILE_FITS: usize = 4;
+
+/// The fitted palette for `colors`, before the readability check. The accent also draws the
+/// keyboard ring of a refused write's box on the operation error banner, whose fill is
+/// `removed_background`, and keeps its 3:1 there (`Palette::readability_issues`). That tile
+/// is known only once the status set is chosen, from statuses tuned on surfaces the accent
+/// takes part in: the hovered selected row blends it in, and the pressed step's rounds read
+/// that row. So where the accent falls under 3:1 on its tile, the fit runs again with the
+/// accent tuned on that tile beside the six surfaces from the start, and on each new tile a
+/// further run gives, until the accent clears its tile, a run gives a tile already tried, or
+/// [`TILE_FITS`] runs: a theme whose accent can be fitted there keeps its own colors, as for
+/// the six surfaces, rather than all of them falling to the mode's built-in (decided
+/// 2026-11-14). Tuned in place after the status set, the accent would leave the row that the
+/// statuses, the text and the pressed step were fitted on.
 pub(crate) fn fit(colors: &Colors) -> Palette {
+    fit_runs(|tiles| fit_on_tiles(colors, tiles))
+}
+
+/// [`fit`]'s runs: `run` fits with the accent tuned on the tiles it is given, first none, then
+/// each tile an earlier run left the accent under its rule on, until the accent clears its
+/// tile, a run gives a tile already tried, or [`TILE_FITS`] runs.
+fn fit_runs(mut run: impl FnMut(&[u32]) -> Palette) -> Palette {
+    let mut tiles = Vec::new();
+    loop {
+        let palette = run(&tiles);
+        let tile = palette.removed_background;
+        if contrast(palette.accent, tile) >= ACCENT_CONTRAST
+            || tiles.contains(&tile)
+            || tiles.len() + 1 == TILE_FITS
+        {
+            return palette;
+        }
+        tiles.push(tile);
+    }
+}
+
+/// [`fit`] with the accent tuned on `tiles` as well as on the six surfaces.
+fn fit_on_tiles(colors: &Colors, tiles: &[u32]) -> Palette {
     let judge = Judge {
         dark: colors.mode == Mode::Dark,
     };
@@ -520,7 +561,8 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
         }
     };
 
-    // The accent, whose hovered selected row (`row_hover(true)`) blends it into `selected`.
+    // The accent, whose hovered selected row (`row_hover(true)`) blends it into `selected`,
+    // and on the removed diff `tiles` where an earlier run left it under its rule there.
     let fit_accent = |palette: Palette, accent: u32| {
         let accepts = |candidate: u32, margin: f64| {
             let row = Palette {
@@ -530,17 +572,20 @@ pub(crate) fn fit(colors: &Colors) -> Palette {
             .row_hover(true);
             judge.clears(
                 candidate,
-                &[(
-                    &[
-                        palette.canvas,
-                        palette.panel,
-                        palette.subtle,
-                        palette.hover,
-                        palette.selected,
-                        row,
-                    ],
-                    3.0,
-                )],
+                &[
+                    (
+                        &[
+                            palette.canvas,
+                            palette.panel,
+                            palette.subtle,
+                            palette.hover,
+                            palette.selected,
+                            row,
+                        ],
+                        ACCENT_CONTRAST,
+                    ),
+                    (tiles, ACCENT_CONTRAST),
+                ],
                 margin,
             )
         };
@@ -1004,6 +1049,15 @@ fn from_hsl(h: f64, s: f64, l: f64) -> u32 {
     })
 }
 
+/// The palettes the embedded fixtures map to, by file name, for theme-wide tests elsewhere.
+#[cfg(test)]
+pub(crate) fn fixture_palettes() -> Vec<(&'static str, Palette)> {
+    tests::fixtures()
+        .into_iter()
+        .map(|(name, colors)| (name, map(&colors).palette))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1127,6 +1181,180 @@ mod tests {
         assert!(contrast(palette.muted, palette.canvas) <= contrast(palette.text, palette.canvas));
     }
 
+    /// A theme whose accent clears the six surfaces it is fitted on but falls under 3:1 on its
+    /// removed diff tile, which fills the operation error banner behind a refused write's
+    /// keyboard ring, keeps its own palette: the accent is fitted on that tile too, in
+    /// lightness only, and no longer takes the whole theme to Midnight. Tokyo Night with a red
+    /// accent, a maroon selection and a pink red: as written, the accent reads 3.02:1 on the
+    /// hovered selected row, the nearest of the six, and 2.99:1 on its tile, the theme's one
+    /// finding.
+    #[test]
+    fn an_accent_under_its_rule_on_the_removed_tile_is_fitted_there_too() {
+        let colors = a_red_accent_under_its_rule_on_the_tile();
+        // Fitted on the six surfaces alone, the accent stays as written and reads under its
+        // rule on the tile.
+        let six = fit_on_tiles(&colors, &[]);
+        assert_eq!(six.accent, colors.accent);
+        let under = contrast(six.accent, six.removed_background);
+        assert!(under < ACCENT_CONTRAST, "{under:.3}");
+        let fitted = fit(&colors);
+        assert_eq!(fitted.readability_issues(), Vec::new());
+        assert_eq!(
+            map(&colors).palette,
+            fitted,
+            "the theme applies its own fit"
+        );
+        let ring = contrast(fitted.accent, fitted.removed_background);
+        assert!(ring >= ACCENT_CONTRAST, "the ring on the tile: {ring:.3}");
+        let more = fitted.with_more_contrast();
+        let ring = contrast(more.accent, more.removed_background);
+        assert!(
+            ring >= ACCENT_CONTRAST,
+            "the ring on the tile with More contrast: {ring:.3}"
+        );
+        // The theme's own colors, the accent moved in lightness alone.
+        assert_eq!(fitted.canvas, colors.background);
+        assert_eq!(Some(fitted.panel), colors.dark_background);
+        assert_eq!(
+            (fitted.subtle, fitted.hover, fitted.selected),
+            (six.subtle, six.hover, six.selected),
+            "subtle, hover and selected as the fit on the six surfaces alone leaves them"
+        );
+        assert_eq!(fitted.removed, colors.red);
+        assert_eq!(fitted.added, colors.green);
+        assert_eq!(fitted.text, colors.foreground);
+        let ((hue, saturation, lightness), (theirs, their_saturation, their_lightness)) =
+            (to_hsl(fitted.accent), to_hsl(colors.accent));
+        assert!(
+            (hue - theirs).abs() < 0.01
+                && (saturation - their_saturation).abs() < 0.05
+                && lightness > their_lightness,
+            "{:06x} from {:06x}",
+            fitted.accent,
+            colors.accent
+        );
+    }
+
+    /// With More contrast on, every bundled theme's accent, and the red accent fitted on its
+    /// tile, reads 3:1 by WCAG luminance on the removed line tint More contrast draws, where a
+    /// refused write's box draws its keyboard ring, and never less than on the tint drawn off:
+    /// More contrast moves that tint only toward the canvas, in OKLab lightness, away from the
+    /// word it stands apart from (`Palette::with_more_contrast`), and the accent, 3:1 off the
+    /// canvas and off the tint, lies beyond both from the canvas, so the move can only raise the
+    /// ring's contrast. That is why the fit judges the tile as given rather than as More
+    /// contrast moves it. Only the palettes as given were judged on the tile.
+    #[test]
+    fn more_contrast_never_lowers_the_accent_on_the_removed_tile() {
+        let mut themes: Vec<_> = fixtures()
+            .into_iter()
+            .map(|(name, colors)| (name.to_owned(), colors))
+            .collect();
+        themes.push((
+            "the red accent".to_owned(),
+            a_red_accent_under_its_rule_on_the_tile(),
+        ));
+        // Ethereal with a teal accent: of the 1,757 themes whose removed tint More contrast
+        // moved, among 12,000 a search tried (2026-11-14), the one whose ring gained least,
+        // 7.716:1 to 7.726:1.
+        let (_, ethereal) = fixtures()
+            .into_iter()
+            .find(|(name, _)| *name == "ethereal")
+            .expect("Ethereal");
+        themes.push((
+            "Ethereal with #80c0c0".to_owned(),
+            Colors {
+                accent: 0x80c0c0,
+                ..ethereal
+            },
+        ));
+        let mut moved = 0;
+        for (name, colors) in themes {
+            let off = map(&colors).palette;
+            let on = off.with_more_contrast();
+            let (was, is) = (
+                contrast(off.accent, off.removed_background),
+                contrast(on.accent, on.removed_background),
+            );
+            assert!(
+                is >= ACCENT_CONTRAST && is >= was,
+                "{name}: the ring on {:06x} with More contrast, {is:.3}:1, off on {:06x}, {was:.3}:1",
+                on.removed_background,
+                off.removed_background
+            );
+            if on.removed_background != off.removed_background {
+                moved += 1;
+            }
+        }
+        assert!(moved > 0, "More contrast moves some theme's removed tint");
+    }
+
+    /// Tokyo Night with a red accent, a maroon selection and a pink red, whose accent clears
+    /// the six surfaces as written and reads 2.99:1 on its removed diff tile.
+    fn a_red_accent_under_its_rule_on_the_tile() -> Colors {
+        let source = tokyo_night_source()
+            .replace("accent = \"#7aa2f7\"", "accent = \"#de4343\"")
+            .replace("selection = \"#292e42\"", "selection = \"#24171f\"")
+            .replace("red = \"#f7768e\"", "red = \"#ffb4c0\"");
+        let colors = parse(source.as_bytes(), false).unwrap();
+        assert_eq!(colors.accent, 0xde4343);
+        colors
+    }
+
+    /// The fit runs again with the accent tuned on each removed diff tile it fell under its
+    /// rule on, and ends at the first run whose accent clears its tile, as the red accent's
+    /// second run does, at a run that gives a tile already tried, and after [`TILE_FITS`]
+    /// runs, whichever comes first: a run that never clears its tile and gives a new one each
+    /// time stops at the fourth, and one that gives its first tile again stops at the second.
+    #[test]
+    fn the_fit_runs_again_until_its_accent_clears_its_tile_or_four_runs() {
+        let mut runs = 0;
+        let colors = a_red_accent_under_its_rule_on_the_tile();
+        let fitted = fit_runs(|tiles| {
+            runs += 1;
+            fit_on_tiles(&colors, tiles)
+        });
+        assert_eq!(
+            (runs, fitted),
+            (2, fit(&colors)),
+            "the red accent clears on its second run"
+        );
+        // Each run's accent the colour of its tile, under any rule.
+        let under = |tile: u32| Palette {
+            accent: tile,
+            removed_background: tile,
+            ..ThemeChoice::Midnight.palette()
+        };
+        let mut given = Vec::new();
+        let last = fit_runs(|tiles| {
+            given.push(tiles.to_vec());
+            under(0x101010 + given.len() as u32)
+        });
+        assert_eq!(
+            given,
+            [
+                vec![],
+                vec![0x101011],
+                vec![0x101011, 0x101012],
+                vec![0x101011, 0x101012, 0x101013]
+            ],
+            "a new tile each run: the tiles tried so far, over four runs"
+        );
+        assert_eq!(
+            last.removed_background, 0x101014,
+            "the fourth run's palette"
+        );
+        let mut runs = 0;
+        let last = fit_runs(|_| {
+            runs += 1;
+            under(0x202020)
+        });
+        assert_eq!(
+            (runs, last.removed_background),
+            (2, 0x202020),
+            "the first tile again ends the runs"
+        );
+    }
+
     /// Diff colors keep the theme's red and green where they are distinguishable (OKLCH
     /// chroma ≥ `DIFF_MIN_CHROMA` for both, hues ≥ `DIFF_MIN_HUE` apart after fitting), and
     /// otherwise take GitTurtle's own added and removed hues for the mode, fitted to the
@@ -1176,7 +1404,7 @@ mod tests {
     }
 
     /// Every bundled theme and the two generated from an `alacritty.toml`, by file name.
-    fn fixtures() -> Vec<(&'static str, Colors)> {
+    pub(super) fn fixtures() -> Vec<(&'static str, Colors)> {
         let generated = [
             (
                 "alacritty-dark",

@@ -14,7 +14,7 @@ use crate::ThemeStyled as _;
 use crate::{
     ActiveTheme, Disableable, ElementExt as _, Icon, IconName, IndexPath, Sizable, Size,
     StyleSized, StyledExt, h_flex,
-    input::{clear_button, input_style},
+    input::{clear_button, input_outline, input_style},
     list::{List, ListState},
     searchable_list::{
         SearchableListAdapter, SearchableListChange, SearchableListDelegate, SearchableListItem,
@@ -983,8 +983,7 @@ fn render_trigger_container(
         .when(appearance, |this| {
             this.bg(bg)
                 .text_color(fg)
-                .when(disabled, |this| this.opacity(0.5))
-                .border_color(cx.theme().input)
+                .border_color(input_outline(disabled, cx))
                 .rounded(cx.theme().radius)
         })
         .input_size(size)

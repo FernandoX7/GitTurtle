@@ -1,0 +1,100 @@
+# Maintainer: FernandoX7 <https://github.com/FernandoX7>
+#
+# GitTurtle's release executable, repackaged from the GitHub Release's Linux
+# archive for this architecture. Nothing is compiled, and package() reads only
+# that archive's own files.
+#
+# Not published yet. Until the first GitHub Release exists, _commit and the
+# checksums below are placeholders that makepkg refuses; packaging/aur/README.md
+# in the GitTurtle repository has the release-time steps.
+
+pkgname=gitturtle-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Fast native Git client for history inspection and everyday Git work'
+arch=(x86_64 aarch64)
+url='https://github.com/FernandoX7/GitTurtle'
+license=(MIT)
+depends=(
+  # NEEDED by the release executable (readelf -d), by owning package.
+  dav1d             # libdav1d.so.7
+  glibc             # libc.so.6, libm.so.6 and the loader
+  libgcc            # libgcc_s.so.1
+  libxcb            # libxcb.so.1
+  libxkbcommon      # libxkbcommon.so.0
+  libxkbcommon-x11  # libxkbcommon-x11.so.0
+  # Loaded by name at run time, so not in NEEDED.
+  wayland            # libwayland-client.so.0, libwayland-egl.so.1
+  vulkan-icd-loader  # libvulkan.so.1
+  vulkan-driver      # the loader draws nothing without a driver
+  libglvnd           # libEGL.so.1, for OpenGL ES where Vulkan is unavailable
+  # Run for every repository.
+  git
+  # Owns the icon theme the launcher finds the icon in, by application ID.
+  hicolor-icon-theme
+)
+optdepends=(
+  'git-lfs: download Git LFS files on request'
+  'github-cli: connect a GitHub account and review pull requests'
+  'org.freedesktop.secrets: a keyring that holds the GitHub authorization'
+  'xdg-desktop-portal: the folder picker, Open in default app and desktop text settings'
+  'xdg-desktop-portal-gtk: a file chooser where the desktop portal has none, as on Hyprland'
+  'xdg-utils: open links, and files when no portal answers'
+  'glib2: check a file type before Open in default app'
+  'fontconfig: fonts for other scripts and the desktop monospace font'
+  'openssh: SSH remotes'
+  'xdg-terminal-exec: Open repository in terminal'
+)
+provides=(gitturtle)
+conflicts=(gitturtle)
+# The release executable is installed byte for byte: its packaging checks rely
+# on the symbol table that strip would remove.
+options=(!strip !debug)
+
+# The release's source commit, 40 hex digits. Asset names carry its first 12.
+_commit=0000000000000000000000000000000000000000
+_asset="GitTurtle-$pkgver-${_commit:0:12}"
+source_x86_64=("$url/releases/download/v$pkgver/$_asset-linux-x86_64-release.tar.gz")
+source_aarch64=("$url/releases/download/v$pkgver/$_asset-linux-aarch64-release.tar.gz")
+# Each archive's line in the release's SHA256SUMS. Never SKIP.
+sha256sums_x86_64=('not-released')
+sha256sums_aarch64=('not-released')
+
+package() {
+  # The application ID: the Wayland app ID the executable sets, so the desktop
+  # entry and the icons carry this name.
+  local _id=com.gitturtle.GitTurtle
+  local _size _notice
+
+  # The archive holds one directory, named after the archive.
+  cd "$srcdir/$_asset-linux-$CARCH-release"
+
+  install -Dm755 bin/gitturtle "$pkgdir/usr/bin/gitturtle"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+  for _size in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "icons/hicolor/${_size}x$_size/apps/$_id.png" \
+      "$pkgdir/usr/share/icons/hicolor/${_size}x$_size/apps/$_id.png"
+  done
+
+  # GitTurtle's own license, then every notice the archive carries with it.
+  install -Dm644 licenses/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  while IFS= read -r -d '' _notice; do
+    install -Dm644 "licenses/$_notice" "$pkgdir/usr/share/licenses/$pkgname/$_notice"
+  done < <(find licenses -type f -printf '%P\0')
+
+  # The archive's installer writes this entry with per-user paths; here the
+  # executable is on PATH and the icon is found by name.
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$_id.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=GitTurtle
+Comment=Browse Git history and manage local repositories
+Exec=gitturtle %f
+Icon=$_id
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=Git;History;Diff;
+StartupWMClass=$_id
+EOF
+}

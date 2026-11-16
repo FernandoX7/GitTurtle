@@ -21,6 +21,7 @@
 //! `docs/development/themes/spec.md` §Editor, §Import and export and §Failure
 //! and recovery, and `DESIGN.md` §Custom theme editor.
 
+use crate::focus_reveal::{FocusReveal, Trigger};
 use crate::*;
 use appearance::custom::{
     self, CustomTheme, ImportedTheme, ReadabilityIssue, ThemeSelection, TokenGroup, TokenKind,
@@ -31,10 +32,22 @@ use gpui_kit::component::{
     WindowExt,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     dialog::Confirm,
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::PopupMenuItem,
+    tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
 use preferences::MAX_CUSTOM_THEMES;
+
+/// The Settings page's scroll, which reveals a control only when the
+/// keyboard moves focus onto it: a click on a partly visible control scrolls
+/// nothing.
+struct SettingsPage(FocusReveal);
+
+impl Default for SettingsPage {
+    fn default() -> Self {
+        Self(FocusReveal::new(Trigger::Keyboard))
+    }
+}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -52,6 +65,12 @@ pub(super) struct State {
     /// A delete finished: New theme… takes focus once a frame has drawn the
     /// card without the row (`return_focus_after_delete`).
     focus_after_delete: Option<DeleteFocus>,
+    /// What the open editor was opened from: New theme… (`Some(None)`) or
+    /// the edited theme's Edit… (`Some(Some(id))`). The editor's close gives
+    /// focus back to that control and brings it into view
+    /// (`GitTurtle::reveal_theme_editor_opener`), except a new theme's Save,
+    /// which gives it to the saved theme's Edit….
+    opened_from: Option<Option<u32>>,
     /// Custom-theme saves submitted from this window and not yet answered.
     /// Only their replies replace `GitTurtle::custom_themes`.
     pending_saves: usize,
@@ -94,10 +113,11 @@ pub(super) struct State {
     revealed_row: std::cell::RefCell<Option<(usize, WeakFocusHandle)>>,
     /// The Settings page's own scroll (`settings.rs`), so that revealing the
     /// row holding focus also brings it, with its focus ring's room, into the
-    /// page's viewport and not only into the list's. The page starts at its
+    /// page's viewport and not only into the list's, and every other control
+    /// the keyboard focuses is revealed there too. The page starts at its
     /// top whenever Settings is entered (`settings_entered`), as it did while
     /// the offset lived in the page's element state.
-    page_scroll: ScrollHandle,
+    page: SettingsPage,
     /// The window y of the first Your themes row with the page and the list
     /// both at offset zero, recorded each time the page is prepainted: the
     /// page reveal places a row from it before the frame lays the page out.
@@ -341,7 +361,12 @@ impl State {
 
     /// The Settings page's scroll handle.
     pub(super) fn page_scroll(&self) -> &ScrollHandle {
-        &self.page_scroll
+        self.page.0.scroll()
+    }
+
+    /// Reveals a Settings control in the page when the keyboard focuses it.
+    pub(super) fn page(&self) -> &FocusReveal {
+        &self.page.0
     }
 
     /// Where the first Your themes row stands with the page and the list at
@@ -353,7 +378,7 @@ impl State {
     /// Settings was entered from another page: the page starts at its top and
     /// the rows' anchor waits for the page's first prepaint.
     pub(super) fn settings_entered(&self) {
-        self.page_scroll.set_offset(Point::default());
+        self.page_scroll().set_offset(Point::default());
         self.rows_anchor.set(None);
     }
 }
@@ -380,21 +405,94 @@ pub(super) struct EditTrace {
     pub(super) draw: usize,
 }
 
-gpui::actions!(theme_editor, [NextThemeAction, PreviousThemeAction]);
+gpui::actions!(
+    theme_editor,
+    [
+        NextThemeAction,
+        PreviousThemeAction,
+        PageUpAction,
+        PageDownAction,
+        PageTopAction,
+        PageBottomAction,
+        NextPickerStop,
+        PreviousPickerStop
+    ]
+);
 
 /// The Settings page's key context, deeper than the toolkit root's, so the
 /// bindings of [`init`] are tried first and fall through when they do not
 /// apply.
 pub(super) const SETTINGS_CONTEXT: &str = "GitTurtleSettings";
 
+/// The key context around a row's colour picker, its trigger and its
+/// popover ([`step_in_picker`]).
+const PICKER_CONTEXT: &str = "GitTurtleColorPicker";
+
 /// Tab and Shift-Tab inside Settings walk the Your themes rows through
 /// [`GitTurtle::tab_theme_rows`] before the toolkit's own tab order, which
 /// knows only the rows drawn.
+///
+/// Page Up, Page Down, Home and End scroll the Settings page
+/// (`GitTurtle::scroll_settings_page`). They are bound at the app's root,
+/// which holds focus when Settings opens. A focused text field binds them in
+/// its own, deeper context, so they keep moving its caret, and on other pages
+/// the root passes them on to the focused view's own key handling.
 pub(super) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", NextThemeAction, Some(SETTINGS_CONTEXT)),
         KeyBinding::new("shift-tab", PreviousThemeAction, Some(SETTINGS_CONTEXT)),
+        KeyBinding::new("pageup", PageUpAction, Some("GitTurtle")),
+        KeyBinding::new("pagedown", PageDownAction, Some("GitTurtle")),
+        KeyBinding::new("home", PageTopAction, Some("GitTurtle")),
+        KeyBinding::new("end", PageBottomAction, Some("GitTurtle")),
+        // In the kit popover's context inside a row's picker, deeper than the
+        // dialog's Tab and below a text field's, which passes Tab on.
+        KeyBinding::new(
+            "tab",
+            NextPickerStop,
+            Some("GitTurtleColorPicker > Popover"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            PreviousPickerStop,
+            Some("GitTurtleColorPicker > Popover"),
+        ),
     ]);
+}
+
+/// Tab (`forward`) or Shift-Tab in a row's open colour picker, whose
+/// `trigger` holds its popover: focus moves to the popover's next or
+/// previous stop, its swatches (one stop, which the arrow keys move inside)
+/// or its hex field, and wraps at either end, so it never rests behind the
+/// drawn popover (decided 2026-11-07, `DESIGN.md`'s focus rules), which
+/// closes only on Escape, a choice or a click outside. The popover is drawn
+/// after the dialog, and GPUI's order reaches the dialog's stops past either
+/// end of the popover's, so each key steps on round that order until it is
+/// back inside the popover. With no other stop in the popover, focus stays
+/// where it was.
+fn step_in_picker(trigger: &FocusHandle, forward: bool, window: &mut Window, cx: &mut App) {
+    let Some(start) = window.focused(cx) else {
+        return;
+    };
+    let mut passed = Vec::new();
+    loop {
+        if forward {
+            window.focus_next(cx);
+        } else {
+            window.focus_prev(cx);
+        }
+        let Some(reached) = window.focused(cx) else {
+            break;
+        };
+        if reached == start || passed.contains(&reached) {
+            break;
+        }
+        if trigger.contains_focused(window, cx) && !trigger.is_focused(window) {
+            return;
+        }
+        passed.push(reached);
+    }
+    window.focus(&start, cx);
 }
 
 /// `Instant::now()` when the edit-frame trace runs: under `GITTURTLE_TRACE`,
@@ -455,6 +553,21 @@ struct WindowFrame {
     padding_top: Pixels,
     padding_bottom: Pixels,
     border_bottom: Pixels,
+}
+
+/// The status bar's top edge in `window`: the foot of the window's body,
+/// inside the client-decoration frame with its insets rounded to device
+/// pixels as the layout rounds them (`views::body_bounds`), less the bar,
+/// drawn at a whole device pixel. A menu stays above it
+/// (`native_accessibility::open_menu`). At scale factor 1.5 an untiled
+/// frame's foot is 31 device pixels, not the 31.5 its 21 px make, so the
+/// bar's top is a third of a pixel lower than the window less the frame's
+/// unrounded insets puts it.
+pub(crate) fn status_bar_top(window: &Window) -> Pixels {
+    window.pixel_snap(
+        crate::views::body_bounds(window).bottom()
+            - window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT)),
+    )
 }
 
 impl WindowFrame {
@@ -554,11 +667,26 @@ fn written_path_text(path: &std::path::Path) -> String {
     if characters <= custom::MAX_MESSAGE_FRAGMENT_CHARS {
         return text;
     }
+    // Starts between whole grapheme clusters.
     let start = text
         .char_indices()
         .nth(characters - custom::MAX_MESSAGE_FRAGMENT_CHARS)
-        .map_or(0, |(index, _)| index);
+        .map_or(0, |(index, _)| crate::text_cut::ceil_cluster(&text, index));
     format!("…{}", &text[start..])
+}
+
+/// Focus `pressed`, the Your themes button whose action starts, unless it
+/// holds focus already: focus stays where the person acted, as a dialog's
+/// close gives focus back to its opener (decided 2026-11-12), and the kit's
+/// Button takes none from a pointer press. A button its action disables
+/// keeps the focus it holds (the kit `Button::track_focus` patch), so the
+/// button holds it again once the action has finished, without a ring when
+/// the pointer pressed it, since nothing the chooser or the alert does marks
+/// keyboard focus but a key in the window.
+fn focus_pressed(pressed: &FocusHandle, window: &mut Window, cx: &mut App) {
+    if !pressed.is_focused(window) {
+        window.focus(pressed, cx);
+    }
 }
 
 /// Read a chosen theme document with the preference store's bounded reader: a
@@ -646,23 +774,42 @@ impl GitTurtle {
         };
         let owner = cx.entity().downgrade();
         let customs = self.custom_themes.clone();
-        let form =
-            cx.new(|cx| ThemeForm::new(owner, editing, name, base, palette, customs, window, cx));
+        let ring = self.focus_ring.clone();
+        let form = cx.new(|cx| {
+            ThemeForm::new(
+                owner, editing, name, base, palette, customs, ring, window, cx,
+            )
+        });
         self.theme_editor.form = Some(form.clone());
         self.clear_theme_transfer_result();
         self.preview_theme_draft(palette, started, window, cx);
         let focus = form.read(cx).name.read(cx).focus_handle(cx);
         let focus_form = form.downgrade();
+        // The dialog's close gives focus back to the focus it opened with,
+        // which is the control that opened it: a press on New theme… or
+        // Edit… focuses neither, and the close gave focus back to the page's
+        // first control, Follow system appearance, scrolled out of view
+        // (QA-110, found outside the checks, 5).
+        let opener = match editing {
+            None => self.page_focus("custom-themes-new", cx),
+            Some(id) => self.theme_editor.action_focus(id, 0, cx),
+        };
+        focus_pressed(&opener, window, cx);
+        self.theme_editor.opened_from = Some(editing);
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let viewport = window.viewport_size();
             let wide = viewport.width >= appearance::ui_size(1060.);
-            // The rows scale with the interface text size and the panel's
-            // padding and the token column's track do not, so the content
-            // width scales and the chrome stays: the longest description then
-            // keeps its clearance from the warning slot at every size, like
-            // the scaled breakpoint above (1,000 and 648 px at 13 pt).
+            // The rows scale with the interface text size, so the content
+            // width scales, and the chrome is what the panel draws around
+            // it: its side padding, which the kit sizes for a ghost Button's
+            // pull and ring (16 px at 13 pt, 17 px at 18 pt:
+            // `crate::dialog_ghost_room`), and the token column's track,
+            // which stays. The longest description then keeps its clearance
+            // from the warning slot at every size, like the scaled breakpoint
+            // above (1,000 and 648 px at 13 pt).
             let content = appearance::ui_size(if wide { 952. } else { 600. });
-            let width = (px(2. * 16.) + Scrollbar::width() + content)
+            let padding = gpui_kit::component::dialog::dialog_side_padding(window, cx);
+            let width = (padding * 2. + Scrollbar::width() + content)
                 .min(viewport.width - px(32.))
                 .max(px(320.));
             let submit = form.clone();
@@ -894,7 +1041,35 @@ impl GitTurtle {
     fn close_theme_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.theme_editor.form = None;
         self.theme_editor.preview = None;
+        self.reveal_theme_editor_opener(cx);
         self.apply_appearance(window, cx);
+    }
+
+    /// The editor is closing, and its close gives focus back to the control
+    /// that opened it (`open_theme_editor`), or, after a new theme's Save,
+    /// to the saved theme's Edit… (`finish_custom_theme_save` sets
+    /// `opened_from` to it): the Settings page reveals that control with its
+    /// ring's room in the first frame after the close, whatever closed the
+    /// editor, a pointer press on Save or Cancel included, and a theme's row
+    /// comes into the list's view, so a window resized while the editor was
+    /// open still shows the control focus lands on.
+    fn reveal_theme_editor_opener(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = self.theme_editor.opened_from.take() else {
+            return;
+        };
+        self.theme_editor.page().reveal_next_focus();
+        if let Some(row) =
+            editing.and_then(|id| self.custom_themes.iter().position(|theme| theme.id == id))
+        {
+            // The row reveals itself, in the list and in the page, once per
+            // focus change; the one before the editor opened may have been
+            // this same action.
+            self.theme_editor.revealed_row.borrow_mut().take();
+            self.theme_editor
+                .rows_scroll()
+                .scroll_to_item(row, ScrollStrategy::Nearest);
+        }
+        self.notify_settings_page(cx);
     }
 
     /// Submit the editor's theme. Errors are returned to the form, which shows
@@ -973,6 +1148,10 @@ impl GitTurtle {
                 theme.name
             )
         };
+        // The alert gives focus back to Delete…, which a press focuses
+        // first, as its close and a delete the store refuses leave it
+        // (decided 2026-11-12).
+        focus_pressed(&self.theme_editor.action_focus(id, 2, cx), window, cx);
         let owner = cx.entity().downgrade();
         let previous = window.focused(cx);
         let cancel_focus = cx.focus_handle();
@@ -998,14 +1177,13 @@ impl GitTurtle {
             let (cancel_focus, delete_focus) = (cancel_focus.clone(), delete_focus.clone());
             let (route_cancel, route_delete) = (cancel_focus.clone(), delete_focus.clone());
             dialog
+                .kind(DialogKind::Alert)
+                .max_h(appearance::dialog_max_height(window))
                 .title(title.clone())
-                .child(
-                    div()
-                        .id("delete-theme-consequences")
-                        .role(Role::Label)
-                        .aria_label(explanation.clone())
-                        .child(explanation.clone()),
-                )
+                .child(native_accessibility::text(
+                    "delete-theme-consequences",
+                    explanation.clone(),
+                ))
                 .footer(
                     div()
                         .w_full()
@@ -1166,6 +1344,9 @@ impl GitTurtle {
         let name = theme.name.clone();
         let bytes = theme.to_document();
         let suggested = theme.suggested_file_name();
+        // Export… keeps focus through the chooser and holds it once the
+        // export finishes (decided 2026-11-12).
+        focus_pressed(&self.theme_editor.action_focus(id, 1, cx), window, cx);
         let response = cx.prompt_for_new_path(&preferences::home_directory(), Some(&suggested));
         self.theme_editor.transfer_pending = true;
         self.clear_theme_transfer_result();
@@ -1218,6 +1399,9 @@ impl GitTurtle {
         if self.theme_transfer_busy() {
             return;
         }
+        // Import… keeps focus through the chooser and holds it once the
+        // import finishes (decided 2026-11-12).
+        focus_pressed(&self.page_focus("custom-themes-import", cx), window, cx);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1379,7 +1563,22 @@ impl GitTurtle {
                 {
                     self.theme_editor.form = None;
                     self.theme_editor.preview = None;
+                    // A new theme's Save gives focus to the saved theme's
+                    // Edit…, not back to New theme…: one spoken result that
+                    // names what was saved, and never a disabled control,
+                    // which New theme… is once the save reaches
+                    // `MAX_CUSTOM_THEMES` (decided 2026-11-10). The close
+                    // gives focus back to New theme… first, which recorded
+                    // it as the dialog opened.
+                    let saved = (self.theme_editor.opened_from == Some(None)).then_some(id);
+                    if saved.is_some() {
+                        self.theme_editor.opened_from = Some(saved);
+                    }
+                    self.reveal_theme_editor_opener(cx);
                     window.close_dialog(cx);
+                    if let Some(id) = saved {
+                        window.focus(&self.theme_editor.action_focus(id, 0, cx), cx);
+                    }
                 }
                 // The window keeps what the editor showed: the saved theme is selected.
                 self.settings.theme = ThemeSelection::Custom(id);
@@ -1396,11 +1595,26 @@ impl GitTurtle {
                 });
             }
             (Ok(themes), SaveOutcome::Imported { id, notice }) => {
+                // An import that fills the last place disables Import…, so
+                // focus it still holds goes to the imported theme's Edit…,
+                // which names what was imported, as a new theme's Save gives
+                // focus to the saved theme, rather than resting on a disabled
+                // control (decided 2026-11-14). Focus the person moved
+                // meanwhile stays where they put it. A row's action that
+                // gains focus brings its row into the list's view and the
+                // page's (`State::reveal_focused_row`), the new row included.
+                let filled = themes.len() >= MAX_CUSTOM_THEMES
+                    && self
+                        .page_focus("custom-themes-import", cx)
+                        .is_focused(window);
                 // Added and highlighted, not applied: the window keeps its theme.
                 self.set_custom_themes(themes, cx);
                 self.theme_editor.error = None;
                 self.theme_editor.notice = Some(notice);
                 self.theme_editor.imported = Some(id);
+                if filled {
+                    window.focus(&self.theme_editor.action_focus(id, 0, cx), cx);
+                }
             }
             (Err(error), SaveOutcome::Imported { .. }) => {
                 self.theme_editor.error =
@@ -1426,13 +1640,6 @@ impl GitTurtle {
     }
 }
 
-/// A focus target the form scrolls into view.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Reveal {
-    Row(TokenKind),
-    Warnings,
-}
-
 struct TokenRow {
     kind: TokenKind,
     hex: Entity<InputState>,
@@ -1455,7 +1662,8 @@ struct RowKey {
     /// The applied palette: the row's text, borders and rings follow it.
     active: Palette,
     rem: Pixels,
-    picker_focused: bool,
+    /// The trigger draws its keyboard ring ([`ThemeForm::focus_ring`]).
+    picker_ringed: bool,
 }
 
 /// One token row of the editor, a view the form embeds with
@@ -1469,8 +1677,8 @@ struct RowKey {
 /// - the form's render compares each row's [`RowKey`] with the last one the
 ///   row showed and embeds a changed row uncached for that frame, so every
 ///   form-side change (draft color, validity, readability flag, a pending
-///   save, a palette application, the text size, the picker's focus) builds
-///   it without a notify site;
+///   save, a palette application, the text size, the picker trigger's
+///   keyboard ring) builds it without a notify site;
 /// - the row observes its hex field and its color picker: the field's view
 ///   node is registered outside the row (`settings::ViewNodeAnchor`, as the
 ///   Settings page does), so the kit input's notify from paint on every frame
@@ -1478,7 +1686,8 @@ struct RowKey {
 ///   selection and popover changes the row must show reach it through these
 ///   observers;
 /// - GPUI's own refresh (hover, press, focus, a window refresh) builds every
-///   cached view.
+///   cached view, and a frame that moves or resizes a row (a scroll, a
+///   resize, the dialog's opening slide) builds it for its new bounds.
 ///
 /// The failure mode of a missed rebuild is a row that keeps showing a
 /// previous frame: a hex field whose text or caret stands still, a swatch or
@@ -1563,10 +1772,25 @@ pub(super) struct ThemeForm {
     visible: bool,
     error: Option<String>,
     /// The token column (wide layout) or the whole body (stacked): group
-    /// labels and rows are its direct children, so a focused row scrolls into view.
-    scroll: ScrollHandle,
-    /// The wide layout's preview-and-warnings column.
-    side_scroll: ScrollHandle,
+    /// labels and rows are its direct children. Each row reports its hex
+    /// field and its picker's trigger (`column_row`), and the stacked body
+    /// the Readability list after them (`report_warnings`), so the control
+    /// holding focus scrolls into view, with its ring's room, in the frame
+    /// that first draws the focus, a pointer's focus included, and again in
+    /// the frame after a resize or text-size change that cuts it, as the
+    /// project hub's form does (decided 2026-11-10): revealed only on a
+    /// focus change, a trigger Tab had shown low in the column was left cut
+    /// by a window shrunk under it.
+    column: FocusReveal,
+    /// The wide layout's preview-and-warnings column, which keeps the
+    /// Readability list in view as `column` keeps a row's controls
+    /// (`report_warnings`). The stacked body ends its frames too, with
+    /// nothing drawn in it, so a widening finds the focus the last frame
+    /// drew and reveals the list only where the stacked body showed it
+    /// (`hand_over_warnings`): recorded only while wide, it counted the
+    /// list's focus as new once widened and revealed a list the person had
+    /// scrolled out of the stacked body's view.
+    side: FocusReveal,
     /// The last render used the two-column layout.
     wide: bool,
     /// Wrap the toolkit buttons, whose own focus handles are private. Return
@@ -1577,8 +1801,11 @@ pub(super) struct ThemeForm {
     reset_focus: FocusHandle,
     cancel_focus: FocusHandle,
     save_focus: FocusHandle,
-    /// The focused row or Readability list the last render scrolled into view.
-    revealed: Option<Reveal>,
+    /// The window's keyboard ring: a picker's trigger draws its ring only
+    /// while it holds focus a key gave it, so a picker opened and closed by
+    /// the pointer leaves its trigger focused without one, and Escape, Enter
+    /// or Space closing a picker shows it.
+    focus_ring: focus_ring::FocusRing,
     /// The Readability list is a tab stop, so the keyboard can bring it into view.
     warnings_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -1593,6 +1820,7 @@ impl ThemeForm {
         base: ThemeChoice,
         palette: Palette,
         customs: Vec<CustomTheme>,
+        focus_ring: focus_ring::FocusRing,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1673,15 +1901,15 @@ impl ThemeForm {
             pending: false,
             visible: true,
             error: None,
-            scroll: ScrollHandle::new(),
-            side_scroll: ScrollHandle::new(),
+            column: FocusReveal::new(Trigger::AnyFocus),
+            side: FocusReveal::new(Trigger::AnyFocus),
             wide: false,
             keep_focus: cx.focus_handle(),
             replace_focus: cx.focus_handle(),
             reset_focus: cx.focus_handle(),
             cancel_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
-            revealed: None,
+            focus_ring,
             warnings_focus,
             _subscriptions: subscriptions,
         }
@@ -1728,13 +1956,6 @@ impl ThemeForm {
     /// `RIGHT_MARGIN` of the toolkit's single-line input element.
     #[cfg(test)]
     const HEX_CARET_MARGIN: Pixels = px(10.);
-
-    /// The Base menu opens under the header, a tenth of the way down plus the
-    /// title and Name row; it may use the window below that and then scrolls.
-    fn base_menu_height(window: &Window) -> Pixels {
-        (window.viewport_size().height * 0.9 - appearance::ui_size(120.))
-            .max(appearance::ui_size(240.))
-    }
 
     /// The tallest the form may be: the window less its client-decoration
     /// frame, the status bar, the 16 px above the bar and the alert's fixed
@@ -1793,6 +2014,7 @@ impl ThemeForm {
 
     /// A token row's index among the scroll container's children, which are
     /// the group labels and rows interleaved in `TokenKind::ALL` order.
+    #[cfg(test)]
     fn row_entry(kind: TokenKind) -> usize {
         let mut index = 0;
         for group in TokenGroup::ALL {
@@ -1807,35 +2029,44 @@ impl ThemeForm {
         index
     }
 
-    /// A row whose hex field or picker gains focus, or the Readability list,
-    /// scrolls into view in the draw that shows the focus. A focus change
-    /// refreshes the window, so this render belongs to that draw and the
-    /// target is applied by its prepaint. Focus listeners would be too late:
-    /// GPUI dispatches them after the draw's layout, where a refresh no longer
-    /// produces a frame, so the scroll would wait for the next input. In the
-    /// wide layout the list follows the miniature in the side column; stacked,
-    /// it follows the rows.
-    fn reveal_focused(&mut self, window: &Window, cx: &App) {
-        let focused = if self.warnings_focus.is_focused(window) {
-            Some(Reveal::Warnings)
-        } else {
-            self.rows
-                .iter()
-                .find(|row| {
-                    row.hex.read(cx).focus_handle(cx).is_focused(window)
-                        || row.picker.focus_handle(cx).is_focused(window)
-                })
-                .map(|row| Reveal::Row(row.kind))
-        };
-        if focused == self.revealed {
+    /// `warnings`, the Readability list, reported to `reveal`, the reveal of
+    /// the container that holds it (`side` in the wide layout, `column`
+    /// stacked), which shows it with the ring's room as it shows a row's
+    /// controls: in the frame that first draws its focus, a pointer's
+    /// included, and in the frame after a resize or text-size change that
+    /// cuts it. Scrolled into view only as it gained focus, the list was
+    /// left cut by a window shrunk under it. The wrapper is laid out as the
+    /// list and takes no focus.
+    fn report_warnings(&self, reveal: &FocusReveal, warnings: AnyElement, cx: &App) -> Div {
+        div()
+            .on_children_prepainted(reveal.control(
+                self.warnings_focus.clone(),
+                appearance::button_ring_room(cx),
+            ))
+            .child(warnings)
+    }
+
+    /// A layout that crosses the breakpoint moves the Readability list
+    /// between the side column and the stacked body, two containers that
+    /// each keep only what they drew: where the one it leaves showed it
+    /// holding focus in the last frame, as that container's reveal judges it
+    /// (`FocusReveal::shows_focus`), the one it enters reveals it, in the
+    /// next frame, as a resize does within one, and otherwise leaves it
+    /// where it lies. Narrowed from 1,440 × 900 to 1,000 × 680, the focused
+    /// list moved below the stacked body's fold and stayed there; widened
+    /// from a 1,000 × 420 stacked body scrolled to its top, a list out of
+    /// view there was scrolled into the side column.
+    fn hand_over_warnings(&self, wide: bool, window: &Window) {
+        if wide == self.wide || !self.warnings_focus.is_focused(window) {
             return;
         }
-        self.revealed = focused;
-        match focused {
-            Some(Reveal::Row(kind)) => self.scroll.scroll_to_item(Self::row_entry(kind)),
-            Some(Reveal::Warnings) if self.wide => self.side_scroll.scroll_to_item(1),
-            Some(Reveal::Warnings) => self.scroll.scroll_to_item(Self::TOKEN_ENTRIES + 1),
-            None => {}
+        let (from, to) = if wide {
+            (&self.column, &self.side)
+        } else {
+            (&self.side, &self.column)
+        };
+        if from.shows_focus() {
+            to.reveal_next_focus();
         }
     }
 
@@ -1843,10 +2074,28 @@ impl ThemeForm {
     /// Name submits, a hex field commits its value, a wrapped button activates
     /// (the toolkit's own Enter click never runs once the action is handled),
     /// and anything else (Base, a picker, the Readability list) does nothing.
+    ///
+    /// Return acts only for an Enter whose press began on the control it acts
+    /// on, as the rewrite review's list does: the dialog confirms each fresh
+    /// key-down, and under X11 a held Enter's repeats arrive as fresh
+    /// presses, so a repeat after focus moved onto Save, Cancel or Reset, as
+    /// a picker closed by Enter in its hex field once gave focus to Save,
+    /// saved the theme or closed the editor. Such a press acts on nothing
+    /// until its key-up and a new key-down.
+    ///
+    /// It acts once for a held Enter where focus stays, too: a repeat, which
+    /// X11 sends as a fresh press the dialog confirms, began on the control
+    /// it lands on, so a held Return in Name began another save after each
+    /// failed or refused one, each announcing its error again.
     fn confirm_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(focused) = window.focused(cx) else {
             return;
         };
+        if gpui_kit::base::enter_press_is_repeat(window, cx)
+            || !gpui_kit::base::enter_press_began_on(&focused, window, cx)
+        {
+            return;
+        }
         if focused == self.name.read(cx).focus_handle(cx) {
             self.submit(window, cx);
         } else if let Some(kind) = self
@@ -1898,7 +2147,7 @@ impl ThemeForm {
             pending: self.pending,
             active: palette(cx),
             rem: window.rem_size(),
-            picker_focused: row.picker.focus_handle(cx).is_focused(window),
+            picker_ringed: self.focus_ring.shows(&row.picker.focus_handle(cx)),
         }
     }
 
@@ -1921,6 +2170,24 @@ impl ThemeForm {
         } else {
             row.view.clone().into_any_element()
         }
+    }
+
+    /// `row` in the token column, reporting its hex field and its picker's
+    /// trigger to the column's reveal (`column`): the wrapper is laid out as
+    /// the row, whose cached view keeps its own prepaint, while the
+    /// wrapper's report runs in every frame the form draws.
+    fn column_row(&self, row: &TokenRow, window: &Window, cx: &App) -> AnyElement {
+        let focus = vec![
+            row.hex.read(cx).focus_handle(cx),
+            row.picker.focus_handle(cx),
+        ];
+        div()
+            .w_full()
+            .h(appearance::ui_size(30.))
+            .flex_shrink_0()
+            .on_children_prepainted(self.column.group(focus, appearance::button_ring_room(cx)))
+            .child(self.row_element(row, window, cx))
+            .into_any_element()
     }
 
     fn can_save(&self) -> bool {
@@ -2160,16 +2427,17 @@ impl ThemeForm {
             )
             .child(div().flex_1())
             .children(self.error.clone().map(|error| {
-                div()
-                    .id("theme-editor-error")
-                    .debug_selector(|| "theme-editor-error".into())
-                    .role(Role::Label)
-                    .aria_label(error.clone())
-                    .min_w_0()
-                    .max_w(px(420.))
-                    .text_size(appearance::ui_text(12.))
-                    .text_color(rgb(p.warning))
-                    .child(error)
+                native_accessibility::static_text(
+                    div()
+                        .id("theme-editor-error")
+                        .debug_selector(|| "theme-editor-error".into()),
+                    error.clone(),
+                )
+                .min_w_0()
+                .max_w(px(420.))
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(p.warning))
+                .child(error)
             }))
             .when(self.pending, |footer| {
                 footer.child(
@@ -2243,14 +2511,15 @@ impl ThemeForm {
                         ),
                     )
                     .children(self.name_error.clone().map(|error| {
-                        div()
-                            .id("theme-editor-name-error")
-                            .debug_selector(|| "theme-editor-name-error".into())
-                            .role(Role::Label)
-                            .aria_label(error.clone())
-                            .text_size(appearance::ui_text(11.))
-                            .text_color(rgb(p.warning))
-                            .child(error)
+                        native_accessibility::static_text(
+                            div()
+                                .id("theme-editor-name-error")
+                                .debug_selector(|| "theme-editor-name-error".into()),
+                            error.clone(),
+                        )
+                        .text_size(appearance::ui_text(11.))
+                        .text_color(rgb(p.warning))
+                        .child(error)
                     })),
             )
             .child(
@@ -2271,13 +2540,11 @@ impl ThemeForm {
                             .dropdown_caret(true)
                             .disabled(self.pending)
                             .accessibility_label(format!("Base theme: {}", current.label()))
-                            .dropdown_menu(move |mut menu, window, _| {
+                            .app_menu(move |mut menu, _, _| {
                                 // As wide as the button; as tall as the window
-                                // below the header allows, then scrolling.
-                                menu = menu
-                                    .min_w(Self::base_width())
-                                    .max_h(Self::base_menu_height(window))
-                                    .scrollable(true);
+                                // allows above the status bar, then scrolling,
+                                // as every menu is.
+                                menu = menu.min_w(Self::base_width());
                                 for light in [true, false] {
                                     menu = menu.label(if light {
                                         "Light palettes"
@@ -2322,14 +2589,14 @@ impl ThemeForm {
                 .items_center()
                 .gap_2()
                 .child(
-                    div()
-                        .id("theme-editor-base-question-text")
-                        .flex_1()
-                        .min_w_0()
-                        .role(Role::Label)
-                        .aria_label(question.clone())
-                        .text_size(appearance::ui_text(12.))
-                        .child(question),
+                    native_accessibility::static_text(
+                        div().id("theme-editor-base-question-text"),
+                        question.clone(),
+                    )
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(appearance::ui_text(12.))
+                    .child(question),
                 )
                 .child(
                     div().track_focus(&self.keep_focus).child(
@@ -2353,6 +2620,12 @@ impl ThemeForm {
         )
     }
 
+    /// What a token row's name and description say whole where the row cuts
+    /// them short.
+    fn row_tooltip(kind: TokenKind) -> SharedString {
+        format!("{} · {}", kind.label(), kind.description()).into()
+    }
+
     fn render_row(
         &self,
         row: &TokenRow,
@@ -2364,7 +2637,9 @@ impl ThemeForm {
         let kind = row.kind;
         let color = self.draft.get(kind);
         let label = kind.label();
-        let picker_focused = row.picker.focus_handle(cx).is_focused(window);
+        let tooltip = Self::row_tooltip(kind);
+        let trigger = row.picker.focus_handle(cx);
+        let picker_ringed = self.focus_ring.shows(&trigger);
         div()
             .id(("theme-token", kind as usize))
             .debug_selector(move || format!("theme-token-{}", kind.key()))
@@ -2377,40 +2652,51 @@ impl ThemeForm {
             .items_center()
             .gap_2()
             .child(
+                // The name gives way for the row's controls, after the
+                // description: at 18 pt in a 461 px window the row's fixed
+                // columns ran 21 px past its content, under the scrollbar's
+                // track and past the panel's clip, and cut the colour
+                // picker's ring.
                 div()
+                    .id(("theme-token-name", kind as usize))
+                    .debug_selector(move || format!("theme-token-name-{}", kind.key()))
                     .w(appearance::ui_size(128.))
-                    .flex_shrink_0()
+                    .min_w_0()
                     .truncate()
                     .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.text))
+                    .tooltip({
+                        let tooltip = tooltip.clone();
+                        move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
                     .child(label),
             )
             .child(
                 div()
+                    .id(("theme-token-description", kind as usize))
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_size(appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
                     .debug_selector(move || format!("theme-token-description-{}", kind.key()))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                     .child(kind.description()),
             )
             .children(if row.invalid {
-                Some(
+                Some(native_accessibility::static_text(
                     invalid_glyph(p)
                         .id(("theme-token-invalid", kind as usize))
-                        .debug_selector(move || format!("theme-token-invalid-{}", kind.key()))
-                        .role(Role::Label)
-                        .aria_label(format!("{label} value is not #rrggbb")),
-                )
+                        .debug_selector(move || format!("theme-token-invalid-{}", kind.key())),
+                    format!("{label} value is not #rrggbb"),
+                ))
             } else if flagged {
-                Some(
+                Some(native_accessibility::static_text(
                     warning_glyph(p)
                         .id(("theme-token-warning", kind as usize))
-                        .debug_selector(move || format!("theme-token-warning-{}", kind.key()))
-                        .role(Role::Label)
-                        .aria_label(format!("{label} has a readability warning")),
-                )
+                        .debug_selector(move || format!("theme-token-warning-{}", kind.key())),
+                    format!("{label} has a readability warning"),
+                ))
             } else {
                 None
             })
@@ -2454,11 +2740,23 @@ impl ThemeForm {
             .child(
                 // The toolkit trigger paints no focus indicator of its own, and
                 // its swatch would vanish on a matching background: a 1 px
-                // border edge at rest, the 2 px accent ring when focused.
+                // border edge at rest, the 2 px accent ring while it holds
+                // keyboard focus.
                 div()
+                    .debug_selector(move || format!("theme-token-picker-{}", kind.key()))
+                    .key_context(PICKER_CONTEXT)
+                    .on_action({
+                        let trigger = trigger.clone();
+                        move |_: &NextPickerStop, window, cx| {
+                            step_in_picker(&trigger, true, window, cx)
+                        }
+                    })
+                    .on_action(move |_: &PreviousPickerStop, window, cx| {
+                        step_in_picker(&trigger, false, window, cx)
+                    })
                     .rounded(px(7.))
                     .map(|ring| {
-                        if picker_focused {
+                        if picker_ringed {
                             ring.border_2().border_color(rgb(p.accent))
                         } else {
                             ring.border_1().border_color(rgb(p.border)).p(px(1.))
@@ -2468,7 +2766,10 @@ impl ThemeForm {
                         ColorPicker::new(&row.picker)
                             .small()
                             .anchor(Anchor::TopRight)
-                            .accessibility_label(format!("Choose the {label} color")),
+                            .accessibility_label(format!("Choose the {label} color"))
+                            // The open popover is named by the color it
+                            // sets, as the row's hex field is.
+                            .popover_label(format!("{label} color")),
                     ),
             )
             .into_any_element()
@@ -2497,61 +2798,65 @@ impl ThemeForm {
     fn render_warnings(&self, p: Palette, window: &Window) -> AnyElement {
         let count = self.warnings.len();
         let focused = self.warnings_focus.is_focused(window);
-        div()
-            .id("theme-editor-warnings")
-            // A tab stop after the last row: the list is content, not a
-            // control, but focusing it scrolls it into view.
-            .track_focus(&self.warnings_focus)
-            .role(Role::Group)
-            .aria_label(format!(
-                "Readability, {count} warning{}",
-                if count == 1 { "" } else { "s" }
-            ))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(transparent_black())
-            .when(focused, |list| list.border_color(rgb(p.accent)))
-            .p_1()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(appearance::ui_text(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(p.text))
-                    .child("Readability")
-                    .when(count > 0, |heading| {
-                        heading.child(
-                            div()
-                                .text_color(rgb(p.muted))
-                                .font_weight(FontWeight::NORMAL)
-                                .child(format!(
-                                    "{count} warning{}",
-                                    if count == 1 { "" } else { "s" }
-                                )),
-                        )
-                    }),
-            )
-            .when(count == 0, |list| {
-                list.child(
+        // The group sits between the scrolling column and its warnings, and
+        // AccessKit compares a child with its nearest clipping parent alone,
+        // so the group clips its warnings: those below the column's edge
+        // leave the tree with the part of the group the window does not draw.
+        crate::native_accessibility::clips_children(
+            div()
+                .id("theme-editor-warnings")
+                .debug_selector(|| "theme-editor-warnings".into())
+                // A tab stop after the last row: the list is content, not a
+                // control, but focusing it scrolls it into view.
+                .track_focus(&self.warnings_focus)
+                .role(Role::Group)
+                .aria_label(format!(
+                    "Readability, {}",
+                    crate::counted(count, "warning", "warnings")
+                ))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(transparent_black())
+                .when(focused, |list| list.border_color(rgb(p.accent)))
+                .p_1()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
                     div()
-                        .debug_selector(|| "theme-editor-no-warnings".into())
-                        .text_size(appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child(NO_READABILITY_WARNINGS),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_size(appearance::ui_text(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(p.text))
+                        .child("Readability")
+                        .when(count > 0, |heading| {
+                            heading.child(
+                                div()
+                                    .text_color(rgb(p.muted))
+                                    .font_weight(FontWeight::NORMAL)
+                                    .child(crate::counted(count, "warning", "warnings")),
+                            )
+                        }),
                 )
-            })
-            .children(self.warnings.iter().enumerate().map(|(index, issue)| {
-                let text = issue.to_string();
-                div()
-                    .id(("theme-warning", index))
-                    .debug_selector(move || format!("theme-warning-{index}"))
-                    .role(Role::Label)
-                    .aria_label(text.clone())
+                .when(count == 0, |list| {
+                    list.child(
+                        div()
+                            .debug_selector(|| "theme-editor-no-warnings".into())
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(p.muted))
+                            .child(NO_READABILITY_WARNINGS),
+                    )
+                })
+                .children(self.warnings.iter().enumerate().map(|(index, issue)| {
+                    let text = issue.to_string();
+                    native_accessibility::static_text(
+                        div()
+                            .id(("theme-warning", index))
+                            .debug_selector(move || format!("theme-warning-{index}")),
+                        text.clone(),
+                    )
                     .flex()
                     .items_start()
                     .gap_2()
@@ -2565,16 +2870,17 @@ impl ThemeForm {
                             .text_color(rgb(p.text))
                             .child(text),
                     )
-            }))
-            .when(count > 0, |list| {
-                list.child(
-                    div()
-                        .text_size(appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child("Warnings do not prevent saving."),
-                )
-            })
-            .into_any_element()
+                }))
+                .when(count > 0, |list| {
+                    list.child(
+                        div()
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(p.muted))
+                            .child("Warnings do not prevent saving."),
+                    )
+                }),
+        )
+        .into_any_element()
     }
 }
 
@@ -2587,11 +2893,24 @@ impl Render for ThemeForm {
         let p = palette(cx);
         let viewport = window.viewport_size();
         let wide = viewport.width >= appearance::ui_size(1060.);
+        self.hand_over_warnings(wide, window);
         self.wide = wide;
-        self.reveal_focused(window, cx);
+        // A picker a press has just opened holds focus in its popover, which
+        // the column counts as its row's once a frame has drawn it: its
+        // trigger comes into view in this frame, the popover's first.
+        if let Some(row) = self.rows.iter().find(|row| row.picker.read(cx).is_open()) {
+            self.column
+                .reveal_opener(&row.picker.focus_handle(cx), window, cx);
+        }
+        // A control focus has moved onto, or a resize has cut, comes into
+        // view in this frame: a row's, or the Readability list in its column.
+        self.column.reveal(window, cx);
+        if wide {
+            self.side.reveal(window, cx);
+        }
         let max_height = Self::max_height(window, cx);
         // Group labels and rows are direct children of the scroll container,
-        // so `ScrollHandle::scroll_to_item` can reveal a focused row.
+        // which keeps where each lies (`ScrollHandle::bounds_for_item`).
         let mut entries: Vec<AnyElement> = Vec::with_capacity(Self::TOKEN_ENTRIES + 2);
         for (index, group) in TokenGroup::ALL.into_iter().enumerate() {
             entries.push(
@@ -2614,7 +2933,7 @@ impl Render for ThemeForm {
                 self.rows
                     .iter()
                     .filter(|row| row.kind.group() == group)
-                    .map(|row| self.row_element(row, window, cx)),
+                    .map(|row| self.column_row(row, window, cx)),
             );
         }
         let name = self.name.read(cx).value().trim().to_owned();
@@ -2653,14 +2972,18 @@ impl Render for ThemeForm {
             // layout decides, and the column's prepaint asks for the next
             // frame when this one laid it out the other way (a notify during
             // a draw requests no frame).
-            let side_overflows = self.side_scroll.max_offset().y > Pixels::ZERO;
+            let side_overflows = self.side.scroll().max_offset().y > Pixels::ZERO;
             let side_track = if side_overflows {
                 Scrollbar::width()
             } else {
                 Pixels::ZERO
             };
             let form = cx.entity().downgrade();
-            let side_scroll = self.side_scroll.clone();
+            let side_scroll = self.side.scroll().clone();
+            // Records the focus this frame drew with, after the list has
+            // reported.
+            let side_observed = self.side.observe();
+            let warnings = self.report_warnings(&self.side, warnings, cx);
             div()
                 .relative()
                 .flex()
@@ -2675,8 +2998,11 @@ impl Render for ThemeForm {
                         .min_h_0()
                         .flex()
                         .flex_col()
-                        .child(
+                        .child(crate::native_accessibility::clips_children(
                             div()
+                                // Records the focus this frame drew with,
+                                // after every row has reported.
+                                .on_children_prepainted(self.column.observe())
                                 .id("theme-editor-body")
                                 .debug_selector(|| "theme-editor-body".into())
                                 .flex_1()
@@ -2686,25 +3012,26 @@ impl Render for ThemeForm {
                                 // covers the pickers.
                                 .pr(Scrollbar::width())
                                 .overflow_y_scroll()
-                                .track_scroll(&self.scroll)
+                                .track_scroll(self.column.scroll())
                                 .flex()
                                 .flex_col()
                                 .children(entries),
-                        )
+                        ))
                         .child(Self::render_scrollbar(
-                            &self.scroll,
+                            self.column.scroll(),
                             "theme-editor-scrollbar",
                         )),
                 )
-                .child(
+                .child(crate::native_accessibility::clips_children(
                     div()
-                        .on_children_prepainted(move |_, window, _| {
+                        .on_children_prepainted(move |bounds, window, cx| {
                             if (side_scroll.max_offset().y > Pixels::ZERO) != side_overflows {
                                 let form = form.clone();
                                 window.on_next_frame(move |_, cx| {
                                     form.update(cx, |_, cx| cx.notify()).ok();
                                 });
                             }
+                            side_observed(bounds, window, cx);
                         })
                         .id("theme-editor-side")
                         .debug_selector(|| "theme-editor-side".into())
@@ -2713,44 +3040,61 @@ impl Render for ThemeForm {
                         .flex_shrink_0()
                         .min_h_0()
                         .overflow_y_scroll()
-                        .track_scroll(&self.side_scroll)
+                        .track_scroll(self.side.scroll())
+                        // The focus ring's room under the list, which its
+                        // reveal leaves below it (`report_warnings`).
+                        .pb(appearance::button_ring_room(cx))
                         .flex()
                         .flex_col()
                         .gap_4()
                         .child(preview)
                         .child(warnings),
-                )
+                ))
                 .when(side_overflows, |body| {
                     body.child(Self::render_scrollbar(
-                        &self.side_scroll,
+                        self.side.scroll(),
                         "theme-editor-side-scrollbar",
                     ))
                 })
                 .into_any_element()
         } else {
             entries.push(preview.mt_5().into_any_element());
-            entries.push(div().mt_4().child(warnings).into_any_element());
+            entries.push(
+                self.report_warnings(&self.column, warnings, cx)
+                    .mt_4()
+                    .into_any_element(),
+            );
+            let column_observed = self.column.observe();
+            // The side column draws nothing while stacked, and records so.
+            let side_observed = self.side.observe();
             div()
                 .relative()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(
+                .child(crate::native_accessibility::clips_children(
                     div()
+                        .on_children_prepainted(move |bounds, window, cx| {
+                            column_observed(bounds, window, cx);
+                            side_observed(Vec::new(), window, cx);
+                        })
                         .id("theme-editor-body")
                         .debug_selector(|| "theme-editor-body".into())
                         .flex_1()
                         .min_h_0()
                         .pr(Scrollbar::width())
+                        // The focus ring's room under the Readability list,
+                        // its last entry, which its reveal leaves below it.
+                        .pb(appearance::button_ring_room(cx))
                         .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
+                        .track_scroll(self.column.scroll())
                         .flex()
                         .flex_col()
                         .children(entries),
-                )
+                ))
                 .child(Self::render_scrollbar(
-                    &self.scroll,
+                    self.column.scroll(),
                     "theme-editor-scrollbar",
                 ))
                 .into_any_element()
@@ -2807,25 +3151,36 @@ impl Render for ThemeForm {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use appearance::custom::{ReadabilityBackground, ReadabilityForeground, ReadabilityMeasure};
     use core::prelude::v1::test;
-    use std::{
-        cell::RefCell,
-        rc::Rc,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
+    use std::{cell::RefCell, rc::Rc};
+
+    /// An export notice's path, clamped from the front, starts between whole
+    /// grapheme clusters: a letter with its combining marks, a ZWJ emoji
+    /// sequence or a flag at the cut is left out whole rather than split.
+    #[test]
+    fn a_written_path_starts_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_suffix};
+        let most = custom::MAX_MESSAGE_FRAGMENT_CHARS;
+        for (case, cluster) in CLUSTERS {
+            for inside in 1..cluster.chars().count() {
+                let tail = "s".repeat(most - inside);
+                let text = format!("/home/{cluster}{tail}");
+                let shown = super::written_path_text(std::path::Path::new(&text));
+                let kept = shown.strip_prefix('…').expect("a clamped path");
+                assert_whole_suffix(&text, kept, case);
+                assert_eq!(kept, tail, "{case}");
+            }
+        }
+    }
 
     fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             init(cx);
         });
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
@@ -2899,16 +3254,50 @@ mod tests {
         }
     }
 
-    /// Wait for replies from the real preference writer thread.
-    fn wait_for(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
-        for _ in 0..500 {
+    /// Settle until `done` holds, letting the real preference writer thread
+    /// answer: each round drains the writer, which holds the test clock, and
+    /// settles to handle its replies. A reply may submit another job, as an
+    /// accepted import's read submits its save, which the next round drains.
+    fn wait_for(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        mut done: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        for round in 0..=WRITER_ROUNDS {
             settle(cx);
             if done(cx) {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if round < WRITER_ROUNDS {
+                cx.read(|cx| app.read(cx).preferences_writer.drain());
+            }
         }
-        panic!("the preference writer did not answer");
+        panic!("the preference writer answered, but not as expected");
+    }
+
+    /// The writer jobs one wait follows: a save, or an import's read and the
+    /// save its reply submits, and the store's answer to either.
+    const WRITER_ROUNDS: usize = 4;
+
+    /// The alert slides in on a wall-clock animation, which a test opens at
+    /// rest with reduced motion ([`open_at_rest`]): `selector` is drawn in the
+    /// same place in two frames, so motion fails every run, not loaded ones.
+    fn assert_at_rest(cx: &mut VisualTestContext, selector: &str) {
+        let before = bounds(cx, selector.into());
+        draw_once(cx);
+        assert_eq!(
+            bounds(cx, selector.into()),
+            before,
+            "{selector} moved between frames"
+        );
+    }
+
+    /// [`open_app`] with reduced motion, so dialogs open at rest rather than
+    /// sliding in over wall-clock time, which a loaded host stretched.
+    fn open_at_rest(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        (app, cx)
     }
 
     fn form(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Entity<ThemeForm> {
@@ -3005,19 +3394,23 @@ mod tests {
         observed
     }
 
-    /// Wait for the preference writer's reply without drawing a frame.
+    /// [`wait_for`] without drawing a frame: each round drains the writer
+    /// and parks to deliver its replies.
     fn wait_without_drawing(
         cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
         mut done: impl FnMut(&mut VisualTestContext) -> bool,
     ) {
-        for _ in 0..500 {
+        for round in 0..=WRITER_ROUNDS {
             cx.run_until_parked();
             if done(cx) {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if round < WRITER_ROUNDS {
+                cx.read(|cx| app.read(cx).preferences_writer.drain());
+            }
         }
-        panic!("the preference writer did not answer");
+        panic!("the preference writer answered, but not as expected");
     }
 
     fn applied(cx: &mut VisualTestContext) -> Palette {
@@ -3027,17 +3420,10 @@ mod tests {
     /// Wait until the preference writer has answered everything submitted so
     /// far, without drawing. The executor is serialized, so a job queued now
     /// runs after the pending save, and parking then delivers that save's
-    /// reply to the window.
-    fn drain_preference_writer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
-        let answered = Arc::new(AtomicBool::new(false));
-        let flag = answered.clone();
-        let _response = cx.read(|cx| {
-            app.read(cx).preferences_writer.submit(move || {
-                flag.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-        });
-        wait_without_drawing(cx, |_| answered.load(Ordering::SeqCst));
+    /// reply to the window. A test reads a store on disk only after this:
+    /// settling or parking alone does not wait for the writer's thread.
+    pub(crate) fn drain_preference_writer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
+        cx.read(|cx| app.read(cx).preferences_writer.drain());
         cx.run_until_parked();
     }
 
@@ -3185,6 +3571,9 @@ mod tests {
     #[gpui::test]
     fn new_edit_save_cancel_and_delete_follow_the_saved_selection(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
+        // The editor dialog otherwise slides in on the wall clock, its Save
+        // moving between the bounds read and the press.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         let initial = applied(cx);
         click(cx, "custom-themes-new");
         let form = form(cx, &app);
@@ -3215,7 +3604,7 @@ mod tests {
         });
         settle(cx);
         click(cx, "theme-editor-save");
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| app.read(cx).theme_editor.form.is_none())
         });
         let saved = Preferences::load();
@@ -3227,7 +3616,7 @@ mod tests {
             .clone();
         assert_eq!(theme.base, ThemeChoice::Nord);
         assert_eq!(theme.palette, draft);
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| {
                 app.read(cx).settings.theme == ThemeSelection::Custom(theme.id)
                     && !app.read(cx).theme_editor.save_pending()
@@ -3252,6 +3641,7 @@ mod tests {
         assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
         assert_eq!(applied(cx), draft, "Escape re-applied the saved selection");
+        drain_preference_writer(cx, &app);
         assert_eq!(
             Preferences::load().custom_themes,
             vec![theme.clone()],
@@ -3270,7 +3660,9 @@ mod tests {
                 app.delete_custom_theme(theme.id, None, window, cx)
             })
         });
-        wait_for(cx, |cx| cx.read(|cx| app.read(cx).custom_themes.is_empty()));
+        wait_for(cx, &app, |cx| {
+            cx.read(|cx| app.read(cx).custom_themes.is_empty())
+        });
         assert_eq!(
             cx.read(|cx| app.read(cx).settings.theme),
             ThemeSelection::BuiltIn(ThemeChoice::Nord)
@@ -3521,6 +3913,73 @@ mod tests {
         });
     }
 
+    /// Over Settings holding 31 saved themes, one short of the bound, the
+    /// editor keeps focus inside however many stops the page behind it
+    /// holds: Shift-Tab from Name, its first stop, wraps to Save, its last,
+    /// and Tab from Save wraps to Name, each with the editor still open,
+    /// while inside it Shift-Tab and Tab still step between Save and Cancel.
+    /// The toolkit's focus trap walked on back from Name through the page's
+    /// stops, at most 100 of them, and Settings draws more behind the open
+    /// editor, so Shift-Tab from Name left focus on a Settings Button behind
+    /// it (decided 2026-11-10).
+    #[gpui::test]
+    fn tab_stays_in_the_editor_over_a_page_of_saved_themes(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        seed_themes(cx, &app, MAX_CUSTOM_THEMES as u32 - 1);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
+        let (cancel, save) = cx.read(|cx| {
+            let form = form.read(cx);
+            (form.cancel_focus.clone(), form.save_focus.clone())
+        });
+        assert!(
+            cx.update(|window, _| name.is_focused(window)),
+            "the editor opens with Name focused"
+        );
+        // The stops GPUI's own step back from Name meets behind the editor
+        // before it comes back inside: the toolkit's walk took at most 100.
+        let behind = cx.update(|window, cx| {
+            let editor =
+                gpui_kit::base::active_focus_trap(window, cx).expect("the editor traps focus");
+            let mut behind = 0;
+            window.focus_prev(cx);
+            while !editor.contains_focused(window, cx) && behind <= 1000 {
+                behind += 1;
+                window.focus_prev(cx);
+            }
+            window.focus(&name, cx);
+            behind
+        });
+        settle(cx);
+        assert!(
+            (101..=1000).contains(&behind),
+            "more than 100 stops lie behind the editor, not {behind}"
+        );
+        for (key, from, to, control) in [
+            ("shift-tab", "Name", "Save", &save),
+            ("shift-tab", "Save", "Cancel", &cancel),
+            ("tab", "Cancel", "Save", &save),
+            ("tab", "Save", "Name", &name),
+        ] {
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            cx.update(|window, cx| {
+                assert!(
+                    window.has_active_dialog(cx),
+                    "{key} from {from}: the editor stays open"
+                );
+                assert!(
+                    control.contains_focused(window, cx),
+                    "{key} from {from} focuses {to}, not {:?}",
+                    window.focused(cx)
+                );
+            });
+        }
+        assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_some()));
+    }
+
     /// Return in a valid hex field rewrites it in canonical form and saves
     /// nothing; Return on the focused Cancel button cancels.
     #[gpui::test]
@@ -3545,6 +4004,7 @@ mod tests {
             "Return rewrites the field as lowercase #rrggbb"
         );
         assert_eq!(cx.read(|cx| form.read(cx).draft.accent), 0x12ab34);
+        drain_preference_writer(cx, &app);
         assert!(Preferences::load().custom_themes.is_empty());
 
         // Shift-Tab from Name wraps to Save, then Cancel.
@@ -3562,7 +4022,7 @@ mod tests {
             "Return on Cancel closes the editor"
         );
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| !app.read(cx).theme_editor.save_pending())
         });
         assert_eq!(applied(cx), before, "Cancel re-applied the saved selection");
@@ -3570,6 +4030,274 @@ mod tests {
             Preferences::load().custom_themes.is_empty(),
             "Return on Cancel saved the draft"
         );
+    }
+
+    /// Return acts only on the control its Enter press began on: Enter goes
+    /// down in a row's hex field, which commits it, and focus moves onto
+    /// Reset to base, Cancel or Save before the key's repeats arrive as GPUI
+    /// delivers them natively, a release and its press together (an input
+    /// method's repeat, or X11's split across a poll batch), GPUI's held
+    /// repeats, then X11's fresh presses. None of them resets the draft,
+    /// begins a save or closes the editor, and the store is unchanged; once
+    /// the key has come up, a new press acts on the button. The form routed
+    /// every fresh press the dialog confirmed to whatever held focus, so a
+    /// repeat after a picker had given focus to Save saved the theme, and one
+    /// on Cancel closed the editor (FU41-B's security review).
+    #[gpui::test]
+    fn a_held_return_acts_on_nothing_focus_moved_to(cx: &mut TestAppContext) {
+        fn enter(window: &mut Window, cx: &mut App, down: Option<bool>) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+            };
+            window.dispatch_event(input, cx);
+        }
+        let (app, cx) = open_at_rest(cx);
+        first_picker(cx, &app);
+        let saved = cx.read(|cx| app.read(cx).custom_themes.len());
+        for target in ["Reset to base", "Cancel", "Save"] {
+            if cx.read(|cx| app.read(cx).theme_editor.form.is_none()) {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.open_theme_editor(None, window, cx))
+                });
+                settle(cx);
+            }
+            let form = form(cx, &app);
+            type_hex(cx, &form, TokenKind::Accent, "12AB34");
+            cx.update(|window, cx| enter(window, cx, Some(false)));
+            settle(cx);
+            assert_eq!(
+                cx.read(|cx| form.read(cx).row(TokenKind::Accent).hex.read(cx).value()),
+                "#12ab34",
+                "{target}: the press committed the field it began in"
+            );
+            let draft = cx.read(|cx| form.read(cx).draft);
+            assert_ne!(draft, cx.read(|cx| form.read(cx).base.palette()));
+            let button = cx.read(|cx| {
+                let form = form.read(cx);
+                match target {
+                    "Reset to base" => form.reset_focus.clone(),
+                    "Cancel" => form.cancel_focus.clone(),
+                    _ => form.save_focus.clone(),
+                }
+            });
+            cx.update(|window, cx| button.focus(window, cx));
+            settle(cx);
+            let unchanged = |cx: &mut VisualTestContext, step: &str| {
+                assert!(
+                    cx.update(|window, cx| window.has_active_dialog(cx))
+                        && cx.read(|cx| app.read(cx).theme_editor.form.is_some()),
+                    "{target}, {step}: the editor stays open"
+                );
+                assert!(
+                    !cx.read(|cx| form.read(cx).pending),
+                    "{target}, {step}: no save began"
+                );
+                assert_eq!(
+                    cx.read(|cx| form.read(cx).draft),
+                    draft,
+                    "{target}, {step}: the draft is unchanged"
+                );
+                assert_eq!(
+                    cx.read(|cx| app.read(cx).custom_themes.len()),
+                    saved,
+                    "{target}, {step}: the store is unchanged"
+                );
+            };
+            // Each its own event, with no idle pass between them.
+            cx.update(|window, cx| enter(window, cx, None));
+            cx.update(|window, cx| enter(window, cx, Some(false)));
+            settle(cx);
+            unchanged(cx, "a release and its press");
+            for (repeat, is_held) in [true, true, false, false, false].into_iter().enumerate() {
+                cx.update(|window, cx| enter(window, cx, Some(is_held)));
+                settle(cx);
+                unchanged(cx, &format!("repeat {repeat}, held {is_held}"));
+            }
+            cx.update(|window, cx| enter(window, cx, None));
+            settle(cx);
+            unchanged(cx, "the release");
+            drain_preference_writer(cx, &app);
+            unchanged(cx, "the writer drained");
+
+            press(cx, "enter");
+            match target {
+                "Reset to base" => assert_eq!(
+                    cx.read(|cx| form.read(cx).draft),
+                    cx.read(|cx| form.read(cx).base.palette()),
+                    "a new press on Reset to base resets the draft"
+                ),
+                "Cancel" => assert!(
+                    cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                    "a new press on Cancel closes the editor"
+                ),
+                _ => wait_for(cx, &app, |cx| {
+                    cx.read(|cx| app.read(cx).custom_themes.len()) == saved + 1
+                }),
+            }
+        }
+    }
+
+    /// Holds Return where focus is, with the store refusing writes: Enter
+    /// goes down and its save fails, then the key's repeats arrive as X11
+    /// sends them, fresh presses with no key-up between them and a release
+    /// and its press together, as GPUI marks them held on macOS and Wayland,
+    /// and after the window's focus bounces, as another client's keyboard
+    /// grab bounces it under X11, each one waited out until the writer has
+    /// answered. The form submits once and shows its error once, and focus
+    /// stays where the press began; after the key-up a new press begins a
+    /// second save.
+    #[cfg(unix)]
+    fn hold_return_with_saves_refused(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        form: &Entity<ThemeForm>,
+        at: &str,
+    ) {
+        fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        }
+        let stop = focused_stop(cx);
+        // Saves begun and errors shown, counted as the form changes.
+        let counts = Rc::new(std::cell::Cell::new((0_usize, 0_usize)));
+        let _counting = cx.update(|_, cx| {
+            let counts = counts.clone();
+            let mut was = (false, false);
+            cx.observe(form, move |form, cx| {
+                let form = form.read(cx);
+                let now = (form.pending, form.error.is_some());
+                let (saves, errors) = counts.get();
+                counts.set((
+                    saves + usize::from(now.0 && !was.0),
+                    errors + usize::from(now.1 && !was.1),
+                ));
+                was = now;
+            })
+        });
+        let failed = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let form = form.read(cx);
+                !form.pending && form.error.is_some()
+            })
+        };
+        let refused = ReadOnlyPreferences::new();
+        enter(cx, Some(false));
+        wait_for(cx, app, failed);
+        assert_eq!(
+            counts.get(),
+            (1, 1),
+            "{at}: the press began a save, which failed"
+        );
+        let repeats: [(&str, &[Option<bool>]); 5] = [
+            ("an X11 repeat", &[Some(false)]),
+            ("another X11 repeat", &[Some(false)]),
+            // A release and its press together, with no idle pass between.
+            ("a release and its press", &[None, Some(false)]),
+            ("a held repeat", &[Some(true)]),
+            ("an X11 repeat after a focus bounce", &[Some(false)]),
+        ];
+        for (repeat, events) in repeats {
+            if repeat.ends_with("bounce") {
+                cx.deactivate_window();
+                cx.update(|window, _| window.activate_window());
+                settle(cx);
+            }
+            for down in events {
+                enter(cx, *down);
+            }
+            settle(cx);
+            drain_preference_writer(cx, app);
+            assert!(
+                cx.update(|window, _| stop.is_focused(window)),
+                "{at}, {repeat}: focus stays"
+            );
+            assert!(failed(cx), "{at}, {repeat}: the error stays");
+            assert_eq!(counts.get(), (1, 1), "{at}, {repeat}: no other save began");
+        }
+        enter(cx, None);
+        settle(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "{at}: the editor stays open"
+        );
+        enter(cx, Some(false));
+        wait_for(cx, app, failed);
+        assert_eq!(
+            counts.get(),
+            (2, 2),
+            "{at}: a new press begins another save"
+        );
+        drop(refused);
+        enter(cx, None);
+        settle(cx);
+    }
+
+    /// A held Return in Name begins one save, under X11 too
+    /// ([`hold_return_with_saves_refused`]). Every X11 repeat began on Name,
+    /// where focus stays, so each began another write after the last one
+    /// failed and announced its error again.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_held_return_in_name_begins_one_save(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        next_frame(cx);
+        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
+        assert!(
+            cx.update(|window, _| name.is_focused(window)),
+            "the editor opens in Name"
+        );
+        hold_return_with_saves_refused(cx, &app, &form, "Name");
+    }
+
+    /// A held Return on Save, which Tab reached, begins one save, under X11
+    /// too ([`hold_return_with_saves_refused`]). Tab focuses the kit Button
+    /// inside Save's wrapper, which takes Enter as the key goes down, ahead
+    /// of the dialog's Confirm; it passed over GPUI's held repeats and a
+    /// press begun elsewhere only, so each X11 repeat, which began on Save,
+    /// began another write after the last one failed: eight for one hold
+    /// (FU41-B3's security re-check).
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_held_return_on_a_tabbed_to_save_begins_one_save(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (form, ..) = first_picker(cx, &app);
+        let (cancel, save) = cx.read(|cx| {
+            let form = form.read(cx);
+            (form.cancel_focus.clone(), form.save_focus.clone())
+        });
+        cx.update(|window, cx| cancel.focus(window, cx));
+        settle(cx);
+        for _ in 0..4 {
+            if cx.update(|window, cx| save.contains_focused(window, cx)) {
+                break;
+            }
+            press(cx, "tab");
+        }
+        assert!(
+            cx.update(|window, cx| save.contains_focused(window, cx)),
+            "Tab from Cancel reaches Save"
+        );
+        assert!(
+            focused_stop(cx) != save,
+            "focus is on the kit Button inside Save's wrapper"
+        );
+        hold_return_with_saves_refused(cx, &app, &form, "Save");
     }
 
     /// Keep colors and Replace colors leave the tree when answered; focus
@@ -3655,8 +4383,8 @@ mod tests {
         let last = TokenKind::ALL[TokenKind::ALL.len() - 1];
         let last_entry = ThemeForm::row_entry(last);
         assert_eq!(last_entry, ThemeForm::TOKEN_ENTRIES - 1);
-        let scroll = cx.read(|cx| form.read(cx).scroll.clone());
-        let side_scroll = cx.read(|cx| form.read(cx).side_scroll.clone());
+        let scroll = cx.read(|cx| form.read(cx).column.scroll().clone());
+        let side_scroll = cx.read(|cx| form.read(cx).side.scroll().clone());
         assert!(
             !entry_visible(&scroll, last_entry),
             "the last row starts below the fold at 1,000 × 680"
@@ -3671,10 +4399,6 @@ mod tests {
                     "tab",
                     |_, _| entry_visible(&scroll, ThemeForm::row_entry(kind)),
                     |_, _| (),
-                );
-                assert_eq!(
-                    cx.read(|cx| form.read(cx).revealed),
-                    Some(Reveal::Row(kind))
                 );
                 assert!(
                     visible,
@@ -3734,13 +4458,2088 @@ mod tests {
         );
     }
 
+    /// What a case of [`a_resize_keeps_the_focused_rows_control_in_view`]
+    /// changes under the focused control.
+    #[derive(Clone, Copy, Debug)]
+    enum Under {
+        /// The window is resized to this width and height.
+        Resize(f32, f32),
+        /// The interface text size changes to this size.
+        TextSize(u8),
+    }
+
+    /// The interface text size set as the Settings page sets it.
+    fn set_text_size(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, text_size: u8) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.settings.interface_text_size = text_size);
+            appearance::apply_text_sizes(text_size, 12, window, cx);
+        });
+    }
+
+    /// The editor opened on a new theme at `text_size` in a `width` ×
+    /// `height` window.
+    fn open_editor_at(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        text_size: u8,
+        width: f32,
+        height: f32,
+    ) -> Entity<ThemeForm> {
+        set_text_size(cx, app, text_size);
+        cx.simulate_resize(size(px(width), px(height)));
+        settle(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        let form = form(cx, app);
+        next_frame(cx);
+        form
+    }
+
+    /// The quads filled with the kit's popover colour the last frame drew,
+    /// in device pixels.
+    fn drawn_popover_fills(window: &Window, cx: &App) -> Vec<Bounds<ScaledPixels>> {
+        let surface = Background::from(gpui_kit::component::Theme::global(cx).popover);
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == surface)
+            .map(|quad| quad.bounds)
+            .collect()
+    }
+
+    /// A popover's surface the last frame drew that `before` did not: the
+    /// largest quad filled with the popover colour outside `before`, in
+    /// logical pixels.
+    fn new_popover(
+        window: &Window,
+        cx: &App,
+        before: &[Bounds<ScaledPixels>],
+    ) -> Option<Bounds<Pixels>> {
+        let scale = window.scale_factor();
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        drawn_popover_fills(window, cx)
+            .into_iter()
+            .filter(|fill| !before.contains(fill))
+            .map(|fill| {
+                Bounds::from_corners(
+                    point(logical(fill.left()), logical(fill.top())),
+                    point(logical(fill.right()), logical(fill.bottom())),
+                )
+            })
+            .max_by(|a, b| {
+                f32::from(a.size.width * f32::from(a.size.height))
+                    .total_cmp(&f32::from(b.size.width * f32::from(b.size.height)))
+            })
+    }
+
+    /// Every frame `reveal`'s container painted through `change` and those
+    /// the frames asked for after it, with no draw forced: the first is laid
+    /// out after the change, and the second, which a reveal the first
+    /// requests asks for, is the next frame.
+    fn frames_through(
+        cx: &mut VisualTestContext,
+        reveal: &FocusReveal,
+        change: impl FnOnce(&mut VisualTestContext),
+    ) -> Vec<crate::focus_reveal::tests::Painted> {
+        reveal.take_painted();
+        change(cx);
+        cx.run_until_parked();
+        reveal.take_painted()
+    }
+
+    /// Whether `frame` drew the control holding focus whole, `room` clear of
+    /// its container's view.
+    fn painted_whole(frame: &crate::focus_reveal::tests::Painted, room: Pixels) -> bool {
+        frame.control.is_some_and(|control| {
+            control.top() - room >= frame.viewport.top() - px(0.01)
+                && control.bottom() + room <= frame.viewport.bottom() + px(0.01)
+        })
+    }
+
+    /// A row's hex field or picker trigger holding focus stays in view
+    /// through a change under it, not only when focus moves onto it (decided
+    /// 2026-11-10): a low row's control, focused and so scrolled into view
+    /// at the column's foot, is cut by the first frame laid out after the
+    /// change, and the next frame shows it whole with its ring's room. The
+    /// changes: a window shrunk under it in the wide layout and stacked, and
+    /// at 18 pt from a 461 × 490 half tile to 461 × 420; one narrowed across
+    /// the breakpoint, where the stacked body takes the column's place; and
+    /// the interface text grown from 13 to 18 pt. The column revealed a row
+    /// only as its control gained focus, so the shrink left it cut until
+    /// focus moved again; settled after the change, this test once passed a
+    /// reveal any number of frames late.
+    #[gpui::test]
+    fn a_resize_keeps_the_focused_rows_control_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let kind = TokenKind::ALL[TokenKind::ALL.len() - 2];
+        let selector = |control: &str| {
+            if control == "trigger" {
+                format!("theme-token-picker-{}", kind.key())
+            } else {
+                format!("theme-token-{}", kind.key())
+            }
+        };
+        let close = |cx: &mut VisualTestContext, at: &str| {
+            click(cx, "theme-editor-cancel");
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                "{at}: Cancel closes the editor"
+            );
+        };
+        for (text_size, (width, height), under) in [
+            (13, (1440., 900.), Under::Resize(1440., 760.)),
+            (13, (1000., 680.), Under::Resize(1000., 560.)),
+            (18, (461., 490.), Under::Resize(461., 420.)),
+            (13, (1440., 900.), Under::Resize(1000., 680.)),
+            (13, (1000., 680.), Under::TextSize(18)),
+        ] {
+            for control in ["hex field", "trigger"] {
+                let at = format!("{text_size} pt {width} × {height}, {under:?}, {control}");
+                let form = open_editor_at(cx, &app, text_size, width, height);
+                assert_eq!(cx.read(|cx| form.read(cx).wide), width > 1060., "{at}");
+                let whole = |cx: &mut VisualTestContext| {
+                    let column = bounds(cx, "theme-editor-body".into());
+                    let control = bounds(cx, selector(control));
+                    control.top() - ring >= column.top() - px(0.01)
+                        && control.bottom() + ring <= column.bottom() + px(0.01)
+                };
+                assert!(!whole(cx), "{at}: the row starts below the fold");
+                cx.update(|window, cx| {
+                    let row = form.read(cx).row(kind);
+                    let focus = if control == "trigger" {
+                        row.picker.focus_handle(cx)
+                    } else {
+                        row.hex.read(cx).focus_handle(cx)
+                    };
+                    focus.focus(window, cx);
+                });
+                settle(cx);
+                assert!(whole(cx), "{at}: focus shows the control whole");
+                let column = cx.read(|cx| form.read(cx).column.clone());
+                let frames = frames_through(cx, &column, |cx| match under {
+                    Under::Resize(width, height) => cx.simulate_resize(size(px(width), px(height))),
+                    Under::TextSize(text_size) => set_text_size(cx, &app, text_size),
+                });
+                let [cut, next, ..] = frames.as_slice() else {
+                    panic!("{at}: the change draws a frame and asks for the next: {frames:?}");
+                };
+                assert!(
+                    !painted_whole(cut, ring),
+                    "{at}: the first frame after the change cuts the control: {cut:?}"
+                );
+                assert!(
+                    painted_whole(next, ring),
+                    "{at}: the next frame shows it whole with its ring's room: {next:?}"
+                );
+                close(cx, &at);
+            }
+        }
+        set_text_size(cx, &app, 13);
+    }
+
+    /// The Readability list holding focus stays in view through a resize, as
+    /// a row's control does: the first frame laid out at the new size cuts
+    /// it, and the next shows it whole by the least scroll, its ring's room
+    /// below it, in the side column and in the stacked body shrunk under it,
+    /// and across the breakpoint, where the list moves between the side
+    /// column and the stacked body; and a list scrolled out of view is not
+    /// scrolled into view across the breakpoint: the column it enters draws
+    /// it where that column's offset puts it, cut at 1,100 × 420, and
+    /// leaves it there in every frame. Nord at 13 pt: it was scrolled into view
+    /// only as it gained focus, so narrowed from 1,440 × 900 to 1,000 × 680
+    /// it moved below the stacked body's fold and stayed there, and shrunk
+    /// from 1,000 × 680 to 1,000 × 560 it was left cut at the body's foot;
+    /// and the side column, which kept no record while the layout stacked,
+    /// counted the focus on it as new once widened, so from a 1,000 × 420
+    /// body scrolled to its top it was scrolled 18.5 px into the side
+    /// column.
+    #[gpui::test]
+    fn a_resize_keeps_the_focused_readability_list_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        for ((width, height), (to_width, to_height), scrolled_out) in [
+            ((1440., 900.), (1000., 680.), false),
+            ((1000., 680.), (1000., 560.), false),
+            ((1440., 900.), (1440., 420.), false),
+            ((1000., 420.), (1100., 420.), false),
+            ((1000., 420.), (1100., 420.), true),
+        ] {
+            let at = format!(
+                "{width} × {height} to {to_width} × {to_height}{}",
+                if scrolled_out { ", scrolled out" } else { "" }
+            );
+            let form = open_editor_at(cx, &app, 13, width, height);
+            cx.update(|window, cx| {
+                form.update(cx, |form, cx| {
+                    form.choose_base(ThemeChoice::Nord, window, cx)
+                })
+            });
+            next_frame(cx);
+            let container = |wide: bool| {
+                if wide {
+                    "theme-editor-side"
+                } else {
+                    "theme-editor-body"
+                }
+            };
+            let warnings = cx.read(|cx| form.read(cx).warnings_focus.clone());
+            cx.update(|window, cx| warnings.focus(window, cx));
+            settle(cx);
+            let (list, view) = (
+                bounds(cx, "theme-editor-warnings".into()),
+                bounds(cx, container(width > 1060.).into()),
+            );
+            assert!(
+                list.top() - ring >= view.top() - px(0.01)
+                    && list.bottom() + ring <= view.bottom() + px(0.01),
+                "{at}: focus shows the list {list:?} whole in {view:?}"
+            );
+            if scrolled_out {
+                let column = cx.read(|cx| form.read(cx).column.clone());
+                cx.update(|window, _| {
+                    column.scroll().set_offset(Point::default());
+                    window.refresh();
+                });
+                settle(cx);
+                let (list, view) = (
+                    bounds(cx, "theme-editor-warnings".into()),
+                    bounds(cx, container(false).into()),
+                );
+                assert!(
+                    list.top() >= view.bottom(),
+                    "{at}: the person scrolls the list {list:?} out of {view:?}"
+                );
+            }
+            let wide = to_width > 1060.;
+            let reveal = cx.read(|cx| {
+                let form = form.read(cx);
+                if wide {
+                    form.side.clone()
+                } else {
+                    form.column.clone()
+                }
+            });
+            let still = reveal.scroll().offset().y;
+            let frames = frames_through(cx, &reveal, |cx| {
+                cx.simulate_resize(size(px(to_width), px(to_height)))
+            });
+            assert_eq!(cx.read(|cx| form.read(cx).wide), wide, "{at}");
+            if scrolled_out {
+                assert!(
+                    frames
+                        .first()
+                        .is_some_and(|cut| !painted_whole(cut, Pixels::ZERO)),
+                    "{at}: the resize draws a frame that cuts the list: {frames:?}"
+                );
+                for (index, frame) in frames.iter().enumerate() {
+                    assert!(
+                        (frame.offset - still).abs() < px(0.01),
+                        "{at}: frame {index} of {} leaves {} at {still:?}: {frame:?}",
+                        frames.len(),
+                        container(wide)
+                    );
+                }
+            } else {
+                let [cut, next, ..] = frames.as_slice() else {
+                    panic!("{at}: the resize draws a frame and asks for the next: {frames:?}");
+                };
+                assert!(
+                    !painted_whole(cut, Pixels::ZERO),
+                    "{at}: the first frame at the new size cuts the list: {cut:?}"
+                );
+                assert!(
+                    painted_whole(next, ring)
+                        && next.control.is_some_and(|list| {
+                            (list.bottom() + ring - next.viewport.bottom()).abs() < px(0.01)
+                        }),
+                    "{at}: the next frame shows the list whole in {} by the least scroll, \
+                     its ring's room below it: {next:?}",
+                    container(wide)
+                );
+            }
+            click(cx, "theme-editor-cancel");
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                "{at}: Cancel closes the editor"
+            );
+        }
+    }
+
+    /// A pointer press on a picker trigger the column's foot cuts, 4 px of
+    /// it in view, opens the picker with the trigger's row whole, by the
+    /// least scroll and with its ring's room, from the popover's first
+    /// frame, so the popover opens beside it and never moves, at 13 pt in
+    /// 1,000 × 680 and at 18 pt in a 461 × 490 half tile (decided
+    /// 2026-11-14), each frame's popover read where that frame draws it; and
+    /// focus inside the popover counts as the trigger's, so a window shrunk
+    /// under the open picker cuts the row for one frame and the next shows
+    /// it whole again. At both sizes the window's margins clamp the popover
+    /// over its trigger, with the opener's reveal or without it, so its
+    /// place says nothing of the trigger's and the row is what the reveal
+    /// decides. The press focuses the popover before any frame, and GPUI
+    /// places that focus under the trigger only once a frame has drawn the
+    /// popover, when focus no longer moves, so the column never revealed the
+    /// row: the popover opened beside the cut trigger, and both stayed
+    /// there.
+    #[gpui::test]
+    fn a_press_on_a_cut_trigger_opens_its_picker_beside_it_whole(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let kind = TokenKind::ALL[TokenKind::ALL.len() - 2];
+        let (row, trigger) = (
+            format!("theme-token-{}", kind.key()),
+            format!("theme-token-picker-{}", kind.key()),
+        );
+        for (text_size, (width, height)) in [(13, (1000., 680.)), (18, (461., 490.))] {
+            let at = format!("{text_size} pt {width} × {height}");
+            let form = open_editor_at(cx, &app, text_size, width, height);
+            let column = cx.read(|cx| form.read(cx).column.clone());
+            let picker = cx.read(|cx| form.read(cx).row(kind).picker.clone());
+            let view = bounds(cx, "theme-editor-body".into());
+            let cut = bounds(cx, trigger.clone());
+            cx.update(|window, _| {
+                let offset = column.scroll().offset().y + view.bottom() - px(4.) - cut.top();
+                column.scroll().set_offset(point(px(0.), offset));
+                window.refresh();
+            });
+            settle(cx);
+            let cut = bounds(cx, trigger.clone());
+            assert!(
+                (view.bottom() - cut.top() - px(4.)).abs() < px(0.01),
+                "{at}: 4 px of the trigger show at the column's foot: {cut:?} in {view:?}"
+            );
+            // The press as native input, each frame drawn alone in GPUI's
+            // order, the popover read from every frame: the press, the frame
+            // after it, the release and the frames after that.
+            let visible = point(cut.center().x, view.bottom() - px(2.));
+            column.take_painted();
+            let (before, popovers) = cx.update(|window, cx| {
+                let before = drawn_popover_fills(window, cx);
+                let mut popovers = Vec::new();
+                let mut frame = |window: &mut Window, cx: &mut App| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    popovers.push(new_popover(window, cx, &before));
+                };
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        position: visible,
+                        modifiers: Modifiers::default(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                frame(window, cx);
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        position: visible,
+                        modifiers: Modifiers::default(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+                for _ in 0..3 {
+                    frame(window, cx);
+                }
+                (before, popovers)
+            });
+            cx.run_until_parked();
+            let frames = column.take_painted();
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: the press opens the picker"
+            );
+            let shown = bounds(cx, row.clone());
+            assert!(
+                shown.top() - ring >= view.top() - px(0.01)
+                    && (shown.bottom() + ring - view.bottom()).abs() < px(0.01),
+                "{at}: the press shows the row {shown:?} whole, its ring's room above the \
+                 foot of {view:?}"
+            );
+            let offset = column.scroll().offset().y;
+            assert!(!frames.is_empty(), "{at}: the press draws the column");
+            for (index, frame) in frames.iter().enumerate() {
+                assert!(
+                    (frame.offset - offset).abs() < px(0.01),
+                    "{at}: frame {index} of {} after the press, the popover's first the \
+                     first of them, draws the column at {offset:?}, which shows the row \
+                     whole: {frame:?}",
+                    frames.len()
+                );
+            }
+            // From its first frame the popover is drawn where it rests,
+            // clamped by the window's margins over the trigger.
+            let first = popovers
+                .iter()
+                .position(Option::is_some)
+                .unwrap_or_else(|| panic!("{at}: the press draws the popover: {popovers:?}"));
+            settle(cx);
+            let rest = cx
+                .update(|window, cx| new_popover(window, cx, &before))
+                .expect("the open popover is drawn");
+            for (index, popover) in popovers.iter().enumerate().skip(first) {
+                assert_eq!(
+                    *popover,
+                    Some(rest),
+                    "{at}: frame {index} of the press, the popover's first being {first}, \
+                     draws it where it rests: {popovers:?}"
+                );
+            }
+            let frames = frames_through(cx, &column, |cx| {
+                cx.simulate_resize(size(px(width), px(height - 40.)))
+            });
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: the picker stays open through the resize"
+            );
+            let [cut, next, ..] = frames.as_slice() else {
+                panic!("{at}: the resize draws a frame and asks for the next: {frames:?}");
+            };
+            assert!(
+                !painted_whole(cut, ring),
+                "{at}: the first frame after the shrink cuts the row: {cut:?}"
+            );
+            assert!(
+                painted_whole(next, ring),
+                "{at}: the next frame shows the row of the open picker whole: {next:?}"
+            );
+            press(cx, "escape");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Escape closes the picker"
+            );
+            click(cx, "theme-editor-cancel");
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+                "{at}: Cancel closes the editor"
+            );
+        }
+        set_text_size(cx, &app, 13);
+    }
+
+    /// A pointer press low on a Readability list taller than the stacked
+    /// body focuses the list and leaves the body where it was in every frame
+    /// after the press, so the warning under the pointer stays put, while
+    /// Tab onto the list still shows its top with the ring's room (decided
+    /// 2026-11-14): revealed by its top, the press scrolled the warning it
+    /// landed on out of view. Twenty or more warnings at 13 pt in 1,000 ×
+    /// 560, the body scrolled to its foot.
+    #[gpui::test]
+    fn a_press_low_on_a_tall_readability_list_leaves_the_body_still(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let form = open_editor_at(cx, &app, 13, 1000., 560.);
+        assert!(!cx.read(|cx| form.read(cx).wide));
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                let mut gray = form.draft;
+                for kind in TokenKind::ALL {
+                    gray.set(kind, 0x808080);
+                }
+                form.warnings = gray.readability_issues();
+                cx.notify();
+            });
+            window.refresh();
+        });
+        settle(cx);
+        let column = cx.read(|cx| form.read(cx).column.clone());
+        cx.update(|window, _| {
+            let foot = column.scroll().max_offset().y;
+            column.scroll().set_offset(point(px(0.), -foot));
+            window.refresh();
+        });
+        settle(cx);
+        let view = bounds(cx, "theme-editor-body".into());
+        let list = bounds(cx, "theme-editor-warnings".into());
+        assert!(
+            list.size.height > view.size.height && list.top() < view.top(),
+            "the list {list:?} is taller than the body {view:?}, its top above the view"
+        );
+        let still = column.scroll().offset();
+        let frames = frames_through(cx, &column, |cx| {
+            cx.simulate_click(
+                point(list.center().x, view.bottom() - px(24.)),
+                Modifiers::default(),
+            );
+        });
+        let warnings = cx.read(|cx| form.read(cx).warnings_focus.clone());
+        assert!(
+            cx.update(|window, _| warnings.is_focused(window)),
+            "the press focuses the list"
+        );
+        assert!(!frames.is_empty(), "the press draws the body");
+        for (index, frame) in frames.iter().enumerate() {
+            assert!(
+                (frame.offset - still.y).abs() < px(0.01),
+                "frame {index} of {} after the press leaves the body at {still:?}: {frame:?}",
+                frames.len()
+            );
+        }
+        // Shift-Tab back onto the last row's picker, then Tab onto the list.
+        press(cx, "shift-tab");
+        assert!(!cx.update(|window, _| warnings.is_focused(window)));
+        press(cx, "tab");
+        assert!(cx.update(|window, _| warnings.is_focused(window)));
+        let (list, view) = (
+            bounds(cx, "theme-editor-warnings".into()),
+            bounds(cx, "theme-editor-body".into()),
+        );
+        assert!(
+            (list.top() - ring - view.top()).abs() < px(0.01),
+            "Tab shows the list's top {list:?} its ring's room below the top of {view:?}"
+        );
+        click(cx, "theme-editor-cancel");
+        assert!(
+            cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+            "Cancel closes the editor"
+        );
+    }
+
+    /// The stops inside the popover `trigger` holds, as GPUI's order meets
+    /// them from the focused stop, once round the window's whole order; focus
+    /// is left where it was.
+    fn popover_order(trigger: &FocusHandle, window: &mut Window, cx: &mut App) -> Vec<FocusHandle> {
+        let start = window.focused(cx).expect("a focused stop");
+        let (mut all, mut stops) = (Vec::new(), Vec::new());
+        loop {
+            window.focus_next(cx);
+            let reached = window.focused(cx).expect("a stop");
+            if all.contains(&reached) {
+                break;
+            }
+            all.push(reached.clone());
+            if trigger.contains_focused(window, cx) && !trigger.is_focused(window) {
+                stops.push(reached);
+            }
+        }
+        window.focus(&start, cx);
+        stops
+    }
+
+    /// Whether the last frame drew the kit's focus ring, the bordered quads
+    /// of the installed `button_focus_ring` in the theme's ring colour, whole:
+    /// every edge shown by the parts the popover paints it in, and inside a
+    /// quad filled with the popover's colour, the popover's surface.
+    fn kit_ring_whole_in_popover(cx: &mut VisualTestContext) -> bool {
+        let (outer, setting, surface) = cx.update(|window, cx| {
+            let theme = gpui_kit::component::Theme::global(cx);
+            let setting = theme.button_focus_ring;
+            let colour = theme.ring.alpha(setting.opacity);
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            let outer = window.painted_quads().into_iter().find_map(|quad| {
+                (quad.border_color == colour
+                    && quad.border_widths.top.as_f32() == setting.width.as_f32() * scale)
+                    .then(|| {
+                        Bounds::from_corners(
+                            gpui::point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            gpui::point(
+                                logical(quad.bounds.right()),
+                                logical(quad.bounds.bottom()),
+                            ),
+                        )
+                    })
+            });
+            (outer, setting, Background::from(theme.popover))
+        });
+        let Some(outer) = outer else {
+            return false;
+        };
+        let footprint = setting.gap + setting.width;
+        let quads = painted_quads(cx);
+        let ring = PaintedRing::around(&quads, outer.dilate(-footprint), footprint);
+        ring.edges(setting.width)
+            .into_iter()
+            .all(|(_, band)| ring.shows(band))
+            && quads.iter().any(|quad| {
+                quad.background == surface
+                    && quad.bounds.left() <= outer.left()
+                    && quad.bounds.top() <= outer.top()
+                    && outer.right() <= quad.bounds.right()
+                    && outer.bottom() <= quad.bounds.bottom()
+            })
+    }
+
+    /// The colour picker trigger's own ring the last frame drew, its
+    /// wrapper's 2 px accent edge, where it drew it whole: every edge shown
+    /// by the parts it is painted in.
+    fn whole_trigger_ring(cx: &mut VisualTestContext) -> Option<Bounds<Pixels>> {
+        let accent = Hsla::from(rgb(applied(cx).accent));
+        let outer = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            window.painted_quads().into_iter().find_map(|quad| {
+                (quad.border_color == accent && quad.border_widths.top.as_f32() == 2. * scale).then(
+                    || {
+                        Bounds::from_corners(
+                            gpui::point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            gpui::point(
+                                logical(quad.bounds.right()),
+                                logical(quad.bounds.bottom()),
+                            ),
+                        )
+                    },
+                )
+            })
+        });
+        let outer = outer?;
+        let ring = PaintedRing::around(&painted_quads(cx), outer, Pixels::ZERO);
+        ring.edges(px(2.))
+            .into_iter()
+            .all(|(_, band)| ring.shows(band))
+            .then_some(outer)
+    }
+
+    /// A row's colour picker, opened from its trigger by Enter, keeps focus
+    /// in its popover while the popover is drawn (decided 2026-11-07,
+    /// `DESIGN.md`'s focus rules): Tab and Shift+Tab cycle through the
+    /// popover's own two stops, its swatches and its hex field, each met once
+    /// a cycle and wrapping at both ends; the hex field's ring lies whole
+    /// inside it, and Escape from the field closes it with focus back on the
+    /// trigger. At 13 pt in 1480 × 973 and at 18 pt in 461 × 490. The
+    /// popover does not close on blur, and Tab past its last swatch moved
+    /// focus to the editor's rows behind it while it stayed drawn. Each
+    /// swatch once took a stop of its own, and the featured row's handles,
+    /// keyed by colour, were its palette twins': Tab reached 83 of the 112
+    /// and Shift+Tab looped among them.
+    #[gpui::test]
+    fn tab_and_shift_tab_cycle_inside_the_open_colour_picker(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        let form = form(cx, &app);
+        let picker = cx.read(|cx| form.read(cx).row(TokenKind::ALL[0]).picker.clone());
+        let trigger = cx.read(|cx| picker.focus_handle(cx));
+        let hex = cx.read(|cx| picker.read(cx).hex_input().read(cx).focus_handle(cx));
+        for (text, viewport) in [
+            (13, size(px(1480.), px(973.))),
+            (18, size(px(461.), px(490.))),
+        ] {
+            let at = format!(
+                "{text} pt in {} × {}",
+                f32::from(viewport.width),
+                f32::from(viewport.height)
+            );
+            cx.simulate_resize(viewport);
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            settle(cx);
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            // The whole press: the kit's dialog takes Enter again only once
+            // its key comes up.
+            press(cx, "enter");
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Enter opens the picker"
+            );
+            // Each Tab from the popover's surface, which opening focuses,
+            // until focus comes back to the first stop it met.
+            let cycle = |key: &str, cx: &mut VisualTestContext| {
+                let mut met = Vec::new();
+                loop {
+                    press(cx, key);
+                    let (open, inside, focused) = cx.update(|window, cx| {
+                        (
+                            picker.read(cx).is_open(),
+                            trigger.contains_focused(window, cx) && !trigger.is_focused(window),
+                            window.focused(cx),
+                        )
+                    });
+                    assert!(open, "{at}: {key} leaves the popover drawn");
+                    assert!(
+                        inside,
+                        "{at}: {key} after {} stops keeps focus inside the drawn popover",
+                        met.len()
+                    );
+                    let focused = focused.expect("a stop holds focus");
+                    if met.first() == Some(&focused) {
+                        return met;
+                    }
+                    assert!(
+                        !met.contains(&focused),
+                        "{at}: {key} meets each stop once a cycle"
+                    );
+                    met.push(focused);
+                }
+            };
+            let stops = cx.update(|window, cx| popover_order(&trigger, window, cx));
+            let forward = cycle("tab", cx);
+            let backward = cycle("shift-tab", cx);
+            assert!(forward.contains(&hex), "{at}: Tab reaches the hex field");
+            assert_eq!(forward, stops, "{at}: Tab meets every stop, in order");
+            assert_eq!(
+                forward.len(),
+                2,
+                "{at}: the swatches are one stop and the hex field the other"
+            );
+            assert_eq!(
+                backward,
+                forward.iter().rev().cloned().collect::<Vec<_>>(),
+                "{at}: Shift+Tab meets the same stops in the reverse order"
+            );
+            // Tab on to the hex field, whose ring the popover holds whole,
+            // and Escape from it.
+            let to_hex = forward.iter().position(|stop| *stop == hex).unwrap();
+            for _ in 0..=to_hex {
+                press(cx, "tab");
+            }
+            assert!(
+                cx.update(|window, _| hex.is_focused(window)),
+                "{at}: Tab reaches the hex field again"
+            );
+            assert!(
+                kit_ring_whole_in_popover(cx),
+                "{at}: the hex field's ring lies whole inside the popover"
+            );
+            press(cx, "escape");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Escape from the hex field closes the picker"
+            );
+            assert!(
+                cx.update(|window, _| trigger.is_focused(window)),
+                "{at}: Escape gives focus back to the trigger"
+            );
+            let ring = whole_trigger_ring(cx)
+                .unwrap_or_else(|| panic!("{at}: the trigger draws its ring whole"));
+            let track = bounds(cx, "theme-editor-scrollbar".into());
+            assert!(
+                ring.right() <= track.left(),
+                "{at}: the ring {ring:?} stays clear of the scrollbar's track {track:?}"
+            );
+        }
+    }
+
+    /// A token row's name, which ends in an ellipsis where the row is short
+    /// of room, reads whole with its description in a tooltip: a pointer
+    /// user has no other way to read them, the accessible name being for
+    /// assistive technology.
+    #[gpui::test]
+    fn a_token_rows_name_reads_whole_in_a_tooltip(cx: &mut TestAppContext) {
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        settle(cx);
+        assert_eq!(
+            ThemeForm::row_tooltip(TokenKind::Canvas).as_ref(),
+            format!(
+                "{} · {}",
+                TokenKind::Canvas.label(),
+                TokenKind::Canvas.description()
+            ),
+            "the tooltip holds the name and the description"
+        );
+        let popover =
+            cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).tokens.popover));
+        let shown = |cx: &mut VisualTestContext| {
+            painted_quads(cx)
+                .iter()
+                .filter(|quad| quad.background == popover)
+                .count()
+        };
+        let before = shown(cx);
+        let name = bounds(cx, "theme-token-name-canvas".into());
+        cx.simulate_mouse_move(name.center(), None, gpui::Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        settle(cx);
+        assert!(shown(cx) > before, "hovering the name shows the tooltip");
+    }
+
+    /// The first row's picker, focus on its trigger, at 13 pt in 1480 × 973:
+    /// the form, the picker, its trigger and its popover's hex field.
+    fn first_picker(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> (
+        Entity<ThemeForm>,
+        Entity<ColorPickerState>,
+        FocusHandle,
+        FocusHandle,
+    ) {
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        settle(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        let form = form(cx, app);
+        let picker = cx.read(|cx| form.read(cx).row(TokenKind::ALL[0]).picker.clone());
+        let trigger = cx.read(|cx| picker.focus_handle(cx));
+        let hex = cx.read(|cx| picker.read(cx).hex_input().read(cx).focus_handle(cx));
+        cx.update(|window, cx| trigger.focus(window, cx));
+        settle(cx);
+        (form, picker, trigger, hex)
+    }
+
+    /// The handle holding focus.
+    fn focused_stop(cx: &mut VisualTestContext) -> FocusHandle {
+        cx.update(|window, cx| window.focused(cx).expect("a stop holds focus"))
+    }
+
+    /// Whether focus lies inside the popover `trigger` holds.
+    fn in_popover(cx: &mut VisualTestContext, trigger: &FocusHandle) -> bool {
+        cx.update(|window, cx| trigger.contains_focused(window, cx) && !trigger.is_focused(window))
+    }
+
+    /// The open picker's swatches, the palette under its featured row, are
+    /// one Tab stop and the hex field the other, and the arrow keys walk
+    /// every swatch: Right and Left along a row, Down and Up to the swatch
+    /// below or above, stopping at the palette's edges. Each swatch has its own focus handle, the swatch
+    /// walked to is the one Tab comes back to, and each previews its colour
+    /// as hovering it does; Escape closes the picker, chooses nothing and
+    /// puts the preview back. Before this, each swatch took a stop of its
+    /// own and the arrows did nothing.
+    #[gpui::test]
+    fn the_colour_pickers_arrow_keys_walk_its_one_stop_of_swatches(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, hex) = first_picker(cx, &app);
+        let value = cx.read(|cx| picker.read(cx).value());
+        press(cx, "enter");
+        assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
+
+        press(cx, "tab");
+        let stop = focused_stop(cx);
+        assert!(in_popover(cx, &trigger), "Tab enters the swatches");
+        assert_ne!(stop, hex, "the swatches come before the hex field");
+        press(cx, "tab");
+        assert_eq!(focused_stop(cx), hex, "the hex field is the next stop");
+        press(cx, "tab");
+        assert_eq!(focused_stop(cx), stop, "and the swatches the one after");
+
+        // To the palette's first swatch, past its edges.
+        for key in ["up", "left"] {
+            for _ in 0..12 {
+                press(cx, key);
+            }
+        }
+        // Along each row, turning at its end.
+        let mut met = vec![focused_stop(cx)];
+        let mut lengths = Vec::new();
+        let walked = ["right", "left"].into_iter().cycle();
+        for key in walked.take(12) {
+            let mut length = 1;
+            loop {
+                let from = focused_stop(cx);
+                press(cx, key);
+                let reached = focused_stop(cx);
+                if reached == from {
+                    break;
+                }
+                assert!(in_popover(cx, &trigger), "{key} stays in the popover");
+                assert!(
+                    !met.contains(&reached),
+                    "{key}: every swatch has its own focus handle"
+                );
+                met.push(reached);
+                length += 1;
+            }
+            lengths.push(length);
+            let from = focused_stop(cx);
+            press(cx, "down");
+            let reached = focused_stop(cx);
+            if reached == from {
+                break;
+            }
+            assert!(!met.contains(&reached), "Down reaches a new swatch");
+            met.push(reached);
+        }
+        assert_eq!(
+            lengths,
+            [12, 11, 11, 11, 11, 11, 11, 11, 11, 11],
+            "the featured row over nine rows of shades"
+        );
+        assert_eq!(met.len(), 111, "every swatch is reached by the arrows");
+        let previewed = cx.read(|cx| picker.read(cx).preview());
+        assert_ne!(previewed, value, "the swatch walked to is previewed");
+        assert_eq!(
+            cx.read(|cx| picker.read(cx).value()),
+            value,
+            "walking chooses nothing"
+        );
+
+        // The swatch walked to is the stop Tab leaves and comes back to.
+        let walked_to = focused_stop(cx);
+        press(cx, "tab");
+        assert_eq!(
+            focused_stop(cx),
+            hex,
+            "Tab leaves the swatches for the field"
+        );
+        press(cx, "shift-tab");
+        assert_eq!(
+            focused_stop(cx),
+            walked_to,
+            "Shift+Tab comes back to the swatch walked to"
+        );
+
+        press(cx, "escape");
+        assert!(!cx.read(|cx| picker.read(cx).is_open()), "Escape closes it");
+        assert_eq!(focused_stop(cx), trigger, "with focus back on the trigger");
+        assert_eq!(cx.read(|cx| picker.read(cx).value()), value);
+        assert_eq!(
+            cx.read(|cx| picker.read(cx).preview()),
+            value,
+            "and the preview back on the committed colour"
+        );
+    }
+
+    /// Enter or Space on the focused swatch chooses it: once, as the key
+    /// comes up, however long the key is held, closing the picker with
+    /// focus back on the trigger. The dialog behind it takes neither key.
+    /// The popover's own binding took both keys and closed the picker with
+    /// nothing chosen.
+    #[gpui::test]
+    fn enter_and_space_choose_the_focused_swatch_once(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, _) = first_picker(cx, &app);
+        for key in ["enter", "space"] {
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
+            press(cx, "tab");
+            press(cx, "right");
+            let chosen = cx.read(|cx| picker.read(cx).preview());
+            let before = cx.read(|cx| picker.read(cx).value());
+            assert_ne!(chosen, before, "{key}: the arrow reached another colour");
+
+            let keystroke = Keystroke::parse(key).expect("a keystroke");
+            for is_held in [false, true, true] {
+                cx.simulate_event(KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held,
+                    prefer_character_input: false,
+                });
+                settle(cx);
+            }
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{key}: nothing is chosen while the key is down"
+            );
+            assert_eq!(cx.read(|cx| picker.read(cx).value()), before);
+
+            cx.simulate_event(KeyUpEvent { keystroke });
+            settle(cx);
+            assert_eq!(
+                cx.read(|cx| picker.read(cx).value()),
+                chosen,
+                "{key}: the focused swatch is chosen as the key comes up"
+            );
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{key}: choosing closes the picker"
+            );
+            assert_eq!(
+                focused_stop(cx),
+                trigger,
+                "{key}: focus returns to the trigger"
+            );
+            cx.update(|window, cx| {
+                assert!(
+                    window.has_active_dialog(cx),
+                    "{key}: the editor stays open beneath"
+                );
+            });
+        }
+    }
+
+    /// Enter or Space choosing a swatch, or Enter in the popover's hex field,
+    /// closes the picker with the trigger's ring drawn in the first frame
+    /// after the key that closed it, as Escape's close draws it, with no
+    /// other redraw (QA-110 check 2). The popover gave focus back only while
+    /// that frame was being built, where GPUI asks for no further frame, so
+    /// the trigger kept its resting 1 px border until an unrelated redraw.
+    #[gpui::test]
+    fn choosing_a_swatch_by_key_rings_the_trigger_in_the_next_frame(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, hex) = first_picker(cx, &app);
+        for key in ["enter", "space", "hex enter"] {
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            let keystroke = Keystroke::parse(if key == "space" { "space" } else { "enter" })
+                .expect("a keystroke");
+            let down = KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            };
+            let draws = if key == "hex enter" {
+                press(cx, "tab");
+                assert_eq!(focused_stop(cx), hex, "{key}: the hex field holds focus");
+                let input = cx.read(|cx| picker.read(cx).hex_input().clone());
+                cx.update(|window, cx| {
+                    input.update(cx, |input, cx| input.set_value("#3b82f6", window, cx))
+                });
+                settle(cx);
+                let draws = draw_count(cx, &app);
+                // The field commits as the key goes down. Only the frames
+                // the key and its key-up draw: no settle.
+                cx.simulate_event(down);
+                draws
+            } else {
+                press(cx, "right");
+                assert!(in_popover(cx, &trigger), "{key}: a swatch holds focus");
+                cx.simulate_event(down);
+                settle(cx);
+                draw_count(cx, &app)
+            };
+            // A swatch chooses as the key comes up: only the frames the
+            // key-up itself draws, no settle.
+            cx.simulate_event(KeyUpEvent { keystroke });
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{key}: the choice closed the picker"
+            );
+            assert_eq!(focused_stop(cx), trigger, "{key}: focus is on the trigger");
+            assert_eq!(
+                draw_count(cx, &app),
+                draws + 1,
+                "{key}: the close drew one frame"
+            );
+            assert!(
+                whole_trigger_ring(cx).is_some(),
+                "{key}: that frame draws the trigger's ring"
+            );
+        }
+    }
+
+    /// The picker opened by a pointer press, its trigger clicked while
+    /// another row's trigger holds focus, gives focus back to the trigger it
+    /// was opened from as it closes (FU37-A's rule): Escape, or a swatch
+    /// chosen by the keyboard after the pointer opened it, draws that
+    /// trigger's ring whole, since a key shows it, and a swatch chosen by
+    /// the pointer, or the trigger pressed again, leaves it focused with no
+    /// ring. The press never focused the trigger, so focus went back to the
+    /// trigger that held it before (QA-110, found outside the checks, 1).
+    #[gpui::test]
+    fn a_picker_opened_by_the_pointer_gives_focus_back_to_its_trigger(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (form, _, first, _) = first_picker(cx, &app);
+        let kind = TokenKind::ALL[1];
+        let picker = cx.read(|cx| form.read(cx).row(kind).picker.clone());
+        let trigger = cx.read(|cx| picker.focus_handle(cx));
+        let selector: &'static str = format!("theme-token-picker-{}", kind.key()).leak();
+        for close in [
+            "escape",
+            "a swatch clicked",
+            "the trigger pressed again",
+            "tab, right, enter",
+        ] {
+            cx.update(|window, cx| first.focus(window, cx));
+            settle(cx);
+            click(cx, selector);
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{close}: the click opened the second row's picker"
+            );
+            if close == "escape" {
+                press(cx, "escape");
+            } else if close == "the trigger pressed again" {
+                click(cx, selector);
+            } else if close == "tab, right, enter" {
+                press(cx, "tab");
+                press(cx, "right");
+                assert!(in_popover(cx, &trigger), "{close}: a swatch holds focus");
+                press(cx, "enter");
+            } else {
+                // The featured row's first swatch, the theme's red.
+                let red =
+                    cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).red));
+                let swatch = painted_quads(cx)
+                    .into_iter()
+                    .find(|quad| {
+                        quad.background == red
+                            && (px(8.)..=px(30.)).contains(&quad.bounds.size.width)
+                            && (px(8.)..=px(30.)).contains(&quad.bounds.size.height)
+                    })
+                    .expect("the featured red swatch")
+                    .bounds;
+                cx.simulate_click(swatch.center(), Modifiers::default());
+                settle(cx);
+            }
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{close}: the picker closed"
+            );
+            assert_eq!(
+                focused_stop(cx),
+                trigger,
+                "{close}: focus is back on the trigger the picker was opened from"
+            );
+            let ring = whole_trigger_ring(cx);
+            if matches!(close, "escape" | "tab, right, enter") {
+                // The first 2 px accent outline drawn, which must be the
+                // clicked trigger's own.
+                let at = settings::shown(cx, selector).expect("the clicked trigger is drawn");
+                let ring =
+                    ring.unwrap_or_else(|| panic!("{close}: the trigger draws its ring whole"));
+                assert!(
+                    ring.contains(&at.center()) && at.dilate(px(1.)).contains(&ring.origin),
+                    "{close}: the ring {ring:?} lies on the clicked trigger {at:?}"
+                );
+            } else {
+                assert_eq!(ring, None, "{close}: a pointer close draws no ring");
+            }
+        }
+    }
+
+    /// How a test closes the open editor ([`close_editor`]).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Close {
+        /// A pointer press on Cancel.
+        CancelPress,
+        /// A pointer press on Save.
+        SavePress,
+        /// Escape.
+        Escape,
+        /// Space on Cancel, reached by Shift-Tab from Name.
+        SpaceOnCancel,
+        /// Return in Name.
+        ReturnInName,
+        /// Return on Save, reached by Tab from Name.
+        ReturnOnSave,
+        /// Space on Save, reached by Tab from Name.
+        SpaceOnSave,
+    }
+
+    impl Close {
+        /// A key closes the editor, so the control focus lands on draws its
+        /// ring.
+        fn by_key(self) -> bool {
+            !matches!(self, Close::CancelPress | Close::SavePress)
+        }
+
+        fn saves(self) -> bool {
+            matches!(
+                self,
+                Close::SavePress | Close::ReturnInName | Close::ReturnOnSave | Close::SpaceOnSave
+            )
+        }
+    }
+
+    /// Close the open editor by `close` and run `observe` right after the
+    /// first frame drawn after the close, which is the only frame the close
+    /// draws: Escape closes as its key goes down, Space on Cancel as its key
+    /// comes up and a press on Cancel as the pointer is released, and a
+    /// save, begun by Return as its key goes down, by Space on Save as its
+    /// key comes up or by a press on Save as the pointer is released, closes
+    /// as the store's answer is handled, the store held behind that answer
+    /// so the selection's save, which the answer submits, answers only
+    /// after `observe`. Then the rest of the input is delivered and the
+    /// store answers. Escape, the first key after the pointer, also draws
+    /// GPUI's frame for the input's turn to keys before the editor takes
+    /// it, which is not the close's ([`escape_reaching_the_editor`]). Each
+    /// press on Cancel or Save, a key's or the pointer's, finds the button
+    /// whole with its ring's room first ([`assert_whole_before_press`]).
+    fn close_editor<R>(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        close: Close,
+        observe: impl FnOnce(&mut VisualTestContext) -> R,
+    ) -> R {
+        let form = form(cx, app);
+        let key = |key: &str| Keystroke::parse(key).expect("a keystroke");
+        let down = |key: Keystroke| KeyDownEvent {
+            keystroke: key,
+            is_held: false,
+            prefer_character_input: false,
+        };
+        let name = cx.read(|cx| form.read(cx).name.read(cx).focus_handle(cx));
+        if close.by_key() {
+            // A pointer resting over the control the close reveals hovers it
+            // in the frame after, which the close does not draw.
+            mouse_away(cx);
+        }
+        if matches!(
+            close,
+            Close::ReturnInName | Close::SpaceOnCancel | Close::ReturnOnSave | Close::SpaceOnSave
+        ) {
+            cx.update(|window, cx| name.focus(window, cx));
+            settle(cx);
+        }
+        if matches!(close, Close::ReturnOnSave | Close::SpaceOnSave) {
+            // Forward through the dialog: Shift-Tab from Name, the dialog's
+            // first stop, wraps through the page behind it, and the toolkit's
+            // focus trap gives up after 100 stops there, which a page of 31
+            // saved themes holds.
+            let save = cx.read(|cx| form.read(cx).save_focus.clone());
+            for _ in 0..100 {
+                if cx.update(|window, cx| save.contains_focused(window, cx)) {
+                    break;
+                }
+                press(cx, "tab");
+            }
+            assert!(
+                cx.update(|window, cx| save.contains_focused(window, cx)),
+                "Tab from Name reaches Save"
+            );
+            assert_whole_before_press(cx, "theme-editor-save", close);
+        }
+        let held = close
+            .saves()
+            .then(|| cx.read(|cx| app.read(cx).preferences_writer.hold_reached()));
+        let mut draws = match close {
+            Close::CancelPress | Close::SavePress => {
+                let selector = if close == Close::CancelPress {
+                    "theme-editor-cancel"
+                } else {
+                    "theme-editor-save"
+                };
+                assert_whole_before_press(cx, selector, close);
+                let at = bounds(cx, selector.into()).center();
+                cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+                let draws = draw_count(cx, app);
+                cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+                draws
+            }
+            Close::Escape => escape_reaching_the_editor(cx, app),
+            Close::SpaceOnCancel => {
+                cx.simulate_keystrokes("shift-tab shift-tab");
+                settle(cx);
+                assert!(
+                    cx.update(|window, cx| form.read(cx).cancel_focus.contains_focused(window, cx)),
+                    "Shift-Tab twice from Name reaches Cancel"
+                );
+                assert_whole_before_press(cx, "theme-editor-cancel", close);
+                cx.simulate_event(down(key("space")));
+                let draws = draw_count(cx, app);
+                cx.simulate_event(KeyUpEvent {
+                    keystroke: key("space"),
+                });
+                draws
+            }
+            Close::ReturnInName | Close::ReturnOnSave | Close::SpaceOnSave => {
+                let key = key(if close == Close::SpaceOnSave {
+                    "space"
+                } else {
+                    "enter"
+                });
+                cx.simulate_event(down(key.clone()));
+                cx.simulate_event(KeyUpEvent { keystroke: key });
+                draw_count(cx, app)
+            }
+        };
+        let mut store = None;
+        if let Some(held) = held {
+            settle(cx);
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.save_pending()),
+                "{close:?}: the save waits for the store"
+            );
+            // A job queued behind the save holds the store once it has
+            // answered the save.
+            let (reached, answered) = std::sync::mpsc::channel::<()>();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let reply = cx.read(|cx| {
+                app.read(cx).preferences_writer.submit(move || {
+                    let _ = reached.send(());
+                    let _ = released.recv();
+                    anyhow::Ok(())
+                })
+            });
+            drop(held);
+            answered
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("the store answered the save");
+            draws = draw_count(cx, app);
+            cx.run_until_parked();
+            store = Some((release, reply));
+        }
+        assert!(
+            cx.read(|cx| app.read(cx).theme_editor.form.is_none()),
+            "{close:?} closed the editor"
+        );
+        assert_eq!(
+            draw_count(cx, app),
+            draws + 1,
+            "{close:?}: the close drew one frame"
+        );
+        let observed = observe(cx);
+        if close == Close::Escape {
+            cx.simulate_event(KeyUpEvent {
+                keystroke: key("escape"),
+            });
+        }
+        drop(store);
+        wait_for(cx, app, |cx| {
+            cx.read(|cx| !app.read(cx).theme_editor.save_pending())
+        });
+        observed
+    }
+
+    /// Escape's key-down with focus where the editor's open left it, after
+    /// the pointer moved away: the draws as the key reaches the window's
+    /// bindings, which the close's one frame follows. As the first key
+    /// after the pointer, Escape turns GPUI's input to keys, and GPUI
+    /// refreshes a window whose input changes so (`Window::dispatch_event`)
+    /// and draws a dirty window before it dispatches a key
+    /// (`Window::dispatch_key_event`): one frame of the still open editor is
+    /// drawn before the key reaches it. That frame is GPUI's, not the
+    /// close's, and natively it is never presented, since the close dirties
+    /// the window again before the next frame tick draws and presents. A
+    /// Tab to Base first, which turned the input to keys, once stood in for
+    /// this, so the editor's commonest close, Escape from Name after a
+    /// click on its opener, was never checked.
+    fn escape_reaching_the_editor(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
+        let reached: Rc<std::cell::Cell<Option<(usize, bool)>>> = Rc::default();
+        let before = draw_count(cx, app);
+        let _intercept = cx.update(|_, cx| {
+            let (reached, app) = (reached.clone(), app.clone());
+            cx.intercept_keystrokes(move |event, _, cx| {
+                if event.keystroke.key == "escape" && reached.get().is_none() {
+                    let app = app.read(cx);
+                    reached.set(Some((app.draws.len(), app.theme_editor.form.is_some())));
+                }
+            })
+        });
+        cx.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse("escape").expect("a keystroke"),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        let (draws, open) = reached.get().expect("Escape reached the window's bindings");
+        assert!(open, "the editor is open as Escape reaches it");
+        assert_eq!(
+            draws,
+            before + 1,
+            "GPUI drew the input's turn to keys once before Escape reached the editor"
+        );
+        draws
+    }
+
+    /// Before `close` presses the editor's `selector`, Cancel or Save: the
+    /// button with its ring's room lies inside the window and the alert's
+    /// clipped body, so the press lands on a button drawn whole, and for a
+    /// key's press its ring is drawn whole there. A press on Save's centre
+    /// at 18 pt in a 461 × 490 half tile once went unchecked against what
+    /// the footer showed.
+    fn assert_whole_before_press(cx: &mut VisualTestContext, selector: &'static str, close: Close) {
+        let (ring, footprint) = installed_ring(cx);
+        let button = bounds(cx, selector.into());
+        let window =
+            cx.update(|window, _| Bounds::new(point(px(0.), px(0.)), window.viewport_size()));
+        for (view, clip) in [("window", window), ("body", body_clip(cx))] {
+            assert!(
+                holds(clip, button.dilate(footprint)),
+                "{close:?}: {selector} with its ring's room {:?} lies inside the {view} {clip:?}",
+                button.dilate(footprint)
+            );
+        }
+        if close.by_key() {
+            let drawn = PaintedRing::around(&painted_quads(cx), button, footprint);
+            for (side, band) in drawn.edges(ring.width) {
+                assert!(
+                    drawn.shows(band),
+                    "{close:?}: {selector}'s ring's {side} edge {band:?} is drawn before the key"
+                );
+            }
+        }
+    }
+
+    /// Whether the last frame drew the installed Button focus ring around
+    /// `control`, within a device pixel.
+    fn button_ringed(cx: &mut VisualTestContext, control: Bounds<Pixels>) -> bool {
+        cx.update(|window, cx| rings_drawn(window, cx)(control))
+    }
+
+    /// What the last frame drew, kept to ask later whether it drew the
+    /// installed Button focus ring around a control, within a device pixel
+    /// ([`button_ringed`]), once a later frame has said where the control is.
+    fn rings_drawn(window: &Window, cx: &App) -> impl Fn(Bounds<Pixels>) -> bool + use<> {
+        let scale = window.scale_factor();
+        let setting = gpui_kit::component::Theme::global(cx).button_focus_ring;
+        let quads = window.painted_quads();
+        move |control| {
+            let footprint = control.dilate(setting.gap + setting.width);
+            quads.iter().any(|quad| {
+                let b = quad.bounds;
+                let near = |edge: f32, expected: Pixels| {
+                    (px(edge / scale) - expected).abs() <= px(1. / scale)
+                };
+                near(b.left().as_f32(), footprint.left())
+                    && near(b.top().as_f32(), footprint.top())
+                    && near(b.right().as_f32(), footprint.right())
+                    && near(b.bottom().as_f32(), footprint.bottom())
+                    && quad.border_widths.top.as_f32() == setting.width.as_f32() * scale
+            })
+        }
+    }
+
+    /// In the frame being observed, the Your themes control `selector`
+    /// holds focus through `expected` and lies whole with its ring's room on
+    /// all four sides in the Settings page, and in the list for a row's
+    /// action, its ring drawn for a key's close and not for a pointer's.
+    fn assert_focused_in_view(
+        cx: &mut VisualTestContext,
+        expected: &FocusHandle,
+        selector: String,
+        close: Close,
+        at: &str,
+    ) {
+        assert_eq!(
+            &focused_stop(cx),
+            expected,
+            "{at}, {close:?}: focus is on {selector}"
+        );
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        // From the observed frame itself: a frame that replayed the page
+        // leaves its selectors out, and drawing another frame to find one
+        // would check that frame instead.
+        let control = cx
+            .debug_bounds(selector.clone().leak())
+            .unwrap_or_else(|| panic!("{at}, {close:?}: the observed frame draws {selector}"));
+        let mut views = vec![bounds(cx, "settings-scroll".into())];
+        if selector.starts_with("edit-custom-theme") {
+            views.push(bounds(cx, "custom-themes-rows".into()));
+        }
+        for view in views {
+            assert!(
+                control.top() - ring >= view.top() - px(0.01)
+                    && control.bottom() + ring <= view.bottom() + px(0.01)
+                    && control.left() - ring >= view.left() - px(0.01)
+                    && control.right() + ring <= view.right() + px(0.01),
+                "{at}, {close:?}: {control:?} lies whole with its ring's room in {view:?}"
+            );
+        }
+        assert_eq!(
+            button_ringed(cx, control),
+            close.by_key(),
+            "{at}, {close:?}: {selector} draws its ring only after a key's close"
+        );
+    }
+
+    /// Closing the editor gives focus back to the control that opened it,
+    /// New theme… or the edited theme's Edit…, also after an edit's Save,
+    /// and the Settings page shows that control whole with its ring's room
+    /// in the first frame after the close, whatever closed the editor: a
+    /// pointer press on Save or Cancel, Escape, Space on Cancel or Return in
+    /// Name, with a pointer press having opened it and the window shrunk
+    /// meanwhile. A key's close draws the control's ring in that frame and
+    /// a pointer's leaves it focused without one (decided 2026-11-10). A
+    /// press on either opener focused nothing, so the close gave focus back
+    /// to the page's first control, Follow system appearance, scrolled out
+    /// of view (QA-110, found outside the checks, 5), and a pointer's close
+    /// drew the opener's ring as a key's did.
+    #[gpui::test]
+    fn closing_the_editor_gives_focus_back_to_its_opener_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
+        settle(cx);
+        for (opener, close) in [
+            ("custom-themes-new", Close::CancelPress),
+            ("custom-themes-new", Close::SpaceOnCancel),
+            ("edit-custom-theme-7", Close::CancelPress),
+            ("edit-custom-theme-7", Close::Escape),
+            ("edit-custom-theme-7", Close::SavePress),
+            ("edit-custom-theme-7", Close::ReturnInName),
+        ] {
+            cx.simulate_resize(size(px(1440.), px(2400.)));
+            settle(cx);
+            cx.update(|window, cx| {
+                // Settings opens with focus on its first control.
+                app.update(cx, |app, cx| app.show_settings(window, cx));
+            });
+            settle(cx);
+            let expected = cx.update(|_, cx| {
+                app.update(cx, |app, cx| match opener {
+                    "custom-themes-new" => app.page_focus("custom-themes-new", cx),
+                    _ => app.theme_editor.action_focus(7, 0, cx),
+                })
+            });
+            assert_ne!(
+                focused_stop(cx),
+                expected,
+                "{opener}: focus starts elsewhere"
+            );
+            click(cx, opener);
+            assert!(
+                cx.read(|cx| app.read(cx).theme_editor.form.is_some()),
+                "{opener}: the press opens the editor"
+            );
+            // The card lies below the fold of the shrunk window.
+            cx.simulate_resize(size(px(1000.), px(680.)));
+            settle(cx);
+            close_editor(cx, &app, close, |cx| {
+                assert_focused_in_view(cx, &expected, opener.into(), close, opener)
+            });
+        }
+    }
+
+    /// A new theme's Save gives focus to the saved theme's Edit…, not back
+    /// to New theme…: saving the 32nd theme disables New theme…
+    /// (`MAX_CUSTOM_THEMES`), and focus given back there was read as "New
+    /// theme…, button, grayed" (decided 2026-11-10). In the first frame
+    /// after the close the saved theme's enabled Edit…, named for it, holds
+    /// focus, its row scrolled into the list's view and the page's with its
+    /// ring's room on all four sides, by Return in Name and by Return or
+    /// Space on Save with its ring and by a pointer press on Save without
+    /// one, in a window shrunk while the editor was open: at 13 pt to
+    /// 1000 × 680 and at 18 pt to a 461 × 490 half tile. A pointer press on
+    /// New theme… opens the editor each time.
+    #[gpui::test]
+    fn a_new_themes_save_gives_focus_to_its_edit(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let cases = [
+            (13, size(px(1000.), px(680.))),
+            (18, size(px(461.), px(490.))),
+        ]
+        .into_iter()
+        .flat_map(|(text, viewport)| {
+            [
+                Close::ReturnInName,
+                Close::ReturnOnSave,
+                Close::SpaceOnSave,
+                Close::SavePress,
+            ]
+            .map(|close| (text, viewport, close))
+        });
+        for (text, viewport, close) in cases {
+            let at = format!(
+                "{text} pt in {} × {}",
+                f32::from(viewport.width),
+                f32::from(viewport.height)
+            );
+            let seeded = (1..MAX_CUSTOM_THEMES as u32)
+                .map(|n| CustomTheme::from_base(n, format!("Seed {n:02}"), ThemeChoice::Nord))
+                .collect();
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = text;
+                    app.set_custom_themes(seeded, cx)
+                });
+                appearance::apply_text_sizes(text, 12, window, cx);
+            });
+            cx.simulate_resize(size(px(1440.), px(2400.)));
+            settle(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .rows_scroll()
+                        .scroll_to_item(0, ScrollStrategy::Top);
+                    app.show_settings(window, cx)
+                })
+            });
+            settle(cx);
+            // At 18 pt the picker's 20 built-in and 31 custom cards take the
+            // Your themes card below the fold of the tall window: the
+            // pointer presses New theme… where the page, scrolled to it,
+            // shows it.
+            let page = bounds(cx, "settings-scroll".into());
+            let below = bounds(cx, "custom-themes-new".into()).bottom() - page.bottom();
+            if below > px(0.) {
+                cx.update(|_, cx| {
+                    app.update(cx, |app, cx| {
+                        let scroll = app.theme_editor.page_scroll();
+                        let y = scroll.offset().y - below - px(16.);
+                        scroll.set_offset(gpui::point(Pixels::ZERO, y));
+                        app.notify_settings_page(cx);
+                    })
+                });
+                settle(cx);
+            }
+            let new = bounds(cx, "custom-themes-new".into());
+            assert!(
+                new.top() >= page.top() && new.bottom() <= page.bottom(),
+                "{at}: New theme… {new:?} is in view in {page:?} to be pressed"
+            );
+            click(cx, "custom-themes-new");
+            let form = form(cx, &app);
+            let name = cx.read(|cx| form.read(cx).name.read(cx).value().to_string());
+            cx.simulate_resize(viewport);
+            settle(cx);
+            close_editor(cx, &app, close, |cx| {
+                let (id, saved, full, pending) = cx.read(|cx| {
+                    let app = app.read(cx);
+                    let saved = app.custom_themes.last().expect("a saved theme");
+                    (
+                        saved.id,
+                        saved.name.clone(),
+                        app.custom_themes.len() >= MAX_CUSTOM_THEMES,
+                        app.theme_editor.save_pending() || app.theme_editor.transfer_pending(),
+                    )
+                });
+                assert_eq!(saved, name, "{at}, {close:?}: the new theme is saved last");
+                assert!(full, "{at}, {close:?}: New theme… is disabled at the bound");
+                // Edit… is disabled only while a save or a transfer owns
+                // the card's actions.
+                assert!(!pending, "{at}, {close:?}: Edit… is enabled in that frame");
+                let edit = cx.read(|cx| app.read(cx).theme_editor.action_focus(id, 0, cx));
+                let selector = format!("edit-custom-theme-{id}");
+                assert_focused_in_view(cx, &edit, selector.clone(), close, &at);
+                let spoken = cx.read(|cx| {
+                    app.read(cx)
+                        .theme_action_names
+                        .borrow()
+                        .iter()
+                        .find(|(drawn, _)| *drawn == selector)
+                        .map(|(_, name)| name.clone())
+                });
+                assert_eq!(
+                    spoken,
+                    Some(format!("Edit {name} theme")),
+                    "{at}, {close:?}: the focused Edit… is named for the saved theme"
+                );
+            });
+        }
+    }
+
+    /// A Save the store refuses keeps the editor open, and a later Cancel
+    /// still gives focus back to New theme…, which opened it, in the first
+    /// frame after the close: only a new theme's successful Save gives it
+    /// to the saved theme's Edit….
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_failed_save_then_cancel_gives_focus_back_to_the_opener(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let expected =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus("custom-themes-new", cx)));
+        click(cx, "custom-themes-new");
+        let form = form(cx, &app);
+        refuse_a_save(cx, &app, &form);
+        assert!(cx.read(|cx| app.read(cx).custom_themes.is_empty()));
+        close_editor(cx, &app, Close::CancelPress, |cx| {
+            assert_focused_in_view(
+                cx,
+                &expected,
+                "custom-themes-new".into(),
+                Close::CancelPress,
+                "a failed save",
+            )
+        });
+    }
+
+    /// The open picker's controls are named by what they set (QA-110, found
+    /// outside the checks, 2): the popover, opened by Enter, by the colour
+    /// its trigger chooses, as the row's hex field is; its hex field "Hex
+    /// value", reading the digits it shows; and the HSLA tab's sliders by
+    /// the channel drawn before each, reading the digits drawn after it, in
+    /// degrees or percent. They were an unnamed dialog, an unnamed entry and
+    /// four unnamed sliders reading the picker's 0 to 1.
+    #[gpui::test]
+    fn the_open_pickers_controls_are_named_by_what_they_set(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, _, hex) = first_picker(cx, &app);
+        let label = TokenKind::ALL[0].label();
+        press(cx, "enter");
+        assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
+        let popover: &'static str = format!("popover: {label} color · Dialog").leak();
+        assert!(
+            settings::shown(cx, popover).is_some(),
+            "the popover is named {label} color"
+        );
+
+        press(cx, "tab");
+        press(cx, "tab");
+        assert_eq!(focused_stop(cx), hex, "the hex field holds focus");
+        // Its text reaches assistive technology as text runs, which the
+        // gpui-base input patch writes and tests.
+        let input = cx.read(|cx| picker.read(cx).hex_input().clone());
+        let node = crate::views::tests::input_node(cx, &input);
+        assert_eq!(node.role(), Role::TextInput);
+        assert_eq!(node.label(), Some("Hex value"));
+
+        cx.update(|_, cx| picker.update(cx, |state, cx| state.set_active_tab(1, cx)));
+        settle(cx);
+        let color = cx
+            .read(|cx| picker.read(cx).displayed_color())
+            .expect("the picker has a color");
+        for (name, share, most) in [
+            ("Hue", color.h, 360.),
+            ("Saturation", color.s, 100.),
+            ("Lightness", color.l, 100.),
+            ("Alpha", color.a, 100.),
+        ] {
+            let drawn = format!("{:.0}", share * most);
+            let slider: &'static str = format!("slider: {name} · {drawn} of 0 to {most}").leak();
+            assert!(
+                settings::shown(cx, slider).is_some(),
+                "the {name} slider reads {drawn}, the digits drawn after it"
+            );
+        }
+    }
+
+    /// The picker's trigger opens it on Enter only for a fresh press: Enter
+    /// in the popover's hex field commits and closes the picker with focus
+    /// on its trigger, and the key still held there, through GPUI's held
+    /// repeats or X11's fresh presses, reopens nothing; Enter on a swatch
+    /// chooses it as the key comes up, and the repeat whose release and
+    /// press a poll batch split, then X11's fresh presses, reopen nothing
+    /// either. Once the key has come up, a new press opens the picker. The
+    /// trigger's Enter toggled the picker on every key-down, so a held Enter
+    /// reopened the picker it had just closed (FU41-B's security review).
+    #[gpui::test]
+    fn a_held_enter_never_reopens_the_picker_it_closed(cx: &mut TestAppContext) {
+        fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        }
+        let (app, cx) = open_at_rest(cx);
+        let (_, picker, trigger, hex) = first_picker(cx, &app);
+        let closed_on_trigger = |cx: &mut VisualTestContext, step: &str| {
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{step}: the picker stays closed"
+            );
+            assert_eq!(focused_stop(cx), trigger, "{step}: focus is on the trigger");
+        };
+        for route in ["the hex field", "a swatch"] {
+            press(cx, "enter");
+            press(cx, "tab");
+            if route == "the hex field" {
+                press(cx, "tab");
+                assert_eq!(focused_stop(cx), hex, "Tab reached the hex field");
+                let input = cx.read(|cx| picker.read(cx).hex_input().clone());
+                cx.update(|window, cx| {
+                    input.update(cx, |input, cx| input.set_value("#3b82f6", window, cx))
+                });
+                settle(cx);
+                enter(cx, Some(false));
+                settle(cx);
+                closed_on_trigger(cx, "Enter in the hex field");
+            } else {
+                press(cx, "right");
+                assert!(in_popover(cx, &trigger), "a swatch holds focus");
+                enter(cx, Some(false));
+                settle(cx);
+                // The release chooses the swatch; its press, in the next
+                // batch, follows with no idle pass between them.
+                enter(cx, None);
+                enter(cx, Some(false));
+                settle(cx);
+                closed_on_trigger(cx, "a release and its press");
+            }
+            for (repeat, is_held) in [true, true, false, false, false].into_iter().enumerate() {
+                enter(cx, Some(is_held));
+                settle(cx);
+                closed_on_trigger(cx, &format!("{route}: repeat {repeat}, held {is_held}"));
+            }
+            enter(cx, None);
+            settle(cx);
+            closed_on_trigger(cx, &format!("{route}: the release"));
+            press(cx, "enter");
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{route}: a new press opens the picker"
+            );
+            press(cx, "escape");
+            closed_on_trigger(cx, &format!("{route}: Escape"));
+        }
+    }
+
+    /// Enter held on a row's picker trigger opens the picker as it goes down
+    /// and does nothing more until its key-up: GPUI's held repeats, X11's
+    /// fresh presses and a release with its press together leave it open
+    /// with focus inside it, and nothing is chosen. After the key-up a new
+    /// press inside the popover closes it onto its trigger. The popover's
+    /// own Enter binding took every key-down inside it, so the first held
+    /// repeat closed the picker the press had opened, and under X11 each
+    /// repeat toggled it (the FU41-B2 security re-check).
+    #[gpui::test]
+    fn a_held_enter_that_opened_the_picker_does_nothing_more(cx: &mut TestAppContext) {
+        fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+            let keystroke = Keystroke::parse("enter").expect("a keystroke");
+            let input = match down {
+                Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+            };
+            cx.update(|window, cx| window.dispatch_event(input, cx));
+        }
+        let (app, cx) = open_at_rest(cx);
+        let (form, picker, trigger, _) = first_picker(cx, &app);
+        let draft = cx.read(|cx| form.read(cx).draft);
+        let open_inside = |cx: &mut VisualTestContext, step: &str| {
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{step}: the picker stays open"
+            );
+            assert!(in_popover(cx, &trigger), "{step}: focus stays inside it");
+            assert_eq!(
+                cx.read(|cx| form.read(cx).draft),
+                draft,
+                "{step}: nothing is chosen"
+            );
+        };
+        enter(cx, Some(false));
+        settle(cx);
+        open_inside(cx, "the press");
+        for (repeat, is_held) in [true, true, false, false, false].into_iter().enumerate() {
+            enter(cx, Some(is_held));
+            settle(cx);
+            open_inside(cx, &format!("repeat {repeat}, held {is_held}"));
+        }
+        // A release and its press together, with no idle pass between.
+        enter(cx, None);
+        enter(cx, Some(false));
+        settle(cx);
+        open_inside(cx, "a release and its press");
+        enter(cx, None);
+        settle(cx);
+        open_inside(cx, "the release");
+        press(cx, "enter");
+        assert!(
+            !cx.read(|cx| picker.read(cx).is_open()),
+            "a new press inside the popover closes it"
+        );
+        assert_eq!(
+            focused_stop(cx),
+            trigger,
+            "the close gives focus to the trigger"
+        );
+        assert_eq!(cx.read(|cx| form.read(cx).draft), draft, "nothing chosen");
+    }
+
+    /// The picker's field shows the digits choosing a colour saves, and Enter
+    /// in the field with no edit saves that same value. The field truncated
+    /// each channel where the saved token rounds it, so Enter there saved a
+    /// colour a step below the one chosen, and each further Enter could step
+    /// it down again.
+    #[gpui::test]
+    fn the_pickers_field_shows_and_keeps_what_choosing_saves(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        let (form, picker, trigger, hex) = first_picker(cx, &app);
+        let kind = TokenKind::ALL[0];
+        let field = |cx: &mut VisualTestContext| {
+            cx.read(|cx| picker.read(cx).hex_input().read(cx).value().to_string())
+        };
+        let token = |cx: &mut VisualTestContext| cx.read(|cx| form.read(cx).draft.get(kind));
+        for (name, row, digits, saved) in [
+            ("Red 500", 2, "#EF4444", 0xEF4444_u32),
+            ("Blue 500", 7, "#3B82F6", 0x3B82F6_u32),
+        ] {
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            for key in ["up", "left"] {
+                for _ in 0..12 {
+                    press(cx, key);
+                }
+            }
+            for _ in 0..row {
+                press(cx, "down");
+            }
+            for _ in 0..5 {
+                press(cx, "right");
+            }
+            assert_eq!(field(cx), digits, "{name}: the field shows its value");
+
+            press(cx, "enter");
+            assert_eq!(token(cx), saved, "{name}: choosing saves its value");
+
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            press(cx, "tab");
+            assert_eq!(focused_stop(cx), hex, "{name}: Tab reaches the field");
+            assert_eq!(field(cx), digits, "{name}: the field shows what was saved");
+            press(cx, "enter");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{name}: Enter in the field closes the picker"
+            );
+            assert_eq!(
+                token(cx),
+                saved,
+                "{name}: Enter in the field with no edit keeps the value"
+            );
+        }
+    }
+
+    /// The open popover's surface: the smallest quad filled with its colour
+    /// that holds `inside`.
+    fn popover_surface(cx: &mut VisualTestContext, inside: Bounds<Pixels>) -> Bounds<Pixels> {
+        let surface =
+            cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).popover));
+        let area =
+            |bounds: &Bounds<Pixels>| f32::from(bounds.size.width) * f32::from(bounds.size.height);
+        painted_quads(cx)
+            .iter()
+            .filter(|quad| {
+                quad.background == surface
+                    && quad.bounds.left() <= inside.left()
+                    && quad.bounds.top() <= inside.top()
+                    && inside.right() <= quad.bounds.right()
+                    && inside.bottom() <= quad.bounds.bottom()
+            })
+            .map(|quad| quad.bounds)
+            .min_by(|a, b| area(a).total_cmp(&area(b)))
+            .expect("the popover's surface")
+    }
+
+    /// The focused swatch's ring as the last frame painted it, whole in the
+    /// popover and with nothing painted over it after it.
+    fn assert_swatch_ringed(cx: &mut VisualTestContext, at: &str) -> Bounds<Pixels> {
+        assert!(kit_ring_whole_in_popover(cx), "{at}: is ringed whole");
+        let (colour, width) = cx.read(|cx| {
+            let theme = gpui_kit::component::Theme::global(cx);
+            let ring = theme.button_focus_ring;
+            (theme.ring.alpha(ring.opacity), ring.width)
+        });
+        let ring = crate::focus_ring::painted_outlines(cx, colour)
+            .into_iter()
+            .find(|outline| outline.width == width)
+            .unwrap_or_else(|| panic!("{at}: draws its ring"));
+        assert_eq!(
+            crate::focus_ring::painted_over(cx, &ring),
+            Vec::new(),
+            "{at}: no neighbour paints over the ring"
+        );
+        ring.bounds
+    }
+
+    /// The focused swatch draws the kit's ring, whole, in the gaps around
+    /// it, at the smallest text the gaps would narrow at and at the largest,
+    /// as the first swatch reached by Tab and the swatch beside it. A focused
+    /// swatch drew nothing that marked it.
+    #[gpui::test]
+    fn a_focused_swatch_draws_the_kit_ring_whole(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|_, cx| ThemeChoice::Midnight.apply(None, cx));
+        let (_, picker, trigger, _) = first_picker(cx, &app);
+        for (text, viewport) in [
+            (11, size(px(1480.), px(973.))),
+            (13, size(px(1480.), px(973.))),
+            (18, size(px(1480.), px(973.))),
+            (18, size(px(461.), px(490.))),
+        ] {
+            let at = format!(
+                "{text} pt in {} × {}",
+                f32::from(viewport.width),
+                f32::from(viewport.height)
+            );
+            cx.simulate_resize(viewport);
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            settle(cx);
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            press(cx, "enter");
+            press(cx, "tab");
+            assert!(in_popover(cx, &trigger), "{at}: Tab enters the swatches");
+            let ring = assert_swatch_ringed(cx, &format!("{at}: the swatch Tab reaches"));
+            // The popover does not scroll, so it must fit between the
+            // window's margin and the status bar.
+            let surface = popover_surface(cx, ring);
+            assert!(
+                surface.top() >= gpui_kit::component::POPUP_WINDOW_MARGIN,
+                "{at}: {surface:?} starts inside the window's margin"
+            );
+            assert!(
+                surface.bottom() <= status_bar_top(cx),
+                "{at}: {surface:?} ends above the status bar"
+            );
+            // Along a row of shades: each gap is laid out to whole pixels
+            // on its own, and the swatch to the right paints after the ring.
+            press(cx, "down");
+            for column in 0..11 {
+                assert_swatch_ringed(cx, &format!("{at}: column {column}"));
+                press(cx, "right");
+            }
+            // The featured row's last column, then the bottom row, whose
+            // rings lie nearest the popover's padding.
+            press(cx, "up");
+            assert_swatch_ringed(cx, &format!("{at}: the featured row's last column"));
+            for _ in 0..9 {
+                press(cx, "down");
+            }
+            for column in (0..11).rev() {
+                assert_swatch_ringed(cx, &format!("{at}: bottom row, column {column}"));
+                press(cx, "left");
+            }
+            press(cx, "escape");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Escape closes the picker"
+            );
+        }
+    }
+
+    /// At 461 × 490, at 13 and 18 pt, the Base menu's twenty palettes and
+    /// their two headings are taller than the room above the status bar. Its
+    /// rows keep the height and spacing they have where the menu fits, in
+    /// 1440 × 1400, and it ends after its last whole palette, scrolling the
+    /// rest with its scrollbar shown. A capped menu once squeezed its rows.
+    #[gpui::test]
+    fn the_base_menu_keeps_its_rows_and_scrolls(cx: &mut TestAppContext) {
+        use crate::views::tests::{assert_menu_keeps_its_rows, draw, menu_rows};
+        let (app, cx) = open_at_rest(cx);
+        let mut labels = vec!["Light palettes"];
+        labels.extend(
+            ThemeChoice::ALL
+                .iter()
+                .filter(|it| it.is_light())
+                .map(|it| it.label()),
+        );
+        labels.push("Dark palettes");
+        labels.extend(
+            ThemeChoice::ALL
+                .iter()
+                .filter(|it| !it.is_light())
+                .map(|it| it.label()),
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        form(cx, &app);
+        let open = |cx: &mut VisualTestContext, viewport: Size<Pixels>| {
+            cx.simulate_resize(viewport);
+            next_frame(cx);
+            assert_at_rest(cx, "theme-editor-base");
+            click(cx, "theme-editor-base");
+            draw(cx);
+            menu_rows(cx, &labels)
+        };
+        let close = |cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(menu_rows(cx, &labels).is_empty(), "Escape closed the menu");
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let at = format!("{text} pt in 1440 × 1400");
+            let uncapped = open(cx, size(px(1440.), px(1400.)));
+            assert_eq!(uncapped.len(), labels.len(), "{at}: {uncapped:?}");
+            let (_, folded) = assert_menu_keeps_its_rows(cx, &at, &uncapped, &uncapped);
+            assert!(!folded, "{at}: every row fits");
+            close(cx);
+
+            let at = format!("{text} pt in 461 × 490");
+            let rows = open(cx, size(px(461.), px(490.)));
+            assert_eq!(rows.len(), labels.len(), "{at}: {rows:?}");
+            let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &uncapped);
+            assert!(folded, "{at}: rows lie past the menu's fold at {surface:?}");
+            close(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Rows and group labels keep their height inside the height-capped scroll
     /// column, Name matches the Base button, the hex field is seven characters
     /// wide, and the alert uses the window height down to its bottom margin so
     /// the footer stays on screen, stacked and wide.
     #[gpui::test]
     fn rows_keep_their_geometry_and_the_dialog_fills_the_window(cx: &mut TestAppContext) {
-        let (app, cx) = open_app(cx);
+        let (app, cx) = open_at_rest(cx);
         for (viewport, wide) in [
             (size(px(1000.), px(680.)), false),
             (size(px(1440.), px(900.)), true),
@@ -3753,17 +6552,7 @@ mod tests {
             let form = form(cx, &app);
             next_frame(cx);
             assert_eq!(cx.read(|cx| form.read(cx).wide), wide);
-            // The alert slides in over real time; measure once it has settled.
-            let mut last = bounds(cx, "theme-editor-save".into());
-            for _ in 0..100 {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                draw_once(cx);
-                let now = bounds(cx, "theme-editor-save".into());
-                if now == last {
-                    break;
-                }
-                last = now;
-            }
+            assert_at_rest(cx, "theme-editor-save");
             let row = appearance::ui_size(30.);
             for (index, group) in TokenGroup::ALL.into_iter().enumerate() {
                 let label = bounds(cx, format!("theme-group-{index}"));
@@ -3820,7 +6609,7 @@ mod tests {
 
             // The token column overflows at both sizes and shows an
             // always-visible scrollbar in a reserved track beside the rows.
-            let scroll = cx.read(|cx| form.read(cx).scroll.clone());
+            let scroll = cx.read(|cx| form.read(cx).column.scroll().clone());
             assert!(
                 scroll.max_offset().y > px(0.),
                 "the token column scrolls at {viewport:?}"
@@ -3894,38 +6683,53 @@ mod tests {
     }
 
     /// The status bar's top edge as the last frame painted it: the quad
-    /// across the window's full width at its foot with only a top rule. It is
-    /// [`STATUS_BAR_HEIGHT`] tall at the interface text size.
-    fn status_bar_top(cx: &mut VisualTestContext) -> Pixels {
+    /// across the window's full width at its foot with only a top rule,
+    /// compared in device pixels, where it ends on the drawable's last
+    /// column and row at every scale. The drawable is the window's size
+    /// rounded half away from zero, as the Linux backend sizes it, and the
+    /// window's content size is that over the scale
+    /// (`views::tests::simulate_window_at_scale`); laid out at a size that
+    /// falls on half a device pixel, the bar ended a device pixel short of
+    /// it. It is [`STATUS_BAR_HEIGHT`] tall at the interface text size, to
+    /// the device pixel.
+    pub(crate) fn status_bar_top(cx: &mut VisualTestContext) -> Pixels {
         cx.update(|window, _| {
             let scale = window.scale_factor();
-            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
-            let viewport = window.viewport_size();
+            let drawable = window.viewport_size().to_device_pixels(scale);
+            let (right, foot) = (
+                ScaledPixels::from(drawable.width),
+                ScaledPixels::from(drawable.height),
+            );
+            let none = ScaledPixels(0.);
             let mut bars: Vec<_> = window
                 .painted_quads()
                 .into_iter()
                 .filter(|quad| {
                     let widths = quad.border_widths;
-                    logical(widths.top) > px(0.)
+                    widths.top > none
                         && [widths.right, widths.bottom, widths.left]
                             .iter()
-                            .all(|width| logical(*width) == px(0.))
-                        && logical(quad.bounds.left()) == px(0.)
-                        && logical(quad.bounds.right()) == viewport.width
-                        && logical(quad.bounds.bottom()) == viewport.height
+                            .all(|width| *width == none)
+                        && quad.bounds.left() == none
+                        && quad.bounds.right() == right
+                        && quad.bounds.bottom() == foot
                 })
-                .map(|quad| logical(quad.bounds.top()))
+                .map(|quad| quad.bounds.top())
                 .collect();
             bars.dedup();
             let [top] = bars[..] else {
-                panic!("one status bar at the window's foot: {bars:?}")
+                panic!(
+                    "one status bar ending on the drawable's last column and row, \
+                     {drawable:?} at {scale}: {bars:?}"
+                )
             };
+            let tall = window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT));
             assert_eq!(
-                viewport.height - top,
-                window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT)),
-                "the status bar is STATUS_BAR_HEIGHT tall at the text size"
+                foot - top,
+                ScaledPixels((f32::from(tall) * scale).round()),
+                "the status bar is STATUS_BAR_HEIGHT tall at the text size, {tall:?} at {scale}"
             );
-            top
+            px(top.as_f32() / scale)
         })
     }
 
@@ -3956,7 +6760,7 @@ mod tests {
                 settle(cx);
                 let form = form(cx, &app);
                 next_frame(cx);
-                let scroll = cx.read(|cx| form.read(cx).scroll.clone());
+                let scroll = cx.read(|cx| form.read(cx).column.scroll().clone());
                 assert!(
                     scroll.max_offset().y > px(0.),
                     "the rows overflow at {text_size} pt in {viewport:?}"
@@ -4157,10 +6961,14 @@ mod tests {
     /// read-only app-data directory does natively, and settle on the error
     /// the refused save leaves beside Save.
     #[cfg(unix)]
-    fn refuse_a_save(cx: &mut VisualTestContext, form: &Entity<ThemeForm>) {
+    fn refuse_a_save(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        form: &Entity<ThemeForm>,
+    ) {
         let refused = ReadOnlyPreferences::new();
         click(cx, "theme-editor-save");
-        wait_for(cx, |cx| {
+        wait_for(cx, app, |cx| {
             cx.read(|cx| {
                 let form = form.read(cx);
                 !form.pending && form.error.is_some()
@@ -4207,7 +7015,7 @@ mod tests {
             );
             assert!(settings::shown(cx, "theme-editor-error").is_none());
 
-            refuse_a_save(cx, &form);
+            refuse_a_save(cx, &app, &form);
 
             let shown = bounds(cx, "theme-editor-error".into());
             let grown = bounds(cx, "theme-editor-footer".into());
@@ -4275,10 +7083,12 @@ mod tests {
     #[gpui::test]
     fn a_focused_footer_buttons_ring_lies_inside_the_body_in_every_state(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
-        cx.update(|window, cx| {
-            window.activate_window();
-            cx.set_reduce_motion(true);
-        });
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        // Set once the activation has settled: on macOS the window's
+        // activation reads the system's setting again
+        // (`native_accessibility::sync_preferences`), and the dialog slid in.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.simulate_resize(size(px(1000.), px(680.)));
         let (ring, footprint) = installed_ring(cx);
         for text_size in [13, 18] {
@@ -4299,7 +7109,7 @@ mod tests {
 
             for wrapped in [false, true] {
                 if wrapped {
-                    refuse_a_save(cx, &form);
+                    refuse_a_save(cx, &app, &form);
                     let shown = bounds(cx, "theme-editor-error".into());
                     assert!(
                         shown.size.height >= appearance::ui_text(12.) * 1.25 * 2.,
@@ -4422,14 +7232,14 @@ mod tests {
     /// the track goes again.
     #[gpui::test]
     fn the_side_column_shows_a_scrollbar_only_while_it_overflows(cx: &mut TestAppContext) {
-        let (app, cx) = open_app(cx);
+        let (app, cx) = open_at_rest(cx);
         cx.simulate_resize(size(px(1440.), px(900.)));
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
         settle(cx);
         let form = form(cx, &app);
         next_frame(cx);
         assert!(cx.read(|cx| form.read(cx).wide));
-        let side_scroll = cx.read(|cx| form.read(cx).side_scroll.clone());
+        let side_scroll = cx.read(|cx| form.read(cx).side.scroll().clone());
         let fits = |cx: &mut VisualTestContext| {
             let side = bounds(cx, "theme-editor-side".into());
             let preview = bounds(cx, "theme-editor-preview".into());
@@ -4449,12 +7259,12 @@ mod tests {
         for kind in TokenKind::ALL {
             gray.set(kind, 0x808080);
         }
-        // The alert slides in over real time; wait until it asks for no frame.
-        for _ in 0..100 {
+        // At rest (reduced motion), the alert asks for a frame only while the
+        // column lays its overflow out.
+        for _ in 0..3 {
             if next_frame(cx) == 0 {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(
             next_frame(cx),
@@ -4503,6 +7313,187 @@ mod tests {
             type_hex(cx, &form, kind, &custom::format_hex(original.get(kind)));
         }
         fits(cx);
+    }
+
+    /// Under reduce motion the editor's alert opens at rest: the first
+    /// frame draws it where it stays, and nothing asks for a frame once its
+    /// side column has laid itself out. GPUI's animation element gives a
+    /// oneshot its end at once under reduce motion, reading no clock.
+    #[gpui::test]
+    fn the_alert_opens_at_rest_under_reduce_motion(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        let opening = cx
+            .debug_bounds("theme-editor-save")
+            .expect("the update that opens the editor draws its alert");
+        for _ in 0..3 {
+            if next_frame(cx) == 0 {
+                break;
+            }
+        }
+        assert_eq!(next_frame(cx), 0, "nothing asks for a frame");
+        assert_eq!(
+            bounds(cx, "theme-editor-save".into()),
+            opening,
+            "the first frame draws the alert at rest"
+        );
+    }
+
+    /// Under default motion the editor's alert slides in and, once at rest,
+    /// asks for no frame while nothing changes: a slide-in that kept asking
+    /// would draw the window every frame for as long as the editor is open.
+    /// The slide-in reads the wall clock (GPUI's animation element), which
+    /// the test clock does not move, so the test lets real time pass its
+    /// duration once; only that lower bound matters. Where the first frame
+    /// drew it depends on how long that frame took, so the slide is checked
+    /// by its path alone: the kit's slide-down moves the alert from at most
+    /// a tenth of the window's height above its rest down to it, never
+    /// below. Comparing the first frame with the rest needed that frame
+    /// drawn within the 250 ms slide, and a loaded host's was not; the path
+    /// alone, though, passed an alert that never slid, so the alert must
+    /// also have moved wherever that frame came within 150 ms of the
+    /// editor's opening, short of its rest, as an idle host's does. Every
+    /// other editor test opens at rest ([`open_at_rest`]).
+    #[gpui::test]
+    fn the_alert_asks_for_no_frame_once_it_has_slid_in(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        assert!(!cx.update(|_, cx| cx.reduce_motion()), "default motion");
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        let started = std::time::Instant::now();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        // The alert's place in the frame a test build draws of the dirty
+        // window as the update that opens the editor ends, which the test
+        // compares with the place it rests at once the slide-in's duration
+        // has passed. Read from a draw after that one instead, on a host
+        // slower than the slide between the two, as one running the whole
+        // suite at once, it was the resting place already. A frame count
+        // could not tell: the editor's first layout asks for a frame of its
+        // own.
+        let opening = cx
+            .debug_bounds("theme-editor-save")
+            .expect("the update that opens the editor draws its alert");
+        // Read within 150 ms of the opening, that frame came before the
+        // alert could reach its rest: 85% of its way at 150 ms along the
+        // kit's curve. A loaded host's may come later.
+        let quick = started.elapsed() < std::time::Duration::from_millis(150);
+        std::thread::sleep(
+            *gpui_kit::component::dialog::ANIMATION_DURATION + std::time::Duration::from_millis(50),
+        );
+        // The frame that finds the slide-in over draws it at rest, and the
+        // side column may lay its content out once more.
+        for _ in 0..3 {
+            if next_frame(cx) == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            next_frame(cx),
+            0,
+            "the alert asks for no frame once it is at rest"
+        );
+        let rested = bounds(cx, "theme-editor-save".into());
+        let travel = rested.top() - opening.top();
+        assert!(
+            travel >= px(0.) && travel <= px(900. / 10.),
+            "the alert slides down into place from at most a tenth of the window above: from {opening:?} to {rested:?}"
+        );
+        if quick {
+            assert!(
+                travel > px(0.),
+                "drawn within 150 ms of opening, the alert had yet to slide: from {opening:?} to {rested:?}"
+            );
+        }
+    }
+
+    /// No readability warning is reachable wholly below the part of the side
+    /// column the window draws. The warnings sit in a group between the
+    /// column, which clips them, and themselves, and AccessKit compares a
+    /// child with its nearest clipping parent alone: with the group partly
+    /// drawn, or kept as the first node past the column's edge, every warning
+    /// in it stayed in the tree.
+    #[gpui::test]
+    fn warnings_past_the_side_column_are_out_of_reach(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Node, Rect};
+
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        cx.run_until_parked();
+        let form = form(cx, &app);
+        for kind in TokenKind::ALL {
+            type_hex(cx, &form, kind, "#808080");
+        }
+        let count = cx.read(|cx| form.read(cx).warnings.len());
+        written::forget();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+        let physical = |bounds: Bounds<Pixels>| Rect {
+            x0: f64::from(f32::from(bounds.left())) * scale,
+            y0: f64::from(f32::from(bounds.top())) * scale,
+            x1: f64::from(f32::from(bounds.right())) * scale,
+            y1: f64::from(f32::from(bounds.bottom())) * scale,
+        };
+        let window = physical(Bounds::new(
+            point(px(0.), px(0.)),
+            size(px(1440.), px(900.)),
+        ));
+        let meets = |a: Rect, b: Rect| !a.intersect(b).is_empty();
+        // The part of the column the window draws, from layout alone.
+        let column = physical(bounds(cx, "theme-editor-side".into())).intersect(window);
+        let warnings: Vec<Rect> = (0..count)
+            .map(|index| physical(bounds(cx, format!("theme-warning-{index}"))))
+            .collect();
+        assert!(
+            warnings.iter().any(|warning| !meets(*warning, column)),
+            "{count} warnings run past the column's visible bottom at {}",
+            column.y1
+        );
+        let mut tree = written::Assembly::default().written("theme-editor-warnings", None);
+        if !tree.has("theme-editor-warnings") {
+            // Without its wrapper the group is the node GPUI writes from
+            // layout, inside the column.
+            tree = tree.written("theme-editor-side", None);
+            let mut group = Node::new(Role::Group);
+            group.set_label("Readability warnings");
+            group.set_bounds(physical(bounds(cx, "theme-editor-warnings".into())));
+            tree = tree.node("theme-editor-warnings", group, Some("theme-editor-side"));
+        }
+        for (index, bounds) in warnings.iter().enumerate() {
+            let mut warning = Node::new(Role::Label);
+            warning.set_label(format!("warning {index}"));
+            warning.set_bounds(*bounds);
+            tree = tree.node(
+                &format!("theme-warning-{index}"),
+                warning,
+                Some("theme-editor-warnings"),
+            );
+        }
+        let found = reachable(tree.tree(window, None));
+        for (index, bounds) in warnings.iter().enumerate() {
+            let label = format!("warning {index}");
+            if meets(*bounds, column)
+                || !found.iter().any(|node| node.label.as_ref() == Some(&label))
+            {
+                continue;
+            }
+            // AccessKit keeps the first warning past the edge.
+            let neighbour = [index.checked_sub(1), Some(index + 1)]
+                .into_iter()
+                .flatten()
+                .filter_map(|other| warnings.get(other))
+                .any(|other| meets(*other, column));
+            assert!(
+                neighbour,
+                "{label} at {bounds:?} is reached, wholly below the column's visible bottom at {}",
+                column.y1
+            );
+        }
     }
 
     /// The Accent row carries the longest description. In the QA host's UI
@@ -4623,7 +7614,7 @@ mod tests {
             !key_frame(cx, "enter", |window, cx| window.has_active_dialog(cx)),
             "Return on Delete theme closes the alert"
         );
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 app.custom_themes.is_empty() && !app.theme_editor.save_pending()
@@ -4638,14 +7629,41 @@ mod tests {
         assert!(!settings::page_shows(cx, "delete-custom-theme-7"));
     }
 
-    /// Delete the active Harbor with the keyboard, the store answering before
-    /// the next frame or only after three native frames have drawn the row's
-    /// actions disabled and run the modal focus repair. Either way Space then
-    /// opens New theme…, also after the repair's delayed recheck.
-    fn delete_then_space_opens_new_theme(cx: &mut TestAppContext, late_reply: bool) {
+    /// How a test confirms the delete alert's Delete theme, which Tab
+    /// reaches from Cancel ([`delete_then_space_opens_new_theme`]).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Confirm {
+        Return,
+        Space,
+        /// A pointer press on Delete theme, which Tab did not reach.
+        Pointer,
+    }
+
+    /// Delete the active Harbor through its alert opened by Space on
+    /// Delete…, confirmed by `confirm`, the store answering before the next
+    /// frame or only after three native frames have drawn the row's actions
+    /// disabled and run the modal focus repair. Either way the frame that
+    /// first gives New theme… focus draws its ring after a key's confirm and
+    /// none after a pointer's, as the shared ring does on every button of
+    /// the card (decided 2026-11-10), and Space then opens New theme…, also
+    /// once time has passed after the alert closed, since nothing returns
+    /// focus later.
+    fn delete_then_space_opens_new_theme(
+        cx: &mut TestAppContext,
+        late_reply: bool,
+        confirm: Confirm,
+    ) {
         let (app, cx) = open_app(cx);
+        if confirm == Confirm::Pointer {
+            // The alert slides in on a wall-clock animation: at rest, Delete
+            // theme is where the press lands.
+            cx.update(|_, cx| cx.set_reduce_motion(true));
+        }
         cx.update(|window, _| window.activate_window());
         with_active_harbor(cx, &app);
+        mouse_away(cx);
+        let new_focus =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus("custom-themes-new", cx)));
         // A job queued ahead of the delete holds the serialized writer.
         let release = late_reply.then(|| {
             let (release, hold) = std::sync::mpsc::channel::<()>();
@@ -4658,8 +7676,54 @@ mod tests {
             release
         });
         open_delete_alert(cx, &app);
-        key_frame(cx, "tab", |_, _| ());
-        assert!(!key_frame(cx, "enter", |window, cx| window.has_active_dialog(cx)));
+        let open = match confirm {
+            Confirm::Return | Confirm::Space => {
+                key_frame(cx, "tab", |_, _| ());
+                let key = if confirm == Confirm::Return {
+                    "enter"
+                } else {
+                    "space"
+                };
+                key_frame(cx, key, |window, cx| window.has_active_dialog(cx))
+            }
+            Confirm::Pointer => {
+                let at = cx
+                    .debug_bounds("delete-theme-confirm")
+                    .expect("the alert draws Delete theme")
+                    .center();
+                // As native input, as `key_frames` delivers a key: the press,
+                // the frame after it, the release, the frame after that.
+                let open = cx.update(|window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseDown(MouseDownEvent {
+                            position: at,
+                            modifiers: Modifiers::default(),
+                            button: MouseButton::Left,
+                            click_count: 1,
+                            first_mouse: false,
+                        }),
+                        cx,
+                    );
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    window.dispatch_event(
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            position: at,
+                            modifiers: Modifiers::default(),
+                            button: MouseButton::Left,
+                            click_count: 1,
+                        }),
+                        cx,
+                    );
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    window.has_active_dialog(cx)
+                });
+                cx.run_until_parked();
+                open
+            }
+        };
+        assert!(!open, "{confirm:?} on Delete theme closes the alert");
         if let Some(release) = release {
             for _ in 0..3 {
                 native_frame(cx);
@@ -4670,16 +7734,35 @@ mod tests {
             );
             release.send(()).expect("the writer holds the job");
         }
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 app.custom_themes.is_empty() && !app.theme_editor.save_pending()
             })
         });
-        // The first frame draws the card without the row; the next moves focus.
+        // The first frame draws the card without the row; the next moves focus
+        // and draws it there, read before anything draws again.
         native_frame(cx);
-        native_frame(cx);
-        // The modal focus repair rechecks 300 ms after the alert closed.
+        let ringed_around = cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+            rings_drawn(window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            focused_stop(cx),
+            new_focus,
+            "{confirm:?}: New theme… holds focus"
+        );
+        // Where New theme… stands once the row's theme has left the picker
+        // above the card, as in that frame.
+        let new_theme = bounds(cx, "custom-themes-new".into());
+        assert_eq!(
+            ringed_around(new_theme),
+            confirm != Confirm::Pointer,
+            "{confirm:?}: New theme… draws its ring in that frame only after a key's confirm"
+        );
+        // Time passes after the alert closed; nothing moves focus later.
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(400));
         cx.run_until_parked();
@@ -4695,14 +7778,486 @@ mod tests {
     fn after_a_delete_answered_before_the_next_frame_focus_is_on_new_theme(
         cx: &mut TestAppContext,
     ) {
-        delete_then_space_opens_new_theme(cx, false);
+        delete_then_space_opens_new_theme(cx, false, Confirm::Return);
     }
 
     #[gpui::test]
     fn after_a_delete_answered_after_the_modal_focus_repair_focus_is_on_new_theme(
         cx: &mut TestAppContext,
     ) {
-        delete_then_space_opens_new_theme(cx, true);
+        delete_then_space_opens_new_theme(cx, true, Confirm::Return);
+    }
+
+    #[gpui::test]
+    fn after_a_delete_confirmed_by_space_new_theme_is_ringed(cx: &mut TestAppContext) {
+        delete_then_space_opens_new_theme(cx, false, Confirm::Space);
+    }
+
+    #[gpui::test]
+    fn after_a_pointer_delete_new_theme_is_focused_without_a_ring(cx: &mut TestAppContext) {
+        delete_then_space_opens_new_theme(cx, false, Confirm::Pointer);
+    }
+
+    #[gpui::test]
+    fn after_a_pointer_delete_answered_late_new_theme_is_focused_without_a_ring(
+        cx: &mut TestAppContext,
+    ) {
+        delete_then_space_opens_new_theme(cx, true, Confirm::Pointer);
+    }
+
+    /// Every button on the Your themes card draws its ring from the shared
+    /// keyboard ring, as the colour picker's trigger does: a key shows it,
+    /// a pointer press ends it, so one card has one rule (decided
+    /// 2026-11-10). Space on Delete… and a pointer press on its alert's
+    /// Cancel gave focus back to Delete… ringed, while the same on Edit…
+    /// gave it back unringed: Import…, Export… and Delete… drew the
+    /// toolkit's ring on any focus. Here each button, reached by Tab, draws
+    /// its ring; New theme…, Edit… and Delete…, opened by Space and closed
+    /// by a pointer press on Cancel, hold focus without one. Export… and
+    /// Import… open the desktop's file chooser, which no press in the
+    /// window closes: cancelled after Space, focus is back on the button
+    /// ringed, and after a pointer press on the button that opened it,
+    /// without a ring.
+    #[gpui::test]
+    fn every_your_themes_button_rings_for_keyboard_focus_only(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
+        settle(cx);
+        mouse_away(cx);
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        // In Tab order from the card.
+        let buttons = [
+            "custom-themes-new",
+            "custom-themes-import",
+            "edit-custom-theme-7",
+            "export-custom-theme-7",
+            "delete-custom-theme-7",
+        ];
+        // The button `selector` holds focus, its ring drawn or not.
+        let assert_focus = |cx: &mut VisualTestContext, stop: usize, ringed: bool, at: &str| {
+            let selector = buttons[stop];
+            let handle = cx.update(|_, cx| {
+                app.update(cx, |app, cx| match stop {
+                    0 | 1 => app.page_focus(selector, cx),
+                    n => app.theme_editor.action_focus(7, n - 2, cx),
+                })
+            });
+            assert_eq!(focused_stop(cx), handle, "{at}: {selector} holds focus");
+            let control = bounds(cx, selector.into());
+            assert_eq!(
+                button_ringed(cx, control),
+                ringed,
+                "{at}: {selector} draws its ring only after a key"
+            );
+        };
+        let answer_chooser = |cx: &mut VisualTestContext, stop: usize| {
+            if stop == 1 {
+                cx.simulate_path_prompt_response(|_| None);
+            } else {
+                cx.simulate_new_path_selection(|_| None);
+            }
+            finish_transfer(cx, &app);
+            assert!(!cx.read(|cx| app.read(cx).theme_transfer_busy()));
+        };
+        for (stop, selector) in buttons.into_iter().enumerate() {
+            cx.update(|window, cx| card.focus(window, cx));
+            settle(cx);
+            for _ in 0..=stop {
+                press(cx, "tab");
+            }
+            assert_focus(cx, stop, true, "Tab");
+            press(cx, "space");
+            match stop {
+                0 | 2 => {
+                    assert!(
+                        cx.read(|cx| app.read(cx).theme_editor.form.is_some()),
+                        "Space on {selector} opens the editor"
+                    );
+                    click(cx, "theme-editor-cancel");
+                    assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
+                }
+                4 => {
+                    assert!(
+                        cx.update(|window, cx| window.has_active_dialog(cx)),
+                        "Space on Delete… opens its alert"
+                    );
+                    click(cx, "delete-theme-cancel");
+                    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+                }
+                _ => {
+                    assert!(
+                        cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                        "Space on {selector} opens the file chooser"
+                    );
+                    answer_chooser(cx, stop);
+                    assert_focus(cx, stop, true, "the chooser Space opened, cancelled");
+                    click(cx, selector);
+                    assert!(
+                        cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                        "a press on {selector} opens the file chooser"
+                    );
+                    answer_chooser(cx, stop);
+                }
+            }
+            mouse_away(cx);
+            assert_focus(cx, stop, false, "after a pointer press");
+        }
+    }
+
+    /// How a test presses one of the Your themes card's buttons.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum CardPress {
+        /// Space, with the button reached by Tab from the card.
+        Space,
+        /// A pointer press, with focus on another control.
+        Pointer,
+    }
+
+    /// Focus stays where the person acted (decided 2026-11-12): Export… and
+    /// Import… hold focus through the desktop's file chooser and after the
+    /// export or import it starts has finished, written or imported, or
+    /// failed, a refused document's import here, as a dialog's close gives
+    /// focus back to its opener. The button draws its
+    /// ring there after Space, and after a pointer press holds focus
+    /// without one, which the chooser's own keys leave so, since the window
+    /// never sees them. The page does not move for it: the button was
+    /// whole where it was pressed. A pointer press focused neither, so
+    /// focus stayed on the page's first control, Follow system appearance,
+    /// out of view.
+    #[gpui::test]
+    fn a_finished_export_or_import_gives_focus_back_to_its_button(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| app.update(cx, |app, cx| app.set_custom_themes(vec![harbor], cx)));
+        settle(cx);
+        mouse_away(cx);
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        let fixture = tempfile::tempdir().unwrap();
+        let document = fixture.path().join("harbor.gitturtle-theme.json");
+        let refused = fixture.path().join("broken.gitturtle-theme.json");
+        std::fs::write(&refused, b"{").unwrap();
+        // The export writes the document each import reads; the last two
+        // imports read a document that is not a theme.
+        for (selector, press_by, fails) in [
+            ("export-custom-theme-7", CardPress::Space, false),
+            ("export-custom-theme-7", CardPress::Pointer, false),
+            ("custom-themes-import", CardPress::Space, false),
+            ("custom-themes-import", CardPress::Pointer, false),
+            ("custom-themes-import", CardPress::Space, true),
+            ("custom-themes-import", CardPress::Pointer, true),
+        ] {
+            let at = format!("{selector}, {press_by:?}, failing {fails}");
+            let export = selector.starts_with("export");
+            // Settings opens with focus on its first control.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            settle(cx);
+            let button = cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    if export {
+                        app.theme_editor.action_focus(7, 1, cx)
+                    } else {
+                        app.page_focus(selector, cx)
+                    }
+                })
+            });
+            assert_ne!(focused_stop(cx), button, "{at}: focus starts elsewhere");
+            match press_by {
+                CardPress::Space => {
+                    cx.update(|window, cx| card.focus(window, cx));
+                    settle(cx);
+                    // Import… is the card's second stop, Export… its fourth.
+                    for _ in 0..if export { 4 } else { 2 } {
+                        press(cx, "tab");
+                    }
+                    assert_eq!(focused_stop(cx), button, "{at}: Tab reaches it");
+                    press(cx, "space");
+                }
+                CardPress::Pointer => click(cx, selector),
+            }
+            assert!(
+                cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                "{at}: the press opens the file chooser"
+            );
+            let offset = cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset());
+            let chosen = if fails {
+                refused.clone()
+            } else {
+                document.clone()
+            };
+            if export {
+                cx.simulate_new_path_selection(move |_| Some(chosen));
+            } else {
+                cx.simulate_path_prompt_response(move |_| Some(vec![chosen]));
+            }
+            wait_for(cx, &app, |cx| {
+                !cx.read(|cx| app.read(cx).theme_transfer_busy())
+            });
+            let (notice, error, _) = transfer_result(cx, &app);
+            assert_eq!(error.is_some(), fails, "{at}: {error:?}");
+            assert_eq!(
+                notice.is_some(),
+                !fails,
+                "{at}: the card reports the finished transfer"
+            );
+            assert_eq!(focused_stop(cx), button, "{at}: the button holds focus");
+            let control = bounds(cx, selector.into());
+            assert_eq!(
+                button_ringed(cx, control),
+                press_by == CardPress::Space,
+                "{at}: draws its ring only after a key"
+            );
+            assert_eq!(
+                cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset()),
+                offset,
+                "{at}: the page stays where the press found it"
+            );
+        }
+    }
+
+    /// An import that fills the 32nd place disables Import…, and focus it
+    /// held goes to the imported theme's Edit…, as a new theme's 32nd Save
+    /// gives focus to the saved theme (decided 2026-11-14): ringed when a
+    /// key pressed Import…, without a ring after a pointer press, its row
+    /// scrolled into the list's view and the page's with its ring's room.
+    /// Focus stayed on the disabled Import…, which the next key could not
+    /// press and a screen reader read as unavailable.
+    #[gpui::test]
+    fn an_import_that_fills_the_last_place_gives_focus_to_the_imported_theme(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let fixture = tempfile::tempdir().unwrap();
+        let document = fixture.path().join("harbor.gitturtle-theme.json");
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        std::fs::write(&document, harbor.to_document()).unwrap();
+        let card = cx.update(|_, cx| app.read(cx).theme_editor.card_focus(cx));
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        for press_by in [CardPress::Space, CardPress::Pointer] {
+            let at = format!("{press_by:?}");
+            // 31 saved themes, so the import fills the last place, the list
+            // on its first rows; the imported row comes in as its last.
+            seed_themes(cx, &app, MAX_CUSTOM_THEMES as u32 - 1);
+            cx.simulate_resize(size(px(1440.), px(600.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.theme_editor
+                        .rows_scroll()
+                        .scroll_to_item(0, ScrollStrategy::Top);
+                    app.show_settings(window, cx)
+                })
+            });
+            settle(cx);
+            mouse_away(cx);
+            let import = cx.update(|_, cx| {
+                app.update(cx, |app, cx| app.page_focus("custom-themes-import", cx))
+            });
+            if press_by == CardPress::Space {
+                cx.update(|window, cx| card.focus(window, cx));
+                settle(cx);
+                // Import… is the card's second stop.
+                press(cx, "tab");
+                press(cx, "tab");
+                assert_eq!(focused_stop(cx), import, "{at}: Tab reaches Import…");
+            }
+            // Import… whole with its ring's room at the page's foot, so the
+            // list below it lies past the fold, as does the imported row
+            // the list brings in at its foot.
+            let page = bounds(cx, "settings-scroll".into());
+            let button = bounds(cx, "custom-themes-import".into());
+            cx.update(|window, cx| {
+                let scroll = app.read(cx).theme_editor.page_scroll();
+                let offset = scroll.offset();
+                let delta = page.bottom() - ring - button.bottom();
+                scroll.set_offset(point(offset.x, offset.y + delta));
+                window.refresh();
+            });
+            settle(cx);
+            let button = bounds(cx, "custom-themes-import".into());
+            assert!(
+                button.top() - ring >= page.top() - px(0.01)
+                    && button.bottom() + ring <= page.bottom() + px(0.01),
+                "{at}: Import… {button:?} is in view in {page:?} to be pressed"
+            );
+            let rows = bounds(cx, "custom-themes-rows".into());
+            assert!(
+                rows.bottom() - ring > page.bottom(),
+                "{at}: the list's foot {rows:?} lies past the page's {page:?}"
+            );
+            match press_by {
+                CardPress::Space => press(cx, "space"),
+                CardPress::Pointer => click(cx, "custom-themes-import"),
+            }
+            assert!(
+                cx.read(|cx| app.read(cx).theme_transfer_busy()),
+                "{at}: the press opens the file chooser"
+            );
+            let chosen = document.clone();
+            cx.simulate_path_prompt_response(move |_| Some(vec![chosen]));
+            wait_for(cx, &app, |cx| {
+                !cx.read(|cx| app.read(cx).theme_transfer_busy())
+            });
+            mouse_away(cx);
+            let (count, imported, error) = cx.read(|cx| {
+                let app = app.read(cx);
+                (
+                    app.custom_themes.len(),
+                    app.theme_editor.imported,
+                    app.theme_editor.error.clone(),
+                )
+            });
+            assert_eq!(error, None, "{at}");
+            assert_eq!(
+                count, MAX_CUSTOM_THEMES,
+                "{at}: the import fills the last place"
+            );
+            let id = imported.unwrap_or_else(|| panic!("{at}: the imported row is highlighted"));
+            let edit = cx.read(|cx| app.read(cx).theme_editor.action_focus(id, 0, cx));
+            assert_eq!(
+                focused_stop(cx),
+                edit,
+                "{at}: the imported theme's Edit… holds focus, not the disabled Import…"
+            );
+            let selector = format!("edit-custom-theme-{id}");
+            let control = bounds(cx, selector.clone());
+            for view in [
+                bounds(cx, "settings-scroll".into()),
+                bounds(cx, "custom-themes-rows".into()),
+            ] {
+                assert!(
+                    control.top() - ring >= view.top() - px(0.01)
+                        && control.bottom() + ring <= view.bottom() + px(0.01),
+                    "{at}: {selector} {control:?} lies whole with its ring's room in {view:?}"
+                );
+            }
+            assert_eq!(
+                button_ringed(cx, control),
+                press_by == CardPress::Space,
+                "{at}: {selector} draws its ring only after a key"
+            );
+        }
+    }
+
+    /// How a test closes the delete alert.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum AlertClose {
+        /// Escape.
+        Escape,
+        /// Return on Cancel, which the alert opens on.
+        ReturnOnCancel,
+        /// Space on Cancel, with its key-up, which the Button acts on.
+        SpaceOnCancel,
+        /// A pointer press on Cancel.
+        CancelPress,
+        /// Return on Delete theme, reached by Tab, the store refusing.
+        RefusedReturn,
+        /// A pointer press on Delete theme, the store refusing.
+        RefusedPress,
+    }
+
+    /// Delete… gets focus back once its alert closes and after a delete the
+    /// store refuses, as a dialog's close gives focus back to its opener
+    /// (decided 2026-11-12): a pointer press on it focuses it before the
+    /// alert opens, and the close, or the failure the card then reports at
+    /// its foot with the theme kept, leaves it focused, ringed when a key
+    /// closed the alert (Escape, Return or Space on Cancel, Return on Delete
+    /// theme), an alert the pointer opened included, and without a ring
+    /// after a pointer press on Cancel or Delete theme. Opened by a press,
+    /// the alert gave focus back to the page's first control, Follow system
+    /// appearance, out of view.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn delete_gets_focus_back_after_its_alert_and_a_refused_delete(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, _| window.activate_window());
+        let harbor = CustomTheme::from_base(7, "Harbor", ThemeChoice::Nord);
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.set_custom_themes(vec![harbor.clone()], cx)
+            })
+        });
+        settle(cx);
+        mouse_away(cx);
+        let delete = cx.read(|cx| app.read(cx).theme_editor.action_focus(7, 2, cx));
+        for (press_by, close) in [
+            (CardPress::Pointer, AlertClose::Escape),
+            (CardPress::Pointer, AlertClose::ReturnOnCancel),
+            (CardPress::Pointer, AlertClose::SpaceOnCancel),
+            (CardPress::Pointer, AlertClose::CancelPress),
+            (CardPress::Space, AlertClose::RefusedReturn),
+            (CardPress::Pointer, AlertClose::RefusedPress),
+        ] {
+            let at = format!("{press_by:?}, {close:?}");
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            settle(cx);
+            match press_by {
+                CardPress::Space => open_delete_alert(cx, &app),
+                CardPress::Pointer => {
+                    assert_ne!(focused_stop(cx), delete, "{at}: focus starts elsewhere");
+                    click(cx, "delete-custom-theme-7");
+                    // The next frame runs the alert's move to Cancel.
+                    native_frame(cx);
+                    mouse_away(cx);
+                }
+            }
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: the alert is open"
+            );
+            let refused = matches!(close, AlertClose::RefusedReturn | AlertClose::RefusedPress)
+                .then(ReadOnlyPreferences::new);
+            match close {
+                AlertClose::Escape => press(cx, "escape"),
+                AlertClose::ReturnOnCancel => press(cx, "enter"),
+                AlertClose::SpaceOnCancel => press(cx, "space"),
+                AlertClose::CancelPress => click(cx, "delete-theme-cancel"),
+                AlertClose::RefusedReturn => {
+                    press(cx, "tab");
+                    press(cx, "enter");
+                }
+                AlertClose::RefusedPress => click(cx, "delete-theme-confirm"),
+            }
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: the alert closed"
+            );
+            wait_for(cx, &app, |cx| {
+                !cx.read(|cx| app.read(cx).theme_editor.save_pending())
+            });
+            drop(refused);
+            mouse_away(cx);
+            let error = cx.read(|cx| app.read(cx).theme_editor.error.clone());
+            if matches!(close, AlertClose::RefusedReturn | AlertClose::RefusedPress) {
+                let error = error.unwrap_or_else(|| panic!("{at}: the card reports the failure"));
+                assert!(
+                    error.starts_with("Could not delete the theme: "),
+                    "{at}: {error}"
+                );
+            } else {
+                assert_eq!(error, None, "{at}");
+            }
+            assert_eq!(
+                cx.read(|cx| app.read(cx).custom_themes.clone()),
+                vec![harbor.clone()],
+                "{at}: the theme is kept"
+            );
+            assert_eq!(focused_stop(cx), delete, "{at}: Delete… holds focus");
+            let control = bounds(cx, "delete-custom-theme-7".into());
+            assert_eq!(
+                button_ringed(cx, control),
+                matches!(
+                    close,
+                    AlertClose::Escape
+                        | AlertClose::ReturnOnCancel
+                        | AlertClose::SpaceOnCancel
+                        | AlertClose::RefusedReturn
+                ),
+                "{at}: Delete… draws its ring only after a key's close"
+            );
+        }
     }
 
     /// The card's current export or import result.
@@ -4727,15 +8282,27 @@ mod tests {
         cx: &mut VisualTestContext,
         app: &Entity<GitTurtle>,
     ) -> std::sync::mpsc::Sender<()> {
+        hold_preference_executor_reached(cx, app).0
+    }
+
+    /// [`hold_preference_executor`], and a receiver that answers once the
+    /// writer starts the hold: the executor is serialized, so every job
+    /// submitted before the hold has then answered.
+    fn hold_preference_executor_reached(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
         let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (started, reached) = std::sync::mpsc::channel::<()>();
         let _reply = cx.read(|cx| {
             app.read(cx).preferences_writer.submit(move || {
+                let _ = started.send(());
                 let _ = wait.recv();
                 Ok(())
             })
         });
         settle(cx);
-        release
+        (release, reached)
     }
 
     /// While `hold` occupies the preference executor, the transfer reports
@@ -5328,6 +8895,11 @@ mod tests {
         let (app, cx) = open_app(cx);
         cx.update(|window, _| window.activate_window());
         settle(cx);
+        // The editor dialog otherwise slides in on the wall clock, its Save
+        // moving between the bounds read and the press. Set once the
+        // activation has settled: on macOS the window's activation reads
+        // the system's setting again (`native_accessibility::sync_preferences`).
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         seed_themes(cx, &app, 2);
 
         // A Settings theme switch. The first save also writes the status line,
@@ -5510,7 +9082,7 @@ mod tests {
         let _ = drawn(cx, &app);
         let changes_before = custom_palette_changes(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 !app.theme_editor.save_pending() && app.theme_editor.form.is_none()
@@ -6910,6 +10482,50 @@ mod tests {
     /// (a boundary, so no strip), a reveal that fits moves nothing, a page
     /// scroll afterwards is left alone, and Settings entered again starts at
     /// its top.
+    /// Page Down, Page Up, End and Home scroll Settings from the focus the
+    /// page opens with, and the page is drawn at its new offset; a focused
+    /// text field keeps the keys for its caret.
+    #[gpui::test]
+    fn page_keys_scroll_the_settings_page(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle(cx);
+        let offset = |cx: &mut VisualTestContext| {
+            cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset().y)
+        };
+        let picker = |cx: &mut VisualTestContext| bounds(cx, "settings-theme-picker".into()).top();
+        assert_eq!(offset(cx), Pixels::ZERO);
+        let resting = picker(cx);
+        cx.simulate_keystrokes("pagedown");
+        settle(cx);
+        let paged = offset(cx);
+        assert!(paged < Pixels::ZERO, "Page Down scrolled nothing");
+        assert_eq!(
+            picker(cx),
+            resting + paged,
+            "the page was not drawn at its offset"
+        );
+        cx.simulate_keystrokes("end");
+        settle(cx);
+        let bottom = -cx.read(|cx| app.read(cx).theme_editor.page_scroll().max_offset().y);
+        assert_eq!(offset(cx), bottom);
+        cx.simulate_keystrokes("pageup");
+        settle(cx);
+        assert!(offset(cx) > bottom);
+        cx.simulate_keystrokes("home");
+        settle(cx);
+        assert_eq!(offset(cx), Pixels::ZERO);
+        assert_eq!(picker(cx), resting);
+        cx.update(|window, cx| {
+            let input = app.read(cx).identity_name.focus_handle(cx);
+            window.focus(&input, cx);
+        });
+        cx.simulate_keystrokes("pagedown end");
+        settle(cx);
+        assert_eq!(offset(cx), Pixels::ZERO, "a text field gave up its keys");
+    }
+
     #[gpui::test]
     fn a_revealed_row_keeps_its_ring_inside_the_settings_page(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
@@ -7261,7 +10877,7 @@ mod tests {
         );
         let _ = drawn(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        wait_without_drawing(cx, &app, |cx| !transfer_result(cx, &app).2);
         let (notice, error, _) = transfer_result(cx, &app);
         assert_eq!(error, None);
         assert!(notice.is_some_and(|notice| notice.contains("Harbor")));
@@ -7295,7 +10911,7 @@ mod tests {
         );
         let _ = drawn(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             let (notice, error, pending) = transfer_result(cx, &app);
             !pending
                 && (notice.is_some() || error.is_some())
@@ -7329,7 +10945,7 @@ mod tests {
         );
         let _ = drawn(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 !app.theme_editor.save_pending() && app.custom_themes.len() == 1
@@ -7443,6 +11059,13 @@ mod tests {
         let (app, cx) = open_app(cx);
         cx.update(|window, _| window.activate_window());
         settle(cx);
+        // The dialog otherwise slides in on the wall clock for 250 ms, and a
+        // frame that moves it gives every row new bounds, which builds all
+        // twenty-one: a run that reached these keys inside the slide counted
+        // those. Set once the activation has settled: the window's activation
+        // reads the system's setting again
+        // (`native_accessibility::sync_preferences`).
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         click(cx, "custom-themes-new");
         let form = form(cx, &app);
         next_frame(cx);
@@ -8034,7 +11657,7 @@ mod tests {
         settle(cx);
         let page = page_renders(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        wait_without_drawing(cx, &app, |cx| !transfer_result(cx, &app).2);
         assert_eq!(
             page_renders(cx, &app),
             page + 1,
@@ -8065,10 +11688,15 @@ mod tests {
             move |_| Some(vec![chosen])
         });
         cx.run_until_parked();
-        let hold_save = hold_preference_executor(cx, &app);
+        let (hold_save, save_held) = hold_preference_executor_reached(cx, &app);
         let page = page_renders(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        // The read was queued before the hold that keeps its save waiting, so
+        // it has answered once the writer reaches that hold; draining instead
+        // would wait behind the hold.
+        save_held.recv().expect("the writer reaches the hold");
+        cx.run_until_parked();
+        assert!(!transfer_result(cx, &app).2, "the read answered");
         assert!(
             cx.read(|cx| app.read(cx).theme_editor.save_pending()),
             "the parsed document's save waits for the store"
@@ -8080,7 +11708,7 @@ mod tests {
         );
         let page = page_renders(cx, &app);
         drop(hold_save);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             !cx.read(|cx| app.read(cx).theme_editor.save_pending())
         });
         assert_eq!(
@@ -8109,7 +11737,7 @@ mod tests {
         );
         assert!(cx.read(|cx| app.read(cx).theme_editor.save_pending()));
         drop(hold);
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             !cx.read(|cx| app.read(cx).theme_editor.save_pending())
         });
         assert!(
@@ -8117,9 +11745,9 @@ mod tests {
             "the saved theme closes the editor"
         );
 
-        // A confirmed delete of the first row, Harbor. The alert's close
-        // restores focus over the next frames and a 300 ms recheck; those pass
-        // before the store answers.
+        // A confirmed delete of the first row, Harbor. The alert gives focus
+        // back as it closes and the window repairs it in the next frame;
+        // those frames, and time after them, pass before the store answers.
         let rows = cx.read(|cx| app.read(cx).custom_themes.len());
         let hold = hold_preference_executor(cx, &app);
         open_delete_alert(cx, &app);
@@ -8137,7 +11765,7 @@ mod tests {
         settle(cx);
         let page = page_renders(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             !cx.read(|cx| app.read(cx).theme_editor.save_pending())
         });
         assert_eq!(cx.read(|cx| app.read(cx).custom_themes.len()), rows - 1);

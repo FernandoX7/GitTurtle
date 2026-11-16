@@ -22,7 +22,10 @@ fn channel() -> (Signal, mpsc::Receiver<()>) {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn subscribe(cx: &mut gpui::Context<crate::GitTurtle>) -> gpui::Task<()> {
+pub(super) fn subscribe(
+    window: &gpui::Window,
+    cx: &mut gpui::Context<crate::GitTurtle>,
+) -> gpui::Task<()> {
     use block2::RcBlock;
     use futures::StreamExt;
     use objc2::{rc::Retained, runtime::ProtocolObject};
@@ -60,15 +63,17 @@ pub(super) fn subscribe(cx: &mut gpui::Context<crate::GitTurtle>) -> gpui::Task<
         )
     };
     let observer = Observer { center, token };
-    cx.spawn(async move |view, cx| {
+    cx.spawn_in(window, async move |view, cx| {
         let _observer = observer;
         while changes.next().await.is_some() {
             // Reading current values here coalesces rapid ON/OFF transitions.
             // Never update GPUI synchronously inside a Cocoa notification.
+            // Resolved with the person's choices, a change of Increase
+            // Contrast applies the window's theme again, once.
             if view
-                .update(cx, |view, cx| {
+                .update_in(cx, |view, window, cx| {
                     super::sync_preferences(cx);
-                    view.apply_motion_preferences(cx);
+                    view.show_display_preferences(None, window, cx);
                     cx.notify();
                 })
                 .is_err()

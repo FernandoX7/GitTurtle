@@ -1,0 +1,453 @@
+//! A list's or a pane's keyboard focus ring, kept while the pointer moves.
+//!
+//! GPUI's `focus_visible` styles a focused element only while the last input
+//! was a key, so merely moving the pointer took the ring off a list that kept
+//! keyboard focus. Here a key press shows the ring of whatever holds focus,
+//! and the ring stays whatever the pointer does until a pointer press, as GTK
+//! and browsers' `:focus-visible` behave: a click still focuses a list without
+//! marking it, and the next key marks it. Every element that draws its own
+//! focus asks [`FocusRing::shows`] rather than `focus_visible` or
+//! `last_input_was_keyboard`; the [`sweep`] tabs through every page and
+//! dialog and fails a stop that shows no whole ring.
+use crate::*;
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
+
+/// One window's keyboard focus ring, owned by its [`GitTurtle`]. A clone
+/// shares it, so a dialog built while the window draws, which cannot read its
+/// owner then, keeps one to ask.
+#[derive(Clone, Default)]
+pub(crate) struct FocusRing {
+    /// A key was pressed after the last pointer press. Shared with the
+    /// window's pointer-press listener, [`FocusRing::pointer_listener`].
+    keyboard: Rc<Cell<bool>>,
+    /// The focus whose ring the frame being built draws.
+    ringed: Rc<RefCell<Option<FocusHandle>>>,
+}
+
+impl FocusRing {
+    /// Reads, before a frame builds its lists and dialogs, which focus draws
+    /// its ring.
+    pub(crate) fn begin_frame(&self, window: &Window, cx: &App) {
+        // GPUI marks every key press as keyboard input and redraws the
+        // window when input turns from the pointer to keys, so a frame
+        // follows each press that shows the ring.
+        if window.last_input_was_keyboard() {
+            self.keyboard.set(true);
+        }
+        *self.ringed.borrow_mut() = self.keyboard.get().then(|| window.focused(cx)).flatten();
+    }
+
+    /// Marks the focus a page opens with, as a key press would, until the
+    /// next pointer press, so the control it lands on draws this ring even
+    /// when a click opened the page: Settings opens with focus on a theme
+    /// card where its Follow system switch is unavailable.
+    pub(crate) fn mark(&self, window: &mut Window) {
+        if !self.keyboard.replace(true) {
+            window.refresh();
+        }
+    }
+
+    /// Whether `focus` draws its keyboard ring this frame.
+    pub(crate) fn shows(&self, focus: &FocusHandle) -> bool {
+        self.ringed.borrow().as_ref() == Some(focus)
+    }
+
+    /// The ring a pane draws on its own edge while `focus`, inside it, shows
+    /// its ring: a 1 px outline in `color`, laid over the pane's content as
+    /// the pane's last child, so nothing in the pane moves for it and the
+    /// pane's own clip, if it has one, keeps it whole. The pane is
+    /// `relative`. A text pane whose editor draws no edge of its own, such as
+    /// Compare's, shows its focus this way.
+    pub(crate) fn edge(&self, focus: &FocusHandle, color: impl Into<Hsla>) -> Option<Div> {
+        self.shows(focus).then(|| {
+            div()
+                .absolute()
+                .inset_0()
+                .border_1()
+                .border_color(color.into())
+        })
+    }
+
+    /// An empty element whose paint ends the ring at any pointer press in the
+    /// window, over a dialog's backdrop included: GPUI calls a window's mouse
+    /// listeners for every press, whatever lies under the pointer.
+    pub(crate) fn pointer_listener(&self) -> impl IntoElement {
+        let keyboard = self.keyboard.clone();
+        canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                let keyboard = keyboard.clone();
+                window.on_mouse_event(move |_: &MouseDownEvent, phase, window, _| {
+                    if phase == DispatchPhase::Capture && keyboard.replace(false) {
+                        window.refresh();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_0()
+    }
+}
+
+/// A loading row's Cancel, which the row takes with it when the read it
+/// waits for answers or is cancelled. Focus left on it would rest on a control
+/// no frame draws: nothing would show focus, and keys would reach none of the
+/// dialog's bindings, so Escape no longer closed the dialog. The Cancel tracks
+/// [`LoadingCancel::handle`], and what takes the row away first hands focus
+/// the Cancel holds to a stop that stays, so the frame without the row draws
+/// that stop's ring. The Reflog, the worktree manager and the GitHub panel
+/// keep one each.
+#[derive(Clone)]
+pub(crate) struct LoadingCancel(FocusHandle);
+
+impl LoadingCancel {
+    pub(crate) fn new(cx: &mut App) -> Self {
+        Self(cx.focus_handle())
+    }
+
+    /// The handle the Cancel tracks (`Button::track_focus`).
+    pub(crate) fn handle(&self) -> &FocusHandle {
+        &self.0
+    }
+
+    /// Whether the Cancel holds focus, which taking its row away would
+    /// strand.
+    pub(crate) fn holds_focus(&self, window: &Window) -> bool {
+        self.0.is_focused(window)
+    }
+
+    /// Moves focus the Cancel holds to `to`, a stop that stays drawn once the
+    /// row has gone; focus anywhere else stays where it is.
+    pub(crate) fn release_to(&self, to: &FocusHandle, window: &mut Window, cx: &mut App) {
+        if self.holds_focus(window) {
+            to.focus(window, cx);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod sweep;
+
+/// An outline the last frame painted, read back for tests: its bounds and
+/// width in logical pixels, its colour, which of its sides (top, right,
+/// bottom, left) are drawn whole, whether any of it shows, whether all four
+/// sides are whole, and the lowest scene order of its strips, which a fill
+/// painted over it, such as a dialog's backdrop, exceeds.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaintedOutline {
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) width: Pixels,
+    pub(crate) color: Hsla,
+    pub(crate) sides: [bool; 4],
+    pub(crate) drawn: bool,
+    pub(crate) whole: bool,
+    pub(crate) order: u32,
+}
+
+/// The outlines of `color`, borders with no fill, that the last frame
+/// painted. GPUI paints such a border as one strip per side, each masked to
+/// its side and to every clip around it, and drops a strip a clip hides
+/// whole. A side is whole when the strips' masks together cover its band,
+/// its border's width along its whole length.
+#[cfg(test)]
+pub(crate) fn painted_outlines(
+    cx: &mut gpui_kit::VisualTestContext,
+    color: Hsla,
+) -> Vec<PaintedOutline> {
+    painted_outlines_where(cx, |painted| painted == color)
+}
+
+/// The outlines, as [`painted_outlines`] reads them, whose colour `matches`.
+#[cfg(test)]
+pub(crate) fn painted_outlines_where(
+    cx: &mut gpui_kit::VisualTestContext,
+    matches: impl Fn(Hsla) -> bool,
+) -> Vec<PaintedOutline> {
+    use gpui_kit::ScaledPixels;
+    /// Whether `masks` together cover `band`: the masks that span its
+    /// thickness, laid end to end along its length, reach both its ends.
+    fn covers(masks: &[Bounds<ScaledPixels>], band: Bounds<ScaledPixels>, across: bool) -> bool {
+        let (start, end) = if across {
+            (band.left(), band.right())
+        } else {
+            (band.top(), band.bottom())
+        };
+        let mut spans: Vec<_> = masks
+            .iter()
+            .filter(|mask| {
+                if across {
+                    mask.top() <= band.top() && mask.bottom() >= band.bottom()
+                } else {
+                    mask.left() <= band.left() && mask.right() >= band.right()
+                }
+            })
+            .map(|mask| {
+                if across {
+                    (mask.left(), mask.right())
+                } else {
+                    (mask.top(), mask.bottom())
+                }
+            })
+            .collect();
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut reach = start;
+        for (from, to) in spans {
+            if from > reach {
+                break;
+            }
+            reach = reach.max(to);
+        }
+        band.size.width > ScaledPixels(0.) && band.size.height > ScaledPixels(0.) && reach >= end
+    }
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        let strips: Vec<_> = window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background.is_transparent() && matches(quad.border_color))
+            .map(|quad| {
+                (
+                    (quad.bounds, quad.border_color),
+                    quad.border_widths,
+                    quad.content_mask.bounds,
+                    quad.order,
+                )
+            })
+            .collect();
+        let mut outlines: Vec<PaintedOutline> = Vec::new();
+        let mut seen = Vec::new();
+        for ((bounds, color), widths, _, _) in &strips {
+            if seen.contains(&(*bounds, *color)) {
+                continue;
+            }
+            seen.push((*bounds, *color));
+            let same = strips
+                .iter()
+                .filter(|(other, _, _, _)| *other == (*bounds, *color));
+            let masks: Vec<_> = same.clone().map(|(_, _, mask, _)| *mask).collect();
+            let order = same
+                .map(|(_, _, _, order)| *order)
+                .min()
+                .unwrap_or_default();
+            let band = |left, top, right, bottom| {
+                Bounds::from_corners(point(left, top), point(right, bottom))
+            };
+            let (b, w) = (bounds, widths);
+            let bands = [
+                (band(b.left(), b.top(), b.right(), b.top() + w.top), true),
+                (
+                    band(b.right() - w.right, b.top(), b.right(), b.bottom()),
+                    false,
+                ),
+                (
+                    band(b.left(), b.bottom() - w.bottom, b.right(), b.bottom()),
+                    true,
+                ),
+                (
+                    band(b.left(), b.top(), b.left() + w.left, b.bottom()),
+                    false,
+                ),
+            ];
+            let sides = bands.map(|(band, across)| covers(&masks, band, across));
+            // A rounded outline's strips reach inside its bands, so a clip
+            // can keep part of a strip while hiding every band.
+            let drawn = bands.iter().any(|(band, _)| {
+                masks.iter().any(|mask| {
+                    let inside = mask.intersect(band);
+                    inside.size.width > ScaledPixels(0.) && inside.size.height > ScaledPixels(0.)
+                })
+            });
+            outlines.push(PaintedOutline {
+                bounds: Bounds::from_corners(
+                    point(logical(bounds.left()), logical(bounds.top())),
+                    point(logical(bounds.right()), logical(bounds.bottom())),
+                ),
+                width: logical(widths.top),
+                color: *color,
+                sides,
+                drawn,
+                whole: sides.iter().all(|side| *side),
+                order,
+            });
+        }
+        outlines
+    })
+}
+
+/// What the last frame painted over `outline` after it: every quad whose
+/// fill or border shows (is not transparent), painted after one of the
+/// outline's strips, whose painted part, inside its clip, meets that strip
+/// where it draws its side's band: the whole quad for a fill, and its
+/// border's strips alone for a border with no fill, whose inside shows
+/// what lies beneath. A side's clip masks can leave it whole while a later
+/// quad hides it: the kit's panel divider, drawn last over the page's first
+/// pixel, covered the navigator ring's left side beside the project pane,
+/// and a divider drawn as a pane's border hides a ring as a fill does.
+/// GPUI orders a primitive one past the highest order among the earlier
+/// ones it meets, so a quad meeting a strip was painted after it exactly
+/// where its order is higher than that strip's; set against the outline's
+/// lowest strip order, a selected row's marker painted beneath the ring,
+/// inside its pane, read as painted over.
+#[cfg(test)]
+pub(crate) fn painted_over(
+    cx: &mut gpui_kit::VisualTestContext,
+    outline: &PaintedOutline,
+) -> Vec<Bounds<Pixels>> {
+    use gpui_kit::ScaledPixels;
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        let logical = |bounds: Bounds<ScaledPixels>| {
+            Bounds::from_corners(
+                point(
+                    px(bounds.left().as_f32() / scale),
+                    px(bounds.top().as_f32() / scale),
+                ),
+                point(
+                    px(bounds.right().as_f32() / scale),
+                    px(bounds.bottom().as_f32() / scale),
+                ),
+            )
+        };
+        let meets = |a: &Bounds<ScaledPixels>, b: &Bounds<ScaledPixels>| {
+            let met = a.intersect(b);
+            met.size.width > ScaledPixels(0.) && met.size.height > ScaledPixels(0.)
+        };
+        let quads = window.painted_quads();
+        let own = |quad: &gpui_kit::Quad| {
+            quad.background.is_transparent()
+                && quad.border_color == outline.color
+                && logical(quad.bounds) == outline.bounds
+        };
+        let band =
+            |left, top, right, bottom| Bounds::from_corners(point(left, top), point(right, bottom));
+        // The outline's strips where each draws its side's band, and each
+        // strip's order: a rounded outline's strips are masked past their
+        // bands, reaching a Button's own edge inside its ring.
+        let strips: Vec<_> = quads
+            .iter()
+            .filter(|quad| own(quad))
+            .flat_map(|quad| {
+                let (b, w) = (quad.bounds, quad.border_widths);
+                let drawn = b.intersect(&quad.content_mask.bounds);
+                [
+                    band(b.left(), b.top(), b.right(), b.top() + w.top),
+                    band(b.right() - w.right, b.top(), b.right(), b.bottom()),
+                    band(b.left(), b.bottom() - w.bottom, b.right(), b.bottom()),
+                    band(b.left(), b.top(), b.left() + w.left, b.bottom()),
+                ]
+                .map(|side| (drawn.intersect(&side), quad.order))
+            })
+            .collect();
+        let mut over = Vec::new();
+        for quad in quads.iter().filter(|quad| !own(quad)) {
+            let (q, widths) = (quad.bounds, quad.border_widths);
+            let filled = !quad.background.is_transparent();
+            let bordered = !quad.border_color.is_transparent()
+                && [widths.top, widths.right, widths.bottom, widths.left]
+                    .into_iter()
+                    .any(|width| width > ScaledPixels(0.));
+            let painted = if filled {
+                vec![q]
+            } else if bordered {
+                vec![
+                    band(q.left(), q.top(), q.right(), q.top() + widths.top),
+                    band(q.right() - widths.right, q.top(), q.right(), q.bottom()),
+                    band(q.left(), q.bottom() - widths.bottom, q.right(), q.bottom()),
+                    band(q.left(), q.top(), q.left() + widths.left, q.bottom()),
+                ]
+            } else {
+                continue;
+            };
+            over.extend(
+                painted
+                    .into_iter()
+                    .map(|part| part.intersect(&quad.content_mask.bounds))
+                    .filter(|drawn| {
+                        strips
+                            .iter()
+                            .any(|(strip, order)| quad.order > *order && meets(drawn, strip))
+                    })
+                    .map(logical),
+            );
+        }
+        over
+    })
+}
+
+/// The focused kit Input whose text lies in `text` draws its focus whole in
+/// the last frame: its own 1 px edge in the theme's ring colour, the accent,
+/// and outside that edge the ring a focused Button draws, the installed
+/// `Theme::button_focus_ring` (2 px of the full accent 1 px out, once a
+/// palette is applied), every side of both inside the clips around the
+/// field.
+#[cfg(test)]
+pub(crate) fn assert_input_ringed(
+    cx: &mut gpui_kit::VisualTestContext,
+    text: Bounds<Pixels>,
+    field: &str,
+) {
+    use gpui_kit::component::Theme;
+    let (setting, edge_color, ring_color) = cx.read(|cx| {
+        let theme = Theme::global(cx);
+        let setting = theme.button_focus_ring;
+        (setting, theme.ring, theme.ring.alpha(setting.opacity))
+    });
+    let slack = px(1.);
+    let near = |drawn: Bounds<Pixels>, expected: Bounds<Pixels>| {
+        [
+            (drawn.left(), expected.left()),
+            (drawn.top(), expected.top()),
+            (drawn.right(), expected.right()),
+            (drawn.bottom(), expected.bottom()),
+        ]
+        .into_iter()
+        .all(|(drawn, expected)| (drawn - expected).abs() <= slack)
+    };
+    // At full opacity the ring is in the edge's colour too, so the edge is
+    // the innermost outline in it around the text.
+    let enclosing: Vec<_> = painted_outlines(cx, edge_color)
+        .into_iter()
+        .filter(|edge| edge.bounds.contains(&text.center()))
+        .collect();
+    let area = |outline: &PaintedOutline| {
+        f32::from(outline.bounds.size.width) * f32::from(outline.bounds.size.height)
+    };
+    let Some(edge) = enclosing
+        .iter()
+        .copied()
+        .min_by(|a, b| area(a).total_cmp(&area(b)))
+    else {
+        panic!("{field}: no accent edge around the field, {text:?}");
+    };
+    assert_eq!(edge.width, px(1.), "{field}: {edge:?}");
+    assert!(
+        edge.whole,
+        "{field}: a clip cuts the field's edge: {edge:?}"
+    );
+    let around = edge.bounds.dilate(setting.gap + setting.width);
+    let others: Vec<_> = enclosing
+        .iter()
+        .filter(|outline| outline.bounds != edge.bounds && !near(outline.bounds, around))
+        .collect();
+    assert!(
+        others.is_empty(),
+        "{field}: one accent edge around the field, {text:?}: {enclosing:?}"
+    );
+    let rings: Vec<_> = painted_outlines(cx, ring_color)
+        .into_iter()
+        .filter(|ring| near(ring.bounds, around))
+        .collect();
+    let [ring] = rings[..] else {
+        panic!("{field}: one ring around the field's edge, {around:?}, as {setting:?}: {rings:?}");
+    };
+    assert_eq!(ring.width, setting.width, "{field}: {ring:?}");
+    assert!(
+        ring.whole,
+        "{field}: a clip cuts the field's ring: {ring:?}"
+    );
+}

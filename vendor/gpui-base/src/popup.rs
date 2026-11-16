@@ -8,11 +8,34 @@ use gpui::{
 
 use crate::{ElementExt as _, Positioner, StyledExt as _};
 
-/// Distance kept between a popup and the window edge.
+/// Distance kept between a popup and the window edge, unless the caller
+/// sets its own ([`Popup::margin`]).
 const WINDOW_MARGIN: Pixels = px(8.);
 
 /// Deferred paint priority for interactive surfaces that must appear above dialogs.
 pub const POPUP_PRIORITY: usize = 100;
+
+/// GitTurtle patch: the room an application keeps clear of popups at a
+/// window's foot, from the viewport's bottom edge ([`set_popup_bottom_inset`]).
+struct PopupBottomInset(Rc<dyn Fn(&Window) -> Pixels>);
+
+impl gpui::Global for PopupBottomInset {}
+
+/// GitTurtle patch: keeps every popup menu and popover a window's [`Popup`]
+/// host or a context menu places clear of the room `inset` gives for that
+/// window, measured up from the viewport's bottom edge, such as a status bar
+/// and the margin kept above it. The host's own margin still applies where it
+/// is larger. Unset, a popup keeps only that margin, as upstream does.
+pub fn set_popup_bottom_inset(cx: &mut App, inset: impl Fn(&Window) -> Pixels + 'static) {
+    cx.set_global(PopupBottomInset(Rc::new(inset)));
+}
+
+/// GitTurtle patch: the room [`set_popup_bottom_inset`] keeps clear of popups
+/// at `window`'s foot, or nothing where no application set it.
+pub fn popup_bottom_inset(window: &Window, cx: &App) -> Pixels {
+    cx.try_global::<PopupBottomInset>()
+        .map_or(Pixels::ZERO, |inset| (inset.0)(window))
+}
 
 #[derive(Default)]
 struct PopupAnchorState {
@@ -31,6 +54,9 @@ pub struct Popup {
     base: gpui::Stateful<Div>,
     style: StyleRefinement,
     anchor: Anchor,
+    /// GitTurtle patch: how far the content stays inside the window
+    /// ([`Popup::margin`]).
+    margin: Pixels,
     trigger: AnyElement,
     content: Option<AnyElement>,
 }
@@ -43,6 +69,7 @@ impl Popup {
             id,
             style: StyleRefinement::default(),
             anchor: Anchor::TopLeft,
+            margin: WINDOW_MARGIN,
             trigger: trigger.into_any_element(),
             content: None,
         }
@@ -50,6 +77,16 @@ impl Popup {
 
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
+        self
+    }
+
+    /// GitTurtle patch: keeps the content `margin` inside the window's
+    /// sides and top, and its foot, where no larger bottom inset applies
+    /// ([`set_popup_bottom_inset`]), in place of the host's 8 px. A caller
+    /// whose content draws outside its box, as a ring outside a menu's fill,
+    /// keeps that drawing the margin it wants in by adding its width.
+    pub fn margin(mut self, margin: Pixels) -> Self {
+        self.margin = margin;
         self
     }
 
@@ -99,10 +136,16 @@ impl RenderOnce for Popup {
         let state =
             window.use_keyed_state((self.id, "anchor"), cx, |_, _| PopupAnchorState::default());
         let anchor = self.anchor;
+        let margin = self.margin;
         let position = Rc::new(Cell::new(Self::resolved_corner(
             anchor,
             state.read(cx).bounds,
         )));
+        // GitTurtle patch: only content held back for the trigger's bounds
+        // waits for the next frame. A closed popup has none, and a trigger
+        // first drawn closed, as review options that fold into their menu at
+        // a new width, asked for a frame that drew nothing new.
+        let waiting = self.content.is_some() && !state.read(cx).captured;
 
         let root = self
             .base
@@ -112,13 +155,11 @@ impl RenderOnce for Popup {
                 let position = position.clone();
                 move |bounds, window, cx| {
                     position.set(Self::resolved_corner(anchor, bounds));
-                    let first = state.update(cx, |state, _| {
-                        let first = !state.captured;
+                    state.update(cx, |state, _| {
                         state.bounds = bounds;
                         state.captured = true;
-                        first
                     });
-                    if first {
+                    if waiting {
                         window.request_animation_frame();
                     }
                 }
@@ -134,8 +175,14 @@ impl RenderOnce for Popup {
 
         root.child(
             deferred(
-                Positioner::corner(anchor, position.get())
-                    .margin(WINDOW_MARGIN)
+                // GitTurtle patch: placed at the trigger's corner as this
+                // frame lays the trigger out, which its prepaint records
+                // before deferred content is prepainted. Taken from the frame
+                // before, an open popup stayed where a width step moved its
+                // trigger from until some other change drew a frame.
+                Positioner::corner_following(anchor, position)
+                    .margin(margin)
+                    .bottom_inset(popup_bottom_inset(window, cx))
                     // The host blocks the mouse, so no caller has to remember:
                     // what a popup covers belongs to the popup.
                     .occlude()
@@ -266,6 +313,135 @@ mod tests {
         assert_eq!(
             window.debug_bounds("popup-content").unwrap().size,
             gpui::Size::new(px(20.), px(20.))
+        );
+    }
+
+    /// GitTurtle patch: a popup 50 px in from the window's top and trailing
+    /// edges, where a narrower window moves its trigger, keyed by `id` and
+    /// open while `open` holds.
+    struct Trailing {
+        id: Rc<Cell<&'static str>>,
+        open: Rc<Cell<bool>>,
+    }
+
+    impl Render for Trailing {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let popup = Popup::new(
+                self.id.get(),
+                div()
+                    .debug_selector(|| "popup-trigger".into())
+                    .size(px(100.)),
+            );
+            let popup = if self.open.get() {
+                popup.content(
+                    div()
+                        .debug_selector(|| "popup-content".into())
+                        .size(px(20.)),
+                )
+            } else {
+                popup
+            };
+            div()
+                .size_full()
+                .flex()
+                .justify_end()
+                .pt(px(50.))
+                .pr(px(50.))
+                .child(popup)
+        }
+    }
+
+    /// GitTurtle patch: a popup asks for the next frame only while it holds
+    /// content back for its trigger's bounds. Upstream it asked the first
+    /// time its trigger was drawn, so a menu's trigger first drawn closed,
+    /// as GitTurtle's text review options are when they fold into their
+    /// menu at a new width, asked for a frame that drew nothing new. A
+    /// trigger first drawn open still asks for the frame that draws its
+    /// content, and that frame asks for no other.
+    #[gpui::test]
+    fn a_popup_asks_for_a_frame_only_for_content_it_holds_back(cx: &mut gpui::TestAppContext) {
+        let id = Rc::new(Cell::new("closed"));
+        let open = Rc::new(Cell::new(false));
+        let (view, window) = cx.add_window_view({
+            let (id, open) = (id.clone(), open.clone());
+            move |_, _| Trailing { id, open }
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(window.debug_bounds("popup-trigger").is_some());
+        assert_eq!(
+            window.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "a trigger first drawn closed asks for no frame"
+        );
+
+        // A popup of its own, first drawn open.
+        id.set("open");
+        open.set(true);
+        view.update(window, |_, cx| cx.notify());
+        window.run_until_parked();
+        assert!(window.debug_bounds("popup-trigger").is_some());
+        assert!(
+            window.debug_bounds("popup-content").is_none(),
+            "the content waits for its trigger's bounds"
+        );
+        assert_eq!(
+            window.update(|window, cx| window.simulate_next_frame(cx)),
+            1,
+            "a trigger first drawn open asks for the frame that draws its content"
+        );
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("popup-content").is_some(),
+            "the frame it asked for draws the content"
+        );
+        assert_eq!(
+            window.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "and that frame asks for no other"
+        );
+    }
+
+    /// GitTurtle patch: an open popup follows its trigger in the frame that
+    /// moves it, and asks for no frame to do so. Placed at the corner its
+    /// trigger had in the frame before, the popup stayed where a narrower
+    /// window moved the trigger from until something else drew a frame.
+    #[gpui::test]
+    fn an_open_popup_follows_its_trigger_in_the_frame_that_moves_it(cx: &mut gpui::TestAppContext) {
+        let (_, window) = cx.add_window_view(|_, _| Trailing {
+            id: Rc::new(Cell::new("popup")),
+            open: Rc::new(Cell::new(true)),
+        });
+        window.simulate_resize(gpui::size(px(800.), px(400.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let drawn = |window: &mut gpui::VisualTestContext| {
+            (
+                window.debug_bounds("popup-trigger").unwrap(),
+                window.debug_bounds("popup-content").unwrap(),
+            )
+        };
+        let (trigger, content) = drawn(window);
+        let beside = content.origin - trigger.origin;
+        window.update(|window, cx| window.simulate_next_frame(cx));
+        window.run_until_parked();
+
+        window.simulate_resize(gpui::size(px(600.), px(400.)));
+        window.run_until_parked();
+        let (moved, followed) = drawn(window);
+        assert_eq!(
+            moved.origin,
+            trigger.origin - Point::new(px(200.), px(0.)),
+            "the narrower window moves the trigger"
+        );
+        assert_eq!(
+            followed.origin - moved.origin,
+            beside,
+            "the popup keeps its place beside its trigger in the frame that moves it"
+        );
+        assert_eq!(
+            window.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "and asks for no other frame"
         );
     }
 }

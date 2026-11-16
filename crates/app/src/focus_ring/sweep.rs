@@ -1,0 +1,1328 @@
+//! The focus-visibility sweep: every page and dialog, at the default and the
+//! largest interface size, walked with Tab until focus comes round again.
+//! At every stop something drawn holds focus, never nothing or the window's
+//! root, and it paints its ring whole: all four sides drawn and none cut by
+//! a clip around it, the window's edge included.
+//!
+//! A stop's ring is what focus adds to the frame: the outlines in the accent,
+//! at any opacity, that the frame draws with the stop focused, not with the
+//! window blurred, and again with focus back on the stop, its layout
+//! otherwise the same; under a dialog, only those it paints above its
+//! backdrop. Nothing that lands on the page between those frames, such as a
+//! refresh moving History's selected row, counts. A Button's 2 px ring, an
+//! Input's accent edge and the Button's ring outside it, and a list's or a
+//! pane's 1 px edge all count, so a stop shows its focus however it draws it.
+//! The modules whose dialogs need their own fixtures walk them with
+//! [`walk`]: `discard::tests`, `worktrees::tests` and `github_view::tests`.
+//! [`walk_back`] walks with Shift+Tab, for a scrolling body that must reveal
+//! each stop from the other side too, as the worktree manager's Create form
+//! does in a half tile.
+use super::{PaintedOutline, painted_outlines_where};
+use crate::appearance::{ThemeChoice, custom::ThemeSelection};
+use crate::*;
+use ::core::prelude::v1::test;
+
+/// The interface sizes the sweep walks, in points: the default and the
+/// largest.
+pub(crate) const SIZES: [u8; 2] = [13, 18];
+
+/// More stops than any surface has: a walk that has not come round by then
+/// never will.
+const MAX_STOPS: usize = 300;
+
+/// Draws the window `frames` times, running what each frame started, so a
+/// scroll that a focus change requests lands before the frame is read.
+fn draw(cx: &mut VisualTestContext, frames: usize) {
+    for _ in 0..frames {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.executor().run_until_parked();
+    }
+}
+
+/// The last frame's outlines in the accent, at any opacity.
+fn accent_outlines(cx: &mut VisualTestContext) -> Vec<PaintedOutline> {
+    let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+    painted_outlines_where(cx, move |color| {
+        color.a > 0.
+            && Hsla {
+                a: accent.a,
+                ..color
+            } == accent
+    })
+}
+
+/// The scene order of the open dialog's backdrop, the fill in the kit's
+/// overlay colour over the whole window, in the last frame: whatever the
+/// page beneath the dialog paints lies below it, and what the dialog paints
+/// above. None with no dialog open, or one that dims nothing.
+fn backdrop_order(cx: &mut VisualTestContext) -> Option<u32> {
+    use gpui_kit::component::Theme;
+    let overlay = cx.read(|cx| Background::from(Theme::global(cx).colors.overlay));
+    cx.update(|window, cx| {
+        if !window.has_active_dialog(cx) || overlay.is_transparent() {
+            return None;
+        }
+        let scale = window.scale_factor();
+        let viewport = window.viewport_size();
+        let covers = |bounds: Bounds<gpui_kit::ScaledPixels>| {
+            bounds.size.width.as_f32() >= viewport.width.as_f32() * scale - 1.
+                && bounds.size.height.as_f32() >= viewport.height.as_f32() * scale - 1.
+        };
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == overlay && covers(quad.bounds))
+            .map(|quad| quad.order)
+            .max()
+    })
+}
+
+/// What holding focus on `focus` adds to the frame: the accent outlines that
+/// show with it focused, that a blurred window does not draw, and that show
+/// again once focus is back on `focus`, where it stays. Only focus may make
+/// the difference: replies keep landing on the page while the frames are
+/// drawn, and an outline a reply moves, such as History's selected row's
+/// leading border, which a quiet refresh listing new commits above the row
+/// moves down, differed between the focused and the blurred frame. Under a
+/// dialog, only what the dialog paints above its backdrop counts, since
+/// focus in a dialog draws nothing on the page beneath it.
+///
+/// `between` runs before each frame after the first, with false before the
+/// blurred frame and true before the refocused one, for the sweep's own
+/// tests to change the page there as a landing reply does.
+fn ring(
+    cx: &mut VisualTestContext,
+    focus: &FocusHandle,
+    between: &mut dyn FnMut(&mut VisualTestContext, bool),
+) -> Vec<PaintedOutline> {
+    let focused = accent_outlines(cx);
+    let beneath = backdrop_order(cx);
+    between(cx, false);
+    cx.update(|window, cx| window.blur(cx));
+    draw(cx, 1);
+    let blurred = accent_outlines(cx);
+    between(cx, true);
+    cx.update(|window, cx| window.focus(focus, cx));
+    draw(cx, 1);
+    let refocused = accent_outlines(cx);
+    let same = |outline: &PaintedOutline, other: &PaintedOutline| {
+        other.bounds == outline.bounds && other.color == outline.color
+    };
+    focused
+        .into_iter()
+        .filter(|outline| {
+            outline.drawn
+                && beneath.is_none_or(|backdrop| outline.order > backdrop)
+                && !blurred.iter().any(|other| same(outline, other))
+                && refocused.iter().any(|other| same(outline, other))
+        })
+        .collect()
+}
+
+/// Walks the shown surface with Tab from wherever it put focus until focus
+/// comes round again, checking every stop, and adds each failing stop to
+/// `failures`, named by `surface`, the interface size and its place in the
+/// order. Returns the bounds of every ring the walk saw, so a caller can
+/// check that Tab reached a particular pane.
+pub(crate) fn walk(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+) -> Vec<Bounds<Pixels>> {
+    walk_with(app, cx, surface, interface, failures, &mut |_, _| {})
+}
+
+/// [`walk`] with Shift+Tab: the same stops in the other order, so a
+/// scrolling body must reveal each from the other side, and Shift+Tab from
+/// the first stop round to the last.
+pub(crate) fn walk_back(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+) -> Vec<Bounds<Pixels>> {
+    walk_each(
+        app,
+        cx,
+        "shift-tab",
+        surface,
+        interface,
+        failures,
+        &mut |_, _, _| {},
+    )
+}
+
+/// [`walk`] with `key`, "tab" or "shift-tab", running `each` at every stop
+/// that holds focus once its ring is read ([`ring`]), with the stop's name
+/// and that ring, the stop's frame drawn again with focus on it: for a
+/// caller that checks more at each stop, as the GitHub panel's reveal sweep
+/// checks the lines its scrolling body cuts.
+pub(crate) fn walk_each(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    key: &str,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+    each: &mut dyn FnMut(&mut VisualTestContext, &str, &[PaintedOutline]),
+) -> Vec<Bounds<Pixels>> {
+    let root = app.read_with(cx, |app, _| app.app_focus.clone());
+    walk_keyed(
+        &root,
+        cx,
+        key,
+        surface,
+        interface,
+        failures,
+        &mut |_, _| {},
+        each,
+    )
+}
+
+/// [`walk`], running `between` between the frames each stop's ring is read
+/// from ([`ring`]).
+fn walk_with(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+    between: &mut dyn FnMut(&mut VisualTestContext, bool),
+) -> Vec<Bounds<Pixels>> {
+    let root = app.read_with(cx, |app, _| app.app_focus.clone());
+    walk_keyed(
+        &root,
+        cx,
+        "tab",
+        surface,
+        interface,
+        failures,
+        between,
+        &mut |_, _, _| {},
+    )
+}
+
+/// What a failure calls `key`: Tab, or Shift+Tab for "shift-tab".
+fn key_name(key: &str) -> &'static str {
+    if key == "tab" { "Tab" } else { "Shift+Tab" }
+}
+
+/// Where a walk's failure at a stop begins: `surface` at `interface` pt and
+/// the walk's `stop`th stop, counted from 0, by `key`, "tab" or
+/// "shift-tab", as "Tags at 13 pt, stop 3 by Shift+Tab"; the key contexts
+/// around the stop follow. A known failure names its stop by this, its key
+/// with it, since the two walks meet a surface's stops at other places:
+/// matched by "stop 3" alone, the remote manager's known cut ring at
+/// Shift+Tab's stop 3, Add remote…, also let a cut ring pass at Tab's stop
+/// 3, a remote's row.
+pub(crate) fn place(surface: &str, interface: u8, stop: usize, key: &str) -> String {
+    format!(
+        "{surface} at {interface} pt, stop {stop} by {}",
+        key_name(key)
+    )
+}
+
+/// The key contexts around focus in the last frame, innermost first, which
+/// name a stop well enough to find.
+fn focus_contexts(cx: &mut VisualTestContext) -> String {
+    cx.update(|window, _| {
+        let stack = window.context_stack();
+        let names: Vec<_> = stack
+            .iter()
+            .rev()
+            .take(3)
+            .map(|context| format!("{context:?}"))
+            .collect();
+        names.join(" < ")
+    })
+}
+
+/// [`walk_with`], moving focus with `key`, "tab" or "shift-tab", and
+/// running `each` as [`walk_each`] does; `root` is the window's root, which
+/// fails as a stop. The walk meets more than one stop and comes round at
+/// its first and nowhere else. A key that leaves focus on the stop it was
+/// on fails, at the walk's first stop as at any later one, from the
+/// window's root and from the stop a dialog opened on alike: a walk whose
+/// key moved nothing at its first stop came round at once and passed, so a
+/// view that swallowed Tab was taken for a surface whose one stop it is; no
+/// surface walked has one stop. A key that comes back to any later stop
+/// fails too, naming that stop: a walk of stops 0, 1, 2 and 1 again passed,
+/// so a Tab trap that skipped a surface's first stops did. A round that
+/// leaves out the tab stop the walk started on fails as well, naming that
+/// stop by its key contexts: the first stop is where the first key lands,
+/// so a dialog that opened on A, with Tab order A, B, C, D and Tab from D
+/// wrapping to B, was seen as B, C, D, B and passed. A start on the
+/// window's root, or on a handle that is no tab stop, such as a dialog's
+/// shell, is no stop for the round to meet.
+#[allow(clippy::too_many_arguments)]
+fn walk_keyed(
+    root: &FocusHandle,
+    cx: &mut VisualTestContext,
+    key: &str,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+    between: &mut dyn FnMut(&mut VisualTestContext, bool),
+    each: &mut dyn FnMut(&mut VisualTestContext, &str, &[PaintedOutline]),
+) -> Vec<Bounds<Pixels>> {
+    let name = key_name(key);
+    let start = cx.update(|window, cx| window.focused(cx));
+    let began = focus_contexts(cx);
+    let mut order: Vec<FocusHandle> = Vec::new();
+    let mut rings = Vec::new();
+    for stop in 0..MAX_STOPS {
+        cx.simulate_keystrokes(key);
+        draw(cx, 2);
+        // Moving the pointer without a press keeps the ring: GPUI's
+        // `focus_visible` dropped it here.
+        cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::none());
+        draw(cx, 1);
+        let contexts = focus_contexts(cx);
+        let at = format!("{} ({contexts})", place(surface, interface, stop, key));
+        let Some(focused) = cx.update(|window, cx| window.focused(cx)) else {
+            failures.push(format!("{at}: {name} left nothing focused"));
+            return rings;
+        };
+        if let Some(seen) = order.iter().position(|other| *other == focused) {
+            if seen + 1 == order.len() {
+                failures.push(if seen == 0 {
+                    format!("{at}: {name} meets no stop but this one")
+                } else {
+                    format!("{at}: {name} keeps focus where it was")
+                });
+            } else if seen > 0 {
+                failures.push(format!(
+                    "{at}: {name} returns to stop {seen}, not to the walk's first"
+                ));
+            } else if start
+                .as_ref()
+                .is_some_and(|start| start.tab_stop && start != root && !order.contains(start))
+            {
+                failures.push(format!(
+                    "{at}: {name} comes round without the stop the walk began on ({began})"
+                ));
+            }
+            return rings;
+        }
+        if focused == *root {
+            failures.push(format!(
+                "{at}: the window's root holds focus and shows none"
+            ));
+        } else if contexts.is_empty() {
+            failures.push(format!(
+                "{at}: focus is on an element the frame does not draw"
+            ));
+        } else {
+            let ring = ring(cx, &focused, between);
+            each(cx, &at, &ring);
+            rings.extend(ring.iter().map(|outline| outline.bounds));
+            if ring.is_empty() {
+                failures.push(format!("{at}: the focused element paints no ring"));
+            }
+            for outline in ring.iter().filter(|outline| !outline.whole) {
+                let cut: Vec<_> = ["top", "right", "bottom", "left"]
+                    .into_iter()
+                    .zip(outline.sides)
+                    .filter_map(|(side, whole)| (!whole).then_some(side))
+                    .collect();
+                failures.push(format!(
+                    "{at}: a clip cuts the {} of its ring at {:?}, {:?} wide",
+                    cut.join(", "),
+                    outline.bounds,
+                    outline.width,
+                ));
+            }
+        }
+        order.push(focused);
+    }
+    failures.push(format!(
+        "{surface} at {interface} pt: {name} did not come round in {MAX_STOPS} stops"
+    ));
+    rings
+}
+
+/// Whether one of `rings` lies on `pane`'s own edge, as a pane's 1 px
+/// keyboard ring does.
+pub(crate) fn rings_edge(rings: &[Bounds<Pixels>], pane: Bounds<Pixels>) -> bool {
+    rings.iter().any(|ring| {
+        [
+            (ring.left(), pane.left()),
+            (ring.top(), pane.top()),
+            (ring.right(), pane.right()),
+            (ring.bottom(), pane.bottom()),
+        ]
+        .into_iter()
+        .all(|(drawn, edge)| (drawn - edge).abs() <= px(0.5))
+    })
+}
+
+/// Fails with every stop that failed.
+pub(crate) fn assert_whole(failures: Vec<String>) {
+    assert_whole_except::<&str>(failures, &[]);
+}
+
+/// Fails with every stop that failed, except the known failures, each a
+/// stop's place (the start of its failure, [`place`], such as "Quick Open
+/// at 13 pt, stop 1 by Tab") and its finding (part of the failure's text),
+/// awaiting the follow-up its caller names. A known failure that no longer
+/// happens fails too, so its entry leaves with its fix.
+pub(crate) fn assert_whole_except<S: AsRef<str>>(failures: Vec<String>, known: &[(S, &str)]) {
+    let matches = |failure: &String, (at, finding): &(S, &str)| {
+        failure.starts_with(at.as_ref()) && failure.contains(finding)
+    };
+    let unexpected: Vec<_> = failures
+        .iter()
+        .filter(|failure| !known.iter().any(|entry| matches(failure, entry)))
+        .cloned()
+        .collect();
+    let fixed: Vec<_> = known
+        .iter()
+        .filter(|entry| !failures.iter().any(|failure| matches(failure, entry)))
+        .map(|(at, finding)| format!("{}: {finding}", at.as_ref()))
+        .collect();
+    assert!(
+        unexpected.is_empty() && fixed.is_empty(),
+        "stops that fail:\n{}\nknown failures that no longer happen; remove them:\n{}",
+        unexpected.join("\n"),
+        fixed.join("\n")
+    );
+}
+
+/// The app's key bindings, Midnight, dialogs opening at rest and a 1280 ×
+/// 800 window.
+pub(crate) fn prepare(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        native_accessibility::bind_keys(cx);
+        shortcuts::bind_keys(cx);
+        cx.set_reduce_motion(true);
+        app.update(cx, |app, cx| {
+            app.settings.theme = ThemeSelection::BuiltIn(ThemeChoice::Midnight);
+            app.settings.follow_system = false;
+            app.apply_appearance(window, cx);
+        })
+    });
+    cx.simulate_resize(size(px(1280.), px(800.)));
+    draw(cx, 2);
+}
+
+/// Sets the interface size the next walk uses.
+pub(crate) fn interface_size(cx: &mut VisualTestContext, interface: u8) {
+    cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+    draw(cx, 2);
+}
+
+/// Closes `surface`, the open dialog, with Escape, as a person would, so it
+/// closes through its own path; a dialog that Escape leaves open fails.
+pub(crate) fn close_dialogs(
+    cx: &mut VisualTestContext,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+) {
+    for _ in 0..4 {
+        if !cx.update(|window, cx| window.has_active_dialog(cx)) {
+            return;
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx, 2);
+    }
+    failures.push(format!(
+        "{surface} at {interface} pt: Escape leaves it open"
+    ));
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx, 2);
+}
+
+/// What an opener passed to [`open_dialog`] returns, which the walk waits on
+/// before it reads the dialog. `()`, for a dialog whose reads go through the
+/// app's own tasks and its operation executor, which [`open_dialog`] drains
+/// and settles; nothing is left to wait for. A dialog that reads on an
+/// executor or worker of its own, which neither `run_until_parked` nor that
+/// drain waits for, opens through an opener that returns it, as
+/// `Option<Entity<_>>`, `None` where it did not open: its `finish` drains
+/// that executor, lets the replies land and asserts that they did, so the
+/// walk reads the dialog as it stands once loaded rather than while a reply
+/// can still change it. The Reflog, Stashes, Worktrees, the rewritten
+/// series' review, Compare local revisions and Quick Open do. A table of
+/// dialogs whose openers return different ones holds them as
+/// [`AnyOpened`] ([`Opened::erased`]), which only the dialog tests built
+/// with debug assertions or on Linux do, so both are built there alone: a
+/// macOS release test build warned that neither was used.
+pub(crate) trait Opened {
+    /// Returns once what opening the dialog started has landed.
+    fn finish(self, cx: &mut VisualTestContext);
+
+    /// This opener's result as an [`AnyOpened`], whose `finish` is its own.
+    #[cfg(any(debug_assertions, target_os = "linux"))]
+    fn erased(self) -> AnyOpened
+    where
+        Self: Sized + 'static,
+    {
+        AnyOpened(Box::new(move |cx| self.finish(cx)))
+    }
+}
+
+impl Opened for () {
+    fn finish(self, _: &mut VisualTestContext) {}
+}
+
+/// Any opener's result ([`Opened::erased`]), so that one table of dialogs
+/// can hold openers that return different ones.
+#[cfg(any(debug_assertions, target_os = "linux"))]
+pub(crate) struct AnyOpened(Box<dyn FnOnce(&mut VisualTestContext)>);
+
+#[cfg(any(debug_assertions, target_os = "linux"))]
+impl Opened for AnyOpened {
+    fn finish(self, cx: &mut VisualTestContext) {
+        (self.0)(cx)
+    }
+}
+
+/// Opens a dialog with `open`, lets its reads finish, walks it, and closes
+/// it. Returns the bounds of every ring the walk saw ([`walk`]).
+async fn walk_dialog<O: Opened>(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+    open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> O,
+) -> Vec<Bounds<Pixels>> {
+    open_dialog(app, cx, surface, open).await;
+    let rings = walk(app, cx, surface, interface, failures);
+    close_dialogs(cx, surface, interface, failures);
+    rings
+}
+
+/// Opens a dialog with `open` from History's list and lets the reads it
+/// started land, so the dialog is walked as it stands once loaded rather
+/// than while a reply can still change it; the layout grid (`layout_grid`)
+/// opens its dialogs here too.
+pub(crate) async fn open_dialog<O: Opened>(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> O,
+) {
+    // Each dialog opens from History's list, as from the page a person is
+    // on, rather than from wherever the last dialog's close left focus.
+    let list = app.read_with(cx, |app, _| app.focus.clone());
+    cx.update(|window, cx| window.focus(&list, cx));
+    draw(cx, 2);
+    let opened = cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
+    opened.finish(cx);
+    // Tags opens only once its list, read on the app's operation executor,
+    // lands. That executor answers on its own thread, which neither
+    // `run_until_parked` nor `settle` waits for, so a slow read left the
+    // dialog unopened when the walk began; once the executor drains, every
+    // read the opener submitted has answered, and the replies land as the
+    // app settles.
+    app.read_with(cx, |app, _| app.operations.drain());
+    views::tests::settle(app, cx).await;
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{surface} opens"
+    );
+    assert!(
+        !cx.update(|window, _| window.context_stack().is_empty()),
+        "{surface} draws the control it focused"
+    );
+}
+
+/// A ring between the quads [`super::painted_over`] reads as painted over it
+/// or not. Beneath it, two fills stacked under its left side, the upper
+/// ordered past the ring's top, right and bottom strips but not its left,
+/// as a selected row's marker lies beneath a pane's ring. Over it, a border
+/// alone whose strip lies on its left side, which hides that side as a fill
+/// would, and a bordered box around it, whose strips miss every side and
+/// whose inside, unfilled, shows the ring. Counting fills alone, the check
+/// passed a divider drawn as a later border; set against the ring's lowest
+/// strip order, it took the upper fill beneath for one painted over it.
+struct Covered;
+
+impl Render for Covered {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let edge = |left: f32, top: f32, width: f32, height: f32| {
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(width))
+                .h(px(height))
+        };
+        div()
+            .size_full()
+            .relative()
+            .child(edge(10., 30., 20., 20.).bg(rgb(0x202020)))
+            .child(edge(15., 35., 10., 10.).bg(rgb(0x404040)))
+            .child(
+                edge(20., 20., 100., 40.)
+                    .border_1()
+                    .border_color(rgb(0x3366ff)),
+            )
+            .child(
+                edge(20., 0., 60., 80.)
+                    .border_l_1()
+                    .border_color(rgb(0x808080)),
+            )
+            .child(
+                edge(0., 0., 200., 100.)
+                    .border_1()
+                    .border_color(rgb(0x808080)),
+            )
+    }
+}
+
+#[gpui::test]
+fn a_border_drawn_over_a_ring_covers_it(cx: &mut TestAppContext) {
+    let (_, cx) = cx.add_window_view(|_, _| Covered);
+    cx.simulate_resize(size(px(300.), px(200.)));
+    draw(cx, 1);
+    let rings = super::painted_outlines(cx, rgb(0x3366ff).into());
+    let [ring] = rings[..] else {
+        panic!("one ring: {rings:?}");
+    };
+    // GPUI masks each side's strip half its width short of the corners.
+    let over = super::painted_over(cx, &ring);
+    let [strip] = over[..] else {
+        panic!("the later border's strip alone: {over:?}");
+    };
+    assert!(
+        strip.left() == px(20.)
+            && strip.right() == px(21.)
+            && strip.top() < ring.bounds.top()
+            && strip.bottom() > ring.bounds.bottom(),
+        "the later border's left strip, along the ring's left side: {strip:?}"
+    );
+}
+
+gpui_kit::actions!(focus_sweep_tests, [FollowRoute]);
+
+/// [`TabRoute`]'s key context, deeper than the kit root's, whose own Tab
+/// would move focus by the frame's tab stops.
+const ROUTE_CONTEXT: &str = "TabRoute";
+
+/// A surface whose Tab and Shift+Tab go where `next` says: from the window's
+/// root to the first stop, and from each stop to the one `next` holds at its
+/// place. Each stop draws a whole ring in the accent while it holds focus, so
+/// its route alone can fail a walk.
+struct TabRoute {
+    root: FocusHandle,
+    stops: Vec<FocusHandle>,
+    next: &'static [usize],
+}
+
+impl Render for TabRoute {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let accent = palette(cx).accent;
+        div()
+            .key_context(ROUTE_CONTEXT)
+            .track_focus(&self.root)
+            .size_full()
+            .on_action(cx.listener(|route, _: &FollowRoute, window, cx| {
+                let from = route.stops.iter().position(|stop| stop.is_focused(window));
+                let to = from.map_or(0, |from| route.next[from]);
+                window.focus(&route.stops[to], cx);
+            }))
+            .children(self.stops.iter().map(|stop| {
+                let drawn = div().track_focus(stop).w(px(100.)).h(px(20.)).m_1();
+                if stop.is_focused(window) {
+                    drawn.border_1().border_color(rgb(accent))
+                } else {
+                    drawn
+                }
+            }))
+    }
+}
+
+/// Where [`walk_route`] leaves focus before the walk's first key.
+#[derive(Clone, Copy, PartialEq)]
+enum Start {
+    /// The window's root, flagged a tab stop here, so that only its being
+    /// the root keeps a walk from asking the round to meet it.
+    Root,
+    /// A stop, as a dialog opens on its first field.
+    Stop(usize),
+    /// A stop whose handle is no tab stop, as a dialog's shell's is not.
+    NoStop(usize),
+}
+
+/// What a walk with `key` finds on a [`TabRoute`] along `next`, from `start`.
+fn walk_route(
+    cx: &mut TestAppContext,
+    next: &'static [usize],
+    start: Start,
+    key: &str,
+) -> Vec<String> {
+    let root = cx.update(|cx| cx.focus_handle().tab_stop(true));
+    let stops: Vec<_> = cx.update(|cx| {
+        (0..next.len())
+            .map(|stop| cx.focus_handle().tab_stop(start != Start::NoStop(stop)))
+            .collect()
+    });
+    let starting = match start {
+        Start::Root => root.clone(),
+        Start::Stop(stop) | Start::NoStop(stop) => stops[stop].clone(),
+    };
+    let (_, cx) = cx.add_window_view({
+        let root = root.clone();
+        move |window, cx| {
+            let route = cx.new(|_| TabRoute { root, stops, next });
+            gpui_kit::component::Root::new(route, window, cx)
+        }
+    });
+    cx.simulate_resize(size(px(300.), px(200.)));
+    cx.update(|window, cx| window.focus(&starting, cx));
+    draw(cx, 2);
+    let mut failures = Vec::new();
+    walk_keyed(
+        &root,
+        cx,
+        key,
+        "A route",
+        13,
+        &mut failures,
+        &mut |_, _| {},
+        &mut |_, _, _| {},
+    );
+    failures
+}
+
+/// A walk comes round at its first stop and nowhere else. A walk whose key
+/// came back to a later stop (stops 0, 1, 2, then 1 again) passed, so a Tab
+/// trap that cycles among a surface's last stops, never reaching its first
+/// again, passed a plain sweep; each way it now fails, naming the stop and
+/// the key. Coming back to the first stop still passes, and a key that moves
+/// nothing keeps its own failures. The first stop is where the first key
+/// lands, so a dialog that opens on A with Tab order A, B, C, D and Tab from
+/// D wrapping to B was seen as B, C, D, B and passed; a round that leaves
+/// out the tab stop the walk started on fails, naming it. A start that is
+/// the window's root or no tab stop is no stop for the round to meet.
+#[gpui::test]
+fn a_walk_comes_round_at_its_first_stop_and_nowhere_else(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.bind_keys([
+            KeyBinding::new("tab", FollowRoute, Some(ROUTE_CONTEXT)),
+            KeyBinding::new("shift-tab", FollowRoute, Some(ROUTE_CONTEXT)),
+        ]);
+    });
+    for key in ["tab", "shift-tab"] {
+        let name = key_name(key);
+        let rounds: [(&'static [usize], Start); 3] = [
+            (&[1, 2, 0], Start::Root),
+            (&[1, 2, 0], Start::Stop(0)),
+            (&[1, 2, 3, 1], Start::NoStop(0)),
+        ];
+        for (next, start) in rounds {
+            let round = walk_route(cx, next, start, key);
+            assert!(round.is_empty(), "{next:?} by {name}: {round:#?}");
+        }
+        let routes: [(&'static [usize], Start, usize, String); 5] = [
+            (
+                &[1, 2, 1],
+                Start::Root,
+                3,
+                format!("{name} returns to stop 1, not to the walk's first"),
+            ),
+            (
+                &[1, 2, 3, 2],
+                Start::Root,
+                4,
+                format!("{name} returns to stop 2, not to the walk's first"),
+            ),
+            (
+                &[1, 2, 2],
+                Start::Root,
+                3,
+                format!("{name} keeps focus where it was"),
+            ),
+            (
+                &[0],
+                Start::Root,
+                1,
+                format!("{name} meets no stop but this one"),
+            ),
+            (
+                &[1, 2, 3, 1],
+                Start::Stop(0),
+                3,
+                format!("{name} comes round without the stop the walk began on"),
+            ),
+        ];
+        for (next, start, stop, finding) in routes {
+            let failures = walk_route(cx, next, start, key);
+            let at = place("A route", 13, stop, key);
+            assert!(
+                matches!(&failures[..], [failure]
+                    if failure.starts_with(&at) && failure.contains(&finding)),
+                "{next:?} by {name}: one failure, at {at:?}, of {finding:?}: {failures:#?}"
+            );
+        }
+    }
+}
+
+/// History and, with its file activated, Compare.
+#[gpui::test]
+async fn history_and_compare_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        walk(&app, cx, "History", interface, &mut failures);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        views::tests::settle(&app, cx).await;
+        walk(&app, cx, "Compare", interface, &mut failures);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        views::tests::settle(&app, cx).await;
+    }
+    assert_whole(failures);
+}
+
+/// History with the local watch unable to start: the status bar's Refresh
+/// and Details… are Tab stops whose rings lie whole inside the bar, where at
+/// 13 pt they ran 0.5 px past the window's foot.
+#[gpui::test]
+async fn the_refresh_warning_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    crate::width_walk::unwatch(&app, cx);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        let rings = walk(&app, cx, "The refresh warning", interface, &mut failures);
+        for control in ["retry-local-refresh", "local-refresh-details"] {
+            let drawn = cx.debug_bounds(control).expect(control);
+            let ringed = rings.iter().any(|ring| {
+                ring.left() < drawn.left()
+                    && ring.right() > drawn.right()
+                    && ring.top() < drawn.top()
+                    && ring.bottom() > drawn.bottom()
+            });
+            assert!(
+                ringed,
+                "{control} at {interface} pt: a Tab stop with its ring"
+            );
+        }
+    }
+    assert_whole(failures);
+}
+
+/// Working Changes with a modified and an untracked file.
+#[gpui::test]
+async fn working_changes_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = views::tests::history_window(cx).await;
+    let root = fixture.path().join("narrow");
+    std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+    std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+    prepare(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    views::tests::settle(&app, cx).await;
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        // From the window's root. Without this, a walk begins where the
+        // last ended, on a roving control, whose handle is made afresh once
+        // its row leaves the frame, so the walk would not recognize its own
+        // first stop.
+        app.update_in(cx, |app, window, cx| window.focus(&app.app_focus, cx));
+        draw(cx, 2);
+        walk(&app, cx, "Working Changes", interface, &mut failures);
+    }
+    assert_whole(failures);
+}
+
+/// Settings.
+#[gpui::test]
+async fn settings_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    cx.update(|_, cx| theme_editor::init(cx));
+    prepare(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    views::tests::settle(&app, cx).await;
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        walk(&app, cx, "Settings", interface, &mut failures);
+    }
+    assert_whole(failures);
+}
+
+/// The theme editor, opened over Settings and walked at `interface` pt; a
+/// walk that meets no stop fails. One test a size: walked in the same test
+/// as Settings, the two surfaces' 196 stops took 68 s on a hosted Ubuntu
+/// runner, past nextest's 60 s slow mark, and both sizes in a test of their
+/// own still took 34.6 s alone in a debug build.
+async fn the_theme_editor_walked_at(interface: u8, cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    cx.update(|_, cx| theme_editor::init(cx));
+    prepare(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    views::tests::settle(&app, cx).await;
+    interface_size(cx, interface);
+    let surface = "the theme editor";
+    let mut failures = Vec::new();
+    let rings = walk_dialog(
+        &app,
+        cx,
+        surface,
+        interface,
+        &mut failures,
+        |app, window, cx| app.open_theme_editor(None, window, cx),
+    )
+    .await;
+    if rings.is_empty() {
+        failures.push(format!("{surface} at {interface} pt: Tab meets no stop"));
+    }
+    assert_whole(failures);
+}
+
+#[gpui::test]
+async fn the_theme_editor_draws_a_whole_ring_at_every_stop_at_13_pt(cx: &mut TestAppContext) {
+    the_theme_editor_walked_at(13, cx).await;
+}
+
+#[gpui::test]
+async fn the_theme_editor_draws_a_whole_ring_at_every_stop_at_18_pt(cx: &mut TestAppContext) {
+    the_theme_editor_walked_at(18, cx).await;
+}
+
+/// The project hub, and History beside the project pane in a window that
+/// draws it, 720 × 490 (`width_walk::PANE_WIDTH`): a 461 px half tile holds
+/// the pane back (DESIGN.md, Project list pane).
+#[gpui::test]
+async fn the_project_hub_and_pane_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        views::tests::settle(&app, cx).await;
+        walk(&app, cx, "the project hub", interface, &mut failures);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_history(window, cx);
+                if !app.settings.project_pane {
+                    app.toggle_project_pane(window, cx);
+                }
+            })
+        });
+        cx.simulate_resize(size(px(crate::width_walk::PANE_WIDTH), px(490.)));
+        views::tests::settle(&app, cx).await;
+        assert!(
+            cx.debug_bounds("project-pane").is_some(),
+            "{interface} pt: the pane is drawn"
+        );
+        walk(
+            &app,
+            cx,
+            "History beside the project pane",
+            interface,
+            &mut failures,
+        );
+        cx.simulate_resize(size(px(1280.), px(800.)));
+    }
+    assert_whole(failures);
+}
+
+/// The ring's room the project hub's list, Quick Open's form and Keyboard
+/// Shortcuts keep inside their clips moves nothing, at 13 and 18 pt: laid
+/// out without it, as a ring taking none lays out, every painted quad and
+/// named element sits where it does with it, and the controls at the clips'
+/// edges, the first project's Rename and Quick Open's scope buttons, lose
+/// their rings. The walks above find the rings whole.
+#[gpui::test]
+async fn the_ring_room_at_list_and_dialog_edges_moves_nothing(cx: &mut TestAppContext) {
+    use crate::tags::tests::assert_room_moves_nothing;
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    for interface in SIZES {
+        interface_size(cx, interface);
+        // A dialog's sides take a ghost Button's ring room by design
+        // (`dialog_ghost_room`: 17 px at 18 pt, 16 px there without the
+        // ring), so the dialogs below hold them at what the installed ring
+        // gives: the walk measures the room their clips keep.
+        let side = cx.update(|window, cx| crate::dialog_ghost_room(window, cx));
+        cx.update(|_, cx| gpui_kit::component::dialog::set_dialog_side_room(cx, move |_, _| side));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        views::tests::settle(&app, cx).await;
+        // Projects opens with its selected action tab focused, and a ring of
+        // no width paints none of that tab's ring quads; the room is
+        // measured with focus on the window's root, where nothing draws one.
+        let root = app.read_with(cx, |app, _| app.app_focus.clone());
+        cx.update(|window, cx| window.focus(&root, cx));
+        draw(cx, 2);
+        assert_room_moves_nothing(
+            cx,
+            &app,
+            &["rename-recent-project-0"],
+            &["project-hub-recent"],
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        views::tests::settle(&app, cx).await;
+        let mut failures = Vec::new();
+        open_dialog(&app, cx, "Quick Open", |app, window, cx| {
+            app.open_quick_file(window, cx)
+        })
+        .await;
+        assert_room_moves_nothing(
+            cx,
+            &app,
+            &["quick-open-worktree", "quick-open-revision"],
+            &["quick-open-results"],
+        );
+        close_dialogs(cx, "Quick Open", interface, &mut failures);
+        open_dialog(&app, cx, "Keyboard Shortcuts", |app, window, cx| {
+            app.shortcut_help(window, cx)
+        })
+        .await;
+        assert_room_moves_nothing(cx, &app, &[], &["shortcut-help-results"]);
+        close_dialogs(cx, "Keyboard Shortcuts", interface, &mut failures);
+        assert_whole(failures);
+    }
+}
+
+/// The sizes a dialog opens at in [`dialogs_open_with_a_whole_ring_on_their_first_field`]:
+/// the default size in a full window, and the largest in a half tile.
+const OPENING: [(u8, f32, f32); 2] = [(13, 1280., 800.), (18, 461., 490.)];
+
+/// The Reflog, the worktree manager and Tags each open with focus on their
+/// first field, the filter, and its ring drawn whole in the first frames,
+/// before any key, at 13 pt in 1280 × 800 and 18 pt in 461 × 490. The
+/// worktree manager and Tags opened with focus on the dialog's shell, which
+/// draws nothing, so the first Tab landed on Manage or on the filter; the
+/// Reflog focused its filter below its content's fold at 18 pt in the half
+/// tile, where nothing showed it.
+#[gpui::test]
+async fn dialogs_open_with_a_whole_ring_on_their_first_field(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    let mut failures = Vec::new();
+    for (interface, width, height) in OPENING {
+        cx.simulate_resize(size(px(width), px(height)));
+        interface_size(cx, interface);
+        for surface in ["the Reflog", "Worktrees", "Tags"] {
+            let field = match surface {
+                "the Reflog" => {
+                    let browser = Rc::new(RefCell::new(None));
+                    let opened = browser.clone();
+                    open_dialog(&app, cx, surface, move |app, window, cx| {
+                        let browser = app.open_reflog_browser(window, cx);
+                        *opened.borrow_mut() = browser.clone();
+                        browser
+                    })
+                    .await;
+                    let browser = browser.borrow().clone().expect("the Reflog opens");
+                    browser.read_with(cx, |browser, cx| browser.filter_focus(cx))
+                }
+                "Worktrees" => {
+                    open_dialog(&app, cx, surface, |app, window, cx| {
+                        app.open_worktree_manager_entity(window, cx)
+                    })
+                    .await;
+                    worktrees::first_field(&app, cx)
+                }
+                _ => {
+                    open_dialog(&app, cx, surface, |app, window, cx| {
+                        app.open_tags(window, cx)
+                    })
+                    .await;
+                    tags::filter(&app, cx)
+                }
+            };
+            // The pointer moving keeps the ring, as at every stop.
+            cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::none());
+            draw(cx, 1);
+            let at = format!("{surface} at {interface} pt in {width} × {height}");
+            if !cx.update(|window, _| field.is_focused(window)) {
+                failures.push(format!("{at}: its first field does not hold focus"));
+            } else {
+                let ring = ring(cx, &field, &mut |_, _| {});
+                if ring.is_empty() {
+                    failures.push(format!("{at}: its first field paints no ring"));
+                }
+                for outline in ring.iter().filter(|outline| !outline.whole) {
+                    failures.push(format!(
+                        "{at}: a clip cuts its first field's ring at {:?}, sides {:?}",
+                        outline.bounds, outline.sides
+                    ));
+                }
+            }
+            close_dialogs(cx, surface, interface, &mut failures);
+        }
+    }
+    assert_whole(failures);
+}
+
+/// Settings opens with focus on its first control, inside the window's
+/// handlers, and its first frames draw that control's ring whole, scrolled
+/// into view, at 13 pt in 1280 × 800 and 18 pt in 461 × 490, opened by its
+/// button with no key pressed, as when a click opens the page, and then, back
+/// from it, by its shortcut: Follow system appearance, or, on Linux while the
+/// desktop's Omarchy theme decides the appearance and that switch is
+/// unavailable, the Omarchy theme's card, whose ring otherwise shows only
+/// after a key. It opened with focus on the window's root, which draws
+/// nothing, so nothing showed where the keyboard stood until a Tab landed on
+/// the tab strip; at 18 pt in the half tile the switch lies below the page's
+/// fold. Opened again onto the same control in the same window, the page
+/// started at its top and revealed nothing, since the control was the one it
+/// had last drawn focused: Ctrl+, after Back left the Omarchy card below the
+/// fold.
+#[gpui::test]
+async fn settings_opens_with_a_whole_ring_on_its_first_control(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut desktops = vec![false];
+    #[cfg(target_os = "linux")]
+    let desktop = {
+        desktops.push(true);
+        tempfile::tempdir().unwrap()
+    };
+    let mut failures = Vec::new();
+    for omarchy in desktops {
+        #[cfg(target_os = "linux")]
+        if omarchy {
+            let root = desktop.path().join("current");
+            std::fs::create_dir_all(root.join("theme")).unwrap();
+            let colors = include_bytes!("../../tests/fixtures/omarchy/tokyo-night.toml");
+            std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+            std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+            cx.update(|_, cx| drop(appearance::omarchy::install(Some(root), cx)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = ThemeSelection::Omarchy;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            views::tests::settle(&app, cx).await;
+        }
+        let control = if omarchy {
+            "the Omarchy theme's card"
+        } else {
+            "Follow system appearance"
+        };
+        for ((interface, width, height), by) in OPENING
+            .into_iter()
+            .flat_map(|opening| [(opening, "its button"), (opening, "its shortcut")])
+        {
+            cx.simulate_resize(size(px(width), px(height)));
+            interface_size(cx, interface);
+            if by == "its button" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            } else {
+                #[cfg(target_os = "macos")]
+                cx.simulate_keystrokes("cmd-,");
+                #[cfg(not(target_os = "macos"))]
+                cx.simulate_keystrokes("ctrl-,");
+            }
+            draw(cx, 2);
+            let at = format!("Settings by {by} at {interface} pt in {width} × {height}, {control}");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.page),
+                AppPage::Settings,
+                "{at}: it opens"
+            );
+            let first = app.update(cx, |app, cx| {
+                if omarchy {
+                    app.theme_card_focus(ThemeSelection::Omarchy).clone()
+                } else {
+                    app.page_focus("follow-system", cx)
+                }
+            });
+            let root = app.read_with(cx, |app, _| app.app_focus.clone());
+            let (holds, inside) = cx
+                .update(|window, cx| (first.is_focused(window), root.contains_focused(window, cx)));
+            if !holds || !inside {
+                failures.push(format!(
+                    "{at}: it does not hold focus inside the window's handlers"
+                ));
+            } else {
+                let ring = ring(cx, &first, &mut |_, _| {});
+                if ring.is_empty() {
+                    failures.push(format!("{at}: it paints no ring in view"));
+                }
+                for outline in ring.iter().filter(|outline| !outline.whole) {
+                    failures.push(format!(
+                        "{at}: a clip cuts its ring at {:?}, sides {:?}",
+                        outline.bounds, outline.sides
+                    ));
+                }
+            }
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            views::tests::settle(&app, cx).await;
+        }
+    }
+    assert_whole(failures);
+}
+
+/// The repository's dialogs: Reflog, interactive rebase, the rewrite review,
+/// the command palette, Quick Open and Keyboard Shortcuts.
+#[gpui::test]
+async fn repository_dialogs_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        walk_dialog(
+            &app,
+            cx,
+            "the Reflog",
+            interface,
+            &mut failures,
+            |app, window, cx| app.open_reflog_browser(window, cx),
+        )
+        .await;
+        walk_dialog(
+            &app,
+            cx,
+            "interactive rebase",
+            interface,
+            &mut failures,
+            |app, window, cx| app.open_interactive_rebase(None, window, cx),
+        )
+        .await;
+        walk_dialog(
+            &app,
+            cx,
+            "the rewrite review",
+            interface,
+            &mut failures,
+            |app, window, cx| app.open_series_review(window, cx),
+        )
+        .await;
+        walk_dialog(
+            &app,
+            cx,
+            "the command palette",
+            interface,
+            &mut failures,
+            |app, window, cx| app.open_command_palette(window, cx),
+        )
+        .await;
+        walk_dialog(
+            &app,
+            cx,
+            "Quick Open",
+            interface,
+            &mut failures,
+            |app, window, cx| app.open_quick_file(window, cx),
+        )
+        .await;
+        walk_dialog(
+            &app,
+            cx,
+            "Keyboard Shortcuts",
+            interface,
+            &mut failures,
+            |app, window, cx| app.shortcut_help(window, cx),
+        )
+        .await;
+    }
+    assert_whole(failures);
+}
+
+/// About in a 461 × 490 half tile, where at 18 pt its details scroll Copy
+/// bug diagnostics in from below their fold: Copy bug diagnostics and Done
+/// each draw a whole ring, the details keeping the ring's room inside their
+/// clip. No sweep walked About, whose details' clip cut the button's ring
+/// at both sides and its foot.
+#[gpui::test]
+async fn about_draws_a_whole_ring_at_every_stop_in_a_half_tile(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    draw(cx, 2);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        walk_dialog(
+            &app,
+            cx,
+            "About",
+            interface,
+            &mut failures,
+            |app, window, cx| app.about(window, cx),
+        )
+        .await;
+    }
+    assert_whole(failures);
+}
+
+/// Moves History's selection between its first two rows, as a reply landing
+/// between two frames moves the selected row: a quiet refresh that lists new
+/// commits above it, such as a stash's two.
+fn move_selection(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.selected_commit = Some(usize::from(app.selected_commit == Some(0)));
+            cx.notify();
+        })
+    });
+}
+
+/// Only focus makes a stop's ring, never a change on the page between the
+/// frames the ring is read from. A quiet refresh that landed there, listing
+/// a new stash's two commits above History's selected row, moved that row's
+/// 2 px accent leading border, and the Stashes walk over History read the
+/// border it left as a ring cut on three sides (13 pt, stop 3, in one seed
+/// of twelve). Here History's selection moves between the frames at every
+/// stop: once for good, as that reply moved it, in History's own walk and in
+/// a dialog's over History, and away and back, as a page beneath a dialog
+/// that drew differently while the window held no focus would. Every stop
+/// stays whole.
+#[gpui::test]
+async fn a_page_changing_between_a_stops_frames_is_not_its_ring(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) =
+        views::tests::history_window_from(cx, views::tests::history_script(3, 1)).await;
+    prepare(&app, cx);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        walk_with(
+            &app,
+            cx,
+            "History as a reply lands",
+            interface,
+            &mut failures,
+            &mut |cx, refocus| {
+                if !refocus {
+                    move_selection(&app, cx)
+                }
+            },
+        );
+        for (surface, back) in [
+            ("Keyboard Shortcuts over History as a reply lands", false),
+            ("Keyboard Shortcuts over History that marks the blur", true),
+        ] {
+            open_dialog(&app, cx, surface, |app, window, cx| {
+                app.shortcut_help(window, cx)
+            })
+            .await;
+            walk_with(
+                &app,
+                cx,
+                surface,
+                interface,
+                &mut failures,
+                &mut |cx, refocus| {
+                    if !refocus || back {
+                        move_selection(&app, cx)
+                    }
+                },
+            );
+            close_dialogs(cx, surface, interface, &mut failures);
+        }
+    }
+    assert_whole(failures);
+}

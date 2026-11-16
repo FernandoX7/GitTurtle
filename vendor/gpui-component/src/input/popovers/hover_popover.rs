@@ -1,10 +1,10 @@
 use std::{ops::Range, rc::Rc};
 
 use gpui::{
-    AnyElement, App, AppContext as _, AvailableSpace, Bounds, Element, ElementId, Entity,
+    AnyElement, App, AppContext as _, AvailableSpace, Bounds, Element, ElementId, Empty, Entity,
     InteractiveElement, IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels,
-    Render, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, deferred, div, point,
-    px,
+    Render, StatefulInteractiveElement as _, StyleRefinement, Styled, WeakEntity, Window, deferred,
+    div, point, px,
 };
 
 use crate::{
@@ -13,7 +13,11 @@ use crate::{
 };
 
 pub struct HoverPopover {
-    editor: Entity<EditorState>,
+    /// Held weakly, as the diagnostic popover holds its state: the overlay
+    /// registry keeps this popover's host only while the state lives, so a
+    /// strong handle here would keep both alive once the state's owner let
+    /// it go.
+    editor: WeakEntity<EditorState>,
     /// The symbol range byte of the hover trigger.
     pub(crate) symbol_range: Range<usize>,
     pub(crate) hover: Rc<lsp_types::Hover>,
@@ -29,7 +33,7 @@ impl HoverPopover {
         let hover = Rc::new(hover.clone());
 
         cx.new(|_| Self {
-            editor,
+            editor: editor.downgrade(),
             symbol_range,
             hover,
         })
@@ -38,6 +42,9 @@ impl HoverPopover {
 
 impl Render for HoverPopover {
     fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        let Some(editor) = self.editor.upgrade() else {
+            return Empty.into_any_element();
+        };
         let contents = match self.hover.contents.clone() {
             lsp_types::HoverContents::Scalar(scalar) => match scalar {
                 lsp_types::MarkedString::String(s) => s,
@@ -56,7 +63,7 @@ impl Render for HoverPopover {
 
         Popover::new(
             "hover-popover",
-            self.editor.clone(),
+            editor,
             self.symbol_range.clone(),
             move |window, cx| render_markdown("message", contents.clone(), window, cx),
         )

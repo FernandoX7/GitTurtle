@@ -153,11 +153,11 @@ impl GitRepository {
         paths: &[PathBuf],
         cancellation: &HistoryCancellation,
     ) -> Result<HashMap<PathBuf, Entry>> {
-        let mut command = asset_command(&self.path);
+        let mut command = asset_command(self.target());
         match scope {
             PreviewAssetScope::Revision(oid) => {
                 validate_oid(oid)?;
-                let mut kind = asset_command(&self.path);
+                let mut kind = asset_command(self.target());
                 kind.args(["cat-file", "-t", oid]);
                 ensure!(
                     trim_line(&read(kind, cancellation, 1024)?) == b"commit",
@@ -222,7 +222,7 @@ impl GitRepository {
         limit: usize,
         cancellation: &HistoryCancellation,
     ) -> Result<Vec<u8>> {
-        let mut size = asset_command(&self.path);
+        let mut size = asset_command(self.target());
         size.args(["cat-file", "-s", oid]);
         let size: usize = std::str::from_utf8(trim_line(&read(size, cancellation, 1024)?))?
             .parse()
@@ -231,7 +231,7 @@ impl GitRepository {
             size <= limit,
             "Local image exceeds its remaining encoded-byte budget ({limit} bytes)"
         );
-        let mut command = asset_command(&self.path);
+        let mut command = asset_command(self.target());
         command.args(["cat-file", "blob", oid]);
         let bytes = read(command, cancellation, limit)?;
         ensure!(
@@ -338,8 +338,8 @@ fn check(cancellation: &HistoryCancellation) -> Result<()> {
     Ok(())
 }
 
-fn asset_command(root: &Path) -> Command {
-    let mut command = git_command(root);
+fn asset_command(target: GitTarget<'_>) -> Command {
+    let mut command = git_command(target);
     command
         .env("GIT_LITERAL_PATHSPECS", "1")
         .env_remove("GIT_GLOB_PATHSPECS")

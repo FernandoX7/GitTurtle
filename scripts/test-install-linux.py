@@ -376,6 +376,23 @@ class BundlePayloadTests(unittest.TestCase):
             installer.install_bundle(self.home, self.data)
         self.assert_preserved()
 
+    def test_upgrade_replaces_the_legacy_launcher_and_rollback_restores_it(self):
+        legacy = sorted(installer.LEGACY_DESKTOP_FILES)
+        for name in legacy:
+            (self.data / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.data / name).write_text(f"legacy {name}")
+        context, _ = self.native_doubles()
+        with context:
+            installer.install_bundle(self.home, self.data)
+        self.assertEqual([name for name in legacy if (self.data / name).exists()], [])
+        current = sorted(installer.desktop_files(installer.APP_ID))
+        self.assertTrue(all((self.data / name).is_file() for name in current))
+        with context:
+            installer.rollback(self.home, self.data)
+        self.assertEqual([(self.data / name).read_text() for name in legacy], [f"legacy {name}" for name in legacy])
+        self.assertEqual([name for name in current if (self.data / name).exists()], [])
+        self.assert_preserved()
+
     def test_partial_copy_failure_restores_installed_payload_and_keeps_recovery(self):
         metadata = self.data / "gitturtle/build-info.json"
         metadata.parent.mkdir(parents=True)

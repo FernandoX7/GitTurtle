@@ -3,18 +3,21 @@
 //! bindings, opens a project on activation, and edits groups through the
 //! serialized preference writer. It never touches a repository.
 
+use crate::native_accessibility::LiveRegion as _;
 use crate::{
-    AppPage, GitTurtle, button, icon, native_accessibility,
+    AppContextMenu, AppMenu, AppPage, GitTurtle, button,
+    commit_drafts::CoalescingSaver,
+    icon, native_accessibility,
+    operations::Busy,
     preferences::Preferences,
     project_library::{LibraryRow, MAX_DEPTH, ProjectLibrary},
 };
-use gpui_kit::base::POPUP_PRIORITY;
 use gpui_kit::component::{
     Disableable, Icon, WindowExt,
     button::{Button, ButtonVariants},
     dialog::{Cancel, Confirm, DialogFooter},
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
+    menu::{PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -22,6 +25,7 @@ use gpui_kit::*;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 /// What the group dialog will do when the user confirms it.
@@ -44,7 +48,9 @@ pub enum PaneRow {
         projects: usize,
     },
     Project {
-        path: PathBuf,
+        /// Shared with the row's key and element ID, which each frame
+        /// clones rather than copying the path.
+        path: Arc<Path>,
         name: String,
         /// The parent folder, shown only when another project has the same
         /// display name, so two identically named checkouts stay apart.
@@ -75,7 +81,25 @@ impl PaneRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowKey {
     Group(u32),
-    Project(PathBuf),
+    /// The project's path, shared with its row ([`PaneRow::Project`]).
+    Project(Arc<Path>),
+}
+
+impl RowKey {
+    /// The row's element ID, from its group or project: the state GPUI keeps
+    /// for the row, its open right-click and actions menus and its tooltip
+    /// among it, stays with that group or project as rows come or go around
+    /// it, and goes with the row when it leaves the list. Keyed by its place,
+    /// a menu open on a project passed to the row that moved into that
+    /// place, as a project added above it or a renamed one sorted elsewhere.
+    /// It allocates nothing: a group's is its number beside a static name, a
+    /// project's its row's shared path.
+    fn element_id(&self) -> ElementId {
+        match self {
+            Self::Group(id) => ElementId::NamedInteger("project-group".into(), u64::from(*id)),
+            Self::Project(path) => ElementId::Path(path.clone()),
+        }
+    }
 }
 
 /// One choice in a "Move to" menu.
@@ -124,7 +148,7 @@ pub fn present_rows(library: &ProjectLibrary, name_of: impl Fn(&Path) -> String)
                     (counts.get(&name).copied().unwrap_or(0) > 1).then(|| parent_label(&path));
                 let location = path.display().to_string();
                 PaneRow::Project {
-                    path,
+                    path: path.into(),
                     name,
                     detail,
                     location,
@@ -184,22 +208,32 @@ pub fn move_destinations(library: &ProjectLibrary, target: &RowKey) -> Vec<Desti
     destinations
 }
 
-/// A popup opened from the keyboard. Right-click menus belong to their rows;
-/// this one is positioned from the cursor row's geometry.
-struct KeyboardMenu {
-    menu: Entity<PopupMenu>,
-    position: Point<Pixels>,
-    _dismiss: Subscription,
-}
-
 /// A recent-project save awaiting its reply. The preference writer adds the
 /// opened project to the stored list; the reply merges that addition into the
 /// pane instead of replacing the pane's list.
+#[derive(Clone, Copy)]
 pub(super) struct RecentProjectSave {
     save: u64,
-    /// The pane already listed the project when the save was submitted, so
+    /// The pane already listed the project when the save was asked for, so
     /// its current list, including a removal made since, stands.
     listed: bool,
+}
+
+/// A project's save and what the job answered for it.
+type AnsweredSave = (RecentProjectSave, anyhow::Result<Preferences>);
+
+/// The recent-project saves of a window, which share one job on the
+/// preference writer ([`GitTurtle::queue_recent_project_save`]).
+#[derive(Default)]
+struct RecentProjectSaves {
+    saver: CoalescingSaver<PathBuf, RecentProjectSave>,
+    /// What the job has answered for each project, which its reply takes.
+    answered: Arc<Mutex<Vec<AnsweredSave>>>,
+    /// The newest project asked for, which a refused job asks for again and
+    /// so schedules everything still waiting.
+    newest: Option<(PathBuf, RecentProjectSave)>,
+    /// The wait before asking again, one at a time.
+    retry: Option<Task<()>>,
 }
 
 pub struct State {
@@ -225,15 +259,75 @@ pub struct State {
     /// The newest pane save answered with a failure: the list on screen is
     /// unsaved until Retry, which the user starts.
     pane_save_failed: bool,
-    menu_open: Option<usize>,
-    keyboard_menu: Option<KeyboardMenu>,
+    recent_saves: RecentProjectSaves,
+    /// The row whose actions button's menu is open, by its group or project.
+    menu_open: Option<RowKey>,
+    keyboard_menu: Option<native_accessibility::KeyboardMenu>,
+    /// Whether the window's last frame drew the pane: the frame that no
+    /// longer draws it gives focus left in it to the page
+    /// ([`GitTurtle::follow_project_pane`]).
+    drawn: bool,
+    /// Where the page begins in the Tab order, focused only to step from to
+    /// the page's first stop: no Tab stop, drawn only in the frame that
+    /// gives focus to the page, before the page.
+    page_start: FocusHandle,
+    /// Toggle Project List turned the pane on or off where the window holds
+    /// it back, which the status bar says while it is fresh
+    /// ([`HELD_BACK_NOTE`], [`HELD_BACK_OFF_NOTE`]).
+    held_note: Option<HeldNote>,
+    /// How many notes the toggle has started, so each is announced again
+    /// with a fresh node.
+    held_turns: usize,
+}
+
+/// What the status bar says where Toggle Project List turns the pane on in a
+/// window that cannot draw it beside the page's floor: nothing else on
+/// screen changes, so the bar says why, feedback in place, in words short
+/// enough to stay whole in a 461 px half tile at 18 pt, as the narrow
+/// rail's "… unavailable: widen the window" does. "Project list hidden: the
+/// window is too narrow to show it beside the page" ended in an ellipsis
+/// there.
+pub(super) const HELD_BACK_NOTE: &str = "Project list hidden: widen the window";
+
+/// What the status bar says where Toggle Project List turns the pane on from
+/// the Projects hub, which never draws it, at any window width.
+pub(super) const HUB_ON_NOTE: &str = "Project list on: hidden on this page";
+
+/// What the status bar says where Toggle Project List turns the pane off
+/// while the window holds it back: nothing on screen changes there either.
+pub(super) const HELD_BACK_OFF_NOTE: &str = "Project list off";
+
+/// What Settings' Show the project list switch says in its description's
+/// place while it is on and the window holds the pane back, announced
+/// politely as it is turned on there: the switch's row is where the person
+/// looks, so the status line keeps the page's status.
+pub(super) const HELD_BACK_DESCRIPTION: &str =
+    "Hidden: widen the window to show the list beside the page";
+
+/// A held-back note while it is fresh: for [`crate::copy_feedback::RESTORE_AFTER`],
+/// as a write's outcome is, or until the window draws the pane, the setting
+/// changes from the one it answers or the project hub is shown.
+struct HeldNote {
+    turn: usize,
+    text: &'static str,
+    /// The setting it answers: off only for [`HELD_BACK_OFF_NOTE`].
+    on: bool,
+    /// The page it answered on: it goes as the page changes
+    /// ([`GitTurtle::follow_project_pane`]).
+    page: AppPage,
+    /// Whether the status line reads it, as it reads the toggle's notes,
+    /// or only the polite node announces it, as the switch's.
+    shown: bool,
+    _expiry: Task<()>,
 }
 
 impl State {
     pub fn new(cx: &mut App) -> Self {
         Self {
             scroll: UniformListScrollHandle::new(),
-            focus: cx.focus_handle(),
+            // The tree is one Tab stop: GPUI ignores the `tab_stop` of the div
+            // that tracks this handle, so the handle carries it.
+            focus: cx.focus_handle().tab_stop(true),
             cursor: None,
             rows: Vec::new(),
             group_form: None,
@@ -242,8 +336,13 @@ impl State {
             latest_save: 0,
             latest_pane_save: 0,
             pane_save_failed: false,
+            recent_saves: RecentProjectSaves::default(),
             menu_open: None,
             keyboard_menu: None,
+            drawn: false,
+            page_start: cx.focus_handle(),
+            held_note: None,
+            held_turns: 0,
         }
     }
 
@@ -263,11 +362,13 @@ impl GitTurtle {
             .and_then(|index| self.project_pane.rows.get(index))
             .map(PaneRow::key);
         let rows = present_rows(&self.project_library, |path| self.project_name(path));
-        self.project_pane.cursor = match followed {
-            Some(key) => rows.iter().position(|row| row.key() == key),
-            None => None,
+        let found = followed.and_then(|key| rows.iter().position(|row| row.key() == key));
+        // A keyboard's menu, opened on the cursor row, is drawn beside that
+        // row where it now stands.
+        if let (Some(row), Some(menu)) = (found, self.project_pane.keyboard_menu.as_mut()) {
+            menu.follow_row(row);
         }
-        .or_else(|| {
+        self.project_pane.cursor = found.or_else(|| {
             self.project_pane
                 .cursor
                 .filter(|_| !rows.is_empty())
@@ -291,6 +392,137 @@ impl GitTurtle {
             save: self.project_pane.latest_save,
             listed: self.project_library.contains_project(path),
         }
+    }
+
+    /// Asks the preference writer to remember `path`. Every snapshot that
+    /// lands remembers its repository, so nine Refresh presses while the
+    /// writer was behind took nine slots of its bounded queue and the next
+    /// was refused as busy, which showed the person an error about a save
+    /// they never asked for and lost the project. The projects asked for
+    /// now share one job, oldest first so the newest ends the list, which
+    /// keeps one slot however many open; a full queue of other saves refuses
+    /// it, and it asks again until there is room.
+    ///
+    /// The job answers with the number of the request that scheduled it,
+    /// its place in the writer's order: a pane save numbered after that
+    /// wrote the list after it, whichever request joined the job later.
+    pub(super) fn queue_recent_project_save(
+        &mut self,
+        path: PathBuf,
+        recent: RecentProjectSave,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answered = Arc::clone(&self.project_pane.recent_saves.answered);
+        let job = recent.save;
+        // Saves a full queue refused may still wait: the list as it stands
+        // now says which of their projects the person has removed since.
+        let shown = self
+            .project_pane
+            .recent_saves
+            .saver
+            .is_pending()
+            .then(|| self.project_library.clone());
+        let response = self.project_pane.recent_saves.saver.queue_with(
+            &self.preferences_writer,
+            path.clone(),
+            recent,
+            move |projects| {
+                let mut projects: Vec<_> = projects.iter().collect();
+                projects.sort_by_key(|(_, recent)| recent.save);
+                for (path, recent) in projects {
+                    // Remembering would add a project the person removed
+                    // since its save was refused back to the store.
+                    if recent.listed
+                        && shown
+                            .as_ref()
+                            .is_some_and(|shown| !shown.contains_project(path))
+                    {
+                        continue;
+                    }
+                    // Remembering rebuilds the whole store from disk; nothing is read here first.
+                    let mut preferences = Preferences::default();
+                    let result = preferences.remember_repository(path).map(|()| preferences);
+                    let answer = RecentProjectSave {
+                        save: job,
+                        ..*recent
+                    };
+                    answered
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push((answer, result));
+                }
+                // Each project answers for itself: failing the job would keep
+                // a project that can no longer be saved ahead of every later one.
+                Ok(())
+            },
+        );
+        self.project_pane.recent_saves.newest = Some((path, recent));
+        let Some(response) = response else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = response.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.land_recent_project_saves(outcome, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn land_recent_project_saves(
+        &mut self,
+        outcome: Result<anyhow::Result<()>, futures::channel::oneshot::Canceled>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answered = std::mem::take(
+            &mut *self
+                .project_pane
+                .recent_saves
+                .answered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        for (recent, result) in answered {
+            match result {
+                Ok(preferences) => {
+                    self.absorb_remembered_project(recent, &preferences, window, cx);
+                    self.hub.update(cx, |hub, cx| {
+                        hub.set_recent(preferences.recent_repositories, cx)
+                    });
+                }
+                Err(error) => {
+                    self.operation_error =
+                        Some(format!("Could not save recent projects: {error:#}").into())
+                }
+            }
+        }
+        match outcome {
+            Ok(Err(error)) if error.is::<Busy>() => self.ask_again_for_recent_projects(window, cx),
+            Ok(Err(error)) => {
+                self.operation_error =
+                    Some(format!("Could not save recent projects: {error:#}").into())
+            }
+            Ok(Ok(())) | Err(_) => {}
+        }
+    }
+
+    /// Asks again, after the wait, for the projects a full queue refused.
+    fn ask_again_for_recent_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_pane.recent_saves.retry.is_some() {
+            return;
+        }
+        let retry = self.retry_refused_save(window, cx, |this, window, cx| {
+            this.project_pane.recent_saves.retry = None;
+            if !this.project_pane.recent_saves.saver.is_pending() {
+                return;
+            }
+            if let Some((path, recent)) = this.project_pane.recent_saves.newest.clone() {
+                this.queue_recent_project_save(path, recent, window, cx);
+            }
+        });
+        self.project_pane.recent_saves.retry = Some(retry);
     }
 
     /// Merge the project a recent-project save added into the pane's current
@@ -438,14 +670,181 @@ impl GitTurtle {
     }
 
     /// Show or hide the pane from the View menu or the command palette. The
-    /// switch in Settings changes the same saved preference.
+    /// switch in Settings changes the same saved preference. Turned on where
+    /// the window cannot draw the pane beside the page
+    /// (`GitTurtle::project_pane_fits`), the setting is saved on and the
+    /// status bar says why nothing appears ([`HELD_BACK_NOTE`]); the pane
+    /// comes as soon as the window gives it room. On the Projects hub, which
+    /// never draws it, it says the list is on but hidden there
+    /// ([`HUB_ON_NOTE`]). Turned off in either, the status bar says so
+    /// ([`HELD_BACK_OFF_NOTE`]), since nothing on screen changes either.
     pub(super) fn toggle_project_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
         }
-        self.settings.project_pane = !self.settings.project_pane;
+        let on = !self.settings.project_pane;
+        self.settings.project_pane = on;
+        self.project_pane.held_note = None;
+        let text = match (on, self.page == AppPage::Projects) {
+            (false, _) => HELD_BACK_OFF_NOTE,
+            (true, true) => HUB_ON_NOTE,
+            (true, false) => HELD_BACK_NOTE,
+        };
+        self.note_held_back_pane(text, true, window, cx);
         self.save_preferences(window, cx);
         cx.notify();
+    }
+
+    /// Settings' Show the project list switch turned the pane on or off.
+    /// Turned on where the window holds the pane back, the switch's own
+    /// description says why no list is drawn
+    /// ([`HELD_BACK_DESCRIPTION`], `GitTurtle::render_settings`), which the
+    /// status bar's polite node announces, the status line left to the page:
+    /// the description is the feedback in place.
+    pub(super) fn switch_project_pane(
+        &mut self,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.project_pane == on {
+            return;
+        }
+        self.settings.project_pane = on;
+        self.project_pane.held_note = None;
+        if on {
+            self.note_held_back_pane(HELD_BACK_DESCRIPTION, false, window, cx);
+        }
+        self.save_preferences(window, cx);
+    }
+
+    /// Starts the held-back note `text`, answering the setting as it now is,
+    /// where the window holds the pane back on this page: in the status
+    /// line too where `shown`, and announced politely, a fresh node for each
+    /// note, for [`crate::copy_feedback::RESTORE_AFTER`].
+    fn note_held_back_pane(
+        &mut self,
+        text: &'static str,
+        shown: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The hub never draws the pane, so a change there shows nothing
+        // whatever the window's width and is answered like a held-back one.
+        if self.page != AppPage::Projects && self.project_pane_fits(window) {
+            return;
+        }
+        self.project_pane.held_turns = self.project_pane.held_turns.wrapping_add(1);
+        let expiry = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::copy_feedback::RESTORE_AFTER)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.project_pane.held_note = None;
+                cx.notify();
+            });
+        });
+        self.project_pane.held_note = Some(HeldNote {
+            turn: self.project_pane.held_turns,
+            text,
+            on: self.settings.project_pane,
+            page: self.page,
+            shown,
+            _expiry: expiry,
+        });
+    }
+
+    /// The held-back note while it is fresh, with the number of the toggle
+    /// it answers, which the status bar's polite node announces whatever
+    /// holds the status line: a read's error, a write's fresh outcome and a
+    /// running write's status keep the line, and the note, feedback for the
+    /// person's own action, is still heard.
+    pub(super) fn project_pane_note(&self) -> Option<(usize, &'static str)> {
+        let note = self.project_pane.held_note.as_ref()?;
+        Some((note.turn, note.text))
+    }
+
+    /// The held-back note where the status line reads it in place of the
+    /// page's status: on Repository a read's error comes first, as it does
+    /// before a write's outcome, and a write's fresh outcome keeps the line,
+    /// heard as it came; the note is announced beside both
+    /// ([`Self::project_pane_note`]).
+    pub(super) fn project_pane_note_line(&self) -> Option<&'static str> {
+        let note = self
+            .project_pane
+            .held_note
+            .as_ref()
+            .filter(|note| note.shown)?;
+        let error = self.page == AppPage::Repository && self.error.is_some();
+        (!error && self.fresh_outcome().is_none()).then_some(note.text)
+    }
+
+    /// Follows the pane as the window builds a frame, before the body,
+    /// `drawn` saying whether this frame draws it
+    /// (`GitTurtle::project_pane_drawn`). The held-back note ends once the
+    /// pane is drawn, its setting changes from the one the note answers or
+    /// the hub is shown. In the frame that no longer draws the pane on
+    /// Repository or Settings, as the window narrows past it or the pane is
+    /// closed, focus left on a control the frame does not draw, one in the
+    /// pane, goes to the page's first stop as the frame ends, its ring whole
+    /// in the next, rather than staying on a control no longer drawn, where
+    /// no key reaches the page.
+    /// So does focus given back to the pane's list while it is not drawn, as
+    /// a group dialog opened from it gives focus back as it closes. Focus
+    /// that the frame draws stays where it is. A row's menu open as the pane
+    /// leaves closes with it: a Shift+F10 menu came back beside its row as
+    /// the window widened again, with focus elsewhere. Returns the page's
+    /// start to draw before the page in this frame where it does.
+    pub(super) fn follow_project_pane(
+        &mut self,
+        drawn: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<FocusHandle> {
+        let setting = self.settings.project_pane;
+        let held = self.project_pane.held_note.as_ref();
+        if drawn
+            // A note answers the page it was made on: the hub's says the
+            // list is hidden "on this page", which no other page can say.
+            || held.is_some_and(|note| note.page != self.page)
+            || held.is_some_and(|note| note.on != setting)
+        {
+            self.project_pane.held_note = None;
+        }
+        let was = std::mem::replace(&mut self.project_pane.drawn, drawn);
+        // A row's menu goes with the pane: its keyboard's menu, which would
+        // otherwise be drawn again beside its row as the pane comes back,
+        // open with focus elsewhere, and the record of the actions button's
+        // menu, whose popover goes with its element.
+        if was && !drawn {
+            self.project_pane.keyboard_menu = None;
+            self.project_pane.menu_open = None;
+        }
+        if !(was || self.project_pane.focus.is_focused(window))
+            || drawn
+            || self.page == AppPage::Projects
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+            || window.focused(cx).is_none()
+        {
+            return None;
+        }
+        let start = self.project_pane.page_start.clone();
+        let step_from = start.clone();
+        cx.defer_in(window, move |this, window, cx| {
+            if this.project_pane_drawn(window)
+                || window.has_active_dialog(cx)
+                || window.has_active_sheet(cx)
+                || window
+                    .focused(cx)
+                    .is_some_and(|focused| this.app_focus.contains(&focused, window))
+            {
+                return;
+            }
+            step_from.focus(window, cx);
+            window.focus_next(cx);
+        });
+        Some(start)
     }
 
     fn open_project_from_pane(
@@ -455,6 +854,12 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         if self.operation_busy.is_some() {
+            return;
+        }
+        // A marked tab's row reads its folder afresh, as the Projects page's
+        // does (`project_event`).
+        if self.repository_tabs.is_marked(&path) {
+            self.open_repository_tab(path, window, cx);
             return;
         }
         // Selecting the open project from Settings returns to it; selecting it
@@ -470,8 +875,7 @@ impl GitTurtle {
     }
 
     fn pane_available(&self, window: &mut Window, cx: &mut App) -> bool {
-        self.settings.project_pane
-            && self.page != AppPage::Projects
+        self.project_pane_drawn(window)
             && !window.has_active_dialog(cx)
             && !window.has_active_sheet(cx)
     }
@@ -573,11 +977,18 @@ impl GitTurtle {
         let Some(row) = self.project_pane.rows.get(index).cloned() else {
             return;
         };
+        // A write refuses a project before the cursor or focus moves, as
+        // `open_project_from_pane` would once they had.
+        if matches!(row, PaneRow::Project { .. }) && self.operation_busy.is_some() {
+            return;
+        }
         self.project_pane.cursor = Some(index);
         window.focus(&self.project_pane.focus, cx);
         match row {
             PaneRow::Group { id, .. } => self.toggle_project_group(id, window, cx),
-            PaneRow::Project { path, .. } => self.open_project_from_pane(path, window, cx),
+            PaneRow::Project { path, .. } => {
+                self.open_project_from_pane(path.to_path_buf(), window, cx)
+            }
         }
         cx.notify();
     }
@@ -597,40 +1008,51 @@ impl GitTurtle {
         let key = row.key();
         let indent = px(24. + row.depth() as f32 * 12.);
         // Rows are uniform, so the cursor row's bottom edge follows from the
-        // list's origin, its scroll offset and the row height.
-        let position = {
-            let state = self.project_pane.scroll.0.borrow();
-            let bounds = state.base_handle.bounds();
-            let height = crate::appearance::ui_size(30.);
-            point(
-                bounds.left() + indent,
-                bounds.top() + state.base_handle.offset().y + height * (index as f32 + 1.),
-            )
-        };
+        // list's origin, its scroll offset and the row height, in each frame,
+        // where `rebuild_project_rows` moves it as rows come or go above it.
+        let anchor = native_accessibility::ListRow::new(
+            &self.project_pane.scroll,
+            index,
+            crate::appearance::ui_size(30.),
+            indent,
+        );
         let owner = cx.entity().downgrade();
-        let focus = self.project_pane.focus.clone();
-        let snapshot = self.menu_snapshot(&key);
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            row_menu(menu, &owner, &key, Some(snapshot)).action_context(focus)
-        });
-        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
-            this.dismiss_project_menu(window, cx);
-        });
-        // The menu takes the keys until it closes; dismissal hands focus
-        // back to the tree through the action context and the subscription.
-        let handle = menu.focus_handle(cx);
-        window.focus(&handle, cx);
-        self.project_pane.keyboard_menu = Some(KeyboardMenu {
-            menu,
-            position,
-            _dismiss: dismiss,
-        });
+        // The cursor row still holds the group or project, wherever rows
+        // that came or went above it moved that row (`rebuild_project_rows`).
+        let held = key.clone();
+        let holds = move |app: &GitTurtle| {
+            app.project_pane
+                .cursor
+                .and_then(|index| app.project_pane.rows.get(index))
+                .is_some_and(|row| row.key() == held)
+        };
+        self.project_pane.keyboard_menu = Some(native_accessibility::KeyboardMenu::following(
+            anchor,
+            self.project_pane.focus.clone(),
+            // Read as it is built: a write's start or end builds the open
+            // menu again.
+            move |menu, app: &GitTurtle| {
+                row_menu(menu, &owner, &key, Some(app.menu_snapshot(&key)))
+            },
+            holds,
+            // A project's or a group's items read nothing HEAD changes.
+            None,
+            Self::dismiss_project_menu,
+            self,
+            window,
+            cx,
+        ));
         cx.notify();
     }
 
+    /// Closes the keyboard's menu. A press outside it leaves focus in the
+    /// menu, so focus returns to the tree; an item or Escape has moved it
+    /// already, to the tree or to the form the item opened.
     fn dismiss_project_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project_pane.keyboard_menu.take().is_some() {
-            window.focus(&self.project_pane.focus, cx);
+        if let Some(menu) = self.project_pane.keyboard_menu.take() {
+            if menu.has_focus(window, cx) || window.focused(cx).is_none() {
+                window.focus(&self.project_pane.focus, cx);
+            }
             cx.notify();
         }
     }
@@ -666,13 +1088,14 @@ impl GitTurtle {
             GroupIntent::Rename(_) => "Rename group",
             GroupIntent::Create(_) => "New group",
         };
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
             let pending = form.read(cx).pending;
             dialog
                 .title(title)
-                .width(px(520.))
+                .width(crate::appearance::dialog_width(px(520.), window))
+                .max_h(crate::appearance::dialog_max_height(window))
                 .child(form.clone())
                 .keyboard(!pending)
                 .footer(
@@ -725,6 +1148,12 @@ impl GitTurtle {
         });
     }
 
+    /// Begins saving `name` for the group `form` names, or returns why the
+    /// project list refuses it. `form` asks while it is being updated, so the
+    /// refusal goes back to it to show: updating it here again panicked
+    /// ("already being updated") for a name over the byte limit, a group
+    /// past the nesting depth or the group limit, or one removed while its
+    /// dialog was open. Only the save's later answer updates `form`.
     fn submit_group_name(
         &mut self,
         intent: GroupIntent,
@@ -732,20 +1161,12 @@ impl GitTurtle {
         form: WeakEntity<GroupForm>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Result<(), String> {
         let mut library = self.project_library.clone();
-        let outcome = match intent {
+        match intent {
             GroupIntent::Create(parent) => library.create_group(parent, &name).map(|_| ()),
             GroupIntent::Rename(id) => library.rename_group(id, &name),
-        };
-        if let Err(message) = outcome {
-            let _ = form.update(cx, |form, cx| {
-                form.pending = false;
-                form.error = Some(message);
-                cx.notify();
-            });
-            return;
-        }
+        }?;
         self.set_project_library(library.clone());
         let save = self.begin_project_library_save();
         let response = self
@@ -764,6 +1185,7 @@ impl GitTurtle {
             });
         })
         .detach();
+        Ok(())
     }
 
     fn finish_group_form(
@@ -796,18 +1218,16 @@ impl GitTurtle {
             // may have succeeded or still be pending.
             let _ = form.update(cx, |form, cx| {
                 form.pending = false;
-                form.error = failure;
+                if let Some(failure) = failure {
+                    form.refuse(failure);
+                }
                 cx.notify();
             });
         }
         cx.notify();
     }
 
-    pub(super) fn render_project_pane(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn render_project_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = crate::appearance::palette(cx);
         let rows = &self.project_pane.rows;
         let projects = self.project_library.project_count();
@@ -867,7 +1287,7 @@ impl GitTurtle {
                     ),
             )
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
                     .id("project-pane-tree")
                     .role(Role::Tree)
                     .aria_label("Projects. Arrow keys browse; Left and Right collapse or expand a group; Enter opens a project; Shift F10 opens project or group actions")
@@ -930,15 +1350,16 @@ impl GitTurtle {
                         .track_scroll(&self.project_pane.scroll)
                         .into_any_element()
                     })
-                    .children(self.render_keyboard_menu(window, cx)),
+                    // Its keyboard ring on its own edge, over the rows, so
+                    // none of them moves.
+                    .children(self.focus_ring.edge(&self.project_pane.focus, rgb(colors.accent)))
+                    .children(self.render_keyboard_menu(cx))),
             )
             .children(self.project_pane.error.as_ref().map(|error| {
-                div()
+                native_accessibility::recorded(div()
                     .id("project-pane-error")
                     .debug_selector(|| "project-pane-error".into())
-                    .role(Role::Alert)
-                    .aria_label(error.clone())
-                    .a11y_synthetic_children(native_accessibility::assertive)
+                    .alert(error.clone())
                     .flex_shrink_0()
                     .px_3()
                     .py_2()
@@ -974,7 +1395,7 @@ impl GitTurtle {
                                         cx.notify();
                                     })),
                             ),
-                    )
+                    ))
             }))
             .into_any_element()
     }
@@ -1024,8 +1445,9 @@ impl GitTurtle {
                     false,
                     false,
                     format!(
-                        "{} {name} · {projects} projects",
-                        if *collapsed { "Expand" } else { "Collapse" }
+                        "{} {name} · {}",
+                        if *collapsed { "Expand" } else { "Collapse" },
+                        crate::counted(*projects, "project", "projects")
                     ),
                     if *collapsed {
                         "Expand this group".to_owned()
@@ -1041,7 +1463,7 @@ impl GitTurtle {
                 location,
                 ..
             } => {
-                let active = self.path.as_ref() == Some(path);
+                let active = self.path.as_deref() == Some(&**path);
                 let body = div()
                     .flex_1()
                     .min_w_0()
@@ -1050,11 +1472,7 @@ impl GitTurtle {
                     .gap_2()
                     // A project carries the turtle mark; only a group keeps the
                     // folder, so the two never look alike.
-                    .child(icon(
-                        "turtle",
-                        15.,
-                        if active { colors.accent } else { colors.muted },
-                    ))
+                    .child(icon("turtle", 15., colors.sidebar_row(active).1))
                     .child(div().min_w_0().truncate().child(name.clone()))
                     .children(detail.as_ref().map(|detail| {
                         div()
@@ -1065,16 +1483,30 @@ impl GitTurtle {
                             .child(format!("· {detail}"))
                     }))
                     .into_any_element();
+                // `open_project_from_pane` refuses while a write runs; the
+                // row looks so once the write looks busy
+                // (`workspace::BusyLook`).
                 (
                     body,
                     active,
-                    self.operation_busy.is_some(),
+                    self.operation_shown().is_some(),
                     format!("Open {name}, {location}"),
                     location.clone(),
                 )
             }
         };
         let is_group = matches!(row, PaneRow::Group { .. });
+        // A write refuses a project's row at once (`activate_project_row`),
+        // and assistive technology hears it unavailable at once, while it
+        // dims only once the write looks busy, as `workspace::refusing` has a
+        // control. A group's row only folds, which no write refuses.
+        let refused = !is_group && self.operation_busy.is_some();
+        #[cfg(test)]
+        crate::workspace::refusals::record(
+            format!("project-pane-row-{index}"),
+            refused || dimmed,
+            dimmed,
+        );
         let expanded = match row {
             PaneRow::Group { collapsed, .. } => Some(!collapsed),
             PaneRow::Project { .. } => None,
@@ -1084,16 +1516,22 @@ impl GitTurtle {
         } else {
             colors.panel
         };
+        let open = self.project_pane.menu_open.as_ref() == Some(&key);
         div()
-            .id(("project-pane-row", index))
+            .id(key.element_id())
             .debug_selector(move || format!("project-pane-row-{index}"))
             .role(Role::TreeItem)
             .aria_level(depth + 1)
             .aria_label(label)
+            // GPUI's Div has no disabled setter; the hook sets the row's own
+            // node, as a live region's is set.
+            .when(refused || dimmed, |row| {
+                row.a11y_synthetic_children(|builder| builder.parent_node().set_disabled())
+            })
             .when(cursor, |row| row.aria_active_descendant())
             .when_some(expanded, |row, expanded| row.aria_expanded(expanded))
             .when(!is_group, |row| row.aria_selected(active))
-            .when(self.project_pane.menu_open != Some(index), |row| {
+            .when(!open, |row| {
                 row.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             })
             .group("project-pane-row")
@@ -1103,7 +1541,14 @@ impl GitTurtle {
             // cursor arrives.
             .border_l_2()
             .border_color(rgb(if cursor { colors.accent } else { surface }))
-            .pl(px(10. + depth as f32 * 12.))
+            // Its icon at the heading's edge, the marker's 2 px out of the
+            // pane's inset, and 12 px further for each tree level, as History's
+            // navigation rows are; a fixed 10 px stood it 2.25 px past the
+            // heading at 13 pt and 1.5 px before it at 18.
+            .pl(
+                crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.)
+                    + px(depth as f32 * 12.),
+            )
             .pr_1()
             .flex()
             .items_center()
@@ -1111,7 +1556,8 @@ impl GitTurtle {
             .text_size(crate::appearance::ui_text(12.))
             .overflow_hidden()
             .bg(rgb(surface))
-            .text_color(rgb(if active { colors.accent } else { colors.text }))
+            .text_color(rgb(colors.sidebar_row(active).0))
+            .when(active, |row| row.font_weight(FontWeight::MEDIUM))
             .when(dimmed, |row| row.opacity(0.6))
             .when(!dimmed, |row| {
                 row.cursor_pointer()
@@ -1124,35 +1570,40 @@ impl GitTurtle {
                 }),
             )
             .child(body)
-            .child(self.render_row_actions(index, menu_key, cursor, cx))
-            .context_menu({
+            .child(self.render_row_actions(index, menu_key, cursor || open, cx))
+            .app_context_menu({
                 let owner = owner.clone();
                 move |menu, _, cx| {
                     let snapshot = owner.upgrade().map(|app| app.read(cx).menu_snapshot(&key));
                     row_menu(menu, &owner, &key, snapshot)
                 }
             })
+            // A write's start or end builds the open menu again.
+            .follows_writes(owner.clone())
             .into_any_element()
     }
 
-    /// The row menu button appears on hover and on the keyboard cursor row.
-    /// It stays out of the Tab order: the tree is one stop, and Shift-F10 or
-    /// a right-click opens the same menu.
+    /// The row menu button appears on hover, on the keyboard cursor row and
+    /// while its menu is open (`reveal`). It stays out of the Tab order: the
+    /// tree is one stop, and Shift-F10 or a right-click opens the same menu.
+    /// Its ID lies inside its row's, which is keyed by the row's group or
+    /// project, so its open menu stays with them.
     fn render_row_actions(
         &self,
         index: usize,
         key: RowKey,
-        cursor: bool,
+        reveal: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let owner = cx.entity().downgrade();
-        let reveal = cursor || self.project_pane.menu_open == Some(index);
         let label = match &key {
             RowKey::Group(_) => "Group actions",
             RowKey::Project(_) => "Project actions",
         };
         let toggled = cx.entity().downgrade();
-        Button::new(("project-row-menu", index))
+        let opened = key.clone();
+        let tree = self.project_pane.focus.clone();
+        Button::new("project-row-menu")
             .ghost()
             .tab_stop(false)
             .flex_shrink_0()
@@ -1160,19 +1611,29 @@ impl GitTurtle {
             .rounded(px(6.))
             .icon(Icon::default().path("icons/sliders.svg").size(px(12.)))
             .accessibility_label(label)
+            .debug_selector(move || format!("project-row-menu-{index}"))
             .opacity(if reveal { 1. } else { 0. })
             .group_hover("project-pane-row", |style| style.opacity(1.))
             // The popover trigger consumes the press, so the row beneath it
             // never sees a click; a click handler here would consume it first
             // and keep the menu shut.
-            .dropdown_menu(move |menu, _, cx| {
+            .app_menu(move |menu, _, cx| {
                 let snapshot = owner.upgrade().map(|app| app.read(cx).menu_snapshot(&key));
-                row_menu(menu, &owner, &key, snapshot)
+                let mut menu = row_menu(menu, &owner, &key, snapshot);
+                // This Button is no Tab stop and takes no focus: a dialog
+                // from its menu returns to the tree, as a keyboard's row
+                // menu's does.
+                menu.set_dialog_return_focus(Some(tree.clone()));
+                menu
             })
+            // A write's start or end builds the open menu again, as it does
+            // the row's right-click and keyboard menus: read only as it
+            // opened, Open project stayed as the write found it.
+            .follows_writes(cx.entity().downgrade())
             .on_open_change(move |open, _, cx| {
                 let open = *open;
                 let _ = toggled.update(cx, |this, cx| {
-                    let next = open.then_some(index);
+                    let next = open.then(|| opened.clone());
                     if this.project_pane.menu_open != next {
                         this.project_pane.menu_open = next;
                         cx.notify();
@@ -1182,50 +1643,20 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    fn render_keyboard_menu(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_keyboard_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let keyboard = self.project_pane.keyboard_menu.as_ref()?;
-        let menu = keyboard.menu.clone();
-        let position = keyboard.position;
-        let viewport = window.bounds().size;
-        Some(
-            deferred(
-                anchored().child(
-                    div()
-                        .id("project-pane-menu-overlay")
-                        .debug_selector(|| "project-pane-menu-overlay".into())
-                        .occlude()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .on_any_mouse_down(cx.listener(|this, _, window, cx| {
-                            this.dismiss_project_menu(window, cx);
-                        }))
-                        .child(
-                            anchored()
-                                .position(position)
-                                .snap_to_window_with_margin(px(8.))
-                                .child(
-                                    // A press inside the menu must reach its
-                                    // item, not the overlay behind it.
-                                    div()
-                                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                                        .child(menu),
-                                ),
-                        ),
-                ),
-            )
-            .with_priority(POPUP_PRIORITY)
-            .into_any_element(),
-        )
+        Some(keyboard.render("project-pane-menu-overlay", Self::dismiss_project_menu, cx))
     }
 }
 
-/// What a row menu shows, captured when the menu opens. Pointer menus read
-/// it from the entity at that moment; the keyboard menu captures it before
-/// building, because the entity is being updated then.
+/// What a row menu shows, captured when the menu opens or is built again.
+/// Pointer menus read it from the entity at that moment; the keyboard menu
+/// captures it before building, because the entity is being updated then.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuSnapshot {
     pub name: String,
-    pub busy: bool,
+    /// Why a running write refuses Open project, which it then states.
+    pub busy: Option<native_accessibility::MenuWait>,
     pub destinations: Vec<Destination>,
 }
 
@@ -1241,14 +1672,18 @@ impl GitTurtle {
         };
         MenuSnapshot {
             name,
-            busy: self.operation_busy.is_some(),
+            // Opening another project reads nothing the window's repository
+            // reloads after a write, so only a running write refuses it.
+            busy: self.running_wait(),
             destinations: move_destinations(&self.project_library, key),
         }
     }
 }
 
 /// One menu for the hover button, the right-click and Shift-F10. Nothing is
-/// rebuilt while rows render; the snapshot arrives when the menu opens.
+/// rebuilt while rows render; the snapshot arrives when the menu opens, and
+/// again as a write starts or ends, which builds each of them again
+/// (`native_accessibility::MenuInputs`).
 fn row_menu(
     menu: PopupMenu,
     owner: &WeakEntity<GitTurtle>,
@@ -1290,17 +1725,19 @@ fn row_menu(
             let rename = owner.clone();
             let rename_path = path.clone();
             menu.label(name)
-                .item(PopupMenuItem::new("Open project").disabled(busy).on_click(
-                    move |_, window, cx| {
-                        let target = open_path.clone();
-                        let _ = open.update(cx, |this, cx| {
-                            this.open_project_from_pane(target, window, cx)
-                        });
-                    },
-                ))
+                .item(
+                    native_accessibility::waiting_item("Open project", false, busy).on_click(
+                        move |_, window, cx| {
+                            let target = open_path.to_path_buf();
+                            let _ = open.update(cx, |this, cx| {
+                                this.open_project_from_pane(target, window, cx)
+                            });
+                        },
+                    ),
+                )
                 .item(
                     PopupMenuItem::new("Rename project…").on_click(move |_, window, cx| {
-                        let target = rename_path.clone();
+                        let target = rename_path.to_path_buf();
                         let _ = rename
                             .update(cx, |this, cx| this.open_rename_project(target, window, cx));
                     }),
@@ -1369,6 +1806,10 @@ pub struct GroupForm {
     parent: Option<String>,
     pub input: Entity<InputState>,
     error: Option<String>,
+    /// How many refusals the form has given, each on a fresh error node that
+    /// assistive technology announces, as Rename project's are: the line
+    /// kept one node, so a name refused again was heard as nothing.
+    errors_shown: usize,
     pub pending: bool,
     pub visible: bool,
     _subscription: Subscription,
@@ -1390,25 +1831,37 @@ impl GroupForm {
                 None => state,
             }
         });
-        let subscription =
-            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => {
-                    this.error = None;
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.submit(window, cx),
-                _ => {}
-            });
+        // Return submits through the dialog's default action alone, which
+        // runs once per press, as the key goes down, never on a held key's
+        // repeats, under X11 too, and never for a modified Enter. The field's
+        // own `PressEnter`, which the field sends for every Enter key-down,
+        // submitted the form as well, so after a refused save each repeat
+        // began another write, and an empty name's refusal was given twice
+        // per press, as Rename project's was.
+        let subscription = cx.subscribe_in(&input, window, |this, _, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.error = None;
+                cx.notify();
+            }
+        });
         Self {
             owner,
             intent,
             parent,
             input,
             error: None,
+            errors_shown: 0,
             pending: false,
             visible: true,
             _subscription: subscription,
         }
+    }
+
+    /// Shows `error` on a fresh node, announced at once, however often the
+    /// same reason is given.
+    fn refuse(&mut self, error: String) {
+        self.errors_shown = self.errors_shown.wrapping_add(1);
+        self.error = Some(error);
     }
 
     /// Keep the reviewed target and text until persistence reports success.
@@ -1418,7 +1871,7 @@ impl GroupForm {
         }
         let name = self.input.read(cx).value().trim().to_owned();
         if name.is_empty() {
-            self.error = Some("Enter a name for this group.".into());
+            self.refuse("Enter a name for this group.".into());
             cx.notify();
             return;
         }
@@ -1426,15 +1879,18 @@ impl GroupForm {
         self.error = None;
         let intent = self.intent;
         let form = cx.entity().downgrade();
-        if self
-            .owner
-            .update(cx, |owner, cx| {
-                owner.submit_group_name(intent, name, form, window, cx)
-            })
-            .is_err()
-        {
+        // The owner answers a refusal here rather than updating this form,
+        // which is being updated while it asks.
+        let refusal = match self.owner.update(cx, |owner, cx| {
+            owner.submit_group_name(intent, name, form, window, cx)
+        }) {
+            Ok(Ok(())) => None,
+            Ok(Err(refusal)) => Some(refusal),
+            Err(_) => Some("The project window is no longer available.".into()),
+        };
+        if let Some(refusal) = refusal {
             self.pending = false;
-            self.error = Some("The project window is no longer available.".into());
+            self.refuse(refusal);
         }
         cx.notify();
     }
@@ -1483,10 +1939,10 @@ impl Render for GroupForm {
             )
             .children(self.error.as_ref().map(|error| {
                 div()
-                    .id("project-group-error")
-                    .role(Role::Alert)
-                    .aria_label(error.clone())
-                    .a11y_synthetic_children(native_accessibility::assertive)
+                    // A fresh node for each refusal, heard again however
+                    // often the same one is given.
+                    .id(("project-group-error", self.errors_shown))
+                    .alert(error.clone())
                     .rounded(px(8.))
                     .border_1()
                     .border_color(rgb(colors.removed))
@@ -1500,3 +1956,159 @@ impl Render for GroupForm {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod recent_save_tests {
+    use super::RecentProjectSave;
+    use crate::{
+        GitTurtle, operations::Held, preferences::Preferences, workspace::REFUSED_SAVE_RETRY,
+    };
+    use gpui_kit::{Entity, TestAppContext, VisualTestContext, gpui};
+    use std::path::Path;
+
+    fn writer_answers(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    }
+
+    /// Stalls the preference writer behind a queue of other saves, which
+    /// refuses the next.
+    fn a_full_queue(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Held {
+        let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+        let fillers: Vec<_> = (0..8)
+            .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+            .collect();
+        for mut filler in fillers {
+            assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+        }
+        held
+    }
+
+    fn ask_to_remember(
+        app: &Entity<GitTurtle>,
+        project: &Path,
+        cx: &mut VisualTestContext,
+    ) -> RecentProjectSave {
+        let recent = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let recent = app.begin_recent_project_save(project);
+                app.queue_recent_project_save(project.to_owned(), recent, window, cx);
+                recent
+            })
+        });
+        cx.executor().run_until_parked();
+        recent
+    }
+
+    fn stored_project(project: &Path) -> bool {
+        Preferences::load()
+            .project_library
+            .contains_project(project)
+    }
+
+    /// A project whose save a full queue refused, removed before the save
+    /// asks again, whichever way that save is next scheduled: the removal
+    /// stands, in the store as on screen. It once came back in the store on
+    /// the retry and returned to the list at the next launch.
+    async fn a_removal_since_the_refusal_stands(by_another_project: bool, cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        let project = app
+            .read_with(cx, |app, _| app.path.clone())
+            .expect("a repository")
+            .canonicalize()
+            .unwrap();
+
+        let held = a_full_queue(&app, cx);
+        let recent = ask_to_remember(&app, &project, cx);
+        assert!(recent.listed, "the pane listed it when the save was asked");
+        assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
+        drop(held);
+        writer_answers(&app, cx);
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.edit_project_library(
+                    |library| {
+                        library.forget_project(&project);
+                        Ok(())
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.executor().run_until_parked();
+        writer_answers(&app, cx);
+        assert!(!stored_project(&project), "the pane's save removed it");
+
+        if by_another_project {
+            let another = fixture.path().canonicalize().unwrap();
+            ask_to_remember(&app, &another, cx);
+            writer_answers(&app, cx);
+            assert!(stored_project(&another), "the other project is saved");
+        } else {
+            cx.executor().advance_clock(REFUSED_SAVE_RETRY);
+            cx.executor().run_until_parked();
+            writer_answers(&app, cx);
+        }
+        assert!(!stored_project(&project), "the removal stands in the store");
+        app.read_with(cx, |app, _| {
+            assert!(!app.project_library.contains_project(&project));
+            assert_eq!(app.operation_error, None);
+        });
+    }
+
+    /// A project the store cannot take is a real failure and no busy writer.
+    #[gpui::test]
+    async fn a_project_that_cannot_be_saved_still_reports(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        ask_to_remember(&app, &fixture.path().join("never-created"), cx);
+        writer_answers(&app, cx);
+        let error = app
+            .read_with(cx, |app, _| app.operation_error_text())
+            .expect("the failure is reported");
+        assert!(
+            error.starts_with("Could not save recent projects:"),
+            "{error}"
+        );
+    }
+
+    /// A writer whose thread has stopped can never take the save, so asking
+    /// again could not help: the person hears about it.
+    #[gpui::test]
+    async fn a_stopped_writer_still_reports_a_recent_project_save(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        writer_answers(&app, cx);
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.preferences_writer = crate::operations::SerialExecutor::stopped("stopped");
+            })
+        });
+        ask_to_remember(&app, fixture.path(), cx);
+        let error = app
+            .read_with(cx, |app, _| app.operation_error_text())
+            .expect("the failure is reported");
+        assert!(
+            error.starts_with("Could not save recent projects:"),
+            "{error}"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.project_pane.recent_saves.retry.is_none()),
+            "nothing asks again"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_retry_leaves_a_project_removed_since_its_refusal(cx: &mut TestAppContext) {
+        a_removal_since_the_refusal_stands(false, cx).await;
+    }
+
+    #[gpui::test]
+    async fn another_projects_save_leaves_a_project_removed_since_its_refusal(
+        cx: &mut TestAppContext,
+    ) {
+        a_removal_since_the_refusal_stands(true, cx).await;
+    }
+}

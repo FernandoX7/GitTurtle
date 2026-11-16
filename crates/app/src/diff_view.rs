@@ -1,9 +1,16 @@
 //! Unified patch presentation with a separate old/new line-number gutter.
 //! The editor retains the exact patch, so selection, copying, and search never
 //! include presentation-only numbers. No Git reads happen in this component.
+//!
+//! Where it offers a working diff's partial actions, its changed lines are
+//! selected from the keyboard through the text's caret, never a Tab stop per
+//! line: Space toggles the changed lines under the caret or the text
+//! selection ([`DiffView::toggle_at_caret`]), the caret line's checkbox draws
+//! a mark, and the view announces each toggle from its own live region.
 
 use crate::{
     appearance::{CodeFont, palette},
+    native_accessibility::LiveRegion as _,
     partial_view::{PartialActions, PartialRow},
     text::PatchPresentation,
 };
@@ -11,13 +18,14 @@ use gitturtle_core::{ChangeArea, PartialDiff, PartialSelection};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, AppContext, Bounds, ClickEvent, ContentMask, Context, Entity, EventEmitter,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled,
-    Subscription, TextAlign, TextRun, Window, canvas,
+    FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Point,
+    Render, Role, SharedString, StatefulInteractiveElement, Styled, Subscription, TextAlign,
+    TextRun, Window, canvas,
     component::{
         Disableable, Sizable,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
-        input::EditorState,
+        input::{EditorState, Position, RopeExt},
     },
     div, fill, point, px, relative, rgb, size,
 };
@@ -31,7 +39,9 @@ use std::{
 };
 
 const FONT_SIZE: f32 = 12.;
-const CELL_PADDING: f32 = 9.;
+/// The space beside a line number inside its gutter column, at the default code size; a
+/// number ends this far inside its column's right edge.
+pub(crate) const CELL_PADDING: f32 = 9.;
 const ACTION_WIDTH: f32 = 28.;
 
 /// Opt-in observations of existing input and paint work. This deliberately does
@@ -74,19 +84,832 @@ pub struct DiffView {
     partial: Option<Arc<PartialActions>>,
     selection: LineSelection,
     partial_busy: bool,
+    /// Whether the partial write this view asked for runs, or has ended and
+    /// the read after it has yet to land here ([`Self::awaits_write`]): the
+    /// window keeps the view, its text, caret, selection and scroll through
+    /// both, and that read lands in place ([`Self::land`]).
+    writing: bool,
+    /// The changed lines that write sent, whose rows its read no longer
+    /// shows where they had no number on the side it leaves alone, so that
+    /// the rows after them keep their own place ([`Self::land`]).
+    written: BTreeSet<usize>,
+    /// Whether the window looks busy (`GitTurtle::busy_shown`), which the
+    /// partial controls a write refuses wait for to look it
+    /// ([`Self::dimmed`]).
+    busy_look: bool,
+    /// Whether the partial actions are suspended for a text review being
+    /// prepared ([`Self::suspend_partial`]), which their tooltips name
+    /// ([`Self::refusal_reason`]), until the review's read lands or the
+    /// review ends ([`Self::refresh`]).
+    reviewing: bool,
+    /// The Enter and Space presses going down in this view, and whether the
+    /// partial controls refused each ([`Presses`]), with the number of the
+    /// last key-up that released one, what ends them as focus leaves the
+    /// view's controls ([`Self::focus_moved`]), and what marks them as the
+    /// window turns inactive ([`Presses::leave`]).
+    presses: Presses,
+    key_ups: u64,
+    _focus_moves: [Subscription; 4],
+    /// The control of Find's bar a press found focus on, whose focus moving
+    /// out ends it too ([`Self::watch_find`]).
+    find_focus: Option<(FocusHandle, Subscription)>,
+    _activation: Subscription,
+    /// What the live region says of the latest Space toggle, with the
+    /// count that names its node afresh for each, so each is announced
+    /// ([`Self::render_announcement`]), until the text loses focus: focus
+    /// coming back, as to a retained view shown again, draws no node to
+    /// announce again.
+    announcement: Option<(usize, SharedString)>,
+    announcements: usize,
+    /// The selection bar's action, Stage N lines or Unstage N lines, and Clear, the
+    /// Tab stops after the text, whose press gives focus back to the text
+    /// ([`Self::render_partial_selection`]).
+    apply_focus: FocusHandle,
+    clear_focus: FocusHandle,
+    /// The focus of the Stage hunk (Unstage hunk) last pressed, which the
+    /// button of the hunk header on `hunk_row` tracks: a press focuses it,
+    /// as a pressed control takes focus, and the landing that takes its hunk
+    /// away gives that focus to the text ([`Self::land`]). It is no Tab stop.
+    hunk_focus: FocusHandle,
+    hunk_row: Option<usize>,
+    /// The partial control the pointer's button last went down on, in the
+    /// diff shown now and drawn by the frame it went down on, until its
+    /// click takes it or its press ends ([`Pressed`]).
+    pointer_press: Option<Pressed>,
+    /// Whether the view still shows the diff that the frame under the
+    /// pointer's last first press drew, a press the platform counts 1,
+    /// wherever in the window it went down ([`Self::note_first_press`]):
+    /// the later presses of that multi-click act on a Stage hunk only
+    /// while it does ([`Self::hunk_went_down`]).
+    first_press_shown: bool,
+    /// The window the view is drawn in, where a read of another diff that
+    /// lands without it in hand moves focus off a Stage hunk it ends
+    /// ([`Self::end_hunk_press`]).
+    window: gpui_kit::AnyWindowHandle,
+    /// The room that bar took in the last frame, so the text keeps the
+    /// caret's line whole above it in the frame it comes, goes or changes
+    /// height ([`BarRoom::keep_caret_line`]).
+    bar_room: Rc<BarRoom>,
     viewport: Viewport,
     pending_scroll: Rc<PendingScroll>,
     gutter_origin: Rc<Cell<Option<Point<Pixels>>>>,
+    /// The other Split side's editor, which shares one Find bar with this
+    /// view's, drawn across both sides, and which side this view is
+    /// ([`Self::share_find_with`]).
+    find_partner: Option<(Entity<EditorState>, crate::editor_find::Side)>,
     _subscription: Subscription,
+}
+
+/// The Enter and Space presses in the Diff view, each from its first
+/// key-down to its own key-up, so that one the partial controls refused
+/// stays refused for its whole press ([`DiffView::note_key_down`]). GPUI
+/// clicks the focused control as Enter or Space comes up, whichever of them
+/// went down last at the same focus: a Return or Space held on the bar's
+/// action through a partial write that failed, which kept focus there and
+/// the selection, and released after it, started a second write of those
+/// lines, and so did Return and Space held there together, one released
+/// after the failure, or a Space whose press the window never saw coming
+/// up there. Each key keeps its own press, so a refused one outlasts the
+/// other key's, which inherits its refusal: one record, of the key pressed
+/// last, ended with that other press, and a third press, the other key
+/// pressed again while the refused one was still down, began afresh and
+/// wrote as it came up (FU45-A5's security re-check).
+#[derive(Clone, Copy, Default)]
+struct Presses {
+    /// Enter's press, then Space's ([`key_slot`]).
+    keys: [Option<KeyPress>; 2],
+}
+
+impl Presses {
+    /// Whether a press under way, of either key, was refused: every Enter
+    /// or Space key-up while it lasts makes no click on the partial
+    /// controls.
+    fn refused(&self) -> bool {
+        self.keys.iter().flatten().any(|press| press.refused)
+    }
+
+    /// Whether a refused press has just come up, its key-up's click still
+    /// to come or gone ([`DiffView::note_key_up`]).
+    fn refused_coming_up(&self) -> bool {
+        self.keys
+            .iter()
+            .flatten()
+            .any(|press| press.refused && press.released.is_some())
+    }
+
+    /// Whether a press has just come up, its key-up's click still to come
+    /// or gone: a click that comes then is that key's, not a pointer's.
+    fn coming_up(&self) -> bool {
+        self.keys
+            .iter()
+            .flatten()
+            .any(|press| press.released.is_some())
+    }
+
+    /// Whether any press is under way.
+    fn any(&self) -> bool {
+        self.keys.iter().any(Option::is_some)
+    }
+
+    /// Marks each press under way as the window turns inactive: its key-up
+    /// may come outside the window, never to reach it.
+    fn leave(&mut self) {
+        for press in self.keys.iter_mut().flatten() {
+            press.left = true;
+        }
+    }
+}
+
+/// Where [`Presses`] keeps Space's press, else Enter's.
+fn key_slot(space: bool) -> usize {
+    usize::from(space)
+}
+
+/// An Enter or Space press in the Diff view ([`Presses`]).
+#[derive(Clone, Copy)]
+struct KeyPress {
+    /// Whether a key-down of it came while the partial controls refused a
+    /// press, or while a refused press of the other key was down: every
+    /// Enter or Space key-up while it lasts then makes no click on them,
+    /// and the other key, pressed meanwhile, inherits it.
+    refused: bool,
+    /// Whether its key's repeats came marked held, as macOS and Wayland
+    /// mark them: a later unmarked key-down of that key begins a fresh
+    /// press, whose key-up came where the view never saw it. GPUI's X11
+    /// client marks none, sending each repeat as a key-down alone.
+    held: bool,
+    /// Whether the latest key-down repeated it rather than beginning it.
+    repeat: bool,
+    /// The number of the key-up that released it, until it ends: a key-down
+    /// that comes before then repeats it, as an X11 repeat's release and
+    /// press, or an input method's, arrive together. A press the controls
+    /// refused ends at the next frame, any other at the next idle pass
+    /// ([`DiffView::note_key_up`]).
+    released: Option<u64>,
+    /// Whether the window turned inactive while it was down, so that its
+    /// key-up may have come outside the window ([`Presses::leave`]): the
+    /// next Return or Space here then repeats it or inherits its refusal at
+    /// most, and a press the other key begins, inheriting it, ends it,
+    /// though that key's repeats leave it, so a key-up lost costs one press
+    /// at most.
+    left: bool,
+}
+
+/// A partial control keyed by its place in the diff that the pointer's
+/// button went down on: what the pointer's press began on, which its click
+/// must still find ([`DiffView::pointer_began_on`]). A pointer press acts
+/// only on what it began on, as a key's does (decided 2026-11-15: a write
+/// acts only on what the person pressed), so a read of another diff in the
+/// view's place, or a landing that changes the text, ends it
+/// ([`DiffView::refresh`], [`DiffView::land`]) and its release does nothing,
+/// while a read of the same diff, as after a write that failed, keeps it.
+/// GPUI keeps a control's pending press by its element, which is its row or
+/// its line's place among the changed lines, and clicks whatever that
+/// element is as the button comes up over it: a press on one hunk's Stage
+/// hunk, a quiet read of an edit made outside the app that drew another
+/// hunk's on that row, and the release staged that other hunk, which nobody
+/// pressed; on a line's checkbox it selected the line that took the pressed
+/// one's place, for the bar's action to stage (FU45-A8's security re-check,
+/// F1). What it began on is what the frame under the pointer drew, so a
+/// press is recorded, and a click acts, only while the view still shows the
+/// diff that frame drew ([`DiffView::still_shows`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pressed {
+    /// The Stage hunk (Unstage hunk) of the hunk header on this row.
+    Hunk(usize),
+    /// The checkbox of the changed line with this id.
+    Line(usize),
+}
+
+/// Whether `keystroke` is Enter or Space, which GPUI clicks a focused
+/// control with as the key comes up, and which.
+fn activation_key(keystroke: &gpui_kit::Keystroke) -> Option<bool> {
+    match keystroke.key.as_str() {
+        "space" => Some(true),
+        "enter" => Some(false),
+        _ => None,
+    }
 }
 
 impl EventEmitter<DiffViewEvent> for DiffView {}
 
 impl DiffView {
+    /// The patch editor's focus, which a scrolling pane around the view
+    /// reveals when the keyboard moves onto it.
+    pub fn focus_handle(&self, cx: &App) -> gpui_kit::FocusHandle {
+        gpui_kit::Focusable::focus_handle(self.editor.read(cx), cx)
+    }
+    /// Whether the partial actions are suspended, as while a text review
+    /// or a partial write runs.
+    pub(crate) fn partial_suspended(&self) -> bool {
+        self.partial_busy
+    }
+
+    /// Whether this view asked for a partial write that runs, or has ended
+    /// with its read yet to land here: the window keeps the view through
+    /// both, rather than tearing it down for the read, and lands that read
+    /// in place ([`Self::land`]).
+    pub(crate) fn awaits_write(&self) -> bool {
+        self.writing
+    }
+
+    /// Follows the window's busy look, as each of its frames is built: the
+    /// partial controls this view's write refuses dim with it
+    /// ([`Self::dimmed`]). Set before this view renders in that frame, it
+    /// asks for no frame of its own. Once shown through this view's write,
+    /// the look stays until the write's read lands here or the wait for it
+    /// ends ([`Self::land`], [`Self::end_write`]), as DESIGN.md has a busy
+    /// look that has shown stay until the work it shows ends: the window's
+    /// spell ends as the status read after the write lands, while the
+    /// diff's read still runs, and the controls, still refusing a press,
+    /// came back looking available until it landed.
+    pub(crate) fn follow_busy_look(&mut self, shown: bool) {
+        self.busy_look = shown || (self.writing && self.busy_look);
+    }
+
+    /// Whether focus is anywhere in this view: in its text, on its
+    /// selection bar's action or Clear, which Tab reaches while a write
+    /// runs, before they look refused, or on the Stage hunk a press focused.
+    pub(crate) fn holds_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle(cx).contains_focused(window, cx)
+            || self.apply_focus.is_focused(window)
+            || self.clear_focus.is_focused(window)
+            || self.hunk_focus.is_focused(window)
+    }
+
+    /// Whether the partial controls look refused: as they are suspended,
+    /// by a text review or a press the window refused, or, through this
+    /// view's own write, only once the window looks busy, as DESIGN.md has
+    /// every control a write refuses: a write that lands sooner dims
+    /// nothing. They refuse a press and are announced unavailable at once
+    /// all the same (`partial_busy`). Dimmed as the write was pressed,
+    /// every quick Stage flashed them disabled.
+    fn dimmed(&self) -> bool {
+        self.partial_busy && (!self.writing || self.busy_look)
+    }
+
+    /// Why the partial controls are unavailable, which their tooltips say
+    /// in place of what they do once they look refused ([`Self::dimmed`]):
+    /// through this view's write, the window's Git operation and the reads
+    /// after it ([`crate::workspace::BUSY_REASON`]); suspended while a text
+    /// review is prepared, that review ([`REVIEW_REASON`]), a read whose
+    /// wait the Git operation's reason would name as work that is not
+    /// running. Dimmed for the review, they once said only what they did.
+    fn refusal_reason(&self) -> Option<&'static str> {
+        if !self.dimmed() {
+            None
+        } else if self.writing {
+            Some(crate::workspace::BUSY_REASON)
+        } else {
+            self.reviewing.then_some(REVIEW_REASON)
+        }
+    }
+
+    /// `purpose`, what a partial control does, or where it looks refused,
+    /// why it is unavailable ([`Self::refusal_reason`]): its tooltip.
+    fn said(&self, purpose: &str) -> String {
+        self.refusal_reason().unwrap_or(purpose).to_owned()
+    }
+
+    /// What the Stage hunk (Unstage hunk) on `row` says in its tooltip:
+    /// what it does to the hunk that row heads, or why it is unavailable
+    /// ([`Self::said`]).
+    fn hunk_tooltip(&self, row: usize) -> String {
+        match self
+            .partial
+            .as_ref()
+            .and_then(|partial| partial.rows.get(row))
+        {
+            Some(PartialRow::Hunk(ids)) => self.said(&format!(
+                "{} all {} in this hunk",
+                self.action(),
+                crate::counted(ids.len(), "changed line", "changed lines")
+            )),
+            _ => String::new(),
+        }
+    }
+
+    /// The tooltip of the partial control `key`, saying what `text` reads
+    /// from this view each time the tooltip renders, drawn as the kit draws
+    /// a text tooltip with its text as `‹key›/tooltip/‹text›`
+    /// ([`crate::workspace::text_tooltip`]): a pointer resting on the
+    /// control reads why it is unavailable as it dims and what it does once
+    /// the write lands, as on Projects (`GitTurtle::refusing_with_reason`).
+    /// The kit keeps a text tooltip from the pointer's entry: resting on
+    /// Stage hunk read the reason after its write had failed, beside the
+    /// button it pressed again. Noted under `key` as built, for a test.
+    fn live_tooltip(
+        &self,
+        key: String,
+        text: impl Fn(&DiffView) -> String + 'static,
+        cx: &Context<Self>,
+    ) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView + 'static {
+        let key = SharedString::from(key);
+        #[cfg(test)]
+        crate::views::note_control_tooltip(&gpui_kit::ElementId::Name(key.clone()), &text(self));
+        let view = cx.entity().downgrade();
+        move |window, cx| {
+            let said = view
+                .upgrade()
+                .map(|view| text(view.read(cx)))
+                .unwrap_or_default();
+            crate::workspace::text_tooltip(key.clone(), said.into(), window, cx)
+        }
+    }
+
+    /// Ends the wait for the read after this view's partial write, as a
+    /// press the window refuses has it, so the window's next read of the
+    /// file builds the view afresh rather than landing in this one. Its
+    /// controls stay suspended, and look it.
+    pub(crate) fn end_write(&mut self, cx: &mut Context<Self>) {
+        if self.writing {
+            self.writing = false;
+            cx.notify();
+        }
+    }
+
+    /// The selection bar's action's focus.
+    #[cfg(test)]
+    pub(crate) fn apply_focus_handle(&self) -> FocusHandle {
+        self.apply_focus.clone()
+    }
+
+    /// The selection bar's Clear's focus.
+    #[cfg(test)]
+    pub(crate) fn clear_focus_handle(&self) -> FocusHandle {
+        self.clear_focus.clone()
+    }
+
+    /// The focus of the Stage hunk a press focused.
+    #[cfg(test)]
+    pub(crate) fn hunk_focus_handle(&self) -> FocusHandle {
+        self.hunk_focus.clone()
+    }
+
+    /// How many changed lines are selected.
+    #[cfg(test)]
+    pub(crate) fn selected_lines(&self) -> usize {
+        self.selection.ids.len()
+    }
+
+    /// Selects every changed line, as their checkboxes would.
+    #[cfg(test)]
+    pub(crate) fn select_every_line(&mut self, cx: &mut Context<Self>) {
+        if let Some(partial) = &self.partial {
+            self.selection.ids = partial
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    PartialRow::Change { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            cx.notify();
+        }
+    }
+
+    /// Suspends the partial actions while a text review of this diff is
+    /// prepared, which says why in their tooltips ([`Self::refusal_reason`]).
     pub fn suspend_partial(&mut self, cx: &mut Context<Self>) {
         self.partial_busy = true;
+        self.reviewing = true;
         self.selection = LineSelection::default();
+        self.announcement = None;
         cx.notify();
+    }
+
+    /// Whether the text holds focus while the per-line controls show, and
+    /// then whether they unstage: Space then selects lines, which the status
+    /// bar names (`GitTurtle::hints_for`).
+    pub(crate) fn line_keys(&self, window: &Window, cx: &App) -> Option<bool> {
+        let partial = self.partial.as_ref()?;
+        self.focus_handle(cx)
+            .is_focused(window)
+            .then_some(partial.diff.area == ChangeArea::Staged)
+    }
+
+    /// The row the text's caret is on.
+    fn caret_row(&self, cx: &App) -> usize {
+        let state = self.editor.read(cx);
+        state.text().offset_to_point(state.cursor()).row
+    }
+
+    /// Space in the focused text while the per-line controls show: it
+    /// toggles the changed lines under the caret or the text selection
+    /// ([`Self::toggle_at_caret`]), once per press, and types nothing; the
+    /// read-only text took it for a space it refused. Elsewhere, as in Find's
+    /// field, the key goes on.
+    fn line_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key != "space"
+            || event.keystroke.modifiers.modified()
+            || self.partial.is_none()
+            || !self.focus_handle(cx).is_focused(window)
+        {
+            return;
+        }
+        cx.stop_propagation();
+        // Once per press: nor a repeat, under X11 a key-down alone, nor a
+        // press the partial controls refused, held on after its write ended
+        // and focus came to the text.
+        if !event.is_held
+            && !self.presses.keys[key_slot(true)].is_some_and(|press| press.refused || press.repeat)
+        {
+            self.toggle_at_caret(cx);
+        }
+    }
+
+    /// Records an Enter or Space key-down anywhere in this view, before
+    /// anything in it takes the key ([`Presses`]). A key-down repeats its
+    /// key's press under way: marked held, as on macOS and Wayland; alone,
+    /// before its key-up, under X11, while the press has no held repeat; or
+    /// after a key-up it follows at once, as an X11 or input method
+    /// repeat's release and press arrive. It is refused if the press was or
+    /// the controls now refuse. Otherwise its key's press begins, refused
+    /// while the controls refuse one or while a refused press of the other
+    /// key is down, as a key pressed while it is down acts no more than it
+    /// does: one marked held whose press began elsewhere acts if nothing
+    /// refuses it, and an unmarked one after held repeats begins afresh, its
+    /// last press having come up where the view never saw it. The other
+    /// key's press stays as it is, refused through presses of this one
+    /// until its own key-up, unless the window turned inactive while it was
+    /// down ([`KeyPress::left`]) and this key-down begins a press: its
+    /// refusal then passes to that press and it ends. A repeat clears this
+    /// key's own mark and leaves the other key's press as it is, that key
+    /// perhaps still down: with Return and Space held through the window's
+    /// return, a Space repeat once ended Return's press, and a Space
+    /// pressed again while Return was still down wrote. Other keys leave
+    /// the presses as they are.
+    fn note_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(space) = activation_key(&event.keystroke) else {
+            return;
+        };
+        let busy = self.partial_busy;
+        let (own, other) = (key_slot(space), key_slot(!space));
+        let repeated = self.presses.keys[own]
+            .filter(|press| event.is_held || press.released.is_some() || !press.held);
+        let other_press = self.presses.keys[other];
+        self.presses.keys[own] = Some(match repeated {
+            Some(press) => KeyPress {
+                refused: press.refused || busy,
+                held: press.held || event.is_held,
+                repeat: true,
+                released: None,
+                left: false,
+            },
+            None => KeyPress {
+                refused: busy || other_press.is_some_and(|press| press.refused),
+                held: event.is_held,
+                repeat: false,
+                released: None,
+                left: false,
+            },
+        });
+        if repeated.is_none() && other_press.is_some_and(|press| press.left) {
+            self.presses.keys[other] = None;
+        }
+        self.watch_find(window, cx);
+    }
+
+    /// Notes the key-up of the Enter or Space press under way, before the
+    /// control it comes up on takes its click, which a refused press
+    /// refuses ([`Self::refuses_click`]): the press ends at the next idle
+    /// pass, unless its key goes down again first, as an X11 repeat's press
+    /// follows its release. A refused one ends only at the next frame: GPUI's
+    /// X11 client drops a repeat's release when its press comes in the same
+    /// batch of events, but a pair split across two batches reached the view
+    /// as a key-up, an idle pass and a key-down, after which the rest of the
+    /// hold was a fresh press whose key-up wrote; the next batch comes within
+    /// microseconds, a frame some milliseconds later, and a person's next
+    /// press later still. The other key's press stays under way.
+    fn note_key_up(
+        &mut self,
+        event: &gpui_kit::KeyUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(space) = activation_key(&event.keystroke) else {
+            return;
+        };
+        let Some(press) = self.presses.keys[key_slot(space)].as_mut() else {
+            return;
+        };
+        self.key_ups = self.key_ups.wrapping_add(1);
+        let key_up = self.key_ups;
+        press.released = Some(key_up);
+        if press.refused {
+            let view = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |this, _| this.end_press(space, key_up));
+            });
+        } else {
+            cx.spawn(async move |this, cx| {
+                let _ = this.update(cx, |this, _| this.end_press(space, key_up));
+            })
+            .detach();
+        }
+    }
+
+    /// Ends the press of Space, else Enter, that `key_up` released, unless
+    /// its key went down again; the other key's press stays.
+    fn end_press(&mut self, space: bool, key_up: u64) {
+        let press = &mut self.presses.keys[key_slot(space)];
+        if press.is_some_and(|press| press.released == Some(key_up)) {
+            *press = None;
+        }
+    }
+
+    /// Ends the presses under way as focus leaves this view's controls for
+    /// another control in its window, which their key-ups then come up on:
+    /// the next press here is a fresh one. Focus moving among the text, the
+    /// bar's action and Clear, the Stage hunk a press focused, and Find's
+    /// bar keeps them. A window turning inactive keeps them, marked
+    /// ([`Presses::leave`]): GPUI reports focus
+    /// leaving then too, but the window keeps its focus, still in this
+    /// view. Under X11 another client's keyboard grab takes the window's
+    /// focus and gives it back while the key is held, and its next repeat,
+    /// a key-down alone, would begin a press the failed write no longer
+    /// refused, whose key-up wrote. A key-up lost outside the window leaves
+    /// the press for the next one here to repeat or inherit: after held
+    /// repeats it begins afresh; under X11 that press is swallowed, and its
+    /// own key-up ends it.
+    fn focus_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.holds_focus(window, cx)
+            || crate::editor_find::bar_contains_focused(&self.editor, window, cx)
+        {
+            self.watch_find(window, cx);
+        } else {
+            self.presses = Presses::default();
+            self.find_focus = None;
+        }
+    }
+
+    /// Watches the control of Find's bar that holds focus while a press is
+    /// under way, so that focus moving out of the view from it ends the
+    /// press as it does from the text, the action or Clear
+    /// ([`Self::focus_moved`]). The bar comes as Find first opens, with
+    /// controls of its own, so each is watched as a press finds focus on
+    /// it: Space pressed in Find's field during a write, where it types,
+    /// then a click on the file list mid-hold, which took its key-up, left
+    /// the press under way, and the next Return on the action inherited its
+    /// refusal. Return in the field begins none: Find's Enter action takes
+    /// it before any key listener.
+    fn watch_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.presses.any() {
+            return;
+        }
+        let Some(focused) = window.focused(cx) else {
+            return;
+        };
+        if self
+            .find_focus
+            .as_ref()
+            .is_some_and(|(watched, _)| *watched == focused)
+            || !crate::editor_find::bar_contains_focused(&self.editor, window, cx)
+        {
+            return;
+        }
+        let moved = cx.on_focus_out(&focused, window, |this: &mut DiffView, _, window, cx| {
+            this.focus_moved(window, cx)
+        });
+        self.find_focus = Some((focused, moved));
+    }
+
+    /// Whether the key coming up ends or comes during an Enter or Space
+    /// press the partial controls refused: they refuse the click GPUI makes
+    /// of it on the control it comes up on, whichever key goes up, since
+    /// GPUI clicks on either after a key-down of either. A refused press
+    /// stays refused for its whole press, as a held key acts once, though
+    /// the write that refused it has ended by then.
+    fn refuses_key_up(&self) -> bool {
+        self.presses.refused()
+    }
+
+    /// Whether the partial controls refuse `event`, a click on one: while
+    /// suspended, or the click GPUI makes of a key-up during a refused
+    /// press ([`Self::refuses_key_up`]).
+    fn refuses_click(&self, event: &ClickEvent) -> bool {
+        self.partial_busy || (matches!(event, ClickEvent::Keyboard(_)) && self.refuses_key_up())
+    }
+
+    /// Whether `event`, a click on the partial control `control`, is a
+    /// key's, or the pointer's whose press went down on that control in the
+    /// diff shown now ([`Pressed`]), which it ends: a pointer's click after
+    /// its press ended, on whatever the new diff drew under it, acts on
+    /// nothing.
+    fn pointer_began_on(&mut self, event: &ClickEvent, control: Pressed) -> bool {
+        !matches!(event, ClickEvent::Mouse(_)) || self.pointer_press.take() == Some(control)
+    }
+
+    /// Whether the view still shows `drawn`, the diff a frame drew its
+    /// partial controls for: that very read, or a later read of the same
+    /// diff ([`shows_same_diff`]). A press acts only on what the person
+    /// pressed, which is what the frame under the pointer drew, not what
+    /// the view holds an instant later (decided 2026-11-15). A read lands
+    /// in the view at once and is drawn only by the next frame, so until
+    /// then the window shows the controls of the diff before it, each
+    /// handler naming a row and line ids of that diff: a click that came
+    /// then on one hunk's Stage hunk applied its lines' ids to the diff
+    /// read, where they were another hunk's or a part of one, and staged
+    /// two added lines without the lines they replaced; a press that went
+    /// down then was recorded on its row and released, after the frame, on
+    /// the hunk drawn there (PTR-B's security re-check, G1).
+    fn still_shows(&self, drawn: &Arc<PartialActions>) -> bool {
+        self.partial
+            .as_ref()
+            .is_some_and(|now| Arc::ptr_eq(now, drawn) || shows_same_diff(Some(drawn), Some(now)))
+    }
+
+    /// Records what the pointer's press begins on, `control` of the frame
+    /// that drew `drawn`, as its button goes down there, for its click to
+    /// find ([`Pressed`]): nothing where the view shows another diff by
+    /// then ([`Self::still_shows`]), so its release does nothing either,
+    /// whatever the next frame draws under it.
+    fn pointer_went_down(&mut self, control: Pressed, drawn: &Arc<PartialActions>) {
+        self.pointer_press = self.still_shows(drawn).then_some(control);
+    }
+
+    /// Notes a multi-click's first press, `event` counted 1 by the platform,
+    /// wherever in the window it goes down: whether the view shows `drawn`,
+    /// the diff of the frame it went down on, which is what the person saw
+    /// as the multi-click began. A read of another diff ends it
+    /// ([`Self::refresh`]), until the next first press.
+    fn note_first_press(&mut self, event: &gpui_kit::MouseDownEvent, drawn: &Arc<PartialActions>) {
+        if event.click_count <= 1 {
+            self.first_press_shown = self.still_shows(drawn);
+        }
+    }
+
+    /// Records the pointer's press on the Stage hunk (Unstage hunk) of the
+    /// hunk header on `row`, drawn by the frame of `drawn`, as its button
+    /// goes down ([`Self::pointer_went_down`]), unless it is a
+    /// multi-click's second or later press, counted above 1 by the
+    /// platform, and another diff has taken the place of the one that
+    /// multi-click's first press found: its release then does nothing
+    /// (decided 2026-11-15, as the Working list's own double-click rule of
+    /// 2026-11-08: an accidental double-click is a write nobody asked
+    /// for). A double-click's first press wrote its hunk, the write and
+    /// its reads landed inside the double-click time, 270 to 450 ms after
+    /// the press on the development host against the platform's 400 ms,
+    /// and the second press wrote the hunk then drawn under the still
+    /// pointer (PTR-B's security re-check, F2). Where the diff is the
+    /// same, as after a write that failed, the press acts, and so does a
+    /// single click on the button that arrived, which names its hunk.
+    fn hunk_went_down(
+        &mut self,
+        event: &gpui_kit::MouseDownEvent,
+        row: usize,
+        drawn: &Arc<PartialActions>,
+    ) {
+        if event.click_count > 1 && !self.first_press_shown {
+            self.pointer_press = None;
+        } else {
+            self.pointer_went_down(Pressed::Hunk(row), drawn);
+        }
+    }
+
+    /// Toggles every changed line the text selection draws, from its first
+    /// row to its last, the caret's row alone where nothing is selected:
+    /// all selected where any is not, else all cleared, as clicks on their
+    /// checkboxes would, the caret's line becoming the anchor a Shift+click
+    /// extends from. A selection ending at the start of a row draws nothing
+    /// on that row, which it leaves out, wherever the caret is: Shift+Up
+    /// twice from a line's start once toggled that line with the two drawn
+    /// above it, and a forward selection ending there selected a line never
+    /// drawn selected, for the next press to stage. Context, hunk headers
+    /// and the file's header select nothing, and a hunk's lines are reached
+    /// by selecting them. The live region says what changed.
+    fn toggle_at_caret(&mut self, cx: &mut Context<Self>) {
+        if self.partial_busy {
+            return;
+        }
+        let Some(partial) = self.partial.clone() else {
+            return;
+        };
+        let state = self.editor.read(cx);
+        let range = state.selected_range();
+        let text = state.text();
+        let caret = text.offset_to_point(state.cursor()).row;
+        let (start, end) = (
+            text.offset_to_point(range.start),
+            text.offset_to_point(range.end),
+        );
+        let last = if end.row > start.row && end.column == 0 {
+            end.row - 1
+        } else {
+            end.row
+        };
+        let rows = start.row..=last;
+        let changes: Vec<_> = rows
+            .filter_map(|row| match partial.rows.get(row)? {
+                PartialRow::Change { id, added, line } => Some((row, *id, *added, *line)),
+                _ => None,
+            })
+            .collect();
+        let Some(&(_, last, added, line)) = changes.last() else {
+            return;
+        };
+        let select = changes
+            .iter()
+            .any(|(_, id, ..)| !self.selection.ids.contains(id));
+        for (_, id, ..) in &changes {
+            if select {
+                self.selection.ids.insert(*id);
+            } else {
+                self.selection.ids.remove(id);
+            }
+        }
+        self.selection.anchor = Some(
+            changes
+                .iter()
+                .find(|(row, ..)| *row == caret)
+                .map_or(last, |(_, id, ..)| *id),
+        );
+        let action = self.action().to_lowercase();
+        let state = if select {
+            "selected"
+        } else {
+            "no longer selected"
+        };
+        let said = match &changes[..] {
+            [_] => format!(
+                "{} line {line} {state} to {action}",
+                if added { "Added" } else { "Removed" }
+            ),
+            many => format!(
+                "{} {state} to {action}",
+                crate::counted(many.len(), "line", "lines")
+            ),
+        };
+        self.announcements = self.announcements.wrapping_add(1);
+        self.announcement = Some((self.announcements, said.into()));
+        cx.notify();
+    }
+
+    /// The partial actions' verb: Unstage in the staged area, else Stage.
+    fn action(&self) -> &'static str {
+        if self
+            .partial
+            .as_ref()
+            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged)
+        {
+            "Unstage"
+        } else {
+            "Stage"
+        }
+    }
+
+    /// The polite status node saying the latest toggle, out of flow in a
+    /// 1 px box at the view's top-left, over the gutter's corner where no
+    /// control lies, its text its name and its value, as AT-SPI reads the
+    /// one and macOS the other. Each toggle draws a node of its own, which
+    /// screen readers announce as it appears, as the window's copy
+    /// announcement does (`copy_feedback::announcement`).
+    fn render_announcement(&self) -> Option<AnyElement> {
+        let (said, text) = self.announcement.clone()?;
+        Some(
+            crate::native_accessibility::recorded(
+                div()
+                    .id(("partial-line-announcement", said))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size(px(1.))
+                    .overflow_hidden()
+                    .role(Role::Status)
+                    .polite()
+                    .aria_label(text.clone())
+                    .aria_value(text),
+            )
+            .into_any_element(),
+        )
+    }
+
+    /// Gives focus back to the text after a press of the selection bar's
+    /// control holding `focus`, which goes with the selection: focus never
+    /// rests on a control that is gone. A pointer press elsewhere leaves
+    /// focus where it is.
+    fn return_focus(&self, focus: &FocusHandle, window: &mut Window, cx: &mut App) {
+        if focus.is_focused(window) {
+            window.focus(&self.focus_handle(cx), cx);
+        }
+    }
+
+    /// Moves the caret to the start of `row`, focusing the text, as a click
+    /// on that row's checkbox does: Space goes on from there. A click on a
+    /// text scrolled sideways leaves it there rather than jumping to the
+    /// lines' starts, and the text scrolls by the least that shows the row
+    /// whole, as it reveals a moved caret ([`BarRoom::keep_whole`]): the
+    /// move's own scroll takes both axes and is applied only at layout, so
+    /// it is put back and the vertical part redone. A selection bar the
+    /// click brings scrolls the text on from there ([`BarRoom::reveal`]).
+    fn move_caret_to(&self, row: usize, window: &mut Window, cx: &mut App) {
+        self.editor.update(cx, |state, cx| {
+            let offset = state.scroll_offset();
+            state.set_cursor_position(Position::new(row as u32, 0), window, cx);
+            state.set_scroll_offset(offset, cx);
+            let text = state.input_bounds().size.height;
+            self.bar_room.keep_whole(text, state, cx);
+        });
     }
 
     pub fn navigate_change(&mut self, forward: bool, cx: &mut Context<Self>) {
@@ -110,8 +933,15 @@ impl DiffView {
         cx.notify();
     }
 
-    pub fn find_header_height(&self, cx: &App) -> Pixels {
-        crate::editor_find::panel_height(&self.editor, cx)
+    /// Shares one Find bar with `partner`'s editor, as Split's sides do, this
+    /// view being `side`: the split view draws it across both, so this view
+    /// draws none ([`crate::editor_find::Editor::sharing_find_with`]).
+    pub fn share_find_with(
+        &mut self,
+        partner: Entity<EditorState>,
+        side: crate::editor_find::Side,
+    ) {
+        self.find_partner = Some((partner, side));
     }
 
     pub fn refresh(
@@ -127,9 +957,192 @@ impl DiffView {
         );
         self.change_rows = Arc::clone(&presentation.change_rows);
         self.change_index = None;
+        // Other partial actions, or none: the bar's last record belongs to
+        // the diff it was drawn over, and kept, the first frame of these
+        // compared their room with it and could scroll the text.
+        let same = match (&self.partial, &partial) {
+            (Some(was), Some(now)) => Arc::ptr_eq(was, now),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.bar_room = Rc::default();
+            if !shows_same_diff(self.partial.as_deref(), partial.as_deref()) {
+                // Another diff: the pointer's press ends as a key's does,
+                // and the multi-click under way acts no more
+                // ([`Self::hunk_went_down`]).
+                self.pointer_press = None;
+                self.first_press_shown = false;
+                self.end_hunk_press(cx);
+            }
+        }
         self.partial = partial;
         self.selection = LineSelection::default();
+        self.announcement = None;
         self.partial_busy = false;
+        self.writing = false;
+        self.written = BTreeSet::new();
+        self.busy_look = false;
+        self.reviewing = false;
+    }
+
+    /// Ends the press of the Stage hunk last pressed as another diff takes
+    /// the place of the one it was pressed on, as the quiet read of an edit
+    /// made outside the app, by the person's editor or a formatter, lands
+    /// in place (`replace_quiet_preview`), or a text review's read: the
+    /// button on its row may now be another hunk's, or that row a line, so
+    /// focus resting on it goes to the text, as a landing gives it
+    /// ([`Self::land`]). A write acts only on what the person pressed, and
+    /// focus never stays on a handle no frame draws. Kept after a press
+    /// whose write failed, the row's focus went to whichever Stage hunk the
+    /// new diff drew there, built out of view for it, and a Return or Space
+    /// there, or the key-up of one pressed before the read, wrote a hunk the
+    /// person never pressed; on a line it rested on a handle no frame drew.
+    /// Moved off the button, a key pressed before the read comes up in the
+    /// text, where it presses nothing.
+    fn end_hunk_press(&mut self, cx: &mut Context<Self>) {
+        if self.hunk_row.take().is_none() {
+            return;
+        }
+        let (hunk, text, window) = (self.hunk_focus.clone(), self.focus_handle(cx), self.window);
+        // These reads land without the window in hand, as does the text
+        // review's release that refreshes this view, so the move comes as
+        // the update they land in ends, before the window takes another key.
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                if hunk.is_focused(window) {
+                    window.focus(&text, cx);
+                }
+            });
+        });
+    }
+
+    /// Lands a read of the diff this view shows in place, as the read after
+    /// its partial write does: the text takes `patch`, and its caret, first
+    /// visible line and line selection stay where the person left them.
+    /// The caret stays on its line where the new text still shows it (an
+    /// added line staged from the unstaged area shows on as context, a
+    /// line's identity being its number on the side the write leaves
+    /// alone, the worktree's or HEAD's, and a row with none there, as an
+    /// added line in the staged area, its position in its run of such rows
+    /// that the write left), else it goes to the nearest changed line after
+    /// it, else before; the first visible line stays at the top where it
+    /// still shows, else the nearest line after it does, and a caret that
+    /// would land out of view is revealed by the least scroll ([`Landing`]).
+    /// The line selection stays where the text has not changed, as after a
+    /// write that failed, and otherwise goes with the lines it selected,
+    /// which left the area, and its bar with it, whose action or Clear
+    /// gives focus to the text, as does the Stage hunk a press focused,
+    /// whose hunk went with its write. Focus is otherwise left where it is. Rebuilt for the read
+    /// instead, the view went for the write's whole length ("Choose a file"
+    /// in its place, focus on the window frame) and came back with its
+    /// caret, selection and scroll lost (QA-118 P3.10).
+    pub(crate) fn land(
+        &mut self,
+        patch: &str,
+        decorations: Option<&crate::editor_find::PatchDecorations>,
+        presentation: &PatchPresentation,
+        partial: Option<Arc<PartialActions>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let staged = partial
+            .as_ref()
+            .or(self.partial.as_ref())
+            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged);
+        let (unchanged, caret, offset, line_height) = {
+            let state = self.editor.read(cx);
+            (
+                state.value().as_ref() == patch,
+                state.cursor_position(),
+                state.scroll_offset(),
+                state.line_height(),
+            )
+        };
+        let same_rows = match (&self.partial, &partial) {
+            (Some(was), Some(now)) => was.rows == now.rows,
+            (None, None) => true,
+            _ => false,
+        };
+        let kept = unchanged && same_rows;
+        let selection = std::mem::take(&mut self.selection);
+        let bar_room = Rc::clone(&self.bar_room);
+        let old = Arc::clone(&self.rows);
+        let written = written_rows(self.partial.as_deref(), &self.written);
+        crate::text::refresh_editor(
+            &self.editor,
+            patch,
+            decorations.map(|collection| (collection, presentation)),
+            window,
+            cx,
+        );
+        self.refresh(presentation, partial, cx);
+        if kept {
+            // The same text, as after a write that failed: the caret, any
+            // text selection and the scroll stay as `refresh_editor` keeps
+            // them, and so do the line selection and its bar.
+            self.selection = selection;
+            self.bar_room = bar_room;
+            return;
+        }
+        let landing = Landing::new(&old, &presentation.rows, staged, &written);
+        let caret_row = landing.caret(caret.line as usize);
+        // The text's room once laid out again, with no bar under it, since
+        // the landed text has no line selected.
+        let bar = bar_room
+            .last
+            .get()
+            .map_or(px(0.), |(bar, _)| bar.max(px(0.)));
+        let room = self.editor.read(cx).input_bounds().size.height + bar;
+        let y = line_height.filter(|height| *height > px(0.)).map(|height| {
+            let scrolled = (-offset.y).max(px(0.));
+            let row = (f32::from(scrolled) / f32::from(height)).floor() as usize;
+            let rest = scrolled - height * row as f32;
+            let y = -(height * landing.line(row) as f32 + rest);
+            // The caret's line revealed by the least scroll, as the text
+            // reveals a moved caret: kept on the first visible line, a
+            // caret moved to the nearest changed line could land out of
+            // view, where the next Space would select a line not drawn.
+            let line = y + height * caret_row as f32;
+            if line < px(0.) {
+                y - line
+            } else if line + height > room && height <= room {
+                y - (line + height - room)
+            } else {
+                y
+            }
+        });
+        self.editor.update(cx, |state, cx| {
+            let position = Position::new(caret_row as u32, caret.character);
+            let at = state.text().position_to_offset(&position);
+            state.set_selected_range(at..at, cx);
+            state.set_scroll_offset(point(offset.x, y.unwrap_or(offset.y)), cx);
+        });
+        // The bar goes with the line selection: focus on its action or
+        // Clear, which Tab reaches while the write runs, goes to the text,
+        // as a press of either gives it ([`Self::return_focus`]). Left
+        // there, it fell to the window frame.
+        let bar = self.apply_focus.clone();
+        self.return_focus(&bar, window, cx);
+        let clear = self.clear_focus.clone();
+        self.return_focus(&clear, window, cx);
+        // So does focus on the Stage hunk the write was pressed on, whose
+        // hunk the landed text no longer shows: left there, it fell to the
+        // window frame with the button.
+        let hunk = self.hunk_focus.clone();
+        self.return_focus(&hunk, window, cx);
+        self.hunk_row = None;
+        // And the pointer's press on a partial control ends with the text
+        // it went down over ([`Pressed`]).
+        self.pointer_press = None;
+        cx.notify();
+    }
+
+    /// The text's accessible name, such as "Read-only Before source", for
+    /// a test.
+    #[cfg(test)]
+    pub(crate) fn label(&self) -> &SharedString {
+        &self.label
     }
 
     pub fn refresh_numbered(
@@ -141,7 +1154,14 @@ impl DiffView {
         self.rows = rows;
         self.column_width = column_width;
         self.pending_scroll = Rc::default();
-        self.gutter_origin = Rc::default();
+        // The gutter keeps the origin it last painted at: the partial
+        // actions are placed from it ([`Self::render_partial_controls`]).
+        // Forgotten here, a view refreshed while hidden, as a text review
+        // released as Quick Open's inspection covers it, drew
+        // its first frame back with each action above its row (8 px at the
+        // default size), where it stayed until something else drew, and the
+        // pointer's arrival drew it in place, from under the pointer: Stage
+        // looked enabled and its first press started nothing.
         cx.notify();
     }
 }
@@ -207,6 +1227,19 @@ pub fn new_numbered(
                 cx.notify();
             }
         });
+        let (apply_focus, clear_focus) = (cx.focus_handle(), cx.focus_handle());
+        let hunk_focus = cx.focus_handle();
+        let text_focus = gpui_kit::Focusable::focus_handle(editor.read(cx), cx);
+        let focus_moves = [&text_focus, &apply_focus, &clear_focus, &hunk_focus].map(|focus| {
+            cx.on_focus_out(focus, window, |this: &mut DiffView, _, window, cx| {
+                this.focus_moved(window, cx)
+            })
+        });
+        let activation = cx.observe_window_activation(window, |this: &mut DiffView, window, _| {
+            if !window.is_window_active() {
+                this.presses.leave();
+            }
+        });
         DiffView {
             editor,
             rows,
@@ -218,16 +1251,44 @@ pub fn new_numbered(
             partial: None,
             selection: LineSelection::default(),
             partial_busy: false,
+            writing: false,
+            written: BTreeSet::new(),
+            busy_look: false,
+            reviewing: false,
+            presses: Presses::default(),
+            key_ups: 0,
+            _focus_moves: focus_moves,
+            find_focus: None,
+            _activation: activation,
+            announcement: None,
+            announcements: 0,
+            apply_focus,
+            clear_focus,
+            hunk_focus,
+            hunk_row: None,
+            pointer_press: None,
+            first_press_shown: false,
+            window: window.window_handle(),
+            bar_room: Rc::default(),
             viewport,
             pending_scroll: Rc::default(),
             gutter_origin: Rc::default(),
+            find_partner: None,
             _subscription: subscription,
         }
     })
 }
 
 impl Render for DiffView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The caret's row while the text holds focus: its checkbox draws
+        // the caret's mark ([`Self::render_partial_controls`]).
+        let caret = self.line_keys(window, cx).map(|_| self.caret_row(cx));
+        // The latest toggle's announcement goes with the text's focus, so
+        // focus coming back draws no node to announce it again.
+        if caret.is_none() {
+            self.announcement = None;
+        }
         let editor = self.editor.clone();
         let scroll_editor = self.editor.clone();
         let pending_scroll = Rc::clone(&self.pending_scroll);
@@ -244,101 +1305,193 @@ impl Render for DiffView {
             0.
         };
         let width = action_width + column_width * if single_column { 1. } else { 2. };
-        let controls = self.render_partial_controls(width, cx);
+        // The selection bar's layout and, in the frame that brings it, the
+        // text's reveal above it, asked for before the controls beside the
+        // text are placed from the text's offset.
+        let bar = (!self.selection.ids.is_empty()).then(|| {
+            let layout = bar_layout(
+                self.action(),
+                self.selection.ids.len(),
+                self.bar_room.width.get(),
+                window,
+            );
+            self.bar_room.reveal(layout.height, &self.editor, cx);
+            layout
+        });
+        let controls = self.render_partial_controls(width, caret, window, cx);
+        let painted_room = Rc::clone(&self.bar_room);
+        let find_partner = self.find_partner.clone();
+        // The gutter and the partial actions stand beside the text under
+        // Find's bar, which spans them (`editor_find::Editor::beside`), so a
+        // narrow side's bar keeps the line numbers' width as well. The editor
+        // paints first: it records its current scrolled bounds during paint,
+        // and the later gutter canvas reads those same-frame coordinates,
+        // avoiding a one-frame lag during wheel scrolling.
+        let gutter = div()
+            .id("diff-line-gutter")
+            .absolute()
+            .left_0()
+            .top_0()
+            .w(px(width))
+            .h_full()
+            .on_scroll_wheel(move |event, _, cx| {
+                scroll_editor.update(cx, |state, cx| {
+                    let (Some(line_height), Some(text_bounds)) =
+                        (state.line_height(), state.text_bounds())
+                    else {
+                        return;
+                    };
+                    let delta = event.delta.pixel_delta(line_height);
+                    let old_offset = state.scroll_offset();
+                    // Match Editor's default trailing space; bound the deferred
+                    // scroll before layout, which applies its own final clamp.
+                    let bottom_padding = (text_bounds.size.height / 2.).max(line_height * 3.);
+                    let content_height = (line_height * row_count as f32 + bottom_padding)
+                        .max(text_bounds.size.height);
+                    let min_y = (state.input_bounds().size.height - content_height).min(px(0.));
+                    if let Some(next) = pending_scroll.advance(old_offset, delta.y, min_y) {
+                        // The gutter stays fixed horizontally, including when
+                        // a trackpad gesture includes both axes.
+                        state.set_scroll_offset(next, cx);
+                        cx.stop_propagation();
+                    }
+                });
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        // Editor has painted and applied its deferred offset.
+                        // Notifications alone do not mark that boundary.
+                        painted_scroll.clear();
+                        painted_room.painted_at(&editor, cx);
+                        if painted_room.ask_again(&editor, cx) {
+                            window.request_animation_frame();
+                        }
+                        // The partial actions are placed from this origin
+                        // as the view renders, before this paint, so a paint
+                        // that finds it moved, the first one or one after the
+                        // view was laid out anew, asks for the frame that
+                        // draws them in place.
+                        if gutter_origin.replace(Some(bounds.origin)) != Some(bounds.origin)
+                            && action_width > 0.
+                        {
+                            window.request_animation_frame();
+                        }
+                        #[cfg(test)]
+                        painted_rows::record(&editor, cx);
+                        if action_width > 0. {
+                            window.paint_quad(fill(bounds, rgb(palette(cx).panel)));
+                        }
+                        let numbered_bounds = Bounds::new(
+                            point(bounds.origin.x + px(action_width), bounds.origin.y),
+                            size(bounds.size.width - px(action_width), bounds.size.height),
+                        );
+                        if scroll_trace_enabled() {
+                            trace_editor_paint(&editor, &trace_label, bounds, window, cx);
+                        }
+                        paint_gutter(
+                            &editor,
+                            &rows,
+                            column_width,
+                            single_column,
+                            numbered_bounds,
+                            window,
+                            cx,
+                        );
+                    },
+                )
+                .size_full(),
+            )
+            .children(controls);
+        let editor = crate::editor_find::Editor::new(&self.editor)
+            .h(relative(1.))
+            .readonly(true)
+            .bordered(false)
+            .aria_label(self.label.clone())
+            .when(self.partial.is_some() && !self.partial_busy, |editor| {
+                editor.aria_description(line_keys_description(
+                    self.action(),
+                    !self.selection.ids.is_empty(),
+                ))
+            })
+            .text_size(crate::appearance::code_text());
+        let editor = match &find_partner {
+            // Split's headings give their row to the shared bar, which names
+            // and marks the side it searches instead.
+            Some((partner, side)) => editor.sharing_find_with(partner, *side),
+            None => editor,
+        };
         let content = div()
             .size_full()
             .flex_1()
             .min_h_0()
             .relative()
             .overflow_hidden()
-            .pl(px(width))
             .code_font(cx)
             .text_size(crate::appearance::code_text())
-            // Paint the editor first. It records its current scrolled bounds
-            // during paint; the later gutter canvas reads those same-frame
-            // coordinates, avoiding a one-frame lag during wheel scrolling.
-            .child(
-                crate::editor_find::Editor::new(&self.editor)
-                    .h(relative(1.))
-                    .readonly(true)
-                    .bordered(false)
-                    .aria_label(self.label.clone())
-                    .text_size(crate::appearance::code_text()),
-            )
-            .child(
-                div()
-                    .id("diff-line-gutter")
+            .when(self.partial.is_some(), |el| {
+                // Prepainted before the text, once the frame is laid out.
+                let (room, state) = (Rc::clone(&self.bar_room), self.editor.clone());
+                el.child(
+                    canvas(
+                        move |column, _, cx| room.keep_caret_line(column, &state, cx),
+                        |_, _, _, _| {},
+                    )
                     .absolute()
-                    .left_0()
-                    .top_0()
-                    .w(px(width))
-                    .h_full()
-                    .on_scroll_wheel(move |event, _, cx| {
-                        scroll_editor.update(cx, |state, cx| {
-                            let (Some(line_height), Some(text_bounds)) =
-                                (state.line_height(), state.text_bounds())
-                            else {
-                                return;
-                            };
-                            let delta = event.delta.pixel_delta(line_height);
-                            let old_offset = state.scroll_offset();
-                            // Match Editor's default trailing space; bound the deferred
-                            // scroll before layout, which applies its own final clamp.
-                            let bottom_padding =
-                                (text_bounds.size.height / 2.).max(line_height * 3.);
-                            let content_height = (line_height * row_count as f32 + bottom_padding)
-                                .max(text_bounds.size.height);
-                            let min_y =
-                                (state.input_bounds().size.height - content_height).min(px(0.));
-                            if let Some(next) = pending_scroll.advance(old_offset, delta.y, min_y) {
-                                // The gutter stays fixed horizontally, including when
-                                // a trackpad gesture includes both axes.
-                                state.set_scroll_offset(next, cx);
-                                cx.stop_propagation();
-                            }
-                        });
-                    })
+                    .size_full(),
+                )
+            })
+            .child(editor.beside(px(width), vec![gutter.into_any_element()]));
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .when_some(self.partial.clone(), |el, drawn| {
+                // The view's foot, recorded before the text column reads it,
+                // and its width, which the bar lays out across: a width that
+                // changed under the bar asks for the frame that lays the bar
+                // out across the new one (`Window::refresh` is ignored while
+                // a frame draws, and the old form stayed).
+                let (room, shown) = (Rc::clone(&self.bar_room), bar.is_some());
+                // Each multi-click's first press, wherever in the window
+                // it goes down, with the diff this frame draws
+                // ([`Self::note_first_press`]).
+                let first_press =
+                    cx.listener(move |this, event, _, _| this.note_first_press(event, &drawn));
+                el.capture_key_down(cx.listener(Self::note_key_down))
+                    .capture_key_up(cx.listener(Self::note_key_up))
+                    .on_key_down(cx.listener(Self::line_key))
                     .child(
                         canvas(
-                            |_, _, _| (),
-                            move |bounds, _, window, cx| {
-                                // Editor has painted and applied its deferred offset.
-                                // Notifications alone do not mark that boundary.
-                                painted_scroll.clear();
-                                gutter_origin.set(Some(bounds.origin));
-                                if action_width > 0. {
-                                    window.paint_quad(fill(bounds, rgb(palette(cx).panel)));
+                            move |view, window, _| {
+                                room.foot.set(Some(view.bottom()));
+                                let width = Some(view.size.width);
+                                if room.width.replace(width) != width && shown {
+                                    window.request_animation_frame();
                                 }
-                                let numbered_bounds = Bounds::new(
-                                    point(bounds.origin.x + px(action_width), bounds.origin.y),
-                                    size(bounds.size.width - px(action_width), bounds.size.height),
-                                );
-                                if scroll_trace_enabled() {
-                                    trace_editor_paint(&editor, &trace_label, bounds, window, cx);
-                                }
-                                paint_gutter(
-                                    &editor,
-                                    &rows,
-                                    column_width,
-                                    single_column,
-                                    numbered_bounds,
-                                    window,
-                                    cx,
+                            },
+                            move |_, _, window, _| {
+                                window.on_mouse_event(
+                                    move |event: &gpui_kit::MouseDownEvent, phase, window, cx| {
+                                        if phase == gpui_kit::DispatchPhase::Capture {
+                                            first_press(event, window, cx);
+                                        }
+                                    },
                                 );
                             },
                         )
+                        .absolute()
                         .size_full(),
                     )
-                    .children(controls),
-            );
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(content)
-            .when(!self.selection.ids.is_empty(), |el| {
-                el.child(self.render_partial_selection(cx))
             })
+            .child(content)
+            .children(
+                bar.as_ref()
+                    .map(|layout| self.render_partial_selection(layout, window, cx)),
+            )
+            .children(self.render_announcement())
     }
 }
 
@@ -405,6 +1558,8 @@ impl DiffView {
         };
         let diff = Arc::clone(&partial.diff);
         self.partial_busy = true;
+        self.writing = true;
+        self.written = ids.iter().copied().collect();
         cx.emit(DiffViewEvent::ApplyPartial {
             diff,
             selection: PartialSelection::Lines(ids),
@@ -412,10 +1567,22 @@ impl DiffView {
         cx.notify();
     }
 
-    fn render_partial_controls(&self, width: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// The per-line checkboxes and each hunk's Stage hunk, over the gutter
+    /// beside the text's visible rows, none of them a Tab stop: a long diff
+    /// would make hundreds, and its lines are selected from the text
+    /// ([`Self::toggle_at_caret`]). The checkbox on the `caret` row, where
+    /// the text holds focus, draws the caret's mark.
+    fn render_partial_controls(
+        &self,
+        width: f32,
+        caret: Option<usize>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let Some(partial) = &self.partial else {
             return Vec::new();
         };
+        let accent = palette(cx).accent;
         let state = self.editor.read(cx);
         let (Some(bounds), Some(line_height), Some(visible)) = (
             state.text_bounds(),
@@ -424,59 +1591,150 @@ impl DiffView {
         ) else {
             return Vec::new();
         };
+        // Placed from where the gutter last painted. Before its first paint
+        // they fall back to the text's origin, which lies below the gutter's
+        // (8 px at the default size), and that paint, finding the origin
+        // moved, asks for the frame that draws them in place.
         let input = state.input_bounds();
-        let top = bounds.origin.y - input.origin.y;
         let origin = self.gutter_origin.get().unwrap_or(input.origin);
-        let action = if partial.diff.area == ChangeArea::Staged {
-            "Unstage"
-        } else {
-            "Stage"
-        };
+        // The text lays out this frame at its offset now, which a scroll
+        // asked for since it painted has moved, as the bar's reveal does
+        // ([`BarRoom::reveal`]): the controls stand where its rows will.
+        let shift = self
+            .bar_room
+            .painted
+            .get()
+            .map_or(px(0.), |painted| state.scroll_offset().y - painted);
+        let top = bounds.origin.y - input.origin.y + shift;
+        // The rows the text shows at that offset: the ones it last showed,
+        // moved by the rows it has scrolled since, a part of a row taking
+        // one more. However far a scrollbar drag or a jump moved the text,
+        // only the viewport's rows are built; the range once widened on both
+        // sides by the whole jump, 40,000 checkboxes for 20,000 rows.
+        let moved = -shift / line_height;
+        let rows = partial.rows.len();
+        let first = visible
+            .start
+            .saturating_add_signed(moved.floor() as isize)
+            .min(rows);
+        let end = visible
+            .end
+            .saturating_add_signed(moved.ceil() as isize)
+            .min(rows);
+        let action = self.action();
+        let (refused, dimmed) = (self.partial_busy, self.dimmed());
+        // The Stage hunk a press focused stays built while its row is out of
+        // view, clipped with the rows, so focus stays on it as the text
+        // scrolls: left unbuilt, its focus fell to the window frame. It goes
+        // as focus leaves it, where it once lasted until the next landing.
+        let held = self.hunk_focus.is_focused(window);
+        let pressed = self
+            .hunk_row
+            .filter(|row| held && !(first..end).contains(row) && *row < rows);
+        // Stage hunk stands inside the gutter, which clips the controls, by
+        // the room its focus ring takes, so the ring a press's focus draws
+        // is whole (DESIGN.md: a Button rings on any focus, a pointer's
+        // included). Inset 2 px, its sides were cut.
+        let ring = crate::appearance::button_ring_room(cx);
         let mut elements = Vec::new();
-        for row in visible.start.min(partial.rows.len())..visible.end.min(partial.rows.len()) {
+        for row in (first..end).chain(pressed) {
             let y = top + line_height * row as f32;
             match &partial.rows[row] {
                 PartialRow::None => {}
                 PartialRow::Hunk(ids) => {
                     let ids = Arc::clone(ids);
+                    // The diff this frame draws, which each handler acts
+                    // on only while the view still shows it
+                    // ([`Self::still_shows`]).
+                    let (went_down, clicked) = (Arc::clone(partial), Arc::clone(partial));
+                    let tooltip = self.live_tooltip(
+                        format!("partial-hunk-{row}"),
+                        move |view| view.hunk_tooltip(row),
+                        cx,
+                    );
+                    let stage = Button::new(("partial-hunk", row))
+                        .debug_selector(move || format!("partial-hunk-{row}"))
+                        .tab_stop(false)
+                        .small()
+                        .w_full()
+                        .h(line_height - px(2.))
+                        .px_1()
+                        .rounded(px(3.))
+                        .text_size(crate::appearance::ui_text(10.))
+                        .label(format!("{action} hunk"))
+                        .accessibility_label(format!("{action} hunk at patch line {}", row + 1))
+                        .when(self.hunk_row == Some(row), |stage| {
+                            stage.track_focus(&self.hunk_focus)
+                        });
                     elements.push(
                         div()
                             .absolute()
                             .top(y + px(1.))
-                            .left(px(2.))
-                            .w(px(width - 4.))
+                            .left(ring)
+                            .w(px(width) - ring * 2.)
                             .h(line_height - px(2.))
                             .child(
-                                Button::new(("partial-hunk", row))
-                                    .small()
-                                    .w_full()
-                                    .h(line_height - px(2.))
-                                    .px_1()
-                                    .rounded(px(3.))
-                                    .text_size(crate::appearance::ui_text(10.))
-                                    .label(format!("{action} hunk"))
-                                    .accessibility_label(format!(
-                                        "{action} hunk at patch line {}",
-                                        row + 1
-                                    ))
-                                    .disabled(self.partial_busy)
-                                    .tooltip(format!(
-                                        "{action} all {} changed lines in this hunk",
-                                        ids.len()
-                                    ))
-                                    .on_click(cx.listener(move |this, event, _, cx| {
-                                        if this.click_matches_row(event, row, cx) {
+                                crate::workspace::refusing(
+                                    stage,
+                                    || format!("partial-hunk-{row}"),
+                                    refused,
+                                    dimmed,
+                                )
+                                .tooltip_view(tooltip)
+                                // What the pointer's press begins on, for
+                                // its click to find ([`Pressed`]).
+                                .on_mouse_down(
+                                    gpui_kit::MouseButton::Left,
+                                    cx.listener(move |this, event, _, _| {
+                                        this.hunk_went_down(event, row, &went_down);
+                                    }),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, event, window, cx| {
+                                        if this.still_shows(&clicked)
+                                            && this.pointer_began_on(event, Pressed::Hunk(row))
+                                            && !this.refuses_click(event)
+                                            && this.click_matches_row(event, row, cx)
+                                        {
+                                            // The pressed control takes
+                                            // focus, as the bar's do, and
+                                            // gives it to the text as its
+                                            // hunk lands away ([`Self::land`]).
+                                            this.hunk_row = Some(row);
+                                            window.focus(&this.hunk_focus.clone(), cx);
                                             this.apply_partial(ids.to_vec(), cx);
                                         }
-                                    })),
+                                    },
+                                )),
                             )
                             .into_any_element(),
                     );
                 }
                 PartialRow::Change { id, added, line } => {
                     let id = *id;
+                    let (went_down, clicked) = (Arc::clone(partial), Arc::clone(partial));
+                    // The caret's mark: a 2 px bar in the ring's accent at
+                    // the checkbox's leading side, as tall as its box, a
+                    // mark rather than a ring, since focus stays in the
+                    // text. Out of flow, it moves nothing.
+                    let mark = (caret == Some(row)).then(|| {
+                        let mark = div()
+                            .debug_selector(|| "partial-line-caret".into())
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(-5.))
+                            .w(px(2.))
+                            .bg(rgb(accent));
+                        #[cfg(test)]
+                        let mark = mark.child(painted_rows::cell(None));
+                        mark
+                    });
+                    let cell = div();
+                    #[cfg(test)]
+                    let cell = cell.child(painted_rows::cell(Some(row)));
                     elements.push(
-                        div()
+                        cell.debug_selector(move || format!("partial-line-{row}"))
                             .absolute()
                             .top(y)
                             .left(px(5.))
@@ -486,29 +1744,57 @@ impl DiffView {
                             .items_center()
                             .justify_center()
                             .child(
-                                Checkbox::new(("partial-line", id))
-                                    .small()
-                                    .checked(self.selection.ids.contains(&id))
-                                    .disabled(self.partial_busy)
-                                    .accessibility_label(format!(
-                                        "Select {} line {line} for {}",
-                                        if *added { "added" } else { "removed" },
-                                        action.to_lowercase()
-                                    ))
-                                    .tooltip(
-                                        "Select this changed line. Shift-click selects a range.",
-                                    )
-                                    .on_click(cx.listener(move |this, checked, window, cx| {
-                                        if this.partial_busy {
-                                            return;
-                                        }
-                                        this.selection.toggle(
-                                            id,
-                                            *checked,
-                                            window.modifiers().shift,
-                                        );
-                                        cx.notify();
-                                    })),
+                                div().relative().flex().children(mark).child(
+                                    self.line_checkbox(row, id, *added, *line, refused, dimmed)
+                                        .on_mouse_down(
+                                            gpui_kit::MouseButton::Left,
+                                            cx.listener(move |this, _, _, _| {
+                                                this.pointer_went_down(
+                                                    Pressed::Line(id),
+                                                    &went_down,
+                                                );
+                                            }),
+                                        )
+                                        .on_click(cx.listener(move |this, checked, window, cx| {
+                                            // No Tab stop, it takes no key's
+                                            // click; refused as one comes up
+                                            // all the same, while a pointer's
+                                            // click acts.
+                                            if this.partial_busy || this.presses.refused_coming_up()
+                                            {
+                                                return;
+                                            }
+                                            // Its line is one of the diff
+                                            // this frame drew: on another,
+                                            // the id names another line
+                                            // ([`Self::still_shows`]).
+                                            if !this.still_shows(&clicked) {
+                                                return;
+                                            }
+                                            // A pointer's, for the press that
+                                            // went down on this line's
+                                            // checkbox in the diff shown now
+                                            // ([`Pressed`]): the kit's
+                                            // Checkbox passes no event, so a
+                                            // key's click is one that comes
+                                            // as its key-up does.
+                                            if !this.presses.coming_up()
+                                                && this.pointer_press.take()
+                                                    != Some(Pressed::Line(id))
+                                            {
+                                                return;
+                                            }
+                                            this.selection.toggle(
+                                                id,
+                                                *checked,
+                                                window.modifiers().shift,
+                                            );
+                                            // The checkbox says what its click did.
+                                            this.announcement = None;
+                                            this.move_caret_to(row, window, cx);
+                                            cx.notify();
+                                        })),
+                                ),
                             )
                             .into_any_element(),
                     );
@@ -530,6 +1816,62 @@ impl DiffView {
         ]
     }
 
+    /// The checkbox of the changed line `id`, `line` on its side, `added`
+    /// or removed, on `row`, without its click: while `refused` its handler
+    /// refuses a press at once and it is announced unavailable at once, as
+    /// the bar's controls and Stage hunk are (`workspace::refusing`), and it
+    /// looks it only where `dimmed`, once the window looks busy
+    /// ([`Self::dimmed`]). The kit's Checkbox reported no unavailable state
+    /// apart from its look, so it was announced available through the delay.
+    fn line_checkbox(
+        &self,
+        row: usize,
+        id: usize,
+        added: bool,
+        line: usize,
+        refused: bool,
+        dimmed: bool,
+    ) -> Checkbox {
+        #[cfg(test)]
+        crate::workspace::refusals::record(
+            format!("partial-line-{row}"),
+            refused || dimmed,
+            dimmed,
+        );
+        Checkbox::new(("partial-line", id))
+            .tab_stop(false)
+            .small()
+            .checked(self.selection.ids.contains(&id))
+            .disabled(dimmed)
+            .accessibility_disabled(refused || dimmed)
+            .accessibility_label(format!(
+                "Select {} line {line} to {}",
+                if added { "added" } else { "removed" },
+                self.action().to_lowercase()
+            ))
+            .tooltip(noted_tooltip(
+                format!("partial-line-{row}"),
+                self.refusal_reason(),
+                || {
+                    format!(
+                        "Select this changed line. {} selects a range.",
+                        crate::shortcuts::SHIFT_CLICK
+                    )
+                },
+            ))
+    }
+
+    /// The checkbox on `row`, as the view builds it now, for a test.
+    #[cfg(test)]
+    pub(crate) fn line_checkbox_at(&self, row: usize) -> Option<Checkbox> {
+        match self.partial.as_ref()?.rows.get(row)? {
+            PartialRow::Change { id, added, line } => {
+                Some(self.line_checkbox(row, *id, *added, *line, self.partial_busy, self.dimmed()))
+            }
+            _ => None,
+        }
+    }
+
     fn click_matches_row(&self, event: &ClickEvent, row: usize, cx: &App) -> bool {
         if matches!(event, ClickEvent::Keyboard(_)) {
             return true;
@@ -545,60 +1887,368 @@ impl DiffView {
         y >= top && y < top + height
     }
 
-    fn render_partial_selection(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The bar under the text while lines are selected, right-aligned:
+    /// Stage (or Unstage) with the selection's count, "Stage 3 lines", the
+    /// next Tab stop after the text, and Clear, laid out as `layout` says
+    /// ([`bar_layout`]). Either press, from the keyboard, gives focus back
+    /// to the text, as the bar goes with the selection
+    /// ([`Self::return_focus`]).
+    fn render_partial_selection(
+        &self,
+        layout: &BarLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let palette = palette(cx);
-        let action = if self
-            .partial
-            .as_ref()
-            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged)
-        {
-            "Unstage"
-        } else {
-            "Stage"
-        };
-        let count = self.selection.ids.len();
+        let (refused, dimmed) = (self.partial_busy, self.dimmed());
+        // Refused, either press does nothing, focus included: they look
+        // refused only once the window looks busy ([`Self::dimmed`]), and
+        // then say why.
+        let action = crate::workspace::refusing(
+            partial_action(&layout.label)
+                .track_focus(&self.apply_focus)
+                .tooltip_view(self.live_tooltip(
+                    "apply-partial-selection".into(),
+                    |view| view.said(ACTION_TOOLTIP),
+                    cx,
+                )),
+            || "apply-partial-selection".into(),
+            refused,
+            dimmed,
+        )
+        .on_click(cx.listener(|this, event, window, cx| {
+            if this.refuses_click(event) {
+                return;
+            }
+            this.return_focus(&this.apply_focus.clone(), window, cx);
+            this.apply_partial(this.selection.ids.iter().copied().collect(), cx)
+        }));
+        let action = described_action(action, self.action(), self.selection.ids.len(), window, cx);
         div()
+            .debug_selector(|| "partial-selection-bar".into())
             .flex_shrink_0()
-            .px_3()
-            .py_2()
+            .px(crate::appearance::ui_size(BAR_INSET))
+            .py(crate::appearance::ui_size(BAR_PADDING))
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap_2()
+            .justify_end()
+            .gap(crate::appearance::ui_size(BAR_GAP))
             .bg(rgb(palette.panel))
             .border_t_1()
             .border_color(rgb(palette.border))
+            .child(action)
             .child(
-                div()
-                    .flex_1()
-                    .text_size(crate::appearance::ui_text(11.))
-                    .text_color(rgb(palette.muted))
-                    .child(format!(
-                        "{count} {} selected",
-                        if count == 1 { "line" } else { "lines" }
-                    )),
-            )
-            .child(
-                Button::new("clear-partial-selection")
-                    .small()
-                    .label("Clear")
-                    .disabled(self.partial_busy)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.selection = LineSelection::default();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("apply-partial-selection")
-                    .small()
-                    .primary()
-                    .label(format!("{action} selected lines"))
-                    .disabled(self.partial_busy)
-                    .tooltip("For a replacement, select both the removed and added lines.")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.apply_partial(this.selection.ids.iter().copied().collect(), cx)
-                    })),
+                crate::workspace::refusing(
+                    clear_control(layout.icon)
+                        .track_focus(&self.clear_focus)
+                        .tooltip_view(self.live_tooltip(
+                            "clear-partial-selection".into(),
+                            |view| view.said(CLEAR_NAME),
+                            cx,
+                        )),
+                    || "clear-partial-selection".into(),
+                    refused,
+                    dimmed,
+                )
+                .on_click(cx.listener(|this, event, window, cx| {
+                    if this.refuses_click(event) {
+                        return;
+                    }
+                    this.return_focus(&this.clear_focus.clone(), window, cx);
+                    this.selection = LineSelection::default();
+                    this.announcement = None;
+                    cx.notify();
+                })),
             )
             .into_any_element()
+    }
+}
+
+/// What the diff text's accessible description says while Space selects
+/// lines there, so not during a partial write: what Space does and, while
+/// lines are `selected` and the bar is drawn, that Tab reaches its action,
+/// as the GitHub panel's patch lines say what their keys do. `action` is the
+/// partial actions' verb.
+fn line_keys_description(action: &str, selected: bool) -> String {
+    let verb = action.to_lowercase();
+    let space =
+        format!("Space selects the changed line at the caret, or the selected lines, to {verb}.");
+    if selected {
+        format!("{space} Tab reaches {action}.")
+    } else {
+        space
+    }
+}
+
+/// The selection bar's room beside its sides, above and below its controls
+/// and between them, at the default interface size.
+pub(crate) const BAR_INSET: f32 = 12.;
+const BAR_PADDING: f32 = 8.;
+pub(crate) const BAR_GAP: f32 = 8.;
+
+/// What Clear's icon form is named and tooltipped.
+const CLEAR_NAME: &str = "Clear line selection";
+
+thread_local! {
+    /// The action's and Clear's labels as laid out, each for its font and
+    /// size ([`bar_layout`]).
+    static ACTION_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static CLEAR_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// How the selection bar lays out ([`bar_layout`]).
+struct BarLayout {
+    /// The action's label, "Stage 3 lines".
+    label: String,
+    /// Whether Clear is its 28 px icon.
+    icon: bool,
+    /// The bar's height, its border included.
+    height: Pixels,
+}
+
+/// How the selection bar lays out across a Diff view `width` wide, as it
+/// was last drawn, in the one responsive order (DESIGN.md), decided from
+/// the interface font before layout: the action and Clear's label on one
+/// row where both fit, else Clear as the shared 28 px icon control beside
+/// the action, else that icon wrapped below, whole. No frame at a settled
+/// width draws a part of it cut or wrapped first; the one frame that
+/// changes the width draws the form the old width chose and asks for the
+/// next, which lays it out across the new one. At 18 pt in a 461 × 490
+/// window the view is 243 px wide, where Clear's label beside a two-digit
+/// count wrapped below and took the text's room before it became an icon.
+/// A view not yet drawn lays it out on one row, labelled.
+fn bar_layout(action: &str, count: usize, width: Option<Pixels>, window: &Window) -> BarLayout {
+    let label = format!("{action} {}", crate::counted(count, "line", "lines"));
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let control = snap(crate::appearance::ui_size(28.));
+    let gap = snap(crate::appearance::ui_size(BAR_GAP));
+    let room = width.map(|width| width - snap(crate::appearance::ui_size(BAR_INSET)) * 2.);
+    let drawn = crate::text_button_width(&[label.as_str()], &ACTION_LABEL, window);
+    let fits = |clear: Pixels| room.is_none_or(|room| drawn + gap + clear <= room);
+    let (icon, rows) = if fits(crate::text_button_width(&["Clear"], &CLEAR_LABEL, window)) {
+        (false, 1.)
+    } else {
+        (true, if fits(control) { 1. } else { 2. })
+    };
+    let padding = snap(crate::appearance::ui_size(BAR_PADDING));
+    BarLayout {
+        label,
+        icon,
+        height: padding * 2. + control * rows + gap * (rows - 1.) + px(1.),
+    }
+}
+
+/// The selection bar's action, `label`, "Stage 3 lines" ("Unstage 3
+/// lines" in the staged area), named by the words it shows, so speech
+/// input that says what it sees finds it (WCAG 2.5.3), and described by
+/// the selection it acts on ([`described_action`]): it was named "Stage 3
+/// selected lines".
+fn partial_action(label: &str) -> Button {
+    crate::button("apply-partial-selection", label.to_owned(), "", false)
+        .debug_selector(|| "apply-partial-selection".into())
+        .primary()
+        .accessibility_label(label.to_owned())
+}
+
+/// Whether `now`, the partial actions of a diff read again, show the diff
+/// `was` did: the same rows and hunks, as after a write that failed, or no
+/// actions either time. Another diff can head the row a Stage hunk was
+/// pressed on with another hunk ([`DiffView::end_hunk_press`]).
+fn shows_same_diff(was: Option<&PartialActions>, now: Option<&PartialActions>) -> bool {
+    match (was, now) {
+        (Some(was), Some(now)) => {
+            was.rows == now.rows
+                && was.diff.path == now.diff.path
+                && was.diff.area == now.diff.area
+                && was.diff.hunks == now.diff.hunks
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// The selection bar's action's tooltip while it can act.
+const ACTION_TOOLTIP: &str = "For a replacement, select both the removed and added lines.";
+
+/// What dimmed partial controls say while a text review of their diff is
+/// prepared, which suspends them ([`DiffView::refusal_reason`]).
+const REVIEW_REASON: &str = "Wait until the text review is ready";
+
+/// A line checkbox's tooltip, `key` its row's: what it does, from
+/// `purpose`, or, where it looks refused, `reason`, why it is unavailable,
+/// as DESIGN.md has a control say ([`DiffView::refusal_reason`]). Dimmed,
+/// they once said only what they did. The kit's Checkbox takes only a text
+/// tooltip, kept from the pointer's entry, so a pointer resting on one
+/// reads the text it came to until it moves (a kit change, not made), where
+/// Stage hunk and the bar's controls read theirs again as it renders
+/// ([`DiffView::live_tooltip`]). Noted under `key` for a test.
+fn noted_tooltip(
+    key: String,
+    reason: Option<&'static str>,
+    purpose: impl FnOnce() -> String,
+) -> String {
+    let tooltip = reason.map_or_else(purpose, str::to_owned);
+    crate::views::note_control_tooltip(&gpui_kit::ElementId::Name(key.into()), &tooltip);
+    tooltip
+}
+
+/// `button`, the selection bar's action ([`partial_action`]), as drawn,
+/// described by the `count` lines it acts on, "Stages the 3 selected
+/// lines": the kit's Button takes a description only as the base Button it
+/// draws.
+fn described_action(
+    button: Button,
+    action: &str,
+    count: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::base::Button {
+    button.base(window, cx).aria_description(if count == 1 {
+        format!("{action}s the selected line")
+    } else {
+        format!("{action}s the {count} selected lines")
+    })
+}
+
+/// The selection bar's Clear, labelled, or where `icon`, the shared 28 px
+/// icon control, the close icon, named "Clear line selection"
+/// ([`bar_layout`]), its tooltip as the bar draws it
+/// ([`DiffView::live_tooltip`]).
+fn clear_control(icon: bool) -> Button {
+    let control = if icon {
+        crate::views::compact_control_name(
+            crate::button("clear-partial-selection", "", "close", false),
+            "clear-partial-selection",
+            CLEAR_NAME,
+        )
+    } else {
+        crate::button("clear-partial-selection", "Clear", "", false).accessibility_label("Clear")
+    };
+    control.debug_selector(|| "clear-partial-selection".into())
+}
+
+/// The room the selection bar takes under the text, read as each frame is
+/// prepainted, after layout and before the text: the view records its foot,
+/// then the text's column, above the bar, compares the bar with the last
+/// frame's ([`Self::keep_caret_line`]).
+#[derive(Default)]
+struct BarRoom {
+    /// The view's foot in this frame.
+    foot: Cell<Option<Pixels>>,
+    /// The bar's height and the text column's bounds in the last frame.
+    last: Cell<Option<(Pixels, Bounds<Pixels>)>>,
+    /// The view's width in the last frame, which the bar lays out across
+    /// ([`bar_layout`]).
+    width: Cell<Option<Pixels>>,
+    /// The text's vertical offset as it last painted, which the controls
+    /// beside it are placed from, with any scroll asked for since
+    /// ([`DiffView::render_partial_controls`]).
+    painted: Cell<Option<Pixels>>,
+    /// The offset a reveal asked for that the text's end, as the text last
+    /// laid out, stopped short of, asked for again once it has laid out
+    /// above the bar ([`Self::ask_again`]).
+    refused: Cell<Option<Pixels>>,
+}
+
+impl BarRoom {
+    /// As the view renders the frame that brings the bar, `height` tall
+    /// ([`bar_layout`]), keeps the caret's line, if the text showed any of
+    /// it, whole in the room left above the bar, by the least scroll, as
+    /// [`Self::keep_caret_line`] does for a bar that changes height: asked
+    /// for here, before the checkboxes and the caret's mark are placed from
+    /// the offset it asks for, they stand on their rows in the bar's first
+    /// frame. Decided only in prepaint, they lagged a frame behind it.
+    fn reveal(&self, height: Pixels, editor: &Entity<EditorState>, cx: &mut App) {
+        if self.last.get().is_some_and(|(bar, _)| bar > px(0.5)) {
+            return;
+        }
+        editor.update(cx, |state, cx| {
+            let room = state.input_bounds().size.height - height;
+            self.keep_whole(room, state, cx);
+        });
+    }
+
+    /// Scrolls the text by the least that keeps the caret's line, if the
+    /// text showed any of it, whole in `room` from the text's top. The text
+    /// clamps that scroll to the end it last laid out, before the room
+    /// shrank, so near the file's end it can stop short: that offset is
+    /// kept for [`Self::ask_again`].
+    fn keep_whole(&self, room: Pixels, state: &mut EditorState, cx: &mut Context<EditorState>) {
+        let Some(height) = state.line_height() else {
+            return;
+        };
+        let text = state.input_bounds();
+        let offset = state.scroll_offset();
+        let row = state.text().offset_to_point(state.cursor()).row;
+        // The line's top below the text's.
+        let line = offset.y + height * row as f32;
+        if line >= text.size.height || line + height <= px(0.) || height > room {
+            return;
+        }
+        let by = if line + height > room {
+            line + height - room
+        } else if line < px(0.) {
+            line
+        } else {
+            return;
+        };
+        let wanted = offset.y - by;
+        state.set_scroll_offset(point(offset.x, wanted), cx);
+        self.refused
+            .set((state.scroll_offset().y != wanted).then_some(wanted));
+    }
+
+    /// Records the offset the text painted at, once it has painted.
+    fn painted_at(&self, editor: &Entity<EditorState>, cx: &App) {
+        self.painted.set(Some(editor.read(cx).scroll_offset().y));
+    }
+
+    /// Once the text has painted, and so holds the end and height it laid
+    /// out with above the bar, asks again for the offset a reveal was
+    /// refused, saying whether it did, as that asks for a frame to draw it.
+    /// The offset is asked for as it stands rather than the line revealed
+    /// anew, since the refused reveal can leave the line wholly under the
+    /// bar, where it no longer counts as shown. With the caret on the
+    /// file's last row at 18 pt in 461 × 490, a bar wrapped to two rows,
+    /// 112 px, outran the 75 px the text scrolls past its end, and the
+    /// line stayed under it.
+    fn ask_again(&self, editor: &Entity<EditorState>, cx: &mut App) -> bool {
+        let Some(wanted) = self.refused.take() else {
+            return false;
+        };
+        editor.update(cx, |state, cx| {
+            let sideways = state.scroll_offset().x;
+            state.set_scroll_offset(point(sideways, wanted), cx);
+        });
+        true
+    }
+
+    /// Where the bar has come, gone or changed height since the last frame,
+    /// keeps the caret's line, if the text showed any of it, whole in the
+    /// text's new height, scrolling by the least, as the text reveals a
+    /// moved caret: the text lays out this same frame at that offset, so no
+    /// frame draws the bar over that line. The text keeps its top under
+    /// Find's bar and ends where its `column` does. In the half tile (18 pt,
+    /// 461 × 490) the bar the first selected line brought covered the
+    /// text's last rows, the caret's among them, until the caret moved.
+    fn keep_caret_line(&self, column: Bounds<Pixels>, editor: &Entity<EditorState>, cx: &mut App) {
+        let Some(foot) = self.foot.get() else {
+            return;
+        };
+        let bar = foot - column.bottom();
+        let Some((was, last)) = self.last.replace(Some((bar, column))) else {
+            return;
+        };
+        if was == bar {
+            return;
+        }
+        editor.update(cx, |state, cx| {
+            let text = state.input_bounds();
+            let room =
+                text.size.height + (column.bottom() - last.bottom()) - (column.top() - last.top());
+            self.keep_whole(room, state, cx);
+        });
     }
 }
 
@@ -678,6 +2328,7 @@ fn paint_gutter(
     cx: &mut App,
 ) {
     let palette = palette(cx);
+    let labels = crate::appearance::labels(cx);
     window.paint_quad(fill(bounds, rgb(palette.panel)));
     for x in [column_width - 1., column_width * 2. - 1.]
         .into_iter()
@@ -725,8 +2376,8 @@ fn paint_gutter(
             let numbers = rows[row];
             let (color, background) = match (numbers.old, numbers.new) {
                 _ if single_column => (palette.muted, None),
-                (Some(_), None) => (palette.removed, Some(palette.removed_background)),
-                (None, Some(_)) => (palette.added, Some(palette.added_background)),
+                (Some(_), None) => (labels.removed, Some(palette.removed_background)),
+                (None, Some(_)) => (labels.added, Some(palette.added_background)),
                 _ => (palette.line_number, None),
             };
             if let Some(background) = background {
@@ -783,19 +2434,175 @@ pub(crate) struct LineNumbers {
     pub(crate) new: Option<u64>,
 }
 
+/// A row's place in the file ([`line_places`]): the number of its line on
+/// the side a partial write leaves alone, or of the next such line, whether
+/// the row is that line, and else its position in its run of such rows.
+type Place = (u64, bool, usize);
+
+/// Each row's place in the file, read from its number on the side a partial
+/// write leaves alone (`staged`: HEAD's, else the worktree's), increasing
+/// down the patch: a numbered line is `(number, true, 0)`, and any other row,
+/// an added line in the staged area, a removed line in the unstaged one or a
+/// header, `(next number, false, k)`, just before the line that follows, `k`
+/// its position among the rows of its run that the write leaves, so that
+/// each keeps its own place. A row of a run that the write sends
+/// (`written`, as [`written_rows`] reads them), which it takes away, has the
+/// place of the next row it leaves in its run. Placed alike, every row of a run landed on its first: a caret on
+/// the fourth of five staged added lines went to the first as a line of
+/// another hunk was unstaged, and the first visible line with it; counted
+/// with the rows the write took, a caret on the fourth went to the fifth as
+/// the second was unstaged.
+fn line_places(rows: &[LineNumbers], staged: bool, written: &[bool]) -> Vec<Place> {
+    let mut run = 0;
+    let mut places: Vec<Place> = rows
+        .iter()
+        .enumerate()
+        .map(
+            |(row, numbers)| match if staged { numbers.old } else { numbers.new } {
+                Some(number) => {
+                    run = 0;
+                    (number, true, 0)
+                }
+                None if written.get(row).copied().unwrap_or(false) => (u64::MAX, false, run),
+                None => {
+                    run += 1;
+                    (u64::MAX, false, run - 1)
+                }
+            },
+        )
+        .collect();
+    let mut next = u64::MAX;
+    for place in places.iter_mut().rev() {
+        if place.1 {
+            next = place.0;
+        } else {
+            place.0 = next;
+        }
+    }
+    places
+}
+
+/// The rows before the patch's first numbered line, its file headers and
+/// first hunk's header.
+fn header_rows(rows: &[LineNumbers]) -> usize {
+    rows.iter()
+        .position(|numbers| numbers.old.is_some() || numbers.new.is_some())
+        .unwrap_or(rows.len())
+}
+
+/// Which rows of the patch `partial` was drawn over a partial write of the
+/// changed lines `ids` sends: those lines, and the header of a hunk whose
+/// every line it sends, as the hunk goes with them. Those numbered on the
+/// side the write leaves alone stay, as context, and the others go.
+fn written_rows(partial: Option<&PartialActions>, ids: &BTreeSet<usize>) -> Vec<bool> {
+    let Some(partial) = partial.filter(|_| !ids.is_empty()) else {
+        return Vec::new();
+    };
+    partial
+        .rows
+        .iter()
+        .map(|row| match row {
+            PartialRow::Change { id, .. } => ids.contains(id),
+            PartialRow::Hunk(hunk) => hunk.iter().all(|id| ids.contains(id)),
+            PartialRow::None => false,
+        })
+        .collect()
+}
+
+/// Where the rows of the patch `old` land in the patch `new`, read again
+/// after a partial write ([`DiffView::land`]), each by its place
+/// ([`line_places`]), `taken` the rows of `old` the write took away.
+struct Landing<'a> {
+    new: &'a [LineNumbers],
+    old_places: Vec<Place>,
+    new_places: Vec<Place>,
+    taken: Vec<bool>,
+    old_headers: usize,
+    new_headers: usize,
+}
+
+impl<'a> Landing<'a> {
+    /// `written` the rows of `old` the write sent ([`written_rows`]).
+    fn new(old: &[LineNumbers], new: &'a [LineNumbers], staged: bool, written: &[bool]) -> Self {
+        let old_places = line_places(old, staged, written);
+        // Sent, a row numbered on the side the write leaves alone stays,
+        // as context: the caret on a staged added line stays on it.
+        let taken = written
+            .iter()
+            .zip(&old_places)
+            .map(|(written, place)| *written && !place.1)
+            .collect();
+        Self {
+            new,
+            old_places,
+            new_places: line_places(new, staged, &[]),
+            taken,
+            old_headers: header_rows(old),
+            new_headers: header_rows(new),
+        }
+    }
+
+    /// The first row of `new` at or after the place of `row`, else the last.
+    fn at(&self, row: usize) -> usize {
+        let last = self.new.len().saturating_sub(1);
+        let Some(place) = self.old_places.get(row) else {
+            return row.min(last);
+        };
+        self.new_places
+            .partition_point(|other| other < place)
+            .min(last)
+    }
+
+    /// Where `row` lands as the first visible line: on its own place where
+    /// `new` shows it, a header row by its place among the headers, else on
+    /// the first row after where it stood.
+    fn line(&self, row: usize) -> usize {
+        if row < self.old_headers {
+            return row
+                .min(self.new_headers.saturating_sub(1))
+                .min(self.new.len().saturating_sub(1));
+        }
+        self.at(row)
+    }
+
+    /// Where the caret on `row` lands: on its own place where `new` shows
+    /// it, else on the nearest changed line after it, else before, else
+    /// where [`Self::line`] puts it. A row the write took away shows
+    /// nowhere, though the next row of its run has its place.
+    fn caret(&self, row: usize) -> usize {
+        let at = self.at(row);
+        let place = self.old_places.get(row);
+        let taken = self.taken.get(row).copied().unwrap_or(false);
+        if !taken && place.is_some() && place == self.new_places.get(at) {
+            return at;
+        }
+        let new = self.new;
+        let changed = |row: &usize| new[*row].old.is_some() != new[*row].new.is_some();
+        (at..new.len())
+            .find(changed)
+            .or_else(|| (0..at).rev().find(changed))
+            .unwrap_or_else(|| self.line(row))
+    }
+}
+
 /// Pure worker-side preparation; the UI constructor only shares these results.
 pub(crate) fn prepare_gutter(patch: &str) -> (Arc<[LineNumbers]>, f32) {
     let rows: Arc<[LineNumbers]> = parse_rows(patch).into();
-    let digits = rows
+    let widest = rows
         .iter()
         .flat_map(|row| [row.old, row.new])
         .flatten()
-        .map(|number| number.checked_ilog10().unwrap_or(0) + 1)
         .max()
-        .unwrap_or(1)
-        .max(3);
-    let column_width = digits as f32 * FONT_SIZE * 0.65 + CELL_PADDING * 2.;
-    (rows, column_width)
+        .unwrap_or(0);
+    (rows, line_number_column_width(widest))
+}
+
+/// The width at the default code size of a line-number column that holds `widest`, at least
+/// three digits, with [`CELL_PADDING`] on either side. Compare's gutter and the GitHub
+/// review's Changes rows share it, so a patch's numbers stand at one place in both.
+pub(crate) fn line_number_column_width(widest: u64) -> f32 {
+    let digits = (widest.checked_ilog10().unwrap_or(0) + 1).max(3);
+    digits as f32 * FONT_SIZE * 0.65 + CELL_PADDING * 2.
 }
 
 #[derive(Clone, Copy)]
@@ -893,6 +2700,96 @@ fn parse_side(range: &str) -> Option<HunkSide> {
     Some(HunkSide { next, remaining })
 }
 
+/// Test-only: where each painted frame put each patch view's rows, as the
+/// gutter, painted after its editor, reads them. A test window draws a
+/// frame a layout asks for inside the update that asked, so bounds read
+/// after it show only the last frame; this record keeps each.
+#[cfg(test)]
+pub(crate) mod painted_rows {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A painted view's editor and the top of its first row.
+    pub(crate) type Painted = (gpui_kit::EntityId, Option<Pixels>);
+
+    /// A painted view's editor, the top of its first row and the region
+    /// its text showed, in one frame, with where that frame drew each
+    /// changed line's checkbox, by row, and the caret's mark.
+    pub(crate) struct Frame {
+        pub(crate) editor: gpui_kit::EntityId,
+        pub(crate) top: Option<Pixels>,
+        pub(crate) text: Bounds<Pixels>,
+        pub(crate) cells: Vec<(usize, Bounds<Pixels>)>,
+        pub(crate) mark: Option<Bounds<Pixels>>,
+    }
+
+    /// Records, as it paints after the gutter, where this frame drew the
+    /// checkbox of `row`, or the caret's mark where `row` is `None`, in the
+    /// frame the gutter last recorded.
+    pub(super) fn cell(row: Option<usize>) -> impl IntoElement {
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, _, _| {
+                ROWS.with_borrow_mut(|rows| {
+                    if let Some(frame) = rows.as_mut().and_then(|rows| rows.last_mut()) {
+                        match row {
+                            Some(row) => frame.cells.push((row, bounds)),
+                            None => frame.mark = Some(bounds),
+                        }
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
+    thread_local! {
+        static ROWS: RefCell<Option<Vec<Frame>>> = const { RefCell::new(None) };
+    }
+
+    /// Starts recording, forgetting anything recorded before.
+    pub(crate) fn watch() {
+        ROWS.with_borrow_mut(|rows| *rows = Some(Vec::new()));
+    }
+
+    /// Each painted view's editor and the top of its first row, its text's
+    /// scrolled origin, in paint order since [`watch`] or the last call;
+    /// recording goes on.
+    pub(crate) fn take() -> Vec<Painted> {
+        take_frames()
+            .into_iter()
+            .map(|frame| (frame.editor, frame.top))
+            .collect()
+    }
+
+    /// Each painted view's [`Frame`], in paint order since [`watch`] or the
+    /// last call; recording goes on.
+    pub(crate) fn take_frames() -> Vec<Frame> {
+        ROWS.with_borrow_mut(|rows| rows.as_mut().map(std::mem::take).unwrap_or_default())
+    }
+
+    /// Stops recording.
+    pub(crate) fn stop() {
+        ROWS.with_borrow_mut(|rows| *rows = None);
+    }
+
+    pub(super) fn record(editor: &Entity<EditorState>, cx: &App) {
+        ROWS.with_borrow_mut(|rows| {
+            if let Some(rows) = rows {
+                let state = editor.read(cx);
+                rows.push(Frame {
+                    editor: editor.entity_id(),
+                    top: state.text_bounds().map(|bounds| bounds.origin.y),
+                    text: state.input_bounds(),
+                    cells: Vec::new(),
+                    mark: None,
+                });
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -918,6 +2815,1506 @@ mod tests {
         );
         selection.toggle(3, false, false);
         assert_eq!(selection.ids.iter().copied().collect::<Vec<_>>(), [2, 4, 5]);
+    }
+
+    /// Keyboard staging by line in Working's diff (decided 2026-11-07):
+    /// the text's caret and selection reach the per-line checkboxes, at QA's
+    /// full window at 13 pt and its half tile at 18 pt.
+    mod keyboard {
+        use super::*;
+        use crate::gpui;
+        use crate::native_accessibility::written;
+        use crate::views::tests::{fixture_git, history_window_from, settle};
+        use gpui::{Modifiers, VisualTestContext};
+
+        /// The windows and interface text sizes each test walks.
+        const SIZES: [(f32, f32, u8); 2] = [(1480., 973., 13), (461., 490., 18)];
+
+        /// No line selected.
+        const NONE: [usize; 0] = [];
+
+        /// Working Changes showing notes.txt's unstaged diff, its notes 4 and
+        /// 5 replaced by "four" and "five": two removed and two added lines
+        /// between context lines, in Midnight with reduced motion.
+        async fn working(
+            cx: &mut gpui::TestAppContext,
+        ) -> (
+            tempfile::TempDir,
+            Entity<crate::GitTurtle>,
+            &mut VisualTestContext,
+        ) {
+            let (fixture, app, cx) =
+                history_window_from(cx, &crate::views::tests::history_script(1, 12)).await;
+            crate::focus_ring::sweep::prepare(&app, cx);
+            let root = fixture.path().join("narrow");
+            fixture_git(&root, &["reset", "--hard", "--quiet"]);
+            let edited: String = (1..=12)
+                .map(|line| match line {
+                    4 => "four\n".to_owned(),
+                    5 => "five\n".to_owned(),
+                    _ => format!("note {line}\n"),
+                })
+                .collect();
+            std::fs::write(root.join("notes.txt"), edited).unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = crate::TextMode::Unified;
+                    app.select_working(0, ChangeArea::Unstaged, window, cx);
+                })
+            });
+            settle(&app, cx).await;
+            (fixture, app, cx)
+        }
+
+        /// The shown diff at one of [`SIZES`].
+        struct Shown {
+            editor: Entity<EditorState>,
+            view: Entity<DiffView>,
+            rows: Arc<[PartialRow]>,
+            at: String,
+        }
+
+        impl Shown {
+            /// The diff drawn in a `width` × `height` window at `interface`
+            /// pt, with no line selected or announced, its text focused.
+            fn at(
+                app: &Entity<crate::GitTurtle>,
+                cx: &mut VisualTestContext,
+                (width, height, interface): (f32, f32, u8),
+            ) -> Self {
+                cx.simulate_resize(size(px(width), px(height)));
+                crate::focus_ring::sweep::interface_size(cx, interface);
+                let (editor, view, rows) = app.read_with(cx, |app, _| {
+                    let Some(crate::Content::Text {
+                        partial: Some(partial),
+                        ..
+                    }) = app.content.as_deref()
+                    else {
+                        panic!("the diff offers its partial actions");
+                    };
+                    (
+                        app.patch_editor.clone().expect("the patch's editor"),
+                        app.patch_view.clone().expect("the Diff view"),
+                        Arc::clone(&partial.rows),
+                    )
+                });
+                view.update(cx, |view, cx| {
+                    view.selection = LineSelection::default();
+                    view.announcement = None;
+                    cx.notify();
+                });
+                let shown = Self {
+                    editor,
+                    view,
+                    rows,
+                    at: format!("{width} × {height} at {interface} pt"),
+                };
+                shown.caret_to(cx, shown.first());
+                shown
+            }
+
+            /// The first changed line's row, removed note 4.
+            fn first(&self) -> usize {
+                self.rows
+                    .iter()
+                    .position(|row| matches!(row, PartialRow::Change { .. }))
+                    .expect("a changed line")
+            }
+
+            /// The context line before it, note 3.
+            fn context(&self) -> usize {
+                let row = self.first() - 1;
+                assert_eq!(self.rows[row], PartialRow::None, "{}", self.at);
+                row
+            }
+
+            /// The selection ID of `row`'s changed line.
+            fn id(&self, row: usize) -> usize {
+                let PartialRow::Change { id, .. } = self.rows[row] else {
+                    panic!("row {row} is no changed line");
+                };
+                id
+            }
+
+            /// Moves the caret to the start of `row`, focusing the text.
+            fn caret_to(&self, cx: &mut VisualTestContext, row: usize) {
+                cx.update(|window, cx| {
+                    self.editor.update(cx, |state, cx| {
+                        state.set_cursor_position(Position::new(row as u32, 0), window, cx)
+                    })
+                });
+                crate::tags::tests::draw(cx);
+            }
+
+            /// Presses and releases each of `keys` in turn, as a keyboard
+            /// does, a key's text reaching the focused field where nothing
+            /// took the key: GPUI clicks a focused Button as Space or Enter
+            /// is released.
+            fn press(&self, cx: &mut VisualTestContext, keys: &str) {
+                for key in keys.split(' ') {
+                    cx.simulate_keystrokes(key);
+                    let keystroke = gpui::Keystroke::parse(key).unwrap();
+                    cx.simulate_event(gpui::KeyUpEvent { keystroke });
+                }
+                crate::tags::tests::draw(cx);
+            }
+
+            fn selected(&self, cx: &mut VisualTestContext) -> Vec<usize> {
+                self.view
+                    .read_with(cx, |view, _| view.selection.ids.iter().copied().collect())
+            }
+
+            fn caret(&self, cx: &mut VisualTestContext) -> usize {
+                self.view.read_with(cx, |view, cx| view.caret_row(cx))
+            }
+
+            fn text_focused(&self, cx: &mut VisualTestContext) -> bool {
+                cx.update(|window, cx| self.view.read(cx).focus_handle(cx).is_focused(window))
+            }
+
+            /// Scrolls the text so `row` is its last whole row, and
+            /// `sideways` to the right, as far as the text scrolls: where
+            /// the whole diff fits, it stays put.
+            fn to_foot(&self, cx: &mut VisualTestContext, row: usize, sideways: Pixels) {
+                self.editor.update(cx, |state, cx| {
+                    let height = state.line_height().expect("the text is laid out");
+                    let text = state.input_bounds().size.height;
+                    let y = (text - height * (row + 1) as f32).min(px(0.));
+                    state.set_scroll_offset(point(-sideways, y), cx);
+                });
+                crate::tags::tests::draw(cx);
+            }
+
+            /// The text's line height and the region it shows, which ends
+            /// where the selection bar, if any, begins.
+            fn text(&self, cx: &mut VisualTestContext) -> (Pixels, Bounds<Pixels>) {
+                let (height, text) = self.editor.read_with(cx, |state, _| {
+                    let height = state.line_height().expect("the text is laid out");
+                    (height, state.input_bounds())
+                });
+                if let Some(bar) = cx.debug_bounds("partial-selection-bar") {
+                    assert!(
+                        text.bottom() <= bar.top() + px(0.01),
+                        "{}: the text {text:?} ends above the bar {bar:?}",
+                        self.at
+                    );
+                }
+                (height, text)
+            }
+
+            /// The top of the caret's line where the latest frame painted
+            /// the text.
+            fn caret_line(&self, cx: &mut VisualTestContext) -> Pixels {
+                let row = self.caret(cx);
+                let (height, _) = self.text(cx);
+                let top = self.editor.read_with(cx, |state, _| {
+                    state.text_bounds().expect("the text is painted").origin.y
+                });
+                top + height * row as f32
+            }
+
+            /// Does `act` and asserts that every frame painted after it
+            /// draws the caret's line whole in the text it shows, `when`.
+            /// Returns the top of that line in the first frame whose text
+            /// ends where it now does, above the selection bar where it
+            /// shows: a frame the text asked for before `act` can come
+            /// first.
+            fn caret_line_after(
+                &self,
+                cx: &mut VisualTestContext,
+                when: &str,
+                act: impl FnOnce(&mut VisualTestContext),
+            ) -> Pixels {
+                painted_rows::watch();
+                act(cx);
+                let frames = painted_rows::take_frames();
+                painted_rows::stop();
+                let (height, now) = self.text(cx);
+                let row = self.caret(cx);
+                let mut first = None;
+                for frame in frames
+                    .iter()
+                    .filter(|frame| frame.editor == self.editor.entity_id())
+                {
+                    let top = frame.top.expect("the text is painted");
+                    let line = top + height * row as f32;
+                    let text = frame.text;
+                    assert!(
+                        line >= text.top() - px(0.01) && line + height <= text.bottom() + px(0.01),
+                        "{}: {when}: a frame draws the caret's line {line:?} to {:?} \
+                         outside its text {text:?}",
+                        self.at,
+                        line + height
+                    );
+                    if first.is_none() && text == now {
+                        first = Some(line);
+                    }
+                }
+                first.unwrap_or_else(|| {
+                    panic!("{}: {when}: a frame draws the text {now:?}", self.at)
+                })
+            }
+
+            /// Asserts that the caret's line, its top at `line`, lies whole
+            /// in the text, above the selection bar where it shows.
+            fn assert_whole(&self, cx: &mut VisualTestContext, line: Pixels, when: &str) {
+                let (height, text) = self.text(cx);
+                assert!(
+                    line >= text.top() - px(0.01) && line + height <= text.bottom() + px(0.01),
+                    "{}: {when}: the caret's line {line:?} to {:?} lies whole in the text {text:?}",
+                    self.at,
+                    line + height
+                );
+            }
+        }
+
+        /// The view's live regions the last frame drew, by element ID with
+        /// what each says: a polite status whose name is its value.
+        fn said() -> Vec<(String, String)> {
+            written::announced_from("partial-line-announcement")
+                .into_iter()
+                .map(|(id, announced)| {
+                    assert_eq!(announced.live, gpui::accesskit::Live::Polite, "{id}");
+                    let node = written::get(&id).expect("the region's node").node;
+                    assert_eq!(node.role(), gpui::accesskit::Role::Status, "{id}");
+                    assert_eq!(
+                        node.label(),
+                        node.value(),
+                        "{id}: AT-SPI reads the name, macOS the value"
+                    );
+                    let text = node.label().expect("a name").to_owned();
+                    (id, text)
+                })
+                .collect()
+        }
+
+        /// Space on a changed line selects it for staging, and Space again
+        /// clears it, each announced from the view's live region in a node
+        /// of its own, as a click on its checkbox selects it; Space on a
+        /// context line selects nothing, types nothing and says nothing,
+        /// and a held Space's repeats do nothing. The view takes the key,
+        /// which goes on as no text. The status bar names Space
+        /// while the text holds focus. In the staged area the lines are
+        /// selected to unstage, and the status bar and the live region say
+        /// so. Before this, Space in the read-only text did nothing and no
+        /// key reached the checkboxes.
+        #[gpui::test]
+        async fn space_selects_the_caret_line_and_space_again_clears_it(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                let text = shown.editor.read_with(cx, |state, _| state.value());
+                shown.caret_to(cx, shown.context());
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    NONE,
+                    "{at}: a context line selects nothing"
+                );
+                assert_eq!(said(), [], "{at}: and says nothing");
+                shown.caret_to(cx, first);
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), [shown.id(first)], "{at}");
+                let [(selected, said_selected)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(said_selected, "Removed line 4 selected to stage", "{at}");
+                assert!(
+                    cx.debug_bounds("apply-partial-selection").is_some(),
+                    "{at}: the selection bar shows"
+                );
+                // A held Space's repeats leave the line selected, unsaid.
+                cx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("space").unwrap(),
+                    is_held: true,
+                    prefer_character_input: false,
+                });
+                crate::tags::tests::draw(cx);
+                assert_eq!(shown.selected(cx), [shown.id(first)], "{at}: a repeat");
+                assert_eq!(
+                    said()[..],
+                    [(selected.clone(), said_selected.clone())],
+                    "{at}"
+                );
+                let hints = cx
+                    .update(|window, cx| app.update(cx, |app, cx| app.key_hints(window, cx)))
+                    .expect("the page's hints");
+                assert!(
+                    hints.keys.contains(&(
+                        crate::shortcuts::key_label("space"),
+                        "Select lines to stage"
+                    )),
+                    "{at}: the status bar names Space: {:?}",
+                    hints.keys
+                );
+                // The view takes the key, so the platform sends it on as no
+                // text, nor to an input method.
+                let space = gpui::Keystroke::parse("space").unwrap();
+                let taken = cx.update(|window, cx| {
+                    let down = gpui::KeyDownEvent {
+                        keystroke: space.clone(),
+                        is_held: false,
+                        prefer_character_input: false,
+                    };
+                    !window
+                        .dispatch_event(gpui::PlatformInput::KeyDown(down), cx)
+                        .propagate
+                });
+                assert!(taken, "{at}: Space goes on from the view");
+                cx.simulate_event(gpui::KeyUpEvent { keystroke: space });
+                crate::tags::tests::draw(cx);
+                assert_eq!(shown.selected(cx), NONE, "{at}: Space again clears it");
+                let [(cleared, said_cleared)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_ne!(cleared, selected, "{at}: a node of its own");
+                assert_eq!(
+                    said_cleared, "Removed line 4 no longer selected to stage",
+                    "{at}"
+                );
+                assert_eq!(
+                    shown.editor.read_with(cx, |state, _| state.value()),
+                    text,
+                    "{at}: Space types nothing"
+                );
+                // Focus elsewhere, Space and the hint are the page's again.
+                let list = app.read_with(cx, |app, _| app.file_focus.clone());
+                cx.update(|window, cx| window.focus(&list, cx));
+                crate::tags::tests::draw(cx);
+                let hints = cx
+                    .update(|window, cx| app.update(cx, |app, cx| app.key_hints(window, cx)))
+                    .expect("the page's hints");
+                assert!(
+                    !hints
+                        .keys
+                        .iter()
+                        .any(|(_, action)| *action == "Select lines to stage"),
+                    "{at}: {:?}",
+                    hints.keys
+                );
+            }
+            // The same notes staged: Space selects lines to unstage.
+            fixture_git(&fixture.path().join("narrow"), &["add", "notes.txt"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_working(0, ChangeArea::Staged, window, cx)
+                })
+            });
+            settle(&app, cx).await;
+            let shown = Shown::at(&app, cx, SIZES[1]);
+            shown.press(cx, "space");
+            assert_eq!(shown.selected(cx), [shown.id(shown.first())], "staged");
+            let [(_, text)] = &said()[..] else {
+                panic!("staged: one announcement: {:?}", said());
+            };
+            assert_eq!(text, "Removed line 4 selected to unstage");
+            let hints = cx
+                .update(|window, cx| app.update(cx, |app, cx| app.key_hints(window, cx)))
+                .expect("the page's hints");
+            assert!(
+                hints.keys.contains(&(
+                    crate::shortcuts::key_label("space"),
+                    "Select lines to unstage"
+                )),
+                "staged: the status bar names Space: {:?}",
+                hints.keys
+            );
+        }
+
+        /// Space held in the text under X11, whose client sends each repeat
+        /// as a key-down alone, toggles the caret's line once, as a held
+        /// Space marked held does, and so does a repeat whose release and
+        /// press arrive together: each repeat toggled it again, selecting
+        /// and clearing it, and the live region said each.
+        #[gpui::test]
+        async fn a_space_repeated_under_x11_in_the_text_toggles_once(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            let first = shown.first();
+            shown.caret_to(cx, first);
+            let space = gpui::Keystroke::parse("space").unwrap();
+            let down = gpui::KeyDownEvent {
+                keystroke: space.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            };
+            for repeat in ["alone", "paired"] {
+                let toggles = shown.view.read_with(cx, |view, _| view.announcements);
+                cx.simulate_event(down.clone());
+                for _ in 0..3 {
+                    if repeat == "paired" {
+                        cx.update(|window, cx| {
+                            let up = gpui::KeyUpEvent {
+                                keystroke: space.clone(),
+                            };
+                            window.dispatch_event(gpui::PlatformInput::KeyUp(up), cx);
+                        });
+                    }
+                    cx.simulate_event(down.clone());
+                }
+                cx.simulate_event(gpui::KeyUpEvent {
+                    keystroke: space.clone(),
+                });
+                crate::tags::tests::draw(cx);
+                assert_eq!(
+                    shown.selected(cx),
+                    [shown.id(first)],
+                    "{repeat}: the line selected once"
+                );
+                assert_eq!(
+                    shown.view.read_with(cx, |view, _| view.announcements),
+                    toggles + 1,
+                    "{repeat}: one toggle said"
+                );
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    NONE,
+                    "{repeat}: the next press clears it"
+                );
+            }
+        }
+
+        /// Shift+Down twice from a changed line extends the text selection
+        /// over three changed lines, and Space selects all three, then
+        /// clears all three; where some of the lines a selection covers are
+        /// selected and some not, Space selects them all.
+        #[gpui::test]
+        async fn shift_down_twice_then_space_selects_three_lines(cx: &mut gpui::TestAppContext) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                let three: Vec<_> = (first..first + 3).map(|row| shown.id(row)).collect();
+                shown.press(cx, "shift-down shift-down");
+                assert_eq!(shown.caret(cx), first + 2, "{at}");
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), three, "{at}");
+                let [(_, text)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(text, "3 lines selected to stage", "{at}");
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), NONE, "{at}: all three cleared");
+                let [(_, text)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(text, "3 lines no longer selected to stage", "{at}");
+                // The middle line alone, then all three: any unselected
+                // selects them all.
+                shown.caret_to(cx, first + 1);
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), [three[1]], "{at}");
+                shown.caret_to(cx, first);
+                shown.press(cx, "shift-down shift-down space");
+                assert_eq!(shown.selected(cx), three, "{at}");
+            }
+        }
+
+        /// The selection bar never covers the caret's line: with the caret
+        /// on the text's last whole row, the frame that draws the bar Space
+        /// brings scrolls the text by the least that keeps that line whole
+        /// above it, as the text reveals a moved caret, and the frame that
+        /// takes the bar away leaves the line where it is, whole. A click on
+        /// the checkbox of the text's last whole row, the text scrolled
+        /// sideways, brings the bar with the line whole above it and its
+        /// start shown, where the caret goes. In the half tile the bar once
+        /// covered the text's last rows, the caret's among them, until the
+        /// caret moved.
+        #[gpui::test]
+        async fn the_selection_bar_never_covers_the_caret_line(cx: &mut gpui::TestAppContext) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                // The last changed line, added "five".
+                let row = shown.first() + 3;
+                shown.caret_to(cx, row);
+                shown.to_foot(cx, row, px(0.));
+                let before = shown.caret_line(cx);
+                shown.assert_whole(cx, before, "before Space");
+                let (height, text) = shown.text(cx);
+                let line =
+                    shown.caret_line_after(cx, "the bar comes", |cx| shown.press(cx, "space"));
+                assert_eq!(shown.selected(cx), [shown.id(row)], "{at}");
+                shown.assert_whole(cx, line, "in the frame that draws the bar");
+                let (_, shorter) = shown.text(cx);
+                assert!(
+                    shorter.bottom() < text.bottom(),
+                    "{at}: the bar takes the text's foot"
+                );
+                // The least scroll: the line moves up only as far as the
+                // bar would cover it.
+                let least = (before + height - shorter.bottom()).max(px(0.));
+                assert!(
+                    (f32::from(before - least - line)).abs() < 0.01,
+                    "{at}: the caret's line moved from {before:?} to {line:?}, not by the least, {least:?}"
+                );
+                let after =
+                    shown.caret_line_after(cx, "the bar goes", |cx| shown.press(cx, "space"));
+                assert_eq!(shown.selected(cx), NONE, "{at}");
+                assert_eq!(cx.debug_bounds("partial-selection-bar"), None, "{at}");
+                shown.assert_whole(cx, after, "in the frame that takes the bar away");
+                assert!(
+                    (f32::from(after - line)).abs() < 0.01,
+                    "{at}: the caret's line stays where it was, at {line:?}, not {after:?}"
+                );
+                // A click on the foot row's checkbox, the caret elsewhere.
+                shown.caret_to(cx, shown.context());
+                shown.to_foot(cx, row, px(40.));
+                let sideways = shown
+                    .editor
+                    .read_with(cx, |state, _| state.scroll_offset().x);
+                let cell = cx
+                    .debug_bounds(format!("partial-line-{row}").leak())
+                    .expect("the row's checkbox");
+                cx.simulate_mouse_down(
+                    cell.center(),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                let line = shown.caret_line_after(cx, "a click's bar comes", |cx| {
+                    cx.simulate_mouse_up(
+                        cell.center(),
+                        gpui::MouseButton::Left,
+                        Modifiers::default(),
+                    );
+                    crate::tags::tests::draw(cx);
+                });
+                assert_eq!(shown.selected(cx), [shown.id(row)], "{at}");
+                assert_eq!(shown.caret(cx), row, "{at}: the caret moved to the click");
+                shown.assert_whole(cx, line, "in the frame a click's bar comes");
+                assert_eq!(
+                    shown
+                        .editor
+                        .read_with(cx, |state, _| state.scroll_offset().x),
+                    sideways,
+                    "{at}: the click keeps the text's sideways scroll"
+                );
+            }
+        }
+
+        /// With lines selected, Tab from the text moves to the action, Stage 1
+        /// line, its ring whole, then to Clear; Clear's press from the
+        /// keyboard clears the selection and gives focus back to the text.
+        /// The per-line checkboxes and the hunk's Stage hunk are no Tab
+        /// stops.
+        #[gpui::test]
+        async fn the_selected_lines_action_is_the_next_tab_stop_with_its_ring_whole(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                shown.press(cx, "space");
+                let (apply, clear) = shown.view.read_with(cx, |view, _| {
+                    (view.apply_focus.clone(), view.clear_focus.clone())
+                });
+                for (focus, selector) in [
+                    (&apply, "apply-partial-selection"),
+                    (&clear, "clear-partial-selection"),
+                ] {
+                    shown.press(cx, "tab");
+                    assert!(
+                        cx.update(|window, _| focus.is_focused(window)),
+                        "{at}: Tab reaches {selector}, focus on {:?}",
+                        cx.update(|window, cx| window.focused(cx))
+                    );
+                    let button = cx.debug_bounds(selector).expect("the button is drawn");
+                    let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                        .into_iter()
+                        .filter(|ring| {
+                            ring.bounds.left() < button.left()
+                                && ring.bounds.top() < button.top()
+                                && ring.bounds.right() > button.right()
+                                && ring.bounds.bottom() > button.bottom()
+                        })
+                        .collect();
+                    let [ring] = &rings[..] else {
+                        panic!("{at}: one ring around {selector} {button:?}: {rings:?}");
+                    };
+                    assert!(ring.whole, "{at}: {selector}'s ring is cut: {ring:?}");
+                }
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    NONE,
+                    "{at}: Clear cleared the selection"
+                );
+                assert!(shown.text_focused(cx), "{at}: focus is back in the text");
+            }
+        }
+
+        /// A pressed Stage hunk draws its focus ring whole inside the gutter
+        /// that clips the partial controls, after a pointer press and after
+        /// a key, at 13 and 18 pt and at scale 1 and 2, in QA's full window:
+        /// the press focuses it, and a Button rings on any focus, a
+        /// pointer's included (DESIGN.md), while its write failing, the
+        /// index locked, keeps focus there. Inset 2 px, its sides lost a
+        /// pixel of the ring to that clip.
+        #[gpui::test]
+        async fn a_pressed_stage_hunk_draws_its_ring_whole(cx: &mut gpui::TestAppContext) {
+            let (fixture, app, cx) = working(cx).await;
+            let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+            let lock = fixture
+                .path()
+                .join("narrow")
+                .join(".git")
+                .join("index.lock");
+            std::fs::write(&lock, "").unwrap();
+            for interface in [13, 18] {
+                for scale in [1., 2.] {
+                    let shown = Shown::at(&app, cx, (1480., 973., interface));
+                    // A resize takes the test display's scale, 2.
+                    cx.update(|window, _| window.set_scale_factor(scale));
+                    let drawn = cx.update(|window, _| window.scale_factor());
+                    assert_eq!(
+                        drawn, scale,
+                        "asked for scale {scale}, the window is at {drawn}"
+                    );
+                    let at = format!("{} at scale {scale}", shown.at);
+                    let row = shown
+                        .rows
+                        .iter()
+                        .position(|row| matches!(row, PartialRow::Hunk(_)))
+                        .expect("the hunk");
+                    let selector: &'static str = format!("partial-hunk-{row}").leak();
+                    let hunk = shown.view.read_with(cx, |view, _| view.hunk_focus.clone());
+                    for after in ["a pointer press", "a key"] {
+                        // Each press's own failure is read, not the last.
+                        app.update(cx, |app, cx| {
+                            app.operation_error = None;
+                            cx.notify();
+                        });
+                        crate::tags::tests::draw(cx);
+                        if after == "a key" {
+                            shown.press(cx, "enter");
+                        } else {
+                            let stage = cx.debug_bounds(selector).expect("Stage hunk is drawn");
+                            cx.simulate_click(stage.center(), Modifiers::default());
+                        }
+                        app.read_with(cx, |app, _| app.operations.drain());
+                        settle(&app, cx).await;
+                        crate::tags::tests::draw(cx);
+                        assert!(
+                            app.read_with(cx, |app, _| app.operation_error.is_some()),
+                            "{at}: {after} wrote, and the write failed"
+                        );
+                        assert!(
+                            cx.update(|window, _| hunk.is_focused(window)),
+                            "{at}: focus stays on Stage hunk after {after}, not {:?}",
+                            cx.update(|window, cx| window.focused(cx))
+                        );
+                        let button = cx.debug_bounds(selector).expect("Stage hunk is drawn");
+                        let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                            .into_iter()
+                            .filter(|ring| {
+                                ring.bounds.left() < button.left()
+                                    && ring.bounds.top() < button.top()
+                                    && ring.bounds.right() > button.right()
+                                    && ring.bounds.bottom() > button.bottom()
+                            })
+                            .collect();
+                        let [ring] = &rings[..] else {
+                            panic!(
+                                "{at}: one ring around Stage hunk {button:?} after {after}: {rings:?}"
+                            );
+                        };
+                        assert!(
+                            ring.whole,
+                            "{at}: after {after}, Stage hunk's ring is cut: {ring:?}"
+                        );
+                    }
+                }
+            }
+            std::fs::remove_file(&lock).unwrap();
+        }
+
+        /// The checkbox on the caret's line draws a 2 px accent mark at its
+        /// leading side while the text holds focus, which follows the caret
+        /// from line to line and leaves a context line, and a blurred text,
+        /// unmarked. A click on a checkbox selects its line and moves the
+        /// caret, and with it the mark, there. The selection bar that Space
+        /// or the click brings leaves the line, and its mark, whole above it.
+        #[gpui::test]
+        async fn the_caret_lines_checkbox_mark_follows_the_caret(cx: &mut gpui::TestAppContext) {
+            let (_fixture, app, cx) = working(cx).await;
+            let accent =
+                cx.read(|cx| gpui_kit::Background::from(gpui::Hsla::from(rgb(palette(cx).accent))));
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                let marked = |cx: &mut VisualTestContext, row: usize| {
+                    let mark = cx
+                        .debug_bounds("partial-line-caret")
+                        .unwrap_or_else(|| panic!("{at}: row {row}'s checkbox is marked"));
+                    let cell = cx
+                        .debug_bounds(format!("partial-line-{row}").leak())
+                        .expect("the row's checkbox");
+                    assert!(
+                        mark.top() >= cell.top() && mark.bottom() <= cell.bottom(),
+                        "{at}: the mark {mark:?} lies on row {row}'s checkbox {cell:?}"
+                    );
+                    assert_eq!(mark.size.width, px(2.), "{at}");
+                    assert!(
+                        mark.left() >= cell.left(),
+                        "{at}: inside the gutter's column"
+                    );
+                    let painted = cx.update(|window, _| {
+                        let scale = window.scale_factor();
+                        window.painted_quads().into_iter().any(|quad| {
+                            quad.background == accent
+                                && (quad.bounds.origin.x.as_f32() / scale - f32::from(mark.left()))
+                                    .abs()
+                                    < 0.5
+                                && (quad.bounds.origin.y.as_f32() / scale - f32::from(mark.top()))
+                                    .abs()
+                                    < 0.5
+                        })
+                    });
+                    assert!(painted, "{at}: the mark is painted in the ring's accent");
+                    let (_, text) = shown.text(cx);
+                    assert!(
+                        mark.top() >= text.top() && mark.bottom() <= text.bottom(),
+                        "{at}: the mark {mark:?} shows whole in the text {text:?}"
+                    );
+                };
+                marked(cx, first);
+                // Space where the caret starts, the half tile's last whole
+                // row, brings the bar.
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), [shown.id(first)], "{at}");
+                marked(cx, first);
+                shown.press(cx, "space");
+                assert_eq!(shown.selected(cx), NONE, "{at}");
+                shown.press(cx, "down");
+                marked(cx, first + 1);
+                shown.caret_to(cx, shown.context());
+                assert_eq!(
+                    cx.debug_bounds("partial-line-caret"),
+                    None,
+                    "{at}: no mark on a context line"
+                );
+                // A click on a checkbox moves the caret, and the mark, there:
+                // the second changed line, at the half tile's foot.
+                let cell = cx
+                    .debug_bounds(format!("partial-line-{}", first + 1).leak())
+                    .expect("the row's checkbox");
+                cx.simulate_click(cell.center(), Modifiers::default());
+                crate::tags::tests::draw(cx);
+                assert_eq!(shown.selected(cx), [shown.id(first + 1)], "{at}");
+                assert_eq!(
+                    shown.caret(cx),
+                    first + 1,
+                    "{at}: the caret moved to the click"
+                );
+                assert!(shown.text_focused(cx), "{at}");
+                marked(cx, first + 1);
+                cx.update(|window, cx| window.blur(cx));
+                crate::tags::tests::draw(cx);
+                assert_eq!(
+                    cx.debug_bounds("partial-line-caret"),
+                    None,
+                    "{at}: no mark unfocused"
+                );
+            }
+        }
+
+        /// The selection bar's action is named by the words it shows, "Stage
+        /// 3 lines", so speech input that says them finds it, and described
+        /// by the selection it acts on; Clear's icon is named "Clear line
+        /// selection", and Clear's label is its name. The action was named
+        /// "Stage 3 selected lines", which its words are not part of.
+        #[gpui::test]
+        async fn the_action_is_named_by_its_words_and_clear_by_its_purpose(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            use gpui::Element as _;
+            let (_fixture, _app, cx) = working(cx).await;
+            for (action, count, label, description) in [
+                ("Stage", 3, "Stage 3 lines", "Stages the 3 selected lines"),
+                ("Stage", 1, "Stage 1 line", "Stages the selected line"),
+                (
+                    "Unstage",
+                    12,
+                    "Unstage 12 lines",
+                    "Unstages the 12 selected lines",
+                ),
+            ] {
+                let node = crate::views::tests::view_node(cx, move |window, cx| {
+                    let button = described_action(partial_action(label), action, count, window, cx);
+                    let element = gpui::RenderOnce::render(button, window, cx).into_element();
+                    let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+                    element.write_a11y_info(&mut node);
+                    node
+                });
+                assert_eq!(
+                    (node.label(), node.description()),
+                    (Some(label), Some(description)),
+                    "{label}"
+                );
+            }
+            for (icon, name) in [(true, CLEAR_NAME), (false, "Clear")] {
+                let node = crate::views::tests::view_node(cx, move |window, cx| {
+                    let button = clear_control(icon).base(window, cx);
+                    let element = gpui::RenderOnce::render(button, window, cx).into_element();
+                    let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+                    element.write_a11y_info(&mut node);
+                    node
+                });
+                assert_eq!(node.label(), Some(name), "icon {icon}");
+            }
+        }
+
+        /// Shift+Up twice from a changed line's start selects the text from
+        /// two lines up to that line's start, which the text draws over the
+        /// two lines above it alone: Space selects those two, never the line
+        /// the selection ends at the start of. Space once toggled that line
+        /// too, a line the drawn selection left out.
+        #[gpui::test]
+        async fn space_toggles_only_the_lines_the_text_selection_draws(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                shown.caret_to(cx, first + 2);
+                shown.press(cx, "shift-up shift-up");
+                assert_eq!(shown.caret(cx), first, "{at}");
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    [shown.id(first), shown.id(first + 1)],
+                    "{at}: the two lines the selection draws"
+                );
+                let [(_, text)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(text, "2 lines selected to stage", "{at}");
+            }
+        }
+
+        /// A selection ending at the start of a line draws nothing on that
+        /// line, with the caret on it as with the caret at the other end:
+        /// Space leaves it out. Shift+Down reaches one column into the next
+        /// line, which it draws selected, and Shift+Left takes that column
+        /// back, ending the selection at that line's start with the caret
+        /// there: Space selected that line too, one never drawn selected,
+        /// and the next press staged it.
+        #[gpui::test]
+        async fn space_leaves_out_a_line_the_selection_ends_at_the_start_of(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                shown.press(cx, "shift-down shift-left");
+                assert_eq!(
+                    shown.caret(cx),
+                    first + 1,
+                    "{at}: the caret is on the next line"
+                );
+                shown.press(cx, "space");
+                assert_eq!(
+                    shown.selected(cx),
+                    [shown.id(first)],
+                    "{at}: the one line the selection draws"
+                );
+                let [(_, text)] = &said()[..] else {
+                    panic!("{at}: one announcement: {:?}", said());
+                };
+                assert_eq!(text, "Removed line 4 selected to stage", "{at}");
+                // From the line's second column the selection ends there too.
+                let shown = Shown::at(&app, cx, size);
+                shown.press(cx, "right shift-down shift-left space");
+                assert_eq!(
+                    shown.selected(cx),
+                    [shown.id(first)],
+                    "{at}: from its second column"
+                );
+            }
+        }
+
+        /// In the frame that draws the selection bar Space brings with the
+        /// caret on the text's last whole row, each drawn checkbox, and the
+        /// caret's mark, lies on its row of that frame's text: the reveal
+        /// the bar asks for is decided as the view renders, before the
+        /// checkboxes are placed. They were placed from the last frame's
+        /// offset and lagged a frame behind the reveal, by up to the bar's
+        /// height.
+        #[gpui::test]
+        async fn the_checkboxes_lie_on_their_rows_in_the_frame_the_bar_comes(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let row = shown.first() + 3;
+                shown.caret_to(cx, row);
+                shown.to_foot(cx, row, px(0.));
+                painted_rows::watch();
+                shown.press(cx, "space");
+                let frames = painted_rows::take_frames();
+                painted_rows::stop();
+                assert_eq!(shown.selected(cx), [shown.id(row)], "{at}");
+                let (height, now) = shown.text(cx);
+                let frame = frames
+                    .iter()
+                    .find(|frame| frame.editor == shown.editor.entity_id() && frame.text == now)
+                    .unwrap_or_else(|| panic!("{at}: a frame draws the bar"));
+                let top = frame.top.expect("the text is painted");
+                assert!(!frame.cells.is_empty(), "{at}: the frame draws checkboxes");
+                for (drawn, cell) in &frame.cells {
+                    let line = top + height * *drawn as f32;
+                    let centre = cell.center().y;
+                    assert!(
+                        centre > line && centre < line + height,
+                        "{at}: row {drawn}'s checkbox {cell:?} lies on its row, {line:?} to {:?}",
+                        line + height
+                    );
+                }
+                let mark = frame.mark.expect("the caret's mark is drawn");
+                let line = top + height * row as f32;
+                assert!(
+                    mark.top() >= line - px(0.01) && mark.bottom() <= line + height + px(0.01),
+                    "{at}: the mark {mark:?} lies on the caret's row, {line:?}"
+                );
+            }
+        }
+
+        /// While a partial write runs, Space selects nothing, so the status
+        /// bar no longer names it, though the text keeps focus.
+        #[gpui::test]
+        async fn the_status_bar_leaves_space_out_while_a_partial_write_runs(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            shown.view.update(cx, |view, cx| view.suspend_partial(cx));
+            crate::tags::tests::draw(cx);
+            assert!(shown.text_focused(cx));
+            let hints = cx
+                .update(|window, cx| app.update(cx, |app, cx| app.key_hints(window, cx)))
+                .expect("the page's hints");
+            assert!(
+                !hints
+                    .keys
+                    .iter()
+                    .any(|(_, action)| action.starts_with("Select lines")),
+                "{:?}",
+                hints.keys
+            );
+        }
+
+        /// The latest toggle's announcement goes once the text loses
+        /// focus, so focus coming back, as to a retained view shown again,
+        /// announces nothing again.
+        #[gpui::test]
+        async fn an_announcement_is_not_made_again_when_focus_comes_back(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = working(cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            shown.press(cx, "space");
+            assert_eq!(said().len(), 1, "Space is announced");
+            let list = app.read_with(cx, |app, _| app.file_focus.clone());
+            cx.update(|window, cx| window.focus(&list, cx));
+            crate::tags::tests::draw(cx);
+            cx.update(|window, cx| window.focus(&shown.view.read(cx).focus_handle(cx), cx));
+            crate::tags::tests::draw(cx);
+            assert!(shown.text_focused(cx));
+            assert_eq!(said(), [], "nothing is announced again");
+        }
+
+        /// Working Changes showing notes.txt's unstaged diff with `added`
+        /// lines added after its last, all in one hunk, every changed line
+        /// selected, in Midnight with reduced motion.
+        async fn with_added(
+            cx: &mut gpui::TestAppContext,
+            added: usize,
+        ) -> (
+            tempfile::TempDir,
+            Entity<crate::GitTurtle>,
+            &mut VisualTestContext,
+        ) {
+            let (fixture, app, cx) = working(cx).await;
+            let root = fixture.path().join("narrow");
+            let edited: String = (1..=12)
+                .map(|line| format!("note {line}\n"))
+                .chain((0..added).map(|line| format!("added {line}\n")))
+                .collect();
+            std::fs::write(root.join("notes.txt"), edited).unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_working(0, ChangeArea::Unstaged, window, cx)
+                })
+            });
+            settle(&app, cx).await;
+            (fixture, app, cx)
+        }
+
+        /// Selects every changed line `shown` holds.
+        fn select_all(shown: &Shown, cx: &mut VisualTestContext) -> usize {
+            let ids: BTreeSet<usize> = shown
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    PartialRow::Change { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            let count = ids.len();
+            shown.view.update(cx, |view, cx| {
+                view.selection.ids = ids;
+                cx.notify();
+            });
+            crate::tags::tests::draw(cx);
+            count
+        }
+
+        /// While the per-line controls show, the diff text says what Space
+        /// does there, and what Tab does while lines are selected and the
+        /// bar it reaches is drawn, in its accessible description, as the
+        /// GitHub panel's patch lines say what their keys do; in the staged
+        /// area they unstage. While a partial write runs Space does nothing,
+        /// so the text says nothing of it, as the status bar leaves it out.
+        #[gpui::test]
+        async fn the_text_describes_space_and_tab_while_lines_can_be_selected(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (fixture, app, cx) = working(cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
+                    "Space selects the changed line at the caret, or the selected lines, to stage."
+                ),
+                "no line selected: no bar for Tab to reach"
+            );
+            shown.press(cx, "space");
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
+                    "Space selects the changed line at the caret, or the selected lines, \
+                     to stage. Tab reaches Stage."
+                ),
+                "a line selected: Tab reaches the bar's action"
+            );
+            // A write that took the selection along: its lines stay
+            // selected, and Space does nothing until it ends.
+            shown.view.update(cx, |view, cx| {
+                view.partial_busy = true;
+                cx.notify();
+            });
+            crate::tags::tests::draw(cx);
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                None,
+                "Space does nothing during a write"
+            );
+            shown.view.update(cx, |view, cx| {
+                view.partial_busy = false;
+                cx.notify();
+            });
+            fixture_git(&fixture.path().join("narrow"), &["add", "notes.txt"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_working(0, ChangeArea::Staged, window, cx)
+                })
+            });
+            settle(&app, cx).await;
+            let shown = Shown::at(&app, cx, SIZES[0]);
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
+                    "Space selects the changed line at the caret, or the selected lines, \
+                     to unstage."
+                )
+            );
+            shown.press(cx, "space");
+            let node = crate::views::tests::input_node(cx, &shown.editor);
+            assert_eq!(
+                node.description(),
+                Some(
+                    "Space selects the changed line at the caret, or the selected lines, \
+                     to unstage. Tab reaches Unstage."
+                )
+            );
+        }
+
+        /// Delivers frames as the platform does: only those something asked
+        /// for, each drawing only if that dirtied the window. A test's own
+        /// `window.draw` draws whatever nothing asked for, so it cannot see
+        /// a view left stale. A view that keeps asking fails here.
+        fn requested_frames(cx: &mut VisualTestContext) {
+            for _ in 0..16 {
+                let asked = cx.update(|window, cx| window.simulate_next_frame(cx));
+                cx.executor().run_until_parked();
+                if asked == 0 {
+                    return;
+                }
+            }
+            panic!("the view keeps asking for frames");
+        }
+
+        /// A resize across one of the selection bar's thresholds settles the
+        /// bar with no further input: the frame that draws the new width
+        /// lays the bar out across the old one and asks for the next. A
+        /// redraw asked for while a frame draws is ignored, so the labelled
+        /// Clear stayed wrapped below until something else drew. At 18 pt,
+        /// from 700 px down the view's origin stays put, as under a drag of
+        /// the window's right edge, where the gutter asks for no frame of
+        /// its own; a tile from a wide window moves it.
+        #[gpui::test]
+        async fn a_resize_settles_the_selection_bar_with_no_further_input(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 12).await;
+            let form = |cx: &mut VisualTestContext| {
+                let bar = cx
+                    .debug_bounds("partial-selection-bar")
+                    .expect("the bar shows");
+                let apply = cx
+                    .debug_bounds("apply-partial-selection")
+                    .expect("the action");
+                let clear = cx.debug_bounds("clear-partial-selection").expect("Clear");
+                (
+                    clear.size.width == clear.size.height,
+                    clear.top() >= apply.bottom(),
+                    bar.size.height,
+                )
+            };
+            for (from, to) in [
+                (700., 461.),
+                (700., 660.),
+                (660., 640.),
+                (461., 700.),
+                (1480., 461.),
+            ] {
+                let at = format!("18 pt, {from} to {to} px wide");
+                let shown = Shown::at(&app, cx, (from, 490., 18));
+                select_all(&shown, cx);
+                let before = form(cx);
+                cx.simulate_resize(size(px(to), px(490.)));
+                cx.executor().run_until_parked();
+                requested_frames(cx);
+                let settled = form(cx);
+                assert_ne!(before, settled, "{at}: the resize crosses a threshold");
+                shown.view.update(cx, |_, cx| cx.notify());
+                crate::tags::tests::draw(cx);
+                assert_eq!(form(cx), settled, "{at}: no later frame changes the bar");
+            }
+        }
+
+        /// A jump of the text's scroll, as a scrollbar drag makes, builds
+        /// the checkboxes of the rows it shows and no others, in the frame
+        /// that draws it, each on its row: the range they are built over was
+        /// widened on both sides by the whole jump, so a jump of 20,000 rows
+        /// built up to 40,000 of them in that frame.
+        #[gpui::test]
+        async fn a_long_scroll_jump_builds_the_checkboxes_of_the_rows_it_shows(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 600).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let (height, text) = shown.text(cx);
+                let first = shown.first();
+                for row in [first + 500, first] {
+                    painted_rows::watch();
+                    shown.editor.update(cx, |state, cx| {
+                        let sideways = state.scroll_offset().x;
+                        state.set_scroll_offset(point(sideways, -height * row as f32), cx);
+                    });
+                    crate::tags::tests::draw(cx);
+                    let frames = painted_rows::take_frames();
+                    painted_rows::stop();
+                    let frame = frames
+                        .iter()
+                        .find(|frame| frame.editor == shown.editor.entity_id())
+                        .unwrap_or_else(|| panic!("{at}: a frame draws the jump"));
+                    let top = frame.top.expect("the text is painted");
+                    let bound = (text.size.height / height).ceil() as usize + 2;
+                    assert!(
+                        frame.cells.len() <= bound,
+                        "{at}: the jump to row {row} builds {} checkboxes for a text \
+                         of at most {bound} rows",
+                        frame.cells.len()
+                    );
+                    let shows = ((frame.text.top() - top) / height).floor() as usize
+                        ..((frame.text.bottom() - top) / height).ceil() as usize;
+                    for row in shows.filter(|row| {
+                        matches!(shown.rows.get(*row), Some(PartialRow::Change { .. }))
+                    }) {
+                        let (_, cell) = frame
+                            .cells
+                            .iter()
+                            .find(|(drawn, _)| *drawn == row)
+                            .unwrap_or_else(|| panic!("{at}: row {row}'s checkbox is built"));
+                        let line = top + height * row as f32;
+                        assert!(
+                            cell.center().y > line && cell.center().y < line + height,
+                            "{at}: row {row}'s checkbox {cell:?} lies on its row, at {line:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Selects the changed lines `ids` as a click would dirty the view,
+        /// leaving the frames it brings to `requested_frames`.
+        fn select_ids(shown: &Shown, cx: &mut VisualTestContext, ids: &[usize]) {
+            shown.view.update(cx, |view, cx| {
+                view.selection.ids = ids.iter().copied().collect();
+                cx.notify();
+            });
+            cx.executor().run_until_parked();
+        }
+
+        /// Each changed line's selection ID, in the diff's order.
+        fn change_ids(shown: &Shown) -> Vec<usize> {
+            shown
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    PartialRow::Change { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// With the caret on the file's last row, a selection bar wrapped to
+        /// two rows, which comes or grows from one row, leaves the caret's
+        /// line whole just above it, with no further input. The text's end
+        /// as it last laid out stopped the reveal short of a bar that tall,
+        /// and nothing asked again: at 18 pt in 461 × 490 the bar is about
+        /// 112 px and the text scrolls about 75 px past its end.
+        #[gpui::test]
+        async fn the_caret_line_at_the_files_end_stays_whole_above_a_wrapped_bar(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 12).await;
+            let whole = |shown: &Shown, cx: &mut VisualTestContext, when: &str| {
+                let (height, text) = shown.text(cx);
+                let line = shown.caret_line(cx);
+                shown.assert_whole(cx, line, when);
+                assert!(
+                    (f32::from(line + height - text.bottom())).abs() < 0.01,
+                    "{}: {when}: the caret's line ends at the text's foot {:?}, not at {:?}",
+                    shown.at,
+                    text.bottom(),
+                    line + height
+                );
+            };
+            let wrapped = |cx: &mut VisualTestContext| {
+                let apply = cx
+                    .debug_bounds("apply-partial-selection")
+                    .expect("the action");
+                let clear = cx.debug_bounds("clear-partial-selection").expect("Clear");
+                clear.top() >= apply.bottom()
+            };
+            let shown = Shown::at(&app, cx, SIZES[1]);
+            let ids = change_ids(&shown);
+            let last = shown
+                .rows
+                .iter()
+                .rposition(|row| matches!(row, PartialRow::Change { .. }))
+                .expect("a changed line");
+            shown.caret_to(cx, last);
+            shown.to_foot(cx, last, px(0.));
+            select_ids(&shown, cx, &ids);
+            requested_frames(cx);
+            assert!(wrapped(cx), "{}: the bar wraps", shown.at);
+            whole(&shown, cx, "the bar came wrapped");
+            // From a bar on one row, the caret's line just above it.
+            let shown = Shown::at(&app, cx, SIZES[1]);
+            shown.caret_to(cx, last);
+            shown.to_foot(cx, last, px(0.));
+            select_ids(&shown, cx, &ids[..3]);
+            requested_frames(cx);
+            assert!(!wrapped(cx), "{}: three lines' bar is one row", shown.at);
+            whole(&shown, cx, "the bar came on one row");
+            select_ids(&shown, cx, &ids);
+            requested_frames(cx);
+            assert!(wrapped(cx), "{}: the bar wraps", shown.at);
+            whole(&shown, cx, "the bar grew to two rows");
+        }
+
+        /// A click on the checkbox of a row the text half cuts, the bar
+        /// already drawn, so that its arrival reveals nothing, leaves that
+        /// row whole, scrolled by the least, at the text's top as at its
+        /// foot, as the text reveals a moved caret. The text's whole offset
+        /// was put back after the caret moved, to keep it from scrolling
+        /// sideways, and the row stayed cut.
+        #[gpui::test]
+        async fn a_click_on_a_half_cut_rows_checkbox_leaves_that_row_whole(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let (_fixture, app, cx) = with_added(cx, 120).await;
+            for size in SIZES {
+                let shown = Shown::at(&app, cx, size);
+                let at = shown.at.clone();
+                let first = shown.first();
+                shown.press(cx, "space");
+                let (height, text) = shown.text(cx);
+                for (row, foot) in [(first + 40, false), (first + 60, true)] {
+                    let y = if foot {
+                        text.size.height + height / 3. - height * (row + 1) as f32
+                    } else {
+                        -height * row as f32 - height / 3.
+                    };
+                    shown.editor.update(cx, |state, cx| {
+                        state.set_scroll_offset(point(px(0.), y), cx);
+                    });
+                    crate::tags::tests::draw(cx);
+                    let cell = cx
+                        .debug_bounds(format!("partial-line-{row}").leak())
+                        .unwrap_or_else(|| panic!("{at}: row {row}'s checkbox"));
+                    assert!(
+                        if foot {
+                            cell.bottom() > text.bottom()
+                        } else {
+                            cell.top() < text.top()
+                        },
+                        "{at}: the text cuts row {row}: {cell:?} in {text:?}"
+                    );
+                    cx.simulate_click(cell.center(), Modifiers::default());
+                    crate::tags::tests::draw(cx);
+                    assert_eq!(shown.caret(cx), row, "{at}: the caret moved to the click");
+                    let line = shown.caret_line(cx);
+                    shown.assert_whole(cx, line, "after the click");
+                    let edge = if foot {
+                        line + height - text.bottom()
+                    } else {
+                        line - text.top()
+                    };
+                    assert!(
+                        f32::from(edge).abs() < 0.01,
+                        "{at}: row {row} moved by the least, {edge:?} from the text's edge"
+                    );
+                }
+            }
+        }
+
+        /// The selection bar keeps its action and Clear whole inside it,
+        /// with a one-, two- and three-digit count and Unstage 12 lines, at
+        /// 18 pt in a 461 × 490 window and at 13 pt in 1480 × 973, and Tab
+        /// draws each one's ring whole: where the action and Clear's label
+        /// do not fit beside each other, Clear is the shared 28 px icon
+        /// control beside the action, named and tooltipped "Clear line
+        /// selection", and only where even that does not fit is it wrapped
+        /// below, whole. With its label it once wrapped below the action
+        /// before it became an icon (DESIGN.md's one responsive order:
+        /// icons first).
+        #[gpui::test]
+        async fn the_selection_bar_keeps_its_controls_whole_on_one_row(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let mut met = BTreeSet::new();
+            for (added, staged) in [(3, false), (12, false), (120, false), (12, true)] {
+                let (fixture, app, cx) = with_added(cx, added).await;
+                let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+                if staged {
+                    fixture_git(&fixture.path().join("narrow"), &["add", "notes.txt"]);
+                    cx.update(|window, cx| {
+                        app.update(cx, |app, cx| app.refresh_worktree(window, cx))
+                    });
+                    settle(&app, cx).await;
+                    cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            app.select_working(0, ChangeArea::Staged, window, cx)
+                        })
+                    });
+                    settle(&app, cx).await;
+                }
+                for size in SIZES {
+                    let shown = Shown::at(&app, cx, size);
+                    let count = select_all(&shown, cx);
+                    let at = format!("{} lines, staged {staged}, {}", count, shown.at);
+                    let bar = cx
+                        .debug_bounds("partial-selection-bar")
+                        .unwrap_or_else(|| panic!("{at}: the bar shows"));
+                    let apply = cx
+                        .debug_bounds("apply-partial-selection")
+                        .expect("the action");
+                    let clear = cx.debug_bounds("clear-partial-selection").expect("Clear");
+                    let icon = clear.size.width == clear.size.height;
+                    let beside = (apply.top() - clear.top()).abs() < px(0.5);
+                    assert!(
+                        beside || (icon && clear.top() >= apply.bottom()),
+                        "{at}: Clear {clear:?} stands beside the action {apply:?}, or as its \
+                         icon wholly below it where even that does not fit"
+                    );
+                    met.insert((icon, beside));
+                    for control in [apply, clear] {
+                        assert!(
+                            control.left() >= bar.left()
+                                && control.right() <= bar.right()
+                                && control.top() >= bar.top()
+                                && control.bottom() <= bar.bottom(),
+                            "{at}: {control:?} lies whole in the bar {bar:?}"
+                        );
+                    }
+                    let (apply_focus, clear_focus) = shown.view.read_with(cx, |view, _| {
+                        (view.apply_focus.clone(), view.clear_focus.clone())
+                    });
+                    for (focus, selector) in [
+                        (&apply_focus, "apply-partial-selection"),
+                        (&clear_focus, "clear-partial-selection"),
+                    ] {
+                        cx.update(|window, cx| window.focus(focus, cx));
+                        crate::tags::tests::draw(cx);
+                        let button = cx.debug_bounds(selector).expect("the button is drawn");
+                        let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                            .into_iter()
+                            .filter(|ring| {
+                                ring.bounds.left() < button.left()
+                                    && ring.bounds.right() > button.right()
+                            })
+                            .collect();
+                        let [ring] = &rings[..] else {
+                            panic!("{at}: one ring around {selector} {button:?}: {rings:?}");
+                        };
+                        assert!(ring.whole, "{at}: {selector}'s ring is cut: {ring:?}");
+                    }
+                    cx.update(|window, cx| window.focus(&shown.view.read(cx).focus_handle(cx), cx));
+                }
+            }
+            assert_eq!(
+                met,
+                BTreeSet::from([(false, true), (true, false), (true, true)]),
+                "Clear labelled beside the action where both fit, its icon beside it, and its icon below"
+            );
+        }
     }
 
     fn n(old: Option<u64>, new: Option<u64>) -> LineNumbers {

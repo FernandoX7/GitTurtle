@@ -1,9 +1,10 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::LazyLock};
 
 use gpui::{
     Anchor, AnyElement, App, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
-    Render, RenderOnce, Role, StatefulInteractiveElement as _, Subscription, Window, div,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, KeyContext, KeyDownEvent,
+    KeybindingKeystroke, Keystroke, MouseButton, NoAction, ParentElement as _, Pixels, Render,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Subscription, Window, div,
     prelude::FluentBuilder as _,
 };
 
@@ -14,12 +15,79 @@ use crate::{
 
 const CONTEXT: &str = "Popover";
 
+/// GitTurtle patch: the key context a popover's trigger has beside
+/// [`CONTEXT`], which its content has alone.
+const TRIGGER_CONTEXT: &str = "PopoverTrigger";
+
+/// GitTurtle patch: the keys that open or close a popover from its trigger.
+/// [`CONTEXT`] binds them to [`Confirm`], in the trigger and the content
+/// alike; in the trigger they are also bound to [`NoAction`], after it,
+/// which outranks it at the same depth, so their key-down reaches the
+/// trigger's listener ([`open_key`]) with its repeat flag instead.
+const OPEN_KEYS: [&str; 2] = ["enter", "space"];
+
+/// GitTurtle patch: [`OPEN_KEYS`] parsed once, as [`KeyBinding::new`]
+/// parses them, for [`open_key`] to match a key-down against as their
+/// bindings match it.
+static OPEN_KEYSTROKES: LazyLock<[KeybindingKeystroke; 2]> = LazyLock::new(|| {
+    OPEN_KEYS.map(|keys| {
+        KeybindingKeystroke::from_keystroke(Keystroke::parse(keys).expect("a popover's open key"))
+    })
+});
+
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
         KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
         KeyBinding::new("space", Confirm { secondary: false }, Some(CONTEXT)),
     ]);
+    cx.bind_keys(OPEN_KEYS.map(|keys| KeyBinding::new(keys, NoAction, Some(TRIGGER_CONTEXT))));
+}
+
+/// GitTurtle patch: a popover's trigger opens or closes it with Enter or
+/// Space only as the key goes down, never on a held key's repeats, as a
+/// menu confirms only on a fresh press. Its key-down, which no binding takes
+/// in the trigger ([`OPEN_KEYS`]), dispatches the [`Confirm`] the binding
+/// did, on the focused element, so whatever an application captures of it
+/// still runs, while an auto-repeat, whose `is_held` is set, does nothing;
+/// either way the key goes no further, as the binding took it. It is taken
+/// in the capture phase, ahead of anything inside the trigger, which the
+/// binding kept it from too. In the content, whose innermost popover context
+/// is not a trigger's, the content's own binding outranks the trigger's
+/// `NoAction` and takes the key as before, so the key reaches this listener
+/// only where nothing there binds it, and it passes over it. Bound to
+/// [`Confirm`], a still-held Enter or Space that had chosen a dropdown's
+/// item reopened its menu once focus returned to the button. Under X11 a
+/// held key arrives as fresh presses, which this cannot tell apart
+/// (`GITTURTLE-PATCH.md`). On Wayland an input method did the same until
+/// the `gpui-pre-linux` patch kept text input off outside a text field.
+fn open_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
+    let in_trigger = OPEN_KEYSTROKES
+        .iter()
+        .any(|keystroke| event.keystroke.should_match(keystroke))
+        && window
+            .context_stack()
+            .iter()
+            .rfind(|context| context.contains(CONTEXT))
+            .is_some_and(|context| context.contains(TRIGGER_CONTEXT));
+    if !in_trigger {
+        return;
+    }
+    if !event.is_held
+        && let Some(focused) = window.focused(cx)
+    {
+        focused.dispatch_action(&Confirm { secondary: false }, window, cx);
+    }
+    cx.stop_propagation();
+}
+
+/// GitTurtle patch: a trigger's key context, [`CONTEXT`] as before and
+/// [`TRIGGER_CONTEXT`] beside it.
+fn trigger_context() -> KeyContext {
+    let mut context = KeyContext::default();
+    context.add(CONTEXT);
+    context.add(TRIGGER_CONTEXT);
+    context
 }
 
 type OpenChangeHandler = Rc<dyn Fn(&bool, &mut Window, &mut App)>;
@@ -102,15 +170,23 @@ impl PopoverState {
         self.set_open(opening, cx);
 
         if self.open {
-            let state = cx.entity();
             self.tracked_focus_handle
                 .clone()
                 .unwrap_or_else(|| self.focus_handle.clone())
                 .focus(window, cx);
 
+            // GitTurtle patch: the callback dismisses the state the
+            // subscription hands it, which the window upgrades from a weak
+            // handle as each event arrives. Upstream it captured
+            // `cx.entity()`, a strong handle that the app's subscriber set
+            // keeps until this subscription, which the state holds, drops: a
+            // popover taken out of the tree while open kept its state, and
+            // the deferred-popup registration the state holds, for the app's
+            // life: the subscriber set and that registry are the app's, and
+            // closing the popover's window clears neither.
             self.dismiss_subscription =
                 Some(
-                    window.subscribe(&cx.entity(), cx, move |_, _: &DismissEvent, window, cx| {
+                    window.subscribe(&cx.entity(), cx, |state, _: &DismissEvent, window, cx| {
                         state.update(cx, |state, cx| state.dismiss(window, cx));
                         window.refresh();
                     }),
@@ -177,6 +253,12 @@ pub struct Popover {
     mouse_button: MouseButton,
     overlay_closable: bool,
     on_open_change: Option<OpenChangeHandler>,
+    /// GitTurtle patch: the popup host's window margin, where the caller
+    /// sets one ([`Popover::margin`]).
+    margin: Option<Pixels>,
+    /// GitTurtle patch: the surface's accessible name
+    /// ([`Popover::aria_label`]).
+    aria_label: Option<SharedString>,
 }
 
 impl Popover {
@@ -192,11 +274,28 @@ impl Popover {
             mouse_button: MouseButton::Left,
             overlay_closable: true,
             on_open_change: None,
+            margin: None,
+            aria_label: None,
         }
+    }
+
+    /// GitTurtle patch: the name assistive technology reads for the open
+    /// surface, a dialog, which upstream left unnamed: Orca read a colour
+    /// picker's popover as "dialog" and nothing more.
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
     }
 
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
+        self
+    }
+
+    /// GitTurtle patch: keeps the surface `margin` inside the window, in
+    /// place of the popup host's 8 px ([`Popup::margin`]).
+    pub fn margin(mut self, margin: Pixels) -> Self {
+        self.margin = Some(margin);
         self
     }
 
@@ -285,9 +384,13 @@ impl RenderOnce for Popover {
             return div().id("empty").into_any_element();
         };
         let parent_view_id = window.current_view();
-        let popup = Popup::new(self.id, trigger(open, window, cx))
-            .anchor(self.anchor)
-            .key_context(CONTEXT)
+        let mut popup = Popup::new(self.id, trigger(open, window, cx)).anchor(self.anchor);
+        if let Some(margin) = self.margin {
+            popup = popup.margin(margin);
+        }
+        let popup = popup
+            .key_context(trigger_context())
+            .capture_key_down(open_key)
             .on_action({
                 let state = state.clone();
                 move |_: &Confirm, window, cx| {
@@ -317,6 +420,8 @@ impl RenderOnce for Popover {
             // dismissed with Escape, which is what this role tells assistive
             // technology to expect.
             .role(Role::Dialog)
+            .when_some(self.aria_label, |this, label| this.aria_label(label));
+        let content = described_surface(content)
             .occlude()
             .tab_group()
             .track_focus(&focus_handle)
@@ -336,6 +441,25 @@ impl RenderOnce for Popover {
             });
         popup.content(content).into_any_element()
     }
+}
+
+/// GitTurtle patch: GPUI's test platform never activates accessibility, so a
+/// test cannot read a popover's AccessKit node. A debug build names the node
+/// a named surface writes in a debug selector, `popover: <name> · <role>`,
+/// which a test build registers with its bounds, as the component kit's menu
+/// items do.
+fn described_surface(content: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+    #[cfg(debug_assertions)]
+    {
+        use gpui::Element as _;
+        let mut node = gpui::accesskit::Node::new(Role::Dialog);
+        content.write_a11y_info(&mut node);
+        if let Some(label) = node.label() {
+            let selector = format!("popover: {label} · {:?}", node.role());
+            return content.debug_selector(move || selector);
+        }
+    }
+    content
 }
 
 #[cfg(test)]
@@ -469,5 +593,341 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
         assert!(cx.debug_bounds("keyboard-popover-content").is_some());
+    }
+
+    /// A popover whose content holds an item that emits the state's dismiss
+    /// event when clicked, as a chosen menu item does.
+    struct DismissalHarness {
+        trigger_focus: FocusHandle,
+        changes: Rc<RefCell<Vec<bool>>>,
+    }
+
+    impl Render for DismissalHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let changes = self.changes.clone();
+            let trigger_focus = self.trigger_focus.clone();
+            Popover::new("dismissal-popover")
+                .trigger_with(move |_, _, _| {
+                    div()
+                        .id("dismissal-trigger")
+                        .debug_selector(|| "dismissal-trigger".into())
+                        .track_focus(&trigger_focus)
+                        .w(px(80.))
+                        .h(px(20.))
+                        .child("Open")
+                        .into_any_element()
+                })
+                .content(|_, _, cx| {
+                    div()
+                        .debug_selector(|| "dismissal-content".into())
+                        .size(px(40.))
+                        .child(
+                            div()
+                                .id("dismissal-item")
+                                .debug_selector(|| "dismissal-item".into())
+                                .size(px(20.))
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                        )
+                })
+                .on_open_change(move |open, _, _| changes.borrow_mut().push(*open))
+        }
+    }
+
+    /// GitTurtle patch: the dismiss subscription reaches its state through
+    /// the entity it is handed rather than one it captured. Escape, the
+    /// trigger pressed again and an item's dismiss event each still close
+    /// the popover, and Escape and the item return focus to the trigger it
+    /// was opened from; a press outside is
+    /// `unstyled_popover_owns_pointer_open_and_outside_dismiss`.
+    #[gpui::test]
+    fn every_dismissal_still_closes_the_popover(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view({
+            let changes = changes.clone();
+            move |_, cx| DismissalHarness {
+                trigger_focus: cx.focus_handle(),
+                changes,
+            }
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let trigger_focus = view.read_with(cx, |view, _| view.trigger_focus.clone());
+        let open_from_the_keyboard = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| trigger_focus.focus(window, cx));
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(
+                cx.debug_bounds("dismissal-content").is_some(),
+                "Enter opens it"
+            );
+        };
+        let trigger_focused = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| trigger_focus.is_focused(window))
+        };
+        draw(cx);
+        let trigger = cx
+            .debug_bounds("dismissal-trigger")
+            .expect("the trigger is drawn")
+            .center();
+
+        open_from_the_keyboard(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds("dismissal-content").is_none(), "Escape");
+        assert!(trigger_focused(cx), "Escape returns focus to the trigger");
+
+        cx.simulate_click(trigger, Default::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("dismissal-content").is_some(),
+            "a press opens it"
+        );
+        cx.simulate_click(trigger, Default::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("dismissal-content").is_none(),
+            "the trigger pressed again"
+        );
+
+        open_from_the_keyboard(cx);
+        let item = cx
+            .debug_bounds("dismissal-item")
+            .expect("the item is drawn")
+            .center();
+        cx.simulate_click(item, Default::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("dismissal-content").is_none(),
+            "the item's dismiss event"
+        );
+        assert!(
+            trigger_focused(cx),
+            "the item's dismissal returns focus to the trigger"
+        );
+
+        assert_eq!(&*changes.borrow(), &[true, false, true, false, true, false]);
+    }
+
+    /// GitTurtle patch: Enter or Space on a popover's trigger opens it only
+    /// as the key goes down, never on the repeats of a held key: held on the
+    /// trigger, the key opens nothing, a fresh press opens the popover, and
+    /// once Escape has closed it and returned focus to the trigger, the key
+    /// still held reopens nothing, while a fresh press does. Enter in the
+    /// content still closes it, through the content's own binding. Bound to
+    /// `Confirm` in the trigger, each repeat toggled the popover, so a key
+    /// still held after a dropdown's item was chosen reopened its menu.
+    /// A repeat is a key-down marked `is_held`, as macOS and Wayland mark it,
+    /// Wayland with an input method such as fcitx5 too since the
+    /// `gpui-pre-linux` patch keeps text input off outside a text field;
+    /// under X11 a held key arrives as fresh presses, which the trigger
+    /// cannot tell from new ones.
+    #[gpui::test]
+    fn a_held_key_on_the_trigger_opens_nothing(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view({
+            let changes = changes.clone();
+            move |_, cx| DismissalHarness {
+                trigger_focus: cx.focus_handle(),
+                changes,
+            }
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let held = |cx: &mut gpui::VisualTestContext, key: &str| {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: Keystroke::parse(key).unwrap().with_simulated_ime(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let open =
+            |cx: &mut gpui::VisualTestContext| cx.debug_bounds("dismissal-content").is_some();
+        let trigger_focus = view.read_with(cx, |view, _| view.trigger_focus.clone());
+        draw(cx);
+        for key in ["enter", "space"] {
+            cx.update(|window, cx| trigger_focus.focus(window, cx));
+            draw(cx);
+            held(cx, key);
+            held(cx, key);
+            assert!(!open(cx), "{key} held on the trigger opens nothing");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert!(open(cx), "a fresh {key} opens it");
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(!open(cx), "Escape closes it");
+            assert!(
+                cx.update(|window, _| trigger_focus.is_focused(window)),
+                "Escape returns focus to the trigger"
+            );
+            for _ in 0..3 {
+                held(cx, key);
+            }
+            assert!(!open(cx), "{key} still held reopens nothing");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert!(open(cx), "a fresh {key} reopens it");
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(!open(cx), "Enter in the content closes it");
+        }
+        assert_eq!(
+            &*changes.borrow(),
+            &[true, false, true, false, true, false, true, false]
+        );
+    }
+
+    /// A view holding only a popover, as a page holds its dropdown. The
+    /// popover's content keeps a weak handle to its state.
+    struct PopoverPage {
+        popover_state: Rc<RefCell<Option<gpui::WeakEntity<PopoverState>>>>,
+    }
+
+    impl Render for PopoverPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let popover_state = self.popover_state.clone();
+            Popover::new("page-popover")
+                .trigger_with(|_, _, _| {
+                    div()
+                        .debug_selector(|| "page-popover-trigger".into())
+                        .w(px(80.))
+                        .h(px(20.))
+                        .child("Open")
+                        .into_any_element()
+                })
+                .content(move |_, _, cx| {
+                    *popover_state.borrow_mut() = Some(cx.weak_entity());
+                    div()
+                        .debug_selector(|| "page-popover-content".into())
+                        .size(px(40.))
+                })
+        }
+    }
+
+    /// An input and, below it while there is one, a [`PopoverPage`].
+    struct InputAbovePage {
+        input: gpui::Entity<crate::input::InputState>,
+        page: Option<gpui::Entity<PopoverPage>>,
+    }
+
+    impl Render for InputAbovePage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .debug_selector(|| "input-slot".into())
+                        .flex()
+                        .w(px(200.))
+                        .h(px(30.))
+                        .child(self.input.clone()),
+                )
+                .children(self.page.clone())
+        }
+    }
+
+    /// What a popover taken out of the tree while open leaves behind.
+    #[derive(Debug, PartialEq)]
+    struct LeftBehind {
+        popover_state_alive: bool,
+        popup_registered: bool,
+        input_menus_opened: Vec<&'static str>,
+    }
+
+    /// GitTurtle patch: a popover whose view is taken away while it is open
+    /// — a page left by a shortcut with its dropdown's menu open — goes with
+    /// it. Its dismiss subscription held its own state, so the state outlived
+    /// its element, for the app's life, and kept its deferred-popup
+    /// registration, which is the app's, and every input in every window
+    /// then refused its right-click menu for the rest of the session.
+    #[gpui::test]
+    fn a_popover_taken_away_while_open_lets_its_state_go(cx: &mut gpui::TestAppContext) {
+        use gpui::Modifiers;
+
+        cx.update(crate::init);
+        let menus = Rc::new(RefCell::new(Vec::new()));
+        let popover_state = Rc::new(RefCell::new(None));
+        let (view, cx) = cx.add_window_view({
+            let menus = menus.clone();
+            let popover_state = popover_state.clone();
+            move |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                let input = cx.new(|cx| {
+                    let mut input = crate::input::InputState::new(window, cx);
+                    input.on_context_menu(Rc::new(move |_, _, _, _, _| {
+                        menus.borrow_mut().push("input");
+                    }));
+                    input
+                });
+                let page = cx.new(|_| PopoverPage { popover_state });
+                InputAbovePage {
+                    input,
+                    page: Some(page),
+                }
+            }
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(cx);
+        let trigger = cx
+            .debug_bounds("page-popover-trigger")
+            .expect("the trigger is drawn")
+            .center();
+        let input = cx
+            .debug_bounds("input-slot")
+            .expect("the input is drawn")
+            .center();
+
+        cx.simulate_click(trigger, Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("page-popover-content").is_some(),
+            "the press opened the popover"
+        );
+        assert!(
+            cx.update(|_, cx| GlobalState::is_in_deferred_context(cx)),
+            "the open popover registered its deferred popup"
+        );
+        let state = popover_state
+            .borrow_mut()
+            .take()
+            .expect("the open popover built its content");
+        let page = view.update(cx, |view, cx| {
+            cx.notify();
+            view.page.take().expect("the page is shown").downgrade()
+        });
+
+        draw(cx);
+        assert!(page.upgrade().is_none(), "the page view is gone");
+        let popover_state_alive = state.upgrade().is_some();
+        let popup_registered = cx.update(|_, cx| GlobalState::is_in_deferred_context(cx));
+
+        cx.simulate_mouse_move(input, None, Modifiers::default());
+        cx.simulate_mouse_down(input, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(input, MouseButton::Right, Modifiers::default());
+        // The input shows its menu in a deferred callback.
+        cx.run_until_parked();
+
+        assert_eq!(
+            LeftBehind {
+                popover_state_alive,
+                popup_registered,
+                input_menus_opened: menus.borrow().clone(),
+            },
+            LeftBehind {
+                popover_state_alive: false,
+                popup_registered: false,
+                input_menus_opened: vec!["input"],
+            }
+        );
     }
 }

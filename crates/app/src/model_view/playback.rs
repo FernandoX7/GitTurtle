@@ -160,7 +160,11 @@ fn toggle(documents: &[Arc<Document>]) {
         }
     }
 }
-fn choose_clip(document: &Arc<Document>, partner: Option<&Arc<Document>>, clip: Option<usize>) {
+pub(super) fn choose_clip(
+    document: &Arc<Document>,
+    partner: Option<&Arc<Document>>,
+    clip: Option<usize>,
+) {
     {
         let mut state = document.state.lock().unwrap_or_else(|e| e.into_inner());
         state.playback.pose.clip =
@@ -171,28 +175,68 @@ fn choose_clip(document: &Arc<Document>, partner: Option<&Arc<Document>>, clip: 
     seek(&documents, 0.);
 }
 
+/// Side `index`'s clip menu and the displayed pose's time, in the header
+/// `held` whose line leaves a control `line_room`: labelled with the chosen
+/// clip's name and a caret where its widest reading, "Default pose" or a
+/// clip's name, fits, and otherwise its clip icon, the name leading its
+/// tooltip ([`crate::system_preview::HeaderControl`]). It was once always
+/// labelled, so a long clip name was cut at a narrow side's edge.
 pub(super) fn clip_control<T: 'static>(
     index: usize,
     label: &'static str,
     document: &Arc<Document>,
     partner: Option<Arc<Document>>,
+    (held, line_room): (&crate::system_preview::SideHeader, Pixels),
+    window: &Window,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
     let clips = document.scene.animation_clips();
     if clips.is_empty() {
         return None;
     }
-    let (selected, sampled) = {
+    // The menu's widest reading is laid out once per font and size and kept
+    // with the document, whose clips never change: its readings were once
+    // gathered and joined on every frame, a clip's playback among them.
+    let key = crate::views::LineKey::current(window);
+    let (selected, sampled, measured) = {
         let state = document.state.lock().unwrap_or_else(|e| e.into_inner());
         (
             state.playback.pose.clip,
             state.frame_pose.unwrap_or_default(),
+            state
+                .clip_menu
+                .as_ref()
+                .filter(|(laid_out, _)| *laid_out == key)
+                .map(|(_, width)| *width),
         )
     };
     let text = selected
         .and_then(|index| clips.get(index))
         .map_or_else(|| "Default pose".to_owned(), |clip| clip.name.clone());
-    let label_text = format!("{label}: Animation clip, {text}");
+    let reading = measured.unwrap_or_else(|| {
+        #[cfg(test)]
+        super::CLIP_READINGS_BUILT.with(|built| built.set(built.get() + 1));
+        let readings: Vec<&str> = std::iter::once("Default pose")
+            .chain(clips.iter().map(|clip| clip.name.as_str()))
+            .collect();
+        let reading = crate::widest_label_now(&readings, window);
+        let mut state = document.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.clip_menu = Some((key, reading));
+        reading
+    });
+    // As layout places it on this display's device pixels, so the clip's
+    // name is never cut ([`crate::placed_menu_width`]).
+    let widest = crate::placed_menu_width(reading, window);
+    let menu = crate::system_preview::HeaderControl::new(
+        ("model-clip", index),
+        format!("model-clip-{index}"),
+        text.clone(),
+        format!("{label}: Animation clip, {text}"),
+        "clip",
+        widest,
+    )
+    .menu("Choose an animation clip or the default pose")
+    .button(line_room);
     let target = document.clone();
     let owner = cx.entity().downgrade();
     let selected_duration = selected
@@ -205,10 +249,8 @@ pub(super) fn clip_control<T: 'static>(
             .items_center()
             .gap_2()
             .child(
-                button(("model-clip", index), text, "", false)
-                    .dropdown_caret(true)
-                    .accessibility_label(label_text)
-                    .dropdown_menu(move |mut menu, _, _| {
+                held.track(("model-clip", index), menu, cx)
+                    .app_menu(move |mut menu, _, _| {
                         menu = menu.label(format!("{label} animation"));
                         for (clip, name) in std::iter::once((None, "Default pose".to_owned()))
                             .chain(target.scene.animation_clips().iter().enumerate().map(
@@ -240,7 +282,7 @@ pub(super) fn clip_control<T: 'static>(
                 div()
                     .id(("model-pose-time", index))
                     .role(Role::Label)
-                    .aria_label(format!(
+                    .aria_value(format!(
                         "{label} displayed pose: {:.2} of {:.2} seconds",
                         sampled.seconds, duration
                     ))
@@ -254,6 +296,7 @@ pub(super) fn clip_control<T: 'static>(
 
 pub(super) fn controls<T: 'static>(
     documents: &[Arc<Document>],
+    ring: &crate::focus_ring::FocusRing,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
     if !documents
@@ -344,7 +387,7 @@ pub(super) fn controls<T: 'static>(
             div()
                 .id("model-comparison-time")
                 .role(Role::Label)
-                .aria_label(format!(
+                .aria_value(format!(
                     "Comparison time {:.2} of {:.2} seconds",
                     seconds, total
                 ))
@@ -352,7 +395,7 @@ pub(super) fn controls<T: 'static>(
                 .child(format!("{seconds:.2} / {total:.2} s")),
         );
     if total > 0. {
-        row = row.child(scrubber(documents, seconds, total, cx));
+        row = row.child(scrubber(documents, seconds, total, ring, cx));
     }
     Some(div().flex().flex_col().gap_1().px_3().py_1().border_b_1().border_color(rgb(colors.border)).child(row)
         .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(colors.muted)).child(if cx.reduce_motion() { "Reduce Motion is enabled. Choose a clip and scrub or step through poses." } else { "Shared seconds · shorter clips hold their last pose · longest clip loops. Clip changes and scrubbing pause both sides." }))
@@ -376,6 +419,7 @@ fn scrubber<T: 'static>(
     documents: &[Arc<Document>],
     seconds: f64,
     total: f64,
+    ring: &crate::focus_ring::FocusRing,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
@@ -396,10 +440,11 @@ fn scrubber<T: 'static>(
     let increment = documents.to_vec();
     let decrement = documents.to_vec();
     let fraction = (seconds / total).clamp(0., 1.) as f32;
-    div().id("model-timeline").min_w(px(120.)).w(px(210.)).h(px(22.)).relative().cursor(CursorStyle::PointingHand)
+    div().id("model-timeline").debug_selector(|| "model-timeline".into()).min_w(px(120.)).w(px(210.)).h(px(22.)).relative().cursor(CursorStyle::PointingHand)
         .track_focus(&focus).tab_stop(true).role(Role::Slider).aria_label("Model animation time in seconds").aria_description("Left and right seek one thirtieth second; Home and End seek to the beginning and end. Seeking pauses playback.")
         .aria_numeric_value(seconds).aria_min_numeric_value(0.).aria_max_numeric_value(total).aria_numeric_value_step(1. / FPS)
-        .focus_visible(|style| style.border_1().border_color(rgb(colors.accent)))
+        // Kept while the pointer moves, as the canvas's ring is.
+        .when(ring.shows(&focus), |timeline| timeline.border_1().border_color(rgb(colors.accent)))
         .on_a11y_action(gpui::AccessibleAction::Increment, move |_, window, cx| { seek(&increment, position(&increment) + 1. / FPS); window.refresh(); cx.refresh_windows(); })
         .on_a11y_action(gpui::AccessibleAction::Decrement, move |_, window, cx| { seek(&decrement, position(&decrement) - 1. / FPS); window.refresh(); cx.refresh_windows(); })
         .on_mouse_down(MouseButton::Left, cx.listener(move |_, event: &MouseDownEvent, window, cx| { focus_down.focus(window, cx); for document in &down { document.state.lock().unwrap_or_else(|e| e.into_inner()).scrubbing = true; } scrub_at(&down, event.position); window.refresh(); cx.stop_propagation(); cx.notify(); }))

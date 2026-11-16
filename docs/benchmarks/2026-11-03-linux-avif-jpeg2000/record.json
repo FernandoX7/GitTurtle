@@ -1,0 +1,2033 @@
+{
+  "measured": "Linux AVIF and JPEG 2000 images through the confined helper, one helper per request; PNG and JPEG in process",
+  "profile": "release",
+  "executable": {
+    "name": "gitturtle",
+    "bytes": 102753536,
+    "revision": "36d977aaef3826405247a45e08133cefda8750bc",
+    "revision_embedded": true,
+    "source_tree": "clean"
+  },
+  "host": {
+    "arch": "aarch64",
+    "kernel": "7.1.12-2-7-ARCH",
+    "cpu": "0x034",
+    "cpus": 12
+  },
+  "edge": 1600,
+  "runs_per_image": 20,
+  "skipped_inputs": [],
+  "start": {
+    "first": {
+      "start_us": 2051,
+      "vm_size_kib": 79520,
+      "vm_rss_kib": 9136,
+      "kill_to_reap_idle_us": 143
+    },
+    "warm": {
+      "start_us": {
+        "p50": 1604,
+        "p95": 2215,
+        "max": 2215,
+        "n": 19
+      },
+      "vm_size_kib": {
+        "p50": 80352,
+        "p95": 80992,
+        "max": 80992,
+        "n": 19
+      },
+      "vm_rss_kib": {
+        "p50": 9104,
+        "p95": 9136,
+        "max": 9136,
+        "n": 19
+      },
+      "kill_to_reap_idle_us": {
+        "p50": 207,
+        "p95": 389,
+        "max": 389,
+        "n": 19
+      }
+    }
+  },
+  "helper_peaks": {
+    "requirement_18": {
+      "name": "avif-6720x4480-12bit-444-alpha-grain.avif",
+      "designated_measured": true,
+      "reason": null,
+      "errors": [],
+      "vm_hwm_kib": 383568,
+      "budget_kib": 524288,
+      "within_budget": true
+    },
+    "largest_accepted_avif": {
+      "name": "avif-6720x4480-12bit-444-alpha-grain.avif",
+      "format": "Avif",
+      "vm_hwm_kib": 383568,
+      "budget_kib": 524288,
+      "within_budget": true
+    },
+    "largest_accepted": {
+      "name": "avif-6720x4480-12bit-444-alpha-grain.avif",
+      "format": "Avif",
+      "vm_hwm_kib": 383568,
+      "budget_kib": 524288,
+      "within_budget": true
+    },
+    "hostile_alpha": [
+      {
+        "name": "avif-6912x4608-12bit-444-grain-hostile-alpha.avif",
+        "vm_hwm_kib": 522096,
+        "budget_kib": 524288,
+        "within_budget": true,
+        "errors": []
+      }
+    ]
+  },
+  "slowest_markdown_image": {
+    "name": "avif-6912x4608-12bit-444-grain-hostile-alpha.avif",
+    "bytes": 459762,
+    "edge": 1000,
+    "share_bytes": 524288,
+    "slowest_request_us": 848332,
+    "warm_request_us": {
+      "p50": 827902,
+      "p95": 848332,
+      "max": 848332,
+      "n": 19
+    },
+    "images_per_side": 32,
+    "document_deadline_us": 10000000,
+    "per_side_unbounded_us": 27146624,
+    "per_side_bounded_us": 10848332
+  },
+  "images": [
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 150,
+        "write_us": 2342,
+        "decode_and_reply_us": 407849,
+        "reply_read_us": 1584,
+        "reap_us": 63,
+        "request_us": 411990,
+        "reply_bytes": 7680040,
+        "exited_0": true,
+        "helper_parse_us": 362,
+        "helper_decode_us": 191261,
+        "helper_convert_us": 216092,
+        "overhead_us": 4275,
+        "pixels": [
+          1600,
+          1200
+        ],
+        "original": [
+          4032,
+          3024
+        ],
+        "caption": "AVIF · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 195,
+          "p95": 256,
+          "max": 256,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 1714,
+          "p95": 3496,
+          "max": 3496,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 413830,
+          "p95": 431768,
+          "max": 431768,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1742,
+          "p95": 2833,
+          "max": 2833,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 87,
+          "p95": 118,
+          "max": 118,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 191,
+          "p95": 359,
+          "max": 359,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 198417,
+          "p95": 215475,
+          "max": 215475,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 215191,
+          "p95": 222487,
+          "max": 222487,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 4383,
+          "p95": 5772,
+          "max": 5772,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 417160,
+          "p95": 436920,
+          "max": 436920,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 424787,
+        "pixels": [
+          1600,
+          1200
+        ],
+        "original": [
+          4032,
+          3024
+        ],
+        "caption": "AVIF · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 425627,
+          "p95": 442982,
+          "max": 442982,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 128,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 145216,
+          "p95": 145328,
+          "max": 145328,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "avif-4032x3024-10bit-420-alpha.avif",
+      "bytes": 1430884,
+      "sha256": "6bb4e6574bfa81737f75d3c09bf4bbde3ab6771c0e64374031e6dc697ee19e08",
+      "format": "Avif"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 121,
+        "write_us": 1501,
+        "decode_and_reply_us": 321718,
+        "reply_read_us": 2586,
+        "reap_us": 79,
+        "request_us": 326007,
+        "reply_bytes": 7680040,
+        "exited_0": true,
+        "helper_parse_us": 210,
+        "helper_decode_us": 177649,
+        "helper_convert_us": 143735,
+        "overhead_us": 4413,
+        "pixels": [
+          1600,
+          1200
+        ],
+        "original": [
+          4032,
+          3024
+        ],
+        "caption": "AVIF · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 130,
+          "p95": 236,
+          "max": 236,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 1760,
+          "p95": 3837,
+          "max": 3837,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 321041,
+          "p95": 331535,
+          "max": 331535,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1447,
+          "p95": 2773,
+          "max": 2773,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 75,
+          "p95": 110,
+          "max": 110,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 195,
+          "p95": 378,
+          "max": 378,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 177584,
+          "p95": 187175,
+          "max": 187175,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 143485,
+          "p95": 144299,
+          "max": 144299,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 4336,
+          "p95": 5518,
+          "max": 5518,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 324886,
+          "p95": 336689,
+          "max": 336689,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 317236,
+        "pixels": [
+          1600,
+          1200
+        ],
+        "original": [
+          4032,
+          3024
+        ],
+        "caption": "AVIF · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 326939,
+          "p95": 344314,
+          "max": 344314,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 227,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 145648,
+          "p95": 146704,
+          "max": 146704,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "avif-4032x3024-8bit-420.avif",
+      "bytes": 1631761,
+      "sha256": "696039772215e680bd0002859be8328204f37fdf9273d7588096d6221d49cc19",
+      "format": "Avif"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 149,
+        "write_us": 2992,
+        "decode_and_reply_us": 1007596,
+        "reply_read_us": 1632,
+        "reap_us": 95,
+        "request_us": 1012466,
+        "reply_bytes": 6828840,
+        "exited_0": true,
+        "helper_parse_us": 302,
+        "helper_decode_us": 540207,
+        "helper_convert_us": 466928,
+        "overhead_us": 5029,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6720,
+          4480
+        ],
+        "caption": "AVIF · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 192,
+          "p95": 252,
+          "max": 252,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 2851,
+          "p95": 4698,
+          "max": 4698,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 997926,
+          "p95": 1015366,
+          "max": 1015366,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1767,
+          "p95": 2620,
+          "max": 2620,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 91,
+          "p95": 124,
+          "max": 124,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 297,
+          "p95": 539,
+          "max": 539,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 528544,
+          "p95": 545254,
+          "max": 545254,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 468316,
+          "p95": 470141,
+          "max": 470141,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 4957,
+          "p95": 6709,
+          "max": 6709,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 1002060,
+          "p95": 1021783,
+          "max": 1021783,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 1013944,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6720,
+          4480
+        ],
+        "caption": "AVIF · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 1004508,
+          "p95": 1023846,
+          "max": 1023846,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 435,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 382624,
+          "p95": 383568,
+          "max": 383568,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "avif-6720x4480-12bit-444-alpha-grain.avif",
+      "bytes": 2475351,
+      "sha256": "634d0322295c0e5d02fe810b92bf520a66e5f42e0e0469cf7449cdb2c869d048",
+      "format": "Avif"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 194,
+        "write_us": 1279,
+        "decode_and_reply_us": 854808,
+        "reply_read_us": 1285,
+        "reap_us": 51,
+        "request_us": 857619,
+        "reply_bytes": 6828840,
+        "exited_0": true,
+        "helper_parse_us": 87,
+        "helper_decode_us": 358077,
+        "helper_convert_us": 496522,
+        "overhead_us": 2933,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6912,
+          4608
+        ],
+        "caption": "AVIF · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 196,
+          "p95": 261,
+          "max": 261,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 1480,
+          "p95": 2571,
+          "max": 2571,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 856834,
+          "p95": 880829,
+          "max": 880829,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1638,
+          "p95": 2447,
+          "max": 2447,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 88,
+          "p95": 137,
+          "max": 137,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 94,
+          "p95": 171,
+          "max": 171,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 358692,
+          "p95": 378546,
+          "max": 378546,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 497007,
+          "p95": 503366,
+          "max": 503366,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 3845,
+          "p95": 5224,
+          "max": 5224,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 860573,
+          "p95": 885208,
+          "max": 885208,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 880005,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6912,
+          4608
+        ],
+        "caption": "AVIF · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 875201,
+          "p95": 891064,
+          "max": 891064,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 118,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 521792,
+          "p95": 522096,
+          "max": 522096,
+          "n": 5
+        }
+      },
+      "markdown": {
+        "edge": 1000,
+        "app_first": {
+          "request_us": 819704,
+          "pixels": [
+            1000,
+            667
+          ],
+          "original": [
+            6912,
+            4608
+          ],
+          "caption": "AVIF · first image"
+        },
+        "app_warm": {
+          "request_us": {
+            "p50": 827902,
+            "p95": 848332,
+            "max": 848332,
+            "n": 19
+          }
+        },
+        "errors": []
+      },
+      "name": "avif-6912x4608-12bit-444-grain-hostile-alpha.avif",
+      "bytes": 459762,
+      "sha256": "ebabd548f788c8342ea08787d487714baa7be86ea9f913f6b8c605b2388405c0",
+      "format": "Avif"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 212,
+        "write_us": 26,
+        "decode_and_reply_us": 2423,
+        "reply_read_us": 75,
+        "reap_us": 55,
+        "request_us": 2792,
+        "reply_bytes": 16424,
+        "exited_0": true,
+        "helper_parse_us": 72,
+        "helper_decode_us": 1057,
+        "helper_convert_us": 54,
+        "overhead_us": 1609,
+        "pixels": [
+          64,
+          64
+        ],
+        "original": [
+          64,
+          64
+        ],
+        "caption": "JPEG 2000 / J2K codestream · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 116,
+          "p95": 169,
+          "max": 169,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 18,
+          "p95": 29,
+          "max": 29,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 3578,
+          "p95": 4832,
+          "max": 4832,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 215,
+          "p95": 395,
+          "max": 395,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 41,
+          "p95": 65,
+          "max": 65,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 17,
+          "p95": 29,
+          "max": 29,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 1650,
+          "p95": 2257,
+          "max": 2257,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 10,
+          "p95": 18,
+          "max": 18,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 2378,
+          "p95": 3032,
+          "max": 3032,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 4023,
+          "p95": 5252,
+          "max": 5252,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 5153,
+        "pixels": [
+          64,
+          64
+        ],
+        "original": [
+          64,
+          64
+        ],
+        "caption": "JPEG 2000 / J2K codestream · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 3743,
+          "p95": 6925,
+          "max": 6925,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 266,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 10416,
+          "p95": 10448,
+          "max": 10448,
+          "n": 5
+        }
+      },
+      "markdown": {
+        "edge": 1000,
+        "app_first": {
+          "request_us": 5949,
+          "pixels": [
+            64,
+            64
+          ],
+          "original": [
+            64,
+            64
+          ],
+          "caption": "JPEG 2000 / J2K codestream · first image"
+        },
+        "app_warm": {
+          "request_us": {
+            "p50": 3978,
+            "p95": 6938,
+            "max": 6938,
+            "n": 19
+          }
+        },
+        "errors": []
+      },
+      "name": "j2k-64x64.j2k",
+      "bytes": 5199,
+      "sha256": "bbb321cb09f55ed70e8a3ed9a2e673c6a2de8ccb6e44deca93d83d7a34598e66",
+      "format": "J2k"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 116,
+        "write_us": 2939,
+        "decode_and_reply_us": 351604,
+        "reply_read_us": 2035,
+        "reap_us": 93,
+        "request_us": 356790,
+        "reply_bytes": 6828840,
+        "exited_0": true,
+        "helper_parse_us": 62,
+        "helper_decode_us": 307909,
+        "helper_convert_us": 43467,
+        "overhead_us": 5352,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          3000,
+          2000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 204,
+          "p95": 266,
+          "max": 266,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 1720,
+          "p95": 3405,
+          "max": 3405,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 338892,
+          "p95": 350378,
+          "max": 350378,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1762,
+          "p95": 3176,
+          "max": 3176,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 77,
+          "p95": 150,
+          "max": 150,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 19,
+          "p95": 34,
+          "max": 34,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 295234,
+          "p95": 306608,
+          "max": 306608,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 43524,
+          "p95": 44688,
+          "max": 44688,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 4688,
+          "p95": 5849,
+          "max": 5849,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 343946,
+          "p95": 354590,
+          "max": 354590,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 338446,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          3000,
+          2000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 342061,
+          "p95": 361438,
+          "max": 361438,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 247,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 218592,
+          "p95": 219888,
+          "max": 219888,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "jp2-3000x2000-cmyk.jp2",
+      "bytes": 1199982,
+      "sha256": "9fecdf5a77e252ebe7d69546a2650295f75e81665802cdb2470cc1085d524b59",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 144,
+        "write_us": 2788,
+        "decode_and_reply_us": 130480,
+        "reply_read_us": 1717,
+        "reap_us": 82,
+        "request_us": 135214,
+        "reply_bytes": 6828840,
+        "exited_0": true,
+        "helper_parse_us": 33,
+        "helper_decode_us": 104630,
+        "helper_convert_us": 25730,
+        "overhead_us": 4821,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          3000,
+          2000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 177,
+          "p95": 269,
+          "max": 269,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 1677,
+          "p95": 3027,
+          "max": 3027,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 126618,
+          "p95": 147288,
+          "max": 147288,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1493,
+          "p95": 2330,
+          "max": 2330,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 70,
+          "p95": 92,
+          "max": 92,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 21,
+          "p95": 41,
+          "max": 41,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 100775,
+          "p95": 121595,
+          "max": 121595,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 25711,
+          "p95": 25850,
+          "max": 25850,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 3692,
+          "p95": 5248,
+          "max": 5248,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 131387,
+          "p95": 150716,
+          "max": 150716,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 138529,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          3000,
+          2000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 136721,
+          "p95": 179704,
+          "max": 179704,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 200,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 56432,
+          "p95": 56448,
+          "max": 56448,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "jp2-3000x2000-icc.jp2",
+      "bytes": 900550,
+      "sha256": "9492f941f49e3e96621f12a4da2cb0b0182bb78f645f6332dd7ec7842d254e77",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 142,
+        "write_us": 10685,
+        "decode_and_reply_us": 207901,
+        "reply_read_us": 1311,
+        "reap_us": 61,
+        "request_us": 220102,
+        "reply_bytes": 5760040,
+        "exited_0": true,
+        "helper_parse_us": 1759,
+        "helper_decode_us": 183009,
+        "helper_convert_us": 22866,
+        "overhead_us": 12468,
+        "pixels": [
+          1600,
+          900
+        ],
+        "original": [
+          3264,
+          1836
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 188,
+          "p95": 256,
+          "max": 256,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 5225,
+          "p95": 14209,
+          "max": 14209,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 221126,
+          "p95": 232130,
+          "max": 232130,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1480,
+          "p95": 2163,
+          "max": 2163,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 87,
+          "p95": 115,
+          "max": 115,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 2174,
+          "p95": 3584,
+          "max": 3584,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 194264,
+          "p95": 205489,
+          "max": 205489,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 22983,
+          "p95": 23205,
+          "max": 23205,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 7610,
+          "p95": 16345,
+          "max": 16345,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 232061,
+          "p95": 248065,
+          "max": 248065,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 221031,
+        "pixels": [
+          1600,
+          900
+        ],
+        "original": [
+          3264,
+          1836
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 224159,
+          "p95": 247402,
+          "max": 247402,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 421,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 134656,
+          "p95": 134896,
+          "max": 134896,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "jp2-3264x1836-icc-10mb.jp2",
+      "bytes": 11398958,
+      "sha256": "9ec433998a4c3729b4514dde70a3543e66d0208c91ef09c14a264ea557933f8a",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 161,
+        "write_us": 2845,
+        "decode_and_reply_us": 127478,
+        "reply_read_us": 1469,
+        "reap_us": 79,
+        "request_us": 132034,
+        "reply_bytes": 5760040,
+        "exited_0": true,
+        "helper_parse_us": 27,
+        "helper_decode_us": 104328,
+        "helper_convert_us": 23011,
+        "overhead_us": 4668,
+        "pixels": [
+          1600,
+          900
+        ],
+        "original": [
+          3264,
+          1836
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 166,
+          "p95": 260,
+          "max": 260,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 1597,
+          "p95": 2978,
+          "max": 2978,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 122834,
+          "p95": 139096,
+          "max": 139096,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1342,
+          "p95": 1468,
+          "max": 1468,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 59,
+          "p95": 100,
+          "max": 100,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 19,
+          "p95": 50,
+          "max": 50,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 99722,
+          "p95": 116077,
+          "max": 116077,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 22979,
+          "p95": 23122,
+          "max": 23122,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 3329,
+          "p95": 4776,
+          "max": 4776,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 125992,
+          "p95": 143277,
+          "max": 143277,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 125630,
+        "pixels": [
+          1600,
+          900
+        ],
+        "original": [
+          3264,
+          1836
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 133650,
+          "p95": 140448,
+          "max": 140448,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 322,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 56448,
+          "p95": 56448,
+          "max": 56448,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "jp2-3264x1836-icc.jp2",
+      "bytes": 899486,
+      "sha256": "c9d413569beb9e1609320c414332e5047b8b81ac384ee30a51ca45b8629ae36a",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 204,
+        "write_us": 1231,
+        "decode_and_reply_us": 322321,
+        "reply_read_us": 918,
+        "reap_us": 65,
+        "request_us": 324741,
+        "reply_bytes": 6764840,
+        "exited_0": true,
+        "helper_parse_us": 13,
+        "helper_decode_us": 228180,
+        "helper_convert_us": 94064,
+        "overhead_us": 2484,
+        "pixels": [
+          1600,
+          1057
+        ],
+        "original": [
+          5600,
+          3700
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 189,
+          "p95": 267,
+          "max": 267,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 2076,
+          "p95": 3333,
+          "max": 3333,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 327262,
+          "p95": 334390,
+          "max": 334390,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1602,
+          "p95": 2285,
+          "max": 2285,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 84,
+          "p95": 118,
+          "max": 118,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 21,
+          "p95": 36,
+          "max": 36,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 233153,
+          "p95": 239821,
+          "max": 239821,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 93356,
+          "p95": 102775,
+          "max": 102775,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 3958,
+          "p95": 5784,
+          "max": 5784,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 331071,
+          "p95": 338137,
+          "max": 338137,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 323004,
+        "pixels": [
+          1600,
+          1057
+        ],
+        "original": [
+          5600,
+          3700
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 324382,
+          "p95": 338290,
+          "max": 338290,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 292,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 322144,
+          "p95": 322160,
+          "max": 322160,
+          "n": 5
+        }
+      },
+      "markdown": {
+        "edge": 1000,
+        "app_first": {
+          "request_us": 306838,
+          "pixels": [
+            1000,
+            661
+          ],
+          "original": [
+            5600,
+            3700
+          ],
+          "caption": "JPEG 2000 / JP2 · first image"
+        },
+        "app_warm": {
+          "request_us": {
+            "p50": 308075,
+            "p95": 326163,
+            "max": 326163,
+            "n": 19
+          }
+        },
+        "errors": []
+      },
+      "name": "jp2-5600x3700-no-levels-512k.jp2",
+      "bytes": 442672,
+      "sha256": "a2d1cb52a37802b63441408665f743c996435b6c6acd0f099f926fbaa8c6e81b",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 153,
+        "write_us": 19,
+        "decode_and_reply_us": 214012,
+        "reply_read_us": 1185,
+        "reap_us": 61,
+        "request_us": 215432,
+        "reply_bytes": 6764840,
+        "exited_0": true,
+        "helper_parse_us": 37,
+        "helper_decode_us": 118463,
+        "helper_convert_us": 93225,
+        "overhead_us": 3707,
+        "pixels": [
+          1600,
+          1057
+        ],
+        "original": [
+          5600,
+          3700
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 162,
+          "p95": 240,
+          "max": 240,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 34,
+          "p95": 75,
+          "max": 75,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 211308,
+          "p95": 222991,
+          "max": 222991,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1481,
+          "p95": 2018,
+          "max": 2018,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 61,
+          "p95": 111,
+          "max": 111,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 28,
+          "p95": 41,
+          "max": 41,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 115811,
+          "p95": 126940,
+          "max": 126940,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 93483,
+          "p95": 95985,
+          "max": 95985,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 3691,
+          "p95": 4429,
+          "max": 4429,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 213257,
+          "p95": 224937,
+          "max": 224937,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 224719,
+        "pixels": [
+          1600,
+          1057
+        ],
+        "original": [
+          5600,
+          3700
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 213907,
+          "p95": 224941,
+          "max": 224941,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 274,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 317040,
+          "p95": 317056,
+          "max": 317056,
+          "n": 5
+        }
+      },
+      "markdown": {
+        "edge": 1000,
+        "app_first": {
+          "request_us": 216993,
+          "pixels": [
+            1000,
+            661
+          ],
+          "original": [
+            5600,
+            3700
+          ],
+          "caption": "JPEG 2000 / JP2 · first image"
+        },
+        "app_warm": {
+          "request_us": {
+            "p50": 202764,
+            "p95": 209382,
+            "max": 209382,
+            "n": 19
+          }
+        },
+        "errors": []
+      },
+      "name": "jp2-5600x3700-no-levels-64tiles-512k.jp2",
+      "bytes": 143021,
+      "sha256": "5d152585a89dd972c42537f54b434146c7ff4adfb6050939b56e6c9db95c816a",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 232,
+        "write_us": 11021,
+        "decode_and_reply_us": 3152804,
+        "reply_read_us": 2195,
+        "reap_us": 107,
+        "request_us": 3166361,
+        "reply_bytes": 6764840,
+        "exited_0": true,
+        "helper_parse_us": 24,
+        "helper_decode_us": 3058027,
+        "helper_convert_us": 94258,
+        "overhead_us": 14052,
+        "pixels": [
+          1600,
+          1057
+        ],
+        "original": [
+          5600,
+          3700
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 198,
+          "p95": 284,
+          "max": 284,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 10280,
+          "p95": 20882,
+          "max": 20882,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 3137620,
+          "p95": 3151155,
+          "max": 3151155,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1459,
+          "p95": 2504,
+          "max": 2504,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 73,
+          "p95": 157,
+          "max": 157,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 20,
+          "p95": 43,
+          "max": 43,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 3043043,
+          "p95": 3056697,
+          "max": 3056697,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 94147,
+          "p95": 95025,
+          "max": 95025,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 12656,
+          "p95": 24273,
+          "max": 24273,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 3149581,
+          "p95": 3171330,
+          "max": 3171330,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 3146008,
+        "pixels": [
+          1600,
+          1057
+        ],
+        "original": [
+          5600,
+          3700
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 3145687,
+          "p95": 3168533,
+          "max": 3168533,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 479,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 343664,
+          "p95": 343680,
+          "max": 343680,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "jp2-5600x3700-no-levels.jp2",
+      "bytes": 23459613,
+      "sha256": "a6bb0eb928e4c9fd5c400cfcbffaeead6985e91822d448d61b59ab85d21899aa",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 169,
+        "write_us": 8903,
+        "decode_and_reply_us": 1293495,
+        "reply_read_us": 2823,
+        "reap_us": 134,
+        "request_us": 1305526,
+        "reply_bytes": 6828840,
+        "exited_0": true,
+        "helper_parse_us": 18,
+        "helper_decode_us": 1249648,
+        "helper_convert_us": 43378,
+        "overhead_us": 12482,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6000,
+          4000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 170,
+          "p95": 253,
+          "max": 253,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 12671,
+          "p95": 32780,
+          "max": 32780,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 1296437,
+          "p95": 1321785,
+          "max": 1321785,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1935,
+          "p95": 2869,
+          "max": 2869,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 78,
+          "p95": 142,
+          "max": 142,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 22,
+          "p95": 38,
+          "max": 38,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 1252345,
+          "p95": 1277259,
+          "max": 1277259,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 43589,
+          "p95": 43929,
+          "max": 43929,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 15389,
+          "p95": 35260,
+          "max": 35260,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 1315411,
+          "p95": 1356337,
+          "max": 1356337,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 1308019,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6000,
+          4000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 1316936,
+          "p95": 1351455,
+          "max": 1351455,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 1470,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 182912,
+          "p95": 183904,
+          "max": 183904,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "jp2-6000x4000-lossless.jp2",
+      "bytes": 29447976,
+      "sha256": "d1337f4a288f58de65de9a08903b866fff3565fe997d56d27f81a4b5ae620831",
+      "format": "Jp2"
+    },
+    {
+      "route": "helper",
+      "first": {
+        "spawn_us": 139,
+        "write_us": 2592,
+        "decode_and_reply_us": 305393,
+        "reply_read_us": 2372,
+        "reap_us": 95,
+        "request_us": 310593,
+        "reply_bytes": 6828840,
+        "exited_0": true,
+        "helper_parse_us": 22,
+        "helper_decode_us": 261670,
+        "helper_convert_us": 43574,
+        "overhead_us": 5327,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6000,
+          4000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "warm": {
+        "spawn_us": {
+          "p50": 165,
+          "p95": 257,
+          "max": 257,
+          "n": 19
+        },
+        "write_us": {
+          "p50": 2793,
+          "p95": 5833,
+          "max": 5833,
+          "n": 19
+        },
+        "decode_and_reply_us": {
+          "p50": 308578,
+          "p95": 322700,
+          "max": 322700,
+          "n": 19
+        },
+        "reply_read_us": {
+          "p50": 1936,
+          "p95": 2780,
+          "max": 2780,
+          "n": 19
+        },
+        "reap_us": {
+          "p50": 75,
+          "p95": 126,
+          "max": 126,
+          "n": 19
+        },
+        "helper_parse_us": {
+          "p50": 21,
+          "p95": 37,
+          "max": 37,
+          "n": 19
+        },
+        "helper_decode_us": {
+          "p50": 265092,
+          "p95": 279163,
+          "max": 279163,
+          "n": 19
+        },
+        "helper_convert_us": {
+          "p50": 43602,
+          "p95": 43999,
+          "max": 43999,
+          "n": 19
+        },
+        "overhead_us": {
+          "p50": 5220,
+          "p95": 8049,
+          "max": 8049,
+          "n": 19
+        },
+        "request_us": {
+          "p50": 313408,
+          "p95": 329740,
+          "max": 329740,
+          "n": 19
+        }
+      },
+      "app_first": {
+        "request_us": 310740,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6000,
+          4000
+        ],
+        "caption": "JPEG 2000 / JP2 · first image"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 314155,
+          "p95": 336082,
+          "max": 336082,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "kill_to_reap_at_work_us": 237,
+      "helper_peak": {
+        "vm_hwm_kib": {
+          "p50": 157824,
+          "p95": 159360,
+          "max": 159360,
+          "n": 5
+        }
+      },
+      "markdown": null,
+      "name": "jp2-6000x4000-lossy.jp2",
+      "bytes": 3599895,
+      "sha256": "f4014f2d9ca4881c544252368913e85b5916fa1e86deea7ba4a9aaf8b0077797",
+      "format": "Jp2"
+    },
+    {
+      "route": "in-process",
+      "app_first": {
+        "request_us": 162122,
+        "pixels": [
+          1600,
+          1200
+        ],
+        "original": [
+          4032,
+          3024
+        ],
+        "caption": "JPEG"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 160788,
+          "p95": 163831,
+          "max": 163831,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "name": "jpg-4032x3024.jpg",
+      "bytes": 6851953,
+      "sha256": "31f3e70fb70320a91ca3b0daafd9b6590432612f8ab26cb5b984fc29a84b94a4",
+      "format": null
+    },
+    {
+      "route": "in-process",
+      "app_first": {
+        "request_us": 257442,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6000,
+          4000
+        ],
+        "caption": "JPEG"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 256514,
+          "p95": 257169,
+          "max": 257169,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "name": "jpg-6000x4000.jpg",
+      "bytes": 10433899,
+      "sha256": "85d4f17e25b1393b5b92880ba407bae1cb1781a2623674b844eb83848321ae35",
+      "format": null
+    },
+    {
+      "route": "in-process",
+      "app_first": {
+        "request_us": 188944,
+        "pixels": [
+          1600,
+          1200
+        ],
+        "original": [
+          4032,
+          3024
+        ],
+        "caption": "PNG"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 188780,
+          "p95": 191193,
+          "max": 191193,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "name": "png-4032x3024.png",
+      "bytes": 16044683,
+      "sha256": "dcf9621d6efc4280d690160677caec55af934d4aad3831ca0c3125332decad5c",
+      "format": null
+    },
+    {
+      "route": "in-process",
+      "app_first": {
+        "request_us": 341840,
+        "pixels": [
+          1600,
+          1067
+        ],
+        "original": [
+          6000,
+          4000
+        ],
+        "caption": "PNG"
+      },
+      "app_warm": {
+        "request_us": {
+          "p50": 341754,
+          "p95": 348596,
+          "max": 348596,
+          "n": 19
+        }
+      },
+      "errors": [],
+      "name": "png-6000x4000.png",
+      "bytes": 29100377,
+      "sha256": "72123d0156d12e5df89210cbd4e83c62806321e948e238cb5fe63fc55f98fc41",
+      "format": null
+    }
+  ]
+}

@@ -120,6 +120,21 @@
     ]
   },
   {
+    "name": "alloc-stdlib",
+    "version": "0.2.4",
+    "license": "BSD-3-Clause",
+    "repository": "dropbox/rust-alloc-no-stdlib",
+    "revision": "ae42d22078b98549e987d2f03d12df7b984fde47",
+    "files": [
+      {
+        "path": "texts/c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae.txt",
+        "url": "https://raw.githubusercontent.com/dropbox/rust-alloc-no-stdlib/ae42d22078b98549e987d2f03d12df7b984fde47/LICENSE",
+        "sha256": "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+      }
+    ],
+    "note": "The alloc-stdlib crate lives in the alloc-stdlib directory of the alloc-no-stdlib repository and ships no license file; the repository's LICENSE at the archive's revision covers it."
+  },
+  {
     "name": "block2",
     "version": "0.5.1",
     "license": "MIT",
@@ -232,6 +247,46 @@
     ]
   },
   {
+    "name": "hayro-interpret",
+    "version": "0.8.0",
+    "license": "Apache-2.0 OR MIT",
+    "repository": "LaurenzV/hayro",
+    "revision": "ea9c81dc70cde40c64205986fdcfcd481fe934d8",
+    "files": [
+      {
+        "path": "texts/a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/NOTICE.md",
+        "sha256": "a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4"
+      },
+      {
+        "path": "texts/469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/hayro-interpret/assets/CGATS_LICENSE.txt",
+        "sha256": "469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9"
+      },
+      {
+        "path": "texts/060a1d5778f49e9de3050c2bb84e5980a29744d9fe25ce590e76d7614c4f172f.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/hayro-interpret/assets/README.md",
+        "sha256": "060a1d5778f49e9de3050c2bb84e5980a29744d9fe25ce590e76d7614c4f172f"
+      }
+    ],
+    "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate. The embedded CMYK profile's CC0-1.0 text is in assets/CGATS_LICENSE.txt, a name the collector does not match, and assets/README.md records the embedded Foxit fonts' PDFium origin and the generated LAB profile."
+  },
+  {
+    "name": "hayro-syntax",
+    "version": "0.8.0",
+    "license": "Apache-2.0 OR MIT",
+    "repository": "LaurenzV/hayro",
+    "revision": "ea9c81dc70cde40c64205986fdcfcd481fe934d8",
+    "files": [
+      {
+        "path": "texts/a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/NOTICE.md",
+        "sha256": "a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4"
+      }
+    ],
+    "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate."
+  },
+  {
     "name": "hexf-parse",
     "version": "0.2.1",
     "license": "CC0-1.0",
@@ -338,6 +393,22 @@
         "path": "texts/80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e.txt",
         "url": "https://raw.githubusercontent.com/nical/lyon/b456b143215a1942a617c4672776b68b9a30feee/LICENSE-MIT",
         "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e"
+      }
+    ]
+  },
+  {
+    "name": "mac",
+    "version": "0.1.1",
+    "license": "MIT/Apache-2.0",
+    "repository": "spdx/license-list-data",
+    "revision": "16f3aa6c3bdd62e50f8b1cf618f32d2a510250ee",
+    "note": "The published crate and its upstream release (reem/rust-mac at 66afc663b68a65633ea165c742b5a9c6734581c2) declare MIT/Apache-2.0 and contain no license file. GitTurtle distributes it under the MIT option, as the project owner's license review decided on 2026-11-15.",
+    "files": [
+      {
+        "path": "texts/8a188924d8a3867afab78b11af96d1e10e6658ec82b7f9260d439d035b9fcff6.txt",
+        "sha256": "8a188924d8a3867afab78b11af96d1e10e6658ec82b7f9260d439d035b9fcff6",
+        "standard_text": "https://raw.githubusercontent.com/spdx/license-list-data/16f3aa6c3bdd62e50f8b1cf618f32d2a510250ee/text/MIT.txt",
+        "composed": "Composed by the GitTurtle project, not fetched from upstream: the standard MIT License text of the SPDX license dataset (SHA-256 b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5) with its one placeholder line \"Copyright (c) <year> <copyright holders>\" filled in as \"Copyright (c) Jonathan Reem\", the author the crate's metadata and the upstream README name. No other byte differs. The project owner's license review decided this notice on 2026-11-15."
       }
     ]
   },
@@ -1035,6 +1106,7 @@
     "license": "MIT OR Unlicense",
     "repository": "ufbx/ufbx-rust",
     "revision": "856c76840977cd504f053bf17ab4948b675b981a",
+    "note": "GitTurtle distributes it under the Unlicense option, which requires no attribution, as the project owner's license review decided on 2026-11-15. The upstream LICENSE, which offers MIT or the Unlicense, ships unchanged.",
     "files": [
       {
         "path": "texts/0dd48ebadf52273c736256325c8f078c03c8bb4facee22a4122de0ad3f615391.txt",

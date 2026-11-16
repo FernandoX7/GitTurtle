@@ -202,7 +202,6 @@ impl ResizableState {
         panel_ix: usize,
         bounds: Bounds<Pixels>,
         size_range: Range<Pixels>,
-        cx: &mut Context<Self>,
     ) {
         let size = bounds.size.along(self.axis);
         // This check is only necessary to stop the very first panel from resizing on its own
@@ -214,7 +213,12 @@ impl ResizableState {
         }
         self.panels[panel_ix].bounds = bounds;
         self.panels[panel_ix].size_range = size_range;
-        cx.notify();
+        // GitTurtle patch: no notify. A panel records here, as it is
+        // prepainted, what the frame being drawn laid it out at, which only a
+        // later build of the group reads; the notify reached a state's
+        // observers after the frame where the window had not drawn the group
+        // in the frame before, and asked for a second frame
+        // ([`Self::fit_container`]).
     }
 
     /// Remove the panel at `panel_ix` and redistribute the remaining space.
@@ -248,6 +252,35 @@ impl ResizableState {
     /// Return the measured size of the group along its resize axis.
     pub fn container_size(&self) -> Pixels {
         self.bounds.size.along(self.axis)
+    }
+
+    /// Fit the panels to a container `size` long on the group's axis before
+    /// the group is laid out at that size, as the group does itself once it
+    /// has been laid out at a new size.
+    ///
+    /// The group learns its size only as it is prepainted, after its panels
+    /// were laid out at their sizes for the old one, so the first frame at a
+    /// new size draws them there and only the next frame draws them
+    /// rescaled. A caller that knows the size the group will be drawn at
+    /// calls this before it builds the group, and the group then finds its
+    /// size unchanged and adjusts nothing.
+    ///
+    /// GitTurtle patch: it notifies no one. The frame that draws the group
+    /// lays its panels out at the sizes fitted here, so nothing waits for a
+    /// later frame; a notify made while that frame is drawn only marks a
+    /// state the window drew in the frame before, but reaches the observers
+    /// of one it did not after the frame, and they asked for a second:
+    /// History's navigation group, drawn again when a window is widened past
+    /// its rail.
+    pub fn fit_container(&mut self, size: Pixels) {
+        if self.container_size() == size {
+            return;
+        }
+        match self.axis {
+            Axis::Horizontal => self.bounds.size.width = size,
+            Axis::Vertical => self.bounds.size.height = size,
+        }
+        self.rescale_to_container();
     }
 
     pub(crate) fn done_resizing(&mut self, cx: &mut Context<Self>) {
@@ -351,8 +384,16 @@ impl ResizableState {
     ///
     /// When the container size changes, the panels should take up the same percentage as they did before.
     fn adjust_to_container_size(&mut self, cx: &mut Context<Self>) {
+        if self.rescale_to_container() {
+            cx.notify();
+        }
+    }
+
+    /// Rescales the panels as [`Self::adjust_to_container_size`] does,
+    /// without notifying, and returns whether it did.
+    fn rescale_to_container(&mut self) -> bool {
         if self.container_size().is_zero() {
-            return;
+            return false;
         }
 
         // A panel with no size preference is laid out by flex, and its entry
@@ -363,13 +404,13 @@ impl ResizableState {
         // which reads as the layout jumping once for no reason. Flex already
         // fits the container, so there is nothing here to adjust.
         if self.panels.iter().any(|panel| panel.size.is_none()) {
-            return;
+            return false;
         }
 
         let container_size = self.container_size();
         let total = self.sizes.iter().map(|s| s.as_f32()).sum::<f32>();
         if !total.is_finite() || total <= 0. {
-            return;
+            return false;
         }
         let total_size = px(total);
 
@@ -381,7 +422,7 @@ impl ResizableState {
             self.sizes[i] = new_size;
             self.panels[i].size = Some(new_size);
         }
-        cx.notify();
+        true
     }
 }
 

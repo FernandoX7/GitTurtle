@@ -310,10 +310,11 @@ def frame_paths(paths: list[Path]) -> list[Path]:
     return found
 
 
-def scan(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engine: str = "auto",
-         jobs: int = 1) -> dict:
-    """Per image, in order: its size, frame count, engine and each template's best result over every
-    animation frame, with hits summed; `jobs` images at a time.
+def scan_each(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engine: str = "auto",
+              jobs: int = 1):
+    """Each image and its result, in order, yielded when that image's scan and every earlier one have ended:
+    its size, frame count, engine and each template's best result over every animation frame, with hits
+    summed; `jobs` images at a time.
 
     A frame that is an exact nearest-neighbour magnification (a scenario's
     scaled crop, `frames.magnifications`) is also scanned once per exact
@@ -350,7 +351,13 @@ def scan(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engi
     if engine in ("auto", "c"):
         helper()  # build once, before worker threads race for the same partial file
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        return dict(pool.map(one, frame_paths(frames)))
+        yield from pool.map(one, frame_paths(frames))
+
+
+def scan(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engine: str = "auto",
+         jobs: int = 1) -> dict:
+    """Every image's `scan_each` result, keyed by image in order, once the whole scan has ended."""
+    return dict(scan_each(frames, templates, threshold, engine, jobs))
 
 
 def crop(frame: Path, box: tuple[int, int, int, int], output: Path) -> None:

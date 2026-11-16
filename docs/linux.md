@@ -23,12 +23,14 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   git openssh-client ca-certificates python3 desktop-file-utils xdg-utils \
   libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 \
-  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core \
+  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core libdav1d7 \
   libvulkan1 mesa-vulkan-drivers libegl1 libgl1 libgl1-mesa-dri \
   xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk
 ```
 
-Ubuntu GNOME normally supplies much of this. Keep the appropriate vendor GPU
+Ubuntu GNOME normally supplies much of this. `libdav1d7` (from universe) is the
+AV1 decoder GitTurtle links for AVIF images; GitTurtle does not start without
+it (see [Platform limits](#platform-limits)). Keep the appropriate vendor GPU
 driver installed, especially on NVIDIA systems; `libvulkan1` is only the loader.
 Mesa supplies its drivers and a software implementation, not the proprietary
 NVIDIA driver. Other desktops need their matching portal backend instead of
@@ -49,6 +51,12 @@ python3 gitturtle-linux-x86_64/install.py
 A bundle packaged on an AArch64 machine is named `gitturtle-linux-aarch64`
 instead. The installer refuses a bundle built for another architecture.
 
+An archive built by CI (a Quality run's artifact, or a GitHub release once one is
+published) is named
+`GitTurtle-<version>-<source commit, 12 characters>-linux-x86_64-release.tar.gz`,
+or the same with `linux-aarch64`, and unpacks to a folder of that name without
+`.tar.gz`: use those names in the three commands above.
+
 Run the installer **without sudo**. It checks the required payload hashes,
 package/compiled identity, license inventory, linked libraries and desktop-entry
 syntax before installation, then atomically replaces the
@@ -60,7 +68,10 @@ a symlink, but managed descendants, payload paths, backups and the installation
 lock must not redirect through symlinks.
 
 Open **GitTurtle** in the application menu. Its desktop file is
-`applications/com.gitturtle.desktop.desktop`, matching the application ID.
+`applications/com.gitturtle.GitTurtle.desktop`, named after the application ID,
+so `gtk-launch com.gitturtle.GitTurtle` also opens it. Installing over a bundle
+from before 2026-10-26 removes that bundle's `com.gitturtle.desktop` entry and
+icons, and `--rollback` restores them.
 The entry uses an absolute executable and icon path, with `Terminal=false`;
 no shell initialization, checkout working directory, `LIBRARY_PATH`,
 `LD_LIBRARY_PATH`, or Cargo installation is needed. The original 1024-pixel
@@ -106,8 +117,13 @@ Install the runtime packages above, then the build/packaging prerequisites:
 sudo apt-get install -y --no-install-recommends \
   build-essential clang cmake pkg-config curl \
   libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-  libssl-dev libzstd-dev libvulkan-dev python3-pil
+  libssl-dev libzstd-dev libvulkan-dev libdav1d-dev python3-pil
 ```
+
+The build links the distribution's libdav1d through `pkg-config`
+(`pkg-config --modversion dav1d` shows which). Leave every `SYSTEM_DEPS_*`
+variable unset: one can make the build download dav1d and link its own copy
+statically, so `scripts/package-linux.sh` refuses to run while one is set.
 
 Install Rust through [rustup](https://rustup.rs/) if needed. The checked-in
 `rust-toolchain.toml` selects **Rust 1.99.0** with rustfmt and Clippy only for
@@ -199,9 +215,12 @@ bash -n scripts/package-linux.sh
 ```
 
 The source fixtures use synthetic payloads/tool doubles and skip real-bundle
-checks unless supplied a bundle. They establish refusal and recovery behavior,
-not a native/package acceptance result. For that result, verify the produced
-archive checksum, extract into a new directory, and pass the extracted bundle to:
+checks unless supplied a bundle. The packager fixtures run the real `readelf`
+from binutils: without it they skip on a developer host, and they fail where
+`CI` is set, so a hosted job never skips them. They establish refusal and
+recovery behavior, not a native/package acceptance result. For that result,
+verify the produced archive checksum, extract into a new directory, and pass
+the extracted bundle to:
 
 ```sh
 python3 scripts/test-install-linux.py --bundle /absolute/path/to/extracted/gitturtle-linux-x86_64
@@ -258,14 +277,24 @@ python3 dist/gitturtle-linux-$(uname -m)/install.py
 `rustup` needs no default toolchain: the checkout's `rust-toolchain.toml`
 installs Rust 1.99.0 on the first build. On another Arch system also install
 `base-devel clang pkgconf desktop-file-utils fontconfig wayland libxkbcommon-x11
-libx11 libxcb openssl zstd vulkan-icd-loader`, the Vulkan driver for your GPU,
-`xdg-desktop-portal` and a FileChooser backend. No font package is needed for
+libx11 libxcb openssl zstd vulkan-icd-loader dav1d`, the Vulkan driver for your
+GPU, `xdg-desktop-portal` and a FileChooser backend. `dav1d` stays installed at
+run time: GitTurtle links its `libdav1d.so.7` for AVIF images and does not
+start without it (on Omarchy, `ffmpeg` already depends on it). No font package
+is needed for interface text, which uses the embedded IBM Plex Sans, or for
 code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font
-(JetBrainsMono Nerd Font by default).
+(JetBrainsMono Nerd Font by default), and an open window changes with
+`omarchy font set` as soon as it is applied. A first launch on Omarchy turns it on.
+
+**Menu → Open repository in editor** opens the repository in your Omarchy editor
+(what `omarchy launch editor` opens; Neovim and other terminal editors run in your
+terminal) unless Settings → Projects names another editor, and **Open repository
+in terminal** opens your default terminal (`xdg-terminal-exec`, as Super+Return
+does) in the repository.
 
 **Settings** offers an **Omarchy** theme in a **Desktop** group above the other
-themes. It follows your current Omarchy theme, including each switch while it
+themes, and a first launch on Omarchy (no saved preferences yet) selects it. It follows your current Omarchy theme, including each switch while it
 is selected, and turns **Follow system appearance** off while in use. GitTurtle
 reads `~/.local/state/omarchy/current/theme/colors.toml`, the `theme.name` file
 beside `theme/`, and whether the theme has a `light.mode` file. It reads them at
@@ -295,8 +324,13 @@ On Hyprland:
   collapses its navigation to the rail and the header keeps only icons for
   Projects and the profile; the inspector stays whole down to about 600 px.
   Float the window (Omarchy: **Super+T**) or widen its split for the full layout.
-- The window class and Wayland app ID are `com.gitturtle.desktop`, for window
-  rules and the launcher entry's `StartupWMClass`.
+- The window class and Wayland app ID are `com.gitturtle.GitTurtle`, for window
+  rules and the launcher entry's `StartupWMClass`; bundles before 2026-10-26 used
+  `com.gitturtle.desktop`. GitTurtle keeps Omarchy's default window opacity
+  (0.985 focused, 0.96 unfocused), as terminals and editors do. For a fully
+  opaque window, add this line below the personal configuration comment in
+  `~/.config/hypr/hyprland.lua`:
+  `o.window("^com\\.gitturtle\\.GitTurtle$", { tag = "-default-opacity", opacity = "1 1" })`.
 - `xdg-desktop-portal-hyprland` has no file chooser; the repository picker is
   `xdg-desktop-portal-gtk`'s dialog, which Omarchy's portal configuration
   selects. The first open after login took about four seconds while that
@@ -318,8 +352,12 @@ executable, History and image comparison were checked, on a temporary
 1480 × 800 headless output at scale 1; see the
 [AArch64 record](validation.md#october-25-linux-aarch64-on-omarchy-on-asahi-linux).
 Not yet checked on AArch64: the folder picker, Git writes and network actions,
-fractional scaling, the Omarchy theme and the command palette. No CI job builds
-for AArch64 Linux, other ARM hardware and distributions have no recorded
+fractional scaling, the Omarchy theme and the command palette. Quality's
+`Rust release · ubuntu-24.04-arm` job builds, packages and checks the AArch64
+release bundle on a hosted Ubuntu 24.04 ARM64 runner
+([CI package downloads](ci-artifacts.md)); that runner has no display, so the
+job is a build and package check, not a desktop check, and no hosted run of it
+is recorded here yet. Other ARM hardware and distributions have no recorded
 check, and a bundle built on AArch64 installs only on AArch64.
 
 ## Launch, state and troubleshooting
@@ -334,9 +372,11 @@ The information flags work without a graphical session and do not open a
 repository or load saved app state. In the app, **Main Menu → About GitTurtle**
 (or **Command Palette → About GitTurtle**) shows the version, source revision,
 target and build profile. **Copy bug diagnostics** copies build information,
-display backend/scale, theme, density and text sizes. It includes no repository
-paths, source text, branch names, account details or credentials. Paste this
-with reproduction steps and the observed/expected behavior in a
+display backend/scale, theme and whether it follows the system appearance,
+density, text sizes and code font choice, and Reduce motion and Increase
+contrast as chosen and as in effect. It includes no
+repository paths, source text, branch names, account details or credentials.
+Paste this with reproduction steps and the observed/expected behavior in a
 [GitHub issue](https://github.com/FernandoX7/GitTurtle/issues).
 
 With no repository argument, the startup setting opens Projects or restores
@@ -357,13 +397,14 @@ portal packages, log out and back in if the session has stale service state.
 | --- | --- |
 | Build reports missing `-lxkbcommon-x11` | Install `libxkbcommon-x11-dev`, then rebuild without custom `LIBRARY_PATH`. `pkg-config --libs xkbcommon-x11` must succeed. |
 | Installer says a shared library is missing | Install the runtime list; inspect `ldd` on the trusted bundled executable. A clean `ldd` alone does not check dynamically loaded graphics drivers. |
+| GitTurtle does not start: `libdav1d.so.7: cannot open shared object file` | Install `libdav1d7` (Ubuntu) or `dav1d` (Arch). GitTurtle links the system AV1 decoder for AVIF images and cannot start without it. |
 | Installer says GitTurtle is still running | Let its Git operation finish, quit the app normally, then rerun the installer. The message lists matching process IDs; the installer never terminates them. |
 | Upgrade causes a regression | Quit the app, run the retained installer's `--rollback` command above, then include build diagnostics for both versions in your report. |
 | No window when launched over SSH, from a console, or in CI | A normal launch needs a graphical session. GitTurtle exits with a specific no-display message; do not invent display variables or set `ZED_HEADLESS` to claim a desktop test. |
 | Window/graphics initialization fails | Launch from a desktop terminal to capture stderr; check `vulkaninfo --summary` (`vulkan-tools`) and your GPU driver. An invalid display connection can still fail inside the toolkit before window creation. |
 | Picker does nothing / reports a portal failure | Check `systemctl --user status xdg-desktop-portal xdg-desktop-portal-gnome`; inspect `journalctl --user -b -u xdg-desktop-portal`. Check the matching backend, then reopen the app. |
 | Blank launcher icon / menu entry absent | Rerun the installer and `desktop-file-validate` on the installed entry; confirm the entry's absolute `Icon` path exists. Refresh the app menu or log out/in if its cache remains stale. |
-| Missing or cramped text | Check `fc-match sans-serif`; install `fonts-dejavu-core` above if no sans family resolves. Code text uses the DejaVu Sans Mono embedded in the executable, so it needs no font package. With **Use the desktop's monospace font** on, code uses `fc-match monospace`'s family when GitTurtle loaded it and it is monospace. Otherwise the setting shows why and keeps the embedded font. A newly installed font needs a relaunch. Settings has separate interface/code text sizes. |
+| Missing or cramped text | Interface text uses the IBM Plex Sans embedded in the executable, in its own regular, medium, semibold and bold faces. Characters it lacks, such as CJK and emoji, come from installed fonts: check `fc-match sans-serif` and install `fonts-dejavu-core` above (or a CJK family) if no sans family resolves. Code text uses the DejaVu Sans Mono embedded in the executable, so it needs no font package. With **Use the desktop's monospace font** on, code uses `fc-match monospace`'s family when GitTurtle loaded it and it is monospace. Otherwise the setting shows why and keeps the embedded font. A newly installed font needs a relaunch. Settings has separate interface/code text sizes. |
 | Text smaller than in other apps | On Wayland, GitTurtle multiplies its text sizes by the desktop text scaling factor (GNOME Settings › Accessibility › Large Text, `org.gnome.desktop.interface text-scaling-factor`). On X11 the toolkit scales the whole window through `Xft.dpi` instead. The app's own interface/code sizes apply on top. |
 | Colored fringes or soft text, typically on an OLED or rotated panel | GitTurtle follows the desktop antialiasing preference. GNOME's default `font-rendering` "automatic" renders grayscale like GTK 4; "manual" follows `font-antialiasing` (Tweaks › Fonts), where `rgba` selects subpixel rendering. When no portal answers, or its GNOME keys are missing or invalid, GitTurtle uses fontconfig's resolved defaults, distribution defaults included: `fc-match --format '%{antialias}\|%{rgba}\n' sans-serif`. Grayscale is the safe choice; changes apply without a restart. |
 | Need an X11 comparison in a session that provides XWayland | Launch once with `env -u WAYLAND_DISPLAY "$HOME/.local/bin/gitturtle" /path/to/fixture`. This tests XWayland, not a full Xorg session. |
@@ -384,15 +425,92 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
 
 ## Platform limits
 
-- GitHub account connection cannot persist credentials on Linux yet; it refuses
-  storage instead of writing plaintext credentials. Git's own configured
-  authentication for explicit fetch/pull/push is separate.
-- Native PDF page rendering/text extraction and ImageIO-based AVIF, HEIC and
-  JPEG 2000 decoding require macOS. PNG/JPEG/GIF/WebP, supported SVG, rendered
-  Markdown and finite mesh/GLB/STEP previews have portable decoders; the
-  [format matrix](file-previews.md) defines bounds and unsupported variants.
-  Recognizing metadata is not the same as rendering a format.
-- System Preview uses macOS Quick Look and has no Linux launcher.
+- **The GitHub account lives in your desktop keyring.** **Connect GitHub CLI
+  account** stores GitTurtle's GitHub authorization in your default desktop
+  keyring (gnome-keyring on Omarchy) through the Secret Service, and nowhere
+  else: GitTurtle writes no credential file and has no fallback, so with no
+  keyring installed or able to start (D-Bus starts an installed gnome-keyring
+  when it is asked for), Connect fails and says so. Refresh PRs and opening a
+  pull request read it without any prompt; a locked keyring is never unlocked
+  by them, and GitTurtle says it is locked. Only Connect and **Disconnect
+  GitTurtle** may show the keyring's own prompt. Disconnect removes it from
+  your default keyring; if you changed which keyring is the default since you
+  connected, the item stays in the old one, where Seahorse shows it.
+  [GitHub collaboration](github-collaboration.md#linux-desktop-keyring) has
+  the item's attributes and the bounds.
+- **A keyring without a password is not protected on disk.** Omarchy creates
+  its Default keyring with no password, and gnome-keyring keeps such a keyring
+  unencrypted in `~/.local/share/keyrings`, readable by anything that runs as
+  you. To protect it, install Seahorse (`sudo pacman -S seahorse`), open
+  **Passwords and Keys**, choose **Change Password** on the Default keyring and
+  set one. A keyring with a password that your login does not unlock stays
+  locked until you unlock it.
+- **GitHub CLI comes from the system package.** GitTurtle runs GitHub CLI only
+  from `/usr/local/bin/gh` or `/usr/bin/gh` (`sudo pacman -S github-cli` on
+  Arch and Omarchy), and `/usr/local/bin/gh` wins when both exist; a CLI
+  installed elsewhere, such as through mise or in `~/.local/bin`, is not used.
+- Pull-request review on Linux is covered by tests and the offline fixture; a
+  live sign-in with a real account is still to be checked. Git's own
+  configured authentication for explicit fetch/pull/push is separate.
+- PDF pages and their text, AVIF images and JPEG 2000 images (JP2 files and
+  raw J2K codestreams) render on x86-64 and AArch64 in GitTurtle's own helper
+  process: the app starts its own executable once per page or image, the
+  helper confines itself (resource limits, one thread, `no_new_privs` and a
+  seccomp filter that allows no file, network or process calls) and decodes
+  with [hayro](https://github.com/LaurenzV/hayro) for PDF, its
+  `hayro-jpeg2000` for JPEG 2000, and `mp4parse` with the system libdav1d for
+  AVIF, and the app kills it after 10 seconds, on Back, another file or page,
+  Retry page or a tab switch, which it checks for every 25 ms, and when the
+  app exits. Pages and images share at most two helpers at a time, and an
+  image comes back at most 1,600 pixels on its longer edge.
+  **It needs a kernel with seccomp filters** (`CONFIG_SECCOMP_FILTER`, on in
+  every mainstream distribution kernel, Asahi's included): without them the
+  helper refuses to start, every page says “The PDF renderer could not
+  start.” and every AVIF or JPEG 2000 image says “The image decoder could not
+  start.” A running helper is named `gitturtle-pdf` for pages and images
+  alike. Other architectures keep PDF metadata and an unavailable result, and
+  decode neither AVIF nor JPEG 2000. The confinement's tests ran on AArch64
+  (Asahi) and, for PDF pages, on x86-64 in the hosted
+  [quality run 41480657885](https://github.com/FernandoX7/GitTurtle/actions/runs/41480657885)
+  ("Rust tests and Clippy · ubuntu-24.04", all 21 helper tests at `66add2e6`);
+  the image tests have not yet run on x86-64.
+- **libdav1d is a hard runtime dependency.** The executable links the
+  distribution's `libdav1d.so.7` (Arch `dav1d`, Ubuntu `libdav1d7`), so
+  GitTurtle does not start without it, even when no AVIF is ever opened.
+  AVIF decoding needs **libdav1d 1.4.1 or later**: the helper checks the
+  version before it reads an AVIF and, with an older one or one that reports
+  no readable version, shows “AVIF decoding needs libdav1d 1.4.1 or later” in
+  place of the image. JPEG 2000 does not use libdav1d. Ubuntu 24.04's
+  `libdav1d7` is 1.4.1. The floor cannot tell whether your distribution has
+  backported a fix; libdav1d is patched at its pace.
+- AVIF shows its first image only: an animated AVIF shows its first frame,
+  captioned “first frame of an animation”, and does not play. AVIF image grids,
+  as some cameras and phones write, are not decoded yet: they say “AVIF image
+  grids are not decoded on Linux yet” and offer **Open in default app**. A
+  crop (`clap`) is not applied, HDR is not tone-mapped, and an ICC profile
+  over 4 MiB, malformed or not RGB is not applied; the caption says so
+  (“crop not applied”, “HDR not tone-mapped”, “color profile not applied”).
+  A JPX file decodes only when it is JP2-compatible.
+- HEIF and HEIC images are not decoded on Linux: they say “HEIF / HEIC images
+  are not decoded on Linux” and offer **Open in default app**. macOS decodes
+  them through ImageIO. PNG/JPEG/GIF/WebP, supported SVG, rendered Markdown
+  and finite mesh/GLB/STEP previews have portable decoders, and AVIF and
+  JPEG 2000 decode in the helper above; the [format matrix](file-previews.md)
+  defines bounds and unsupported variants. Recognizing metadata is not the
+  same as rendering a format.
+- System preview is **Open in default app** on Linux: an explicit click hands a
+  private read-only copy of the captured bytes to the desktop's default
+  application through the OpenURI portal, or `xdg-open` where no portal
+  answers, once GIO (and, for `xdg-open`, `xdg-mime`) types the copy as
+  what its content is. Only passive types decided from content offer it:
+  raster images and PDF, and plain text where a view presents a file's
+  captured text as a document, which is the Diagrams view of a Mermaid file
+  or of Markdown with Mermaid diagrams and a text 3D model's header (OBJ,
+  ASCII STL, STEP); a source diff, the source tabs and Markdown's Rendered
+  view offer nothing. Audio and video, office documents, SVG, HTML,
+  scripts, desktop entries, executables, archives, fonts and unrecognized
+  bytes do not. See the
+  [handoff contract](file-previews.md#background-work-and-resource-lifetime).
 - Automatic refresh skips ignored working-tree directories while preserving
   coverage for tracked files inside them and essential Git metadata. Linux
   coverage is bounded to 16,384 directory registrations and a scan budget;
@@ -400,9 +518,19 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   Refresh and copyable Details. Ignore-rule edits reconsider affected coverage,
   including shared and global excludes. Refresh or returning focus retries
   degraded coverage. See the [local refresh contract](../crates/app/docs/navigation-and-refresh.md#local-refresh).
-- Automatic reading of OS reduced-motion, contrast and transparency
-  accessibility preferences is macOS-only. Manual app preferences remain
-  available; Linux screen-reader and IME coverage is not established.
+- Reduced motion follows the desktop through the XDG settings portal: the
+  appearance `reduced-motion` (1 reduces), GNOME's
+  `org.gnome.desktop.a11y.interface` `reduced-motion` (`reduce`) and
+  `org.gnome.desktop.interface` `enable-animations` (false). Any one of them
+  asking reduces motion; unknown values and missing keys ask for nothing. The
+  appearance `contrast` and GNOME's `high-contrast` are read but do not change
+  the palette yet; there is no transparency preference. Omarchy's settings
+  backend, xdg-desktop-portal-gtk, does not publish the appearance
+  `reduced-motion`, so there the GNOME keys decide. Omarchy has no switch for
+  any of these keys: they stay at their defaults until set with `gsettings`
+  (for example `gsettings set org.gnome.desktop.a11y.interface reduced-motion
+  reduce`), and `omarchy toggle animations` changes only Hyprland's own
+  animations. Linux screen-reader and IME coverage is not established.
 - Glyph antialiasing reads `font-rendering` and `font-antialiasing` from the
   XDG settings portal (`org.gnome.desktop.interface`). GNOME Automatic mode
   uses grayscale, matching [GTK 4](https://docs.gtk.org/gtk4/property.Settings.gtk-xft-rgba.html);
@@ -448,15 +576,15 @@ GPU/driver, session type and scale setting with the result.
   set to Manual): text size and glyph edges follow without a restart.
 - [ ] Open and cancel the repository picker from Projects and Ctrl+O, including
   a path containing spaces. Confirm errors are useful if the portal is absent.
-- [ ] Select a commit (stays in History), activate text/PNG/Markdown files, Back,
+- [ ] Select a commit (stays in History), activate text/PNG/AVIF/JPEG 2000/Markdown files, Back,
   then rapid activation/Back; inspect image zoom/overlay and a supported model.
 - [ ] In Working Changes, stage and unstage fixture files/hunks. Verify with
   `git diff` and `git diff --cached`; ensure unrelated fixture edits survive.
   Enter a draft, navigate away, quit and reopen, then verify exact draft text.
 
 To uninstall the user-local app, remove `~/.local/bin/gitturtle`, the installed
-`applications/com.gitturtle.desktop.desktop`, `icons/com.gitturtle.desktop.png`
-and the eight `icons/hicolor/SIZExSIZE/apps/com.gitturtle.desktop.png` files
+`applications/com.gitturtle.GitTurtle.desktop`, `icons/com.gitturtle.GitTurtle.png`
+and the eight `icons/hicolor/SIZExSIZE/apps/com.gitturtle.GitTurtle.png` files
 and `gitturtle/licenses/`, `gitturtle/build-info.json`, `gitturtle/install.py`,
 `gitturtle/install.lock`, `gitturtle/previous-installation.json` and any unwanted
 `gitturtle/install-backups/` under the data directory used at installation. Leave other icons and the

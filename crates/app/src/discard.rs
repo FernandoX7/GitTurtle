@@ -5,7 +5,7 @@ use gitturtle_core::{ChangeStatus, DiscardPlan, StatusEntry, WriteCommand};
 
 mod review;
 
-const PREPARING: &str = "Reviewing file changes…";
+pub(crate) const PREPARING: &str = "Reviewing file changes…";
 
 #[derive(Default)]
 pub(super) struct State {
@@ -57,6 +57,7 @@ impl GitTurtle {
                 if this.operation_busy == Some(PREPARING) {
                     this.operation_busy = None;
                 }
+                this.read_deferred_working(window, cx);
                 if this.path.as_ref() != Some(&repository)
                     || this.repository.as_ref().map(|repo| repo.path())
                         != Some(repository.as_path())
@@ -69,7 +70,9 @@ impl GitTurtle {
                     Ok(plan) => {
                         this.confirm_discard(repository, plan, generation, window, cx);
                     }
-                    Err(error) => this.operation_error = Some(format!("{error:#}")),
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error))
+                    }
                 }
                 cx.notify();
             });

@@ -1,4 +1,5 @@
-//! Desktop text on Linux: the code font, glyph antialiasing and text scaling.
+//! Desktop text on Linux: the code font, glyph antialiasing and text scaling,
+//! and the desktop's motion and contrast preferences.
 //!
 //! The toolkit's Linux backend always recommends subpixel (RGB stripe) glyph
 //! rendering and never consults the session's font settings. That fringes on
@@ -7,16 +8,30 @@
 //! grayscale. This module reads the desktop preference through the XDG
 //! settings portal, falls back to fontconfig's resolved defaults when no portal
 //! answers or it does not publish GNOME's keys, and follows portal changes while the app
-//! runs. Returning to a window refreshes the snapshot and fontconfig fallback. On Wayland it also applies the desktop text scaling factor ("Large
+//! runs. Returning to a window, or a change to the user's fontconfig
+//! configuration (`user_fontconfig`), refreshes the snapshot and fontconfig
+//! fallback. On Wayland it also applies the desktop text scaling factor ("Large
 //! Text"), where the toolkit has no DPI source; the X11 backend already scales
 //! the whole window through `Xft.dpi`. Code uses the bundled DejaVu Sans Mono
 //! unless Settings asks for the desktop's fontconfig `monospace` family, which
 //! is looked up on the same worker, one `fc-match` at a time and for up to a
 //! few seconds so that a cold fontconfig cache can answer, and used only when
-//! the toolkit has loaded it and it draws at one advance. Nothing here writes a
-//! setting.
+//! the toolkit has loaded it and it draws at one advance. The same portal
+//! session, one subscription to every namespace's changes on one ordered
+//! stream under the same deadline and batch bounds, also reads the
+//! appearance `reduced-motion` and `contrast` and GNOME's `reduced-motion`,
+//! `high-contrast` and `enable-animations`; each snapshot carries their
+//! resolved `DisplayPreferences` (`Observed::display`), which
+//! `native_accessibility` keeps and applies to the toolkit's motion policy.
+//! Only a text key's change runs `fc-match` again. Once the portal has
+//! answered, a refresh that cannot reconnect keeps that answer and sends
+//! nothing, so neither text nor motion resets while it is away. Nothing here
+//! writes a setting.
 
 use gpui_kit::AsyncApp;
+
+#[cfg(target_os = "linux")]
+mod user_fontconfig;
 
 /// Waits for the first applied desktop snapshot. After the startup deadline,
 /// launch uses the safe defaults already installed by `start`.
@@ -55,12 +70,21 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
     let scales_text = gpui_kit::guess_compositor() == "Wayland";
     let executor = cx.background_executor().clone();
     let (cancel, cancellation) = futures::future::AbortHandle::new_pair();
+    let follow = user_fontconfig::config_home()
+        .map(|home| user_fontconfig::follow(home, refresh.clone(), executor.clone()));
     let worker = executor.clone().spawn(async move {
-        let _ = futures::future::Abortable::new(
-            portal::observe(scales_text, fontconfig, sender, requests, executor),
-            cancellation,
-        )
-        .await;
+        let observe = portal::observe(scales_text, fontconfig, sender, requests, executor);
+        let observing = async move {
+            match follow {
+                // Following never ends by itself; it stops with the reads it asks for.
+                Some(follow) => {
+                    futures::pin_mut!(observe, follow);
+                    futures::future::select(observe, follow).await;
+                }
+                None => observe.await,
+            }
+        };
+        let _ = futures::future::Abortable::new(observing, cancellation).await;
     });
     let updates = cx.spawn(async move |cx| {
         let mut ready = Some(ready);
@@ -142,20 +166,44 @@ const CODE_FONT_FACES: [&[u8]; 4] = [
     include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono-BoldOblique.ttf"),
 ];
 
-/// Registers the bundled code font. Call it before any window lays out text:
-/// the toolkit caches a failed family lookup for the life of the process.
+/// IBM Plex Sans 3.005 (`assets/fonts/ibm-plex-sans`): the four weights the
+/// interface draws, and the italics Markdown emphasis needs. Without the
+/// installed family the toolkit fell back to the desktop's sans family at
+/// weight 400, and variable families such as Adwaita Sans load as one Regular
+/// face, so every interface weight drew Regular.
 #[cfg(target_os = "linux")]
-pub(super) fn register_code_font(cx: &gpui_kit::App) {
+const INTERFACE_FONT_FACES: [&[u8]; 6] = [
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf"),
+];
+
+/// Registers the bundled code and interface fonts. Call it before any window
+/// lays out text: the toolkit caches a failed family lookup for the life of the
+/// process.
+#[cfg(target_os = "linux")]
+pub(super) fn register_bundled_fonts(cx: &gpui_kit::App) {
     if let Err(error) = cx.text_system().add_fonts(code_font_faces()) {
         eprintln!("GitTurtle could not register its bundled code font: {error:#}");
     }
+    if let Err(error) = cx.text_system().add_fonts(borrowed(&INTERFACE_FONT_FACES)) {
+        eprintln!("GitTurtle could not register its bundled interface font: {error:#}");
+    }
 }
 #[cfg(not(target_os = "linux"))]
-pub(super) fn register_code_font(_cx: &gpui_kit::App) {}
+pub(super) fn register_bundled_fonts(_cx: &gpui_kit::App) {}
 
 #[cfg(target_os = "linux")]
 fn code_font_faces() -> Vec<std::borrow::Cow<'static, [u8]>> {
-    CODE_FONT_FACES
+    borrowed(&CODE_FONT_FACES)
+}
+
+#[cfg(target_os = "linux")]
+fn borrowed(faces: &[&'static [u8]]) -> Vec<std::borrow::Cow<'static, [u8]>> {
+    faces
         .iter()
         .map(|face| std::borrow::Cow::Borrowed(*face))
         .collect()
@@ -268,6 +316,12 @@ fn apply(snapshot: DesktopText, cx: &mut gpui_kit::App) {
     if changed {
         cx.refresh_windows();
     }
+    // `native_accessibility` keeps the desktop's latest display preferences
+    // and stays the one place that sets the toolkit's motion policy; windows
+    // observe the change and pause playback.
+    if crate::native_accessibility::store_desktop_preferences(snapshot.display, cx) {
+        crate::native_accessibility::sync_preferences(cx);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -350,6 +404,17 @@ fn bundled_text() -> std::sync::Arc<gpui_kit::TextSystem> {
     std::sync::Arc::new(text)
 }
 
+/// Tests: a text system with only the bundled interface faces, which draws
+/// `.SystemUIFont` as a Linux session does, to measure interface text in.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn interface_text() -> std::sync::Arc<gpui_kit::TextSystem> {
+    let text = gpui_kit::TextSystem::new(std::sync::Arc::new(
+        gpui_wgpu::CosmicTextSystem::new_without_system_fonts("IBM Plex Sans"),
+    ));
+    text.add_fonts(borrowed(&INTERFACE_FONT_FACES)).unwrap();
+    std::sync::Arc::new(text)
+}
+
 /// Tests: lets real time and the test executor's clock pass together by one
 /// read poll, so a real child's output reaches a query timed on that clock.
 #[cfg(all(test, target_os = "linux"))]
@@ -359,10 +424,43 @@ pub(super) fn pass_real_time(executor: &gpui_kit::BackgroundExecutor) {
     executor.run_until_parked();
 }
 
+/// Tests: whether the child `pid` has exited and awaits its reaping. A query
+/// reaps its child only as it ends, at a read poll or deadline on the test
+/// clock, so while a test holds that clock, `pid` cannot name a newer process.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn exited_unreaped(pid: libc::pid_t) -> bool {
+    // The state follows the parenthesised command name.
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, fields)| fields.trim_start().starts_with('Z'))
+    })
+}
+
+/// Tests: whether `pid` has exited and been reaped: a zombie would still
+/// accept signal zero.
+#[cfg(all(test, target_os = "linux"))]
+fn reaped(pid: libc::pid_t) -> bool {
+    // SAFETY: signal zero checks existence and does not send a signal.
+    let gone = unsafe { libc::kill(pid, 0) } == -1;
+    gone && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// Tests: lets one read poll of real time pass with the test executor's
+/// clock held, while a real child starts or writes its answer. A loaded host
+/// can take tens of milliseconds to start one, and waiting with
+/// [`pass_real_time`] would spend them from the query's bound, which runs on
+/// that clock from the spawn.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn pass_real_time_only(executor: &gpui_kit::BackgroundExecutor) {
+    std::thread::sleep(portal::READ_POLL);
+    executor.run_until_parked();
+}
+
 /// Tests: a stand-in for `fc-match`. It logs each query with its process id,
 /// notes a query that starts while another runs, answers the rendering
 /// defaults at once, and answers the code font query only once the test
-/// supplies a family.
+/// supplies a family. A code font query also ends once its directory is gone,
+/// so a test that fails before it answers leaves no process polling for ever.
 #[cfg(all(test, target_os = "linux"))]
 pub(super) struct StandIn(tempfile::TempDir);
 
@@ -373,7 +471,7 @@ mkdir "$d/running" 2>/dev/null || echo overlap >> "$d/overlap"
 echo "$$ $*" >> "$d/log"
 case "$*" in
 *sans-serif) printf 'True|1' ;;
-*monospace) while [ ! -e "$d/family" ]; do sleep 0.005; done; cat "$d/family" ;;
+*monospace) while [ -d "$d" ] && [ ! -e "$d/family" ]; do sleep 0.005; done; cat "$d/family" 2>/dev/null ;;
 esac
 rmdir "$d/running""#;
 
@@ -410,6 +508,12 @@ rmdir "$d/running""#;
             .collect()
     }
 
+    /// Ends a code font query left waiting: drops the directory it polls, as
+    /// a test that fails before answering does.
+    fn abandon(self) {
+        drop(self.0);
+    }
+
     pub(super) fn code_font_queries(&self) -> usize {
         self.queries()
             .iter()
@@ -421,14 +525,19 @@ rmdir "$d/running""#;
         self.0.path().join("overlap").exists()
     }
 
-    /// Whether every query's process has exited and been reaped: a zombie
-    /// would still accept signal zero.
+    /// Whether query `count` (counting from one) has started and its process
+    /// has exited, so its answer is whole in its pipe ([`exited_unreaped`])
+    /// or, where the query's first read found it already exited and reaped
+    /// it, already read; the next query may then have started too.
+    pub(super) fn exited(&self, count: usize) -> bool {
+        self.queries()
+            .get(count - 1)
+            .is_some_and(|(pid, _)| exited_unreaped(*pid) || reaped(*pid))
+    }
+
+    /// Whether every query's process has exited and been reaped.
     pub(super) fn reaped(&self) -> bool {
-        self.queries().iter().all(|(pid, _)| {
-            // SAFETY: signal zero checks existence and does not send a signal.
-            let gone = unsafe { libc::kill(*pid, 0) } == -1;
-            gone && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-        })
+        self.queries().iter().all(|(pid, _)| reaped(*pid))
     }
 }
 
@@ -520,6 +629,8 @@ pub(super) struct DesktopText {
     /// The desktop code font lookup and the generation it answers; `None`
     /// while the setting is off.
     pub code_font: Option<(u64, Result<gpui_kit::SharedString, String>)>,
+    /// The desktop's motion and contrast preferences ([`Observed::display`]).
+    pub display: crate::native_accessibility::DisplayPreferences,
 }
 
 /// Raw values as reported by the desktop; each source may be absent.
@@ -534,6 +645,17 @@ pub(super) struct Observed {
     pub text_scale: Option<f64>,
     /// fontconfig's `antialias|rgba` defaults for the generic sans family.
     pub fontconfig: Option<String>,
+    /// The portal's appearance `reduced-motion`: 0 no preference, 1 reduce.
+    pub reduced_motion: Option<u32>,
+    /// The portal's appearance `contrast`: 0 normal, 1 higher.
+    pub contrast: Option<u32>,
+    /// GNOME a11y `reduced-motion` (GNOME 50 and later): "no-preference" or
+    /// "reduce".
+    pub gnome_reduced_motion: Option<String>,
+    /// GNOME a11y `high-contrast`.
+    pub high_contrast: Option<bool>,
+    /// GNOME `enable-animations`; false turns animation off.
+    pub enable_animations: Option<bool>,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -564,6 +686,25 @@ impl Observed {
             rendering,
             text_scale,
             code_font: None,
+            display: self.display(),
+        }
+    }
+
+    /// Reduces motion when any source asks for it: the portal's appearance
+    /// `reduced-motion` 1, GNOME's a11y `reduced-motion` "reduce", or GNOME's
+    /// `enable-animations` turned off. Asks for more contrast when the
+    /// appearance `contrast` is 1 or GNOME's `high-contrast` is on. Any other
+    /// value, an unknown number or word included, is no preference, as the
+    /// settings portal specifies ("Unknown values should be treated as 0"),
+    /// and so is a key the desktop lacks. Linux has no transparency
+    /// preference.
+    pub(super) fn display(&self) -> crate::native_accessibility::DisplayPreferences {
+        crate::native_accessibility::DisplayPreferences {
+            reduce_motion: self.reduced_motion == Some(1)
+                || self.gnome_reduced_motion.as_deref() == Some("reduce")
+                || self.enable_animations == Some(false),
+            increase_contrast: self.contrast == Some(1) || self.high_contrast == Some(true),
+            reduce_transparency: false,
         }
     }
 }
@@ -616,7 +757,7 @@ pub(super) fn rendering_from_fontconfig(defaults: &str) -> Option<gpui_kit::Text
 #[cfg(target_os = "linux")]
 mod portal {
     use super::{DesktopText, Observed};
-    use ashpd::{desktop::settings::Settings, zbus, zvariant::OwnedValue};
+    use ashpd::{desktop::settings::Settings, zbus, zvariant::Value};
     use futures::channel::mpsc::{self, Receiver, Sender};
     use futures::{FutureExt as _, StreamExt as _};
     use gpui_kit::BackgroundExecutor;
@@ -631,6 +772,28 @@ mod portal {
     const FONT_RENDERING: &str = "font-rendering";
     const FONT_ANTIALIASING: &str = "font-antialiasing";
     const TEXT_SCALING_FACTOR: &str = "text-scaling-factor";
+    const ENABLE_ANIMATIONS: &str = "enable-animations";
+    const APPEARANCE: &str = "org.freedesktop.appearance";
+    const A11Y_INTERFACE: &str = "org.gnome.desktop.a11y.interface";
+    /// In both the appearance and the GNOME a11y namespace.
+    const REDUCED_MOTION: &str = "reduced-motion";
+    const CONTRAST: &str = "contrast";
+    const HIGH_CONTRAST: &str = "high-contrast";
+
+    /// The keys a signal set, one bit each.
+    type Keys = u16;
+    const SET_FONT_RENDERING: Keys = 1;
+    const SET_FONT_ANTIALIASING: Keys = 1 << 1;
+    const SET_TEXT_SCALE: Keys = 1 << 2;
+    const SET_REDUCED_MOTION: Keys = 1 << 3;
+    const SET_CONTRAST: Keys = 1 << 4;
+    const SET_GNOME_REDUCED_MOTION: Keys = 1 << 5;
+    const SET_HIGH_CONTRAST: Keys = 1 << 6;
+    const SET_ENABLE_ANIMATIONS: Keys = 1 << 7;
+    /// The text keys. Only a change to one of them can need fontconfig's
+    /// rendering defaults; motion and contrast keys never run `fc-match`.
+    const TEXT_KEYS: Keys = SET_FONT_RENDERING | SET_FONT_ANTIALIASING | SET_TEXT_SCALE;
+
     const PORTAL_WAIT: Duration = Duration::from_millis(250);
     const FONTCONFIG_WAIT: Duration = Duration::from_millis(100);
     const FONTCONFIG_BYTES: usize = 128;
@@ -773,9 +936,10 @@ mod portal {
     }
 
     struct Session {
-        // Retain the private connection only for this subscription's lifetime.
-        _settings: Settings,
-        changes: zbus::proxy::SignalStream<'static>,
+        // Retain the private connection only for this subscription's lifetime;
+        // tests supply a session without one.
+        _settings: Option<Settings>,
+        changes: futures::stream::BoxStream<'static, zbus::Message>,
         observed: Observed,
     }
 
@@ -787,28 +951,50 @@ mod portal {
             .await
             .ok()?;
         let settings = Settings::with_connection(connection).await.ok()?;
-        // Subscribe first, on one ordered stream. Separate per-key streams can
+        // Subscribe first, on one ordered stream of every namespace, which
+        // `change` selects from. Separate per-key or per-namespace streams can
         // reorder coupled font-rendering/antialiasing changes.
         let mut changes = settings
-            .receive_signal_with_args("SettingChanged", &[(0, INTERFACE)])
+            .receive_signal("SettingChanged")
             .await
-            .ok()?;
+            .ok()?
+            .boxed();
         let observed = snapshot(&mut changes, async {
-            let (font_rendering, antialiasing, text_scale) = futures::join!(
+            // A key the backend lacks answers an error, and reads as absent.
+            let (
+                font_rendering,
+                antialiasing,
+                text_scale,
+                enable_animations,
+                reduced_motion,
+                contrast,
+                gnome_reduced_motion,
+                high_contrast,
+            ) = futures::join!(
                 settings.read(INTERFACE, FONT_RENDERING),
                 settings.read(INTERFACE, FONT_ANTIALIASING),
                 settings.read(INTERFACE, TEXT_SCALING_FACTOR),
+                settings.read(INTERFACE, ENABLE_ANIMATIONS),
+                settings.read(APPEARANCE, REDUCED_MOTION),
+                settings.read(APPEARANCE, CONTRAST),
+                settings.read(A11Y_INTERFACE, REDUCED_MOTION),
+                settings.read(A11Y_INTERFACE, HIGH_CONTRAST),
             );
             Observed {
                 font_rendering: font_rendering.ok(),
                 antialiasing: antialiasing.ok(),
                 text_scale: text_scale.ok(),
                 fontconfig: None,
+                reduced_motion: reduced_motion.ok(),
+                contrast: contrast.ok(),
+                gnome_reduced_motion: gnome_reduced_motion.ok(),
+                high_contrast: high_contrast.ok(),
+                enable_animations: enable_animations.ok(),
             }
         })
         .await;
         Some(Session {
-            _settings: settings,
+            _settings: Some(settings),
             changes,
             observed,
         })
@@ -844,39 +1030,107 @@ mod portal {
         // Consume signals while the reads are in flight, so a full bounded
         // signal queue cannot block delivery of the read replies. A signal
         // received during the snapshot wins over that key's earlier read.
-        if seen & 1 != 0 {
-            initial.font_rendering = updates.font_rendering;
+        fn take<T>(seen: Keys, key: Keys, read: &mut T, signalled: T) {
+            if seen & key != 0 {
+                *read = signalled;
+            }
         }
-        if seen & 2 != 0 {
-            initial.antialiasing = updates.antialiasing;
-        }
-        if seen & 4 != 0 {
-            initial.text_scale = updates.text_scale;
-        }
+        let Observed {
+            font_rendering,
+            antialiasing,
+            text_scale,
+            fontconfig: _,
+            reduced_motion,
+            contrast,
+            gnome_reduced_motion,
+            high_contrast,
+            enable_animations,
+        } = updates;
+        take(
+            seen,
+            SET_FONT_RENDERING,
+            &mut initial.font_rendering,
+            font_rendering,
+        );
+        take(
+            seen,
+            SET_FONT_ANTIALIASING,
+            &mut initial.antialiasing,
+            antialiasing,
+        );
+        take(seen, SET_TEXT_SCALE, &mut initial.text_scale, text_scale);
+        take(
+            seen,
+            SET_REDUCED_MOTION,
+            &mut initial.reduced_motion,
+            reduced_motion,
+        );
+        take(seen, SET_CONTRAST, &mut initial.contrast, contrast);
+        take(
+            seen,
+            SET_GNOME_REDUCED_MOTION,
+            &mut initial.gnome_reduced_motion,
+            gnome_reduced_motion,
+        );
+        take(
+            seen,
+            SET_HIGH_CONTRAST,
+            &mut initial.high_contrast,
+            high_contrast,
+        );
+        take(
+            seen,
+            SET_ENABLE_ANIMATIONS,
+            &mut initial.enable_animations,
+            enable_animations,
+        );
         initial
     }
 
-    fn change(observed: &mut Observed, message: zbus::Message) -> u8 {
+    /// Applies one `SettingChanged` signal and returns the key it set, or
+    /// nothing for another namespace's key, an unknown key or a malformed
+    /// signal. The stream carries every namespace, so each key is matched
+    /// with its own; the value is read borrowed from the message, so a
+    /// signal this ignores copies nothing.
+    fn change(observed: &mut Observed, message: zbus::Message) -> Keys {
         let body = message.body();
-        let Ok((namespace, key, value)) = body.deserialize::<(&str, &str, OwnedValue)>() else {
+        let Ok((namespace, key, value)) = body.deserialize::<(&str, &str, Value<'_>)>() else {
             return 0;
         };
-        if namespace != INTERFACE {
-            return 0;
-        }
+        let text = |value: &Value<'_>| <&str>::try_from(value).ok().map(str::to_owned);
         // Invalid values clear the old preference so resolution can fall back.
-        match key {
-            FONT_RENDERING => {
-                observed.font_rendering = <&str>::try_from(&value).ok().map(str::to_owned);
-                1
+        match (namespace, key) {
+            (INTERFACE, FONT_RENDERING) => {
+                observed.font_rendering = text(&value);
+                SET_FONT_RENDERING
             }
-            FONT_ANTIALIASING => {
-                observed.antialiasing = <&str>::try_from(&value).ok().map(str::to_owned);
-                2
+            (INTERFACE, FONT_ANTIALIASING) => {
+                observed.antialiasing = text(&value);
+                SET_FONT_ANTIALIASING
             }
-            TEXT_SCALING_FACTOR => {
+            (INTERFACE, TEXT_SCALING_FACTOR) => {
                 observed.text_scale = f64::try_from(&value).ok();
-                4
+                SET_TEXT_SCALE
+            }
+            (INTERFACE, ENABLE_ANIMATIONS) => {
+                observed.enable_animations = bool::try_from(&value).ok();
+                SET_ENABLE_ANIMATIONS
+            }
+            (APPEARANCE, REDUCED_MOTION) => {
+                observed.reduced_motion = u32::try_from(&value).ok();
+                SET_REDUCED_MOTION
+            }
+            (APPEARANCE, CONTRAST) => {
+                observed.contrast = u32::try_from(&value).ok();
+                SET_CONTRAST
+            }
+            (A11Y_INTERFACE, REDUCED_MOTION) => {
+                observed.gnome_reduced_motion = text(&value);
+                SET_GNOME_REDUCED_MOTION
+            }
+            (A11Y_INTERFACE, HIGH_CONTRAST) => {
+                observed.high_contrast = bool::try_from(&value).ok();
+                SET_HIGH_CONTRAST
             }
             _ => 0,
         }
@@ -896,13 +1150,14 @@ mod portal {
         .await;
     }
 
-    fn drain(session: &mut Session) -> bool {
-        let mut changed = false;
+    /// Applies the signals already queued and returns the keys they set.
+    fn drain(session: &mut Session) -> Keys {
+        let mut changed = 0;
         // Fixed work per turn, even if a backend continuously emits signals.
         for _ in 0..SIGNAL_BATCH {
             match session.changes.next().now_or_never() {
                 Some(Some(message)) => {
-                    changed |= change(&mut session.observed, message) != 0;
+                    changed |= change(&mut session.observed, message);
                 }
                 _ => break,
             }
@@ -932,28 +1187,38 @@ mod portal {
         mut refresh: Receiver<()>,
         executor: BackgroundExecutor,
     ) {
+        // The portal's last answer, once a session has given one.
+        let mut known: Option<Observed> = None;
         loop {
             let mut session = bounded(&executor, connect()).await.flatten();
             if let Some(session) = &mut session {
                 drain(session);
             }
-            let mut observed = session
-                .as_ref()
-                .map(|session| session.observed.clone())
-                .unwrap_or_default();
-            if super::rendering_from_gnome(
-                observed.font_rendering.as_deref(),
-                observed.antialiasing.as_deref(),
-            )
-            .is_none()
-            {
-                observed.fontconfig = fontconfig.defaults(&executor).await;
-            }
-            // Launch waits for the first snapshot, so the code font lookup
-            // follows it rather than holding the window back. The lookup
-            // holds this loop, so a refresh requested meanwhile waits for it.
-            if !sender.send(observed.resolve(scales_text)) {
-                return;
+            // A refresh whose connection fails or outlives its bound keeps
+            // the last answer and sends nothing, so the desktop's preferences
+            // hold until a refresh connects again. A desktop that never
+            // answered resolves without portal values at every attempt.
+            let keeps = session.is_none() && known.is_some();
+            let mut observed = match &session {
+                Some(session) => session.observed.clone(),
+                None => known.clone().unwrap_or_default(),
+            };
+            if !keeps {
+                if super::rendering_from_gnome(
+                    observed.font_rendering.as_deref(),
+                    observed.antialiasing.as_deref(),
+                )
+                .is_none()
+                {
+                    observed.fontconfig = fontconfig.defaults(&executor).await;
+                }
+                // Launch waits for the first snapshot, so the code font
+                // lookup follows it rather than holding the window back. The
+                // lookup holds this loop, so a refresh requested meanwhile
+                // waits for it.
+                if !sender.send(observed.resolve(scales_text)) {
+                    return;
+                }
             }
             let code = fontconfig.code_font(&executor).await;
             let resolve = |observed: &Observed| DesktopText {
@@ -986,13 +1251,16 @@ mod portal {
                     }
                     break;
                 };
-                let changed = change(&mut session.observed, message) != 0;
-                if drain(&mut session) || changed {
-                    if super::rendering_from_gnome(
-                        session.observed.font_rendering.as_deref(),
-                        session.observed.antialiasing.as_deref(),
-                    )
-                    .is_none()
+                let changed = change(&mut session.observed, message) | drain(&mut session);
+                if changed != 0 {
+                    // fontconfig's defaults stand in for unresolved GNOME
+                    // rendering keys, so only a text key's change asks again.
+                    if changed & TEXT_KEYS != 0
+                        && super::rendering_from_gnome(
+                            session.observed.font_rendering.as_deref(),
+                            session.observed.antialiasing.as_deref(),
+                        )
+                        .is_none()
                     {
                         session.observed.fontconfig = fontconfig.defaults(&executor).await;
                     }
@@ -1002,6 +1270,7 @@ mod portal {
                 }
                 executor.timer(CHANGE_COALESCE_WAIT).await;
             }
+            known = Some(session.observed);
         }
     }
 
@@ -1065,7 +1334,12 @@ mod portal {
     }
 
     /// One read of everything the pipe holds: `None` while the child may
-    /// write more, otherwise the query's result.
+    /// write more, otherwise the query's result. A child that had exited
+    /// before the read has its whole answer in the pipe, so the query ends
+    /// once the read drains it, whether or not the pipe has closed: a
+    /// process another thread spawns while this child starts holds a copy
+    /// of the pipe's write end until that process execs, which a loaded host
+    /// can delay well past this child's exit.
     fn read_available(
         child: &mut Child,
         stdout: &mut ChildStdout,
@@ -1073,47 +1347,64 @@ mod portal {
         buffer: &mut [u8],
         limit: usize,
     ) -> Option<Option<String>> {
+        let exited = match child.try_wait() {
+            Ok(exited) => exited,
+            Err(_) => return Some(None),
+        };
         loop {
             match stdout.read(buffer) {
+                Ok(0) => break,
                 Ok(count) => {
                     if output.len() + count > limit {
                         return Some(None);
                     }
                     output.extend_from_slice(&buffer[..count]);
-                    if count > 0 {
-                        continue;
-                    }
-                    return match child.try_wait() {
-                        Ok(Some(status)) => Some(
-                            status
-                                .success()
-                                .then(|| String::from_utf8(std::mem::take(output)).ok())
-                                .flatten(),
-                        ),
-                        Ok(None) => None,
-                        Err(_) => Some(None),
-                    };
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return None,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => match exited {
+                    Some(_) => break,
+                    // A running child may write more.
+                    None => return None,
+                },
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => return Some(None),
             }
         }
+        // Drained: the child had exited, or it closed the pipe and may still
+        // be exiting.
+        let status = match exited {
+            Some(status) => status,
+            None => match child.try_wait() {
+                Ok(Some(status)) => status,
+                Ok(None) => return None,
+                Err(_) => return Some(None),
+            },
+        };
+        Some(
+            status
+                .success()
+                .then(|| String::from_utf8(std::mem::take(output)).ok())
+                .flatten(),
+        )
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use ashpd::zvariant::OwnedValue;
 
-        fn signal(key: &str, value: OwnedValue) -> zbus::Message {
+        fn signal(namespace: &str, key: &str, value: OwnedValue) -> zbus::Message {
             zbus::Message::signal(
                 "/org/freedesktop/portal/desktop",
                 "org.freedesktop.portal.Settings",
                 "SettingChanged",
             )
             .unwrap()
-            .build(&(INTERFACE, key, value))
+            .build(&(namespace, key, value))
             .unwrap()
+        }
+
+        fn text(value: &str) -> OwnedValue {
+            OwnedValue::from(ashpd::zvariant::Str::from(value))
         }
 
         #[test]
@@ -1124,13 +1415,21 @@ mod portal {
             let emit = async move {
                 for index in 0..100 {
                     sender
-                        .send(signal(TEXT_SCALING_FACTOR, OwnedValue::from(index as f64)))
+                        .send(signal(
+                            INTERFACE,
+                            TEXT_SCALING_FACTOR,
+                            OwnedValue::from(index as f64),
+                        ))
                         .await
                         .unwrap();
                 }
                 // Wrong type must clear the previous antialiasing value.
                 sender
-                    .send(signal(FONT_ANTIALIASING, OwnedValue::from(123u32)))
+                    .send(signal(
+                        INTERFACE,
+                        FONT_ANTIALIASING,
+                        OwnedValue::from(123u32),
+                    ))
                     .await
                     .unwrap();
                 reply
@@ -1138,7 +1437,7 @@ mod portal {
                         font_rendering: Some("manual".into()),
                         antialiasing: Some("rgba".into()),
                         text_scale: Some(1.25),
-                        fontconfig: None,
+                        ..Observed::default()
                     })
                     .unwrap();
             };
@@ -1148,6 +1447,161 @@ mod portal {
             assert_eq!(observed.font_rendering.as_deref(), Some("manual"));
             assert_eq!(observed.antialiasing, None);
             assert_eq!(observed.text_scale, Some(99.0));
+        }
+
+        /// The one stream carries every namespace: each motion and contrast
+        /// key is read in its own namespace, the same name in another
+        /// namespace and unknown keys change nothing, and a value of the
+        /// wrong type clears the key's old value.
+        #[test]
+        fn change_reads_each_motion_and_contrast_key_in_its_own_namespace() {
+            let mut observed = Observed::default();
+            for (namespace, key, value, set) in [
+                (
+                    APPEARANCE,
+                    REDUCED_MOTION,
+                    OwnedValue::from(1u32),
+                    SET_REDUCED_MOTION,
+                ),
+                (APPEARANCE, CONTRAST, OwnedValue::from(1u32), SET_CONTRAST),
+                (
+                    A11Y_INTERFACE,
+                    REDUCED_MOTION,
+                    text("reduce"),
+                    SET_GNOME_REDUCED_MOTION,
+                ),
+                (
+                    A11Y_INTERFACE,
+                    HIGH_CONTRAST,
+                    OwnedValue::from(true),
+                    SET_HIGH_CONTRAST,
+                ),
+                (
+                    INTERFACE,
+                    ENABLE_ANIMATIONS,
+                    OwnedValue::from(false),
+                    SET_ENABLE_ANIMATIONS,
+                ),
+            ] {
+                assert_eq!(
+                    change(&mut observed, signal(namespace, key, value)),
+                    set,
+                    "{namespace} {key}"
+                );
+            }
+            let read = Observed {
+                reduced_motion: Some(1),
+                contrast: Some(1),
+                gnome_reduced_motion: Some("reduce".into()),
+                high_contrast: Some(true),
+                enable_animations: Some(false),
+                ..Observed::default()
+            };
+            assert_eq!(observed, read);
+
+            for (namespace, key, value) in [
+                (INTERFACE, REDUCED_MOTION, OwnedValue::from(0u32)),
+                (INTERFACE, CONTRAST, OwnedValue::from(0u32)),
+                (INTERFACE, HIGH_CONTRAST, OwnedValue::from(false)),
+                (A11Y_INTERFACE, CONTRAST, OwnedValue::from(0u32)),
+                (A11Y_INTERFACE, ENABLE_ANIMATIONS, OwnedValue::from(true)),
+                (A11Y_INTERFACE, FONT_ANTIALIASING, text("rgba")),
+                (APPEARANCE, HIGH_CONTRAST, OwnedValue::from(false)),
+                (APPEARANCE, ENABLE_ANIMATIONS, OwnedValue::from(true)),
+                (APPEARANCE, TEXT_SCALING_FACTOR, OwnedValue::from(2.0)),
+                (
+                    "org.gnome.desktop.a11y",
+                    REDUCED_MOTION,
+                    text("no-preference"),
+                ),
+                (APPEARANCE, "color-scheme", OwnedValue::from(1u32)),
+                (A11Y_INTERFACE, "show-status-shapes", OwnedValue::from(true)),
+                (INTERFACE, "gtk-theme", text("Adwaita")),
+            ] {
+                assert_eq!(
+                    change(&mut observed, signal(namespace, key, value)),
+                    0,
+                    "{namespace} {key}"
+                );
+            }
+            assert_eq!(observed, read);
+
+            for (namespace, key, value, set) in [
+                (APPEARANCE, REDUCED_MOTION, text("1"), SET_REDUCED_MOTION),
+                (APPEARANCE, CONTRAST, OwnedValue::from(true), SET_CONTRAST),
+                (
+                    A11Y_INTERFACE,
+                    REDUCED_MOTION,
+                    OwnedValue::from(1u32),
+                    SET_GNOME_REDUCED_MOTION,
+                ),
+                (
+                    A11Y_INTERFACE,
+                    HIGH_CONTRAST,
+                    text("true"),
+                    SET_HIGH_CONTRAST,
+                ),
+                (
+                    INTERFACE,
+                    ENABLE_ANIMATIONS,
+                    OwnedValue::from(0u32),
+                    SET_ENABLE_ANIMATIONS,
+                ),
+            ] {
+                assert_eq!(
+                    change(&mut observed, signal(namespace, key, value)),
+                    set,
+                    "{namespace} {key}"
+                );
+            }
+            assert_eq!(observed, Observed::default());
+        }
+
+        /// A motion or contrast signal received during the initial reads wins
+        /// over that key's read, a wrong type clearing it, while a key no
+        /// signal named keeps its read.
+        #[test]
+        fn a_motion_or_contrast_signal_during_the_reads_wins_over_its_read() {
+            use futures::SinkExt as _;
+            let (mut sender, mut changes) = mpsc::channel(0);
+            let (reply, reads) = futures::channel::oneshot::channel();
+            let emit = async move {
+                for (namespace, key, value) in [
+                    (APPEARANCE, REDUCED_MOTION, OwnedValue::from(1u32)),
+                    (APPEARANCE, CONTRAST, OwnedValue::from(1u32)),
+                    (A11Y_INTERFACE, REDUCED_MOTION, text("reduce")),
+                    (A11Y_INTERFACE, HIGH_CONTRAST, text("yes")),
+                    (INTERFACE, ENABLE_ANIMATIONS, OwnedValue::from(false)),
+                ] {
+                    sender.send(signal(namespace, key, value)).await.unwrap();
+                }
+                reply
+                    .send(Observed {
+                        font_rendering: Some("automatic".into()),
+                        reduced_motion: Some(0),
+                        contrast: Some(0),
+                        gnome_reduced_motion: Some("no-preference".into()),
+                        high_contrast: Some(true),
+                        enable_animations: Some(true),
+                        ..Observed::default()
+                    })
+                    .unwrap();
+            };
+            let (observed, ()) = futures::executor::block_on(async {
+                futures::join!(snapshot(&mut changes, async { reads.await.unwrap() }), emit)
+            });
+            assert_eq!(
+                observed,
+                Observed {
+                    font_rendering: Some("automatic".into()),
+                    reduced_motion: Some(1),
+                    contrast: Some(1),
+                    gnome_reduced_motion: Some("reduce".into()),
+                    high_contrast: None,
+                    enable_animations: Some(false),
+                    ..Observed::default()
+                }
+            );
         }
 
         #[gpui_kit::test]
@@ -1177,7 +1631,7 @@ mod portal {
 
         #[test]
         fn continuously_ready_signals_yield_to_cancellation() {
-            let message = signal(TEXT_SCALING_FACTOR, OwnedValue::from(1.25));
+            let message = signal(INTERFACE, TEXT_SCALING_FACTOR, OwnedValue::from(1.25));
             let mut changes = futures::stream::repeat(message);
             // A perpetually ready source must still return Pending instead of
             // monopolizing one poll and defeating the enclosing deadline.
@@ -1196,6 +1650,7 @@ mod portal {
                     rendering: gpui_kit::TextRenderingMode::Grayscale,
                     text_scale: index as f32,
                     code_font: None,
+                    display: Default::default(),
                 }));
             }
             assert_eq!(latest.lock().unwrap().take().unwrap().text_scale, 9999.0);
@@ -1205,9 +1660,13 @@ mod portal {
             assert!(!sender.send(Observed::default().resolve(true)));
         }
 
-        /// Runs `query` on the executor while real time and its clock pass.
+        /// Runs `query` on the executor: real time passes alone until
+        /// `ready`, then with its clock until the query ends. A child that
+        /// exits before the query's first read is reaped by that read, so
+        /// the query can end before `ready` could ever hold.
         fn finish<T: Send + 'static>(
             cx: &gpui_kit::TestAppContext,
+            mut ready: impl FnMut() -> bool,
             query: impl Future<Output = T> + Send + 'static,
         ) -> T {
             let result = Arc::new(Mutex::new(None));
@@ -1215,15 +1674,31 @@ mod portal {
             cx.executor()
                 .spawn(async move { *slot.lock().unwrap() = Some(query.await) })
                 .detach();
+            until_clock_held(cx, || result.lock().unwrap().is_some() || ready());
             until(cx, || result.lock().unwrap().is_some());
             result.lock().unwrap().take().unwrap()
         }
 
+        /// Waits while real time and the test clock pass together, for a
+        /// real child's output to reach a query that reads it on that clock.
+        #[track_caller]
         fn until(cx: &gpui_kit::TestAppContext, mut done: impl FnMut() -> bool) {
             let started = std::time::Instant::now();
             while !done() {
                 assert!(started.elapsed() < Duration::from_secs(30), "timed out");
                 super::super::pass_real_time(&cx.executor());
+            }
+        }
+
+        /// [`until`] with the test clock held, for a stand-in to start or to
+        /// answer: however slowly a loaded host runs it, the wait spends
+        /// none of its query's bound, which the test then passes exactly.
+        #[track_caller]
+        fn until_clock_held(cx: &gpui_kit::TestAppContext, mut done: impl FnMut() -> bool) {
+            let started = std::time::Instant::now();
+            while !done() {
+                assert!(started.elapsed() < Duration::from_secs(30), "timed out");
+                super::super::pass_real_time_only(&cx.executor());
             }
         }
 
@@ -1233,61 +1708,101 @@ mod portal {
             command
         }
 
+        /// Each script first records its process id, and the clock is held
+        /// until the script has exited, or for one that does not, until it
+        /// has recorded the id: its start spends none of the bound.
         #[gpui_kit::test]
         fn fontconfig_child_output_and_lifetime_are_bounded(cx: &mut gpui_kit::TestAppContext) {
-            let output = |script: &'static str, timeout: Duration| {
+            let output = |script: &str, timeout: Duration, exits: bool| {
+                let pid_file = tempfile::NamedTempFile::new().unwrap();
+                let pid = || -> Option<libc::pid_t> {
+                    let recorded = std::fs::read_to_string(pid_file.path()).ok()?;
+                    recorded.strip_suffix('\n')?.parse().ok()
+                };
+                let mut command = sh(&format!("echo $$ > \"$1\"; {script}"));
+                command.arg(pid_file.path());
                 let executor = cx.executor();
-                finish(cx, async move {
-                    command_output(
-                        &executor,
-                        &mut sh(script),
-                        timeout,
-                        FONTCONFIG_BYTES,
-                        || true,
-                    )
-                    .await
-                })
+                let output = finish(
+                    cx,
+                    || pid().is_some_and(|pid| !exits || super::super::exited_unreaped(pid)),
+                    async move {
+                        command_output(&executor, &mut command, timeout, FONTCONFIG_BYTES, || true)
+                            .await
+                    },
+                );
+                (output, pid().unwrap())
             };
             let second = Duration::from_secs(1);
-            assert_eq!(output("printf 'True|1'", second), Some("True|1".into()));
-            assert_eq!(output("printf 'True|1'; exit 1", second), None);
             assert_eq!(
-                output("while :; do printf '0123456789'; done", second),
+                output("printf 'True|1'", second, true).0,
+                Some("True|1".into())
+            );
+            assert_eq!(output("printf 'True|1'; exit 1", second, true).0, None);
+            assert_eq!(
+                output("while :; do printf '0123456789'; done", second, false).0,
                 None
             );
             // The direct child replaces its shell, so this also detects a leaked
             // sleeper without creating an unrelated descendant process.
-            let pid_file = tempfile::NamedTempFile::new().unwrap();
-            let path = pid_file.path().to_owned();
-            let executor = cx.executor();
             let started = std::time::Instant::now();
-            assert_eq!(
-                finish(cx, async move {
-                    let mut command = sh("echo $$ > \"$1\"; exec sleep 30");
-                    command.arg(path);
-                    command_output(
-                        &executor,
-                        &mut command,
-                        Duration::from_millis(40),
-                        FONTCONFIG_BYTES,
-                        || true,
-                    )
-                    .await
-                }),
-                None
-            );
+            let (sleeper, pid) = output("exec sleep 30", Duration::from_millis(40), false);
+            assert_eq!(sleeper, None);
             assert!(started.elapsed() < Duration::from_secs(2));
-            let pid: libc::pid_t = std::fs::read_to_string(pid_file.path())
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
             // SAFETY: signal zero checks existence and does not send a signal.
             assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
             assert_eq!(
                 std::io::Error::last_os_error().raw_os_error(),
                 Some(libc::ESRCH)
             );
+        }
+
+        /// A process another thread spawns while a query's child starts holds
+        /// a copy of the pipe's write end until it execs, so the pipe can stay
+        /// open after the child exits. The query still ends at its first read
+        /// poll after the exit, with the child's whole answer. Here the child
+        /// leaves a background sleeper holding the pipe, and the clock is held
+        /// until the child has exited, then passes one read poll.
+        #[gpui_kit::test]
+        fn a_query_ends_with_its_child_while_another_process_holds_its_pipe(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let ids = tempfile::tempdir().unwrap();
+            let pid = |name: &str| -> Option<libc::pid_t> {
+                let recorded = std::fs::read_to_string(ids.path().join(name)).ok()?;
+                recorded.strip_suffix('\n')?.parse().ok()
+            };
+            let mut command =
+                sh("sleep 30 & echo $! > \"$1/holder\"; echo $$ > \"$1/child\"; printf 'True|1'");
+            command.arg(ids.path());
+            let result = Arc::new(Mutex::new(None));
+            let slot = result.clone();
+            let executor = cx.executor();
+            cx.executor()
+                .spawn(async move {
+                    let output = command_output(
+                        &executor,
+                        &mut command,
+                        Duration::from_secs(1),
+                        FONTCONFIG_BYTES,
+                        || true,
+                    )
+                    .await;
+                    *slot.lock().unwrap() = Some(output);
+                })
+                .detach();
+            // The query's first read reaps a child that has already exited.
+            until_clock_held(cx, || {
+                result.lock().unwrap().is_some()
+                    || pid("child").is_some_and(super::super::exited_unreaped)
+            });
+            super::super::pass_real_time(&cx.executor());
+            let answered = result.lock().unwrap().take();
+            if let Some(holder) = pid("holder") {
+                // SAFETY: the sleeper holds the pipe for 30 s, so the id is
+                // still its own.
+                unsafe { libc::kill(holder, libc::SIGKILL) };
+            }
+            assert_eq!(answered, Some(Some("True|1".into())));
         }
 
         fn stand_in(generation: &Arc<AtomicU64>, fake: &super::super::StandIn) -> Fontconfig {
@@ -1333,8 +1848,16 @@ mod portal {
                 seen.extend(latest.lock().unwrap().take());
             };
 
-            until(cx, || fake.code_font_queries() == 1);
-            collect(&mut seen);
+            // Real time passes alone while a query's process starts and
+            // answers, and the clock one read poll once it has exited, so a
+            // slow start spends none of the query's bound.
+            let read_answer = |count: usize, seen: &mut Vec<DesktopText>| {
+                until_clock_held(cx, || fake.exited(count));
+                super::super::pass_real_time(&executor);
+                collect(seen);
+            };
+            read_answer(1, &mut seen);
+            until_clock_held(cx, || fake.code_font_queries() == 1);
             // The defaults answered, and launch's snapshot did not wait.
             assert_eq!(seen.len(), 1);
             assert_eq!(seen[0].rendering, gpui_kit::TextRenderingMode::Subpixel);
@@ -1351,16 +1874,15 @@ mod portal {
             assert_eq!(fake.code_font_queries(), 1, "a refresh waits for it");
 
             fake.answer("DejaVu Sans Mono");
-            let answered = |seen: &[DesktopText]| {
-                seen.iter()
-                    .filter(|snapshot| snapshot.code_font.is_some())
-                    .count()
-            };
-            until(cx, || {
-                collect(&mut seen);
-                answered(&seen) == 2
-            });
+            // The late answer, then the refreshes' one pass: its defaults and
+            // its code font.
+            for count in 2..=4 {
+                read_answer(count, &mut seen);
+            }
+            // Snapshots replace one another between reads, so a query whose
+            // process ended before its first read can leave only the pass's.
             let found = Some((1, Ok(gpui_kit::SharedString::from("DejaVu Sans Mono"))));
+            assert_eq!(seen.last().unwrap().code_font, found);
             assert!(
                 seen.iter()
                     .all(|snapshot| snapshot.code_font.is_none() || snapshot.code_font == found)
@@ -1375,6 +1897,266 @@ mod portal {
             drop(refresh);
             until(cx, || done.load(Ordering::SeqCst));
             assert!(fake.reaped());
+        }
+
+        /// A portal session without a bus: `observed` stands for its reads,
+        /// and the returned sender emits its signals.
+        fn fake_session(observed: Observed) -> (Session, mpsc::UnboundedSender<zbus::Message>) {
+            let (signals, changes) = mpsc::unbounded();
+            let session = Session {
+                _settings: None,
+                changes: changes.boxed(),
+                observed,
+            };
+            (session, signals)
+        }
+
+        /// A connection whose attempts answer `sessions` in order, `None`
+        /// failing to connect, and then fail.
+        fn connect_to(
+            sessions: Vec<Option<Session>>,
+        ) -> impl Fn() -> futures::future::Ready<Option<Session>> {
+            let sessions = Mutex::new(std::collections::VecDeque::from(sessions));
+            move || futures::future::ready(sessions.lock().unwrap().pop_front().flatten())
+        }
+
+        /// On a desktop whose GNOME rendering keys do not decide, rendering
+        /// falls back to fontconfig. A burst of motion and contrast changes
+        /// sends its snapshot at once and runs no `fc-match`; a change to a
+        /// text key runs one.
+        #[gpui_kit::test]
+        fn motion_and_contrast_changes_never_ask_fontconfig_again(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::TextRenderingMode::Subpixel;
+            let fake = super::super::StandIn::new();
+            // The code font setting is off, so only the defaults are queried.
+            let generation = Arc::new(AtomicU64::new(0));
+            let (session, signals) = fake_session(Observed::default());
+            let (sender, _wakes, latest) = snapshots();
+            let (refresh, requests) = mpsc::channel(0);
+            let executor = cx.executor();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished = done.clone();
+            let worker = observe_with(
+                connect_to(vec![Some(session)]),
+                false,
+                stand_in(&generation, &fake),
+                sender,
+                requests,
+                executor.clone(),
+            );
+            executor
+                .spawn(async move {
+                    worker.await;
+                    finished.store(true, Ordering::SeqCst);
+                })
+                .detach();
+            let defaults = || {
+                fake.queries()
+                    .iter()
+                    .filter(|(_, pattern)| pattern == "sans-serif")
+                    .count()
+            };
+
+            // The launch snapshot asks fontconfig, which answers subpixel.
+            until_clock_held(cx, || fake.exited(1));
+            super::super::pass_real_time(&executor);
+            let launch = latest.lock().unwrap().take().expect("the launch snapshot");
+            assert_eq!(launch.rendering, Subpixel);
+            assert_eq!(defaults(), 1);
+
+            for _ in 0..3 {
+                for (namespace, key, value) in [
+                    (APPEARANCE, REDUCED_MOTION, OwnedValue::from(1u32)),
+                    (APPEARANCE, CONTRAST, OwnedValue::from(1u32)),
+                    (A11Y_INTERFACE, REDUCED_MOTION, text("reduce")),
+                    (A11Y_INTERFACE, HIGH_CONTRAST, OwnedValue::from(true)),
+                    (INTERFACE, ENABLE_ANIMATIONS, OwnedValue::from(false)),
+                ] {
+                    signals
+                        .unbounded_send(signal(namespace, key, value))
+                        .unwrap();
+                }
+            }
+            // The test clock alone: a snapshot waiting on a real `fc-match`
+            // could not be sent here.
+            for _ in 0..4 {
+                executor.advance_clock(CHANGE_COALESCE_WAIT);
+                executor.run_until_parked();
+            }
+            let burst = latest.lock().unwrap().take().expect("the burst's snapshot");
+            assert_eq!(burst.rendering, Subpixel, "fontconfig's answer stands");
+            assert!(
+                burst.display.reduce_motion && burst.display.increase_contrast,
+                "{:?}",
+                burst.display
+            );
+            for _ in 0..50 {
+                super::super::pass_real_time(&executor);
+            }
+            assert_eq!(defaults(), 1, "motion and contrast run no fc-match");
+
+            // A text key's change that leaves the GNOME keys undecided asks
+            // fontconfig once.
+            signals
+                .unbounded_send(signal(INTERFACE, FONT_ANTIALIASING, text("lcd-v")))
+                .unwrap();
+            executor.run_until_parked();
+            until_clock_held(cx, || fake.exited(2));
+            super::super::pass_real_time(&executor);
+            let text_change = latest.lock().unwrap().take();
+            assert_eq!(
+                text_change.map(|snapshot| snapshot.rendering),
+                Some(Subpixel)
+            );
+            for _ in 0..50 {
+                super::super::pass_real_time(&executor);
+            }
+            assert_eq!(defaults(), 2, "a text key's change runs one");
+            assert_eq!(fake.queries().len(), 2, "and no code font query");
+
+            drop(refresh);
+            until(cx, || done.load(Ordering::SeqCst));
+            drop(signals);
+            assert!(fake.reaped());
+            assert!(!fake.overlapped());
+        }
+
+        /// Focus return picks up a change made while the window was
+        /// inactive: the refresh it requests replaces the connection, reads
+        /// again and sends a snapshot with what the desktop says now.
+        #[gpui_kit::test]
+        fn a_refresh_reconnects_and_sends_what_the_desktop_reads_now(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use crate::native_accessibility::DisplayPreferences;
+            let fake = super::super::StandIn::new();
+            let generation = Arc::new(AtomicU64::new(0));
+            // GNOME's rendering keys decide, so fontconfig is never asked.
+            let decided = Observed {
+                font_rendering: Some("automatic".into()),
+                ..Observed::default()
+            };
+            let (first, _first_signals) = fake_session(decided.clone());
+            let (second, _second_signals) = fake_session(Observed {
+                gnome_reduced_motion: Some("reduce".into()),
+                high_contrast: Some(true),
+                ..decided
+            });
+            let (sender, _wakes, latest) = snapshots();
+            let (mut refresh, requests) = mpsc::channel(0);
+            let executor = cx.executor();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished = done.clone();
+            let worker = observe_with(
+                connect_to(vec![Some(first), Some(second)]),
+                false,
+                stand_in(&generation, &fake),
+                sender,
+                requests,
+                executor.clone(),
+            );
+            executor
+                .spawn(async move {
+                    worker.await;
+                    finished.store(true, Ordering::SeqCst);
+                })
+                .detach();
+            executor.run_until_parked();
+            let launch = latest.lock().unwrap().take().expect("the launch snapshot");
+            assert_eq!(launch.display, DisplayPreferences::default());
+
+            refresh.try_send(()).unwrap();
+            executor.run_until_parked();
+            let returned = latest
+                .lock()
+                .unwrap()
+                .take()
+                .expect("the refresh's snapshot");
+            assert_eq!(
+                returned.display,
+                DisplayPreferences {
+                    reduce_motion: true,
+                    increase_contrast: true,
+                    reduce_transparency: false,
+                }
+            );
+            assert!(fake.queries().is_empty(), "{:?}", fake.queries());
+
+            drop(refresh);
+            executor.run_until_parked();
+            assert!(done.load(Ordering::SeqCst));
+        }
+
+        /// Once the portal has answered, a refresh whose connection fails
+        /// keeps that answer and sends no snapshot, so the desktop's reduced
+        /// motion stays on rather than resetting until the next good refresh;
+        /// a later refresh that connects sends what the desktop says then.
+        #[gpui_kit::test]
+        fn a_failed_refresh_keeps_the_desktops_last_answer(cx: &mut gpui_kit::TestAppContext) {
+            let fake = super::super::StandIn::new();
+            let generation = Arc::new(AtomicU64::new(0));
+            // GNOME's rendering keys decide, so fontconfig is never asked.
+            let decided = Observed {
+                font_rendering: Some("automatic".into()),
+                ..Observed::default()
+            };
+            let (reducing, _reducing_signals) = fake_session(Observed {
+                enable_animations: Some(false),
+                ..decided.clone()
+            });
+            let (animating, _animating_signals) = fake_session(Observed {
+                enable_animations: Some(true),
+                ..decided
+            });
+            let (sender, _wakes, latest) = snapshots();
+            let (mut refresh, requests) = mpsc::channel(0);
+            let executor = cx.executor();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished = done.clone();
+            let worker = observe_with(
+                connect_to(vec![Some(reducing), None, Some(animating)]),
+                false,
+                stand_in(&generation, &fake),
+                sender,
+                requests,
+                executor.clone(),
+            );
+            executor
+                .spawn(async move {
+                    worker.await;
+                    finished.store(true, Ordering::SeqCst);
+                })
+                .detach();
+            // Applies the latest snapshot, as the app's update task does,
+            // and says whether there was one.
+            let apply_latest = |cx: &mut gpui_kit::TestAppContext| {
+                executor.run_until_parked();
+                let snapshot = latest.lock().unwrap().take();
+                let sent = snapshot.is_some();
+                if let Some(snapshot) = snapshot {
+                    cx.update(|cx| super::super::apply(snapshot, cx));
+                }
+                sent
+            };
+            let reduced = |cx: &mut gpui_kit::TestAppContext| cx.read(|cx| cx.reduce_motion());
+
+            assert!(apply_latest(cx), "the launch snapshot");
+            assert!(reduced(cx));
+
+            refresh.try_send(()).unwrap();
+            assert!(!apply_latest(cx), "a failed refresh sends nothing");
+            assert!(reduced(cx), "and the desktop's answer holds");
+
+            refresh.try_send(()).unwrap();
+            assert!(apply_latest(cx), "a refresh that connects sends its answer");
+            assert!(!reduced(cx));
+            assert!(fake.queries().is_empty(), "{:?}", fake.queries());
+
+            drop(refresh);
+            cx.executor().run_until_parked();
+            assert!(done.load(Ordering::SeqCst));
         }
 
         /// A query that outlives the bound is killed, reaped and reported
@@ -1395,7 +2177,7 @@ mod portal {
                     *slot.lock().unwrap() = Some(fontconfig.code_font(&lookup).await);
                 })
                 .detach();
-            until(cx, || fake.queries().len() == 1);
+            until_clock_held(cx, || fake.queries().len() == 1);
             executor.advance_clock(FAMILY_WAIT - Duration::from_millis(50));
             executor.run_until_parked();
             assert!(result.lock().unwrap().is_none());
@@ -1425,7 +2207,7 @@ mod portal {
                         *slot.lock().unwrap() = Some(fontconfig.code_font(&lookup).await);
                     })
                     .detach();
-                until(cx, || fake.queries().len() == 1);
+                until_clock_held(cx, || fake.queries().len() == 1);
                 generation.store(next, Ordering::Release);
                 super::super::pass_real_time(&executor);
                 assert_eq!(result.lock().unwrap().take(), Some(None), "{next}");
@@ -1474,6 +2256,86 @@ mod tests {
             }
         }
         assert_eq!(faces.len(), 4, "each style has its own bundled face");
+    }
+
+    /// A code font query the test never answers ends once the stand-in's
+    /// directory goes, as it does when a test fails before answering: it once
+    /// polled for ever, and runs of failed tests left such processes behind.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unanswered_code_font_query_ends_with_its_test() {
+        let fake = StandIn::new();
+        let mut query = fake.program()()
+            .arg("monospace")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while fake.code_font_queries() == 0 {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        fake.abandon();
+        let started = std::time::Instant::now();
+        loop {
+            if query.try_wait().unwrap().is_some() {
+                break;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                query.kill().unwrap();
+                panic!("the query kept polling after its directory went");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The interface's `.SystemUIFont` resolves, through the toolkit's
+    /// `resolve_font`, to a face of its own at every weight the interface draws,
+    /// each wider than the last, and to real italics.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_interface_font_draws_each_weight_in_its_own_face() {
+        use gpui_kit::{FontStyle, FontWeight, PlatformTextSystem as _};
+        use gpui_wgpu::CosmicTextSystem;
+
+        // The family the toolkit's Linux platform draws `.SystemUIFont` in.
+        const SYSTEM_UI_FAMILY: &str = "IBM Plex Sans";
+        let ui = gpui_kit::font(".SystemUIFont");
+        // What a session without the installed family resolved before the
+        // bundle: `.SystemUIFont` names a family that does not exist.
+        let bare = CosmicTextSystem::new_without_system_fonts(SYSTEM_UI_FAMILY);
+        assert!(bare.font_id(&ui).is_err());
+
+        let platform =
+            std::sync::Arc::new(CosmicTextSystem::new_without_system_fonts(SYSTEM_UI_FAMILY));
+        platform.add_fonts(borrowed(&INTERFACE_FONT_FACES)).unwrap();
+        let text = gpui_kit::TextSystem::new(platform.clone());
+        let face = |weight, style| {
+            text.resolve_font(&gpui_kit::Font {
+                weight,
+                style,
+                ..ui.clone()
+            })
+        };
+        let advance = |face| {
+            let glyph = platform.glyph_for_char(face, 'm').unwrap();
+            platform.advance(face, glyph).unwrap().width
+        };
+        let upright = [
+            FontWeight::NORMAL,
+            FontWeight::MEDIUM,
+            FontWeight::SEMIBOLD,
+            FontWeight::BOLD,
+        ]
+        .map(|weight| face(weight, FontStyle::Normal));
+        for pair in upright.windows(2) {
+            assert_ne!(pair[0], pair[1]);
+            assert!(advance(pair[0]) < advance(pair[1]), "{pair:?}");
+        }
+        let italic =
+            [FontWeight::NORMAL, FontWeight::BOLD].map(|weight| face(weight, FontStyle::Italic));
+        let faces: std::collections::HashSet<_> = upright.iter().chain(&italic).collect();
+        assert_eq!(faces.len(), INTERFACE_FONT_FACES.len());
     }
 
     /// Code text in the bundled family skips the features that keep a desktop
@@ -1695,6 +2557,7 @@ mod tests {
             antialiasing: Some("rgba".into()),
             text_scale: Some(1.25),
             fontconfig: Some("True|5".into()),
+            ..Observed::default()
         };
         assert_eq!(
             desktop.resolve(true),
@@ -1702,6 +2565,7 @@ mod tests {
                 rendering: Subpixel,
                 text_scale: 1.25,
                 code_font: None,
+                display: Default::default(),
             }
         );
         let kde = Observed {
@@ -1724,8 +2588,8 @@ mod tests {
         Observed {
             font_rendering: font_rendering.map(str::to_owned),
             antialiasing: antialiasing.map(str::to_owned),
-            text_scale: None,
             fontconfig: fontconfig.map(str::to_owned),
+            ..Observed::default()
         }
         .resolve(false)
         .rendering
@@ -1842,5 +2706,297 @@ mod tests {
         };
         assert_eq!(broken.resolve(true).text_scale, 1.0);
         assert_eq!(Observed::default().resolve(true).text_scale, 1.0);
+    }
+
+    /// Any one motion source reduces motion and either contrast source asks
+    /// for more contrast; unknown values and absent keys ask for nothing.
+    #[test]
+    fn display_preferences_take_any_source_that_asks_and_nothing_unknown() {
+        use crate::native_accessibility::DisplayPreferences;
+        let none = DisplayPreferences::default();
+        let motion = DisplayPreferences {
+            reduce_motion: true,
+            ..none
+        };
+        let contrast = DisplayPreferences {
+            increase_contrast: true,
+            ..none
+        };
+        let both = DisplayPreferences {
+            reduce_motion: true,
+            increase_contrast: true,
+            reduce_transparency: false,
+        };
+        let display = |observed: Observed| {
+            let resolved = observed.resolve(true).display;
+            assert_eq!(resolved, observed.display(), "the snapshot carries it");
+            resolved
+        };
+        let reduced = |value: u32| Observed {
+            reduced_motion: Some(value),
+            ..Observed::default()
+        };
+        let gnome = |value: &str| Observed {
+            gnome_reduced_motion: Some(value.into()),
+            ..Observed::default()
+        };
+        let animations = |value: bool| Observed {
+            enable_animations: Some(value),
+            ..Observed::default()
+        };
+        let appearance_contrast = |value: u32| Observed {
+            contrast: Some(value),
+            ..Observed::default()
+        };
+        let high_contrast = |value: bool| Observed {
+            high_contrast: Some(value),
+            ..Observed::default()
+        };
+
+        // Every key absent, as on a desktop with no portal.
+        assert_eq!(display(Observed::default()), none);
+        // Each source alone, on and off.
+        assert_eq!(display(reduced(1)), motion);
+        assert_eq!(display(reduced(0)), none);
+        assert_eq!(display(gnome("reduce")), motion);
+        assert_eq!(display(gnome("no-preference")), none);
+        assert_eq!(display(animations(false)), motion);
+        assert_eq!(display(animations(true)), none);
+        assert_eq!(display(appearance_contrast(1)), contrast);
+        assert_eq!(display(appearance_contrast(0)), none);
+        assert_eq!(display(high_contrast(true)), contrast);
+        assert_eq!(display(high_contrast(false)), none);
+        // Unknown values are no preference.
+        for value in [2, 99, u32::MAX] {
+            assert_eq!(display(reduced(value)), none, "reduced-motion {value}");
+            assert_eq!(
+                display(appearance_contrast(value)),
+                none,
+                "contrast {value}"
+            );
+        }
+        for value in ["", "Reduce", "reduced", "1"] {
+            assert_eq!(display(gnome(value)), none, "{value:?}");
+        }
+        // One source asking is enough, whatever the others say.
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(0),
+                gnome_reduced_motion: Some("reduce".into()),
+                enable_animations: Some(true),
+                ..Observed::default()
+            }),
+            motion
+        );
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(1),
+                gnome_reduced_motion: Some("no-preference".into()),
+                enable_animations: Some(true),
+                ..Observed::default()
+            }),
+            motion
+        );
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(2),
+                gnome_reduced_motion: Some("no-preference".into()),
+                enable_animations: Some(false),
+                ..Observed::default()
+            }),
+            motion
+        );
+        assert_eq!(
+            display(Observed {
+                contrast: Some(0),
+                high_contrast: Some(true),
+                ..Observed::default()
+            }),
+            contrast
+        );
+        assert_eq!(
+            display(Observed {
+                contrast: Some(1),
+                high_contrast: Some(false),
+                ..Observed::default()
+            }),
+            contrast
+        );
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(1),
+                contrast: Some(1),
+                gnome_reduced_motion: Some("reduce".into()),
+                high_contrast: Some(true),
+                enable_animations: Some(false),
+                ..Observed::default()
+            }),
+            both
+        );
+        // GNOME 49 has no `reduced-motion` key, and xdg-desktop-portal-gtk
+        // publishes no appearance `reduced-motion`: `enable-animations` alone
+        // decides.
+        let gnome_49 = |enable_animations| Observed {
+            font_rendering: Some("automatic".into()),
+            contrast: Some(0),
+            high_contrast: Some(false),
+            enable_animations: Some(enable_animations),
+            ..Observed::default()
+        };
+        assert_eq!(display(gnome_49(false)), motion);
+        assert_eq!(display(gnome_49(true)), none);
+    }
+
+    /// A `git fast-import` stream of one commit adding `animation.gif`: two
+    /// 4 × 4 frames of 10 s each.
+    #[cfg(target_os = "linux")]
+    fn gif_commit() -> Vec<u8> {
+        use image::{Delay, Frame, Rgba, RgbaImage, codecs::gif::GifEncoder};
+        let mut gif = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut gif);
+            for color in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+                encoder
+                    .encode_frame(Frame::from_parts(
+                        RgbaImage::from_pixel(4, 4, Rgba(color)),
+                        0,
+                        0,
+                        Delay::from_numer_denom_ms(10_000, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let mut input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 9\nanimation\nM 100644 inline animation.gif\ndata {}\n",
+            gif.len()
+        )
+        .into_bytes();
+        input.extend_from_slice(&gif);
+        input.extend_from_slice(b"\ndone\n");
+        input
+    }
+
+    /// The snapshot of a desktop whose GNOME `enable-animations` is off, or on.
+    #[cfg(target_os = "linux")]
+    fn reducing_motion(reduce: bool) -> DesktopText {
+        Observed {
+            enable_animations: Some(!reduce),
+            ..Observed::default()
+        }
+        .resolve(true)
+    }
+
+    /// The desktop's reduced motion, applied as the observer applies a
+    /// snapshot, pauses a GIF playing in image comparison, and a later
+    /// snapshot that turns it off leaves the GIF paused until the person
+    /// presses Play GIF. The GIF's controls carry no selector of their own:
+    /// Play GIF is the first control of the row just above their note, and
+    /// whether the GIF plays is read from the fill painted there, which the
+    /// toggle draws at rest only while it is selected, that is playing.
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    async fn the_desktops_reduced_motion_pauses_a_playing_gif_until_play(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::views::tests::{draw, history_window_from, settle};
+        use gpui_kit::{Modifiers, Pixels, Point, VisualTestContext, point, px};
+        let (_fixture, app, cx) = history_window_from(cx, gif_commit()).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        // Play GIF's middle: 14 px into its 28 px row, which ends 4 px above
+        // the note, and 6 px in from the left edge they share.
+        let note = cx
+            .debug_bounds("gif-playback-note")
+            .expect("the GIF's controls");
+        let toggle = point(note.left() + px(6.), note.top() - px(18.));
+        // Whether a control-sized quad paints a fill under `at`.
+        let filled = |at: Point<Pixels>, cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let (x, y) = (at.x.as_f32() * scale, at.y.as_f32() * scale);
+                window.painted_quads().into_iter().any(|quad| {
+                    let bounds = quad.bounds;
+                    !quad.background.is_transparent()
+                        && bounds.size.height.as_f32() < 40. * scale
+                        && (bounds.left().as_f32()..=bounds.right().as_f32()).contains(&x)
+                        && (bounds.top().as_f32()..=bounds.bottom().as_f32()).contains(&y)
+                })
+            })
+        };
+        // The pointer rests on the image, so the toggle draws its state's
+        // fill rather than its hover's.
+        let rest = |cx: &mut VisualTestContext| {
+            let image = cx.debug_bounds("image-canvas-area").expect("the image");
+            cx.simulate_mouse_move(image.center(), None, Modifiers::default());
+            draw(cx);
+        };
+        let press = |cx: &mut VisualTestContext| {
+            cx.simulate_click(toggle, Modifiers::default());
+            rest(cx);
+        };
+        let desktop = |reduce: bool, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| apply(reducing_motion(reduce), cx));
+            draw(cx);
+        };
+
+        cx.simulate_mouse_move(toggle, None, Modifiers::default());
+        draw(cx);
+        assert!(
+            filled(toggle, cx),
+            "hovered, Play GIF at {toggle:?} draws a fill"
+        );
+        rest(cx);
+        assert!(!filled(toggle, cx), "the GIF is paused at first");
+        press(cx);
+        assert!(filled(toggle, cx), "Play GIF plays");
+
+        desktop(true, cx);
+        assert!(cx.read(|cx| cx.reduce_motion()));
+        assert!(
+            !filled(toggle, cx),
+            "while reduced motion is on, the GIF is shown paused"
+        );
+        desktop(false, cx);
+        assert!(!cx.read(|cx| cx.reduce_motion()));
+        assert!(
+            !filled(toggle, cx),
+            "turning reduced motion off resumes nothing"
+        );
+
+        press(cx);
+        assert!(filled(toggle, cx), "until the person presses Play GIF");
+    }
+
+    /// Until a snapshot has been applied, a window's activation leaves the
+    /// toolkit's motion policy as it is, so a reduced motion set by hand
+    /// stays; once the desktop has answered, activation applies its answer
+    /// again.
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    async fn activation_applies_the_desktops_answer_only_once_there_is_one(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::VisualTestContext;
+        let (_fixture, _app, cx) = crate::views::tests::history_window(cx).await;
+        let reactivate = |cx: &mut VisualTestContext| {
+            cx.deactivate_window();
+            cx.update(|window, _| window.activate_window());
+            cx.run_until_parked();
+        };
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        reactivate(cx);
+        assert!(
+            cx.read(|cx| cx.reduce_motion()),
+            "no snapshot yet: activation keeps it"
+        );
+
+        cx.update(|_, cx| apply(reducing_motion(false), cx));
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        reactivate(cx);
+        assert!(!cx.read(|cx| cx.reduce_motion()), "the desktop's answer");
     }
 }

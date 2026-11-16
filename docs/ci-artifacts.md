@@ -1,7 +1,19 @@
 # CI package downloads
 
-Quality builds one optimized executable per declared native target:
-`aarch64-apple-darwin` on standard ARM64 macOS 26 and `x86_64-unknown-linux-gnu` on Ubuntu 24.04.
+Quality builds one optimized executable per declared native target, each in its
+own leg of the `rust-release` matrix and on a runner of its own architecture:
+
+| Job | Runner | Target | Package label |
+| --- | --- | --- | --- |
+| `Rust release · macos-26` | standard ARM64 macOS 26 | `aarch64-apple-darwin` | `macos-arm64` |
+| `Rust release · ubuntu-24.04` | Ubuntu 24.04, x86-64 | `x86_64-unknown-linux-gnu` | `linux-x86_64` |
+| `Rust release · ubuntu-24.04-arm` | Ubuntu 24.04, ARM64 | `aarch64-unknown-linux-gnu` | `linux-aarch64` |
+
+The two Linux legs run the same steps: the pinned toolchain and their own cache
+entry (the key takes the compiler's host triple and the installed packages with
+their architecture), the build, strict notice collection, the `--distribution`
+package, the local checks and the upload with its verification. The three legs
+may run at once.
 The same job passes `target/<target>/release/gitturtle`, its SHA-256, source commit
 and version to the platform packager with `--no-build`. No second release build
 or implicit target-path lookup is used. CI selects and verifies installed Xcode
@@ -19,7 +31,7 @@ deployment target, artwork and package acceptance requirements are unchanged.
 Package creation, local archive checks, upload, download and installed-package
 checks precede release cache cleanup. Cache accounting covers the entire target
 root, including the explicit target subdirectory. The stable Quality gate requires
-both release matrix jobs. Product, package, native asset, workflow and
+all three release matrix jobs. Product, package, native asset, workflow and
 `scripts/ci/packages.py` changes run those jobs; documentation-only PR routing remains
 inexpensive. Every main push and manual run requires full coverage, including
 documentation-, website- and tooling-only changes, to verify packages and seed
@@ -28,33 +40,78 @@ the trusted caches.
 ## License boundary and availability
 
 Every run executes target-specific license collection with `--require-complete`.
-Only exit 0 with a matching target/lock inventory and no missing notices permits a
-public binary upload. The current documented C0 gaps are `mac-0.1.1` and
-`ufbx-0.11.3` on Linux; macOS additionally has `block-0.1.6`,
-`objc_exception-0.1.2`, `leak-0.1.2` and `leaky-cow-0.1.1`.
+Only exit 0 with a matching target/lock inventory and no missing notices lets a
+job take the complete-notice path. Linux has no documented C0 gap since the
+[license review](licenses/linux-notice-review.md) of November 15, 2026, so its
+jobs, x86-64 and AArch64, take that path and any missing notice there fails them.
+The documented C0 gaps are on macOS: `block-0.1.6`, `objc_exception-0.1.2`,
+`leak-0.1.2` and `leaky-cow-0.1.1`.
 
-While these known gaps remain, exit 2 is checked against that exact inventory,
+Complete notices alone do not upload a package: its platform must also be
+listed in `HOSTED_UPLOAD_PLATFORMS` in `scripts/ci/packages.py`. The project
+owner decided on November 15, 2026 that the hosted upload is on for the Linux
+archives, so the constant lists Linux and nothing else. A Linux job with
+complete notices collects strictly, packages with `--distribution` and verifies
+the archive, the executable and the installed package inside the job. It then
+writes `eligible=true`, records `upload_eligible: true` and fills its `publish/`
+directory, and the workflow uploads that directory as the artifact described
+[below](#find-and-verify-a-download), downloads it again and verifies it. Every
+main push, manual run and product pull request does this. The artifact is a CI
+build, not a release: [GitHub Releases](releases.md) is the release channel.
+
+macOS is not listed, so a macOS archive never leaves its job, whatever its
+notices. With complete notices its job would still collect strictly, package
+with `--distribution` and verify; it would then write `eligible=false`, record
+`upload_eligible: false` and make no `publish/` directory, so the workflow's
+upload, download and verify steps are skipped, and the Actions summary would say
+**Download unavailable: the macOS upload is held until macOS distribution is
+decided; C3 hosted transfer remains open**. Listing macOS would publish an
+ad-hoc signed, not notarized archive as the same seven-day artifact from the
+same events. That entry waits for the macOS distribution decision, which is made
+with signing, and is a reviewed change of its own. Nothing else turns an upload
+on: the helper reads no flag, environment variable or workflow input for it, and
+the verifier refuses a prepared record that is not upload-eligible.
+
+The upload set covers this workflow's CI package only. The explicitly dispatched
+[release workflow](releases.md) does not read it: its Linux build required
+complete notices, which it now has. A dispatch on `main` with an existing tag
+and a successful Quality run of that commit uploads its three-day build
+artifacts, for `linux` one package for each Linux target (x86-64 and AArch64)
+and their assembly; only its GitHub Release also waits for `publish` and the
+`gitturtle-release` environment, which is not set up yet.
+
+While the macOS known gaps remain, exit 2 is checked against that exact inventory,
 a development package is created and verified locally, and the Actions summary
-says **Download unavailable; C0 incomplete and C3 open**. The archive is withheld;
+says **Download unavailable; C0 incomplete and C3 open**, and that the macOS
+upload is separately held. The archive is withheld;
 it is never included in the diagnostics artifact. A newly missing notice, malformed
 inventory or any other collector failure fails the package job. This allowance is
 not license clearance and does not mark hosted transfer or the initiative complete.
 When authoritative notices are supplied, the same code takes the strict
-complete-notice path automatically.
+complete-notice path automatically; the macOS upload stays held as above.
 
 ## Find and verify a download
 
-After C0 is cleared, successful eligible jobs upload a seven-day Actions artifact
-named with version, source SHA, platform, release profile, event trust label, run
-ID and attempt. It contains exactly:
+Each successful Linux release job uploads a seven-day Actions artifact named
+with version, source SHA, package label, release profile, event trust label, run
+ID and attempt, so a run has two:
+`GitTurtle-<version>-<source SHA, 12 characters>-linux-x86_64-release-ci-build-<run ID>-<attempt>`
+and the same name with `linux-aarch64`. The trust label is `untrusted-pr` on a
+pull request. Each job's step summary names its artifact, and the run's summary
+page lists both under Artifacts for anyone who can read the repository's Actions
+runs. No macOS job uploads a package. The upload comes before the downloaded copy is
+verified, so a job that fails or is cancelled after it can leave its artifact for the
+seven days: only a green job's artifact has passed the download check. Each artifact
+contains exactly:
 
-- The Linux `.tar.gz` or macOS `.zip` package.
+- The Linux `.tar.gz` package.
 - The archive's `.sha256` checksum and `.manifest.json` provenance sidecar.
 - `ci-provenance.json`, tying the package to this run and its local validation.
 
 The Linux archive includes the per-user installer, complete notices, executable
-and format-2 package identity. macOS includes `GitTurtle.app` and a detached
-`build-info.json` outside the app's signature seal. Linux binaries are unsigned;
+and format-2 package identity. The macOS `.zip`, which stays in its job, holds
+`GitTurtle.app` and a detached `build-info.json` outside the app's signature
+seal. Linux binaries are unsigned;
 macOS CI apps are ad-hoc signed and **not notarized**. These are early-development
 builds, not published releases or a promise of production support.
 
@@ -64,6 +121,25 @@ fail. The downloaded archive and sidecar digests must also match the local
 pre-upload record. The verifier checks the detached checksum, inner/outer package
 identity, source/version/target/profile, original executable digest, Cargo.lock,
 all inventoried notice bytes and the actual extracted executable's `--build-info`.
+
+The download is attempted up to three times, because the run's artifact listing
+can lag the upload. The download action finds an ID by listing the run's
+artifacts. In the x86-64 job of Quality run 43747610529 (November 15, 2026)
+that listing came back 0.45 s after the upload was finalized, with seven
+artifacts and without the new ID, and the step failed with
+`None of the provided artifact IDs were found`, although the package had been
+built, verified and uploaded. The first attempt therefore runs at once, a
+second about 15 s after a failure and a third about 45 s after that. Each
+attempt is the same pinned action with the same single ID, the same directory
+and `digest-mismatch: error`; none downloads by name or pattern, so no other
+artifact can take the uploaded one's place. A
+later attempt runs only when every earlier one failed, and the download
+directory is removed before it, so nothing a failed attempt left reaches the
+next attempt or the verifier. The first two attempts may fail without failing
+the job, and their failures stay in its log; the third fails it. No job passes
+without the download: the verification runs in every upload-eligible job in
+which no step has failed, and it refuses an absent, empty or incomplete
+directory itself.
 
 Extraction permits only bounded regular files and directories in a new private
 destination; traversal, symlinks, hard links, special/sparse files, duplicate paths,
@@ -77,9 +153,10 @@ checks app identity, resources, plist and the extracted ad-hoc signature.
 
 Successful downloaded-package verification is recorded in
 `package-transfer.json` in the separate three-day diagnostics artifact. The
-prepared identity and C0 state are in `package-prepared.json`; commands also use
-existing sanitized CI measurement logs. An upload, download, checksum or package
-check failure fails the required release lane. A no-display check is not a native
+prepared identity, C0 state and `upload_eligible` are in `package-prepared.json`; commands also use
+existing sanitized CI measurement logs. An upload, checksum or package check
+failure, or a download that fails on all three attempts, fails the required
+release lane. A no-display check is not a native
 GUI test: actual installation and desktop interaction on each supported platform
 remain separate C3 evidence.
 
@@ -98,17 +175,26 @@ contract; the CI CLI always uses the standard unsigned/ad-hoc validator and exec
 the native identity probe. Neither option turns arbitrary CI outputs into trusted
 release inputs.
 
-Action pins were verified against the official repositories on September 15, 2026:
-[upload-artifact v7.0.1](https://github.com/actions/upload-artifact/releases/tag/v7.0.1)
-and [download-artifact v8.0.1](https://github.com/actions/download-artifact/releases/tag/v8.0.1).
-The download is bound to the current run's returned artifact ID, and its
-`digest-mismatch: error` input is explicit.
+Action pins were verified against the official repositories on November 15, 2026:
+[upload-artifact v7.0.2](https://github.com/actions/upload-artifact/releases/tag/v7.0.2)
+(`cf430e030ddbb5b0abf93d22962f4752f3646cd9`) and
+[download-artifact v8.0.2](https://github.com/actions/download-artifact/releases/tag/v8.0.2)
+(`9000827ccba6bdab643e8b6fd33ac0654aef8333`); each tag resolves to the commit
+the workflows pin.
+Every download attempt is bound to the current run's returned artifact ID, and
+its `digest-mismatch: error` input is explicit.
 
 ## Evidence still required
 
 Source tests and workflow lint establish the helper's refusal and routing behavior.
 They do not establish a successful Actions upload/download, a complete license
-inventory, or native desktop behavior. Before closing C3, record the actual run and
+inventory, or native desktop behavior. The Linux upload and the AArch64 Linux
+leg are in source since November 15, 2026; no hosted run with either is recorded
+here. The download's retries are in source since the same day; no hosted run
+with them is recorded here either, and the run named
+[above](#find-and-verify-a-download) is the failure that led to them, not
+evidence for them. The hosted Linux runners have no display, so neither Linux
+leg is a desktop check of its build. Before closing C3, record the actual run and
 artifact IDs, archive hashes, source commit, OS/architecture, signing state, transfer
 report and native installation/session evidence. macOS native verification is
 currently assigned separately to the project owner.

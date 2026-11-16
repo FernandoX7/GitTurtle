@@ -85,11 +85,72 @@ fn check_cancelled() -> Result<()> {
     Ok(())
 }
 
-fn review_read(root: &Path, args: &[&str], input: Option<Vec<u8>>) -> Result<Vec<u8>> {
+/// The most a series review reads and keeps of all its commits' patches and
+/// messages.
+const SERIES_BUDGET: usize = 32 * 1024 * 1024;
+
+/// A series the bounded review refuses for its size, named as such rather
+/// than as an unavailable series or a write whose outcome is uncertain:
+/// Git's own tools compare it.
+#[derive(Debug)]
+struct TooLarge(String);
+
+impl std::fmt::Display for TooLarge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "This series is too large to review here: {}. Compare it with `git range-diff`.",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for TooLarge {}
+
+impl TooLarge {
+    /// A series whose patches and messages together pass [`SERIES_BUDGET`].
+    fn over_budget() -> Self {
+        Self(format!(
+            "its patches and messages pass the review's {} MiB series limit",
+            SERIES_BUDGET / (1024 * 1024)
+        ))
+    }
+}
+
+/// `error` of reading one side of a series, under `context` unless the
+/// series is too large to review, which says so alone: neither a side's
+/// availability nor the publication check's Fetch advice applies to it.
+fn side_error(error: anyhow::Error, context: &'static str) -> anyhow::Error {
+    if error.is::<TooLarge>() {
+        error
+    } else {
+        error.context(context)
+    }
+}
+
+/// One passive read of a series review, its output bounded as a write's
+/// (`WRITE_OUTPUT_LIMIT`): past that, the read is the series' patch too
+/// large to review here, never a write that may have completed, as the
+/// shared helper words its overflow.
+fn review_read(target: GitTarget<'_>, args: &[&str], input: Option<Vec<u8>>) -> Result<Vec<u8>> {
     check_cancelled()?;
-    let mut command = git_command(root);
+    let mut command = git_command(target);
     command.args(args);
-    Ok(checked_write_output(command, input, GIT_TIMEOUT)?.stdout)
+    match checked_write_output(command, input, GIT_TIMEOUT) {
+        Ok(output) => Ok(output.stdout),
+        Err(error)
+            if error
+                .to_string()
+                .starts_with("Git output exceeded its limit") =>
+        {
+            Err(TooLarge(format!(
+                "its patches pass the review's {} MiB read limit",
+                WRITE_OUTPUT_LIMIT / (1024 * 1024)
+            ))
+            .into())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 impl GitRepository {
@@ -109,7 +170,7 @@ impl GitRepository {
             "Finish or abort the rebase before reviewing its rewritten series"
         );
         let rewritten_head = text(trim_line(&review_read(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -119,10 +180,15 @@ impl GitRepository {
             None,
         )?));
         validate_oid(&rewritten_head)?;
-        let original = self.review_series(base, original_head).context("Original series is unavailable or outside the bounded linear review; original objects may have been removed")?;
-        let rewritten = self.review_series(base, &rewritten_head).context(
-            "Rewritten series is unavailable or no longer descends linearly from the captured base",
-        )?;
+        let original = self.review_series(base, original_head).map_err(|error| side_error(error, "Original series is unavailable or outside the bounded linear review; original objects may have been removed"))?;
+        let rewritten = self
+            .review_series(base, &rewritten_head)
+            .map_err(|error| {
+                side_error(
+                    error,
+                    "Rewritten series is unavailable or no longer descends linearly from the captured base",
+                )
+            })?;
         let rows = correspond(&original, &rewritten);
         Ok(RewriteReview {
             root: self.path.clone(),
@@ -141,7 +207,7 @@ impl GitRepository {
         self.recovery_commit(base)?;
         self.recovery_commit(head)?;
         let output = review_read(
-            &self.path,
+            self.target(),
             &[
                 "rev-list",
                 "--reverse",
@@ -172,7 +238,7 @@ impl GitRepository {
                 "Only a linear series directly after the captured base can be matched"
             );
             let patch = review_read(
-                &self.path,
+                self.target(),
                 &[
                     "diff-tree",
                     "--no-ext-diff",
@@ -190,10 +256,9 @@ impl GitRepository {
             bytes = bytes
                 .saturating_add(patch.len())
                 .saturating_add(commit.message.len());
-            ensure!(
-                bytes <= 32 * 1024 * 1024,
-                "Series patches exceed the 32 MiB review budget"
-            );
+            if bytes > SERIES_BUDGET {
+                return Err(TooLarge::over_budget().into());
+            }
             // Strip only the object-name header when comparing exact diff bytes.
             // Hunk coordinates, whitespace, modes, binary bodies and paths remain.
             let mut digest = Sha256::new();
@@ -206,7 +271,7 @@ impl GitRepository {
             let patch_id = if patch.is_empty() {
                 None
             } else {
-                let id = review_read(&self.path, &["patch-id", "--stable"], Some(patch))?;
+                let id = review_read(self.target(), &["patch-id", "--stable"], Some(patch))?;
                 let text = std::str::from_utf8(&id)?;
                 let mut lines = text.lines();
                 let line = lines.next().context("Patch fingerprint unavailable")?;
@@ -222,7 +287,7 @@ impl GitRepository {
                 Some(oid.to_owned())
             };
             let author = review_read(
-                &self.path,
+                self.target(),
                 &["show", "--no-patch", "--format=%an%x00%ae", oid, "--"],
                 None,
             )?;
@@ -243,7 +308,7 @@ impl GitRepository {
 
     fn single_push_url(&self, remote: &str) -> Result<String> {
         self.validate_remote(remote)?;
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command
             .env("GIT_OPTIONAL_LOCKS", "0")
             .args(["remote", "get-url", "--push", "--all", "--", remote]);
@@ -268,7 +333,7 @@ impl GitRepository {
             "Finish the current Git operation before publication"
         );
         let fresh = text(trim_line(&review_read(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -319,8 +384,10 @@ impl GitRepository {
             });
         }
         if plan.expected_remote_oid != review.original_head {
+            // A new series too large to review says so alone: fetching
+            // cannot make it reviewable here.
             let changed = self.rewrite_review(&review.base, &plan.expected_remote_oid, &review.branch)
-                .context("The remote moved. Its new series cannot be reviewed from available local objects. Explicitly Fetch this named remote, then check the destination again; merge or unrelated history may require Git's tools")?;
+                .map_err(|error| side_error(error, "The remote moved. Its new series cannot be reviewed from available local objects. Explicitly Fetch this named remote, then check the destination again; merge or unrelated history may require Git's tools"))?;
             self.check_review_tip(&review.root, &review.branch, &review.rewritten_head)?;
             return Ok(PublicationInspection::RemoteChanged(changed));
         }
@@ -337,7 +404,7 @@ impl GitRepository {
         self.validate_branch(remote_branch)?;
         let remote_url = self.single_push_url(remote)?;
         let remote_ref = format!("refs/heads/{remote_branch}");
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         configure_network(&mut command, self)?;
         command.args(["ls-remote", "--refs", "--", &remote_url, &remote_ref]);
         let output = checked_write_output(command, None, NETWORK_TIMEOUT)?.stdout;
@@ -383,7 +450,7 @@ impl GitRepository {
             self.single_push_url(&plan.remote)? == plan.remote_url,
             "Remote destination changed after review. Inspect it again before publishing"
         );
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         configure_network(&mut command, self)?;
         // Pin the reviewed destination after checking the named remote. Using
         // the name here would let a concurrent config edit retarget the write.
@@ -418,6 +485,7 @@ impl GitRepository {
                 text(&output.stderr)
             ),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }
@@ -575,5 +643,29 @@ mod tests {
             assert_eq!(rows.len(), 4);
             assert!(rows.iter().all(|row| row.ambiguous && (row.original.is_none() || row.rewritten.is_none())));
         }
+    }
+
+    /// A series past the 32 MiB budget reads as too large to review, alone:
+    /// under a side's context it read as an unavailable series whose
+    /// objects may have been removed.
+    #[test]
+    fn a_series_past_its_budget_is_too_large_without_a_sides_context() {
+        let error = side_error(
+            TooLarge::over_budget().into(),
+            "Original series is unavailable",
+        );
+        assert_eq!(
+            format!("{error:#}"),
+            "This series is too large to review here: its patches and messages pass the \
+             review's 32 MiB series limit. Compare it with `git range-diff`."
+        );
+        let other = side_error(
+            anyhow::anyhow!("Git failed"),
+            "Original series is unavailable",
+        );
+        assert_eq!(
+            format!("{other:#}"),
+            "Original series is unavailable: Git failed"
+        );
     }
 }

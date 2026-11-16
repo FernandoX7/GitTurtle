@@ -58,6 +58,7 @@ impl Fixture {
         let root = directory.path().join("work");
         std::fs::create_dir(&root).unwrap();
         git(&root, &["init", "--initial-branch=main"]);
+        crate::views::tests::fixture_identity(&root);
         std::fs::write(root.join("tracked.txt"), "original\n").unwrap();
         std::fs::write(root.join("other.txt"), "other\n").unwrap();
         git(&root, &["add", "."]);
@@ -86,9 +87,8 @@ fn app_window(
     repo: GitRepository,
 ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
     cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
     cx.update(|cx| {
-        gpui_kit::init(cx);
-        image_lifetime::init(cx);
         native_accessibility::bind_keys(cx);
     });
     let captured = Rc::new(RefCell::new(None));
@@ -207,6 +207,19 @@ async fn discard_reviews_exact_entry_and_restores_tracked_file_from_head(cx: &mu
         app.update(cx, |app, cx| app.open_discard(entry, window, cx));
     });
     prepared(&app, cx).await;
+    // The review is named by its styled title, not the toolkit's fallback
+    // "Alert dialog" (`native_accessibility::dialog_tests`).
+    #[cfg(debug_assertions)]
+    {
+        let nodes = cx.update(|window, cx| gpui_kit::base::focused_modal_nodes(window, cx));
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| (node.role(), node.label()))
+                .collect::<Vec<_>>(),
+            [(Role::AlertDialog, Some("Discard file changes?"))]
+        );
+    }
     // Tab backwards from the dialog container reaches its final action. The
     // actual focused button still accepts Enter after the user chooses it.
     cx.simulate_keystrokes("shift-tab enter");
@@ -535,4 +548,33 @@ async fn working_path_tooltip_wraps_and_yields_to_the_discard_menu(cx: &mut Test
     );
     cx.simulate_keystrokes("escape");
     assert_eq!(std::fs::read(&absolute).unwrap(), b"keep scratch\n");
+}
+
+/// The focus sweep (`focus_ring::sweep`) over the discard review, at the
+/// default and the largest interface size.
+#[gpui::test]
+async fn the_discard_review_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    std::fs::write(fixture.root().join("tracked.txt"), "edited\n").unwrap();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    let entry = fixture.entry("tracked.txt");
+    let mut failures = Vec::new();
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_discard(entry.clone(), window, cx));
+        });
+        prepared(&app, cx).await;
+        let details = cx.debug_bounds("discard-details").unwrap();
+        let rings = sweep::walk(&app, cx, "the discard review", interface, &mut failures);
+        // The details scroll by key, so Tab stops there and rings their edge.
+        assert!(
+            sweep::rings_edge(&rings, details),
+            "{interface} pt: Tab rings the details {details:?}: {rings:?}"
+        );
+        sweep::close_dialogs(cx, "the discard review", interface, &mut failures);
+    }
+    sweep::assert_whole(failures);
 }

@@ -99,8 +99,8 @@ inexpensive checks for docs/site/tooling-only changes and full platform coverage
 for product or uncertain inputs. The strict `Quality gate` aggregate is the sole
 required status check; its transitional per-platform mirrors were retired after
 the documented protection migration. Formatting reports independently; each platform runs
-workspace tests (including doctests) and strict all-target Clippy in a shared debug
-job, alongside a separate optimized build/package job. A cache hit never skips
+workspace tests (including doctests) in a debug test job, strict all-target Clippy in
+a job beside it, and a separate optimized build/package job. A cache hit never skips
 validation. The [job graph and measurement boundary](docs/ci.md#parallel-validation-and-coverage)
 describe the retained coverage and pending hosted timing evidence. Do not change
 repository rules or bypass a failed requirement merely to obtain a green PR.

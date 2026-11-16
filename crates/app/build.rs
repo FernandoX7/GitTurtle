@@ -35,9 +35,13 @@ fn main() {
         "../../Cargo.toml",
         "../../Cargo.lock",
         "../../assets",
+        "../../vendor/accesskit_atspi_common",
+        "../../vendor/accesskit_unix",
         "../../vendor/gpui-base",
         "../../vendor/gpui-component",
+        "../../vendor/gpui-pre-linux",
         "../../vendor/gpui-pre-macos",
+        "../../vendor/gpui-pre-macros",
         "../../vendor/mermaid-rs-renderer",
     ] {
         println!("cargo:rerun-if-changed={path}");

@@ -90,20 +90,27 @@ pub use checkbox::{
     Checkbox, CheckboxIndicator, CheckboxIndicatorStyles, CheckboxState, CheckboxStyles,
 };
 pub use collapsible::Collapsible;
-pub use color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState, ColorSwatch, HslaSliders};
+pub use color_picker::{
+    ColorPicker, ColorPickerEvent, ColorPickerState, ColorSwatch, HslaSliders, color_channels,
+    color_hex,
+};
 pub use combobox::Combobox;
 pub use component_traits::FocusableExt;
 pub use component_traits::{Disableable, Selectable};
 pub use date_picker::DatePicker;
 pub use dialog::{
     Dialog, DialogBackdrop, DialogChangeReason, DialogClose, DialogDescription, DialogHandle,
-    DialogPopup, DialogTitle, DialogTrigger,
+    DialogKind, DialogPopup, DialogTitle, DialogTrigger, dialog_closing, dialog_opened,
+    enter_press_began_on, enter_press_is_repeat, note_key_up,
 };
 pub use element_ext::ElementExt;
 pub use event::{InteractiveElementExt, OngoingScrollExt};
 pub use focus_trap::FocusTrapElement;
 #[doc(hidden)]
 pub use focus_trap::active_focus_trap;
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use focus_trap::{focused_modal_nodes, focused_modal_titles};
 pub use geometry::*;
 pub use global_state::{DeferredPopover, GlobalState};
 pub use history::History;
@@ -133,8 +140,11 @@ pub use number_input::{
 pub use otp_input::{OtpEvent, OtpInput, OtpState};
 pub use pagination::{Pagination, PaginationItem, PaginationState};
 pub use popover::{Popover, PopoverState};
-pub use popup::{POPUP_PRIORITY, Popup};
-pub use positioner::{Align, Positioner, ResolvedPosition};
+pub use popup::{POPUP_PRIORITY, Popup, popup_bottom_inset, set_popup_bottom_inset};
+pub use positioner::{
+    Align, Positioner, ResolvedPosition, device_pixel_at_or_after, device_pixel_at_or_before,
+    point_device_row, point_row_clear_by,
+};
 pub use progress::{Progress, ProgressIndicator, ProgressTrack};
 pub use radio::{Radio, RadioStyles};
 pub use radio_group::RadioGroup;
@@ -152,7 +162,7 @@ pub use scrollbar::{
 pub use select::Select;
 pub use selectable_text::SelectableText;
 pub use sheet::Sheet;
-pub use slider::{Slider, SliderIndicator, SliderThumb, SliderTrack};
+pub use slider::{Slider, SliderAccessibleValue, SliderIndicator, SliderThumb, SliderTrack};
 pub use state_style::StateStyle;
 #[cfg(any(feature = "inspector", debug_assertions))]
 pub use styled::styled_ext_reflection_methods;

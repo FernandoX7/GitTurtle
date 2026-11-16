@@ -4,14 +4,26 @@
 //! every disabled Switch, CheckBox or text input as read-only; the vendored #788
 //! backport (`vendor/accesskit_atspi_common/GITTURTLE-PATCH.md`) reports none
 //! of them, while an enabled read-only text input stays read-only.
+//!
+//! [`reached`] walks a tree through the same adapter, for the tests of what an
+//! AT-SPI client finds in it, and a [`Bus`] feeds the adapter a window's
+//! frames and keeps the objects it puts on the bus.
 
-use accesskit_atspi_common::{Adapter, AdapterCallback, AppContext, Event, InterfaceSet};
-use accesskit_atspi_common::{NodeId, State, StateSet, WindowBounds};
-use gpui_kit::gpui::accesskit::{
-    ActionHandler, ActionRequest, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
+use accesskit_atspi_common::{
+    Adapter, AdapterCallback, AppContext, CacheEvent, Event, InterfaceSet, NodeIdOrRoot,
+    ObjectEvent, Property,
 };
+use accesskit_atspi_common::{
+    CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
+};
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::gpui;
+use gpui_kit::gpui::accesskit::{
+    ActionHandler, ActionRequest, Live, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
+};
+use gpui_kit::gpui::{Bounds, Context, Entity, VisualTestContext, Window, point, px};
 
-struct IgnoreCallbacks;
+pub(crate) struct IgnoreCallbacks;
 
 impl AdapterCallback for IgnoreCallbacks {
     fn register_interfaces(&self, _: &Adapter, _: NodeId, _: InterfaceSet) {}
@@ -21,6 +33,47 @@ impl AdapterCallback for IgnoreCallbacks {
 
 impl ActionHandler for IgnoreCallbacks {
     fn do_action(&mut self, _: ActionRequest) {}
+}
+
+/// A node an AT-SPI client reaches: its role, name, state set and extents in
+/// window coordinates.
+#[derive(Debug)]
+pub(crate) struct Reached {
+    pub role: AtspiRole,
+    pub name: String,
+    pub state: StateSet,
+    pub extents: Rect,
+}
+
+/// Every node an AT-SPI client reaches walking `update`'s tree from its root,
+/// child by child as `accesskit_unix` serves it, in tree order.
+pub(crate) fn reached(update: TreeUpdate) -> Vec<Reached> {
+    let adapter = Adapter::new(
+        &AppContext::new(None),
+        IgnoreCallbacks,
+        update,
+        true,
+        WindowBounds::default(),
+        IgnoreCallbacks,
+    );
+    let mut found = Vec::new();
+    let mut pending = vec![adapter.root_id()];
+    while let Some(id) = pending.pop() {
+        let node = adapter.platform_node(id);
+        found.push(Reached {
+            role: node.role().unwrap(),
+            name: node.name().unwrap(),
+            state: node.state(),
+            extents: node.extents(CoordType::Window).unwrap(),
+        });
+        let children = node.child_count().unwrap() as usize;
+        pending.extend(
+            (0..children)
+                .rev()
+                .filter_map(|index| node.child_at_index(index).unwrap()),
+        );
+    }
+    found
 }
 
 fn control(role: Role, disabled: bool) -> Node {
@@ -102,5 +155,851 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
     assert!(
         read_only.contains(State::ReadOnly) && !read_only.intersects(usable),
         "an enabled read-only text input stays read-only: {read_only:?}"
+    );
+}
+
+/// What `accesskit_unix` does on the bus for one window: the objects it
+/// keeps there, each node's interfaces as the adapter registers and
+/// unregisters them (a path with none answers every AT-SPI call with
+/// "Unknown object"), the announcements it makes, the containers it reports
+/// a change of selection in (`object:selection-changed`), whose selected
+/// item Orca speaks, and the objects it reports renamed
+/// (`object:property-change:accessible-name`), and the announcements,
+/// changes of selection and removals from AT-SPI's cache together in the
+/// order it made them, for what Orca hears of them ([`Bus::heard_by_orca`]).
+#[derive(Clone, Default)]
+struct Registry {
+    objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u128, InterfaceSet>>>,
+    announced: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    selection: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
+    renamed: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
+    emitted: std::sync::Arc<std::sync::Mutex<Vec<Emitted>>>,
+}
+
+/// An event the adapter emitted that Orca speaks: an announcement's text,
+/// or a change of selection in a container, whose selected item it speaks;
+/// or one libatspi acts on in Orca's process: an object taken out of
+/// AT-SPI's cache (`RemoveAccessible`).
+enum Emitted {
+    Announced(String),
+    Selection(NodeId),
+    Uncached(NodeId),
+}
+
+/// How long Orca 51.1's spam filter (`event_manager.py`,
+/// `_ignore_by_spam_filter`) drops an event of a type the same application
+/// sent before it.
+const ORCA_SPAM_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
+
+impl AdapterCallback for Registry {
+    fn register_interfaces(&self, _: &Adapter, id: NodeId, interfaces: InterfaceSet) {
+        let mut objects = self.objects.lock().unwrap();
+        let object = objects.entry(id.into()).or_insert(InterfaceSet::empty());
+        *object = *object | interfaces;
+    }
+
+    fn unregister_interfaces(&self, _: &Adapter, id: NodeId, interfaces: InterfaceSet) {
+        let mut objects = self.objects.lock().unwrap();
+        if let Some(object) = objects.get_mut(&id.into()) {
+            *object = *object ^ (*object & interfaces);
+            if *object == InterfaceSet::empty() {
+                objects.remove(&id.into());
+            }
+        }
+    }
+
+    fn emit_event(&self, _: &Adapter, event: Event) {
+        match event {
+            Event::Object {
+                event: ObjectEvent::Announcement(text, _),
+                ..
+            } => {
+                let announced = Emitted::Announced(text.clone());
+                self.emitted.lock().unwrap().push(announced);
+                self.announced.lock().unwrap().push(text);
+            }
+            Event::Object {
+                target: NodeIdOrRoot::Node(id),
+                event: ObjectEvent::SelectionChanged,
+            } => {
+                self.emitted.lock().unwrap().push(Emitted::Selection(id));
+                self.selection.lock().unwrap().push(id);
+            }
+            Event::Object {
+                target: NodeIdOrRoot::Node(id),
+                event: ObjectEvent::PropertyChanged(Property::Name(_)),
+            } => self.renamed.lock().unwrap().push(id),
+            Event::Cache(CacheEvent::Removed(id)) => {
+                self.emitted.lock().unwrap().push(Emitted::Uncached(id));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A window's AT-SPI adapter fed its tree frame by frame, as GPUI's Linux
+/// backend feeds `accesskit_unix` one `TreeUpdate` per drawn frame, with
+/// the objects it keeps on the bus.
+pub(crate) struct Bus {
+    adapter: Adapter,
+    registry: Registry,
+    /// When Orca last saw an event of each type ([`Self::heard_by_orca`]).
+    orca: std::collections::HashMap<&'static str, std::time::Instant>,
+    /// The objects whose proxies libatspi disposed since Orca last took
+    /// them, on the cache's `RemoveAccessible` ([`Self::heard_by_orca_from`]).
+    disposed: std::collections::HashSet<NodeId>,
+}
+
+impl Bus {
+    /// The adapter as it starts on a window whose tree is `update`.
+    pub(crate) fn new(update: TreeUpdate) -> Self {
+        let registry = Registry::default();
+        let adapter = Adapter::new(
+            &AppContext::new(None),
+            registry.clone(),
+            update,
+            true,
+            WindowBounds::default(),
+            IgnoreCallbacks,
+        );
+        Self {
+            adapter,
+            registry,
+            orca: std::collections::HashMap::new(),
+            disposed: std::collections::HashSet::new(),
+        }
+    }
+
+    /// The next frame's tree.
+    pub(crate) fn update(&mut self, update: TreeUpdate) {
+        self.adapter.update(update);
+    }
+
+    /// Every node an AT-SPI client reaches from the window, child by child,
+    /// whose object is not on the bus, as "role name": a client walking the
+    /// window finds it among its parent's children, and every call it then
+    /// makes on it answers "Unknown object".
+    pub(crate) fn unknown(&self) -> Vec<String> {
+        let objects = self.registry.objects.lock().unwrap();
+        let mut unknown = Vec::new();
+        let mut pending = vec![self.adapter.root_id()];
+        while let Some(id) = pending.pop() {
+            let node = self.adapter.platform_node(id);
+            if !objects.contains_key(&id.into()) {
+                let role = node.role().unwrap();
+                unknown.push(format!("{role:?} {:?}", node.name().unwrap()));
+            }
+            let children = node.child_count().unwrap() as usize;
+            pending.extend(
+                (0..children)
+                    .rev()
+                    .filter_map(|index| node.child_at_index(index).unwrap()),
+            );
+        }
+        unknown
+    }
+
+    /// How many objects are on the bus.
+    pub(crate) fn objects(&self) -> usize {
+        self.registry.objects.lock().unwrap().len()
+    }
+
+    /// What was announced since the last call.
+    pub(crate) fn announced(&self) -> Vec<String> {
+        std::mem::take(&mut *self.registry.announced.lock().unwrap())
+    }
+
+    /// The names of the items selected now in each container that reported
+    /// a change of selection since the last call, which Orca speaks on that
+    /// event: QA-92 heard Down, Page Down, End and Home in Keyboard
+    /// Shortcuts' list spoken from it, End's and Home's for a row added to
+    /// the bus already selected, which the adapter reports as no change of
+    /// the item's own state but as one of its list's selection.
+    pub(crate) fn selection_changed(&self) -> Vec<String> {
+        let ids = std::mem::take(&mut *self.registry.selection.lock().unwrap());
+        ids.into_iter().flat_map(|id| self.selected(id)).collect()
+    }
+
+    /// The names of the items `container` holds selected now.
+    fn selected(&self, container: NodeId) -> Vec<String> {
+        let list = self.adapter.platform_node(container);
+        let count = list.n_selected_children().unwrap() as usize;
+        (0..count)
+            .filter_map(|index| list.selected_child(index).unwrap())
+            .map(|item| self.adapter.platform_node(item).name().unwrap())
+            .collect()
+    }
+
+    /// What Orca 51.1 speaks of the announcements and changes of selection
+    /// the adapter made since the last call, in order, each seen `at` the
+    /// time of the frame that made it: an announcement's text, and the item
+    /// a container holds selected as it reports its selection changed. Its
+    /// spam filter drops an event of a type the application sent less than
+    /// [`ORCA_SPAM_WINDOW`] before, and times each one it sees, dropped or
+    /// not, so of keys typed 60 ms apart it hears only the first key's:
+    /// typing "go" into the command palette, it spoke the status's reading
+    /// for "g" and dropped the one for "go", sent 51 ms after it ("Ignoring
+    /// object:announcement due to multiple instances in short time", QA-94).
+    pub(crate) fn heard_by_orca(&mut self, at: std::time::Instant) -> Vec<String> {
+        self.hear(at, None)
+    }
+
+    /// As [`Self::heard_by_orca`], with Orca's locus of focus, which each
+    /// change of selection it hears moves to the selected item. Before that
+    /// item Orca 51.1 speaks the ancestors it does not share with the item
+    /// it left, here all as "<context>" ([`Self::quiet_move`]): none only
+    /// when the item it left is alive and answers the same parent. QA-94
+    /// heard "GitTurtle", "Keyboard Shortcuts dialog …" and "Keyboard
+    /// shortcuts by group List with 11 items" before the row Down moved to,
+    /// once typing a search had taken away the row Orca last spoke: that
+    /// row answered no parent, its object gone from the bus.
+    pub(crate) fn heard_by_orca_from(
+        &mut self,
+        at: std::time::Instant,
+        locus: &mut Option<NodeId>,
+    ) -> Vec<String> {
+        self.hear(at, Some(locus))
+    }
+
+    fn hear(
+        &mut self,
+        at: std::time::Instant,
+        mut locus: Option<&mut Option<NodeId>>,
+    ) -> Vec<String> {
+        let emitted = std::mem::take(&mut *self.registry.emitted.lock().unwrap());
+        let mut heard = Vec::new();
+        for event in emitted {
+            let kind = match &event {
+                Emitted::Announced(_) => "object:announcement",
+                Emitted::Selection(_) => "object:selection-changed",
+                Emitted::Uncached(id) => {
+                    self.disposed.insert(*id);
+                    continue;
+                }
+            };
+            let last = self.orca.insert(kind, at);
+            if last.is_some_and(|last| at.duration_since(last) < ORCA_SPAM_WINDOW) {
+                continue;
+            }
+            match event {
+                Emitted::Announced(text) => heard.push(text),
+                Emitted::Selection(list) => {
+                    let item = self.adapter.platform_node(list).selected_child(0).unwrap();
+                    let Some(item) = item else { continue };
+                    if let Some(locus) = locus.as_deref_mut()
+                        && let Some(left) = locus.replace(item)
+                        && !self.quiet_move(left, item)
+                    {
+                        heard.push("<context>".into());
+                    }
+                    // A proxy libatspi disposed left its table; the item's
+                    // path gets a fresh one.
+                    self.disposed.remove(&item);
+                    heard.push(self.adapter.platform_node(item).name().unwrap());
+                }
+                Emitted::Uncached(_) => unreachable!("handled before the spam filter"),
+            }
+        }
+        heard
+    }
+
+    /// Whether Orca 51.1, moving its locus from `left` to `item`, speaks no
+    /// ancestor of `item`: only while `left` is alive and answers the parent
+    /// `item` answers (`speech_generator.py`, `_generate_ancestors`, 1144).
+    /// An item answering no parent shares no ancestor with `item`, so Orca
+    /// speaks all of them up to the application (1150-1214). An item whose
+    /// proxy libatspi 2.60 disposed, as it does on the cache's
+    /// `RemoveAccessible` (`atspi-misc.c`, `handle_remove_accessible`),
+    /// answers every call with "The application no longer exists", so Orca
+    /// takes it as dead (`ax_object.py`, `is_dead`), drops it as the prior
+    /// object (`focus_manager.py`, `set_locus_of_focus`, 338-342) and
+    /// speaks `item`'s ancestors below the window it presents from instead
+    /// (`scripts/default.py`, `locus_of_focus_changed`, 252-253): in
+    /// Keyboard Shortcuts the dialog and the list. libatspi took
+    /// `RemoveAccessible` only once the vendored `accesskit_unix` sent it
+    /// as `(so)` (AccessKit #819); 0.22.1's `so` it dropped.
+    fn quiet_move(&self, left: NodeId, item: NodeId) -> bool {
+        !self.disposed.contains(&left) && self.orca_parent(left) == self.orca_parent(item)
+    }
+
+    /// The parent Orca reads for `id`: none when its object is not on the
+    /// bus, or the adapter answers it with an error.
+    fn orca_parent(&self, id: NodeId) -> Option<NodeIdOrRoot> {
+        let on_bus = self
+            .registry
+            .objects
+            .lock()
+            .unwrap()
+            .contains_key(&id.into());
+        on_bus
+            .then(|| self.adapter.platform_node(id).parent().ok())
+            .flatten()
+    }
+
+    /// The objects reported renamed since the last call, each by its role
+    /// and the name it reads now, which Orca speaks for the object it
+    /// presents: QA-92 heard a list item that a search's change renamed.
+    pub(crate) fn renamed(&self) -> Vec<(AtspiRole, String)> {
+        let ids = std::mem::take(&mut *self.registry.renamed.lock().unwrap());
+        ids.into_iter()
+            .map(|id| {
+                let node = self.adapter.platform_node(id);
+                (node.role().unwrap(), node.name().unwrap())
+            })
+            .collect()
+    }
+}
+
+/// What a window's adapter did around a dialog that Escape closed.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Escaped {
+    /// Every node an AT-SPI client reaches in the window after Escape that
+    /// is not on the bus ([`Bus::unknown`]).
+    pub unknown: Vec<String>,
+    /// What closing the dialog announced.
+    pub announced: Vec<String>,
+    /// How many objects were on the bus while the dialog was open, and how
+    /// many an adapter started on that frame puts there.
+    pub covered: (usize, usize),
+    /// The same after Escape.
+    pub shown: (usize, usize),
+}
+
+/// Opens `surface`, a dialog, with `open` over the page from History's list,
+/// as `focus_ring::sweep::open_dialog` does, changes the page beneath it
+/// with `beneath`, and closes it with Escape. The window's adapter sees the
+/// frame before the dialog, the frame it lands in, the frame after
+/// `beneath` and the frame after Escape, as GPUI's Linux backend feeds it.
+pub(crate) async fn closed_with_escape<O: crate::focus_ring::sweep::Opened>(
+    app: &Entity<crate::GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    open: impl FnOnce(&mut crate::GitTurtle, &mut Window, &mut Context<crate::GitTurtle>) -> O,
+    beneath: impl FnOnce(&mut VisualTestContext),
+) -> Escaped {
+    let list = app.read_with(cx, |app, _| app.focus.clone());
+    cx.update(|window, cx| window.focus(&list, cx));
+    let mut bus = Bus::new(next_frame(cx));
+    assert_eq!(bus.unknown(), Vec::<String>::new(), "{surface}: before");
+    crate::focus_ring::sweep::open_dialog(app, cx, surface, open).await;
+    bus.update(next_frame(cx));
+    beneath(cx);
+    let frame = next_frame(cx);
+    bus.update(frame.clone());
+    let covered = (bus.objects(), Bus::new(frame).objects());
+    bus.announced();
+    cx.simulate_keystrokes("escape");
+    let frame = next_frame(cx);
+    bus.update(frame.clone());
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{surface} closes with Escape"
+    );
+    Escaped {
+        unknown: bus.unknown(),
+        announced: bus.announced(),
+        covered,
+        shown: (bus.objects(), Bus::new(frame).objects()),
+    }
+}
+
+/// The window's tree as its next frame writes it: every node the app's
+/// wrappers write, the page among them, and, while a dialog is open, a
+/// modal dialog node holding what the dialog layer drew beside the page.
+/// Successive frames keep each node's ID, as GPUI's do, so a [`Bus`] fed
+/// them updates what it holds as the adapter does on a real window.
+pub(crate) fn next_frame(cx: &mut VisualTestContext) -> TreeUpdate {
+    super::written::forget();
+    crate::views::tests::draw(cx);
+    let mut tree = super::written::Assembly::default();
+    let open = cx.update(|window, cx| window.has_active_dialog(cx));
+    if open {
+        let mut dialog = Node::new(Role::Dialog);
+        dialog.set_modal();
+        tree = tree.node("dialog", dialog, None);
+    }
+    let tree = tree.everything(open.then_some("dialog"));
+    let size = cx.update(|window, _| window.viewport_size());
+    let window = Bounds::new(point(px(0.), px(0.)), size);
+    tree.tree(
+        gpui_kit::gpui::accesskit::Rect {
+            x0: 0.,
+            y0: 0.,
+            x1: f64::from(f32::from(window.right())),
+            y1: f64::from(f32::from(window.bottom())),
+        },
+        None,
+    )
+}
+
+/// A page that a modal dialog hides is a generic container, which the
+/// filter passes over while it is shown (`beneath_modal`): hiding it takes
+/// everything it holds off the bus, and showing it again puts back
+/// everything it holds, including the nodes that changed or appeared while
+/// it was hidden. The adapter acted only on a node that is itself included,
+/// so a control that changed beneath a dialog left the bus for good, and a
+/// line that appeared there never reached it: after the tracking-branch
+/// review closed with Escape, 23 of the 30 children AT-SPI listed for the
+/// window answered "Unknown object". Nothing on the page is new, so a live
+/// region it holds, such as a conflict's position, is not announced again.
+#[test]
+fn a_page_shown_again_after_a_dialog_puts_everything_it_holds_on_the_bus() {
+    let named = |role: Role, name: &str| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node
+    };
+    let [
+        root,
+        page,
+        picker,
+        fetch,
+        list,
+        row,
+        status,
+        block,
+        dialog,
+        confirm,
+    ] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(LocalNodeId);
+    let frame = |covered: bool, fetch_name: &str, with_status: bool| {
+        let mut window = Node::new(Role::Window);
+        window.set_children(if covered {
+            vec![page, dialog]
+        } else {
+            vec![page]
+        });
+        let mut page_node = Node::new(Role::GenericContainer);
+        if covered {
+            page_node.set_hidden();
+        }
+        let mut held = vec![picker, fetch, list, block];
+        if with_status {
+            held.push(status);
+        }
+        page_node.set_children(held);
+        let mut list_node = named(Role::ListBox, "History");
+        list_node.set_children(vec![row]);
+        let mut nodes = vec![
+            (root, window),
+            (page, page_node),
+            (picker, named(Role::Button, "Current branch")),
+            (fetch, named(Role::Button, fetch_name)),
+            (list, list_node),
+            (row, named(Role::ListBoxOption, "Commit")),
+            (block, {
+                let mut status = named(Role::Status, "Conflict block 1 of 3");
+                status.set_live(Live::Polite);
+                status
+            }),
+        ];
+        if with_status {
+            let mut line = Node::new(Role::Label);
+            line.set_value("Fetched origin");
+            nodes.push((status, line));
+        }
+        if covered {
+            let mut dialog_node = named(Role::AlertDialog, "Create tracking branch feature");
+            dialog_node.set_modal();
+            dialog_node.set_children(vec![confirm]);
+            nodes.push((dialog, dialog_node));
+            nodes.push((confirm, named(Role::Button, "Create and switch")));
+        }
+        TreeUpdate {
+            nodes,
+            tree: Some(Tree::new(root)),
+            tree_id: TreeId::ROOT,
+            // The dialog takes focus from its opener and gives it back.
+            focus: if covered { confirm } else { picker },
+        }
+    };
+
+    let mut bus = Bus::new(frame(false, "Fetch", false));
+    assert_eq!(bus.unknown(), Vec::<String>::new());
+    // The dialog opens over a control that changes as it does, and a line
+    // appears on the page beneath it.
+    bus.update(frame(true, "Fetch from origin", false));
+    bus.update(frame(true, "Fetch from origin", true));
+    assert_eq!(bus.unknown(), Vec::<String>::new());
+    let hidden = bus.objects();
+    bus.announced();
+    // Escape closes it; nothing on the page changes.
+    bus.update(frame(false, "Fetch from origin", true));
+    assert_eq!(
+        bus.unknown(),
+        Vec::<String>::new(),
+        "every node AT-SPI reaches after Escape is on the bus"
+    );
+    assert_eq!(bus.objects(), 7, "the window and the page's six nodes");
+    assert_eq!(bus.announced(), Vec::<String>::new());
+    assert_eq!(
+        hidden, 3,
+        "only the window and the dialog were on the bus while the page was hidden"
+    );
+}
+
+/// A node AccessKit's filter keeps wholly outside its nearest clipping
+/// ancestor, as the first child past that edge or because it holds focus, is
+/// visible but not showing: off screen, as browsers report one. A node inside
+/// that ancestor, or partly inside it, shows, as does one with no clipping
+/// ancestor. The adapter reported every node it keeps both visible and
+/// showing, so text GitTurtle reports where it lies below a body's fold, as
+/// the GitHub panel's notice at 18 pt in a 461 × 490 window, read as shown
+/// over Back to repository (vendored patch, `GITTURTLE-PATCH.md`).
+#[test]
+fn a_node_outside_its_clip_is_visible_but_not_showing() {
+    use gpui_kit::gpui::accesskit::Rect as Bounds;
+    let named = |role: Role, name: &str, y0: f64, y1: f64| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node.set_bounds(Bounds {
+            x0: 0.,
+            y0,
+            x1: 100.,
+            y1,
+        });
+        node
+    };
+    let [root, body, inside, cut, past, beyond, focused, footer] =
+        [0, 1, 2, 3, 4, 5, 6, 7].map(LocalNodeId);
+    let mut window = Node::new(Role::Window);
+    window.set_bounds(Bounds {
+        x0: 0.,
+        y0: 0.,
+        x1: 100.,
+        y1: 500.,
+    });
+    window.set_children(vec![body, footer]);
+    let mut body_node = named(Role::ScrollView, "Body", 0., 100.);
+    body_node.set_clips_children();
+    body_node.set_children(vec![inside, cut, past, beyond, focused]);
+    let update = TreeUpdate {
+        nodes: vec![
+            (root, window),
+            (body, body_node),
+            (inside, named(Role::Button, "Inside", 10., 30.)),
+            (cut, named(Role::Status, "Cut by the fold", 90., 120.)),
+            (past, named(Role::Status, "Past the fold", 120., 200.)),
+            (beyond, named(Role::Button, "Beyond", 210., 230.)),
+            (focused, named(Role::Button, "Focused", 300., 320.)),
+            (
+                footer,
+                named(Role::Button, "Back to repository", 400., 430.),
+            ),
+        ],
+        tree: Some(Tree::new(root)),
+        tree_id: TreeId::ROOT,
+        focus: focused,
+    };
+    let found = reached(update);
+    let state = |name: &str| {
+        found
+            .iter()
+            .find(|node| node.name == name)
+            .map(|node| node.state)
+    };
+    for name in ["Inside", "Cut by the fold", "Back to repository"] {
+        let state = state(name).unwrap_or_else(|| panic!("{name} is reached"));
+        assert!(
+            state.contains(State::Visible | State::Showing),
+            "{name} shows: {state:?}"
+        );
+    }
+    for name in ["Past the fold", "Focused"] {
+        let state = state(name).unwrap_or_else(|| panic!("{name} is reached"));
+        assert!(
+            state.contains(State::Visible) && !state.contains(State::Showing),
+            "{name} is visible but not showing: {state:?}"
+        );
+    }
+    assert_eq!(state("Beyond"), None, "AccessKit's filter leaves it out");
+    let past = found
+        .iter()
+        .find(|node| node.name == "Past the fold")
+        .expect("reached");
+    assert_eq!(
+        (past.extents.y, past.extents.height),
+        (120, 80),
+        "the node keeps its extents: {:?}",
+        past.extents
+    );
+}
+
+/// A node wholly outside any clipping ancestor is visible but not showing,
+/// though it lies inside its nearest one. AccessKit's filter keeps an inner
+/// clipping node past the outer one's fold when the child before it lies
+/// inside, and keeps every child inside that inner node, so the adapter,
+/// comparing a node with its nearest clipping ancestor alone, reported a row
+/// of a list the window draws none of showing (vendored patch,
+/// `GITTURTLE-PATCH.md`).
+#[test]
+fn a_node_outside_an_outer_clip_is_not_showing() {
+    use gpui_kit::gpui::accesskit::Rect as Bounds;
+    let named = |role: Role, name: &str, y0: f64, y1: f64| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node.set_bounds(Bounds {
+            x0: 0.,
+            y0,
+            x1: 100.,
+            y1,
+        });
+        node
+    };
+    let [root, body, inside, inner, row] = [0, 1, 2, 3, 4].map(LocalNodeId);
+    let mut window = named(Role::Window, "Window", 0., 500.);
+    window.set_children(vec![body]);
+    let mut body_node = named(Role::ScrollView, "Body", 0., 100.);
+    body_node.set_clips_children();
+    body_node.set_children(vec![inside, inner]);
+    let mut inner_node = named(Role::ScrollView, "Inner", 120., 220.);
+    inner_node.set_clips_children();
+    inner_node.set_children(vec![row]);
+    let found = reached(TreeUpdate {
+        nodes: vec![
+            (root, window),
+            (body, body_node),
+            (inside, named(Role::Button, "Inside", 10., 30.)),
+            (inner, inner_node),
+            (row, named(Role::Button, "Row", 130., 150.)),
+        ],
+        tree: Some(Tree::new(root)),
+        tree_id: TreeId::ROOT,
+        focus: root,
+    });
+    let state = |name: &str| {
+        found
+            .iter()
+            .find(|node| node.name == name)
+            .map(|node| node.state)
+            .unwrap_or_else(|| panic!("{name} is reached: {found:?}"))
+    };
+    assert!(
+        state("Inside").contains(State::Visible | State::Showing),
+        "Inside shows"
+    );
+    for name in ["Inner", "Row"] {
+        let state = state(name);
+        assert!(
+            state.contains(State::Visible) && !state.contains(State::Showing),
+            "{name}, past the body's fold, is visible but not showing: {state:?}"
+        );
+    }
+}
+
+/// A point query passes over a node wholly outside a clipping ancestor to
+/// what is drawn at the point. AccessKit's hit test ignores clips and tries
+/// later siblings first, so a control AccessKit's filter keeps past a
+/// scrolling body's top fold, reported where it lies under the dialog's
+/// title, answered for the title's pixels (vendored patch,
+/// `GITTURTLE-PATCH.md`).
+#[test]
+fn a_point_query_passes_over_a_node_its_clip_leaves_out() {
+    use gpui_kit::gpui::accesskit::Rect as Bounds;
+    let named = |role: Role, name: &str, y0: f64, y1: f64| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node.set_bounds(Bounds {
+            x0: 0.,
+            y0,
+            x1: 100.,
+            y1,
+        });
+        node
+    };
+    let [root, title, body, above, inside] = [0, 1, 2, 3, 4].map(LocalNodeId);
+    let mut window = named(Role::Window, "Window", 0., 500.);
+    window.set_children(vec![title, body]);
+    let mut body_node = named(Role::ScrollView, "Body", 40., 140.);
+    body_node.set_clips_children();
+    body_node.set_children(vec![above, inside]);
+    let adapter = Adapter::new(
+        &AppContext::new(None),
+        IgnoreCallbacks,
+        TreeUpdate {
+            nodes: vec![
+                (root, window),
+                (title, named(Role::Heading, "Dialog title", 0., 40.)),
+                (body, body_node),
+                (above, named(Role::Button, "Above the fold", 10., 36.)),
+                (inside, named(Role::Button, "Inside", 50., 80.)),
+            ],
+            tree: Some(Tree::new(root)),
+            tree_id: TreeId::ROOT,
+            focus: root,
+        },
+        true,
+        WindowBounds::default(),
+        IgnoreCallbacks,
+    );
+    let window = adapter.platform_node(adapter.root_id());
+    let at = |y: i32| {
+        window
+            .accessible_at_point(50, y, CoordType::Window)
+            .unwrap()
+            .map(|id| adapter.platform_node(id).name().unwrap())
+    };
+    let body = adapter.platform_node(window.child_at_index(1).unwrap().expect("the body"));
+    let names: Vec<String> = (0..body.child_count().unwrap() as usize)
+        .filter_map(|index| body.child_at_index(index).unwrap())
+        .map(|id| adapter.platform_node(id).name().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["Above the fold", "Inside"],
+        "AccessKit's filter keeps the control past the top fold"
+    );
+    assert_eq!(at(20).as_deref(), Some("Dialog title"));
+    assert_eq!(at(60).as_deref(), Some("Inside"));
+}
+
+/// A point query passes over a control where a clipping ancestor hides it,
+/// even though the clip draws the rest of it. A Button cut by a scrolling
+/// body's top fold, drawn below the fold and hidden above it under the
+/// dialog's title, answered for the title's pixels, as the hit test tried
+/// it before the title and skipped only a node wholly outside its clip;
+/// below the fold it still answers (vendored patch, `GITTURTLE-PATCH.md`).
+#[test]
+fn a_point_query_passes_over_a_control_where_its_clip_hides_it() {
+    use gpui_kit::gpui::accesskit::Rect as Bounds;
+    let named = |role: Role, name: &str, y0: f64, y1: f64| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node.set_bounds(Bounds {
+            x0: 0.,
+            y0,
+            x1: 100.,
+            y1,
+        });
+        node
+    };
+    let [root, title, body, cut, inside] = [0, 1, 2, 3, 4].map(LocalNodeId);
+    let mut window = named(Role::Window, "Window", 0., 500.);
+    window.set_children(vec![title, body]);
+    let mut body_node = named(Role::ScrollView, "Body", 40., 140.);
+    body_node.set_clips_children();
+    body_node.set_children(vec![cut, inside]);
+    let adapter = Adapter::new(
+        &AppContext::new(None),
+        IgnoreCallbacks,
+        TreeUpdate {
+            nodes: vec![
+                (root, window),
+                (title, named(Role::Heading, "Dialog title", 0., 40.)),
+                (body, body_node),
+                (cut, named(Role::Button, "Cut by the top fold", 20., 60.)),
+                (inside, named(Role::Button, "Inside", 70., 90.)),
+            ],
+            tree: Some(Tree::new(root)),
+            tree_id: TreeId::ROOT,
+            focus: root,
+        },
+        true,
+        WindowBounds::default(),
+        IgnoreCallbacks,
+    );
+    let window = adapter.platform_node(adapter.root_id());
+    let at = |y: i32| {
+        window
+            .accessible_at_point(50, y, CoordType::Window)
+            .unwrap()
+            .map(|id| adapter.platform_node(id).name().unwrap())
+    };
+    let cut = adapter.platform_node(
+        adapter
+            .platform_node(window.child_at_index(1).unwrap().expect("the body"))
+            .child_at_index(0)
+            .unwrap()
+            .expect("the cut control"),
+    );
+    assert!(
+        cut.state().contains(State::Visible | State::Showing),
+        "the body draws part of the control"
+    );
+    assert_eq!(at(30).as_deref(), Some("Dialog title"));
+    assert_eq!(at(39).as_deref(), Some("Dialog title"));
+    assert_eq!(at(40).as_deref(), Some("Cut by the top fold"));
+    assert_eq!(at(50).as_deref(), Some("Cut by the top fold"));
+    assert_eq!(at(80).as_deref(), Some("Inside"));
+}
+
+/// What Orca 51.1 speaks of the focused entry in `update`'s tree as it
+/// moves to it (`speech_generator.py`, `_generate_entry`): its name, its
+/// role, and the line at the caret, which it reads through the Text
+/// interface (`_generate_text_line`), or where that gives nothing, the
+/// entry's placeholder (`generator.py`, `_generate_accessible_placeholder_text`).
+fn orca_reads_entry(update: TreeUpdate) -> String {
+    use accesskit_atspi_common::Granularity;
+    let adapter = Adapter::new(
+        &AppContext::new(None),
+        IgnoreCallbacks,
+        update,
+        true,
+        WindowBounds::default(),
+        IgnoreCallbacks,
+    );
+    let window = adapter.platform_node(adapter.root_id());
+    let entry = adapter.platform_node(window.child_at_index(0).unwrap().expect("the entry"));
+    assert_eq!(entry.role().unwrap(), AtspiRole::Entry);
+    let line = if entry.supports_text().unwrap() {
+        let caret = entry.caret_offset().unwrap();
+        let (line, ..) = entry.string_at_offset(caret, Granularity::Line).unwrap();
+        line.trim_end_matches('\n').to_owned()
+    } else {
+        String::new()
+    };
+    let name = entry.name().unwrap();
+    let placeholder = entry.attributes().unwrap().remove("placeholder-text");
+    let spoken = match placeholder {
+        Some(placeholder) if line.is_empty() && placeholder != name => placeholder,
+        _ => line,
+    };
+    format!("{name} entry {spoken}")
+}
+
+/// Orca reads Settings' Name and Email by their values, and an empty field
+/// by its placeholder. Filled with "QA Fixture" and
+/// "qa-fixture@example.invalid", they were read "Name entry Your name" and
+/// "Email entry you@example.com" (QA-106b S4): the fields wrote no text
+/// runs, so AT-SPI gave them no Text interface to read their values
+/// through, and Orca spoke their placeholders.
+#[gpui::test]
+fn orca_reads_the_identity_fields_by_their_values(cx: &mut gpui::TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = crate::tags::tests::tagged_repository(fixture.path());
+    let (app, cx) = crate::tags::tests::window(cx, &repo);
+    cx.update(|_, cx| crate::theme_editor::init(cx));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    let settle = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    settle(cx);
+    let (name, email) = cx.read(|cx| {
+        let app = app.read(cx);
+        (app.identity_name.clone(), app.identity_email.clone())
+    });
+    let reads = |values: [&str; 2], cx: &mut VisualTestContext| {
+        for (field, value) in [(&name, values[0]), (&email, values[1])] {
+            cx.update(|window, cx| {
+                field.update(cx, |state, cx| state.set_value(value, window, cx))
+            });
+        }
+        settle(cx);
+        [&name, &email].map(|field| {
+            let node = crate::views::tests::input_node(cx, field);
+            let text = cx.update(|_, cx| field.update(cx, |state, _| state.accessible_text(true)));
+            orca_reads_entry(super::input_tests::field_tree(node, text))
+        })
+    };
+    assert_eq!(
+        reads(["QA Fixture", "qa-fixture@example.invalid"], cx),
+        [
+            "Name entry QA Fixture",
+            "Email entry qa-fixture@example.invalid"
+        ]
+    );
+    assert_eq!(
+        reads(["", ""], cx),
+        ["Name entry Your name", "Email entry you@example.com"]
     );
 }

@@ -358,8 +358,9 @@ pub(super) fn decode_pdf_page(
         );
         ensure!(
             page_index < page_count,
-            "PDF page {} is outside this document's {page_count} pages",
-            page_index.saturating_add(1)
+            "PDF page {} is outside this document's {}",
+            page_index.saturating_add(1),
+            crate::metadata::counted(page_count, "page", "pages")
         );
         let mut pages = Vec::new();
         {

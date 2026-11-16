@@ -1,5 +1,5 @@
 use super::*;
-use crate::{activity, image_lifetime, preferences, recovery_drafts, repository_tabs};
+use crate::{activity, preferences, recovery_drafts, repository_tabs};
 use core::prelude::v1::test;
 use gpui_kit::component::Root;
 use std::{cell::RefCell, rc::Rc};
@@ -8,10 +8,7 @@ fn test_app(
     cx: &mut TestAppContext,
 ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
     cx.executor().allow_parking();
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        image_lifetime::init(cx);
-    });
+    crate::views::tests::init_app(cx);
     let fixture = tempfile::tempdir().unwrap();
     let captured = Rc::new(RefCell::new(None));
     let observed = captured.clone();
@@ -131,6 +128,75 @@ fn invalid_project_name_keeps_the_dialog_and_typed_text(cx: &mut TestAppContext)
     });
 }
 
+/// An invalid name is refused once per press: a fresh Return gives one
+/// refusal, and the key's repeats, as X11 sends them (fresh presses with no
+/// key-up between them, and a release and its press together) and as GPUI
+/// marks them held on macOS and Wayland, give none more, until a new press
+/// after the key-up gives the next. The field's own `PressEnter` submitted
+/// the form beside the dialog's default action, so each press refused the
+/// name twice and each repeat once more.
+#[gpui::test]
+fn an_invalid_name_is_refused_once_per_press(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = test_app(cx);
+    let path = fixture.path().join("client-folder");
+    let form = open_form(&app, &path, cx);
+    cx.simulate_input(&"x".repeat(129));
+    let refusals = |cx: &mut VisualTestContext| form.read_with(cx, |form, _| form.errors_shown);
+    for press in ["first", "second"] {
+        let before = refusals(cx);
+        enter(cx, Some(false));
+        settle(cx);
+        assert_eq!(refusals(cx), before + 1, "{press} press: one refusal");
+        for down in [Some(false), Some(false), None, Some(false), Some(true)] {
+            enter(cx, down);
+        }
+        settle(cx);
+        assert_eq!(
+            refusals(cx),
+            before + 1,
+            "{press} press: its repeats refuse nothing more"
+        );
+        cx.update(|window, cx| {
+            assert!(
+                window.has_active_dialog(cx),
+                "{press} press: the dialog stays"
+            )
+        });
+        enter(cx, None);
+        settle(cx);
+    }
+}
+
+/// A name refused again, asked for again without an edit, is said on a
+/// fresh node, announced at once again: the error line kept one node, which
+/// an assistive technology announces only as it is added or its text
+/// changes, so the second refusal of the same name was heard as nothing.
+#[gpui::test]
+fn a_name_refused_again_is_announced_again(cx: &mut TestAppContext) {
+    use crate::native_accessibility::written;
+    let (fixture, app, cx) = test_app(cx);
+    let path = fixture.path().join("client-folder");
+    let _form = open_form(&app, &path, cx);
+    cx.simulate_input(&"x".repeat(129));
+    let mut nodes = Vec::new();
+    for attempt in ["first", "second"] {
+        written::forget();
+        cx.simulate_keystrokes("enter");
+        enter(cx, None);
+        settle(cx);
+        let announced = written::announced_from("rename-project-error");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "{attempt}: the refusal is announced at once: {announced:?}"
+        );
+        nodes.push(announced[0].0.clone());
+    }
+    assert_ne!(
+        nodes[0], nodes[1],
+        "the same refusal again is a fresh node, announced again"
+    );
+}
+
 #[gpui::test]
 async fn pending_rename_blocks_duplicate_submission_edits_and_cancel(cx: &mut TestAppContext) {
     let (fixture, app, cx) = test_app(cx);
@@ -186,6 +252,7 @@ async fn failed_rename_retains_text_until_success_updates_hub_and_closes(cx: &mu
     let form = open_form(&app, &path, cx);
     cx.simulate_input("Chosen name");
     cx.simulate_keystrokes("enter");
+    enter(cx, None);
     settle_save(&app, cx).await;
     cx.update(|window, cx| {
         assert!(window.has_active_dialog(cx));
@@ -204,6 +271,7 @@ async fn failed_rename_retains_text_until_success_updates_hub_and_closes(cx: &mu
 
     std::fs::remove_file(&settings_path).unwrap();
     cx.simulate_keystrokes("enter");
+    enter(cx, None);
     settle_save(&app, cx).await;
     cx.update(|window, cx| {
         assert!(!window.has_active_dialog(cx));
@@ -263,4 +331,88 @@ fn late_rename_completion_does_not_close_a_different_project_dialog(cx: &mut Tes
         assert_eq!(app.project_name(&first_path), "First saved");
         assert_eq!(app.project_name(&second_path), "second-client");
     });
+}
+
+/// One Enter key event as the platform delivers it, with no idle pass after
+/// it: a key-down, marked held or not, or with `None` its key-up.
+fn enter(cx: &mut VisualTestContext, down: Option<bool>) {
+    let keystroke = Keystroke::parse("enter").expect("a keystroke");
+    let input = match down {
+        Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held,
+            prefer_character_input: false,
+        }),
+        None => PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+    };
+    cx.update(|window, cx| window.dispatch_event(input, cx));
+}
+
+/// A held Return in the name field begins one save, under X11 too: with the
+/// store refusing writes, Enter goes down and its save fails, then the key's
+/// repeats arrive as X11 sends them, fresh presses with no key-up between
+/// them and a release and its press together, and as GPUI marks them held
+/// on macOS and Wayland, each one waited out until the writer has answered.
+/// The form submits once and says why once; after the key-up a new press
+/// begins a second save. The dialog's default action passed over GPUI's held
+/// repeats only, and the field's own `PressEnter`, which submitted the form
+/// as well, over none, so each repeat began another write after the last one
+/// failed and said its refusal again.
+#[gpui::test]
+async fn a_held_return_begins_one_save(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = test_app(cx);
+    // An unreadable store refuses the save, as in
+    // `failed_rename_retains_text_until_success_updates_hub_and_closes`.
+    let settings_path = preferences::settings_path().unwrap();
+    std::fs::write(&settings_path, b"{ fixture invalid preferences").unwrap();
+    let path = fixture.path().join("client-folder");
+    let form = open_form(&app, &path, cx);
+    cx.simulate_input("Chosen name");
+    // Saves begun, counted as the form changes, and refusals said.
+    let saves = Rc::new(std::cell::Cell::new(0_usize));
+    let _counting = cx.update(|_, cx| {
+        let saves = saves.clone();
+        let mut was = false;
+        cx.observe(&form, move |form, cx| {
+            let now = form.read(cx).pending;
+            saves.set(saves.get() + usize::from(now && !was));
+            was = now;
+        })
+    });
+    let seen =
+        |cx: &mut VisualTestContext| (saves.get(), form.read_with(cx, |form, _| form.errors_shown));
+    enter(cx, Some(false));
+    settle_save(&app, cx).await;
+    assert_eq!(seen(cx), (1, 1), "the press began a save, which failed");
+    let repeats: [(&str, &[Option<bool>]); 4] = [
+        ("an X11 repeat", &[Some(false)]),
+        ("another X11 repeat", &[Some(false)]),
+        // A release and its press together, with no idle pass between.
+        ("a release and its press", &[None, Some(false)]),
+        ("a held repeat", &[Some(true)]),
+    ];
+    for (repeat, events) in repeats {
+        for down in events {
+            enter(cx, *down);
+        }
+        settle_save(&app, cx).await;
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx), "{repeat}: the dialog stays");
+            let form = form.read(cx);
+            assert!(form.visible && !form.pending, "{repeat}: the form waits");
+            assert!(
+                form.input.read(cx).focus_handle(cx).is_focused(window),
+                "{repeat}: focus stays in the field"
+            );
+        });
+        assert_eq!(seen(cx), (1, 1), "{repeat}: no other save began");
+    }
+    enter(cx, None);
+    settle(cx);
+    enter(cx, Some(false));
+    settle_save(&app, cx).await;
+    assert_eq!(seen(cx), (2, 2), "a new press begins another save");
+    enter(cx, None);
+    settle(cx);
+    assert!(!app.read_with(cx, |app, _| app.project_names.contains_key(&path)));
 }

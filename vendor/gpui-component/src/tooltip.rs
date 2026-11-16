@@ -270,7 +270,7 @@ pub(crate) trait ManagedTooltipExt:
         self,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_placement(None, build_tooltip)
+        self.managed_tooltip_with_placement(None, None, true, build_tooltip)
     }
 
     fn managed_tooltip_at(
@@ -278,12 +278,22 @@ pub(crate) trait ManagedTooltipExt:
         placement: Placement,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_placement(Some(placement), build_tooltip)
+        self.managed_tooltip_with_placement(Some(placement), None, true, build_tooltip)
     }
 
+    /// GitTurtle patch: `hide_on_press` false keeps the tooltip, shown or
+    /// waiting to show, through a press on its trigger, so a trigger whose
+    /// tooltip answers the press (a copy button's "Copied") shows it while the
+    /// pointer stays on it. Upstream always hides it on mouse down, and only a
+    /// hover change asks for it again. `placement_following`, where it holds a
+    /// side as the tooltip is placed, is preferred over `preferred_placement`
+    /// in each frame the tooltip is drawn in
+    /// ([`gpui_base::TooltipRequest::placement_following`]).
     fn managed_tooltip_with_placement(
         self,
         preferred_placement: Option<Placement>,
+        placement_following: Option<Rc<Cell<Option<Placement>>>>,
+        hide_on_press: bool,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
         let build_tooltip = Rc::new(build_tooltip);
@@ -309,6 +319,10 @@ pub(crate) trait ManagedTooltipExt:
                                 Some(placement) => request.placement(placement),
                                 None => request,
                             };
+                            let request = match placement_following.clone() {
+                                Some(placement) => request.placement_following(placement),
+                                None => request,
+                            };
                             o.request_show(request, window, cx);
                         });
                     } else {
@@ -320,6 +334,9 @@ pub(crate) trait ManagedTooltipExt:
             }
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if !hide_on_press {
+                return;
+            }
             if let Some(overlay) = Root::tooltip_overlay(window, cx) {
                 overlay.update(cx, |overlay, cx| {
                     overlay.hide(cx);

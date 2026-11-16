@@ -30,7 +30,8 @@ pub struct Document {
     pub total: usize,
 }
 
-/// `None` means ordinary source with no recognized Mermaid block. Individual
+/// `None` means ordinary source with no recognized Mermaid block, as a blank
+/// Mermaid file (`.mmd`, `.mermaid`) is. Individual
 /// parse/render failures stay attached to their source block; cancellation
 /// aborts the whole request and leaves the normal worker generation guard intact.
 pub fn preview(
@@ -55,10 +56,12 @@ pub fn preview(
         source.len() <= MAX_DOCUMENT_BYTES,
         "Mermaid source document exceeds 2 MiB"
     );
-    let blocks = if matches!(extension.as_str(), "mmd" | "mermaid") {
-        vec![(1, source, false)]
-    } else {
+    let blocks = if !matches!(extension.as_str(), "mmd" | "mermaid") {
         markdown_blocks(source)
+    } else if source.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![(1, source, false)]
     };
     if blocks.is_empty() {
         return Ok(None);
@@ -127,6 +130,9 @@ fn markdown_blocks(source: &str) -> Vec<(usize, &str, bool)> {
     if let Some((_, _, true, start, source_line)) = open {
         blocks.push((source_line, &source[start..], true));
     }
+    // A blank block is no diagram, before anything counts it. An unclosed
+    // one keeps its own error, blank or not.
+    blocks.retain(|(_, block, unclosed)| *unclosed || !block.trim().is_empty());
     blocks
 }
 
@@ -272,6 +278,57 @@ fn render(source: &str, max_edge: u32, check: &impl Fn() -> Result<()>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blank_markdown_fence_is_no_block() {
+        for (name, source) in [
+            ("doc.md", "```mermaid\n```\n"),
+            ("doc.mdx", "```mermaid\n\n \t\n```\n"),
+            ("doc.markdown", "~~~mermaid\n\n~~~\n"),
+        ] {
+            assert!(
+                preview(source, Path::new(name), 800, || Ok(()))
+                    .unwrap()
+                    .is_none(),
+                "{name} holding {source:?} has no diagrams"
+            );
+        }
+        let unclosed = preview("```mermaid\n", Path::new("doc.md"), 800, || Ok(()))
+            .unwrap()
+            .expect("an unclosed fence still says so, blank or not");
+        assert_eq!(unclosed.total, 1);
+        assert!(
+            unclosed.diagrams[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("not closed")),
+            "an unclosed blank fence keeps its own error"
+        );
+    }
+
+    #[test]
+    fn a_blank_mermaid_file_has_no_diagrams() {
+        for (name, source) in [
+            ("blank.mmd", ""),
+            ("blank.mmd", " \n\t\r\n"),
+            ("blank.mermaid", "\n"),
+        ] {
+            assert!(
+                preview(source, Path::new(name), 800, || Ok(()))
+                    .unwrap()
+                    .is_none(),
+                "{name} holding {source:?} has no diagrams"
+            );
+        }
+        let rendered = preview("not a diagram", Path::new("text.mmd"), 800, || Ok(()))
+            .unwrap()
+            .expect("a Mermaid file with text is one diagram's source");
+        assert_eq!(rendered.total, 1);
+        assert!(
+            rendered.diagrams[0].error.is_some(),
+            "text that does not parse says so on its own page"
+        );
+    }
 
     #[test]
     fn renders_supported_diagrams_to_bounded_pixels() {

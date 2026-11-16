@@ -17,13 +17,26 @@ import tempfile
 import time
 
 
-APP_ID = "com.gitturtle.desktop"
+APP_ID = "com.gitturtle.GitTurtle"
+# Earlier bundles installed their launcher and icons under these IDs. Installing
+# removes them, and the installation's backup keeps them for --rollback.
+LEGACY_APP_IDS = ("com.gitturtle.desktop",)
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
 MACHINE_TARGETS = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}
 
 
 def fail(message):
     raise RuntimeError(message)
+
+
+def desktop_files(app_id):
+    """The launcher and icons installed under one application ID."""
+    return {f"icons/{app_id}.png", f"applications/{app_id}.desktop",
+            *(f"icons/hicolor/{size}x{size}/apps/{app_id}.png" for size in ICON_SIZES)}
+
+
+LEGACY_DESKTOP_FILES = set().union(*map(desktop_files, LEGACY_APP_IDS))
+DESKTOP_FILES = desktop_files(APP_ID) | LEGACY_DESKTOP_FILES
 
 
 def owned_directory(data, relative):
@@ -132,9 +145,8 @@ def owned_target(base, name, home, data):
     allowed = (
         base == "home" and name == ".local/bin/gitturtle"
         or base == "data" and (
-            name in {f"icons/{APP_ID}.png", f"applications/{APP_ID}.desktop", "gitturtle/build-info.json"}
+            name == "gitturtle/build-info.json" or name in DESKTOP_FILES
             or name.startswith("gitturtle/licenses/")
-            or name in {f"icons/hicolor/{size}x{size}/apps/{APP_ID}.png" for size in ICON_SIZES}
         )
     )
     if not allowed:
@@ -154,9 +166,8 @@ def owned_target(base, name, home, data):
 
 
 def installed_targets(home, data):
-    targets = {("home", ".local/bin/gitturtle"), ("data", "gitturtle/build-info.json"),
-               ("data", f"icons/{APP_ID}.png"), ("data", f"applications/{APP_ID}.desktop")}
-    targets.update(("data", f"icons/hicolor/{size}x{size}/apps/{APP_ID}.png") for size in ICON_SIZES)
+    targets = {("home", ".local/bin/gitturtle"), ("data", "gitturtle/build-info.json")}
+    targets.update(("data", name) for name in DESKTOP_FILES)
     licenses = data / "gitturtle/licenses"
     if licenses.exists():
         targets.update(("data", str(path.relative_to(data))) for path in licenses.rglob("*")
@@ -381,6 +392,9 @@ def install_bundle(home, data):
             replace_file(bundle / "install.py", data / "gitturtle/install.py", 0o755)
             for source, destination, mode in payload:
                 replace_file(source, destination, mode)
+            # One launcher: an earlier ID's entry would list GitTurtle twice.
+            for name in sorted(LEGACY_DESKTOP_FILES):
+                owned_target("data", name, home, data).unlink(missing_ok=True)
         except BaseException:
             restore_backup(backup, home, data)
             raise

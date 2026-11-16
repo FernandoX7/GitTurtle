@@ -3,9 +3,10 @@ use appearance::custom::{CustomTheme, ThemeSelection};
 use appearance::{CodeFont, Density, ThemeChoice};
 use columns::{ColumnId, ColumnSettings};
 use gitturtle_core::WriteCommand;
-use gpui_kit::base::{Scrollbar, ScrollbarMode};
+use gpui_kit::base::{FocusableExt, Scrollbar, ScrollbarMode};
 use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
+use preferences::DisplayChoice;
 use std::path::Path;
 
 /// Fixed list rows are snapped by GPUI before layout. Preserve row positions
@@ -110,6 +111,15 @@ fn planned_rows_top(
     top
 }
 
+/// A Page Up, Page Down, Home or End in Settings (`scroll_settings_page`).
+#[derive(Clone, Copy)]
+pub(super) enum PageStep {
+    Up,
+    Down,
+    Top,
+    Bottom,
+}
+
 /// Scroll the Settings page the least that brings the span from window y
 /// `top` to `bottom`, measured at the page's current offset, inside the
 /// page's viewport, as the Your themes list's own Nearest reveal does inside
@@ -169,7 +179,19 @@ struct RowFill {
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
 pub(super) struct DraftState {
     branch: String,
-    identity: Option<(PathBuf, (String, String))>,
+    /// The repository Name and Email hold text for, and the identity they
+    /// were last filled with there: `None` while they wait for one to be
+    /// read ([`GitTurtle::loaded_identity`]), empty with their placeholders
+    /// but for what the person typed for that repository
+    /// ([`GitTurtle::sync_identity_fields`]).
+    identity: Option<(PathBuf, Option<(String, String)>)>,
+    /// The settings whose save last failed, in use and not on disk, until a
+    /// save of the settings in use succeeds: Return in Default branch saves
+    /// them again, as Retry save does (`GitTurtle::save_default_branch`),
+    /// whatever the window's error line says by then. Read from that
+    /// line's text, the failure was forgotten once another operation's
+    /// error replaced it, and Return in the field saved nothing.
+    failed_save: Option<AppSettings>,
 }
 
 impl DraftState {
@@ -177,6 +199,7 @@ impl DraftState {
         Self {
             branch,
             identity: None,
+            failed_save: None,
         }
     }
     fn branch_update(&mut self, saved: &str, edited: &str) -> Option<String> {
@@ -192,18 +215,32 @@ impl DraftState {
         effective: &(String, String),
         edited: &(String, String),
     ) -> Option<(String, String)> {
-        if let Some((scope, baseline)) = &self.identity
+        if let Some((scope, Some(baseline))) = &self.identity
             && scope == path
             && edited != baseline
             && edited != effective
         {
             return None;
         }
-        self.identity = Some((path.to_owned(), effective.clone()));
+        self.identity = Some((path.to_owned(), Some(effective.clone())));
         (edited != effective).then(|| effective.clone())
     }
     fn reset_identity(&mut self, path: Option<&Path>, effective: (String, String)) {
-        self.identity = path.map(|path| (path.to_owned(), effective));
+        self.identity = path.map(|path| (path.to_owned(), Some(effective)));
+    }
+    /// Whether `value`, the text of field `index` (Name, then Email), is
+    /// one read from the repository rather than typed: the identity the
+    /// window holds, `read`, or the one the fields were last filled with,
+    /// `baseline`, which an unsaved edit of the other field keeps.
+    fn was_read(
+        baseline: &(String, String),
+        read: Option<&(String, String)>,
+        index: usize,
+        value: &str,
+    ) -> bool {
+        let holds =
+            |(name, email): &(String, String)| *value == *if index == 0 { name } else { email };
+        read.is_some_and(holds) || holds(baseline)
     }
 }
 
@@ -255,26 +292,62 @@ impl GitTurtle {
             }));
         // A change in one of the page's inputs reaches the page through its
         // own observation of the input (`SettingsPage::new`); the app has
-        // nothing outside the page that shows an unsaved value.
-        self.subscriptions.push(cx.subscribe_in(
+        // nothing outside the page that shows an unsaved value. Return in a
+        // field saves from the page's key-down listener
+        // (`Self::settings_field_enter`).
+    }
+
+    /// Return in the Default branch field saves it, and in Name or Email the
+    /// repository's Git identity, once per press: a plain Enter (Shift-Enter
+    /// too) going down, not marked held, not repeating the press the toolkit
+    /// recorded (`enter_press_is_repeat`), in the field focused as that press
+    /// began (`enter_press_began_on`), the conditions a dialog's default
+    /// action keeps and the project hub's fields keep. The page's key-down
+    /// listener asks, after the field's own Enter has let the key go on. The
+    /// fields saved on their own `PressEnter`, which the field sends for
+    /// every Enter key-down, a held key's repeats included on every platform,
+    /// so a held Return after an identity write that failed at once began
+    /// another Git configuration write on each repeat. The secondary Enter
+    /// (Command-Enter on macOS, Control-Enter elsewhere) saves nothing: on
+    /// macOS it records no press, since Cocoa sends no key-up for a key
+    /// pressed with Command held, so its repeats could not be told from
+    /// presses. Neither does an Alt- or Fn-Enter.
+    fn settings_field_enter(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let modifiers = &event.keystroke.modifiers;
+        if event.keystroke.key != "enter"
+            || event.is_held
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || modifiers.function
+        {
+            return;
+        }
+        let Some((index, field)) = [
             &self.settings_branch,
-            window,
-            |this, _, event, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.save_default_branch(window, cx)
-                }
-            },
-        ));
-        for input in [&self.identity_name, &self.identity_email] {
-            self.subscriptions.push(cx.subscribe_in(
-                input,
-                window,
-                |this, _, event, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        this.save_identity(window, cx)
-                    }
-                },
-            ));
+            &self.identity_name,
+            &self.identity_email,
+        ]
+        .into_iter()
+        .map(|field| field.read(cx).focus_handle(cx))
+        .enumerate()
+        .find(|(_, field)| field.is_focused(window)) else {
+            return;
+        };
+        if gpui_kit::base::enter_press_is_repeat(window, cx)
+            || !gpui_kit::base::enter_press_began_on(&field, window, cx)
+        {
+            return;
+        }
+        if index == 0 {
+            self.save_default_branch(window, cx);
+        } else {
+            self.save_identity(window, cx);
         }
     }
 
@@ -322,6 +395,27 @@ impl GitTurtle {
         App::notify(cx, self.settings_page.entity_id());
     }
 
+    /// Page Up and Page Down move the Settings page by most of its viewport,
+    /// as they move the commit message; Home and End go to its top and
+    /// bottom. On another page the key goes on to the focused view.
+    pub(super) fn scroll_settings_page(&self, step: PageStep, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings {
+            cx.propagate();
+            return;
+        }
+        let page = self.theme_editor.page_scroll();
+        let offset = page.offset();
+        let bottom = -page.max_offset().y;
+        let y = match step {
+            PageStep::Up => offset.y + page.bounds().size.height * 0.85,
+            PageStep::Down => offset.y - page.bounds().size.height * 0.85,
+            PageStep::Top => Pixels::ZERO,
+            PageStep::Bottom => bottom,
+        };
+        page.set_offset(point(offset.x, y.max(bottom).min(Pixels::ZERO)));
+        self.notify_settings_page(cx);
+    }
+
     /// What the page shows that other features change: the operation error
     /// and busy state (`workspace::write` and its completion), the status
     /// line, the effective identity a status reply resolves and the open
@@ -332,12 +426,16 @@ impl GitTurtle {
         PageKey {
             error: self.operation_error.clone(),
             busy: self.operation_busy.is_some(),
+            looks_busy: self.operation_shown().is_some(),
             status: self.status.clone(),
             profile: self.profile.clone(),
+            identity_loaded: self.loaded_identity().is_some(),
+            identity_wait: self.identity_wait(),
             repository: self.repository.as_ref().map(|repository| {
                 let path = repository.path();
                 (path.to_owned(), self.project_name(path))
             }),
+            marked: self.shown_tab_unavailable(),
         }
     }
 
@@ -363,17 +461,42 @@ impl GitTurtle {
             self.theme_editor.settings_entered();
         }
         self.capture_page_return_focus(window, cx);
-        self.cancel_branch_action();
-        self.cancel_interactive_rebase_action();
-        self.cancel_discard_action();
         self.page = AppPage::Settings;
+        // Cancels every review being prepared, and runs the read Changes
+        // asked for meanwhile, which their ends would have run: clicking the
+        // tab back, which reads nothing, once left Refresh unrun.
+        self.end_preparations(page_navigation::PageSwitch::Away, window, cx);
         self.column_menu = false;
         self.column_drag = None;
         self.image_drag = None;
         self.end_image_drag();
         self.sync_settings_drafts(window, cx);
-        window.focus(&self.app_focus, cx);
+        // Focus opens on the page's first control, inside the page so the
+        // application's keys still reach the window's handlers, with its
+        // ring drawn and the page scrolled to show it, as a key moving focus
+        // there would, whether a key or a click opened the page.
+        let first = self.settings_first_control(cx);
+        window.focus(&first, cx);
+        self.focus_ring.mark(window);
+        self.theme_editor.page().reveal_next_focus();
         self.repaint_page(window, cx);
+    }
+
+    /// The control Settings opens with focus on, its first: Follow system
+    /// appearance, or, while the desktop's Omarchy theme decides the
+    /// appearance and that switch is unavailable, the selected theme's card.
+    /// The page opened with focus on the window's root, which draws nothing,
+    /// so nothing showed where the keyboard stood until a Tab landed on the
+    /// tab strip.
+    fn settings_first_control(&self, cx: &mut App) -> FocusHandle {
+        if !self.follows_desktop_theme(cx) {
+            return self.page_focus("follow-system", cx);
+        }
+        let selected = self.settings.theme.on_desktop(cx);
+        self.theme_card_focus
+            .iter()
+            .find_map(|(drawn, focus)| (*drawn == selected).then(|| focus.clone()))
+            .unwrap_or_else(|| self.app_focus.clone())
     }
 
     pub(super) fn capture_page_return_focus(&mut self, window: &Window, cx: &App) {
@@ -385,19 +508,85 @@ impl GitTurtle {
         }
     }
 
-    fn fill_identity_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let profile = self.profile.clone().unwrap_or_default();
-        self.settings_drafts.reset_identity(
-            self.repository.as_ref().map(|repository| repository.path()),
-            (profile.name.clone(), profile.email.clone()),
-        );
-        self.identity_name
-            .update(cx, |input, cx| input.set_value(profile.name, window, cx));
-        self.identity_email
-            .update(cx, |input, cx| input.set_value(profile.email, window, cx));
+    /// The Git identity Settings has loaded, the one answer its fields'
+    /// fill, Save repository identity, Reset edits, their handlers, the
+    /// identity line, the signing line and the note all ask: the identity
+    /// read for the repository the tab now shows, and since its mark where
+    /// it was marked ([`Self::read_since_the_mark`]). The window's identity
+    /// goes as another repository is shown (`forget_repository_state`, a
+    /// warm tab's own restored), so one held is the shown repository's. Until
+    /// such a read lands Settings has none (decided 2026-11-15: a write acts
+    /// only on the captured repository and on values read from it, and
+    /// nothing from before the mark): on a cold tab until its status read
+    /// lands, for good where that read fails, on a marked tab, after a
+    /// Refresh's snapshot has cleared the mark in place, and in a tab left
+    /// meanwhile and come back to. Each asked the window's identity alone,
+    /// or nothing: Save, offered whenever none was held, wrote the Name and
+    /// Email another repository's read had left in the fields into the one
+    /// shown, and after a mark the ones read before it.
+    pub(super) fn loaded_identity(&self) -> Option<&gitturtle_core::GitProfile> {
+        (self.profile.as_ref()).filter(|_| self.repository.is_some() && self.read_since_the_mark())
+    }
+
+    /// Why Save repository identity and Reset edits are refused where no
+    /// identity is loaded ([`Self::loaded_identity`]), in the words the
+    /// bar's Fetch, Pull and Push give for the same two states of the same
+    /// read: "Reading the working tree…" while the working state, which
+    /// brings the identity, is read or waits to be
+    /// (`working_read_pending`), "Working tree not read · Refresh" where
+    /// none is, as after a read that failed. `None` where one is loaded,
+    /// with no repository shown, and on a marked tab, whose own words win.
+    fn identity_wait(&self) -> Option<&'static str> {
+        if self.repository.is_none()
+            || self.shown_tab_unavailable()
+            || self.loaded_identity().is_some()
+        {
+            return None;
+        }
+        Some(if self.working_read_pending() {
+            crate::workspace::READING_WORKING_TREE
+        } else {
+            crate::workspace::NOT_READ_REASON
+        })
+    }
+
+    /// Reset edits: Name and Email take the loaded identity again, which
+    /// becomes what they were last filled with. Refused while a write runs
+    /// and where no identity is loaded ([`Self::loaded_identity`]), as its
+    /// Button is, so a press that reaches it there restores nothing: it
+    /// put the identity read before the mark back into both fields, to be
+    /// kept as an edit and saved.
+    pub(super) fn reset_identity_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() {
+            return;
+        }
+        let Some(path) = self
+            .repository
+            .as_ref()
+            .map(|repository| repository.path().to_owned())
+        else {
+            return;
+        };
+        let Some(read) = self
+            .loaded_identity()
+            .map(|profile| (profile.name.clone(), profile.email.clone()))
+        else {
+            return;
+        };
+        for (input, value) in [
+            (&self.identity_name, &read.0),
+            (&self.identity_email, &read.1),
+        ] {
+            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+        }
+        self.settings_drafts.reset_identity(Some(&path), read);
     }
 
     fn sync_settings_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // On every page: a mark comes and goes behind any of them, and what
+        // a read left in the fields goes with it.
+        self.note_the_mark();
+        self.withhold_identity_fields(window, cx);
         if self.page != AppPage::Settings {
             return;
         }
@@ -408,23 +597,126 @@ impl GitTurtle {
             self.settings_branch
                 .update(cx, |input, cx| input.set_value(value, window, cx));
         }
-        let (Some(repository), Some(profile)) = (&self.repository, &self.profile) else {
+        self.sync_identity_fields(window, cx);
+    }
+
+    /// With no identity loaded for the repository Name and Email hold text
+    /// for ([`Self::loaded_identity`]), empties each holding a value read
+    /// from it (`DraftState::was_read`), to wait with its placeholder for
+    /// the read that loads one, while text the person typed and has not
+    /// saved is theirs and stays as typed (decided 2026-11-14). On every
+    /// page, as the app notifies: a field's text is the person's only if
+    /// they typed it, whichever page shows as the mark or the read lands.
+    /// Done only while Settings showed, a Name typed there and left unsaved
+    /// kept the Email read before a mark that came and went behind History,
+    /// both taken for one unfinished edit as the read after the mark landed,
+    /// and Save wrote that Email over the one configured since (the code
+    /// re-check of FU44-D11).
+    fn withhold_identity_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
             return;
         };
-        let effective = (profile.name.clone(), profile.email.clone());
-        let edited = (
-            self.identity_name.read(cx).value().to_string(),
-            self.identity_email.read(cx).value().to_string(),
-        );
-        if let Some((name, email)) =
-            self.settings_drafts
-                .identity_update(repository.path(), &effective, &edited)
-        {
-            self.identity_name
-                .update(cx, |input, cx| input.set_value(name, window, cx));
-            self.identity_email
-                .update(cx, |input, cx| input.set_value(email, window, cx));
+        if self.loaded_identity().is_some() {
+            return;
         }
+        let Some(baseline) = (self.settings_drafts.identity.as_mut())
+            .filter(|(scope, _)| scope.as_path() == path)
+            .and_then(|(_, filled)| filled.take())
+        else {
+            return;
+        };
+        // What the window holds, where it holds one, is not loaded: read
+        // before the mark, as the baseline was.
+        let read = self
+            .profile
+            .as_ref()
+            .map(|profile| (profile.name.clone(), profile.email.clone()));
+        for (index, field) in [&self.identity_name, &self.identity_email]
+            .into_iter()
+            .enumerate()
+        {
+            let value = field.read(cx).value();
+            if !value.is_empty() && DraftState::was_read(&baseline, read.as_ref(), index, &value) {
+                field.update(cx, |input, cx| input.set_value("", window, cx));
+            }
+        }
+    }
+
+    /// Brings Name and Email to the repository shown and the identity loaded
+    /// for it ([`Self::loaded_identity`]), as Settings is shown, as the app
+    /// notifies while it is, and before Save reads them:
+    ///
+    /// - Holding text for another repository, read or typed, both take the
+    ///   loaded identity, or wait empty: nothing of another repository
+    ///   follows to this one. Left as they were while none was loaded, they
+    ///   kept the other's Name and Email for Save to write here, and as the
+    ///   tab was marked they were taken for the person's typing and kept
+    ///   through the mark (the security re-check of FU44-D10, X1 and X2).
+    /// - With none loaded, each holding a value read from the repository
+    ///   waits empty ([`Self::withhold_identity_fields`]).
+    /// - As one is loaded after such a wait, each still empty takes what it
+    ///   found, which is what the fields were last filled with, so typing
+    ///   meanwhile stays an edit.
+    /// - Loaded before and now, they follow the read unless they hold an
+    ///   unfinished edit (`DraftState::identity_update`).
+    fn sync_identity_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.withhold_identity_fields(window, cx);
+        let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
+            return;
+        };
+        let loaded = self
+            .loaded_identity()
+            .map(|profile| (profile.name.clone(), profile.email.clone()));
+        let fields = [&self.identity_name, &self.identity_email];
+        // A field given the value it holds would only draw the window again.
+        let set = |index: usize, value: &str, window: &mut Window, cx: &mut Context<Self>| {
+            if fields[index].read(cx).value().as_ref() != value {
+                fields[index].update(cx, |input, cx| {
+                    input.set_value(value.to_owned(), window, cx)
+                });
+            }
+        };
+        let filled = match &mut self.settings_drafts.identity {
+            Some((scope, filled)) if scope.as_path() == path => filled,
+            held => {
+                let (name, email) = loaded.clone().unwrap_or_default();
+                set(0, &name, window, cx);
+                set(1, &email, window, cx);
+                *held = Some((path.to_owned(), loaded));
+                return;
+            }
+        };
+        match (filled.as_mut(), loaded) {
+            // Emptied already of what a read left, and waiting.
+            (_, None) => {}
+            (None, Some(read)) => {
+                for (index, value) in [&read.0, &read.1].into_iter().enumerate() {
+                    if fields[index].read(cx).value().is_empty() {
+                        set(index, value, window, cx);
+                    }
+                }
+                *filled = Some(read);
+            }
+            (Some(_), Some(read)) => {
+                let edited = (
+                    fields[0].read(cx).value().to_string(),
+                    fields[1].read(cx).value().to_string(),
+                );
+                if let Some((name, email)) =
+                    self.settings_drafts.identity_update(path, &read, &edited)
+                {
+                    set(0, &name, window, cx);
+                    set(1, &email, window, cx);
+                }
+            }
+        }
+    }
+
+    /// Whether Settings' Name or Email holds keyboard focus.
+    pub(super) fn identity_field_focused(&self, window: &Window, cx: &App) -> bool {
+        [&self.identity_name, &self.identity_email]
+            .into_iter()
+            .any(|field| field.focus_handle(cx).is_focused(window))
     }
 
     /// This method never replaces current UI settings with an older disk reply.
@@ -432,7 +724,8 @@ impl GitTurtle {
     pub(super) fn save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.normalize();
         if let Err(error) = self.settings.validate() {
-            self.operation_error = Some(format!("Could not save settings: {error:#}"));
+            self.operation_error = Some(format!("Could not save settings: {error:#}").into());
+            self.settings_drafts.failed_save = Some(self.settings.clone());
             cx.notify();
             return;
         }
@@ -462,10 +755,13 @@ impl GitTurtle {
                         {
                             this.operation_error = None;
                         }
+                        this.settings_drafts.failed_save = None;
                         this.status = "Settings saved".into();
                     }
                     Err(error) => {
-                        this.operation_error = Some(format!("Could not save settings: {error:#}"));
+                        this.operation_error =
+                            Some(format!("Could not save settings: {error:#}").into());
+                        this.settings_drafts.failed_save = Some(submitted);
                     }
                 }
                 // A completed save costs a whole-window frame, so it only asks
@@ -571,6 +867,123 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// Settings' Reduce motion or Increase contrast: the title and the
+    /// description of the current choice at the row's left edge, the three
+    /// choices at its trailing edge, built as List density's segments and
+    /// stacked below the title in a `narrow` page. The description says what
+    /// the desktop asks while following it, and the row keeps the height of
+    /// its tallest description, so a choice moves nothing.
+    fn render_display_setting(
+        &self,
+        setting: DisplaySetting,
+        narrow: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = palette(cx);
+        let choice = setting.choice(&self.settings);
+        let asks = setting.asks(native_accessibility::display_preferences(cx));
+        let reserve = setting.descriptions().map(SharedString::from);
+        let key = setting.key();
+        let focus: Vec<_> = (0..DisplayChoice::ALL.len())
+            .map(|index| self.page_focus((key, index), cx))
+            .collect();
+        // A focused segment shows its whole row, the description a choice
+        // changes with it.
+        let (row_in_view, segments_drawn) = self.keep_row_in_view(&focus, cx);
+        let segments = div()
+            .debug_selector(move || format!("{key}-segments"))
+            .on_children_prepainted(segments_drawn)
+            .flex()
+            .flex_shrink_0()
+            .gap_1()
+            .p_1()
+            .rounded(px(8.))
+            .bg(rgb(p.canvas))
+            .children(
+                DisplayChoice::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, option)| {
+                        display_segment(setting, index, option == choice, &focus[index]).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.choose_display(setting, option, window, cx)
+                            }),
+                        )
+                    }),
+            );
+        div()
+            .on_children_prepainted(row_in_view)
+            .child(
+                div()
+                    .debug_selector(move || format!("{key}-row"))
+                    .flex()
+                    // Every row's trailing control, these segments as List
+                    // density's, the text sizes', each switch's track and
+                    // Your themes' actions, is centred on the title's first
+                    // line (`on_title_line`), where it stays as the
+                    // description rewraps; centred on the row, it drifted
+                    // down with each wrapped line.
+                    .items_start()
+                    .justify_between()
+                    .gap_3()
+                    .when(narrow, |row| row.flex_col())
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(rgb(p.border))
+                    // Stacked, the text takes the row's width, so its longest
+                    // description wraps inside the card rather than widening it.
+                    .child(
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .map(|text| if narrow { text.w_full() } else { text.flex_1() })
+                            .child(read_setting_text(
+                                setting.title(),
+                                &setting.description(choice, asks).into(),
+                                &reserve,
+                                cx,
+                            )),
+                    )
+                    // Below the separator, the row's top padding is the
+                    // room above its title.
+                    .child(if narrow {
+                        segments.into_any_element()
+                    } else {
+                        on_title_line(segments, rem(), cx).into_any_element()
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// A Reduce motion or Increase contrast segment pressed: the choice is
+    /// kept, resolved with the desktop's answer and shown at once (a change
+    /// of More contrast applies the theme again, traced as
+    /// `gitturtle.contrast_apply_frame_ms` from here to the next frame), and
+    /// saved.
+    fn choose_display(
+        &mut self,
+        setting: DisplaySetting,
+        choice: DisplayChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let started = trace_enabled().then(std::time::Instant::now);
+        let current = match setting {
+            DisplaySetting::ReduceMotion => &mut self.settings.reduce_motion,
+            DisplaySetting::IncreaseContrast => &mut self.settings.increase_contrast,
+        };
+        if *current == choice {
+            return;
+        }
+        *current = choice;
+        native_accessibility::set_display_choices(&self.settings, cx);
+        native_accessibility::sync_preferences(cx);
+        self.show_display_preferences(started, window, cx);
+        self.notify_settings_page(cx);
+        cx.notify();
+        self.save_preferences(window, cx);
+    }
+
     /// Linux: code in the desktop's fontconfig `monospace` family, used only
     /// when the toolkit loaded it and it draws at one advance.
     fn render_code_font_setting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -583,12 +996,15 @@ impl GitTurtle {
         {
             use crate::desktop_text::{self, SystemCodeFont};
             let bundled = crate::mono();
-            let description: SharedString = match desktop_text::system_code_font(cx) {
-                SystemCodeFont::Off => format!(
-                    "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
-                )
-                .into(),
-                SystemCodeFont::Pending => "Looking up the desktop's monospace font…".into(),
+            let focus = self.page_focus("settings-system-code-font", cx);
+            let off: SharedString = format!(
+                "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
+            )
+            .into();
+            let pending: SharedString = "Looking up the desktop's monospace font…".into();
+            let description = match desktop_text::system_code_font(cx) {
+                SystemCodeFont::Off => off.clone(),
+                SystemCodeFont::Pending => pending.clone(),
                 SystemCodeFont::Loaded(family) => {
                     format!("Code uses {family}, the desktop's monospace font.").into()
                 }
@@ -599,28 +1015,38 @@ impl GitTurtle {
             Some(
                 div()
                     .debug_selector(|| "code-font-setting".into())
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
-                        "Use the desktop's monospace font",
-                        description,
-                        cx,
-                    ))
                     .child(
-                        div().debug_selector(|| "code-font-switch".into()).child(
-                            Switch::new("settings-system-code-font")
-                                .accessibility_label("Use the desktop's monospace font for code")
+                        div()
+                            .on_children_prepainted(
+                                self.keep_in_view(vec![Some(focus.clone())], cx),
+                            )
+                            .debug_selector(|| "code-font-switch".into())
+                            .child(
+                                // Toggling shows the pending line, then the
+                                // answer, and turning off shows the off line:
+                                // the row keeps the height of the tallest, so
+                                // neither the Switch nor the rows below move
+                                // when one replaces another.
+                                switch_row(
+                                    "settings-system-code-font",
+                                    "Use the desktop's monospace font",
+                                    "Use the desktop's monospace font for code",
+                                    description,
+                                    &[off, pending],
+                                    cx,
+                                )
+                                .track_focus(&focus)
                                 .checked(self.settings.system_code_font)
-                                .on_click(cx.listener(|this, checked: &bool, window, cx| {
-                                    if this.settings.system_code_font != *checked {
-                                        this.settings.system_code_font = *checked;
-                                        desktop_text::set_system_code_font(*checked, cx);
-                                        this.save_preferences(window, cx);
-                                    }
-                                })),
-                        ),
+                                .on_click(cx.listener(
+                                    |this, checked: &bool, window, cx| {
+                                        if this.settings.system_code_font != *checked {
+                                            this.settings.system_code_font = *checked;
+                                            desktop_text::set_system_code_font(*checked, cx);
+                                            this.save_preferences(window, cx);
+                                        }
+                                    },
+                                )),
+                            ),
                     )
                     .into_any_element(),
             )
@@ -646,6 +1072,10 @@ impl GitTurtle {
             )
         };
         let p = palette(cx);
+        let index = usize::from(code);
+        let decrease = self.page_focus(("text-size-decrease", index), cx);
+        let increase = self.page_focus(("text-size-increase", index), cx);
+        let reset = self.page_focus(("text-size-reset", index), cx);
         div()
             .debug_selector(move || {
                 format!(
@@ -654,65 +1084,100 @@ impl GitTurtle {
                 )
             })
             .flex()
-            .flex_wrap()
-            .items_center()
+            .flex_col()
             .gap_3()
-            .child(div().flex_1().min_w(px(180.)).child(setting_description(
-                label,
-                explanation,
-                cx,
-            )))
+            // Rows are spaced more than a rem apart. Too narrow for the
+            // controls beside the text, the row puts them on a line of their
+            // own below it.
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new(("text-size-decrease", usize::from(code)))
-                            .small()
-                            .ghost()
-                            .label("−")
-                            .accessibility_label(format!("Decrease {}", label.to_lowercase()))
-                            .disabled(value <= *bounds.start())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.choose_text_size(code, value.saturating_sub(1), window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(("text-size-value", usize::from(code)))
-                            .role(Role::Label)
-                            .aria_label(format!("{label}, {value} points"))
+                wrapping_row(
+                    div().debug_selector(move || {
+                        format!("text-size-row-{}", if code { "code" } else { "interface" })
+                    }),
+                    setting_description(label, explanation, cx),
+                    div()
+                        .debug_selector(move || {
+                            format!(
+                                "text-size-controls-{}",
+                                if code { "code" } else { "interface" }
+                            )
+                        })
+                        .on_children_prepainted(self.keep_in_view(
+                            vec![
+                                Some(decrease.clone()),
+                                None,
+                                Some(increase.clone()),
+                                Some(reset.clone()),
+                            ],
+                            cx,
+                        ))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            Button::new(("text-size-decrease", usize::from(code)))
+                                .track_focus(&decrease)
+                                .debug_selector(move || {
+                                    format!(
+                                        "text-size-decrease-{}",
+                                        if code { "code" } else { "interface" }
+                                    )
+                                })
+                                .small()
+                                .ghost()
+                                .label("−")
+                                .accessibility_label(format!("Decrease {}", label.to_lowercase()))
+                                .disabled(value <= *bounds.start())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_text_size(code, value.saturating_sub(1), window, cx)
+                                })),
+                        )
+                        .child(
+                            native_accessibility::static_text(
+                                div().id(("text-size-value", usize::from(code))),
+                                format!("{label}, {value} points"),
+                            )
                             .min_w(appearance::ui_size(42.))
                             .text_center()
                             .text_size(appearance::ui_text(12.))
                             .child(format!("{value} pt")),
-                    )
-                    .child(
-                        Button::new(("text-size-increase", usize::from(code)))
-                            .small()
-                            .ghost()
-                            .label("+")
-                            .accessibility_label(format!("Increase {}", label.to_lowercase()))
-                            .disabled(value >= *bounds.end())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.choose_text_size(code, value.saturating_add(1), window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(("text-size-reset", usize::from(code)))
-                            .small()
-                            .ghost()
-                            .label("Reset")
-                            .accessibility_label(format!(
-                                "Reset {} to {default} points",
-                                label.to_lowercase()
-                            ))
-                            .disabled(value == default)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.choose_text_size(code, default, window, cx)
-                            })),
-                    ),
+                        )
+                        .child(
+                            Button::new(("text-size-increase", usize::from(code)))
+                                .track_focus(&increase)
+                                .small()
+                                .ghost()
+                                .label("+")
+                                .accessibility_label(format!("Increase {}", label.to_lowercase()))
+                                .disabled(value >= *bounds.end())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_text_size(code, value.saturating_add(1), window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(("text-size-reset", usize::from(code)))
+                                .track_focus(&reset)
+                                .small()
+                                .ghost()
+                                .label("Reset")
+                                .accessibility_label(format!(
+                                    "Reset {} to {default} points",
+                                    label.to_lowercase()
+                                ))
+                                .disabled(value == default)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_text_size(code, default, window, cx)
+                                })),
+                        ),
+                    // The kit's small Buttons' height (`h_6`), which the value
+                    // between them does not exceed.
+                    rem() * 1.5,
+                    rem(),
+                    cx,
+                )
+                // The small ghost −'s frame pads its label by the small Button's
+                // 0.5 rem (`px_2`): wrapped, its label stands on the title's edge.
+                .ghost_lead(rem() * 0.5),
             )
             .child(
                 div()
@@ -851,11 +1316,14 @@ impl GitTurtle {
             return;
         };
         // A choice of the card waiting for its read applies what it finds
-        // (`choose_omarchy`), so nothing applies here meanwhile.
+        // (`choose_omarchy`), so nothing applies here meanwhile. The palette
+        // is compared as it would be applied: with More contrast on, the
+        // applied global is the adjusted one, so the raw palette always
+        // differed and every revision applied it again.
         if self.settings.theme == ThemeSelection::Omarchy
             && self.omarchy_choice.waiting.is_none()
             && self.theme_editor.preview().is_none()
-            && self.effective_theme(cx).palette != palette(cx)
+            && self.effective_theme(cx).palette.as_applied(cx) != palette(cx)
         {
             self.apply_appearance(window, cx);
             if let (true, false, Some(arrived)) = (trace_enabled(), first, card.arrived) {
@@ -982,7 +1450,7 @@ impl GitTurtle {
         let mut edited = self.settings.clone();
         edited.default_branch = self.settings_branch.read(cx).value().to_string();
         if let Err(error) = edited.validate() {
-            self.operation_error = Some(format!("Default branch: {error:#}"));
+            self.operation_error = Some(format!("Default branch: {error:#}").into());
             cx.notify();
             return;
         }
@@ -994,32 +1462,56 @@ impl GitTurtle {
             self.operation_error = None;
             cx.notify();
         }
-        if edited == self.settings {
+        // A save that failed leaves the value it carried in use and on screen,
+        // with the failure and Retry save beside it, as every setting's does:
+        // a press then saves it again, as Retry save would, until a save
+        // succeeds, even once another operation's error has replaced the
+        // failure's (`DraftState::failed_save`). A press found nothing new
+        // and did nothing, so Return in the field, which still shows the
+        // value, was a dead key until another setting changed.
+        let save_failed = self.settings_drafts.failed_save.as_ref() == Some(&self.settings);
+        if edited == self.settings && !save_failed {
             return;
         }
-        self.settings = edited;
-        self.hub.update(cx, |hub, cx| {
-            hub.set_default_branch(self.settings.default_branch.clone(), cx)
-        });
+        if edited != self.settings {
+            self.settings = edited;
+            self.hub.update(cx, |hub, cx| {
+                hub.set_default_branch(self.settings.default_branch.clone(), cx)
+            });
+        }
         self.save_preferences(window, cx);
     }
 
-    fn save_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.repository.is_none() || self.operation_busy.is_some() {
+    /// Saves the identity fields to the shown repository's Git
+    /// configuration, refused on a marked tab, whose repository is the one
+    /// read before the mark: where its `.git` came back before a read, the
+    /// save wrote `user.name` and `user.email` there (security re-check of
+    /// FU44-D3; decided 2026-11-11: an entry is offered only where it can
+    /// act), as Apply profile… is refused there. Refused too wherever no
+    /// identity is loaded for the repository shown
+    /// ([`Self::loaded_identity`]), by Return in a field or a stale press as
+    /// by the Button, and the fields are brought to that repository before
+    /// they are read ([`Self::sync_identity_fields`]), so what is written
+    /// was typed for it or read from it since its mark.
+    pub(super) fn save_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() {
             return;
         }
+        self.sync_identity_fields(window, cx);
         let name = self.identity_name.read(cx).value().trim().to_owned();
         let email = self.identity_email.read(cx).value().trim().to_owned();
+        let Some(unchanged) = self
+            .loaded_identity()
+            .map(|loaded| loaded.name == name && loaded.email == email)
+        else {
+            return;
+        };
         if name.is_empty() || email.is_empty() {
             self.operation_error = Some("Enter both your Git name and email address.".into());
             cx.notify();
             return;
         }
-        if self
-            .profile
-            .as_ref()
-            .is_some_and(|profile| profile.name == name && profile.email == email)
-        {
+        if unchanged {
             return;
         }
         self.write(
@@ -1030,8 +1522,26 @@ impl GitTurtle {
         );
     }
 
-    pub(super) fn render_columns_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// History's column controls, in Settings (`in_settings`) or History's
+    /// own Columns panel. In Settings the keyboard focusing one scrolls the
+    /// page to show it.
+    pub(super) fn render_columns_controls(
+        &self,
+        in_settings: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
+        let focus =
+            |id: ElementId, cx: &mut Context<Self>| in_settings.then(|| self.page_focus(id, cx));
+        // Outside Settings nothing records where the controls lie.
+        let keep_in_view = |handles: Vec<Option<FocusHandle>>, cx: &App| {
+            in_settings.then(|| self.keep_in_view(handles, cx))
+        };
+        let (less, more, reset) = (
+            focus("graph-spacing-less".into(), cx),
+            focus("graph-spacing-more".into(), cx),
+            focus("reset-history-columns".into(), cx),
+        );
         div()
             .flex()
             .flex_col()
@@ -1043,33 +1553,58 @@ impl GitTurtle {
                     .text_color(rgb(p.muted))
                     .child("Choose what appears in history. Drag a column divider to resize; scroll horizontally when your columns need more room."),
             )
-            .child(div().flex().items_center().flex_wrap().gap_2()
+            // In Settings the steppers are centred on the title's first line,
+            // as every Settings row's trailing control, with the value
+            // centred between them; the paragraph above is the gap's 0.75 rem
+            // away. History's Columns panel tops them on the row, as
+            // before.
+            .child(div()
+                .debug_selector(|| "graph-spacing-row".into())
+                .flex().items_start().flex_wrap().gap_2()
                 .child(setting_description("Graph lane spacing", "Distinct lanes keep this spacing; wide histories scroll horizontally.", cx))
-                .child(button("graph-spacing-less", "−", "", false)
-                    .accessibility_label("Decrease graph lane spacing").disabled(self.settings.graph_spacing <= 12)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.settings.graph_spacing = this.settings.graph_spacing.saturating_sub(2).max(12);
-                        this.save_preferences(window, cx);
-                    })))
-                .child(div().min_w(px(38.)).text_center().child(format!("{} px", self.settings.graph_spacing)))
-                .child(button("graph-spacing-more", "+", "", false)
-                    .accessibility_label("Increase graph lane spacing").disabled(self.settings.graph_spacing >= 32)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.settings.graph_spacing = (this.settings.graph_spacing + 2).min(32);
-                        this.save_preferences(window, cx);
-                    }))))
+                .child({
+                let steppers = div()
+                    .when_some(keep_in_view(vec![less.clone(), None, more.clone()], cx), |steppers, reveal| {
+                        steppers.on_children_prepainted(reveal)
+                    })
+                    .debug_selector(|| "graph-spacing-controls".into())
+                    .flex().items_center().gap_2()
+                    .child(button("graph-spacing-less", "−", "", false)
+                        .when_some(less.as_ref(), |button, focus| button.track_focus(focus))
+                        .accessibility_label("Decrease graph lane spacing").disabled(self.settings.graph_spacing <= 12)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.settings.graph_spacing = this.settings.graph_spacing.saturating_sub(2).max(12);
+                            this.save_preferences(window, cx);
+                        })))
+                    .child(div().min_w(px(38.)).text_center().child(format!("{} px", self.settings.graph_spacing)))
+                    .child(button("graph-spacing-more", "+", "", false)
+                        .when_some(more.as_ref(), |button, focus| button.track_focus(focus))
+                        .accessibility_label("Increase graph lane spacing").disabled(self.settings.graph_spacing >= 32)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.settings.graph_spacing = (this.settings.graph_spacing + 2).min(32);
+                            this.save_preferences(window, cx);
+                        })));
+                if in_settings {
+                    on_title_line(steppers, rem() * 0.75, cx).into_any_element()
+                } else {
+                    steppers.into_any_element()
+                }
+            }))
             .children(ColumnId::ALL.into_iter().enumerate().map(|(index, id)| {
                 let setting = self.settings.columns.get(id);
+                let column = focus(("history-column", index).into(), cx);
                 div()
+                    .debug_selector(move || format!("history-column-row-{index}"))
+                    .when_some(keep_in_view(vec![column.clone()], cx), |row, reveal| {
+                        row.on_children_prepainted(reveal)
+                    })
                     .flex()
                     .items_center()
                     .gap_3()
                     .min_h(crate::appearance::ui_size(32.))
                     .child(
-                        Checkbox::new(("history-column", index))
-                            .label(id.label())
-                            .checked(setting.visible)
-                            .disabled(id == ColumnId::Subject)
+                        column_checkbox(index, id, setting.visible)
+                            .when_some(column.as_ref(), |checkbox, focus| checkbox.track_focus(focus))
                             .on_click(cx.listener(move |this, checked: &bool, window, cx| {
                                 if this.settings.columns.get(id).visible != *checked {
                                     this.settings.columns.set_visible(id, *checked);
@@ -1087,15 +1622,21 @@ impl GitTurtle {
                             .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .child(if id == ColumnId::Subject {
-                                "Always shown".to_owned()
+                                ALWAYS_SHOWN.to_owned()
                             } else {
                                 format!("{:.0} px", setting.width)
                             }),
                     )
             }))
             .child(
-                div().pt_2().child(
+                div()
+                    .when_some(keep_in_view(vec![reset.clone()], cx), |row, reveal| {
+                        row.on_children_prepainted(reveal)
+                    })
+                    .pt_2()
+                    .child(
                     button("reset-history-columns", "Reset column layout", "refresh", false)
+                        .when_some(reset.as_ref(), |button, focus| button.track_focus(focus))
                         .disabled(self.settings.columns == ColumnSettings::default())
                         .on_click(cx.listener(|this, _, window, cx| {
                             if this.settings.columns != ColumnSettings::default() {
@@ -1234,26 +1775,16 @@ impl GitTurtle {
         }
     }
 
-    fn render_theme_picker(
-        &self,
-        columns: usize,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let selected = self.selected_theme_card(cx);
-        // Keyboard focus, as GPUI's `focus_visible` judges it: the last input
-        // was a key. A change of focus or of input modality refreshes the
-        // window, so the page is built again whenever this changes.
-        let focused = window
-            .last_input_was_keyboard()
-            .then(|| {
-                self.theme_card_focus
-                    .iter()
-                    .find(|(_, handle)| handle.is_focused(window))
-                    .map(|(selection, _)| *selection)
-            })
-            .flatten();
+        // Keyboard focus, as the window's focus ring shows it: after a key,
+        // and still while the pointer moves, until a pointer press.
+        let focused = self
+            .theme_card_focus
+            .iter()
+            .find(|(_, handle)| self.focus_ring.shows(handle))
+            .map(|(selection, _)| *selection);
         #[cfg(test)]
         self.card_names.borrow_mut().clear();
         let groups = self.theme_card_groups(cx);
@@ -1280,7 +1811,12 @@ impl GitTurtle {
                                     .child(title),
                             )
                             .children(cards.chunks(columns).map(|row| {
+                                let focus = row
+                                    .iter()
+                                    .map(|card| Some(self.theme_card_focus(card.selection).clone()))
+                                    .collect();
                                 div()
+                                    .on_children_prepainted(self.keep_in_view(focus, cx))
                                     .flex()
                                     .gap_3()
                                     .children(row.iter().map(|card| {
@@ -1321,17 +1857,18 @@ impl GitTurtle {
         {
             let reason = appearance::omarchy::card(cx)?.reason?;
             Some(
-                div()
-                    .id("settings-theme-omarchy-reason")
-                    .debug_selector(|| "settings-theme-omarchy-reason".into())
-                    .role(Role::Label)
-                    .aria_label(reason.clone())
-                    .text_size(appearance::ui_text(12.))
-                    .text_color(rgb(p.muted))
-                    .line_clamp(2)
-                    .text_ellipsis()
-                    .child(reason)
-                    .into_any_element(),
+                native_accessibility::static_text(
+                    div()
+                        .id("settings-theme-omarchy-reason")
+                        .debug_selector(|| "settings-theme-omarchy-reason".into()),
+                    reason.clone(),
+                )
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(p.muted))
+                .line_clamp(2)
+                .text_ellipsis()
+                .child(reason)
+                .into_any_element(),
             )
         }
         #[cfg(not(target_os = "linux"))]
@@ -1375,11 +1912,10 @@ impl GitTurtle {
             format!("{} · {}", card.name, card.description)
         } else {
             format!(
-                "{} · {} · {} readability warning{}",
+                "{} · {} · {}",
                 card.name,
                 card.description,
-                card.warnings,
-                if card.warnings == 1 { "" } else { "s" }
+                crate::counted(card.warnings, "readability warning", "readability warnings")
             )
         };
         Button::new(id)
@@ -1452,6 +1988,8 @@ impl GitTurtle {
         // New theme… is named by its visible label, which the kit's button
         // exposes when no other name is given; Import… says what it opens.
         let (new_label, import_name) = ("New theme…", "Import a theme file");
+        let new_theme = self.page_focus("custom-themes-new", cx);
+        let import_theme = self.page_focus("custom-themes-import", cx);
         // At the bound both actions are disabled, so their tooltips are the
         // only place that says what to do, in the words the bound's own
         // refusals use (`open_theme_editor`, `add_imported_theme`).
@@ -1495,44 +2033,68 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .gap_3()
+            // Centred on the title's first line, as every Settings row's
+            // trailing control, inside the card's padding; too narrow for
+            // them beside the text, the actions take a line of their own
+            // below it, as the text sizes' controls do, New theme…'s "+" on
+            // the title's edge, its transparent frame its label inset before
+            // it.
             .child(
-                div()
-                    .debug_selector(|| "custom-themes-header".into())
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
+                wrapping_row(
+                    div().debug_selector(|| "custom-themes-header".into()),
+                    setting_description(
                         "Your themes",
                         "Start from any built-in theme, adjust its colors with a live preview, and save it under your own name.",
                         cx,
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_shrink_0()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                button("custom-themes-new", new_label, "plus", false)
-                                    .debug_selector(|| "custom-themes-new".into())
-                                    .disabled(pending || full)
-                                    .tooltip(new_tooltip)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_theme_editor(None, window, cx)
-                                    })),
-                            )
-                            .child(
-                                button("custom-themes-import", "Import…", "", false)
-                                    .debug_selector(|| "custom-themes-import".into())
-                                    .accessibility_label(import_name)
-                                    .disabled(pending || full)
-                                    .tooltip(import_tooltip)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.import_custom_theme(window, cx)
-                                    })),
-                            ),
                     ),
+                    div()
+                        .debug_selector(|| "custom-themes-actions".into())
+                        .on_children_prepainted(self.keep_in_view(
+                            vec![Some(new_theme.clone()), Some(import_theme.clone())],
+                            cx,
+                        ))
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            button("custom-themes-new", new_label, "plus", false)
+                                .track_focus(&new_theme)
+                                // Every button on the card rings for keyboard
+                                // focus only, from the shared ring: a key
+                                // shows it, a pointer press ends it, so the
+                                // theme editor's close by a pointer press
+                                // leaves New theme… focused without a ring,
+                                // and a key close draws it (decided
+                                // 2026-11-10).
+                                .focus_ring(self.focus_ring.shows(&new_theme))
+                                .debug_selector(|| "custom-themes-new".into())
+                                .disabled(pending || full)
+                                .tooltip(new_tooltip)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_theme_editor(None, window, cx)
+                                })),
+                        )
+                        .child(
+                            button("custom-themes-import", "Import…", "", false)
+                                .track_focus(&import_theme)
+                                .focus_ring(self.focus_ring.shows(&import_theme))
+                                .debug_selector(|| "custom-themes-import".into())
+                                .accessibility_label(import_name)
+                                .disabled(pending || full)
+                                .tooltip(import_tooltip)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.import_custom_theme(window, cx)
+                                })),
+                        ),
+                    // The `button` helper's height.
+                    appearance::ui_size(28.),
+                    rem(),
+                    cx,
+                )
+                // New theme…'s frame pads its icon by the helper's label
+                // inset.
+                .ghost_lead(appearance::ui_size(crate::LABEL_INSET)),
             )
             .when(self.custom_themes.is_empty(), |card| {
                 card.child(
@@ -1562,11 +2124,12 @@ impl GitTurtle {
             // shortened where it is built (`folder_picker::failure`), so a cut
             // there drops the quoted error, not the guidance.
             .children(self.theme_editor.notice().map(|notice| {
-                div()
-                    .id("custom-themes-notice")
-                    .debug_selector(|| "custom-themes-notice".into())
-                    .role(Role::Label)
-                    .aria_label(notice.to_owned())
+                native_accessibility::static_text(
+                    div()
+                        .id("custom-themes-notice")
+                        .debug_selector(|| "custom-themes-notice".into()),
+                    notice.to_owned(),
+                )
                     .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.muted))
                     .line_clamp(2)
@@ -1579,18 +2142,19 @@ impl GitTurtle {
                 // muted (`folder_picker::styled_message`). The selector names
                 // the colors and where the muted run starts, for tests.
                 let detail = folder_picker::detail_start(error);
-                div()
-                    .id("custom-themes-error")
-                    .debug_selector(move || match detail {
-                        Some(start) => format!(
-                            "custom-themes-error-{:06x}-{start}-{:06x}",
-                            p.warning, p.muted
-                        ),
-                        None => format!("custom-themes-error-{:06x}", p.warning),
-                    })
-                    .role(Role::Label)
-                    .aria_label(error.to_owned())
-                    .text_size(appearance::ui_text(12.))
+                native_accessibility::static_text(
+                    div()
+                        .id("custom-themes-error")
+                        .debug_selector(move || match detail {
+                            Some(start) => format!(
+                                "custom-themes-error-{:06x}-{start}-{:06x}",
+                                p.warning, p.muted
+                            ),
+                            None => format!("custom-themes-error-{:06x}", p.warning),
+                        }),
+                    error.to_owned(),
+                )
+                .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.warning))
                     .line_clamp(2)
                     .when(!error.contains('\n'), |el| el.text_ellipsis())
@@ -1881,6 +2445,7 @@ impl GitTurtle {
             (format!("export-custom-theme-{id}"), export_name.clone()),
             (format!("delete-custom-theme-{id}"), delete_name.clone()),
         ]);
+        let [edit, export, delete] = [0, 1, 2].map(|n| self.theme_editor.action_focus(id, n, cx));
         let row = div()
             .id(("custom-theme", id as usize))
             .debug_selector(move || format!("custom-theme-{id}"))
@@ -1960,27 +2525,27 @@ impl GitTurtle {
             .when(is_active, |row| row.child(icon("check", 12., p.accent)))
             .child(div().flex_1())
             .when(warnings > 0, |row| {
-                let text = format!(
-                    "{warnings} readability warning{}",
-                    if warnings == 1 { "" } else { "s" }
-                );
+                let text = crate::counted(warnings, "readability warning", "readability warnings");
                 row.child(
-                    div()
-                        .id(("custom-theme-warnings", id as usize))
-                        .role(Role::Label)
-                        .aria_label(format!("{}: {text}", theme.name))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_size(appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child(crate::theme_editor::warning_glyph(p))
-                        .child(warnings.to_string()),
+                    native_accessibility::static_text(
+                        div().id(("custom-theme-warnings", id as usize)),
+                        format!("{}: {text}", theme.name),
+                    )
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    .child(crate::theme_editor::warning_glyph(p))
+                    .child(warnings.to_string()),
                 )
             })
             .child(
                 button(("edit-custom-theme", id as usize), "Edit…", "", false)
-                    .track_focus(&self.theme_editor.action_focus(id, 0, cx))
+                    .track_focus(&edit)
+                    // Ringed for keyboard focus only, as every button on the
+                    // card is (decided 2026-11-10).
+                    .focus_ring(self.focus_ring.shows(&edit))
                     .debug_selector(move || format!("edit-custom-theme-{id}"))
                     .accessibility_label(edit_name)
                     .disabled(pending)
@@ -2013,7 +2578,8 @@ impl GitTurtle {
                     })
                     .child(
                         button(("export-custom-theme", id as usize), "Export…", "", false)
-                            .track_focus(&self.theme_editor.action_focus(id, 1, cx))
+                            .track_focus(&export)
+                            .focus_ring(self.focus_ring.shows(&export))
                             .debug_selector(move || format!("export-custom-theme-{id}"))
                             .accessibility_label(export_name)
                             .disabled(pending)
@@ -2024,7 +2590,8 @@ impl GitTurtle {
             )
             .child(
                 button(("delete-custom-theme", id as usize), "Delete…", "", false)
-                    .track_focus(&self.theme_editor.action_focus(id, 2, cx))
+                    .track_focus(&delete)
+                    .focus_ring(self.focus_ring.shows(&delete))
                     .debug_selector(move || format!("delete-custom-theme-{id}"))
                     .accessibility_label(delete_name)
                     .disabled(pending)
@@ -2035,11 +2602,96 @@ impl GitTurtle {
         Some(row.into_any_element())
     }
 
-    pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The focus handle Settings control `id` tracks, the same in every
+    /// frame, so the page can tell when the keyboard focuses it.
+    pub(super) fn page_focus(&self, id: impl Into<ElementId>, cx: &mut App) -> FocusHandle {
+        self.theme_editor.page().focus(id, cx)
+    }
+
+    /// For the `on_children_prepainted` of a Settings element whose children
+    /// include controls, `focus` holding each child's handle in order: the
+    /// keyboard focusing one scrolls the page by the least that shows it with
+    /// the focus ring's room.
+    fn keep_in_view<'a>(
+        &'a self,
+        focus: Vec<Option<FocusHandle>>,
+        cx: &App,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static + use<'a> {
+        self.theme_editor
+            .page()
+            .controls(focus, appearance::button_ring_room(cx))
+    }
+
+    /// [`Self::keep_in_view`] for a row of segments, as List density's,
+    /// Reduce motion's and Increase contrast's, `focus` holding the
+    /// segments' handles in order: the first listener is for the
+    /// `on_children_prepainted` of the row's wrapper, whose one child is the
+    /// row, the second for the segments' group. The keyboard focusing a
+    /// segment scrolls the page by the least that shows the whole row, its
+    /// title, the description a choice changes and its segments, with the
+    /// focus ring's room, so a press's feedback is in view beside it. A row
+    /// taller than the page's view shows the focused segment with its ring.
+    /// Where the row fits, the row is also the control a resize judges
+    /// (`FocusReveal::finish`): a resize reveals it again only after a frame
+    /// that showed it whole, so a row the person has scrolled partly out of
+    /// view is left where it is, as any control is. Revealed alone, the
+    /// group left Increase contrast's description below the fold of a
+    /// 1,480 × 973 window.
+    fn keep_row_in_view<'a>(
+        &'a self,
+        focus: &[FocusHandle],
+        cx: &App,
+    ) -> (impl Prepainted + use<'a>, impl Prepainted + use<'a>) {
+        let page = self.theme_editor.page();
+        let room = appearance::button_ring_room(cx);
+        let row = page.group(focus.to_vec(), room);
+        let segment = page.controls(focus.iter().cloned().map(Some).collect(), room);
+        let view = page.scroll().clone();
+        // The group is prepainted before the row's wrapper, whose listener
+        // then finds where the segments lie in the same frame.
+        let segments = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let drawn = segments.clone();
+        (
+            move |bounds: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App| {
+                let segments = drawn.take();
+                let Some(bounds) = bounds.into_iter().next() else {
+                    return;
+                };
+                if bounds.size.height + room * 2. <= view.bounds().size.height {
+                    row(vec![bounds], window, cx);
+                } else {
+                    segment(segments, window, cx);
+                }
+            },
+            move |bounds: Vec<Bounds<Pixels>>, _: &mut Window, _: &mut App| {
+                *segments.borrow_mut() = bounds;
+            },
+        )
+    }
+
+    /// The Settings page, laid out `width` wide: the width it is drawn at in
+    /// this frame ([`SettingsPage`]), which beside the project list is less
+    /// than the window's.
+    pub(super) fn render_settings(
+        &self,
+        width: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // A control the keyboard has focused scrolls into view in this frame.
+        self.theme_editor.page().reveal(window, cx);
         let p = palette(cx);
+        // A write refuses the identity's fields and actions at once; they
+        // look so once the write looks busy (`workspace::BusyLook`).
         let busy = self.operation_busy.is_some();
-        let compact = window.viewport_size().width < appearance::ui_size(1060.);
-        let narrow = window.viewport_size().width < appearance::ui_size(720.);
+        let looks_busy = self.operation_shown().is_some();
+        // The page's breakpoints, the theme grid's columns among them, are
+        // the page's own width, not the window's: beside the project list a
+        // 1,200 px window leaves the page 960 px, where the grid laid four
+        // columns out across the two groups' room.
+        let compact = width < appearance::ui_size(1060.);
+        let narrow = width < appearance::ui_size(720.);
+        let retry = self.page_focus("retry-save-settings", cx);
         let theme_columns = if narrow {
             2
         } else if compact {
@@ -2049,10 +2701,23 @@ impl GitTurtle {
         };
         let branch_edited =
             self.settings_branch.read(cx).value().as_ref() != self.settings.default_branch.as_str();
-        let identity_edited = self.profile.as_ref().is_none_or(|profile| {
-            self.identity_name.read(cx).value().trim() != profile.name
-                || self.identity_email.read(cx).value().trim() != profile.email
-        });
+        // Against the identity loaded for the repository shown: with none
+        // loaded there is no edit to save or reset, whatever the fields
+        // hold. Asked of the window's identity alone, every field counted
+        // as edited while none was held, and Save was offered for another
+        // repository's Name and Email.
+        let loaded = self.loaded_identity();
+        // Both fields are read at every build, with or without an identity
+        // loaded, as they were whenever one was held: read only once one was
+        // loaded, the frame that first drew the card built the page twice,
+        // Name and Email notifying it after that frame
+        // (`theme_editor::tests::state_from_other_features_builds_the_page_through_the_reconciler`).
+        let (name, email) = (
+            self.identity_name.read(cx).value(),
+            self.identity_email.read(cx).value(),
+        );
+        let identity_edited = loaded
+            .is_some_and(|profile| name.trim() != profile.name || email.trim() != profile.email);
         let repository_name = self
             .repository
             .as_ref()
@@ -2061,6 +2726,7 @@ impl GitTurtle {
         // cannot be turned on: the desktop decides the theme.
         let desktop_theme = self.follows_desktop_theme(cx);
         let follow_checked = self.settings.follow_system && !desktop_theme;
+        let follow = self.page_focus("follow-system", cx);
         let follow_description: SharedString = if desktop_theme {
             "Omarchy follows your desktop theme".into()
         } else {
@@ -2072,123 +2738,164 @@ impl GitTurtle {
             desktop_theme,
             follow_description.clone(),
         )));
+        let density_focus: Vec<_> = (0..Density::ALL.len())
+            .map(|index| self.page_focus(("settings-density", index), cx))
+            .collect();
+        let (density_row_in_view, density_segments_drawn) =
+            self.keep_row_in_view(&density_focus, cx);
+        let density_segments = div()
+            .debug_selector(|| "settings-density-segments".into())
+            .on_children_prepainted(density_segments_drawn)
+            .flex()
+            .gap_1()
+            .p_1()
+            .rounded(px(8.))
+            .bg(rgb(p.canvas))
+            .children(
+                Density::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, density)| {
+                        let selected = self.settings.density == density;
+                        // The shared helper's look, as History's segments:
+                        // unselected, transparent at rest with the palette's
+                        // hover and pressed fills, so a press steps to
+                        // almost the selected fill; selected, the `selected`
+                        // surface, tinted on hover rather than faded, which
+                        // would fade the focus ring with it.
+                        Button::new(("settings-density", index))
+                            .track_focus(&density_focus[index])
+                            .small()
+                            .with_variant(appearance::control_button_variant(selected))
+                            .label(density.label())
+                            .selected(selected)
+                            .toggled(selected)
+                            .debug_selector(move || format!("settings-density-{index}"))
+                            .when(selected, |button| {
+                                button.hover(appearance::control_selected_hover)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if this.settings.density != density {
+                                    this.settings.density = density;
+                                    this.save_preferences(window, cx);
+                                }
+                            }))
+                    }),
+            );
         let appearance = div()
             .flex()
             .flex_col()
             .gap_5()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
-                        "Follow system appearance",
-                        follow_description.clone(),
-                        cx,
-                    ))
+                    .on_children_prepainted(self.keep_in_view(vec![Some(follow.clone())], cx))
+                    .debug_selector(|| "follow-system-switch".into())
                     .child(
-                        div()
-                            .debug_selector(|| "follow-system-switch".into())
-                            .child(
-                                Switch::new("follow-system")
-                                    .checked(follow_checked)
-                                    .disabled(desktop_theme)
-                                    .label("Follow system appearance")
-                                    .on_click(cx.listener(|this, checked, window, cx| {
-                                        // The Omarchy theme follows the desktop instead.
-                                        if this.follows_desktop_theme(cx) {
-                                            return;
-                                        }
-                                        this.settings.follow_system = *checked;
-                                        this.apply_appearance(window, cx);
-                                        this.save_preferences(window, cx);
-                                    })),
-                            ),
+                        switch_row(
+                            "follow-system",
+                            FOLLOW_SYSTEM,
+                            FOLLOW_SYSTEM,
+                            follow_description.clone(),
+                            &[],
+                            cx,
+                        )
+                        .track_focus(&follow)
+                        .checked(follow_checked)
+                        .disabled(desktop_theme)
+                        .on_click(cx.listener(
+                            |this, checked, window, cx| {
+                                // The Omarchy theme follows the desktop instead.
+                                if this.follows_desktop_theme(cx) {
+                                    return;
+                                }
+                                this.settings.follow_system = *checked;
+                                this.apply_appearance(window, cx);
+                                this.save_preferences(window, cx);
+                            },
+                        )),
                     ),
             )
-            .child(self.render_theme_picker(theme_columns, window, cx))
+            .child(self.render_theme_picker(theme_columns, cx))
             .child(self.render_custom_themes(window, cx))
             .child(self.render_text_size_setting(false, cx))
             .child(self.render_text_size_setting(true, cx))
             .children(self.render_code_font_setting(cx))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .when(narrow, |row| row.flex_col().items_start())
-                    .pt_4()
-                    .border_t_1()
-                    .border_color(rgb(p.border))
-                    .child(setting_description(
-                        "List density",
-                        "A little breathing room, or more at a glance.",
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .p_1()
-                            .rounded(px(8.))
-                            .bg(rgb(p.canvas))
-                            .children(Density::ALL.into_iter().enumerate().map(
-                                |(index, density)| {
-                                    let selected = self.settings.density == density;
-                                    // The shared helper's look, as History's segments:
-                                    // unselected, transparent at rest with the palette's
-                                    // hover and pressed fills, so a press steps to
-                                    // almost the selected fill; selected, the `selected`
-                                    // surface, tinted on hover rather than faded, which
-                                    // would fade the focus ring with it.
-                                    Button::new(("settings-density", index))
-                                        .small()
-                                        .with_variant(appearance::control_button_variant(selected))
-                                        .label(density.label())
-                                        .selected(selected)
-                                        .toggled(selected)
-                                        .debug_selector(move || format!("settings-density-{index}"))
-                                        .when(selected, |button| {
-                                            button.hover(appearance::control_selected_hover)
-                                        })
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            if this.settings.density != density {
-                                                this.settings.density = density;
-                                                this.save_preferences(window, cx);
-                                            }
-                                        }))
-                                },
-                            )),
-                    ),
+                div().on_children_prepainted(density_row_in_view).child(
+                    div()
+                        .debug_selector(|| "settings-density-row".into())
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap_3()
+                        .when(narrow, |row| row.flex_col())
+                        .pt_4()
+                        .border_t_1()
+                        .border_color(rgb(p.border))
+                        .child(setting_description(
+                            "List density",
+                            "A little breathing room, or more at a glance.",
+                            cx,
+                        ))
+                        // Below the separator, the row's top padding is
+                        // the room above its title.
+                        .child(if narrow {
+                            density_segments.into_any_element()
+                        } else {
+                            on_title_line(density_segments, rem(), cx).into_any_element()
+                        }),
+                ),
             )
+            .child(self.render_display_setting(DisplaySetting::ReduceMotion, narrow, cx))
+            .child(self.render_display_setting(DisplaySetting::IncreaseContrast, narrow, cx))
             .into_any_element();
 
+        let save_editor = self.page_focus("save-external-editor", cx);
+        let reopen_last = self.page_focus("settings-reopen-last", cx);
+        let project_pane = self.page_focus("settings-project-pane", cx);
+        let save_branch = self.page_focus("save-default-branch", cx);
         let startup = div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(div().flex().flex_col().gap_2()
-                .child(setting_description("External editor", "Application name on macOS; executable path on Linux. File → Open Repository in Editor opens the current folder.", cx))
-                .child(Input::new(&self.settings_editor).aria_label("Preferred external editor"))
-                .child(button("save-external-editor", "Save editor", "", false)
-                    .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)
-                    .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); }))))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
-                        "Restore repository tabs on startup",
-                        "Reopen the selected tab and retain up to eight saved repository tabs.",
+            .child(div()
+                .flex().flex_col().gap_2()
+                .child(setting_description("External editor", if cfg!(target_os = "macos") { "Application name, such as Visual Studio Code. File → Open Repository in Editor opens the current folder." } else { "Executable name or path, such as code. Menu → Open repository in editor opens the current folder; left empty on Omarchy, your Omarchy editor opens it." }, cx))
+                // As the default branch's field and Save are: the Button keeps
+                // its content's width and its own fill at the card's trailing
+                // edge, where the transparent helper stretched to the card's
+                // width drew only a centred dim label while disabled.
+                .child(div()
+                    .on_children_prepainted(self.keep_in_view(
+                        vec![Some(self.settings_editor.focus_handle(cx)), Some(save_editor.clone())],
                         cx,
                     ))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().debug_selector(|| "settings-editor-field".into()).flex_1().min_w_0()
+                        .child(Input::new(&self.settings_editor).aria_label("External editor")))
+                    .child(Button::new("save-external-editor")
+                        .track_focus(&save_editor)
+                        .debug_selector(|| "save-external-editor".into())
+                        .label("Save editor")
+                        .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)
+                        .tooltip("Save the editor that opens repositories")
+                        .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); })))))
+            .child(
+                div()
+                    .on_children_prepainted(self.keep_in_view(vec![Some(reopen_last.clone())], cx))
+                    .debug_selector(|| "settings-reopen-last-row".into())
                     .child(
-                        Switch::new("settings-reopen-last")
-                            .accessibility_label("Restore repository tabs on startup")
+                        switch_row(
+                            "settings-reopen-last",
+                            REOPEN_LAST,
+                            REOPEN_LAST,
+                            "Reopen the selected tab and retain up to eight saved repository tabs.",
+                            &[],
+                            cx,
+                        )
+                            .track_focus(&reopen_last)
                             .checked(self.settings.reopen_last)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
                                 if this.settings.reopen_last != *checked {
@@ -2198,41 +2905,49 @@ impl GitTurtle {
                             })),
                     ),
             )
-            .child(
+            .child({
+                // On where the window holds the pane back, the switch says why
+                // no list is drawn; the row keeps the taller description's
+                // height, so neither the switch nor the rows below move as one
+                // replaces the other.
+                let shown: SharedString = PROJECT_PANE_DESCRIPTION.into();
+                let held: SharedString = crate::project_pane::HELD_BACK_DESCRIPTION.into();
+                let held_back = self.settings.project_pane && !self.project_pane_fits(window);
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
-                        "Show the project list",
-                        "Keep a pane on the far left to jump between known projects and sort them into groups.",
-                        cx,
-                    ))
+                    .on_children_prepainted(self.keep_in_view(vec![Some(project_pane.clone())], cx))
+                    .debug_selector(|| "settings-project-pane-row".into())
                     .child(
-                        Switch::new("settings-project-pane")
-                            .accessibility_label("Show the project list")
+                        switch_row(
+                            "settings-project-pane",
+                            PROJECT_PANE,
+                            PROJECT_PANE,
+                            if held_back { held.clone() } else { shown.clone() },
+                            &[shown, held],
+                            cx,
+                        )
+                            .track_focus(&project_pane)
                             .checked(self.settings.project_pane)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
-                                if this.settings.project_pane != *checked {
-                                    this.settings.project_pane = *checked;
-                                    this.save_preferences(window, cx);
-                                }
+                                this.switch_project_pane(*checked, window, cx)
                             })),
-                    ),
-            )
+                    )
+            })
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(setting_description(
+                    .child(field_description(
                         "Default branch",
                         "Used when creating a new repository.",
                         cx,
                     ))
                     .child(
                         div()
+                            .on_children_prepainted(self.keep_in_view(
+                                vec![Some(self.settings_branch.focus_handle(cx)), Some(save_branch.clone())],
+                                cx,
+                            ))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -2240,10 +2955,12 @@ impl GitTurtle {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(Input::new(&self.settings_branch)),
+                                    .child(Input::new(&self.settings_branch).aria_label("Default branch")),
                             )
                             .child(
                                 Button::new("save-default-branch")
+                                    .track_focus(&save_branch)
+                                    .debug_selector(|| "save-default-branch".into())
                                     .label("Save")
                                     .disabled(!branch_edited)
                                     .tooltip("Save the default branch for new repositories")
@@ -2255,7 +2972,15 @@ impl GitTurtle {
             )
             .into_any_element();
 
+        let save_identity = self.page_focus("save-repository-identity", cx);
+        let reset_identity = self.page_focus("use-current-identity", cx);
+        // A marked tab's repository is the one read before the mark: the
+        // identity card's actions on it are refused with the mark's reason.
+        let marked = self.shown_tab_unavailable();
         let identity = if let Some(repository_name) = repository_name {
+            // Its actions, drawn as recorded for tests, which read the name
+            // and state each gives assistive technology.
+            use native_accessibility::DrawnButton as _;
             let repository_identity = format!(
                 "{}\n{}",
                 repository_name,
@@ -2264,15 +2989,67 @@ impl GitTurtle {
                     .map(|path| path.display().to_string())
                     .unwrap_or_default()
             );
+            let manage_profiles = self.page_focus("settings-manage-profiles", cx);
+            // How far Reset edits and Manage named profiles…, ghost Buttons,
+            // stand their frames before the card's text edge
+            // (`crate::ghost_pull`). With their 3 px ring it takes 13 px of the
+            // section cards' 1.25 rem padding at 13 pt and 17 of 22.5 at 18 pt;
+            // standing its frame on the edge, a wrapped Reset edits started its
+            // icon 10 px past the field labels at 13 pt and 14 px at 18 pt.
+            let pull = ghost_pull(window);
+            // On a marked tab what the mark says and its way back, nothing
+            // from before it, as the bar and the navigation say there: the
+            // identity read before the mark read as the repository's own, and
+            // nothing on the page said why its fields and actions were refused
+            // (decided 2026-11-12).
+            let line: SharedString = match loaded {
+                _ if marked => format!(
+                    "{} · {}",
+                    crate::branch_actions::UNAVAILABLE_REASON,
+                    crate::branch_actions::UNAVAILABLE_WAY_BACK
+                )
+                .into(),
+                Some(profile) if !profile.name.is_empty() && !profile.email.is_empty() => {
+                    format!("Current identity: {} <{}>", profile.name, profile.email).into()
+                }
+                Some(_) => "A commit identity has not been configured yet.".into(),
+                None => "Git identity has not been loaded yet.".into(),
+            };
+            // The repository card, Name, Email, the signing line, the save
+            // buttons, the note and Manage named profiles…; on a marked tab
+            // neither the signing line nor the note, both chosen from the
+            // identity read before the mark (decided 2026-11-14), and with
+            // no identity loaded no note, which says where a save goes as
+            // only that read decides (decided 2026-11-15).
+            let noted = !marked && loaded.is_some();
+            // Why Save and Reset edits are refused: the mark's reason, or
+            // with no identity loaded the read's (`identity_wait`).
+            let refusal = if marked {
+                Some(crate::branch_actions::UNAVAILABLE_REASON)
+            } else {
+                self.identity_wait()
+            };
+            let mut kept = vec![
+                None,
+                Some(self.identity_name.focus_handle(cx)),
+                Some(self.identity_email.focus_handle(cx)),
+            ];
+            kept.extend((!marked).then_some(None));
+            kept.push(None);
+            kept.extend(noted.then_some(None));
+            kept.push(Some(manage_profiles.clone()));
             div()
+                .on_children_prepainted(self.keep_in_view(kept, cx))
                 .flex()
                 .flex_col()
                 .gap_4()
                 .child(
-                    div()
-                        .id("settings-repository-identity")
-                        .role(Role::Label)
-                        .aria_label(format!("Repository {repository_identity}"))
+                    native_accessibility::static_text(
+                        div()
+                            .id("settings-repository-identity")
+                            .debug_selector(|| "settings-repository-identity".into()),
+                        format!("Repository {repository_identity}"),
+                    )
                         .tooltip(move |window, cx| {
                             Tooltip::new(repository_identity.clone()).build(window, cx)
                         })
@@ -2289,54 +3066,116 @@ impl GitTurtle {
                                 self.path.as_ref().map(|path| path.display().to_string()).unwrap_or_default(),
                             ),
                         )
-                        .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(
-                            match &self.profile {
-                                Some(profile) if !profile.name.is_empty() && !profile.email.is_empty() => {
-                                    format!("Current identity: {} <{}>", profile.name, profile.email)
-                                }
-                                Some(_) => "A commit identity has not been configured yet.".into(),
-                                None => "Git identity has not been loaded yet.".into(),
-                            },
-                        )),
+                        .child(
+                            div()
+                                .debug_selector({
+                                    let line = line.clone();
+                                    move || format!("settings-identity-line: {line}")
+                                })
+                                .text_size(crate::appearance::ui_text(11.))
+                                .line_height(relative(1.5))
+                                .text_color(rgb(p.muted))
+                                .child(line.clone()),
+                        ),
                 )
-                .child(settings_field("Name", &self.identity_name, busy, cx))
-                .child(settings_field("Email", &self.identity_email, busy, cx))
+                // A marked tab refuses them as a write does, refused and
+                // dimmed, so nothing typed there waits for a save no route
+                // makes: they took a Name and Email the dimmed Save could not
+                // write (decided 2026-11-12). There they draw no value read
+                // before the mark (`sync_identity_fields`), say why as the
+                // line does and leave the Tab order (decided 2026-11-14).
+                .child(settings_field("Name", &self.identity_name, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
+                .child(settings_field("Email", &self.identity_email, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
+                .when(!marked, |card| {
+                    let signing = match loaded {
+                        Some(profile) if profile.signing => "Commit signing is enabled in Git. GitTurtle uses your configured signer.",
+                        Some(_) => "Commit signing is off in Git. Your existing Git signing configuration is preserved.",
+                        None => "Signing follows your existing Git configuration.",
+                    };
+                    card.child(
+                        div()
+                            .debug_selector(move || format!("settings-signing-line: {signing}"))
+                            .text_size(crate::appearance::ui_text(11.))
+                            .line_height(relative(1.5))
+                            .text_color(rgb(p.muted))
+                            .child(signing),
+                    )
+                })
                 .child(
                     div()
-                        .text_size(crate::appearance::ui_text(11.))
-                        .line_height(relative(1.5))
-                        .text_color(rgb(p.muted))
-                        .child(match self.profile.as_ref() {
-                            Some(profile) if profile.signing => "Commit signing is enabled in Git. GitTurtle uses your configured signer.",
-                            Some(_) => "Commit signing is off in Git. Your existing Git signing configuration is preserved.",
-                            None => "Signing follows your existing Git configuration.",
-                        }),
-                )
-                .child(
-                    div()
+                        .on_children_prepainted(self.keep_in_view(
+                            vec![Some(save_identity.clone()), Some(reset_identity.clone())],
+                            cx,
+                        ))
                         .flex()
                         .flex_wrap()
-                        .gap_2()
+                        // Reset edits, a ghost Button, wrapped onto a line of
+                        // its own stands its icon on the card's edge, its
+                        // frame `pull` before it; beside Save its margin takes
+                        // back what the gap adds, so there it stays the gap
+                        // past Save and the row wraps where it did, as a
+                        // wrapping row's ghost lead does.
+                        .gap_y(window.rem_size() * 0.5)
+                        .gap_x(window.rem_size() * 0.5 + pull)
                         .child(
                             Button::new("save-repository-identity")
+                                .track_focus(&save_identity)
+                                .debug_selector(|| "save-repository-identity".into())
                                 .primary()
                                 .icon(Icon::default().path("icons/check.svg").size(px(14.)))
-                                .label(if busy { "Working…" } else { "Save repository identity" })
-                                .disabled(busy || !identity_edited)
-                                .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx))),
+                                .label(if looks_busy { "Working…" } else { "Save repository identity" })
+                                .map(|save| {
+                                    let unavailable = !identity_edited || marked;
+                                    let save = crate::workspace::refusing(save, || "save-repository-identity".into(), busy || unavailable, looks_busy || unavailable);
+                                    says_why(save, "save-repository-identity", "Save repository identity", None, refusal)
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx)))
+                                .node_recorded(),
                         )
                         .child(
                             button("use-current-identity", "Reset edits", "refresh", false)
-                                .tooltip("Restore the repository’s current name and email")
-                                .disabled(busy || self.profile.is_none() || !identity_edited)
-                                .on_click(cx.listener(|this, _, window, cx| this.fill_identity_inputs(window, cx))),
+                                .track_focus(&reset_identity)
+                                .debug_selector(|| "use-current-identity".into())
+                                .ml(-pull)
+                                .map(|reset| {
+                                    let unavailable = !identity_edited || marked;
+                                    let reset = crate::workspace::refusing(reset, || "use-current-identity".into(), busy || unavailable, looks_busy || unavailable);
+                                    says_why(reset, "use-current-identity", "Reset edits", Some("Restore the repository’s current name and email"), refusal)
+                                })
+                                // Refused at once while a write runs, on a
+                                // marked tab and with no identity loaded.
+                                .on_click(cx.listener(|this, _, window, cx| this.reset_identity_edits(window, cx)))
+                                .node_recorded(),
                         ),
                 )
-                .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." }))
-                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
+                // Where a save goes, which the identity read chose: on a
+                // marked tab it is not drawn, as the signing line is not,
+                // nor with no identity loaded, where it claimed the shared
+                // configuration before any read had said so.
+                .when(noted, |card| {
+                    let note = if loaded.is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." };
+                    card.child(div().debug_selector(move || format!("settings-identity-note: {note}")).text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(note))
+                })
+                // A ghost Button at the card's text edge: its icon on the
+                // edge, its frame `pull` before it, as wide as its content
+                // as Settings' other ghost Buttons are. Stretched across the
+                // column, it centred its icon and label in the card. On a
+                // marked tab it is refused with the mark's reason, as the
+                // profile picker's Manage profiles… and the palette's Manage
+                // Git profiles… are, since no route opens the manager there
+                // (`open_profiles`): it was drawn enabled, and a click opened
+                // nothing and said nothing.
+                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).debug_selector(|| "settings-manage-profiles".into()).self_start().ml(-pull).map(|manage| {
+                    let manage = crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy || marked, looks_busy || marked);
+                    says_why(manage, "settings-manage-profiles", "Manage named profiles…", None, marked.then_some(crate::branch_actions::UNAVAILABLE_REASON))
+                }).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))).node_recorded())
                 .into_any_element()
         } else {
+            let open_projects = self.page_focus("settings-open-projects", cx);
             div()
+                .on_children_prepainted(
+                    self.keep_in_view(vec![None, None, None, Some(open_projects.clone())], cx),
+                )
                 .flex()
                 .flex_col()
                 .items_start()
@@ -2354,6 +3193,8 @@ impl GitTurtle {
                         .text_color(rgb(p.muted))
                         .child("Your Git name, email, and signing preference will appear here."),
                 )
+                // A ghost Button at the card's text edge: its icon on the
+                // edge, its frame its label inset before it.
                 .child(
                     button(
                         "settings-open-projects",
@@ -2361,6 +3202,9 @@ impl GitTurtle {
                         "folder",
                         false,
                     )
+                    .track_focus(&open_projects)
+                    .debug_selector(|| "settings-open-projects".into())
+                    .ml(-ghost_pull(window))
                     .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx))),
                 )
                 .into_any_element()
@@ -2371,6 +3215,9 @@ impl GitTurtle {
             // Tab and Shift-Tab walk the Your themes rows before the toolkit's
             // frame-bound tab order (`theme_editor::init`).
             .key_context(theme_editor::SETTINGS_CONTEXT)
+            // Return in a field saves it from here, once per press
+            // ([`Self::settings_field_enter`]).
+            .on_key_down(cx.listener(Self::settings_field_enter))
             .on_action(cx.listener(|this, _: &theme_editor::NextThemeAction, window, cx| {
                 this.tab_theme_rows(true, window, cx)
             }))
@@ -2384,14 +3231,18 @@ impl GitTurtle {
             .bg(rgb(p.canvas))
             .text_color(rgb(p.text))
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
+                    // Record even focus outside the page, so returning to the
+                    // same control reveals it again.
+                    .on_children_prepainted(self.theme_editor.page().observe())
                     .id("settings-scroll")
                     .debug_selector(|| "settings-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     // Tracked so that the Your themes row holding focus is
-                    // revealed here too (`reveal_in_page`).
+                    // revealed here too (`reveal_in_page`), as is every other
+                    // control the keyboard focuses (`keep_in_view`).
                     .track_scroll(self.theme_editor.page_scroll())
                     .p_6()
                     .when(narrow, |body| body.p_4())
@@ -2416,6 +3267,7 @@ impl GitTurtle {
                             .when_some(self.operation_error.as_ref(), |element, error| {
                                 element.child(
                                     div()
+                                        .on_children_prepainted(self.keep_in_view(vec![None, Some(retry.clone())], cx))
                                         .p_3()
                                         .rounded(px(8.))
                                         .bg(rgb(p.removed_background))
@@ -2424,9 +3276,9 @@ impl GitTurtle {
                                         .flex()
                                         .items_center()
                                         .gap_3()
-                                        .child(div().flex_1().min_w_0().child(error.clone()))
+                                        .child(div().flex_1().min_w_0().child(error.to_string()))
                                         .when(error.starts_with("Could not save settings:"), |notice| {
-                                            notice.child(Button::new("retry-save-settings").label("Retry save").on_click(cx.listener(|this, _, window, cx| this.save_preferences(window, cx))))
+                                            notice.child(Button::new("retry-save-settings").track_focus(&retry).label("Retry save").on_click(cx.listener(|this, _, window, cx| this.save_preferences(window, cx))))
                                         }),
                                 )
                             })
@@ -2455,7 +3307,7 @@ impl GitTurtle {
                                                 "History columns",
                                                 "columns",
                                                 "Keep the information you care about in view.",
-                                                self.render_columns_controls(cx),
+                                                self.render_columns_controls(true, cx),
                                                 cx,
                                             )),
                                     )
@@ -2483,7 +3335,7 @@ impl GitTurtle {
                                             )),
                                     ),
                             ),
-                    ),
+                    )),
             )
             .into_any_element()
     }
@@ -2525,11 +3377,22 @@ pub(super) struct SettingsPage {
 /// see `GitTurtle::settings_page_key`.
 #[derive(PartialEq)]
 struct PageKey {
-    error: Option<String>,
+    error: Option<crate::views::OperationFailure>,
     busy: bool,
+    /// Whether the write has looked busy, which the page's write controls
+    /// wait for before they dim (`workspace::BusyLook`).
+    looks_busy: bool,
     status: String,
     profile: Option<gitturtle_core::GitProfile>,
+    /// Whether that identity is loaded for the repository shown
+    /// (`GitTurtle::loaded_identity`), and why none is
+    /// (`GitTurtle::identity_wait`).
+    identity_loaded: bool,
+    identity_wait: Option<&'static str>,
     repository: Option<(PathBuf, String)>,
+    /// Whether the shown tab is marked, which refuses Manage named
+    /// profiles… with the mark's reason.
+    marked: bool,
 }
 
 impl SettingsPage {
@@ -2590,7 +3453,7 @@ pub(crate) fn page_shows(cx: &mut gpui::VisualTestContext, selector: &'static st
 }
 
 impl Render for SettingsPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         {
             self.renders += 1;
@@ -2598,14 +3461,31 @@ impl Render for SettingsPage {
         let Some(app) = self.app.upgrade() else {
             return div().into_any_element();
         };
-        let (page, key) = app.update(cx, |app, cx| {
-            // This build's placeholders record the cards again.
+        let key = app.update(cx, |app, cx| {
+            // This build's placeholders record the cards again, when the
+            // page below is prepainted.
             app.picker_cards.0.borrow_mut().clear();
             app.sync_theme_cards(cx);
-            (app.render_settings(window, cx), app.settings_page_key())
+            app.settings_page_key()
         });
         self.seen = Some(key);
-        page
+        // Built for the width the page is drawn at in this frame, so its
+        // breakpoints follow the room it has: beside the project list, or a
+        // width the window's resizable columns give it, rather than the
+        // window's.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                crate::in_frame::in_frame(move |bounds, window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.render_settings(bounds.size.width, window, cx)
+                    })
+                })
+                .named("settings-page"),
+            )
+            .into_any_element()
     }
 }
 
@@ -3882,9 +4762,12 @@ fn preview_caption(
                 .truncate()
                 .text_size(crate::appearance::ui_text(12.))
                 .line_height(relative(1.3))
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(p.text))
-                .child(label);
+                .child(label)
+                .children(appearance::text_probe(move || {
+                    format!("theme-name-{miniature}")
+                }));
             if selected || warnings > 0 || tag.is_some() {
                 div()
                     .flex()
@@ -4035,20 +4918,539 @@ fn swatch_run<const N: usize>(
     .into_any_element()
 }
 
+/// An element's `on_children_prepainted` listener, as
+/// [`GitTurtle::keep_row_in_view`] returns two of.
+trait Prepainted: Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {}
+
+impl<F: Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static> Prepainted for F {}
+
+/// A setting's title and description, read together.
 fn setting_description(
     title: &'static str,
     description: impl Into<SharedString>,
     cx: &App,
 ) -> AnyElement {
-    let p = palette(cx);
+    read_setting_text(title, &description.into(), &[], cx)
+}
+
+/// Settings' two display preferences, each a row of three choices
+/// ([`GitTurtle::render_display_setting`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DisplaySetting {
+    ReduceMotion,
+    IncreaseContrast,
+}
+
+impl DisplaySetting {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 2] = [Self::ReduceMotion, Self::IncreaseContrast];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::ReduceMotion => "Reduce motion",
+            Self::IncreaseContrast => "Increase contrast",
+        }
+    }
+
+    /// The ID its segments and their focus handles are built from.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::ReduceMotion => "settings-reduce-motion",
+            Self::IncreaseContrast => "settings-increase-contrast",
+        }
+    }
+
+    pub(crate) fn choice(self, settings: &AppSettings) -> DisplayChoice {
+        match self {
+            Self::ReduceMotion => settings.reduce_motion,
+            Self::IncreaseContrast => settings.increase_contrast,
+        }
+    }
+
+    /// Whether the desktop's answer asks for this preference; a desktop
+    /// that has not answered asks for nothing.
+    fn asks(self, desktop: Option<native_accessibility::DisplayPreferences>) -> bool {
+        desktop.is_some_and(|desktop| match self {
+            Self::ReduceMotion => desktop.reduce_motion,
+            Self::IncreaseContrast => desktop.increase_contrast,
+        })
+    }
+
+    /// What `choice` does, following a desktop that `asks` or does not.
+    /// macOS is named as the system that asks there.
+    pub(crate) fn description(self, choice: DisplayChoice, asks: bool) -> &'static str {
+        #[cfg(target_os = "macos")]
+        let (motion_asks, motion_does_not, contrast_asks, contrast_does_not) = (
+            "macOS asks for reduced motion.",
+            "macOS does not ask for reduced motion.",
+            "macOS asks for more contrast.",
+            "macOS does not ask for more contrast.",
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (motion_asks, motion_does_not, contrast_asks, contrast_does_not) = (
+            "Your desktop asks for reduced motion.",
+            "Your desktop does not ask for reduced motion.",
+            "Your desktop asks for more contrast.",
+            "Your desktop does not ask for more contrast.",
+        );
+        match (self, choice) {
+            (Self::ReduceMotion, DisplayChoice::Follow) if asks => motion_asks,
+            (Self::ReduceMotion, DisplayChoice::Follow) => motion_does_not,
+            (Self::ReduceMotion, DisplayChoice::On) => {
+                "Transitions finish at once and GIFs and model clips stay paused, whatever the desktop asks."
+            }
+            (Self::ReduceMotion, DisplayChoice::Off) => {
+                "GitTurtle's short transitions play, whatever the desktop asks."
+            }
+            (Self::IncreaseContrast, DisplayChoice::Follow) if asks => contrast_asks,
+            (Self::IncreaseContrast, DisplayChoice::Follow) => contrast_does_not,
+            (Self::IncreaseContrast, DisplayChoice::On) => {
+                "Secondary text, dividers and control edges are drawn with more contrast, in every theme."
+            }
+            (Self::IncreaseContrast, DisplayChoice::Off) => {
+                "Each theme's own contrast, whatever the desktop asks."
+            }
+        }
+    }
+
+    /// Every description the row can show, which it reserves the height of.
+    pub(crate) fn descriptions(self) -> [&'static str; 4] {
+        [
+            self.description(DisplayChoice::Follow, true),
+            self.description(DisplayChoice::Follow, false),
+            self.description(DisplayChoice::On, false),
+            self.description(DisplayChoice::Off, false),
+        ]
+    }
+}
+
+/// A display choice's segment label: the first follows the desktop, which
+/// on macOS is the system.
+pub(crate) fn display_choice_label(choice: DisplayChoice) -> &'static str {
+    match choice {
+        #[cfg(target_os = "macos")]
+        DisplayChoice::Follow => "Follow the system",
+        #[cfg(not(target_os = "macos"))]
+        DisplayChoice::Follow => "Follow the desktop",
+        DisplayChoice::On => "On",
+        DisplayChoice::Off => "Off",
+    }
+}
+
+/// `setting`'s segment `index`, the choice [`DisplayChoice::ALL`] holds
+/// there, built as List density's segments: the shared helper's look, its
+/// toggled state the selection, tracking `focus`, and named by the setting
+/// and the choice ("Reduce motion: Off").
+pub(crate) fn display_segment(
+    setting: DisplaySetting,
+    index: usize,
+    selected: bool,
+    focus: &FocusHandle,
+) -> Button {
+    let key = setting.key();
+    let label = display_choice_label(DisplayChoice::ALL[index]);
+    let name = format!("{}: {label}", setting.title());
+    #[cfg(test)]
+    SEGMENTS.with(|segments| {
+        segments
+            .borrow_mut()
+            .insert(format!("{key}-{index}"), (name.clone(), selected))
+    });
+    Button::new((key, index))
+        .track_focus(focus)
+        .small()
+        .with_variant(appearance::control_button_variant(selected))
+        .label(label)
+        .accessibility_label(name)
+        .selected(selected)
+        .toggled(selected)
+        .debug_selector(move || format!("{key}-{index}"))
+        .when(selected, |button| {
+            button.hover(appearance::control_selected_hover)
+        })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The accessible name and toggled state each display segment was last
+    /// built with, by its selector: the test platform builds no
+    /// accessibility tree.
+    static SEGMENTS: std::cell::RefCell<
+        std::collections::BTreeMap<String, (String, bool)>,
+    > = std::cell::RefCell::default();
+}
+
+/// The accessible name and toggled state the display segment `selector`
+/// was last built with.
+#[cfg(test)]
+pub(crate) fn segment_built(selector: &str) -> Option<(String, bool)> {
+    SEGMENTS.with(|segments| segments.borrow().get(selector).cloned())
+}
+
+/// A field's title and description, the title the field's name, so the
+/// text reads only the description: the Default branch's read "Default
+/// branch. Used when creating a new repository." before the field named
+/// "Default branch".
+fn field_description(
+    title: &'static str,
+    description: impl Into<SharedString>,
+    cx: &App,
+) -> AnyElement {
     let description = description.into();
+    let label = description.to_string();
+    setting_text_read_as(title, &description, label, &[], cx)
+}
+
+/// A setting's title and description, read together, the description as
+/// tall as the tallest of it and `reserve`.
+fn read_setting_text(
+    title: &'static str,
+    description: &SharedString,
+    reserve: &[SharedString],
+    cx: &App,
+) -> AnyElement {
     let label = format!("{title}. {description}");
-    div()
-        .id(title)
-        .role(Role::Label)
-        // Tests read the accessible name here; other builds skip it.
-        .debug_selector(|| format!("setting-description: {label}"))
-        .aria_label(label)
+    setting_text_read_as(title, description, label, reserve, cx)
+}
+
+/// A setting's title and description, read as `label`, the description as
+/// tall as the tallest of it and `reserve`.
+fn setting_text_read_as(
+    title: &'static str,
+    description: &SharedString,
+    label: String,
+    reserve: &[SharedString],
+    cx: &App,
+) -> AnyElement {
+    let selector = label.clone();
+    setting_text(
+        native_accessibility::static_text(
+            div()
+                .id(title)
+                // Tests read the accessible name here; other builds skip it.
+                .debug_selector(move || format!("setting-description: {selector}")),
+            label,
+        ),
+        title,
+        description,
+        reserve,
+        cx,
+    )
+    .into_any_element()
+}
+
+/// The titles of the switches' rows, which name their switches.
+pub(crate) const FOLLOW_SYSTEM: &str = "Follow system appearance";
+const REOPEN_LAST: &str = "Restore repository tabs on startup";
+const PROJECT_PANE: &str = "Show the project list";
+/// The project list switch's description where the window draws the pane,
+/// or it is off; where the window holds it back, the switch says why instead
+/// (`project_pane::HELD_BACK_DESCRIPTION`).
+const PROJECT_PANE_DESCRIPTION: &str =
+    "Keep a pane on the far left to jump between known projects and sort them into groups.";
+
+/// Why History's Subject column cannot be hidden, as the pill beside its
+/// checkbox says.
+const ALWAYS_SHOWN: &str = "Always shown";
+
+/// The checkbox that shows History's column `id`, the `index`th, checked
+/// while `visible`, without its focus or click. Subject's is unavailable,
+/// since the column is always shown, and says so as its description, as the
+/// pill beside it does: announced unavailable, it gave no reason, the pill
+/// being text of its own after it.
+fn column_checkbox(index: usize, id: ColumnId, visible: bool) -> Checkbox {
+    Checkbox::new(("history-column", index))
+        .label(id.label())
+        .checked(visible)
+        .disabled(id == ColumnId::Subject)
+        .when(id == ColumnId::Subject, |checkbox| {
+            checkbox.aria_description(ALWAYS_SHOWN)
+        })
+}
+
+/// A Settings switch whose row is the control: its `title` and
+/// `description` are drawn before its track (the kit's `Switch::leading`),
+/// the description as tall as the tallest of it and `reserve`, the other
+/// descriptions the row can show, so replacing one with another moves
+/// nothing. The switch is named `name`, its title or that title said in
+/// full, and described by `description`, so assistive technology reads the
+/// row once, with the switch: the row's text read the title before the
+/// description, the switch's name again, and the description apart from
+/// the switch. A press anywhere on the row toggles the switch, hovering it
+/// lifts the track, and the title takes the disabled label's dim with the
+/// switch, as Follow system appearance's label did. The track is centred on
+/// the title's first line ([`on_title_line`]), its top never above the
+/// row's. The switch draws no label of
+/// its own: Follow system appearance drew one beside its track as well as
+/// its title, which at 18 pt in a 461 px window wrapped to three lines
+/// beside it.
+pub(crate) fn switch_row(
+    id: &'static str,
+    title: &'static str,
+    name: &'static str,
+    description: impl Into<SharedString>,
+    reserve: &[SharedString],
+    cx: &App,
+) -> Switch {
+    let description = description.into();
+    #[cfg(test)]
+    SWITCHES.with(|switches| {
+        switches
+            .borrow_mut()
+            .insert(id, (name, description.to_string()))
+    });
+    // The switch fills its row, which the page reveals with a ring's room
+    // around it, so the track's ring may take that room above the row and
+    // no more: the track never rises above the row's top. At 13 pt the 20 px
+    // track, taller than the title's line (19.5 px on a 2x display, 19 px at
+    // 1x), rose 0.25 px above it (0.5 px at 1x), and the page's edge cut its
+    // ring with the row revealed at the top of the view.
+    let ring = appearance::button_ring_room(cx);
+    // The kit leaves 8 px before the track; the rows beside keep 12.
+    Switch::new(id)
+        .w_full()
+        .accessibility_label(name)
+        .accessibility_description(description.clone())
+        .leading(setting_text(div().pr_1(), title, &description, reserve, cx))
+        // A ring's room above the title: the track's top stays on the row's.
+        .place_track(move |track| TitleLine::new(track, ring, ring).into_any_element())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The name and description each Settings switch was last built with,
+    /// by ID: the test platform builds no accessibility tree.
+    static SWITCHES: std::cell::RefCell<
+        std::collections::BTreeMap<&'static str, (&'static str, String)>,
+    > = std::cell::RefCell::default();
+}
+
+/// What the Settings switch `id` was last built with: its name and its
+/// description.
+#[cfg(test)]
+pub(crate) fn switch_built(id: &str) -> Option<(&'static str, String)> {
+    SWITCHES.with(|switches| switches.borrow().get(id).cloned())
+}
+
+/// A setting title's line height, GPUI's default (`phi`, the golden ratio),
+/// set on the title so its first line box, which the row's trailing control
+/// is centred on, is known while the row is built.
+const TITLE_LINE_HEIGHT: f32 = std::f32::consts::GOLDEN_RATIO;
+
+/// The height of a setting title's first line box in `window`, as GPUI lays
+/// a text line out: the line height snapped to the window's device pixels,
+/// 19.5 px at 13 pt and 27 px at 18 pt on a 2x display.
+fn title_line(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_text(12.) * TITLE_LINE_HEIGHT)
+}
+
+/// One rem, the rem `appearance::apply_text_sizes` sets: the top padding
+/// (`pt_4`) a separated Settings row and the Your themes card keep above
+/// their titles, and less than the gap (`gap_5`) between spaced rows.
+fn rem() -> Pixels {
+    appearance::ui_text(13.)
+}
+
+/// `control`, a Settings row's trailing control beside its text, centred on
+/// the title's first line box: its own text then shares the title's baseline
+/// at every size, and it stays put as the description rewraps. With their
+/// tops on that line instead, a 36 px segment group sat 4 px below the
+/// title's baseline at 18 pt and a switch 3.5 px above its cap centre. A
+/// control taller than the line reaches above the title, but never so far
+/// that its focus ring would pass `room` above it, into the row above or its
+/// separator: such a control is lowered just enough instead. The slot itself
+/// is one title line tall, so the row keeps its text's height. A control
+/// stacked below its text is placed without it, as is History's Columns
+/// panel, where the steppers stand under the panel's paragraph rather than
+/// beside a row's title; a row whose control wraps below its text when
+/// narrow is a [`wrapping_row`].
+fn on_title_line(control: impl IntoElement, room: Pixels, cx: &App) -> TitleLine {
+    TitleLine::new(
+        control.into_any_element(),
+        room,
+        appearance::button_ring_room(cx),
+    )
+}
+
+/// [`on_title_line`]'s slot for a control whose focus ring reaches `ring`
+/// outside its edge, built as it is drawn, when the window's device pixels,
+/// which the title's line is snapped to, are known.
+#[derive(IntoElement)]
+struct TitleLine {
+    control: AnyElement,
+    room: Pixels,
+    ring: Pixels,
+}
+
+impl TitleLine {
+    fn new(control: AnyElement, room: Pixels, ring: Pixels) -> Self {
+        Self {
+            control,
+            room,
+            ring,
+        }
+    }
+}
+
+impl RenderOnce for TitleLine {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        title_line_slot(self.control, title_line(window), self.room, self.ring)
+    }
+}
+
+/// The slot [`TitleLine`] draws for a title line `line` tall.
+fn title_line_slot(control: AnyElement, line: Pixels, room: Pixels, ring: Pixels) -> Div {
+    // How far above the title's top the control's edge may go.
+    let reach = room - ring;
+    div().flex_shrink_0().h(line).flex().flex_col().child(
+        // From `reach` above the title's line to as far below it, so a
+        // control centred in it is centred on the line; one too tall for
+        // it makes it taller downwards and starts at its top.
+        div()
+            .flex_shrink_0()
+            .mt(-reach)
+            .min_h((line + reach * 2.).max(Pixels::ZERO))
+            .flex()
+            .items_center()
+            .child(control),
+    )
+}
+
+/// Where a control `height` tall starts beside a title whose first line box
+/// is `line` tall, from the title's top: centred on that line, unless that
+/// takes its edge more than `reach` above the title, where it starts
+/// `reach` above. [`title_line_slot`] places a control there by layout.
+fn beside_title(line: Pixels, height: Pixels, reach: Pixels) -> Pixels {
+    ((line - height) / 2.).max(-reach)
+}
+
+/// The least width a [`wrapping_row`]'s text keeps beside its control: 180 px
+/// at the default interface size, scaled with it. At 461 px and 18 pt Your
+/// themes' header, which never wrapped, left its text 66 px beside its
+/// actions, its title on two lines and its description a word a line.
+fn wrapping_text_min() -> Pixels {
+    appearance::ui_size(180.)
+}
+
+/// `row` holding a setting's `text` and its trailing `control`, `height`
+/// tall, that wraps: beside the text while the text keeps at least
+/// [`wrapping_text_min`], the control is centred on the title's first line
+/// as [`on_title_line`] centres one, its focus ring kept within `room` above
+/// the title; narrower, it starts a line of its own at the text's left edge,
+/// the row's gap (a `gap_3`) below the text, with nothing reserved above it:
+/// its frame does, or, for a ghost Button, its content
+/// ([`WrappingRow::ghost_lead`]). Only the text sizes' rows and Your themes'
+/// header wrap; the others stack below a breakpoint or keep their control
+/// beside their text.
+fn wrapping_row(
+    row: Div,
+    text: impl IntoElement,
+    control: impl IntoElement,
+    height: Pixels,
+    room: Pixels,
+    cx: &App,
+) -> WrappingRow {
+    WrappingRow {
+        row,
+        text: text.into_any_element(),
+        control: control.into_any_element(),
+        height,
+        room,
+        ring: appearance::button_ring_room(cx),
+        lead: Pixels::ZERO,
+    }
+}
+
+/// [`wrapping_row`]'s row, built as it is drawn, when the window's device
+/// pixels, which the title's line is snapped to, are known.
+#[derive(IntoElement)]
+struct WrappingRow {
+    row: Div,
+    text: AnyElement,
+    control: AnyElement,
+    height: Pixels,
+    room: Pixels,
+    ring: Pixels,
+    /// How far the control's content starts inside its frame, where that
+    /// frame draws nothing at rest ([`Self::ghost_lead`]).
+    lead: Pixels,
+}
+
+impl WrappingRow {
+    /// The row for a control that leads with a ghost Button, transparent at
+    /// rest, whose content (its leading icon, else its label) starts `inset`
+    /// inside its frame: on a line of its own, the control's frame stands
+    /// that far before the text's edge, its hover fill and focus ring
+    /// spreading into the padding before it, so what a person sees starts at
+    /// the edge (DESIGN.md, "One left edge"). Beside the text it stays where
+    /// it was. Standing its frame at the edge, Your themes' New theme…, a
+    /// ghost Button, started its "+" icon 10 px past the title at 13 pt and
+    /// 14 px at 18 pt on a 2x display, and the cross itself, inset in its
+    /// icon, 12.5 and 17 px past it: a third left edge in the card.
+    fn ghost_lead(mut self, inset: Pixels) -> Self {
+        self.lead = inset;
+        self
+    }
+}
+
+impl RenderOnce for WrappingRow {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let top = beside_title(title_line(window), self.height, self.room - self.ring);
+        let gap = window.rem_size() * 0.75;
+        // On the device pixel the Button's own padding is laid out at, so its
+        // content lands on the text's edge rather than a rounding beside it.
+        let lead = window.pixel_snap(self.lead);
+        self.row
+            .flex()
+            .flex_wrap()
+            .items_start()
+            // Beside the text, the control's margin takes back the lead the
+            // gap adds, so it stays the gap past the text and the row wraps
+            // where it did: the control's outer width and the gap sum to what
+            // they were. A line of its own has no gap before the control, so
+            // the same margin stands its frame the lead before the text's
+            // edge.
+            .gap_x(gap + lead)
+            // Beside the text, the control's margin places it on the title's
+            // line. A line of its own starts `top` short of the gap, so the
+            // same margin puts the control's edge the gap below the text:
+            // placed in a title line's slot there, as beside the text, a
+            // 28 px control started 4.25 px above the gap at 13 pt.
+            .gap_y(gap - top)
+            // At least its least width beside the control, which wraps
+            // first; alone on a narrower row, the row's width.
+            .child(
+                div()
+                    .flex_grow(1.)
+                    .flex_shrink(1.)
+                    .flex_basis(wrapping_text_min())
+                    .min_w_0()
+                    .child(self.text),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .h(self.height)
+                    .mt(top)
+                    .ml(-lead)
+                    .flex()
+                    .items_center()
+                    .child(self.control),
+            )
+    }
+}
+
+/// `element` holding a setting's title and description, the description as
+/// tall as the tallest of it and `reserve`.
+fn setting_text<E: Styled + ParentElement>(
+    element: E,
+    title: &'static str,
+    description: &SharedString,
+    reserve: &[SharedString],
+    cx: &App,
+) -> E {
+    let p = palette(cx);
+    element
         .flex_1()
         .min_w_0()
         .flex()
@@ -4056,34 +5458,113 @@ fn setting_description(
         .gap_1()
         .child(
             div()
+                .debug_selector(move || format!("setting-title: {title}"))
                 .text_size(crate::appearance::ui_text(12.))
+                .line_height(relative(TITLE_LINE_HEIGHT))
                 .font_weight(FontWeight::MEDIUM)
-                .child(title),
+                .child(title)
+                .children(appearance::text_probe(move || {
+                    format!("setting-title: {title}")
+                })),
         )
         .child(
             div()
+                .debug_selector(move || format!("setting-detail: {title}"))
+                .grid()
+                .grid_cols(1)
                 .text_size(crate::appearance::ui_text(11.))
                 .line_height(relative(1.5))
                 .text_color(rgb(p.muted))
-                .child(description),
+                .child(div().row_start(1).col_start(1).child(description.clone()))
+                .children(
+                    reserve
+                        .iter()
+                        .filter(|text| *text != description)
+                        .map(|text| {
+                            div()
+                                .row_start(1)
+                                .col_start(1)
+                                .invisible()
+                                .child(text.clone())
+                        }),
+                ),
         )
-        .into_any_element()
 }
 
+/// `control`, an action of the Git identity card with element ID `id` and
+/// label `label`, refused for `reason`: on a marked tab the mark's, as Fetch
+/// is refused there (decided 2026-11-11: an entry is offered only where it
+/// can act), and for Save repository identity and Reset edits with no
+/// identity loaded the read's, as Fetch gives it (`GitTurtle::identity_wait`;
+/// decided 2026-11-15). Its tooltip is what it does, `purpose` or its
+/// label, then the reason, and its accessible name its label and the
+/// reason, as Fetch's is, since a refused control leaves the Tab order and
+/// its tooltip shows only under the pointer. With no reason it keeps
+/// `purpose` as its tooltip, where it has one. Formatted only where there
+/// is a reason, as the cached page is built again.
+fn says_why(
+    control: Button,
+    id: &'static str,
+    label: &'static str,
+    purpose: Option<&'static str>,
+    reason: Option<&'static str>,
+) -> Button {
+    let Some(reason) = reason else {
+        return match purpose {
+            Some(purpose) => control.tooltip(purpose),
+            None => control,
+        };
+    };
+    let name: SharedString = format!("{label}: {reason}").into();
+    let tooltip = format!("{} · {reason}", purpose.unwrap_or(label));
+    crate::views::note_control_tooltip(&id.into(), &tooltip);
+    control.tooltip(tooltip).accessibility_label(name)
+}
+
+/// A labelled field which a write leaves `(refused, dimmed)`
+/// (`workspace::refusing_input`), named by its label, the words drawn above
+/// it: its placeholder is no name, yet the Git identity's Name and Email
+/// fields, named by nothing else, were announced by it ("Your name").
+///
+/// On a marked tab, `marked` holds the identity line, which the field gives
+/// assistive technology as its description, so a screen reader says why on
+/// it as the refused buttons' names do, and the field leaves the Tab order,
+/// as those dimmed buttons do: a disabled field draws no focus ring, so Tab
+/// stopped on Name and Email with nothing drawn to show it (decided
+/// 2026-11-14). The tab stop is the focus handle's own, which every copy
+/// GPUI tracks reads.
 fn settings_field(
     label: &'static str,
     input: &Entity<InputState>,
-    disabled: bool,
+    (refused, dimmed): (bool, bool),
+    marked: Option<SharedString>,
     cx: &App,
 ) -> AnyElement {
+    let _ = input.focus_handle(cx).tab_stop(marked.is_none());
     div()
         .flex()
         .flex_col()
         .gap_2()
         .text_size(crate::appearance::ui_text(12.))
         .text_color(rgb(palette(cx).text))
-        .child(label)
-        .child(Input::new(input).disabled(disabled))
+        .child(
+            // Medium, as the setting titles beside it are; the field's own
+            // text stays regular.
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(label)
+                .children(appearance::text_probe(|| {
+                    format!("settings-field-label: {label}")
+                })),
+        )
+        .child(crate::workspace::refusing_input(
+            Input::new(input)
+                .aria_label(label)
+                .when_some(marked, |input, line| input.aria_description(line)),
+            || format!("settings-field-{label}"),
+            refused,
+            dimmed,
+        ))
         .into_any_element()
 }
 
@@ -4096,6 +5577,7 @@ fn settings_section(
 ) -> AnyElement {
     let p = palette(cx);
     div()
+        .debug_selector(move || format!("settings-section: {title}"))
         .w_full()
         .min_w_0()
         .p_5()
@@ -4326,6 +5808,8 @@ mod theme_apply_tests {
             split,
             partial: None,
             partial_unavailable: None,
+            lfs_missing: [false; 2],
+            lfs_failed: [None; 2],
         })
     }
 
@@ -4342,10 +5826,7 @@ mod theme_apply_tests {
     fn theme_switch_submits_no_job_and_keeps_editor_and_find(cx: &mut TestAppContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -4467,11 +5948,19 @@ mod picker_tests {
     use std::{cell::RefCell, rc::Rc};
 
     pub(super) fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+        open_styled_app(cx, |root| root)
+    }
+
+    /// [`open_app`] with its window's root styled by `style`, as a test that
+    /// reads where text runs are drawn marks them (`width_walk::text_mark`).
+    fn open_styled_app(
+        cx: &mut TestAppContext,
+        style: impl FnOnce(gpui_kit::component::Root) -> gpui_kit::component::Root + 'static,
+    ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             theme_editor::init(cx);
         });
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
@@ -4489,7 +5978,7 @@ mod picker_tests {
                 )
             });
             *output.borrow_mut() = Some(app.clone());
-            gpui_kit::component::Root::new(app, window, cx)
+            style(gpui_kit::component::Root::new(app, window, cx))
         });
         let app = captured.borrow().as_ref().unwrap().clone();
         // Tall enough that the Your themes card is on screen without scrolling.
@@ -4508,6 +5997,163 @@ mod picker_tests {
         for _ in 0..2 {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
+        }
+    }
+
+    /// In a short window an assistive technology reaches only the Settings
+    /// controls the window draws: no reachable control lies wholly outside
+    /// its nearest clipping ancestor, beyond the one neighbour AccessKit
+    /// keeps past each edge for it to move into, and that ancestor is the
+    /// part of the page the window draws. Settings' page did not clip, so
+    /// every theme card, switch and button below the window was reached.
+    ///
+    /// The test platform builds no accessibility tree, so the test builds
+    /// the part GPUI would: the wrappers' nodes as they were drawn, and the
+    /// controls, as the page's children, at their bounds, in the order the
+    /// page draws them. It walks the tree through AccessKit's own filter.
+    #[gpui::test]
+    async fn assistive_technology_reaches_only_the_settings_drawn(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Node, Rect};
+
+        let (_app, cx) = open_app(cx);
+        let mut selectors: Vec<String> = ThemeChoice::ALL
+            .iter()
+            .map(|choice| format!("settings-theme-{}", *choice as usize))
+            .collect();
+        selectors.extend((0..4).map(|index| format!("settings-density-{index}")));
+        selectors.extend(
+            [
+                "settings-theme-omarchy",
+                "follow-system-switch",
+                "code-font-switch",
+                "custom-themes-new",
+                "custom-themes-import",
+                "save-external-editor",
+                "save-default-branch",
+            ]
+            .map(str::to_owned),
+        );
+        let physical = |cx: &mut VisualTestContext, bounds: Bounds<Pixels>| {
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            Rect {
+                x0: f64::from(f32::from(bounds.left())) * scale,
+                y0: f64::from(f32::from(bounds.top())) * scale,
+                x1: f64::from(f32::from(bounds.right())) * scale,
+                y1: f64::from(f32::from(bounds.bottom())) * scale,
+            }
+        };
+        let meets = |a: Rect, b: Rect| !a.intersect(b).is_empty();
+        let close = |a: Rect, b: Rect| {
+            [(a.x0, b.x0), (a.y0, b.y0), (a.x1, b.x1), (a.y1, b.y1)]
+                .iter()
+                .all(|(a, b)| (a - b).abs() < 0.01)
+        };
+
+        for (width, height) in [(640., 490.), (461., 490.)] {
+            let at = format!("{width} × {height}");
+            cx.simulate_resize(size(px(width), px(height)));
+            settle(cx);
+            // Without an assistive technology the page is a cached view,
+            // which a frame that changes nothing reuses unseen; it is not
+            // cached while one is active, so draw it again whole.
+            written::forget();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let window = physical(
+                cx,
+                Bounds::new(point(px(0.), px(0.)), size(px(width), px(height))),
+            );
+            // The part of the page the window draws, from layout alone.
+            let page = cx
+                .debug_bounds("settings-scroll")
+                .expect("Settings is drawn");
+            let drawn = physical(
+                cx,
+                page.intersect(&Bounds::new(
+                    point(px(0.), px(0.)),
+                    size(px(width), px(height)),
+                )),
+            );
+            // The controls, in the order the page draws them.
+            let mut controls: Vec<(String, Rect)> = selectors
+                .iter()
+                .filter_map(|selector| {
+                    cx.debug_bounds(selector.clone().leak())
+                        .map(|bounds| (selector.clone(), physical(cx, bounds)))
+                })
+                .collect();
+            controls.sort_by(|a, b| (a.1.y0, a.1.x0).partial_cmp(&(b.1.y0, b.1.x0)).unwrap());
+            assert!(
+                controls.len() > 20 && controls.iter().any(|(_, bounds)| !meets(*bounds, drawn)),
+                "at {at} the page runs past the window: {controls:?}"
+            );
+
+            let mut tree = written::Assembly::default().written("settings-scroll", None);
+            // Without a node of its own the page's controls are children of
+            // the node around it, as they were.
+            let parent = if tree.has("settings-scroll") {
+                "settings-scroll"
+            } else {
+                tree = tree.written("gitturtle-page", None);
+                "gitturtle-page"
+            };
+            for (selector, bounds) in &controls {
+                let mut control = Node::new(Role::Button);
+                control.set_label(selector.clone());
+                control.set_bounds(*bounds);
+                tree = tree.node(selector, control, Some(parent));
+            }
+            let found = reachable(tree.tree(window, None));
+            let reached: Vec<_> = found
+                .iter()
+                .filter(|node| {
+                    node.label
+                        .as_ref()
+                        .is_some_and(|label| selectors.contains(label))
+                })
+                .collect();
+            for node in &reached {
+                let bounds = node.bounds.expect("bounds");
+                let clip = node.clip.unwrap_or(window);
+                let index = controls
+                    .iter()
+                    .position(|(selector, _)| Some(selector) == node.label.as_ref())
+                    .unwrap();
+                // AccessKit keeps the first control past each edge.
+                let neighbour = [index.checked_sub(1), Some(index + 1)]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|other| controls.get(other))
+                    .any(|(_, other)| meets(*other, clip));
+                assert!(
+                    meets(bounds, clip) || neighbour,
+                    "at {at} {:?} at {bounds:?} is reached, wholly outside its clipping ancestor {clip:?}",
+                    node.label
+                );
+            }
+            // The clipping ancestor is the part of the page the window draws.
+            for node in &reached {
+                assert!(
+                    node.clip.is_some_and(|clip| close(clip, drawn)),
+                    "at {at} {:?} is clipped to {:?}; the window draws {drawn:?} of the page",
+                    node.label,
+                    node.clip
+                );
+            }
+            // Every control the window draws is in reach.
+            for (selector, bounds) in &controls {
+                if meets(*bounds, drawn) {
+                    assert!(
+                        reached
+                            .iter()
+                            .any(|node| node.label.as_ref() == Some(selector)),
+                        "at {at} the drawn {selector} is in reach"
+                    );
+                }
+            }
         }
     }
 
@@ -4534,8 +6180,102 @@ mod picker_tests {
         cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id())
     }
 
+    /// With a repository open, the Git identity's Name and Email labels are
+    /// medium, as the Projects setting titles beside them are, rather than
+    /// regular, and every theme card's name is medium rather than semibold.
+    /// On Linux the bundled interface font draws each weight in a face of its
+    /// own, so the difference shows.
+    #[gpui::test]
+    fn settings_labels_draw_in_medium(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        // Tall enough that every card is on screen without scrolling.
+        cx.simulate_resize(size(px(1440.), px(2400.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(cx);
+        for label in ["Name", "Email"] {
+            assert_eq!(
+                appearance::drawn_weight(&format!("settings-field-label: {label}")),
+                Some(FontWeight::MEDIUM),
+                "the {label} label"
+            );
+        }
+        for choice in ThemeChoice::ALL {
+            let body = miniature(cx, &app, ThemeSelection::BuiltIn(choice));
+            assert_eq!(
+                appearance::drawn_weight(&format!("theme-name-{body}")),
+                Some(FontWeight::MEDIUM),
+                "the {} card's name",
+                choice.label()
+            );
+        }
+    }
+
     fn drawn(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
         shown(cx, selector.leak())
+    }
+
+    /// The theme grid takes its columns from the width the page is drawn at,
+    /// not the window's. Beside the 240 px project list a 1,200 px window
+    /// leaves the page 960 px, below the 1,060 px breakpoint, so the dark
+    /// palettes' first row holds three cards, as a 960 px window without the
+    /// list does; at 18 pt a 1,480 px window, over the scaled breakpoint,
+    /// leaves the page 1,240 px, under it, and three as well. The grid laid
+    /// four out for the window's width in the room the page did not have.
+    #[gpui::test]
+    fn the_theme_grid_takes_its_columns_from_the_pages_width(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let dark: Vec<_> = ThemeChoice::ALL
+            .into_iter()
+            .filter(|choice| !choice.is_light())
+            .collect();
+        let first_row = |cx: &mut VisualTestContext| {
+            let card = |cx: &mut VisualTestContext, choice: ThemeChoice| {
+                drawn(cx, format!("settings-theme-{}", choice as usize))
+            };
+            let top = card(cx, dark[0]).expect("the first dark card").top();
+            dark.iter()
+                .filter(|choice| card(cx, **choice).is_some_and(|card| card.top() == top))
+                .count()
+        };
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let text_size = |cx: &mut VisualTestContext, interface: u8| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+        };
+        for (interface, width) in [(13, 1200.), (18, 1480.)] {
+            let at = format!("{interface} pt in a {width} px window");
+            text_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(2400.)));
+            settle(cx);
+            assert!(px(width) >= appearance::ui_size(1060.), "{at}");
+            assert_eq!(first_row(cx), 4, "{at} without the project list");
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+            settle(cx);
+            let page = drawn(cx, "settings-scroll".into()).expect("the page");
+            assert!(
+                page.size.width <= px(width - 240.) + px(0.5)
+                    && page.size.width < appearance::ui_size(1060.),
+                "{at}: the page {page:?} beside the project list"
+            );
+            assert_eq!(
+                first_row(cx),
+                3,
+                "{at}: beside the project list, the {:?} page's columns",
+                page.size.width
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+            settle(cx);
+        }
+        text_size(cx, 13);
+        settle(cx);
     }
 
     /// The check badge is the name's line tall at every interface text size:
@@ -4807,11 +6547,14 @@ mod picker_tests {
 
         let (_app, cx) = open_app(cx);
         let describes = |cx: &mut VisualTestContext, description: &str| {
-            let label = format!("Use the desktop's monospace font. {description}");
+            // The row's description is its switch's accessible description.
+            assert!(page_shows(cx, "code-font-switch"));
+            let built = switch_built("settings-system-code-font").map(|(_, built)| built);
             let state = cx.read(desktop_text::system_code_font);
-            assert!(
-                drawn(cx, format!("setting-description: {label}")).is_some(),
-                "the row reads {label:?} while {state:?}"
+            assert_eq!(
+                built.as_deref(),
+                Some(description),
+                "the switch's description while {state:?}"
             );
         };
         let toggle = |cx: &mut VisualTestContext| {
@@ -4874,11 +6617,13 @@ mod picker_tests {
 
         let (_app, cx) = open_app(cx);
         let describes = |cx: &mut VisualTestContext, description: &str| {
-            let label = format!("Use the desktop's monospace font. {description}");
+            assert!(page_shows(cx, "code-font-switch"));
+            let built = switch_built("settings-system-code-font").map(|(_, built)| built);
             let state = cx.read(desktop_text::system_code_font);
-            assert!(
-                drawn(cx, format!("setting-description: {label}")).is_some(),
-                "the row reads {label:?} while {state:?}"
+            assert_eq!(
+                built.as_deref(),
+                Some(description),
+                "the switch's description while {state:?}"
             );
         };
         let toggle = |cx: &mut VisualTestContext| {
@@ -4895,6 +6640,16 @@ mod picker_tests {
             while !done(cx) {
                 assert!(started.elapsed() < Duration::from_secs(30), "timed out");
                 desktop_text::pass_real_time(&cx.executor());
+                settle(cx);
+            }
+        };
+        // A lookup's process starts with the clock held, so however slowly a
+        // loaded host starts it, the wait spends none of the lookup's bound.
+        let started = |cx: &mut VisualTestContext, fake: &StandIn| {
+            let since = std::time::Instant::now();
+            while fake.code_font_queries() != 1 {
+                assert!(since.elapsed() < Duration::from_secs(30), "timed out");
+                desktop_text::pass_real_time_only(&cx.executor());
                 settle(cx);
             }
         };
@@ -4915,7 +6670,7 @@ mod picker_tests {
         toggle(cx);
         let slow = StandIn::new();
         let _slow = lookup(cx, &slow);
-        until(cx, &|_| slow.code_font_queries() == 1);
+        started(cx, &slow);
         pass(cx, Duration::from_millis(1500));
         describes(cx, pending);
         slow.answer(bundled);
@@ -4940,7 +6695,7 @@ mod picker_tests {
         let stale = cx.update(|_, cx| desktop_text::code_font_lookup_generation(cx));
         let stopped = StandIn::new();
         let _stopped = lookup(cx, &stopped);
-        until(cx, &|_| stopped.code_font_queries() == 1);
+        started(cx, &stopped);
         toggle(cx);
         toggle(cx);
         until(cx, &|_| stopped.reaped());
@@ -4956,7 +6711,7 @@ mod picker_tests {
         // A lookup that never answers is unavailable at the bound, not before.
         let silent = StandIn::new();
         let _silent = lookup(cx, &silent);
-        until(cx, &|_| silent.code_font_queries() == 1);
+        started(cx, &silent);
         pass(cx, CODE_FONT_WAIT - Duration::from_millis(50));
         describes(cx, pending);
         pass(cx, Duration::from_millis(50));
@@ -5136,8 +6891,8 @@ mod picker_tests {
     /// A disabled Switch fades its thumb with its track. The Follow system
     /// switch, which the selected Omarchy theme disables, paints its track and
     /// its thumb (`switch_thumb`, the palette's text) at half strength; enabled
-    /// with Midnight selected, off and on, it paints both at full strength, as
-    /// before.
+    /// with Midnight selected, off and on, it paints both at full strength, the
+    /// checked thumb in the accent's label colour.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_disabled_switch_fades_its_thumb_with_its_track(cx: &mut TestAppContext) {
@@ -5213,7 +6968,7 @@ mod picker_tests {
             };
             (
                 fill(if checked { p.accent } else { p.border }),
-                fill(p.text),
+                fill(if checked { p.accent_foreground } else { p.text }),
             )
         };
 
@@ -5236,6 +6991,2247 @@ mod picker_tests {
             "the Omarchy theme applies its mapped palette"
         );
         assert_eq!(painted, expected(cx, false, true), "disabled");
+    }
+
+    /// Every quad the last frame painted, in logical pixels, in paint order.
+    fn painted_quads(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .map(|quad| {
+                    let b = quad.bounds;
+                    Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// Settings' Save editor keeps its shape while there is nothing to save,
+    /// as the default branch's Save does: it was the transparent helper
+    /// stretched to the card's width, so disabled it drew only a centred dim
+    /// label (x 1954–2605 at 2x in a 1480 px window). In a dark and a light
+    /// palette it now sits beside its field at the card's trailing edge, as
+    /// wide as its content, and paints Save's fill at Save's height.
+    #[gpui::test]
+    fn the_disabled_save_editor_keeps_its_shape(cx: &mut TestAppContext) {
+        let (_, cx) = open_app(cx);
+        let fills = |cx: &mut VisualTestContext, at: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                    (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+                };
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        !quad.background.is_transparent()
+                            && near(quad.bounds.left(), at.left())
+                            && near(quad.bounds.top(), at.top())
+                            && near(quad.bounds.right(), at.right())
+                            && near(quad.bounds.bottom(), at.bottom())
+                    })
+                    .map(|quad| quad.background)
+                    .collect::<Vec<_>>()
+            })
+        };
+        for theme in [ThemeChoice::Midnight, ThemeChoice::Daylight] {
+            cx.update(|window, cx| theme.apply(Some(window), cx));
+            // A frame that builds the whole page in the palette, read before
+            // anything else draws.
+            assert!(page_shows(cx, "save-external-editor"), "{theme:?}");
+            let editor = cx.debug_bounds("save-external-editor").unwrap();
+            let field = cx.debug_bounds("settings-editor-field").unwrap();
+            let save = cx.debug_bounds("save-default-branch").unwrap();
+            let (editor_fills, save_fills) = (fills(cx, editor), fills(cx, save));
+            assert!(
+                editor.left() >= field.right() && editor.right() == save.right(),
+                "{theme:?}: Save editor {editor:?} beside its field {field:?}, ending with Save {save:?}"
+            );
+            assert_eq!(editor.size.height, save.size.height, "{theme:?}");
+            assert!(
+                !save_fills.is_empty() && editor_fills == save_fills,
+                "{theme:?}: Save editor paints {editor_fills:?}, Save {save_fills:?}"
+            );
+        }
+    }
+
+    /// Toggling a Settings Switch moves nothing: every Switch track and the
+    /// rows around them keep their bounds, at 0.875, 1 and 1.25 of
+    /// the desktop text scale (Linux) and at 18 pt, and through the code font
+    /// row's off, pending, found and unavailable descriptions, which wrap to
+    /// different line counts in a 1,000 px window, with each toggle's save
+    /// answered before the page is measured. Show the project list is left
+    /// out: narrowing the page for its pane is what it does.
+    #[gpui::test]
+    fn toggling_a_settings_switch_moves_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let sizes: &[(u8, f32)] = if cfg!(target_os = "linux") {
+            &[(13, 0.875), (13, 1.0), (13, 1.25), (18, 1.0)]
+        } else {
+            &[(13, 1.0), (18, 1.0)]
+        };
+        let mut switches = vec!["follow-system-switch", "settings-reopen-last-row"];
+        let mut rows = vec![
+            "follow-system-switch",
+            "custom-themes-new",
+            "text-size-setting-interface",
+            "text-size-setting-code",
+            "settings-density-0",
+            "settings-reopen-last-row",
+            "settings-scroll",
+        ];
+        if cfg!(target_os = "linux") {
+            switches.push("code-font-switch");
+            rows.extend(["code-font-setting", "code-font-switch"]);
+        }
+        // Every Switch track, the toggled one's included, then each row.
+        let measure = |cx: &mut VisualTestContext| {
+            let mut bounds: Vec<_> = painted_quads(cx)
+                .into_iter()
+                .filter(|quad| quad.size == size(px(36.), px(20.)))
+                .collect();
+            // A checked track may paint in another order.
+            bounds.sort_by(|a, b| {
+                (a.top(), a.left())
+                    .partial_cmp(&(b.top(), b.left()))
+                    .unwrap()
+            });
+            for row in &rows {
+                bounds.push(shown(cx, row).unwrap_or_else(|| panic!("{row}")));
+            }
+            bounds
+        };
+        for &(interface, desktop) in sizes {
+            cx.simulate_resize(size(px(1000.), px(5000.)));
+            cx.update(|window, cx| {
+                #[cfg(target_os = "linux")]
+                appearance::set_desktop_text_scale(desktop, cx);
+                #[cfg(not(target_os = "linux"))]
+                assert_eq!(desktop, 1.0, "only Linux reports a desktop text scale");
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    app.apply_appearance(window, cx);
+                    cx.notify();
+                });
+            });
+            settle(cx);
+            let at = format!("{interface} pt at {desktop}");
+            let rest = painted_quads(cx);
+            for selector in &switches {
+                let holder = shown(cx, selector).unwrap_or_else(|| panic!("{selector}"));
+                let track = rest
+                    .iter()
+                    .copied()
+                    .find(|quad| {
+                        quad.size == size(px(36.), px(20.)) && holder.contains(&quad.center())
+                    })
+                    .unwrap_or_else(|| panic!("{at}: {selector} draws its track"));
+                let expected = measure(cx);
+                let assert_still = |cx: &mut VisualTestContext, state: &str| {
+                    let now = measure(cx);
+                    let moved: Vec<_> = expected
+                        .iter()
+                        .zip(&now)
+                        .filter(|(before, after)| before != after)
+                        .take(3)
+                        .collect();
+                    assert!(
+                        moved.is_empty() && now.len() == expected.len(),
+                        "{at}: {state} moved {moved:?} ({} bounds, then {})",
+                        expected.len(),
+                        now.len()
+                    );
+                };
+                // A click saves the settings on the preference writer, a
+                // thread `run_until_parked` does not wait for. Drained, each
+                // save answers before the page is measured; undrained, a
+                // loaded host's writer fell a queue's length behind the
+                // clicks, its bounded queue refused the next save, and the
+                // refusal's "Could not save settings" notice stood above
+                // every switch (hosted run 42902520118).
+                let toggle = |cx: &mut VisualTestContext| {
+                    cx.simulate_click(track.center(), Modifiers::default());
+                    cx.read(|cx| app.read(cx).preferences_writer.drain());
+                    settle(cx);
+                };
+                toggle(cx);
+                assert_still(cx, &format!("turning {selector} on"));
+                #[cfg(target_os = "linux")]
+                if *selector == "code-font-switch" {
+                    use crate::desktop_text;
+                    let answer =
+                        |cx: &mut VisualTestContext, found: Result<SharedString, String>| {
+                            cx.update(|_, cx| {
+                                let lookup = desktop_text::code_font_lookup_generation(cx);
+                                desktop_text::answer_code_font_lookup(lookup, found, cx)
+                            });
+                            settle(cx);
+                        };
+                    answer(cx, Ok("Desktop Mono".into()));
+                    assert_still(cx, "the desktop's font found");
+                    toggle(cx);
+                    assert_still(cx, "turning the desktop's font off");
+                    toggle(cx);
+                    answer(cx, Err("Proportional Sans is not monospace.".into()));
+                    assert_still(cx, "the desktop's font unusable");
+                }
+                toggle(cx);
+                assert_still(cx, &format!("turning {selector} off again"));
+            }
+        }
+    }
+
+    /// The four switches' rows, for tests: each switch's ID, its row's
+    /// title, its description at rest and the selector drawn around the row.
+    fn switch_rows() -> Vec<(&'static str, &'static str, String, &'static str)> {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut rows = vec![
+            (
+                "follow-system",
+                FOLLOW_SYSTEM,
+                "Braden in Light Mode; your selected dark palette in Dark Mode.".to_owned(),
+                "follow-system-switch",
+            ),
+            (
+                "settings-reopen-last",
+                REOPEN_LAST,
+                "Reopen the selected tab and retain up to eight saved repository tabs.".to_owned(),
+                "settings-reopen-last-row",
+            ),
+            (
+                "settings-project-pane",
+                PROJECT_PANE,
+                "Keep a pane on the far left to jump between known projects and sort them into groups."
+                    .to_owned(),
+                "settings-project-pane-row",
+            ),
+        ];
+        #[cfg(target_os = "linux")]
+        rows.push((
+            "settings-system-code-font",
+            "Use the desktop's monospace font",
+            format!(
+                "Code uses the bundled {}. Turn on to use fontconfig's monospace font when it is fixed-width.",
+                crate::mono()
+            ),
+            "code-font-switch",
+        ));
+        rows
+    }
+
+    /// The Switch track the last frame painted inside `row`.
+    fn track_in(cx: &mut VisualTestContext, row: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        painted_quads(cx)
+            .into_iter()
+            .find(|quad| quad.size == size(px(36.), px(20.)) && row.contains(&quad.center()))
+    }
+
+    /// Each switch's row says its setting once, at 13 and 18 pt in a 461
+    /// and a 1,480 px window: the switch is named by the row's title and
+    /// described by its description, the row's text is not read apart from
+    /// the switch, the title stays inside the window, Follow system's on one
+    /// line, and the track ends the row, with no label drawn after it.
+    /// Follow system appearance drew its words beside its track as well as
+    /// in its title, which at 18 pt in a 461 px window wrapped to three lines
+    /// beside them, and each row's text read its title before its
+    /// description, the switch's name again, apart from the switch.
+    #[gpui::test]
+    fn each_switch_row_says_its_setting_once(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let rows = switch_rows();
+        for interface in [13, 18] {
+            for width in [461., 1480.] {
+                let at = format!("{interface} pt at {width} px");
+                // Tall enough to paint every row of the narrow page.
+                cx.simulate_resize(size(px(width), px(9000.)));
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.settings.interface_text_size = interface;
+                        appearance::apply_text_sizes(interface, code, window, cx);
+                        cx.notify();
+                    })
+                });
+                settle(cx);
+                SWITCHES.with(|switches| switches.borrow_mut().clear());
+                crate::native_accessibility::written::forget();
+                assert!(page_shows(cx, "follow-system-switch"), "{at}");
+                // The rows' text is read nowhere apart from the switches,
+                // while List density's title and description are.
+                let read = crate::native_accessibility::written::labels();
+                assert!(
+                    read.iter().any(|(_, label)| label
+                        .as_deref()
+                        .is_some_and(|label| label.starts_with("List density. "))),
+                    "{at}: List density is read"
+                );
+                for (_, title, description, _) in &rows {
+                    assert!(
+                        !read.iter().any(|(_, label)| label
+                            .as_deref()
+                            .is_some_and(|label| label.contains(title)
+                                || label.contains(description.as_str()))),
+                        "{at}: {title}'s row is read apart from its switch: {read:?}"
+                    );
+                }
+                // One line of a title, as a short one draws it.
+                let line = drawn(cx, "setting-title: List density".into())
+                    .expect("List density's title")
+                    .size
+                    .height;
+                for (id, title, description, row) in &rows {
+                    let built = switch_built(id);
+                    assert!(
+                        built.as_ref().is_some_and(
+                            |(name, built)| name.starts_with(title) && built == description
+                        ),
+                        "{at}: {id} is built {built:?}, not named by {title:?} and described \
+                         by {description:?}"
+                    );
+                    for read in [format!("{title}. {description}"), description.clone()] {
+                        assert!(
+                            drawn(cx, format!("setting-description: {read}")).is_none(),
+                            "{at}: {title}'s row reads {read:?} apart from its switch"
+                        );
+                    }
+                    let drawn_title = drawn(cx, format!("setting-title: {title}"))
+                        .unwrap_or_else(|| panic!("{at}: {title} is drawn"));
+                    assert!(
+                        drawn_title.right() <= px(width),
+                        "{at}: {title} {drawn_title:?} runs past the window"
+                    );
+                    // A longer title may wrap inside its room beside the
+                    // track ("Restore repository tabs on startup" takes two
+                    // lines at 18 pt in 461 px); Follow system's never does.
+                    if *title == FOLLOW_SYSTEM {
+                        assert_eq!(
+                            drawn_title.size.height, line,
+                            "{at}: {title} {drawn_title:?} takes one line"
+                        );
+                    }
+                    let row = shown(cx, row).unwrap_or_else(|| panic!("{at}: {row}"));
+                    let track = track_in(cx, row)
+                        .unwrap_or_else(|| panic!("{at}: {title}'s row {row:?} draws its track"));
+                    assert!(
+                        drawn_title.right() <= track.left() && track.right() == row.right(),
+                        "{at}: {title}'s track {track:?} does not end its row {row:?} after its \
+                         title {drawn_title:?}"
+                    );
+                }
+                // Each switch's own node, as the page's arguments build it.
+                for (id, title, description, _) in &rows {
+                    let (name, _) = switch_built(id).expect("built");
+                    let node = switch_node(cx, id, title, name, description);
+                    assert_eq!(
+                        (node.role(), node.label(), node.description()),
+                        (
+                            gpui::accesskit::Role::Switch,
+                            Some(name),
+                            Some(description.as_str())
+                        ),
+                        "{at}: {id}'s node"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The accessibility node of the switch [`switch_row`] builds for these
+    /// arguments, its base Switch built inside a draw, as
+    /// `views::tests::input_node` builds a field's.
+    fn switch_node(
+        cx: &mut VisualTestContext,
+        id: &'static str,
+        title: &'static str,
+        name: &'static str,
+        description: &str,
+    ) -> gpui::accesskit::Node {
+        let description = SharedString::from(description.to_owned());
+        crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            let base = switch_row(id, title, name, description.clone(), &[], cx).base(window, cx);
+            let element = RenderOnce::render(base, window, cx).into_element();
+            let mut node =
+                gpui::accesskit::Node::new(element.a11y_role().expect("the switch's role"));
+            element.write_a11y_info(&mut node);
+            node
+        })
+    }
+
+    /// Every Settings row's trailing control is centred on its title's first
+    /// line box, beside a description of one line or several, at 13 and 18 pt
+    /// in a 1,480 px and a 900 px window: List density's, Reduce motion's and
+    /// Increase contrast's segments, the two text sizes' controls, Graph lane
+    /// spacing's steppers, Your themes' actions and each switch's track, unless
+    /// its focus ring would then reach past its row's room above the title,
+    /// where it is lowered to that room. Only a switch's track at 13 pt is: a
+    /// switch fills its row, which the page reveals with a ring's room around
+    /// it, so the 20 px track, taller than the title's line (19.5 px on a 2x
+    /// display), keeps its top on the row's rather than rising 0.25 px above
+    /// it. Each lies within
+    /// half a device pixel of that place, the slot as tall as the title's
+    /// line as GPUI lays it out. At
+    /// 1,480 px and 13 pt the motion and contrast rows' descriptions, kept at
+    /// their tallest, and Restore repository tabs on startup's wrap to two
+    /// lines or more beside their controls; centred on the row, those
+    /// controls sat lower than List density's and drifted down with every
+    /// line a description wrapped to, and with their tops on the title's line
+    /// a segment group sat 4 px below the title's baseline at 18 pt and a
+    /// track 3.5 px above its cap centre. A control stacked below its text, as
+    /// in the narrow page, is left to the stacked layout.
+    #[gpui::test]
+    fn each_settings_row_centres_its_control_on_its_title_line(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let ring = cx.read(appearance::button_ring_room);
+        // Each control, the selector drawn around it, and the room above its
+        // title in rems: a rem, or the 0.75 rem gap above Graph lane spacing;
+        // a switch's is its ring's own room.
+        let mut controls = vec![("List density", "settings-density-segments".to_owned(), 1.)];
+        for setting in DisplaySetting::ALL {
+            controls.push((setting.title(), format!("{}-segments", setting.key()), 1.));
+        }
+        controls.push((
+            "Interface text size",
+            "text-size-controls-interface".into(),
+            1.,
+        ));
+        controls.push(("Code text size", "text-size-controls-code".into(), 1.));
+        controls.push(("Graph lane spacing", "graph-spacing-controls".into(), 0.75));
+        controls.push(("Your themes", "custom-themes-actions".into(), 1.));
+        let switches = switch_rows();
+        // Half a device pixel: layout puts every edge on the device grid, so
+        // a control whose height differs from the line's by an odd number of
+        // device pixels, as the 28 px steppers beside a 19.5 px line do, lies
+        // a quarter pixel from exact centre at 2x; the rest are exact.
+        let slack = cx.update(|window, _| px(0.5 / window.scale_factor()));
+        let mut failures = Vec::new();
+        let mut wrapped = Vec::new();
+        let mut checked = 0;
+        for (interface, width) in [(13, 1480.), (18, 1480.), (13, 900.), (18, 900.)] {
+            let at = format!("{interface} pt at {width} px");
+            // Tall enough to paint every row of the page.
+            cx.simulate_resize(size(px(width), px(9000.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let detail_line = appearance::ui_text(11.) * 1.5;
+            // One line of a title, as a short one draws it.
+            let line = drawn(cx, "setting-title: List density".into())
+                .expect("List density's title")
+                .size
+                .height;
+            let slot = cx.update(|window, _| title_line(window));
+            assert_eq!(line, slot, "{at}: a title's line and its slot");
+            let mut rows: Vec<(&str, Option<Bounds<Pixels>>, Pixels)> = controls
+                .iter()
+                .map(|(title, selector, room)| (*title, drawn(cx, selector.clone()), rem() * *room))
+                .collect();
+            for (_, title, _, row) in &switches {
+                let row = drawn(cx, (*row).to_owned()).expect("the switch's row");
+                rows.push((title, track_in(cx, row), ring));
+            }
+            for (title, control, room) in rows {
+                let heading = drawn(cx, format!("setting-title: {title}"));
+                let detail = drawn(cx, format!("setting-detail: {title}"));
+                let (Some(control), Some(heading), Some(detail)) = (control, heading, detail)
+                else {
+                    failures.push(format!("{at}: {title}'s row is not drawn whole"));
+                    continue;
+                };
+                if control.top() + slack >= detail.bottom() {
+                    // Stacked below its text.
+                    continue;
+                }
+                checked += 1;
+                if detail.size.height > detail_line * 1.5 {
+                    wrapped.push(format!("{title} at {at}"));
+                }
+                let centred = heading.top() + line / 2. - control.size.height / 2.;
+                let lowest = heading.top() - (room - ring);
+                let expected = centred.max(lowest);
+                if (control.top() - expected).abs() > slack {
+                    failures.push(format!(
+                        "{at}: {title}'s control {:?} starts at {:?}, not {expected:?}, \
+                         centred on its title's first line from {:?}, {line:?} tall, its \
+                         description {:?} tall",
+                        control.size,
+                        control.top(),
+                        heading.top(),
+                        detail.size.height
+                    ));
+                }
+            }
+        }
+        // Every control is beside its text at least at 1,480 px.
+        assert!(
+            checked >= 2 * (controls.len() + switches.len()),
+            "{checked} controls checked beside their text"
+        );
+        for title in [
+            DisplaySetting::ReduceMotion.title(),
+            DisplaySetting::IncreaseContrast.title(),
+            REOPEN_LAST,
+        ] {
+            let beside = format!("{title} at 13 pt at 1480 px");
+            assert!(
+                wrapped.contains(&beside),
+                "{title}'s description wraps beside its control at 13 pt in 1,480 px: \
+                 {wrapped:?}"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Where the leftmost text run the last frame drew inside `area` starts,
+    /// in a window whose root marks every text run
+    /// (`width_walk::text_mark`).
+    fn text_start_in(cx: &mut VisualTestContext, area: Bounds<Pixels>) -> Option<Pixels> {
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == mark)
+                .map(|quad| {
+                    let b = quad.bounds;
+                    Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                })
+                .filter(|run| area.contains(&run.center()))
+                .map(|run| run.left())
+                .reduce(Pixels::min)
+        })
+    }
+
+    /// The focus ring the last frame drew around a Button's or a Switch's
+    /// `control`: the bordered quad the installed `Theme::button_focus_ring`
+    /// paints there, within a device pixel.
+    fn ring_around(cx: &mut VisualTestContext, control: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        cx.update(|window, cx| {
+            let scale = window.scale_factor();
+            let setting = gpui_kit::component::Theme::global(cx).button_focus_ring;
+            let footprint = control.dilate(setting.gap + setting.width);
+            window.painted_quads().into_iter().find_map(|quad| {
+                let b = quad.bounds;
+                let drawn = Bounds::from_corners(
+                    point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                    point(
+                        px(b.right().as_f32() / scale),
+                        px(b.bottom().as_f32() / scale),
+                    ),
+                );
+                let near = [
+                    (drawn.left(), footprint.left()),
+                    (drawn.top(), footprint.top()),
+                    (drawn.right(), footprint.right()),
+                    (drawn.bottom(), footprint.bottom()),
+                ]
+                .into_iter()
+                .all(|(edge, expected)| (edge - expected).abs() <= px(1. / scale));
+                (near && quad.border_widths.top.as_f32() == setting.width.as_f32() * scale)
+                    .then_some(drawn)
+            })
+        })
+    }
+
+    /// Centred on its title's first line, a focused control's ring stays
+    /// inside its row: each segment's below its row's separator at 13 and
+    /// 18 pt (10 and 15 px below it, the group reaching 3 and 4.5 px above
+    /// its title), and each switch's inside the row the switch fills at
+    /// 18 pt, where the track sits 3.5 px below its title's top. At 13 pt,
+    /// where the 20 px track is taller than the title's line (19.5 px on a 2x
+    /// display), the ring keeps to the ring's room the page reveals the row
+    /// with: centred, the track rose 0.25 px above the row, and the page's
+    /// edge cut its ring with the row revealed at the top of the view.
+    #[gpui::test]
+    fn a_centred_control_keeps_its_focus_ring_inside_its_row(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let focus = |cx: &mut VisualTestContext, id: ElementId| {
+            let handle = cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus(id, cx)));
+            cx.update(|window, cx| window.focus(&handle, cx));
+            settle(cx);
+        };
+        let mut segments: Vec<(String, String, ElementId)> = vec![(
+            "settings-density-0".into(),
+            "settings-density-row".into(),
+            ("settings-density", 0usize).into(),
+        )];
+        for setting in DisplaySetting::ALL {
+            segments.push((
+                format!("{}-0", setting.key()),
+                format!("{}-row", setting.key()),
+                (setting.key(), 0usize).into(),
+            ));
+        }
+        for interface in [13, 18] {
+            cx.simulate_resize(size(px(1480.), px(9000.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            for (segment, row, id) in &segments {
+                focus(cx, id.clone());
+                let control = drawn(cx, segment.clone()).expect("the segment");
+                let row = drawn(cx, row.clone()).expect("the segment's row");
+                let ring = ring_around(cx, control)
+                    .unwrap_or_else(|| panic!("{interface} pt: {segment} draws its ring"));
+                // The separator is the row's 1 px top border.
+                assert!(
+                    ring.top() >= row.top() + px(1.) && ring.bottom() <= row.bottom(),
+                    "{interface} pt: {segment}'s ring {ring:?} leaves its row {row:?}"
+                );
+            }
+            let room = cx.read(appearance::button_ring_room);
+            for (id, title, _, row) in switch_rows() {
+                focus(cx, id.into());
+                let row = drawn(cx, row.to_owned()).expect("the switch's row");
+                let track = track_in(cx, row).expect("the track");
+                let ring = ring_around(cx, track)
+                    .unwrap_or_else(|| panic!("{interface} pt: {title}'s switch draws its ring"));
+                let top = if interface == 18 {
+                    row.top()
+                } else {
+                    row.top() - room
+                };
+                assert!(
+                    ring.top() >= top && ring.bottom() <= row.bottom(),
+                    "{interface} pt: {title}'s ring {ring:?} leaves its row {row:?}"
+                );
+            }
+        }
+    }
+
+    /// A control too tall to centre on its title's first line without its
+    /// focus ring passing the row's room above the title is lowered just
+    /// enough to keep the ring inside: the ring then meets the separator's
+    /// lower edge. Shorter ones are centred, whether shorter than the line or
+    /// reaching above the title. No Settings control is that tall, so a
+    /// synthetic one stands in, in a row built as a separated row is: a 1 px
+    /// separator above a rem of padding.
+    #[gpui::test]
+    fn a_control_too_tall_to_centre_is_lowered_to_keep_its_ring_in_its_row(
+        cx: &mut TestAppContext,
+    ) {
+        struct Row {
+            height: Pixels,
+        }
+        impl Render for Row {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().pt(px(100.)).child(
+                    div()
+                        .debug_selector(|| "row".into())
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .pt(rem())
+                        .border_t_1()
+                        .child(
+                            div()
+                                .debug_selector(|| "title".into())
+                                .text_size(appearance::ui_text(12.))
+                                .line_height(relative(TITLE_LINE_HEIGHT))
+                                .child("Title"),
+                        )
+                        .child(TitleLine::new(
+                            div()
+                                .debug_selector(|| "control".into())
+                                .w(px(40.))
+                                .h(self.height)
+                                .into_any_element(),
+                            rem(),
+                            px(3.),
+                        )),
+                )
+            }
+        }
+        crate::views::tests::init_app(cx);
+        let (view, cx) = cx.add_window_view(|_, _| Row { height: px(10.) });
+        for interface in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            for height in [10., 30., 40., 60., 120.] {
+                cx.update(|window, cx| {
+                    view.update(cx, |row, cx| {
+                        row.height = px(height);
+                        cx.notify();
+                    });
+                    window.draw(cx).clear(cx);
+                });
+                let at = format!("{interface} pt, {height} px tall");
+                let row = cx.debug_bounds("row").expect("the row");
+                let title = cx.debug_bounds("title").expect("the title");
+                let control = cx.debug_bounds("control").expect("the control");
+                let centre = title.top() + title.size.height / 2.;
+                let ring = control.dilate(px(3.));
+                let separator = row.top() + px(1.);
+                let centred = (control.center().y - centre).abs() <= px(0.5);
+                let lowered = (ring.top() - separator).abs() <= px(0.5);
+                assert!(
+                    (centred && ring.top() + px(0.5) >= separator) || (lowered && !centred),
+                    "{at}: the control {control:?} is neither centred on {centre:?} with its \
+                     ring {ring:?} inside the row nor lowered to put it on the separator \
+                     {separator:?}"
+                );
+                // Room enough to centre a 30 px control at either size; a
+                // 120 px one never fits.
+                if height <= 30. {
+                    assert!(centred, "{at}: centred");
+                }
+                if height >= 120. {
+                    assert!(lowered, "{at}: lowered to the separator");
+                }
+            }
+        }
+    }
+
+    /// Your themes' header wraps as the text sizes' rows do. In a 461 × 490
+    /// window at 18 pt, and at 13 pt in a 410 × 490 one, New theme… and
+    /// Import a theme file no longer fit beside the text with the text at
+    /// least 180 px (scaled) wide, so they start a line of their own at the
+    /// title's left edge (New theme…, a ghost Button, by its icon, its frame
+    /// its label inset before it, and a text size's small ghost − by its
+    /// label, its frame its 0.5 rem padding before it), a row gap (0.75 rem)
+    /// below the description, with
+    /// nothing reserved above them; the text takes the row's whole width,
+    /// nothing overlaps, the row ends at the actions' foot, and each action's
+    /// focus ring is drawn whole inside the card and the page's view. At
+    /// 13 pt in 461 px the header is 8 px short of holding both with the
+    /// labels Linux measures, so CoreText's may fit: there the test holds
+    /// whichever layout it takes to that layout's rule. 410 px leaves it
+    /// about 60 px short, so the wrap asserted there holds on every
+    /// platform. At 1,480 × 973 the actions stay beside the text, centred on
+    /// the title's first line. The text sizes'
+    /// controls take the same rule wherever they wrap, as at 18 pt in 461 px:
+    /// as tall as the title's line, they reserve nothing above themselves
+    /// there either. At 461 px and 18 pt the header kept its actions beside
+    /// a text column 66 px wide, its title on two lines and its description
+    /// a word a line, beside 230 px of empty card; placed in a title line's
+    /// slot on their own line, the actions started 4.25 px above the row gap
+    /// at 13 pt and 5.9 px above it at 18 pt.
+    #[gpui::test]
+    fn the_your_themes_header_wraps_its_actions_below_its_text(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let ring = cx.read(appearance::button_ring_room);
+        let slack = cx.update(|window, _| px(0.5 / window.scale_factor()));
+        // Each row's title, its control, the row the control wraps in and
+        // how far its leading ghost Button's content starts inside its
+        // frame, which on a line of its own stands that far before the
+        // title's edge: New theme…'s label inset, a text size's small −'s
+        // 0.5 rem padding.
+        let rows: [(_, _, _, fn() -> Pixels); 3] = [
+            (
+                "Your themes",
+                "custom-themes-actions",
+                "custom-themes-header",
+                || appearance::ui_size(crate::LABEL_INSET),
+            ),
+            (
+                "Interface text size",
+                "text-size-controls-interface",
+                "text-size-row-interface",
+                || rem() * 0.5,
+            ),
+            (
+                "Code text size",
+                "text-size-controls-code",
+                "text-size-row-code",
+                || rem() * 0.5,
+            ),
+        ];
+        let mut wrapped = Vec::new();
+        let mut failures = Vec::new();
+        for (interface, width, height) in [
+            (13, 410., 490.),
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 1480., 973.),
+            (18, 1480., 973.),
+        ] {
+            let at = format!("{interface} pt at {width} × {height}");
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let gap = rem() * 0.75;
+            let line = cx.update(|window, _| title_line(window));
+            for (title, control, row, lead) in rows {
+                let inset = cx.update(|window, _| window.pixel_snap(lead()));
+                let (Some(heading), Some(detail), Some(control), Some(row)) = (
+                    drawn(cx, format!("setting-title: {title}")),
+                    drawn(cx, format!("setting-detail: {title}")),
+                    drawn(cx, control.to_owned()),
+                    drawn(cx, row.to_owned()),
+                ) else {
+                    failures.push(format!("{at}: {title}'s row is not drawn whole"));
+                    continue;
+                };
+                // The text's column, which the description fills.
+                let text = detail.size.width;
+                if text + slack < appearance::ui_size(180.) && (text - row.size.width).abs() > slack
+                {
+                    failures.push(format!(
+                        "{at}: {title}'s text is {text:?} wide in a {:?} row",
+                        row.size.width
+                    ));
+                }
+                if control.top() + slack < detail.bottom() {
+                    // Beside the text, centred on the title's first line.
+                    let expected =
+                        heading.top() + beside_title(line, control.size.height, rem() - ring);
+                    if control.left() + slack < detail.right() + gap
+                        || (control.top() - expected).abs() > slack
+                    {
+                        failures.push(format!(
+                            "{at}: {title}'s control {control:?} beside its text {detail:?} \
+                             does not start at {expected:?}, centred on its title's line"
+                        ));
+                    }
+                    continue;
+                }
+                wrapped.push(format!("{title} at {at}"));
+                let edge = heading.left() - inset;
+                if (control.left() - edge).abs() > slack
+                    || (control.top() - detail.bottom() - gap).abs() > slack
+                    || (text - row.size.width).abs() > slack
+                    || (control.bottom() - row.bottom()).abs() > slack
+                {
+                    failures.push(format!(
+                        "{at}: {title}'s control {control:?} on its own line does not start \
+                         at {edge:?}, by its title's left edge {:?}, {gap:?} below its \
+                         description {detail:?}, ending its row {row:?}",
+                        heading.left()
+                    ));
+                }
+            }
+            if width > 1000. {
+                continue;
+            }
+            // Each action's ring, focused from the keyboard, which reveals it.
+            for action in ["custom-themes-new", "custom-themes-import"] {
+                cx.simulate_keystrokes("f13");
+                settle(cx);
+                let focus = cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus(action, cx)));
+                cx.update(|window, cx| window.focus(&focus, cx));
+                settle(cx);
+                let (Some(button), Some(card), Some(view)) = (
+                    drawn(cx, action.to_owned()),
+                    drawn(cx, "custom-themes-card".to_owned()),
+                    drawn(cx, "settings-scroll".to_owned()),
+                ) else {
+                    failures.push(format!("{at}: {action} is not drawn"));
+                    continue;
+                };
+                let Some(drawn_ring) = ring_around(cx, button) else {
+                    failures.push(format!("{at}: {action} draws no ring"));
+                    continue;
+                };
+                let inside = |outer: Bounds<Pixels>| {
+                    drawn_ring.left() + slack >= outer.left()
+                        && drawn_ring.top() + slack >= outer.top()
+                        && drawn_ring.right() <= outer.right() + slack
+                        && drawn_ring.bottom() <= outer.bottom() + slack
+                };
+                if !inside(card) || !inside(view) {
+                    failures.push(format!(
+                        "{at}: {action}'s ring {drawn_ring:?} leaves the card {card:?} or the \
+                         page's view {view:?}"
+                    ));
+                }
+            }
+        }
+        for (size, width) in [(13, 410), (18, 461)] {
+            let header = format!("Your themes at {size} pt at {width} × 490");
+            assert!(
+                wrapped.contains(&header),
+                "the header wraps at {size} pt in {width} px: {wrapped:?}"
+            );
+        }
+        assert!(
+            wrapped.contains(&"Interface text size at 18 pt at 461 × 490".to_owned()),
+            "the interface text size's controls wrap at 18 pt in 461 px: {wrapped:?}"
+        );
+        assert!(
+            !wrapped.iter().any(|row| row.contains("1480")),
+            "every control stays beside its text at 1,480 px: {wrapped:?}"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Where Your themes' actions wrap onto a line of their own, New theme…,
+    /// a ghost Button whose frame paints nothing at rest, stands its "+" icon
+    /// on the title's left edge, its frame the `button` helper's label inset
+    /// before it, and Import… follows at the actions' 0.5 rem gap (DESIGN.md,
+    /// "One left edge"). The icon draws no text, so the test reads where its
+    /// label is drawn, every text run marked as the layout grid marks them,
+    /// and places the icon its 16 px and their 6 px gap before it. Its hover
+    /// fill, and the ring Tab draws around it, stay inside the card's 1 px
+    /// border and the page's view: the ring's outer edge falls on the
+    /// border's inner edge at 13 pt, where the card's 1 rem padding less the
+    /// inset is the ring's 3 px, and a pixel inside it at 18 pt. In
+    /// 461 × 490 Linux wraps the actions at 13 and 18 pt;
+    /// CoreText's narrower labels may fit them beside the text at 13 pt, so
+    /// there the test holds whichever layout it takes to that layout's rule,
+    /// and 410 px, about 60 px short, wraps them on every platform. Beside
+    /// the text, at 1,480 × 973, the actions stay where they were: the
+    /// 0.75 rem gap past the text's column, ending the header, centred on the
+    /// title's first line. Standing its frame on the title's edge, New
+    /// theme… started its icon 10 px past the title at 13 pt and 14 px at
+    /// 18 pt.
+    #[gpui::test]
+    fn new_theme_stands_its_icon_on_the_titles_edge_where_the_actions_wrap(
+        cx: &mut TestAppContext,
+    ) {
+        // Every text run marked, so the test reads where New theme…'s label
+        // is drawn.
+        let (app, cx) = open_styled_app(cx, |root| root.text_bg(crate::width_walk::text_mark()));
+        let label_in = text_start_in;
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            ThemeChoice::Midnight.apply(Some(window), cx);
+        });
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let room = cx.read(appearance::button_ring_room);
+        let new_theme =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus("custom-themes-new", cx)));
+        let (scale, slack) = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            (scale, px(0.5 / scale))
+        });
+        // The non-transparent fills the last frame painted at `at`.
+        let fills_at = |cx: &mut VisualTestContext, at: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let near =
+                    |a: ScaledPixels, b: Pixels| (a.as_f32() / scale - f32::from(b)).abs() <= 0.5;
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        !quad.background.is_transparent()
+                            && near(quad.bounds.left(), at.left())
+                            && near(quad.bounds.top(), at.top())
+                            && near(quad.bounds.right(), at.right())
+                            && near(quad.bounds.bottom(), at.bottom())
+                    })
+                    .count()
+            })
+        };
+        let mut wrapped = Vec::new();
+        let mut failures = Vec::new();
+        for (interface, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 410., 490.),
+            (13, 1480., 973.),
+            (18, 1480., 973.),
+        ] {
+            let at = format!("{interface} pt at {width} × {height}");
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                });
+                window.blur(cx);
+            });
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            settle(cx);
+            let inset =
+                cx.update(|window, _| window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)));
+            let (Some(title), Some(detail), Some(header), Some(actions), Some(new), Some(import)) = (
+                drawn(cx, "setting-title: Your themes".to_owned()),
+                drawn(cx, "setting-detail: Your themes".to_owned()),
+                drawn(cx, "custom-themes-header".to_owned()),
+                drawn(cx, "custom-themes-actions".to_owned()),
+                drawn(cx, "custom-themes-new".to_owned()),
+                drawn(cx, "custom-themes-import".to_owned()),
+            ) else {
+                failures.push(format!("{at}: Your themes' header is not drawn whole"));
+                continue;
+            };
+            if actions.top() + slack < detail.bottom() {
+                // Beside the text, where the actions always stood: the row's
+                // gap past the text's column, which the description fills,
+                // ending the header, centred on the title's first line.
+                let line = cx.update(|window, _| title_line(window));
+                let top = title.top() + beside_title(line, actions.size.height, rem() - room);
+                if (actions.left() - detail.right() - rem() * 0.75).abs() > slack
+                    || (actions.right() - header.right()).abs() > slack
+                    || (actions.top() - top).abs() > slack
+                    || (new.left() - actions.left()).abs() > slack
+                {
+                    failures.push(format!(
+                        "{at}: beside the text {detail:?} the actions {actions:?} moved from \
+                         0.75 rem past it, ending the header {header:?}, at {top:?}"
+                    ));
+                }
+                continue;
+            }
+            wrapped.push(format!("{interface} pt at {width}"));
+            // Its frame its label inset before the title's edge, as layout
+            // places the frame's padding on device pixels, and Import… at the
+            // actions' gap.
+            if (new.left() - (title.left() - inset)).abs() > slack
+                || (import.left() - new.right() - rem() * 0.5).abs() > slack
+            {
+                failures.push(format!(
+                    "{at}: wrapped, New theme… {new:?} does not stand its frame {inset:?} \
+                     before the title's edge {:?}, or Import… {import:?} is not 0.5 rem after \
+                     it",
+                    title.left()
+                ));
+            }
+            // Tab onto New theme…, from the control before it, which also
+            // scrolls it into the page's view.
+            cx.update(|window, cx| {
+                window.focus(&new_theme, cx);
+                window.focus_prev(cx);
+            });
+            settle(cx);
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            if !cx.update(|window, _| new_theme.is_focused(window)) {
+                failures.push(format!("{at}: Tab does not reach New theme…"));
+                continue;
+            }
+            let (Some(new), Some(card), Some(view)) = (
+                drawn(cx, "custom-themes-new".to_owned()),
+                drawn(cx, "custom-themes-card".to_owned()),
+                drawn(cx, "settings-scroll".to_owned()),
+            ) else {
+                failures.push(format!("{at}: focused, New theme… is not drawn"));
+                continue;
+            };
+            // The icon, in view now: where the label New theme… draws
+            // starts, less the icon and its gap as layout places them on
+            // device pixels, on the title's edge. Below the view, the label
+            // is not drawn.
+            let (Some(title), Some(label)) = (
+                drawn(cx, "setting-title: Your themes".to_owned()),
+                label_in(cx, new),
+            ) else {
+                failures.push(format!("{at}: in view, New theme… {new:?} draws no label"));
+                continue;
+            };
+            let icon = cx.update(|window, _| {
+                label
+                    - window.pixel_snap(appearance::ui_size(6.))
+                    - window.pixel_snap(appearance::ui_size(16.))
+            });
+            if (icon - title.left()).abs() > slack {
+                failures.push(format!(
+                    "{at}: wrapped, New theme… draws its label at {label:?}, its icon at \
+                     {icon:?}, not on the title's edge {:?}",
+                    title.left()
+                ));
+            }
+            let Some(ring) = ring_around(cx, new) else {
+                failures.push(format!("{at}: focused by Tab, New theme… draws no ring"));
+                continue;
+            };
+            // Inside the card's 1 px border, over no other control, and the
+            // page's view.
+            let within = |outer: Bounds<Pixels>| {
+                ring.left() + slack >= outer.left()
+                    && ring.top() + slack >= outer.top()
+                    && ring.right() <= outer.right() + slack
+                    && ring.bottom() <= outer.bottom() + slack
+            };
+            let border = Bounds::from_corners(
+                card.origin + point(px(1.), px(1.)),
+                card.bottom_right() - point(px(1.), px(1.)),
+            );
+            if !within(border) || !within(view) {
+                failures.push(format!(
+                    "{at}: New theme…'s ring {ring:?} leaves the card's border {border:?} or \
+                     the page's view {view:?}"
+                ));
+            }
+            // At rest the frame paints nothing: what a person sees is its
+            // icon. Hovered, its fill stays inside the card's border.
+            cx.update(|window, cx| window.blur(cx));
+            settle(cx);
+            if fills_at(cx, new) != 0 {
+                failures.push(format!("{at}: New theme… paints a fill at rest"));
+            }
+            cx.simulate_mouse_move(new.center(), None, Modifiers::default());
+            settle(cx);
+            if fills_at(cx, new) == 0 || new.left() + slack < border.left() {
+                failures.push(format!(
+                    "{at}: hovered, New theme… {new:?} paints no fill, or one past the card's \
+                     border {border:?}"
+                ));
+            }
+        }
+        for required in ["18 pt at 461", "13 pt at 410"] {
+            assert!(
+                wrapped.iter().any(|layout| layout == required),
+                "the actions wrap at {required} px: {wrapped:?}"
+            );
+        }
+        assert!(
+            !wrapped.iter().any(|layout| layout.ends_with("1480")),
+            "the actions stay beside the text at 1,480 px: {wrapped:?}"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Where a ghost Button, which paints nothing at rest, stands at a
+    /// Settings card's text edge, its content stands on the edge and its
+    /// frame in the card's padding before it (DESIGN.md, "One left edge"),
+    /// at 13 and 18 pt: Git identity's Manage named profiles…, its "user"
+    /// icon on the edge its field labels and notes start at; Reset edits,
+    /// wrapped onto a line of its own below Save repository identity, its
+    /// icon there too; the Interface text size's −, wrapped below its
+    /// description, its label on its title's edge; and, with no repository
+    /// open, Choose a project, its icon on the edge the card's lines start
+    /// at. The icons draw no text, so the test reads where each label is
+    /// drawn, every text run marked, and places the icon its 16 px and their
+    /// 6 px gap before it. Tab onto each, where it stands at the edge, draws
+    /// its ring whole inside the card's 1 px border and the page's view.
+    /// Beside Save, in a single column of cards, Reset edits stays 0.5 rem
+    /// past it; beside its text the − is not measured, as it never moved
+    /// there. Standing their frames on the edge, Reset edits and Choose a
+    /// project started their icons 10 px past it at 13 pt and 14 px at
+    /// 18 pt, and the − its label 6.5 and 9 px; Manage, stretched across the
+    /// card, centred its content in it.
+    #[gpui::test]
+    async fn settings_ghost_buttons_stand_their_content_on_the_cards_text_edge(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::History, cx).await;
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            app.update(cx, |app, cx| app.show_settings(window, cx))
+        });
+        crate::views::tests::settle(&app, cx).await;
+        // An edit, so Save and Reset edits take focus.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.identity_name
+                    .update(cx, |input, cx| input.set_value("Another Name", window, cx))
+            })
+        });
+        settle(cx);
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let handles = cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                [
+                    app.page_focus("settings-manage-profiles", cx),
+                    app.page_focus("use-current-identity", cx),
+                    app.page_focus(("text-size-decrease", 0_usize), cx),
+                ]
+            })
+        });
+        let mut wrapped = Vec::new();
+        let mut failures = Vec::new();
+        for (interface, width) in [
+            (13, 1480.),
+            (18, 1480.),
+            (13, 1000.),
+            (13, 760.),
+            (18, 1000.),
+            (18, 760.),
+            (13, 360.),
+            (18, 461.),
+        ] {
+            let at = format!("{interface} pt at {width}");
+            cx.simulate_resize(size(px(width), px(980.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let slack = cx.update(|window, _| px(1. / window.scale_factor()));
+            for (index, selector) in [
+                "settings-manage-profiles",
+                "use-current-identity",
+                "text-size-decrease-interface",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                // Tab onto it, from the control before it, which also scrolls
+                // it into the page's view.
+                cx.update(|window, cx| {
+                    window.focus(&handles[index], cx);
+                    window.focus_prev(cx);
+                });
+                settle(cx);
+                cx.simulate_keystrokes("tab");
+                settle(cx);
+                if !cx.update(|window, _| handles[index].is_focused(window)) {
+                    failures.push(format!("{at}: Tab does not reach {selector}"));
+                    continue;
+                }
+                let card_selector = if index == 2 {
+                    "settings-section: Appearance"
+                } else {
+                    "settings-section: Git identity"
+                };
+                let (Some(frame), Some(card), Some(view)) = (
+                    drawn(cx, selector.to_owned()),
+                    drawn(cx, card_selector.to_owned()),
+                    drawn(cx, "settings-scroll".to_owned()),
+                ) else {
+                    failures.push(format!("{at}: {selector} is not drawn"));
+                    continue;
+                };
+                let Some(label) = text_start_in(cx, frame) else {
+                    failures.push(format!("{at}: {selector} {frame:?} draws no label"));
+                    continue;
+                };
+                // Where its content starts, and the text edge it stands at:
+                // the card's text where its lines lead the card, the text
+                // size's title for the −.
+                let (content, edge) = match index {
+                    0 => (
+                        icon_before(cx, label),
+                        text_start_in(cx, card.intersect(&view)),
+                    ),
+                    1 => {
+                        let Some(save) = drawn(cx, "save-repository-identity".to_owned()) else {
+                            failures.push(format!("{at}: Save repository identity is not drawn"));
+                            continue;
+                        };
+                        if save.top() + slack >= frame.top() {
+                            // Beside Save, where it always stood.
+                            wrapped.push(format!("Reset edits beside Save at {at}"));
+                            if (frame.left() - save.right() - rem() * 0.5).abs() > slack {
+                                failures.push(format!(
+                                    "{at}: beside Save {save:?}, Reset edits {frame:?} is not \
+                                     0.5 rem past it"
+                                ));
+                            }
+                            continue;
+                        }
+                        wrapped.push(format!("Reset edits at {at}"));
+                        (
+                            icon_before(cx, label),
+                            text_start_in(cx, card.intersect(&view)),
+                        )
+                    }
+                    _ => {
+                        let (Some(title), Some(detail)) = (
+                            drawn(cx, "setting-title: Interface text size".to_owned()),
+                            drawn(cx, "setting-detail: Interface text size".to_owned()),
+                        ) else {
+                            failures.push(format!("{at}: the text size's row is not drawn"));
+                            continue;
+                        };
+                        if frame.top() + slack < detail.bottom() {
+                            // Beside its text, where it always stood.
+                            continue;
+                        }
+                        wrapped.push(format!("− at {at}"));
+                        (label, Some(title.left()))
+                    }
+                };
+                failures.extend(on_the_edge(
+                    cx, &at, selector, content, edge, frame, card, view,
+                ));
+            }
+        }
+        // Git identity with no repository open: Choose a project, its
+        // "folder" icon on the edge the card's lines start at.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.close_repository_tab(0, window, cx);
+                app.show_settings(window, cx)
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        let choose = cx
+            .update(|_, cx| app.update(cx, |app, cx| app.page_focus("settings-open-projects", cx)));
+        for (interface, width) in [(13, 1480.), (18, 1480.), (13, 360.), (18, 461.)] {
+            let at = format!("{interface} pt at {width}, no repository open");
+            cx.simulate_resize(size(px(width), px(980.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            cx.update(|window, cx| {
+                window.focus(&choose, cx);
+                window.focus_prev(cx);
+            });
+            settle(cx);
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            if !cx.update(|window, _| choose.is_focused(window)) {
+                failures.push(format!("{at}: Tab does not reach Choose a project"));
+                continue;
+            }
+            let (Some(frame), Some(card), Some(view)) = (
+                drawn(cx, "settings-open-projects".to_owned()),
+                drawn(cx, "settings-section: Git identity".to_owned()),
+                drawn(cx, "settings-scroll".to_owned()),
+            ) else {
+                failures.push(format!("{at}: Choose a project is not drawn"));
+                continue;
+            };
+            let Some(label) = text_start_in(cx, frame) else {
+                failures.push(format!("{at}: Choose a project {frame:?} draws no label"));
+                continue;
+            };
+            let content = icon_before(cx, label);
+            let edge = text_start_in(cx, card.intersect(&view));
+            failures.extend(on_the_edge(
+                cx,
+                &at,
+                "settings-open-projects",
+                content,
+                edge,
+                frame,
+                card,
+                view,
+            ));
+        }
+        for required in [
+            "Reset edits at 13 pt at 360",
+            "Reset edits at 18 pt at 461",
+            "− at 13 pt at 360",
+            "− at 18 pt at 461",
+        ] {
+            assert!(
+                wrapped.iter().any(|layout| layout == required),
+                "{required} wraps: {wrapped:?}"
+            );
+        }
+        for size in ["13 pt", "18 pt"] {
+            assert!(
+                wrapped
+                    .iter()
+                    .any(|layout| layout.starts_with(&format!("Reset edits beside Save at {size}"))),
+                "Reset edits stands beside Save in some layout at {size}: {wrapped:?}"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A leading icon's left edge, from where the label after it starts:
+    /// the icon's 16 px and their 6 px gap before it, as layout places them
+    /// on device pixels.
+    fn icon_before(cx: &mut VisualTestContext, label: Pixels) -> Pixels {
+        cx.update(|window, _| {
+            label
+                - window.pixel_snap(appearance::ui_size(6.))
+                - window.pixel_snap(appearance::ui_size(16.))
+        })
+    }
+
+    /// Where a ghost Button `selector`, drawn at `frame` and focused by Tab,
+    /// fails to stand its `content` on the text's `edge`, within a device
+    /// pixel, or draws its ring past its `card`'s 1 px border or the page's
+    /// `view`, by half a device pixel.
+    #[allow(clippy::too_many_arguments)]
+    fn on_the_edge(
+        cx: &mut VisualTestContext,
+        at: &str,
+        selector: &str,
+        content: Pixels,
+        edge: Option<Pixels>,
+        frame: Bounds<Pixels>,
+        card: Bounds<Pixels>,
+        view: Bounds<Pixels>,
+    ) -> Vec<String> {
+        let slack = cx.update(|window, _| px(1. / window.scale_factor()));
+        let Some(edge) = edge else {
+            return vec![format!("{at}: no text is drawn at {selector}'s card")];
+        };
+        let mut failures = Vec::new();
+        if (content - edge).abs() > slack {
+            failures.push(format!(
+                "{at}: {selector} {frame:?} starts its content at {content:?}, not on the \
+                 text's edge {edge:?}"
+            ));
+        }
+        let Some(ring) = ring_around(cx, frame) else {
+            failures.push(format!("{at}: focused by Tab, {selector} draws no ring"));
+            return failures;
+        };
+        let within = |outer: Bounds<Pixels>| {
+            ring.left() + slack / 2. >= outer.left()
+                && ring.top() + slack / 2. >= outer.top()
+                && ring.right() <= outer.right() + slack / 2.
+                && ring.bottom() <= outer.bottom() + slack / 2.
+        };
+        let border = Bounds::from_corners(
+            card.origin + point(px(1.), px(1.)),
+            card.bottom_right() - point(px(1.), px(1.)),
+        );
+        if !within(border) || !within(view) {
+            failures.push(format!(
+                "{at}: {selector}'s ring {ring:?} leaves its card's border {border:?} or the \
+                 page's view {view:?}"
+            ));
+        }
+        failures
+    }
+
+    /// A press on a switch's row, its title or its description, toggles the
+    /// switch, and hovering the row lifts an unchecked track by the palette's
+    /// hover step, as the label Follow system appearance drew beside its
+    /// track did: with that label gone, only the 36 by 20 px track answered.
+    #[gpui::test]
+    fn a_switch_row_answers_the_pointer_as_its_switch(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, cx| ThemeChoice::Midnight.apply(Some(window), cx));
+        let reopen = |cx: &mut VisualTestContext| cx.read(|cx| app.read(cx).settings.reopen_last);
+        let away = |cx: &mut VisualTestContext| {
+            cx.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+            settle(cx);
+        };
+        settle(cx);
+        let row = shown(cx, "settings-reopen-last-row").expect("the row");
+        let before = reopen(cx);
+        for part in [
+            format!("setting-title: {REOPEN_LAST}"),
+            format!("setting-detail: {REOPEN_LAST}"),
+        ] {
+            let at = drawn(cx, part.clone()).expect("the title");
+            let was = reopen(cx);
+            cx.simulate_click(at.center(), Modifiers::default());
+            settle(cx);
+            assert_eq!(reopen(cx), !was, "a press on {part} toggles the switch");
+            away(cx);
+        }
+        assert_eq!(reopen(cx), before);
+        // Unchecked, hovered on its title: the track lifts.
+        if reopen(cx) {
+            let title = drawn(cx, format!("setting-title: {REOPEN_LAST}")).expect("the title");
+            cx.simulate_click(title.center(), Modifiers::default());
+            away(cx);
+        }
+        assert!(!reopen(cx), "Restore repository tabs is off");
+        // The fill of the 36 by 20 px quad painted at `track`.
+        let fill = |cx: &mut VisualTestContext, track: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .find(|quad| {
+                        let b = quad.bounds;
+                        (b.left().as_f32() / scale - f32::from(track.left())).abs() < 0.01
+                            && (b.top().as_f32() / scale - f32::from(track.top())).abs() < 0.01
+                            && (b.size.width.as_f32() / scale - 36.).abs() < 0.01
+                    })
+                    .map(|quad| quad.background)
+            })
+        };
+        let track = track_in(cx, row).expect("the track");
+        let resting = fill(cx, track);
+        let title = drawn(cx, format!("setting-title: {REOPEN_LAST}")).expect("the title");
+        cx.simulate_mouse_move(title.center(), None, Modifiers::default());
+        settle(cx);
+        let hovered = fill(cx, track);
+        let lift = Background::from(Hsla::from(rgb(cx.read(palette).switch_hover())));
+        assert_eq!(hovered, Some(lift), "the hovered title lifts the track");
+        assert_ne!(resting, hovered);
+        away(cx);
+    }
+
+    /// Linux: while the Omarchy theme locks Follow system, a press on its
+    /// row's title turns nothing on, as a press on its track does not.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_locked_follow_system_row_toggles_nothing(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.follow_system = false;
+                app.settings.theme = ThemeSelection::Omarchy;
+                app.apply_appearance(window, cx);
+            })
+        });
+        settle(cx);
+        assert!(page_shows(cx, "follow-system-switch"));
+        let title = drawn(cx, format!("setting-title: {FOLLOW_SYSTEM}")).expect("the title");
+        cx.simulate_click(title.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            !cx.read(|cx| app.read(cx).settings.follow_system),
+            "the locked row turned Follow system on"
+        );
+    }
+
+    /// Tab walks Settings with a repository open in a 1,480 × 800 window at
+    /// 13 pt, and every text field it stops on is named by the words drawn
+    /// beside it, read from the node the drawn field writes. The Git
+    /// identity's Name and Email fields had no name of their own, so their
+    /// nodes carried only their placeholders: the 47th stop, Name, after the
+    /// 20 theme cards and the page's other controls, read "Your name".
+    #[gpui::test]
+    fn every_settings_field_tab_reaches_is_named(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(cx);
+        let fields = cx.read(|cx| {
+            let app = app.read(cx);
+            [
+                ("External editor", app.settings_editor.clone()),
+                ("Default branch", app.settings_branch.clone()),
+                ("Name", app.identity_name.clone()),
+                ("Email", app.identity_email.clone()),
+            ]
+        });
+        let handles: Vec<FocusHandle> = cx.read(|cx| {
+            fields
+                .iter()
+                .map(|(_, field)| field.focus_handle(cx))
+                .collect()
+        });
+        // Each field Tab stops on: its stop, its expected name and the name
+        // its node gives.
+        let mut reached: Vec<(usize, &str, Option<String>)> = Vec::new();
+        let mut order: Vec<FocusHandle> = Vec::new();
+        for _ in 0..200 {
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            let focused = cx
+                .update(|window, cx| window.focused(cx))
+                .expect("Tab keeps focus");
+            if order.contains(&focused) {
+                break;
+            }
+            order.push(focused.clone());
+            if let Some(at) = handles.iter().position(|handle| *handle == focused) {
+                let (expected, field) = &fields[at];
+                let name = crate::views::tests::input_node(cx, field)
+                    .label()
+                    .map(str::to_owned);
+                reached.push((order.len(), *expected, name));
+            }
+        }
+        for (expected, _) in &fields {
+            let (stop, _, name) = reached
+                .iter()
+                .find(|(_, field, _)| field == expected)
+                .unwrap_or_else(|| panic!("Tab reaches the {expected} field: {reached:?}"));
+            assert_eq!(
+                name.as_deref(),
+                Some(*expected),
+                "stop {stop}: the {expected} field is named by its label"
+            );
+        }
+    }
+
+    /// The default branch's field is named by its title, "Default branch",
+    /// which the row's text then leaves to it: it had no name and no
+    /// placeholder, so assistive technology announced an unnamed field.
+    #[gpui::test]
+    fn the_default_branch_field_is_named_by_its_title(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        assert!(page_shows(cx, "save-default-branch"));
+        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        crate::native_accessibility::written::forget();
+        assert!(page_shows(cx, "save-default-branch"));
+        let read: Vec<_> = crate::native_accessibility::written::labels()
+            .into_iter()
+            .filter_map(|(_, label)| label)
+            .filter(|label| label.contains("new repository"))
+            .collect();
+        assert_eq!(
+            read,
+            ["Used when creating a new repository."],
+            "the row's text reads its description alone"
+        );
+        let label = crate::views::tests::input_node(cx, &field)
+            .label()
+            .map(str::to_owned);
+        assert_eq!(label.as_deref(), Some("Default branch"));
+    }
+
+    /// A held Return in the repository identity's Name or Email asks for one
+    /// Git configuration write per press, under X11 too: with the
+    /// repository's configuration locked, the write fails at once and the
+    /// field keeps focus, then the key's repeats arrive (`REPEATS`), each
+    /// waited out until the write has answered. The form writes once and
+    /// says why; after the key-up a new press writes again. Once the lock
+    /// goes during a hold, its repeats still write nothing, and the next
+    /// press saves the identity. The fields saved on their own `PressEnter`,
+    /// which the field sends for every Enter key-down, so each repeat after
+    /// the quick failure began another write.
+    #[gpui::test]
+    async fn a_held_return_in_the_identity_form_writes_once_per_press(cx: &mut TestAppContext) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::tags::tests::draw;
+        use std::cell::Cell;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        // Git's identity is read before the form is edited, as the page
+        // shows it, so the edits are kept as edits when it is read again.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.profile.is_some()),
+            "Git's identity is read"
+        );
+        // Git refuses to write a configuration another process has locked.
+        let lock = repo.path().join(".git").join("config.lock");
+        std::fs::write(&lock, "").unwrap();
+        let (name, email) = cx.read(|cx| {
+            let app = app.read(cx);
+            (app.identity_name.clone(), app.identity_email.clone())
+        });
+        cx.update(|window, cx| {
+            name.update(cx, |input, cx| {
+                input.set_value("Another Person", window, cx)
+            });
+            email.update(cx, |input, cx| {
+                input.set_value("another@example.com", window, cx)
+            });
+        });
+        settle(cx);
+        // Identity writes, counted as each begins.
+        let writes = Rc::new(Cell::new(0_usize));
+        let _counting = cx.update(|_, cx| {
+            let writes = writes.clone();
+            let mut was = false;
+            cx.observe(&app, move |app, cx| {
+                let now = app.read(cx).operation_busy == Some("Saving repository identity…");
+                writes.set(writes.get() + usize::from(now && !was));
+                was = now;
+            })
+        });
+        // The write's answer lands, and the frames after it.
+        let lands = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.run_until_parked();
+            draw(cx);
+        };
+        let focused = |field: &Entity<InputState>, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window))
+        };
+        for (field, which) in [(&name, "Name"), (&email, "Email")] {
+            cx.update(|window, cx| field.read(cx).focus_handle(cx).focus(window, cx));
+            draw(cx);
+            for press in ["the first press", "a new press after the key-up"] {
+                let at = format!("{which}, {press}");
+                let after = writes.get() + 1;
+                enter(cx, Some(false));
+                lands(cx);
+                assert_eq!(writes.get(), after, "{at}: one write");
+                assert!(
+                    app.read_with(cx, |app, _| app.operation_busy.is_none()
+                        && app.operation_error.is_some()),
+                    "{at}: it fails and says why"
+                );
+                assert!(focused(field, cx), "{at}: the field keeps focus");
+                for (repeat, events) in REPEATS {
+                    for down in events {
+                        enter(cx, *down);
+                    }
+                    lands(cx);
+                    assert_eq!(writes.get(), after, "{at}, {repeat}: no other write");
+                }
+                enter(cx, None);
+                draw(cx);
+            }
+        }
+        // The lock goes while the key is held: its repeats still write
+        // nothing, and the next press saves the identity.
+        let after = writes.get() + 1;
+        enter(cx, Some(false));
+        lands(cx);
+        assert_eq!(writes.get(), after, "the press with the lock held writes");
+        std::fs::remove_file(&lock).unwrap();
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            lands(cx);
+            assert_eq!(
+                writes.get(),
+                after,
+                "unlocked, {repeat}: the held key writes nothing"
+            );
+        }
+        enter(cx, None);
+        draw(cx);
+        enter(cx, Some(false));
+        lands(cx);
+        enter(cx, None);
+        draw(cx);
+        assert_eq!(writes.get(), after + 1, "a new press writes again");
+        let saved = fixture_config(repo.path(), "user.email");
+        assert_eq!(saved, "another@example.com", "and saves the identity");
+    }
+
+    /// The repository's own value of `key`, read with Git.
+    fn fixture_config(repository: &Path, key: &str) -> String {
+        let output = std::process::Command::new("git")
+            .args(["config", "--local", "--get", key])
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("git runs");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Return in the Default branch field saves it once per press, and saves
+    /// it again after a save that failed. With a directory where the
+    /// preference store's file goes, a press saves and fails, and the value
+    /// stays in use and in the field beside the failure and Retry save; the
+    /// store is mended while the key is still held, and its repeats
+    /// (`REPEATS`) save nothing; after the key-up a new press saves it. A
+    /// press after a failed save found nothing new in the settings and saved
+    /// nothing, so Return in the field was a dead key, and the field saved
+    /// on its own `PressEnter`, which it sends for every Enter key-down.
+    #[gpui::test]
+    fn return_in_the_default_branch_saves_once_per_press_and_after_a_failure(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        use crate::theme_editor::tests::drain_preference_writer;
+        let (app, cx) = open_app(cx);
+        drain_preference_writer(cx, &app);
+        let store = crate::preferences::settings_path().expect("the store's path");
+        if store.exists() {
+            std::fs::remove_file(&store).unwrap();
+        }
+        std::fs::create_dir(&store).unwrap();
+        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        cx.update(|window, cx| {
+            field.update(cx, |input, cx| input.set_value("trunk", window, cx));
+            field.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        settle(cx);
+        let failed = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.operation_error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with("Could not save settings:"))
+            })
+        };
+        enter(cx, Some(false));
+        drain_preference_writer(cx, &app);
+        settle(cx);
+        assert!(failed(cx), "the save fails and says so, beside Retry save");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.settings.default_branch.clone()),
+            "trunk",
+            "the value stays in use"
+        );
+        // Mended while the key is held: its repeats save nothing.
+        std::fs::remove_dir(&store).unwrap();
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            drain_preference_writer(cx, &app);
+            settle(cx);
+            assert!(!store.exists(), "{repeat}: the held key saves nothing");
+        }
+        enter(cx, None);
+        settle(cx);
+        enter(cx, Some(false));
+        drain_preference_writer(cx, &app);
+        enter(cx, None);
+        settle(cx);
+        assert_eq!(
+            crate::preferences::Preferences::load()
+                .settings
+                .default_branch,
+            "trunk",
+            "a new press saves it"
+        );
+        assert!(!failed(cx), "and the failure goes");
+    }
+
+    /// Return in the Default branch field saves the settings again after a
+    /// save that failed though another operation's error has replaced the
+    /// failure in the window's error line since: the failed save is its own
+    /// record (`DraftState::failed_save`), not that line's text, and the
+    /// save that then succeeds leaves the other error standing. Read from
+    /// the line, the press found nothing new and saved nothing.
+    #[gpui::test]
+    fn return_in_the_default_branch_saves_after_another_error_replaced_its_failure(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::theme_editor::tests::drain_preference_writer;
+        let (app, cx) = open_app(cx);
+        drain_preference_writer(cx, &app);
+        let store = crate::preferences::settings_path().expect("the store's path");
+        if store.exists() {
+            std::fs::remove_file(&store).unwrap();
+        }
+        std::fs::create_dir(&store).unwrap();
+        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        cx.update(|window, cx| {
+            field.update(cx, |input, cx| input.set_value("trunk", window, cx));
+            field.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        settle(cx);
+        let press = |cx: &mut VisualTestContext| {
+            enter(cx, Some(false));
+            drain_preference_writer(cx, &app);
+            enter(cx, None);
+            settle(cx);
+        };
+        let error = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.operation_error.as_deref().map(str::to_owned)
+            })
+        };
+        press(cx);
+        assert!(
+            error(cx).is_some_and(|error| error.starts_with("Could not save settings:")),
+            "the save fails and says so"
+        );
+        let other = "Could not fetch origin: the remote hung up";
+        app.update(cx, |app, cx| {
+            app.operation_error = Some(other.into());
+            cx.notify();
+        });
+        settle(cx);
+        std::fs::remove_dir(&store).unwrap();
+        press(cx);
+        assert_eq!(
+            crate::preferences::Preferences::load()
+                .settings
+                .default_branch,
+            "trunk",
+            "a fresh press saves it"
+        );
+        assert_eq!(
+            error(cx).as_deref(),
+            Some(other),
+            "the other operation's error stands"
+        );
+    }
+
+    /// Linux: while the Omarchy theme locks Follow system, the row's title,
+    /// which names the switch, takes the disabled label's dim with it, as
+    /// the label the switch drew beside its track did, and loses it once
+    /// another theme releases the switch.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_locked_follow_system_dims_its_title(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        settle(cx);
+        let key = format!("setting-title: {FOLLOW_SYSTEM}");
+        // Whether the switch is locked, the title's colour and the dim.
+        let choose = |cx: &mut VisualTestContext, theme: ThemeSelection| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = theme;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            settle(cx);
+            assert!(page_shows(cx, "follow-system-switch"));
+            cx.read(|cx| {
+                (
+                    app.read(cx).follows_desktop_theme(cx),
+                    appearance::drawn_color(&key),
+                    gpui_kit::component::switch::disabled_label_color(cx),
+                )
+            })
+        };
+        let (locked, color, dim) = choose(cx, ThemeSelection::Omarchy);
+        assert!(locked, "the Omarchy theme locks Follow system");
+        assert_eq!(color, Some(dim), "the locked switch's title is dimmed");
+        let (locked, color, dim) = choose(cx, ThemeSelection::BuiltIn(ThemeChoice::Midnight));
+        assert!(!locked, "Midnight releases Follow system");
+        assert!(
+            color.is_some_and(|color| color != dim),
+            "the released switch's title is not dimmed: {color:?}"
+        );
+    }
+
+    /// Tab, then Shift-Tab, walk every Settings control in a 1,000 × 680
+    /// window, crossing the page viewport's lower edge and back, and in every
+    /// frame painted after each key the focused control, grown by the focus
+    /// ring's 3 px of room, lies inside the page's viewport.
+    #[gpui::test]
+    fn tab_keeps_every_settings_control_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        assert_tab_keeps_controls_in_view(&app, cx, 30);
+    }
+
+    /// As above, with a repository open, whose Git identity form, Name,
+    /// Email and its buttons, takes the place of Choose a project.
+    #[gpui::test]
+    fn tab_keeps_the_identity_form_in_view(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        assert_tab_keeps_controls_in_view(&app, cx, 33);
+    }
+
+    /// Tab walks Settings from its first control until focus returns to it,
+    /// then Shift-Tab walks back, through at least `controls` page controls.
+    fn assert_tab_keeps_controls_in_view(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        controls: usize,
+    ) {
+        use crate::tags::tests::draw;
+
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle(cx);
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        // Takes one key and returns the control it focused, if that control
+        // is on the page rather than in the window's header.
+        let step = |cx: &mut VisualTestContext, key: &str| -> Option<FocusHandle> {
+            page.take_painted();
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            let (focused, on_page) = cx.update(|window, cx| {
+                let on_page = window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains(theme_editor::SETTINGS_CONTEXT));
+                (window.focused(cx).expect("{key} keeps focus"), on_page)
+            });
+            if !on_page {
+                return None;
+            }
+            let frames = page.take_painted();
+            assert!(!frames.is_empty(), "{key} paints the page");
+            let slack = px(0.01);
+            for (index, frame) in frames.iter().enumerate() {
+                let ring = frame
+                    .control
+                    .unwrap_or_else(|| {
+                        panic!("frame {index} after {key} draws the focused control")
+                    })
+                    .dilate(room);
+                assert!(
+                    ring.top() + slack >= frame.viewport.top()
+                        && ring.bottom() <= frame.viewport.bottom() + slack,
+                    "frame {index} after {key} paints the focused control with its ring, \
+                     {ring:?}, outside the page, {:?}",
+                    frame.viewport
+                );
+            }
+            Some(focused)
+        };
+        // With nothing focused a key reaches no binding; start the walk.
+        cx.update(|window, cx| window.focus_next(cx));
+        settle(cx);
+        let mut order: Vec<FocusHandle> = Vec::new();
+        let mut deepest = px(0.);
+        for _ in 0..200 {
+            let Some(focused) = step(cx, "tab") else {
+                continue;
+            };
+            if order.first() == Some(&focused) {
+                break;
+            }
+            order.push(focused);
+            deepest = deepest.min(page.scroll().offset().y);
+        }
+        assert!(
+            order.len() >= controls,
+            "Tab reached {} Settings controls",
+            order.len()
+        );
+        let viewport = page.scroll().bounds().size.height;
+        assert!(
+            deepest < -viewport,
+            "Tab scrolled the page past its first screen ({deepest:?}, {viewport:?} tall)"
+        );
+        // Back from the first control: Shift-Tab leaves the page for the
+        // header, then walks the page from its foot to its top.
+        let mut back: Vec<FocusHandle> = Vec::new();
+        let mut highest = deepest;
+        for _ in 0..200 {
+            if let Some(focused) = step(cx, "shift-tab") {
+                if back.first() == Some(&focused) {
+                    break;
+                }
+                back.push(focused);
+                highest = highest.max(page.scroll().offset().y);
+            }
+        }
+        back.reverse();
+        assert_eq!(back, order, "Shift-Tab walks the same controls back");
+        assert!(
+            highest > -viewport,
+            "Shift-Tab scrolled back to the page's first screen ({highest:?})"
+        );
+    }
+
+    /// A Tab-focused, enabled Settings Switch draws the Button focus ring, 2 px
+    /// of full accent 1 px outside its track, whole inside every clip, at the
+    /// default and the largest interface size, and gaining focus moves nothing;
+    /// no unfocused Switch draws one. Hovering an enabled unchecked Switch lifts
+    /// its track to `Palette::switch_hover`; a checked or disabled one keeps its
+    /// resting fill.
+    #[gpui::test]
+    fn a_focused_switch_draws_the_button_ring_whole_and_moves_nothing(cx: &mut TestAppContext) {
+        use gpui_kit::{ScaledPixels, component::ActiveTheme as _};
+
+        /// Switch tracks (the 36 x 20 filled quads) with their fills, the
+        /// Button-ring quads with whether their clip holds them whole, and the
+        /// bounds of every other quad, in paint order.
+        type Frame = (
+            Vec<(Bounds<Pixels>, Background)>,
+            Vec<(Bounds<Pixels>, bool)>,
+            Vec<Bounds<Pixels>>,
+        );
+        fn frame(cx: &mut VisualTestContext) -> Frame {
+            cx.update(|window, cx| {
+                let scale = window.scale_factor();
+                let logical = |b: Bounds<ScaledPixels>| {
+                    Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                };
+                let ring = appearance::BUTTON_FOCUS_RING;
+                let ring_color = cx.theme().ring.alpha(ring.opacity);
+                let (mut tracks, mut sides, mut others) = (Vec::new(), Vec::new(), Vec::new());
+                for quad in window.painted_quads() {
+                    let bounds = logical(quad.bounds);
+                    if quad.background.is_transparent()
+                        && quad.border_color == ring_color
+                        && quad.border_widths.top.as_f32() == ring.width.as_f32() * scale
+                    {
+                        sides.push((quad.bounds, quad.content_mask.bounds));
+                    } else if !quad.background.is_transparent()
+                        && bounds.size == size(px(36.), px(20.))
+                    {
+                        tracks.push((bounds, quad.background));
+                    } else {
+                        others.push(bounds);
+                    }
+                }
+                // The kit paints a ring as one quad per side, each masked to
+                // its side: the ring is whole when those masks cover it.
+                let mut rings: Vec<(Bounds<Pixels>, bool)> = Vec::new();
+                for (ring, _) in &sides {
+                    if rings.iter().any(|(seen, _)| *seen == logical(*ring)) {
+                        continue;
+                    }
+                    let covered = sides
+                        .iter()
+                        .filter(|(other, _)| other == ring)
+                        .map(|(_, mask)| *mask)
+                        .reduce(|a, b| a.union(&b))
+                        .unwrap();
+                    let whole = covered.left() <= ring.left()
+                        && covered.top() <= ring.top()
+                        && covered.right() >= ring.right()
+                        && covered.bottom() >= ring.bottom();
+                    rings.push((logical(*ring), whole));
+                }
+                (tracks, rings, others)
+            })
+        }
+        let around = |track: Bounds<Pixels>| {
+            let room = appearance::BUTTON_FOCUS_RING.gap + appearance::BUTTON_FOCUS_RING.width;
+            track.dilate(room)
+        };
+
+        let (app, cx) = open_app(cx);
+        let midnight = ThemeSelection::BuiltIn(ThemeChoice::Midnight);
+        let select = |cx: &mut VisualTestContext, follow_system: bool| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = midnight;
+                    app.settings.follow_system = follow_system;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            settle(cx);
+        };
+        select(cx, false);
+        for (interface, height) in [(13, 2400.), (18, 4000.)] {
+            cx.simulate_resize(size(px(1440.), px(height)));
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.update(|window, cx| window.blur(cx));
+            settle(cx);
+            let (tracks, rings, others) = frame(cx);
+            let switches: Vec<_> = tracks.iter().map(|(track, _)| *track).collect();
+            assert!(switches.len() >= 3, "{interface} pt: {switches:?}");
+            assert!(
+                !rings
+                    .iter()
+                    .any(|(ring, _)| switches.iter().any(|t| around(*t) == *ring)),
+                "{interface} pt: an unfocused switch draws a ring"
+            );
+            let mut seen = Vec::new();
+            // With nothing focused a key reaches no binding; start the walk.
+            cx.update(|window, cx| window.focus_next(cx));
+            for _ in 0..300 {
+                if seen.len() == switches.len() {
+                    break;
+                }
+                cx.simulate_keystrokes("tab");
+                settle(cx);
+                let (now_tracks, now_rings, now_others) = frame(cx);
+                let ringed: Vec<_> = now_rings
+                    .iter()
+                    .filter(|(ring, _)| switches.iter().any(|t| around(*t) == *ring))
+                    .collect();
+                let [(ring, whole)] = ringed[..] else {
+                    assert!(ringed.is_empty(), "{interface} pt: {ringed:?}");
+                    continue;
+                };
+                assert!(whole, "{interface} pt: a clip cuts the ring {ring:?}");
+                assert_eq!(
+                    now_tracks.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+                    switches,
+                    "{interface} pt: a switch moved"
+                );
+                let missing = |from: &[Bounds<Pixels>], to: &[Bounds<Pixels>]| {
+                    let mut left = to.to_vec();
+                    from.iter()
+                        .filter(|b| match left.iter().position(|o| o == *b) {
+                            Some(at) => {
+                                left.remove(at);
+                                false
+                            }
+                            None => true,
+                        })
+                        .copied()
+                        .collect::<Vec<_>>()
+                };
+                let (gone, came) = (missing(&others, &now_others), missing(&now_others, &others));
+                assert!(
+                    gone.is_empty() && came.is_empty(),
+                    "{interface} pt: focus moved quads: {gone:?} became {came:?}"
+                );
+                if !seen.contains(ring) {
+                    seen.push(*ring);
+                }
+            }
+            assert_eq!(
+                seen.len(),
+                switches.len(),
+                "{interface} pt: Tab rings every switch"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1440.), px(2400.)));
+        cx.update(|window, cx| window.blur(cx));
+
+        // The Follow system switch, hovered: unchecked, then checked.
+        let hovered_fill = |cx: &mut VisualTestContext| {
+            settle(cx);
+            let area = shown(cx, "follow-system-switch").unwrap();
+            let (tracks, _, _) = frame(cx);
+            let (track, _) = *tracks
+                .iter()
+                .find(|(track, _)| area.contains(&track.center()))
+                .unwrap();
+            cx.simulate_mouse_move(track.center(), None, Modifiers::default());
+            settle(cx);
+            let (tracks, _, _) = frame(cx);
+            let fill = tracks.iter().find(|(t, _)| *t == track).unwrap().1;
+            cx.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+            fill
+        };
+        let fill = |color: u32| Background::from(Hsla::from(rgb(color)));
+        select(cx, false);
+        let unchecked = hovered_fill(cx);
+        assert_eq!(unchecked, fill(cx.read(palette).switch_hover()));
+        assert_ne!(unchecked, fill(cx.read(palette).border));
+        select(cx, true);
+        let checked = hovered_fill(cx);
+        assert_eq!(
+            checked,
+            fill(cx.read(palette).accent),
+            "a checked track keeps its accent"
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            // The Omarchy theme disables Follow system: its track keeps its
+            // faded resting fill under the pointer.
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("current");
+            std::fs::create_dir_all(root.join("theme")).unwrap();
+            let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+            std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+            std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+            cx.update(|_, cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = ThemeSelection::Omarchy;
+                    app.settings.follow_system = false;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            let disabled = hovered_fill(cx);
+            assert_eq!(disabled, fill(cx.read(palette).border).opacity(0.5));
+        }
     }
 
     /// The Omarchy card's caption fits its card at the default interface size
@@ -5739,6 +9735,119 @@ mod picker_tests {
     }
 }
 
+/// History's Columns panel, which keeps its controls off the title line.
+#[cfg(test)]
+mod columns_popover_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// The node `checkbox`, a kit Checkbox, writes for assistive technology
+    /// as a window draws it.
+    fn checkbox_node(
+        cx: &mut gpui::VisualTestContext,
+        checkbox: impl Fn() -> Checkbox + 'static,
+    ) -> gpui::accesskit::Node {
+        crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            fn of_type<'a, E: gpui::Element>(
+                _witness: &E,
+                element: &'a mut gpui::AnyElement,
+            ) -> Option<&'a mut E> {
+                element.downcast_mut()
+            }
+            let mut outer = gpui::RenderOnce::render(checkbox(), window, cx).into_element();
+            let (_, mut layout) = outer.request_layout(None, None, window, cx);
+            let mut base = (&mut layout as &mut dyn std::any::Any)
+                .downcast_mut::<Option<gpui::AnyElement>>()
+                .and_then(Option::take)
+                .expect("the kit's Checkbox renders a base Checkbox");
+            let witness =
+                gpui::RenderOnce::render(gpui_kit::base::Checkbox::new("witness"), window, cx)
+                    .into_element();
+            let element = of_type(&witness, &mut base).expect("the base element writes the node");
+            let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+            element.write_a11y_info(&mut node);
+            node
+        })
+    }
+
+    /// History's Subject column checkbox, which cannot hide the column, is
+    /// announced unavailable with its reason, "Always shown", as the pill
+    /// beside it draws it; the other columns' checkboxes are available and
+    /// describe nothing. Announced unavailable, it gave no reason: the pill
+    /// is text of its own after it.
+    #[gpui::test]
+    async fn the_subject_column_checkbox_says_why_it_is_unavailable(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx) = crate::views::tests::history_window(cx).await;
+        for (index, id) in ColumnId::ALL.into_iter().enumerate() {
+            let node = checkbox_node(cx, move || column_checkbox(index, id, true));
+            assert_eq!(node.label(), Some(id.label()), "{id:?}");
+            if id == ColumnId::Subject {
+                assert!(node.is_disabled(), "Subject is announced unavailable");
+                assert_eq!(node.description(), Some(ALWAYS_SHOWN), "with its reason");
+            } else {
+                assert!(!node.is_disabled(), "{id:?} is available");
+                assert_eq!(node.description(), None, "{id:?}");
+            }
+        }
+    }
+
+    /// History's Columns panel lays its graph lane spacing out as it did
+    /// before Settings centred its rows' controls on their titles' first
+    /// lines: the steppers top their row and lie inside it, and the column
+    /// list starts the panel's 0.75 rem gap below that row, at 13 and 18 pt
+    /// in a 1,280 and a 461 px window. The title-line slot belongs beside a
+    /// Settings row's title; in the panel it lifted the steppers above
+    /// their row, 4.25 px at 13 pt and 6 px at 18 pt.
+    #[gpui::test]
+    async fn the_columns_popover_tops_its_steppers_on_their_row(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.column_menu = true;
+                cx.notify();
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        for width in [1280., 461.] {
+            for interface in [13, 18] {
+                let at = format!("{interface} pt at {width} px");
+                cx.simulate_resize(size(px(width), px(1200.)));
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.settings.interface_text_size = interface;
+                        appearance::apply_text_sizes(interface, code, window, cx);
+                        cx.notify();
+                    })
+                });
+                crate::views::tests::settle(&app, cx).await;
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                let (Some(row), Some(steppers), Some(first)) = (
+                    cx.debug_bounds("graph-spacing-row"),
+                    cx.debug_bounds("graph-spacing-controls"),
+                    cx.debug_bounds("history-column-row-0"),
+                ) else {
+                    panic!("{at}: the panel draws its graph lane spacing and columns");
+                };
+                let half = cx.update(|window, _| px(0.5 / window.scale_factor()));
+                assert!(
+                    steppers.top() == row.top() && steppers.bottom() <= row.bottom(),
+                    "{at}: the steppers {steppers:?} do not top their row {row:?}"
+                );
+                let gap = appearance::ui_size(9.75);
+                assert!(
+                    (first.top() - row.bottom() - gap).abs() <= half,
+                    "{at}: the column list starts at {:?}, not {gap:?} below the row's \
+                     foot at {:?}",
+                    first.top(),
+                    row.bottom()
+                );
+            }
+        }
+    }
+}
+
 /// Settings' own segmented controls as a real window draws them.
 #[cfg(test)]
 mod segment_tests {
@@ -5883,6 +9992,934 @@ mod segment_tests {
                 segment,
                 appearance::SelectedState::FocusedAndHovered,
             );
+        }
+    }
+}
+
+/// Linux: the Omarchy theme followed while More contrast is on.
+#[cfg(all(test, target_os = "linux"))]
+mod omarchy_contrast_tests {
+    use super::picker_tests::{open_app, settle};
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// With More contrast on and the Omarchy theme selected, a reread that
+    /// changes what the card shows but not its palette (`colors.toml` gone,
+    /// so the card keeps Tokyo Night) applies nothing and the applied palette
+    /// stays the adjusted mapping; a reread that changes the palette applies
+    /// it once, adjusted. Compared raw with the adjusted global, every
+    /// revision applied the theme again.
+    #[gpui::test]
+    fn an_omarchy_revision_under_more_contrast_applies_only_a_new_palette(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        settle(cx);
+        let card = shown(cx, "settings-theme-omarchy").expect("the Omarchy card");
+        cx.simulate_click(card.center(), Modifiers::default());
+        settle(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.increase_contrast = crate::preferences::DisplayChoice::On;
+                native_accessibility::set_display_choices(&app.settings, cx);
+                native_accessibility::sync_preferences(cx);
+                app.show_display_preferences(None, window, cx);
+            })
+        });
+        settle(cx);
+        let shown_palette = |cx: &mut VisualTestContext| {
+            cx.read(|cx| appearance::omarchy::card(cx).unwrap().palette)
+        };
+        let mapped = shown_palette(cx);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.theme),
+            ThemeSelection::Omarchy
+        );
+        assert_eq!(cx.read(palette), mapped.with_more_contrast());
+        let revision = |cx: &mut VisualTestContext| {
+            cx.read(|cx| appearance::omarchy::card(cx).unwrap().revision)
+        };
+        let (before, applied) = (revision(cx), platform_polish::appearance_applications());
+
+        std::fs::remove_file(root.join("theme/colors.toml")).unwrap();
+        cx.update(|_, cx| appearance::omarchy::refresh(cx));
+        settle(cx);
+        assert!(revision(cx) > before, "the card takes a new revision");
+        assert_eq!(shown_palette(cx), mapped, "the card keeps its palette");
+        assert_eq!(
+            platform_polish::appearance_applications(),
+            applied,
+            "an unchanged palette applies nothing"
+        );
+        assert_eq!(cx.read(palette), mapped.with_more_contrast());
+
+        let latte = include_bytes!("../tests/fixtures/omarchy/catppuccin-latte.toml");
+        std::fs::write(root.join("theme/colors.toml"), latte).unwrap();
+        cx.update(|_, cx| appearance::omarchy::refresh(cx));
+        settle(cx);
+        let changed = shown_palette(cx);
+        assert_ne!(changed, mapped, "the card shows the new palette");
+        assert_eq!(
+            platform_polish::appearance_applications() - applied,
+            1,
+            "a new palette applies once"
+        );
+        assert_eq!(cx.read(palette), changed.with_more_contrast());
+    }
+}
+
+/// Settings' Reduce motion and Increase contrast rows as a real window
+/// draws them.
+#[cfg(test)]
+mod display_row_tests {
+    use super::picker_tests::{open_app, settle};
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// The focus handle of `setting`'s segment `index`, as the page tracks it.
+    fn segment_focus(
+        app: &Entity<GitTurtle>,
+        setting: DisplaySetting,
+        index: usize,
+        cx: &mut VisualTestContext,
+    ) -> FocusHandle {
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        cx.update(|_, cx| page.focus((setting.key(), index), cx))
+    }
+
+    /// Where `selector` is drawn, for a test that expects it.
+    fn drawn(cx: &mut VisualTestContext, selector: String) -> Bounds<Pixels> {
+        let leaked: &'static str = selector.clone().leak();
+        shown(cx, leaked).unwrap_or_else(|| panic!("{selector} is drawn"))
+    }
+
+    /// Presses a key no binding takes, so that the window takes keyboard
+    /// input before a walk's first key whose frames are checked. The first
+    /// key after pointer input, or after none, switches the window to
+    /// keyboard input, which leaves it to be drawn again, and GPUI draws a
+    /// window left so inside the key's dispatch, before acting on the key
+    /// (`Window::dispatch_event`, then `dispatch_key_event`): a frame that
+    /// still holds focus on the previous control, now with its keyboard
+    /// ring, at the page's offset before the key, which the page's record
+    /// of painted frames counts. No platform presents that frame: the frame
+    /// request draws again once the key has moved focus and presents only
+    /// that frame, so no one sees the ring on the previous control or the
+    /// page at its old offset. A probe found that frame drawn inside the
+    /// dispatch for such a first key only, again after a pointer move, and
+    /// never after a key no binding takes.
+    fn keyboard_input(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("f13");
+        settle(cx);
+    }
+
+    /// Interface text at `size` points.
+    fn text_size(app: &Entity<GitTurtle>, size: u8, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = size;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(size, code, window, cx);
+                cx.notify();
+            })
+        });
+    }
+
+    /// Both rows draw whole at 11, 13 and 18 pt in 1480 × 973 and
+    /// 461 × 490 windows, each scrolled to the top of the page's view: its
+    /// three segments share one height (no label wraps), are as wide at
+    /// 461 px as at 1480 px (no label is cut to fit) and lie inside their
+    /// group, and the group and the title lie inside the row and the row
+    /// inside the Appearance card, within the page's view. At 1480 px the
+    /// group ends the row beside the title; at 461 px it stacks below it.
+    #[gpui::test]
+    fn the_display_rows_draw_whole_at_every_size(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() + slack >= outer.left()
+                && inner.right() <= outer.right() + slack
+                && inner.top() + slack >= outer.top()
+                && inner.bottom() <= outer.bottom() + slack
+        };
+        let mut wide_widths = std::collections::HashMap::new();
+        let mut failures = Vec::new();
+        for (width, height) in [(1480., 973.), (461., 490.)] {
+            for text in [11, 13, 18] {
+                text_size(&app, text, cx);
+                cx.simulate_resize(size(px(width), px(height)));
+                settle(cx);
+                for setting in DisplaySetting::ALL {
+                    let at = format!("{} at {text} pt in {width} × {height}", setting.title());
+                    let key = setting.key();
+                    // Scrolled so the row starts 8 px below the view's top.
+                    let row = drawn(cx, format!("{key}-row"));
+                    let view = page.scroll().bounds();
+                    let offset = page.scroll().offset();
+                    page.scroll().set_offset(point(
+                        offset.x,
+                        offset.y - (row.top() - view.top() - px(8.)),
+                    ));
+                    settle(cx);
+                    let row = drawn(cx, format!("{key}-row"));
+                    let group = drawn(cx, format!("{key}-segments"));
+                    let title = drawn(cx, format!("setting-title: {}", setting.title()));
+                    let card = drawn(cx, "settings-section: Appearance".into());
+                    let view = page.scroll().bounds();
+                    let segments: Vec<_> = (0..DisplayChoice::ALL.len())
+                        .map(|index| drawn(cx, format!("{key}-{index}")))
+                        .collect();
+                    if !(inside(group, row) && inside(title, row) && inside(row, card)) {
+                        failures.push(format!(
+                            "{at}: the group {group:?} or title {title:?} leaves the row \
+                             {row:?}, or the row the card {card:?}"
+                        ));
+                    }
+                    if !(row.left() + slack >= view.left() && row.right() <= view.right() + slack)
+                        || !inside(group, view)
+                    {
+                        failures.push(format!(
+                            "{at}: the row {row:?} or group {group:?} is cut by the view {view:?}"
+                        ));
+                    }
+                    // Stacked, the group starts the row's next line at its
+                    // left edge; centred beside a tall description, it could
+                    // also lie below the title's line.
+                    let stacked = title.bottom() <= group.top() + slack
+                        && (group.left() - row.left()).abs() <= slack;
+                    let beside = title.right() <= group.left() + slack
+                        && (group.right() - row.right()).abs() <= slack;
+                    if (width < 1000. && !stacked) || (width > 1000. && !beside) {
+                        failures.push(format!(
+                            "{at}: the group {group:?} is not {} the title {title:?}",
+                            if width < 1000. { "below" } else { "beside" }
+                        ));
+                    }
+                    for (index, segment) in segments.iter().enumerate() {
+                        if !inside(*segment, group) {
+                            failures.push(format!(
+                                "{at}: segment {index} {segment:?} leaves its group {group:?}"
+                            ));
+                        }
+                        if (segment.size.height - segments[1].size.height).abs() > slack {
+                            failures.push(format!(
+                                "{at}: segment {index} is {:?} tall, \"On\" {:?}: a label wraps",
+                                segment.size.height, segments[1].size.height
+                            ));
+                        }
+                        let widths = (key, text, index);
+                        if width > 1000. {
+                            wide_widths.insert(widths, segment.size.width);
+                        } else if let Some(wide) = wide_widths.get(&widths)
+                            && (segment.size.width - *wide).abs() > slack
+                        {
+                            failures.push(format!(
+                                "{at}: segment {index} is {:?} wide, {wide:?} in the wide \
+                                 window: its label is cut",
+                                segment.size.width
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(wide_widths.len(), 2 * 3 * 3, "every wide segment measured");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Each choice, and following a desktop that asks and one that does
+    /// not, keeps each row's height and leaves the rows below where they
+    /// were, at 13 and 18 pt in a 461 px and a 1480 px window: every row
+    /// reserves its tallest description.
+    #[gpui::test]
+    fn each_choice_keeps_the_rows_height(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let mut failures = Vec::new();
+        let mut descriptions = std::collections::BTreeSet::new();
+        for width in [461., 1480.] {
+            for text in [13, 18] {
+                text_size(&app, text, cx);
+                // Tall enough to draw the whole page without scrolling.
+                cx.simulate_resize(size(px(width), px(9000.)));
+                settle(cx);
+                let rows = |cx: &mut VisualTestContext| {
+                    DisplaySetting::ALL.map(|setting| drawn(cx, format!("{}-row", setting.key())))
+                };
+                let at_rest = rows(cx);
+                for setting in DisplaySetting::ALL {
+                    for (choice, asks) in [
+                        (DisplayChoice::On, false),
+                        (DisplayChoice::Off, false),
+                        (DisplayChoice::Follow, true),
+                        (DisplayChoice::Follow, false),
+                    ] {
+                        // On macOS, following shows the Mac's own answer, which a test cannot set.
+                        if cfg!(target_os = "macos") && choice == DisplayChoice::Follow {
+                            continue;
+                        }
+                        let at = format!(
+                            "{} {choice:?} (asks {asks}) at {text} pt in {width} px",
+                            setting.title()
+                        );
+                        cx.update(|window, cx| {
+                            app.update(cx, |app, cx| {
+                                match setting {
+                                    DisplaySetting::ReduceMotion => {
+                                        app.settings.reduce_motion = choice
+                                    }
+                                    DisplaySetting::IncreaseContrast => {
+                                        app.settings.increase_contrast = choice
+                                    }
+                                }
+                                #[cfg(target_os = "linux")]
+                                native_accessibility::store_desktop_preferences(
+                                    native_accessibility::DisplayPreferences {
+                                        reduce_motion: asks,
+                                        increase_contrast: asks,
+                                        reduce_transparency: false,
+                                    },
+                                    cx,
+                                );
+                                app.notify_settings_page(cx);
+                                window.refresh();
+                            })
+                        });
+                        settle(cx);
+                        let drawn_rows = rows(cx);
+                        if drawn_rows != at_rest {
+                            failures.push(format!("{at}: {at_rest:?} -> {drawn_rows:?}"));
+                        }
+                        let shown = setting.description(choice, asks);
+                        let read = format!("setting-description: {}. {shown}", setting.title());
+                        if !page_shows(cx, read.clone().leak()) {
+                            failures.push(format!("{at}: does not read {read:?}"));
+                        }
+                        descriptions.insert(shown);
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            descriptions.len(),
+            8,
+            "every description drawn: {descriptions:?}"
+        );
+    }
+
+    /// From List density's first segment, focused in code below the page's
+    /// view, Tab reaches its last and then Reduce motion's three segments
+    /// and Increase contrast's, in order, in a 461 × 490 window at 18 pt,
+    /// and every frame painted after each key, the first key's included,
+    /// shows the focused segment's row, which fits the page's view, with the
+    /// focus ring's room inside that view.
+    #[gpui::test]
+    fn tab_reaches_the_six_segments_in_order_and_keeps_each_in_view(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        text_size(&app, 18, cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(cx);
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        // List density's first segment, focused in code before any key, so
+        // the page leaves it below its view; then a key no binding takes,
+        // which moves no focus and so reveals nothing, and Tab to the
+        // segment's neighbour, which the keyboard's focus scrolls into view
+        // in the first frame after that Tab. Focused in code after a key,
+        // the segment was revealed at once, and the walk's first Tab began
+        // inside the view.
+        let density = |index: usize, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| page.focus(("settings-density", index), cx))
+        };
+        let first = density(0, cx);
+        cx.update(|window, cx| window.focus(&first, cx));
+        settle(cx);
+        keyboard_input(cx);
+        let view = page.scroll().bounds();
+        let below = drawn(cx, "settings-density-0".into());
+        assert!(
+            cx.update(|window, _| first.is_focused(window)) && below.top() > view.bottom(),
+            "List density's first segment, {below:?}, holds focus below the page's view, \
+             {view:?}, before the first Tab"
+        );
+        let slack = px(0.01);
+        let mut steps = vec![("List density's segment 1".to_owned(), density(1, cx))];
+        for setting in DisplaySetting::ALL {
+            for index in 0..DisplayChoice::ALL.len() {
+                let at = format!("{}'s segment {index}", setting.title());
+                steps.push((at, segment_focus(&app, setting, index, cx)));
+            }
+        }
+        for (at, expected) in steps {
+            page.take_painted();
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert!(
+                cx.update(|window, _| expected.is_focused(window)),
+                "Tab reaches {at}"
+            );
+            let frames = page.take_painted();
+            assert!(!frames.is_empty(), "{at}: Tab paints the page");
+            for (frame, painted) in frames.iter().enumerate() {
+                let ring = painted
+                    .control
+                    .unwrap_or_else(|| panic!("{at}: frame {frame} draws the focused row"))
+                    .dilate(room);
+                assert!(
+                    ring.top() + slack >= painted.viewport.top()
+                        && ring.bottom() <= painted.viewport.bottom() + slack,
+                    "{at}: frame {frame} paints the segment's row with its ring's room, \
+                         {ring:?}, outside the page, {:?}",
+                    painted.viewport
+                );
+            }
+        }
+    }
+
+    /// The first key after pointer input. A click on an empty spot of the
+    /// page focuses the window's root, and the key after it, Tab or
+    /// Shift+Tab, paints one stale frame first, drawn inside its dispatch
+    /// ([`keyboard_input`]), with the root still focused and the page at its
+    /// offset before the key; every frame after it holds the focus the key
+    /// moved to and, where that is a control of the page, shows it with its
+    /// ring's room inside the page's view, and otherwise leaves the page
+    /// where it was. From the root Tab reaches the window's first control,
+    /// in the header above the page, and Shift+Tab its last, a control of
+    /// the page above the view of a page scrolled to its foot, which the
+    /// page scrolls to.
+    #[gpui::test]
+    fn the_first_key_after_a_click_paints_one_stale_frame_then_its_focus(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        settle(cx);
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        let root = cx.read(|cx| app.read(cx).app_focus.clone());
+        let mut revealed = false;
+        for key in ["tab", "shift-tab"] {
+            let foot = page.scroll().max_offset().y;
+            page.scroll().set_offset(point(px(0.), -foot));
+            settle(cx);
+            // Beside the page's columns, where no control lies.
+            let view = page.scroll().bounds();
+            cx.simulate_click(
+                point(view.right() - px(24.), view.bottom() - px(24.)),
+                Modifiers::default(),
+            );
+            settle(cx);
+            assert!(
+                cx.update(|window, _| root.is_focused(window)),
+                "the click focuses the window's root"
+            );
+            let before = page.scroll().offset().y;
+            page.take_painted();
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            let focus = cx.update(|window, cx| window.focused(cx));
+            assert!(
+                focus.as_ref().is_some_and(|focus| *focus != root),
+                "{key} moves focus from the root"
+            );
+            let frames = page.take_painted();
+            let Some((stale, after)) = frames.split_first().filter(|(_, after)| !after.is_empty())
+            else {
+                panic!("{key} paints a stale frame and then more: {frames:?}");
+            };
+            assert!(
+                stale.focus.as_ref().is_some_and(|focus| *focus == root) && stale.offset == before,
+                "{key}'s first frame is drawn before focus moves, at the page's offset \
+                 {before:?}: {stale:?}"
+            );
+            let in_page = cx.update(|window, _| page.focused(window)).is_some();
+            for (index, painted) in after.iter().enumerate() {
+                let frame = index + 1;
+                assert!(
+                    painted.focus == focus.as_ref().map(FocusHandle::downgrade),
+                    "{key}: frame {frame} holds the focus the key moved to: {painted:?}"
+                );
+                if in_page {
+                    let control = painted.control.unwrap_or_else(|| {
+                        panic!("{key}: frame {frame} draws the focused control")
+                    });
+                    assert!(
+                        within(control.dilate(room), painted.viewport),
+                        "{key}: frame {frame} paints the focused control, {control:?}, with its \
+                         ring's room outside the page's view, {:?}",
+                        painted.viewport
+                    );
+                } else {
+                    assert_eq!(
+                        painted.offset, before,
+                        "{key}: frame {frame} leaves the page"
+                    );
+                }
+            }
+            revealed |= in_page && page.scroll().offset().y > before;
+        }
+        assert!(
+            revealed,
+            "Shift+Tab from the root scrolls the page to its last control"
+        );
+    }
+
+    /// List density's, Reduce motion's and Increase contrast's rows: each
+    /// row's drawn name with its segments' focus handles and drawn names.
+    fn segment_rows(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<(String, Vec<(FocusHandle, String)>)> {
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let density = (0..Density::ALL.len())
+            .map(|index| {
+                let focus = cx.update(|_, cx| page.focus(("settings-density", index), cx));
+                (focus, format!("settings-density-{index}"))
+            })
+            .collect();
+        let mut rows = vec![("settings-density-row".to_owned(), density)];
+        for setting in DisplaySetting::ALL {
+            let key = setting.key();
+            let segments = (0..DisplayChoice::ALL.len())
+                .map(|index| {
+                    let focus = segment_focus(app, setting, index, cx);
+                    (focus, format!("{key}-{index}"))
+                })
+                .collect();
+            rows.push((format!("{key}-row"), segments));
+        }
+        rows
+    }
+
+    /// Focuses the control before `segment` in the Tab order, then scrolls
+    /// the page so that `row` starts 8 px below its view (`below`) or ends
+    /// 8 px above it, for a Tab onto the segment.
+    fn ready_tab_onto(
+        cx: &mut VisualTestContext,
+        page: &ScrollHandle,
+        row: &str,
+        segment: &FocusHandle,
+        below: bool,
+    ) {
+        cx.update(|window, cx| {
+            window.focus(segment, cx);
+            window.focus_prev(cx);
+        });
+        settle(cx);
+        let at = drawn(cx, row.to_owned());
+        let view = page.bounds();
+        let shift = if below {
+            view.bottom() + px(8.) - at.top()
+        } else {
+            view.top() - px(8.) - at.bottom()
+        };
+        let offset = page.offset();
+        page.set_offset(point(offset.x, offset.y + shift));
+        settle(cx);
+        let at = drawn(cx, row.to_owned());
+        assert!(
+            if below {
+                at.top() > view.bottom()
+            } else {
+                at.bottom() < view.top()
+            },
+            "{row} at {at:?} lies {} the page's view {view:?}",
+            if below { "below" } else { "above" }
+        );
+    }
+
+    /// Whether `bounds` lies inside `view`'s height.
+    fn within(bounds: Bounds<Pixels>, view: Bounds<Pixels>) -> bool {
+        let slack = px(0.01);
+        bounds.top() + slack >= view.top() && bounds.bottom() <= view.bottom() + slack
+    }
+
+    /// Tab onto each segment of List density, Reduce motion and Increase
+    /// contrast, from a page scrolled so that the segment's row starts below
+    /// its view, at 13 and 18 pt in 1480 × 973 and 461 × 490 windows: every
+    /// frame painted after the key, and the page once settled, show the whole
+    /// row, its title, its description at its reserved height and its
+    /// segments, with the focus ring's room, and focus stays on the segment
+    /// with its ring's room in view. Revealed alone, the segments left
+    /// Increase contrast's description below the fold of the wide window.
+    #[gpui::test]
+    fn tab_onto_a_segment_shows_its_whole_row(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        let rows = segment_rows(&app, cx);
+        // Without it the first step's frames began with one holding focus on
+        // the control before List density's first segment, passed only
+        // because the page showed it just above that row.
+        keyboard_input(cx);
+        let mut failures = Vec::new();
+        let mut steps = 0;
+        for (width, height) in [(1480., 973.), (461., 490.)] {
+            for text in [13, 18] {
+                text_size(&app, text, cx);
+                cx.simulate_resize(size(px(width), px(height)));
+                settle(cx);
+                for (row, segments) in &rows {
+                    for (focus, segment) in segments {
+                        let at = format!("{segment} at {text} pt in {width} × {height}");
+                        ready_tab_onto(cx, page.scroll(), row, focus, true);
+                        page.take_painted();
+                        cx.simulate_keystrokes("tab");
+                        draw(cx);
+                        steps += 1;
+                        if !cx.update(|window, _| focus.is_focused(window)) {
+                            failures.push(format!("{at}: Tab does not focus the segment"));
+                            continue;
+                        }
+                        let frames = page.take_painted();
+                        if frames.is_empty() {
+                            failures.push(format!("{at}: Tab paints nothing"));
+                        }
+                        for (frame, painted) in frames.iter().enumerate() {
+                            match painted.control {
+                                Some(shown) if within(shown.dilate(room), painted.viewport) => {}
+                                shown => failures.push(format!(
+                                    "{at}: frame {frame} paints the focused row {shown:?} \
+                                     outside the page {:?}",
+                                    painted.viewport
+                                )),
+                            }
+                        }
+                        let view = page.scroll().bounds();
+                        let shown_row = drawn(cx, row.clone());
+                        if !within(shown_row.dilate(room), view) {
+                            failures.push(format!(
+                                "{at}: the row {shown_row:?}, with the ring's room, \
+                                 leaves the page {view:?}"
+                            ));
+                        }
+                        let shown_segment = drawn(cx, segment.clone());
+                        if !within(shown_segment.dilate(room), view) {
+                            failures.push(format!(
+                                "{at}: the segment {shown_segment:?} with its ring \
+                                 leaves the page {view:?}"
+                            ));
+                        }
+                        if !cx.update(|window, _| focus.is_focused(window)) {
+                            failures.push(format!("{at}: the reveal moves focus"));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(steps, 4 * 8, "every segment reached at every size");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// In a window cut so that the page's view is shorter than each row but
+    /// holds a segment with its focus ring, at 18 pt and 461 and 1480 px
+    /// wide, Tab onto each segment from a page scrolled so that its row lies
+    /// below the view and so that it lies above: from the frame that first
+    /// draws the focus, the page shows the focused segment with its ring's
+    /// room rather than the row's top or foot.
+    #[gpui::test]
+    fn a_row_taller_than_the_page_shows_its_focused_segment(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        let rows = segment_rows(&app, cx);
+        text_size(&app, 18, cx);
+        // As the test's first key, the first step's Tab painted one frame
+        // that still held focus on the control before the segment, at the
+        // page's offset before the key, a frame no platform presents.
+        keyboard_input(cx);
+        let mut failures = Vec::new();
+        let mut steps = 0;
+        for width in [461., 1480.] {
+            let height = px(490.);
+            cx.simulate_resize(size(px(width), height));
+            settle(cx);
+            let one = drawn(cx, rows[0].1[0].1.clone()).size.height;
+            let chrome = height - page.scroll().bounds().size.height;
+            cx.simulate_resize(size(px(width), chrome + one + room * 2. + px(12.)));
+            settle(cx);
+            let view = page.scroll().bounds().size.height;
+            for (row, _) in &rows {
+                let tall = drawn(cx, row.clone()).size.height;
+                assert!(
+                    tall + room * 2. > view && one + room * 2. <= view,
+                    "{row}, {tall:?} tall, does not fit the page's view, {view:?}, \
+                     which holds a segment, {one:?}"
+                );
+            }
+            for (row, segments) in &rows {
+                for (focus, segment) in segments {
+                    for below in [true, false] {
+                        let at = format!(
+                            "{segment} at {width} px from {}",
+                            if below { "below" } else { "above" }
+                        );
+                        ready_tab_onto(cx, page.scroll(), row, focus, below);
+                        page.take_painted();
+                        cx.simulate_keystrokes("tab");
+                        draw(cx);
+                        steps += 1;
+                        if !cx.update(|window, _| focus.is_focused(window)) {
+                            failures.push(format!("{at}: Tab does not focus the segment"));
+                            continue;
+                        }
+                        // From the frame that first draws the focus.
+                        let frames = page.take_painted();
+                        if frames.is_empty() {
+                            failures.push(format!("{at}: Tab paints nothing"));
+                        }
+                        for (frame, painted) in frames.iter().enumerate() {
+                            match painted.control {
+                                Some(shown) if within(shown.dilate(room), painted.viewport) => {}
+                                shown => failures.push(format!(
+                                    "{at}: frame {frame} paints the focused segment {shown:?} \
+                                     with its ring outside the page {:?}",
+                                    painted.viewport
+                                )),
+                            }
+                        }
+                        let view = page.scroll().bounds();
+                        let shown = drawn(cx, segment.clone());
+                        if !within(shown.dilate(room), view) {
+                            failures.push(format!(
+                                "{at}: the segment {shown:?} with its ring leaves the \
+                                 page {view:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(steps, 2 * 8 * 2, "every segment reached from both sides");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// What the settings file on disk holds for `setting` once every save
+    /// asked for so far has landed. A save is the preference writer's job on
+    /// its own thread, which settling the window does not wait for: read at
+    /// once, the file held the save before (hosted run 42696574651) or none.
+    fn stored(
+        app: &Entity<GitTurtle>,
+        setting: DisplaySetting,
+        cx: &mut VisualTestContext,
+    ) -> serde_json::Value {
+        crate::theme_editor::tests::drain_preference_writer(cx, app);
+        let path = preferences::settings_path().expect("the test settings path");
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).expect("a saved store")).expect("a store");
+        let field = match setting {
+            DisplaySetting::ReduceMotion => "reduce_motion",
+            DisplaySetting::IncreaseContrast => "increase_contrast",
+        };
+        stored["settings"][field].clone()
+    }
+
+    /// A click on a segment, or Space on the focused one, selects its
+    /// choice, saves it and applies it at once: Reduce motion On reduces
+    /// the toolkit's motion, Off plays it; Increase contrast On applies the
+    /// adjusted palette, once, and Off the theme's own, once. A press on the
+    /// selected segment does nothing.
+    #[gpui::test]
+    fn a_click_or_space_selects_saves_and_applies(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1480.), px(9000.)));
+        settle(cx);
+        let own = cx.read(|cx| app.read(cx).effective_theme(cx).palette);
+        let click = |cx: &mut VisualTestContext, setting: DisplaySetting, index: usize| {
+            let segment = drawn(cx, format!("{}-{index}", setting.key()));
+            cx.simulate_click(segment.center(), Modifiers::default());
+            settle(cx);
+        };
+        let space = |cx: &mut VisualTestContext, setting: DisplaySetting, index: usize| {
+            let focus = segment_focus(&app, setting, index, cx);
+            cx.update(|window, cx| window.focus(&focus, cx));
+            settle(cx);
+            let space = Keystroke::parse("space").expect("a keystroke");
+            cx.simulate_event(KeyDownEvent {
+                keystroke: space.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(KeyUpEvent { keystroke: space });
+            settle(cx);
+        };
+        let state = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                (
+                    app.settings.reduce_motion,
+                    app.settings.increase_contrast,
+                    cx.reduce_motion(),
+                    appearance::more_contrast(cx),
+                    palette(cx),
+                )
+            })
+        };
+        let motion = DisplaySetting::ReduceMotion;
+        let contrast = DisplaySetting::IncreaseContrast;
+        let index = |choice: DisplayChoice| {
+            DisplayChoice::ALL
+                .iter()
+                .position(|option| *option == choice)
+                .unwrap()
+        };
+        // On macOS, following takes the Mac's own Increase Contrast: Off
+        // there keeps the test independent of it.
+        let unchosen = if cfg!(target_os = "macos") {
+            DisplayChoice::Off
+        } else {
+            DisplayChoice::Follow
+        };
+        #[cfg(target_os = "macos")]
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.increase_contrast = unchosen;
+                native_accessibility::set_display_choices(&app.settings, cx);
+            })
+        });
+
+        click(cx, motion, index(DisplayChoice::On));
+        assert_eq!(
+            state(cx),
+            (DisplayChoice::On, unchosen, true, false, own),
+            "a click on Reduce motion: On"
+        );
+        assert_eq!(stored(&app, motion, cx), "on");
+        space(cx, motion, index(DisplayChoice::Off));
+        assert_eq!(
+            state(cx),
+            (DisplayChoice::Off, unchosen, false, false, own),
+            "Space on Reduce motion: Off"
+        );
+        assert_eq!(stored(&app, motion, cx), "off");
+
+        let applied = platform_polish::appearance_applications();
+        space(cx, contrast, index(DisplayChoice::On));
+        assert_eq!(
+            state(cx),
+            (
+                DisplayChoice::Off,
+                DisplayChoice::On,
+                false,
+                true,
+                own.with_more_contrast()
+            ),
+            "Space on Increase contrast: On"
+        );
+        assert_eq!(stored(&app, contrast, cx), "on");
+        assert_eq!(platform_polish::appearance_applications() - applied, 1);
+        click(cx, contrast, index(DisplayChoice::On));
+        assert_eq!(
+            platform_polish::appearance_applications() - applied,
+            1,
+            "the selected segment again applies nothing"
+        );
+        click(cx, contrast, index(DisplayChoice::Off));
+        assert_eq!(
+            state(cx),
+            (DisplayChoice::Off, DisplayChoice::Off, false, false, own),
+            "a click on Increase contrast: Off"
+        );
+        assert_eq!(stored(&app, contrast, cx), "off");
+        assert_eq!(platform_polish::appearance_applications() - applied, 2);
+        click(cx, contrast, index(DisplayChoice::Follow));
+        assert_eq!(stored(&app, contrast, cx), "follow");
+    }
+
+    /// The accessibility node `segment` writes as it is drawn: its base
+    /// Button, laid out inside the kit's, writes it, as `reflog`'s entry
+    /// nodes are read.
+    fn segment_node(segment: Button, window: &mut Window, cx: &mut App) -> gpui::accesskit::Node {
+        use gpui::Element as _;
+        fn of_type<'a, E: gpui::Element>(
+            _witness: &E,
+            element: &'a mut AnyElement,
+        ) -> Option<&'a mut E> {
+            element.downcast_mut()
+        }
+        let mut outer = RenderOnce::render(segment, window, cx).into_element();
+        let (_, mut layout) = outer.request_layout(None, None, window, cx);
+        let mut base = (&mut layout as &mut dyn std::any::Any)
+            .downcast_mut::<Option<AnyElement>>()
+            .and_then(Option::take)
+            .expect("the kit's Button renders a base Button");
+        let witness = RenderOnce::render(
+            gpui_kit::base::Button::new("segment-node-witness"),
+            window,
+            cx,
+        )
+        .into_element();
+        let element = of_type(&witness, &mut base).expect("the base Button writes the node");
+        let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+        element.write_a11y_info(&mut node);
+        node
+    }
+
+    /// Each segment is named by its setting and its choice, and only the
+    /// selected one is toggled: as the page builds them for each choice,
+    /// and in the node such a segment writes.
+    #[gpui::test]
+    fn each_segment_names_its_setting_and_choice_and_toggles_the_selected(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1480.), px(9000.)));
+        settle(cx);
+        let follow = if cfg!(target_os = "macos") {
+            "Follow the system"
+        } else {
+            "Follow the desktop"
+        };
+        for setting in DisplaySetting::ALL {
+            let names = [follow, "On", "Off"].map(|label| format!("{}: {label}", setting.title()));
+            for (selected, choice) in DisplayChoice::ALL.into_iter().enumerate() {
+                let segment = drawn(cx, format!("{}-{selected}", setting.key()));
+                cx.simulate_click(segment.center(), Modifiers::default());
+                settle(cx);
+                assert_eq!(cx.read(|cx| setting.choice(&app.read(cx).settings)), choice);
+                page_shows(cx, "settings-section: Appearance");
+                for (index, name) in names.iter().enumerate() {
+                    let selector = format!("{}-{index}", setting.key());
+                    assert_eq!(
+                        segment_built(&selector),
+                        Some((name.clone(), index == selected)),
+                        "{selector} with {choice:?} chosen"
+                    );
+                    let focus = segment_focus(&app, setting, index, cx);
+                    let node = crate::views::tests::view_node(cx, move |window, cx| {
+                        segment_node(
+                            display_segment(setting, index, index == selected, &focus),
+                            window,
+                            cx,
+                        )
+                    });
+                    assert_eq!(
+                        (node.role(), node.label(), node.toggled()),
+                        (
+                            gpui::accesskit::Role::Button,
+                            Some(name.as_str()),
+                            Some(if index == selected {
+                                gpui::accesskit::Toggled::True
+                            } else {
+                                gpui::accesskit::Toggled::False
+                            })
+                        ),
+                        "{selector}'s node with {choice:?} chosen"
+                    );
+                }
+            }
         }
     }
 }

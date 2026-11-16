@@ -132,9 +132,14 @@ jobs:
   rust-debug:
     needs: changes
     if: needs.changes.outputs.product == 'true'
-    name: Rust tests and Clippy · ${{ matrix.os }}
+    name: Rust tests · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The limit only backs up a hung step: nextest's ci profile terminates any
+    # test after 120 s (terminate-after in .config/nextest.toml). The test
+    # jobs take about 25 to 31 minutes on a normal runner and runners have been
+    # seen 1.8 times slower, which 60 minutes holds and 45 did not (quality run
+    # 41757534359; docs/ci.md#test-execution-with-nextest).
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -172,15 +177,116 @@ jobs:
       # shared proc-macro dependency. Only doctest names contain "(line ".
       - name: Locked workspace tests with nextest
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+      - name: Print the libdav1d link and initializers
+        # Requirement 15 of the AVIF and JPEG 2000 security review
+        # (docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md) on
+        # this runner's architecture: the app the tests built links the system
+        # libdav1d (NEEDED, every dav1d_* undefined), and libdav1d's DT_INIT
+        # and .init_array entries with a few instructions at each. It only
+        # reads ELF files; a missing pkg-config skips the library's records.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for tool in readelf objdump; do
+            if ! command -v "$tool" >/dev/null; then echo "::error::$tool is missing"; exit 1; fi
+          done
+          app="${CARGO_TARGET_DIR:-target}/debug/gitturtle"
+          echo "== readelf -d -W $app"
+          LC_ALL=C readelf -d -W "$app"
+          echo "== dav1d_* in its .dynsym"
+          LC_ALL=C readelf --dyn-syms -W "$app" | grep dav1d_ || echo "none"
+          if ! command -v pkg-config >/dev/null; then
+            echo "::notice::pkg-config is missing, so libdav1d's initializers are not printed"
+            exit 0
+          fi
+          lib="$(readlink -f -- "$(pkg-config --variable=libdir dav1d)/libdav1d.so.7")"
+          dynamic="$(LC_ALL=C readelf -d -W "$lib")"
+          echo "== readelf -d -W $lib"
+          echo "$dynamic"
+          tag() { awk -v tag="($1)" '$2 == tag { print $3; exit }' <<<"$dynamic"; }
+          init="$(tag INIT)" array="$(tag INIT_ARRAY)" size="$(tag INIT_ARRAYSZ)"
+          offset="$(LC_ALL=C readelf -S -W "$lib" | awk '{ for (i = 1; i < NF; i++) if ($i == ".init_array") { print $(i + 3); exit } }')"
+          relocations="$(LC_ALL=C readelf -r -W "$lib")"
+          targets=()
+          if [[ -n "$init" ]]; then targets+=("$init DT_INIT"); fi
+          if [[ -n "$array" && -n "$size" && -n "$offset" ]]; then
+            echo "== .init_array at $array, $size bytes: each entry's relocation and target"
+            for ((at = array; at < array + size; at += 8)); do
+              entry="$(printf '%016x' "$at")"
+              grep -F "$entry" <<<"$relocations" || echo "$entry: no relocation"
+              # A RELA relocation's addend, else the address stored in place (RELR).
+              target="$(awk -v entry="$entry" '$1 == entry && $3 ~ /_RELATIVE$/ { print $NF; exit }' <<<"$relocations")"
+              if [[ -z "$target" ]]; then
+                target="$(od -An -t x8 -j "$((16#$offset + at - array))" -N 8 -- "$lib" | tr -d ' ')"
+              fi
+              if [[ "$target" =~ ^[0-9a-f]+$ ]]; then targets+=("0x$target .init_array[$(((at - array) / 8))]"); fi
+            done
+          fi
+          for target in "${targets[@]}"; do
+            read -r address label <<<"$target"
+            echo "== $label: $address"
+            LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
+          done
       - name: Locked workspace doctests
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
-      - name: Locked all-target Clippy
-        run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
       - name: Prepare bounded successful-main debug cache save
         uses: ./.github/actions/setup-rust
         with:
           phase: finish
           profile: debug
+      - name: Summarize CI measurements
+        if: always()
+        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve CI measurements and sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/
+          retention-days: 3
+          if-no-files-found: warn
+          include-hidden-files: false
+
+  # Clippy runs beside the tests instead of after them, so the test job is the
+  # build and the tests only, and a failing test no longer hides Clippy's
+  # result. It restores the debug cache that the same platform's test job
+  # saves (same profile, runner and key) and never saves one: a save here would
+  # race that job's for the same key, and an entry holding only Clippy's checked
+  # dependencies would leave the test job a cache without its build.
+  rust-clippy:
+    needs: changes
+    if: needs.changes.outputs.product == 'true'
+    name: Rust Clippy · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # Clippy already ran inside 45 minutes as the last step of the combined
+    # test job; alone, without the test build and the tests, it stays well
+    # inside them on a slow runner. Nothing else stops a hung Cargo step here:
+    # nextest's terminator bounds only tests.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      GIT_CONFIG_NOSYSTEM: 1
+    steps:
+      - name: Isolate CI Git configuration
+        run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # One Cargo command, as in rust-release, so the app's build script runs
+      # once and the refs it watches need no packing.
+      - name: Prepare Rust and restore bounded dependencies
+        uses: ./.github/actions/setup-rust
+        with:
+          profile: debug
+          vendor-reuse: true
+      - name: Locked all-target Clippy
+        run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
       - name: Summarize CI measurements
         if: always()
         run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
@@ -202,13 +308,19 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # Every leg at once, as in the other matrices: the legs share no runner,
+      # cache entry or artifact name.
+      max-parallel: 3
       matrix:
+        # Each leg compiles for its own runner, so `target` is that runner's
+        # host triple: the Linux packager packages only its machine's own.
         include:
           - os: macos-26
             target: aarch64-apple-darwin
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -265,14 +377,55 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           include-hidden-files: false
+      # The run's artifact listing can lag the upload: in Quality run
+      # 43747610529 the listing this download reads came back 0.45 s after the
+      # upload was finalized, without the new ID, and the step failed. The same
+      # download, by the same exact ID, is therefore attempted up to three
+      # times: at once, about 15 s later and about 45 s after that. A later
+      # attempt runs only when every earlier one failed, and starts without the
+      # download directory, as the first does. The first two may fail without
+      # failing the job; the last one fails it. No attempt downloads by name or
+      # pattern, so no other artifact can stand in for the uploaded one.
       - name: Download this exact uploaded artifact from Actions
+        id: download-first
         if: steps.package.outputs.eligible == 'true'
+        continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
           path: ${{ runner.temp }}/ci-package-download
           merge-multiple: true
           digest-mismatch: error
+      - name: Wait about 15 s for the run's artifact listing and empty the download directory
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure'
+        run: |
+          sleep 15
+          rm -rf -- "$RUNNER_TEMP/ci-package-download"
+      - name: Download this exact uploaded artifact from Actions, second attempt
+        id: download-second
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
+          path: ${{ runner.temp }}/ci-package-download
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Wait about 45 s more for the run's artifact listing and empty the download directory
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure' && steps.download-second.outcome == 'failure'
+        run: |
+          sleep 45
+          rm -rf -- "$RUNNER_TEMP/ci-package-download"
+      - name: Download this exact uploaded artifact from Actions, third and last attempt
+        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure' && steps.download-second.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
+          path: ${{ runner.temp }}/ci-package-download
+          merge-multiple: true
+          digest-mismatch: error
+      # Reached only when no step above failed the job, so only after one
+      # attempt succeeded; it refuses a missing or incomplete directory itself.
       - name: Verify downloaded bytes and installation
         if: steps.package.outputs.eligible == 'true'
         env:
@@ -314,7 +467,11 @@ jobs:
     if: needs.changes.outputs.product == 'true'
     name: Rust tests · archlinux
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # As in rust-debug, the limit only backs up a hung step: nextest's ci
+    # profile terminates any test after 120 s (terminate-after in
+    # .config/nextest.toml). This job takes about 28 minutes on a normal
+    # runner; 1.8 times slower is 50, inside 60 and past 45.
+    timeout-minutes: 60
     container:
       image: archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
     env:
@@ -356,14 +513,21 @@ jobs:
             check_siglevel "$repo" "$(pacman-conf --repo="$repo" SigLevel)"
           done
           echo "pacman SigLevel: $(tr '\n' ' ' <<<"$global")"
+          # A SYSTEM_DEPS_ variable can make dav1d-sys git-clone dav1d and link
+          # that copy statically; the build links only the signed system package.
+          if names=$(compgen -e | grep '^SYSTEM_DEPS_'); then
+            echo "::error::SYSTEM_DEPS_ variables must not reach the build: $(tr '\n' ' ' <<<"$names")"
+            exit 1
+          fi
           pacman -Sy --noconfirm --noprogressbar --needed archlinux-keyring
           pacman -Su --noconfirm --noprogressbar --needed \
             base-devel clang cmake git openssh python rustup ca-certificates \
-            fontconfig freetype2 wayland libxkbcommon libxkbcommon-x11 libx11 libxcb \
-            vulkan-icd-loader vulkan-headers openssl zstd
-          pkg-config --exists fontconfig freetype2 wayland-client xkbcommon xkbcommon-x11 x11-xcb vulkan
+            fontconfig freetype2 wayland libxkbcommon libxkbcommon-x11 libx11 libxcb dav1d \
+            vulkan-icd-loader vulkan-headers openssl zstd shared-mime-info
+          pkg-config --exists fontconfig freetype2 wayland-client xkbcommon xkbcommon-x11 x11-xcb vulkan dav1d
+          echo "libdav1d $(pkg-config --modversion dav1d) in $(pkg-config --variable=libdir dav1d)"
           # The rolling versions this run built against, for comparing runs.
-          pacman -Q glibc gcc clang cmake git python rustup fontconfig freetype2 wayland libxkbcommon libx11
+          pacman -Q glibc gcc clang cmake git python rustup fontconfig freetype2 wayland libxkbcommon libx11 dav1d shared-mime-info
       # The runner's account owns RUNNER_TEMP, HOME and the file-command files;
       # the build user takes its UID so later steps can write them.
       - name: Create the unprivileged build user
@@ -417,6 +581,50 @@ jobs:
       # The same two phases as rust-debug, which explains the doctest filter.
       - name: Locked workspace tests with nextest
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+      - name: Print the libdav1d link and initializers
+        # The same records as in rust-debug, for Arch's libdav1d.
+        run: |
+          set -euo pipefail
+          for tool in readelf objdump; do
+            if ! command -v "$tool" >/dev/null; then echo "::error::$tool is missing"; exit 1; fi
+          done
+          app="${CARGO_TARGET_DIR:-target}/debug/gitturtle"
+          echo "== readelf -d -W $app"
+          LC_ALL=C readelf -d -W "$app"
+          echo "== dav1d_* in its .dynsym"
+          LC_ALL=C readelf --dyn-syms -W "$app" | grep dav1d_ || echo "none"
+          if ! command -v pkg-config >/dev/null; then
+            echo "::notice::pkg-config is missing, so libdav1d's initializers are not printed"
+            exit 0
+          fi
+          lib="$(readlink -f -- "$(pkg-config --variable=libdir dav1d)/libdav1d.so.7")"
+          dynamic="$(LC_ALL=C readelf -d -W "$lib")"
+          echo "== readelf -d -W $lib"
+          echo "$dynamic"
+          tag() { awk -v tag="($1)" '$2 == tag { print $3; exit }' <<<"$dynamic"; }
+          init="$(tag INIT)" array="$(tag INIT_ARRAY)" size="$(tag INIT_ARRAYSZ)"
+          offset="$(LC_ALL=C readelf -S -W "$lib" | awk '{ for (i = 1; i < NF; i++) if ($i == ".init_array") { print $(i + 3); exit } }')"
+          relocations="$(LC_ALL=C readelf -r -W "$lib")"
+          targets=()
+          if [[ -n "$init" ]]; then targets+=("$init DT_INIT"); fi
+          if [[ -n "$array" && -n "$size" && -n "$offset" ]]; then
+            echo "== .init_array at $array, $size bytes: each entry's relocation and target"
+            for ((at = array; at < array + size; at += 8)); do
+              entry="$(printf '%016x' "$at")"
+              grep -F "$entry" <<<"$relocations" || echo "$entry: no relocation"
+              # A RELA relocation's addend, else the address stored in place (RELR).
+              target="$(awk -v entry="$entry" '$1 == entry && $3 ~ /_RELATIVE$/ { print $NF; exit }' <<<"$relocations")"
+              if [[ -z "$target" ]]; then
+                target="$(od -An -t x8 -j "$((16#$offset + at - array))" -N 8 -- "$lib" | tr -d ' ')"
+              fi
+              if [[ "$target" =~ ^[0-9a-f]+$ ]]; then targets+=("0x$target .init_array[$(((at - array) / 8))]"); fi
+            done
+          fi
+          for target in "${targets[@]}"; do
+            read -r address label <<<"$target"
+            echo "== $label: $address"
+            LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
+          done
       - name: Locked workspace doctests
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
       - name: Prepare bounded successful-main debug cache save
@@ -443,12 +651,27 @@ jobs:
   # that exist only in the optional NATIVE_QA_PRIVACY_TEMPLATES secret. GitHub
   # withholds secrets from fork pull requests; those runs, and a repository
   # without the secret, record "unavailable" with a notice instead of a pass.
+  # The matching is brute force (image pixels times template pixels), so eight
+  # shards each make the same plan and scan every eighth image of its list;
+  # image_privacy.py's `slice` refuses any other shard number or job count. A
+  # matrix job's output is the last shard's to set it, so every shard reports a
+  # status that is true of the whole list once all eight succeed, and Quality
+  # gate needs this job's result to be success: a failed, cancelled or timed
+  # out shard fails the gate (docs/ci.md#image-privacy-scan).
   image-privacy:
-    name: Image privacy
+    name: Image privacy · ${{ matrix.shard }}/8
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # One 45-minute job was cancelled before it finished 735 images (quality
+    # run 43781503794); eight shards of 90 minutes give a list sixteen times
+    # that runner time. The templates' size, and so the real cost, is not
+    # known outside the secret.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     outputs:
-      status: ${{ steps.scan.outputs.status || steps.plan.outputs.status }}
+      status: ${{ steps.scan.outputs.status || steps.slice.outputs.status || steps.plan.outputs.status }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -459,21 +682,31 @@ jobs:
         env:
           TEMPLATES_CONFIGURED: ${{ secrets.NATIVE_QA_PRIVACY_TEMPLATES != '' }}
         run: python3 scripts/ci/image_privacy.py plan --list "$RUNNER_TEMP/image-privacy/images" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+      # strategy.job-total is the matrix's real job count, so a matrix edited to
+      # fewer jobs than the script's eight slices is refused instead of leaving
+      # slices unscanned. An empty slice records "scanned" here, without the secret.
+      - name: Take this shard's slice of the list
+        id: slice
+        if: steps.plan.outputs.status == 'scan'
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: python3 scripts/ci/image_privacy.py slice --list "$RUNNER_TEMP/image-privacy/images" --slice "$RUNNER_TEMP/image-privacy/slice" --shard "$SHARD" --shards "$SHARDS" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
       # The Ubuntu archive's signed package; the scan's C engine uses the runner's compiler.
       - name: Install Pillow from the Ubuntu archive
-        if: steps.plan.outputs.status == 'scan'
+        if: steps.slice.outputs.slice == 'scan'
         run: |
           if ! /usr/bin/python3 -c 'import PIL' 2>/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq --no-install-recommends python3-pil
           fi
           /usr/bin/python3 -c 'import PIL; print("Pillow", PIL.__version__)'
-      - name: Template-scan added or changed images
+      - name: Template-scan this shard's added or changed images
         id: scan
-        if: steps.plan.outputs.status == 'scan'
+        if: steps.slice.outputs.slice == 'scan'
         env:
           NATIVE_QA_PRIVACY_TEMPLATES: ${{ secrets.NATIVE_QA_PRIVACY_TEMPLATES }}
-        run: /usr/bin/python3 scripts/ci/image_privacy.py scan --list "$RUNNER_TEMP/image-privacy/images" --directory "$RUNNER_TEMP/image-privacy" --jobs "$(nproc)" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+        run: /usr/bin/python3 scripts/ci/image_privacy.py scan --list "$RUNNER_TEMP/image-privacy/slice" --directory "$RUNNER_TEMP/image-privacy" --jobs "$(nproc)" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
 
   website:
     name: Website
@@ -486,7 +719,7 @@ jobs:
   quality:
     name: Quality gate
     if: always()
-    needs: [changes, agent-tooling, rust-format, rust-debug, rust-release, rust-arch, image-privacy, website]
+    needs: [changes, agent-tooling, rust-format, rust-debug, rust-clippy, rust-release, rust-arch, image-privacy, website]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

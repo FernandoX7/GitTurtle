@@ -1,8 +1,8 @@
 use crate::appearance::{Palette, palette};
 use gitturtle_core::Commit;
 use gpui_kit::{
-    AnyElement, App, Bounds, IntoElement, ParentElement, PathBuilder, Styled, canvas, div, point,
-    px, quad, rgb, size,
+    AnyElement, App, Bounds, ContentMask, IntoElement, ParentElement, PathBuilder, Styled, canvas,
+    div, point, px, quad, rgb, size,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -12,8 +12,21 @@ use std::{
 const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
 const NODE_MARGIN: f32 = 10.;
+/// The selected node's radius, the widest a node is drawn.
+const SELECTED_RADIUS: f32 = 5.;
+/// The narrowest compact lane pitch. Nodes keep their radii at every pitch,
+/// so this leaves a selected node (5 px) 2.2 px clear of a neighbouring
+/// lane's 1.6 px stroke.
+const COMPACT_PITCH_MIN: f32 = 8.;
 pub(super) fn required_width(lane_count: usize, spacing: f32) -> f32 {
     NODE_MARGIN * 2. + lane_count.saturating_sub(1).min(128) as f32 * spacing
+}
+
+/// Narrow History's lane pitch for a chosen `spacing`: half of it, so the
+/// graph keeps its shape in about half the width, and never so tight that a
+/// node touches the next lane's edge.
+pub(super) fn compact_spacing(spacing: f32) -> f32 {
+    (spacing * 0.5).max(COMPACT_PITCH_MIN)
 }
 
 /// Colors change with appearance; worker-prepared lane identities do not.
@@ -263,11 +276,35 @@ fn layout_page<E>(
     Ok((rows, frontier, next_color))
 }
 
+/// How far past its node a cell must reach to hold a lane whole: half a
+/// pitch, where the lane's strokes end, short of the next lane, yet never
+/// less than the selected node's radius, so the node is whole at the
+/// narrowest pitch, nor more than the margin `required_width` leaves after
+/// its last lane, so a graph of that width holds every one of its lanes.
+fn lane_reach(lane_spacing: f32) -> f32 {
+    (lane_spacing / 2.).clamp(SELECTED_RADIUS, NODE_MARGIN)
+}
+
 /// A shared horizontal lane viewport keeps true spacing and continuous edges
 /// across every visible row. Clipping is explicit; lanes are never compressed
-/// into indistinguishable pixels to accommodate offscreen ancestry.
+/// into indistinguishable pixels to accommodate offscreen ancestry. A lane is
+/// held, and drawn, where its node and `lane_reach` past it fit in `width`,
+/// rounding aside, and not at all otherwise.
 pub fn visible_lane_capacity(width: f32, lane_spacing: f32) -> usize {
-    (((width - NODE_MARGIN * 2.).max(0.) / lane_spacing.max(1.)).floor() as usize + 1).max(1)
+    (((width - NODE_MARGIN - lane_reach(lane_spacing)).max(0.) / lane_spacing.max(1.) + 1e-3)
+        .floor() as usize
+        + 1)
+    .max(1)
+}
+
+/// Narrow History's graph within `room`: every one of its `lanes` that
+/// `room` holds whole (`visible_lane_capacity`), and no wider than those
+/// lanes take at their full margin, so the room short of the next lane is
+/// the subject's. Never less than one lane.
+pub(super) fn fitted_width(lanes: usize, room: f32, lane_spacing: f32) -> f32 {
+    let held = visible_lane_capacity(room, lane_spacing).min(lanes.max(1));
+    room.min(required_width(held, lane_spacing))
+        .max(required_width(1, lane_spacing))
 }
 
 fn lane_x(width: f32, lane_offset: usize, lane: usize, lane_spacing: f32) -> f32 {
@@ -293,6 +330,8 @@ pub fn render(
         merge,
         filtered,
     } = style;
+    // The lanes the cell holds whole, from `lane_offset`.
+    let last = lane_offset + visible_lane_capacity(width, lane_spacing) - 1;
     div()
         .w(px(width))
         .h(px(row_height))
@@ -309,40 +348,56 @@ pub fn render(
                     let top = bounds.origin.y;
                     let middle = top + bounds.size.height / 2.;
                     let bottom = top + bounds.size.height;
-                    if !filtered {
-                        // Curves meet adjacent rows at exact lane coordinates with
-                        // vertical tangents, including collapsing lanes.
-                        for edge in row.edges.iter() {
-                            let start =
-                                point(x(edge.from), if edge.from_node { middle } else { top });
-                            let end = point(x(edge.to), bottom);
-                            let distance = end.y - start.y;
-                            let mut path = PathBuilder::stroke(px(1.6));
-                            path.move_to(start);
-                            path.cubic_bezier_to(
-                                end,
-                                point(start.x, start.y + distance * 0.5),
-                                point(end.x, end.y - distance * 0.5),
-                            );
-                            if let Ok(path) = path.build() {
-                                window.paint_path(path, rgb(colors[edge.color % colors.len()]));
+                    // Strokes end half a pitch past the lanes the cell holds,
+                    // short of the next lane's node and line, so a lane the
+                    // cell has no room for shows no cut node or line at its
+                    // edge; an edge to it leaves toward it.
+                    let half = px(lane_spacing / 2.);
+                    let band = Bounds::from_corners(
+                        point(x(lane_offset) - half, top),
+                        point(x(last) + half, bottom),
+                    );
+                    window.with_content_mask(Some(ContentMask { bounds: band }), |window| {
+                        if !filtered {
+                            // Curves meet adjacent rows at exact lane coordinates with
+                            // vertical tangents, including collapsing lanes.
+                            for edge in row.edges.iter() {
+                                let start =
+                                    point(x(edge.from), if edge.from_node { middle } else { top });
+                                let end = point(x(edge.to), bottom);
+                                let distance = end.y - start.y;
+                                let mut path = PathBuilder::stroke(px(1.6));
+                                path.move_to(start);
+                                path.cubic_bezier_to(
+                                    end,
+                                    point(start.x, start.y + distance * 0.5),
+                                    point(end.x, end.y - distance * 0.5),
+                                );
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(path, rgb(colors[edge.color % colors.len()]));
+                                }
+                            }
+                            if row.incoming {
+                                let mut path = PathBuilder::stroke(px(1.6));
+                                path.move_to(point(x(row.lane), top));
+                                path.line_to(point(x(row.lane), middle));
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(path, rgb(colors[row.color % colors.len()]));
+                                }
                             }
                         }
-                        if row.incoming {
-                            let mut path = PathBuilder::stroke(px(1.6));
-                            path.move_to(point(x(row.lane), top));
-                            path.line_to(point(x(row.lane), middle));
-                            if let Ok(path) = path.build() {
-                                window.paint_path(path, rgb(colors[row.color % colors.len()]));
-                            }
-                        }
-                    }
+                    });
                     // Search results are discontinuous history: isolated nodes do
                     // not imply parent relationships across hidden rows.
-                    let center = point(x(if filtered { 0 } else { row.lane }), middle);
+                    let lane = if filtered { 0 } else { row.lane };
+                    // A node only on a lane the cell holds whole.
+                    if !(lane_offset..=last).contains(&lane) {
+                        return;
+                    }
+                    let center = point(x(lane), middle);
                     let color = rgb(colors[row.color % colors.len()]);
                     let radius = if active {
-                        5.
+                        SELECTED_RADIUS
                     } else if merge {
                         4.3
                     } else {
@@ -558,6 +613,20 @@ mod tests {
         assert_eq!(prefix, complete[..prefix.len()]);
     }
 
+    /// Narrow History's pitch is half the chosen spacing, scaled or not, and
+    /// a selected node with its ring never reaches the next lane's stroke.
+    #[test]
+    fn compact_pitch_halves_the_spacing_and_keeps_nodes_clear() {
+        assert_eq!(compact_spacing(20.), 10.);
+        assert_eq!(compact_spacing(32. * 18. / 13.), 16. * 18. / 13.);
+        for spacing in [12., 14., 20., 32., 44.3] {
+            let pitch = compact_spacing(spacing);
+            assert!(pitch <= spacing * 0.5 || pitch == COMPACT_PITCH_MIN);
+            assert!(5. + 0.8 < pitch, "{spacing}: {pitch}");
+            assert!(required_width(8, pitch) < required_width(8, spacing));
+        }
+    }
+
     #[test]
     fn lane_viewport_keeps_spacing_and_can_reach_offscreen_ancestry() {
         assert_eq!(visible_lane_capacity(84., 20.), 4);
@@ -566,6 +635,46 @@ mod tests {
         assert_eq!(lane_x(84., 4, 4, 20.), 10.);
         assert_eq!(lane_x(84., 4, 3, 20.), -10.);
         assert_eq!(lane_x(84., 4, 7, 20.), 70.);
+    }
+
+    #[test]
+    fn a_lane_is_held_where_its_node_and_half_a_pitch_fit() {
+        // Narrow History's compact pitch at 13 and 18 pt.
+        for pitch in [compact_spacing(20.), compact_spacing(20. * 18. / 13.)] {
+            for lanes in 1..=4 {
+                let node = NODE_MARGIN + (lanes - 1) as f32 * pitch;
+                assert_eq!(visible_lane_capacity(node + pitch / 2., pitch), lanes);
+                assert_eq!(
+                    visible_lane_capacity(node + pitch / 2. - 0.1, pitch),
+                    (lanes - 1).max(1),
+                    "{pitch}: {lanes}"
+                );
+            }
+        }
+        // At the narrowest pitch the selected node, not half a pitch, needs
+        // the room; at a wide one, the margin after the last lane suffices.
+        assert_eq!(visible_lane_capacity(NODE_MARGIN + 8. + 4.9, 8.), 1);
+        assert_eq!(visible_lane_capacity(NODE_MARGIN + 8. + 5., 8.), 2);
+        for spacing in [8., 10., 20., 27.7, 44.3] {
+            for lanes in 1..=4 {
+                assert_eq!(
+                    visible_lane_capacity(required_width(lanes, spacing), spacing),
+                    lanes,
+                    "{spacing}: {lanes}"
+                );
+            }
+        }
+        // Narrow History's graph keeps each lane the room holds whole and
+        // leaves the room short of the next to the subject: at 29 px the
+        // second lane's node and half a pitch (25 px) fit and the third's
+        // (35 px) do not.
+        assert_eq!(fitted_width(3, 24., 10.), 20.);
+        assert_eq!(fitted_width(3, 29., 10.), 29.);
+        assert_eq!(fitted_width(3, 33., 10.), 30.);
+        assert_eq!(fitted_width(3, 36., 10.), 36.);
+        assert_eq!(fitted_width(3, 60., 10.), 40.);
+        assert_eq!(fitted_width(3, 12., 10.), 20.);
+        assert_eq!(fitted_width(0, 60., 10.), 20.);
     }
 
     #[test]

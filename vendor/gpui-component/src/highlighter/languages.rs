@@ -542,9 +542,10 @@ impl Language {
                 tree_sitter_typescript::LOCALS_QUERY,
             ),
             #[cfg(feature = "tree-sitter-diff")]
+            // GitTurtle patch: the bundled query names diff roles of its own.
             Self::Diff => (
                 tree_sitter_diff::LANGUAGE,
-                tree_sitter_diff::HIGHLIGHTS_QUERY,
+                include_str!("languages/diff/highlights.scm"),
                 "",
                 "",
             ),

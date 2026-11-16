@@ -321,10 +321,26 @@ pub(super) struct SavedRewrite {
     pub original: String,
 }
 
-pub(super) fn latest_rewrite(root: &Path) -> Result<SavedRewrite> {
+/// What the rewritten-series review says where [`latest_rewrite`] finds no
+/// capture: no rebase started in GitTurtle captured a series for the
+/// worktree. Edit local commits… stands beside it.
+pub(super) const NO_CAPTURE: &str =
+    "No rewritten series for this worktree · A rebase started in Edit local commits captures one";
+
+/// The series the latest rebase started in GitTurtle in the worktree at
+/// `root` captured, if one did.
+pub(super) fn latest_rewrite(root: &Path) -> Result<Option<SavedRewrite>> {
     let entries = read(&store_path()?)?;
-    let draft = entries.values().filter(|draft| draft.key.worktree == path_bytes(root) && draft.key.kind == Kind::RewriteSeries).max_by_key(|draft| draft.updated).context("No captured interactive rebase is available for this worktree. Start a rebase in GitTurtle to capture its original series before rewriting")?;
-    Ok(serde_json::from_str(&draft.text)?)
+    let Some(draft) = entries
+        .values()
+        .filter(|draft| {
+            draft.key.worktree == path_bytes(root) && draft.key.kind == Kind::RewriteSeries
+        })
+        .max_by_key(|draft| draft.updated)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_str(&draft.text)?))
 }
 
 impl GitTurtle {
@@ -494,12 +510,13 @@ impl GitTurtle {
             scroll: UniformListScrollHandle::new(),
         });
         self.recovery_drafts.browser = Some(form.downgrade());
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let close = form.clone();
             let cancel = form.clone();
             dialog
                 .title("Saved recovery drafts")
-                .width(px(720.))
+                .width(appearance::dialog_width(px(720.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("close-saved-recovery", "Close", "", false).on_click(
@@ -544,6 +561,10 @@ impl RecoveryList {
         let copy = key.clone();
         let retry = key.clone();
         let discard = key.clone();
+        // Keyed by the draft, so the row that takes this index after a
+        // discard is at rest.
+        let mark = copy_feedback::Mark::new(("copy-recovery", index), key);
+        let copy_mark = mark.clone();
         div()
             .h(appearance::ui_size(110.))
             .p_3()
@@ -562,7 +583,11 @@ impl RecoveryList {
                 div()
                     .text_size(appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
-                    .child(format!("{bytes} bytes · source {}", &key.source[..12])),
+                    .child(format!(
+                        "{} · source {}",
+                        crate::counted(bytes, "byte", "bytes"),
+                        &key.source[..12]
+                    )),
             )
             .child(
                 div()
@@ -570,8 +595,8 @@ impl RecoveryList {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        button(("copy-recovery", index), "Copy exact text", "", false).on_click(
-                            cx.listener(move |this, _, _, cx| {
+                        copy_feedback::copy_button(mark, "Copy exact text", "", cx).on_click(
+                            cx.listener(move |this, _, window, cx| {
                                 if let Some(owner) = this.owner.upgrade() {
                                     let text = owner
                                         .read(cx)
@@ -580,7 +605,13 @@ impl RecoveryList {
                                         .get(&copy)
                                         .map(|draft| draft.text.clone());
                                     if let Some(text) = text {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                        copy_feedback::copy(
+                                            window,
+                                            cx,
+                                            Some(copy_mark.clone()),
+                                            "draft text",
+                                            text,
+                                        );
                                     }
                                 }
                             }),
@@ -635,26 +666,29 @@ impl Render for RecoveryList {
         let height = (appearance::ui_size(110.) * count.min(5) as f32 + px(2.))
             .max(px(120.))
             .min(available);
-        div().flex().flex_col().gap_3().child("Draft text is retained until you discard it, including completed, aborted, moved or removed worktrees. Copying never stages or continues an operation. Open the matching conflict or rebase message to check whether restoration is safe.")
+        // The body scrolls inside the window, as Activity's does: in a
+        // narrow window the explanation wraps to more lines than a short
+        // one has room for.
+        let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
+        crate::native_accessibility::clips_children(div().id("recovery-drafts-content").max_h(body_height).overflow_y_scroll().flex().flex_col().gap_3().child("Draft text is retained until you discard it, including completed, aborted, moved or removed worktrees. Copying never stages or continues an operation. Open the matching conflict or rebase message to check whether restoration is safe.")
             .child(div().text_color(rgb(p.muted)).child(status))
             .child(div().h(height).border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
                 .when(count == 0, |list| list.child(empty("No saved recovery drafts", "Conflict results and rebase messages appear here after you edit them.")))
-                .when(count > 0, |list| list.child(uniform_list("saved-recovery-list", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>() )).size_full().track_scroll(&self.scroll))))
+                .when(count > 0, |list| list.child(uniform_list("saved-recovery-list", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>() )).size_full().track_scroll(&self.scroll)))))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preferences::test_directories::TestDirectory;
     use core::prelude::v1::test;
-    fn fixture(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "gitturtle-recovery-{}-{name}-{}",
-            std::process::id(),
-            now()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path.join("drafts.json")
+    /// A store path in a new test directory, which goes when the directory
+    /// drops, a failed assertion's unwinding included.
+    fn fixture(name: &str) -> (TestDirectory, PathBuf) {
+        let directory = TestDirectory::new(&format!("recovery-{name}"));
+        let path = directory.path().join("drafts.json");
+        (directory, path)
     }
     fn key(source: char) -> Key {
         Key::conflict(
@@ -672,7 +706,7 @@ mod tests {
     }
     #[test]
     fn restart_preserves_exact_bytes_and_refuses_stale_identity() {
-        let path = fixture("restart");
+        let (_directory, path) = fixture("restart");
         let key = key('a');
         let text = " Résolution 🐢\r\n\r\n# retain whitespace  \nno trailing newline";
         save_at(
@@ -710,7 +744,6 @@ mod tests {
             "A saved conflict must not confirm an untouched rebase message"
         );
         assert!(state.status().contains("saved locally"));
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -739,7 +772,7 @@ mod tests {
     }
     #[test]
     fn failed_store_is_preserved_and_other_worktrees_survive_updates() {
-        let path = fixture("merge");
+        let (_directory, path) = fixture("merge");
         let first = key('a');
         let second = Key {
             worktree: path_bytes(Path::new("/other/worktree")),
@@ -766,7 +799,6 @@ mod tests {
             std::fs::read(&path).unwrap(),
             b"corrupt but recoverable storage"
         );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
     #[cfg(unix)]
     #[test]
@@ -804,7 +836,7 @@ mod tests {
 
     #[test]
     fn forced_termination_after_saved_keeps_exact_recoverable_text() {
-        let path = fixture("forced-termination");
+        let (directory, path) = fixture("forced-termination");
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -812,6 +844,9 @@ mod tests {
                 "--nocapture",
             ])
             .env("GITTURTLE_RECOVERY_CRASH_FIXTURE", &path)
+            // The child's own test directories, which its killed process
+            // cannot remove at exit, go with this fixture.
+            .env("TMPDIR", directory.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -833,7 +868,6 @@ mod tests {
             read(&path).unwrap().get(&key('a')).unwrap().text.as_bytes(),
             "Forced termination 🐢\r\n  exact text\n".as_bytes()
         );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[gpui::test]

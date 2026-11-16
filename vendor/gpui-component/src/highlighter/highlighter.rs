@@ -523,8 +523,10 @@ impl SyntaxHighlighter {
     /// When `timeout` is `Some`, aborts if parsing exceeds the given duration
     /// and returns `false`. On timeout the old tree is preserved so highlighting
     /// still works with stale data, but `self.text` is updated so that the
-    /// caller can send the current text to a background parse.
-    /// When `timeout` is `None`, parsing runs to completion and always returns `true`.
+    /// caller can send the current text to a background parse. Each injected
+    /// layer then also stops after `INJECTION_PARSE_TIMEOUT` and is left out.
+    /// When `timeout` is `None`, parsing runs to completion, injected layers
+    /// included, and always returns `true`.
     pub fn update(
         &mut self,
         edit: Option<InputEdit>,
@@ -595,7 +597,7 @@ impl SyntaxHighlighter {
         let new_tree = new_tree.unwrap();
         self.tree = Some(new_tree.clone());
         self.text = text.clone();
-        self.parse_injection_layers(&new_tree);
+        self.parse_injection_layers(&new_tree, timeout.map(|_| INJECTION_PARSE_TIMEOUT));
         true
     }
 
@@ -622,11 +624,22 @@ impl SyntaxHighlighter {
 
     /// Compute injection layers from a freshly-parsed main tree.
     /// This is pure computation with no side effects and is safe to run on a
-    /// background thread.
+    /// background thread. Each layer stops after `INJECTION_PARSE_TIMEOUT`.
     pub(crate) fn compute_injection_layers(
         data: InjectionParseData,
         tree: &Tree,
         text: &Rope,
+    ) -> Vec<InjectionLayer> {
+        Self::injection_layers(data, tree, text, Some(INJECTION_PARSE_TIMEOUT))
+    }
+
+    /// Injection layers for `tree`. A layer whose parse runs past `deadline`
+    /// is left out; without a deadline every layer parses to completion.
+    fn injection_layers(
+        data: InjectionParseData,
+        tree: &Tree,
+        text: &Rope,
+        deadline: Option<Duration>,
     ) -> Vec<InjectionLayer> {
         struct CombinedRanges {
             ranges: Vec<tree_sitter::Range>,
@@ -803,6 +816,7 @@ impl SyntaxHighlighter {
                     ranges,
                     old_tree,
                     text,
+                    deadline,
                 ) {
                     new_layers.push(layer);
                 }
@@ -825,9 +839,14 @@ impl SyntaxHighlighter {
             let Some(highlight_query) = highlight_queries.get(&language_name).cloned() else {
                 continue;
             };
-            if let Some(layer) =
-                Self::parse_injection_layer(&language_name, highlight_query, ranges, old_tree, text)
-            {
+            if let Some(layer) = Self::parse_injection_layer(
+                &language_name,
+                highlight_query,
+                ranges,
+                old_tree,
+                text,
+                deadline,
+            ) {
                 new_layers.push(layer);
             }
         }
@@ -835,7 +854,8 @@ impl SyntaxHighlighter {
         new_layers
     }
 
-    /// Parse one injection layer over the given included ranges.
+    /// Parse one injection layer over the given included ranges, giving up
+    /// once it runs past `deadline`.
     /// Reuses the previous tree only when the language and byte ranges still match.
     fn parse_injection_layer(
         language_name: &SharedString,
@@ -843,6 +863,7 @@ impl SyntaxHighlighter {
         ranges: Vec<tree_sitter::Range>,
         old_tree: Option<&Tree>,
         text: &Rope,
+        deadline: Option<Duration>,
     ) -> Option<InjectionLayer> {
         fn bounding_byte_range(ranges: &[tree_sitter::Range]) -> Option<Range<usize>> {
             let start = ranges.iter().map(|r| r.start_byte).min()?;
@@ -856,7 +877,7 @@ impl SyntaxHighlighter {
         let parse_start = Instant::now();
         let mut timed_out = false;
         let mut progress = |_: &tree_sitter::ParseState| -> ControlFlow<()> {
-            if parse_start.elapsed() > INJECTION_PARSE_TIMEOUT {
+            if deadline.is_some_and(|deadline| parse_start.elapsed() > deadline) {
                 timed_out = true;
                 ControlFlow::Break(())
             } else {
@@ -912,12 +933,12 @@ impl SyntaxHighlighter {
 
     /// Parse injection layers after the main tree is updated.
     /// pattern: parse once in update, query many times in render.
-    fn parse_injection_layers(&mut self, tree: &Tree) {
+    fn parse_injection_layers(&mut self, tree: &Tree, deadline: Option<Duration>) {
         let Some(data) = self.injection_parse_data() else {
             self.injection_layers.clear();
             return;
         };
-        self.injection_layers = Self::compute_injection_layers(data, tree, &self.text.clone());
+        self.injection_layers = Self::injection_layers(data, tree, &self.text.clone(), deadline);
     }
 
     /// Match the visible ranges of nodes in the Tree for highlighting.

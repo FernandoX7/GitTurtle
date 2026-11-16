@@ -28,6 +28,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.undo_manager.break_transaction_coalescing();
         self.selected_range = (range.start..range.end).into();
         self.selected_word_range = Some(self.selected_range);
+        // GitTurtle patch: a selection pauses the caret, as
+        // `select_to_with_affinity` does.
+        self.pause_blink_cursor(cx);
         cx.notify()
     }
 
@@ -39,6 +42,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.undo_manager.break_transaction_coalescing();
         self.selected_range = (range.start..range.end).into();
         self.selected_word_range = None;
+        // GitTurtle patch: a selection pauses the caret, as
+        // `select_to_with_affinity` does.
+        self.pause_blink_cursor(cx);
         cx.notify()
     }
 }

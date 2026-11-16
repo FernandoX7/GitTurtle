@@ -1,5 +1,6 @@
 //! Worker-prepared CommonMark/GFM blocks, painted by a bounded native list.
 //! Source remains the only text used for copying and staging.
+use crate::native_accessibility::LiveRegion as _;
 use crate::{appearance::CodeFont, *};
 use markdown::mdast::Node;
 use std::ops::Range;
@@ -8,6 +9,12 @@ const MAX_SOURCE: usize = 256 * 1024;
 const MAX_NODES: usize = 16_384;
 const MAX_BLOCKS: usize = 2048;
 const MAX_BLOCK_BYTES: usize = 16 * 1024;
+/// The longer edge, in pixels, a document's local images are decoded to.
+const IMAGE_EDGE: u32 = 1000;
+/// The decoded RGBA, in bytes, a document's local images may hold together.
+const PIXEL_BUDGET: usize = 16 * 1024 * 1024;
+/// What an image says in its place once the others have used the budget.
+const OVER_BUDGET: &str = "Markdown images exceed the 16 MiB decoded-pixel budget";
 
 #[derive(Clone, Copy, Default)]
 struct Style {
@@ -50,6 +57,9 @@ pub struct Document {
     repository: Option<GitRepository>,
     source: Arc<str>,
     navigation: std::sync::Mutex<Option<gitturtle_core::HistoryCancellation>>,
+    /// What this side says for itself if it stays its literal Git LFS
+    /// pointer, as a side kept literal says in the place of diagrams.
+    pub(super) literal: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Origins {
@@ -89,12 +99,67 @@ impl Document {
             repository: None,
             source: Arc::from(""),
             navigation: std::sync::Mutex::new(None),
+            literal: None,
             blocks: vec![Block {
                 kind: Kind::Notice(message.into()),
                 indent: 0,
                 heading: 0,
                 line: 1,
             }],
+        }
+    }
+    /// What this side is called in its heading and accessible names: a side
+    /// that stays its pointer is not Markdown.
+    fn kind(&self) -> &'static str {
+        if self.literal.is_some() {
+            rich_preview::Literal::LfsPointer.format()
+        } else {
+            "Markdown"
+        }
+    }
+    /// The caption over a code block in `language` at source `line`: a
+    /// pointer's stored text is the whole file, not a block at a line of it.
+    fn code_caption(&self, language: &str, line: usize) -> String {
+        if self.literal.is_some() {
+            language.to_owned()
+        } else {
+            format!("{language} · line {line}")
+        }
+    }
+    /// The accessible value of the code block [`Self::code_caption`] heads.
+    fn code_value(&self, language: &str, line: usize, source: &str) -> String {
+        if self.literal.is_some() {
+            format!("{language}.\n{source}")
+        } else {
+            format!("{language} code, source line {line}.\n{source}")
+        }
+    }
+    /// A side that is a Git LFS pointer: its exact stored text, under the
+    /// words saying why it stays literal, never parsed as Markdown.
+    fn lfs_pointer(
+        name: &std::path::Path,
+        source: &str,
+        failure: Option<gitturtle_core::LfsObjectFailure>,
+    ) -> Self {
+        let reason = rich_preview::Literal::LfsPointer.reason(failure);
+        let block = |kind| Block {
+            kind,
+            indent: 0,
+            heading: 0,
+            line: 1,
+        };
+        Self {
+            name: name.into(),
+            present: true,
+            origin: None,
+            repository: None,
+            source: Arc::from(source),
+            navigation: std::sync::Mutex::new(None),
+            literal: Some(reason.clone()),
+            blocks: vec![
+                block(Kind::Notice(reason)),
+                block(Kind::Code("Git LFS pointer".into(), source.to_owned())),
+            ],
         }
     }
     fn bytes(&self) -> usize {
@@ -179,7 +244,16 @@ impl Comparison {
             side.page_kind = "Diagram";
             side.metadata.format = "Mermaid diagrams".into();
             if document.present {
-                side.captured = Some(Arc::from(document.source.as_bytes()));
+                if let Some(reason) = &document.literal {
+                    // A literal side's text is not captured: capturing reads
+                    // it to decide what another application could open it as.
+                    side.literal = Some(rich_preview::Literal::LfsPointer);
+                    side.metadata.format = rich_preview::Literal::LfsPointer.format().into();
+                    side.metadata.details.push(reason.clone());
+                } else {
+                    // Called on the worker; text needs no cancellation point.
+                    let _ = side.capture(Arc::from(document.source.as_bytes()), &|| Ok(()));
+                }
                 side.metadata.source = Some(document.source.clone());
             }
             side.pages = document
@@ -200,7 +274,9 @@ impl Comparison {
                 })
                 .collect();
             side.page_count = side.pages.len();
-            side.metadata.details.push("Up to four bounded Mermaid blocks; Rendered includes surrounding prose and exact Source retains every block.".into());
+            if document.literal.is_none() {
+                side.metadata.details.push("Up to four bounded Mermaid blocks; Rendered includes surrounding prose and exact Source retains every block.".into());
+            }
             Arc::new(side)
         };
         let old = side(&self.old);
@@ -225,6 +301,8 @@ pub fn prepare(
     old: &str,
     new: &str,
     file: &FileChange,
+    lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    stored_pointers: [bool; 2],
     check: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Comparison>> {
     if ![file.old_path.as_deref(), file.new_path.as_deref()]
@@ -232,26 +310,52 @@ pub fn prepare(
         .flatten()
         .any(is_markdown)
         || [file.old_mode.as_str(), file.new_mode.as_str()].contains(&"120000")
-        || [old, new]
-            .iter()
-            .any(|source| gitturtle_preview::detect_lfs_pointer(source.as_bytes()).is_some())
     {
+        return Ok(None);
+    }
+    // A pointer side stays literal and only that side, as Diagrams keeps one
+    // (`rich_preview::Literal`); with no regular side to render there is no
+    // Rendered view.
+    let old_present = file.old_path.is_some();
+    let new_present = file.new_path.is_some();
+    let old_pointer = old_present && rich_preview::Literal::of(&file.old_mode, old).is_some();
+    let new_pointer = new_present && rich_preview::Literal::of(&file.new_mode, new).is_some();
+    if !(old_present && !old_pointer) && !(new_present && !new_pointer) {
+        return Ok(None);
+    }
+    // Stored as a pointer on both sides, with one still a pointer in the
+    // text shown: `old` and `new` are the text a local object resolved to,
+    // so what is stored is passed in. With both resolved it is Markdown.
+    if stored_pointers == [true; 2] && (old_pointer || new_pointer) {
         return Ok(None);
     }
     let old_name = file.old_path.as_deref().unwrap_or_else(|| file.path());
     let new_name = file.new_path.as_deref().unwrap_or_else(|| file.path());
+    let side = |source: &str,
+                name: &std::path::Path,
+                present: bool,
+                pointer: bool,
+                failure: Option<gitturtle_core::LfsObjectFailure>| {
+        if pointer {
+            Ok(Document::lfs_pointer(name, source, failure))
+        } else {
+            prepare_document(source, name, present, &check)
+        }
+    };
     Ok(Some(Comparison {
-        old: Arc::new(prepare_document(
+        old: Arc::new(side(
             old,
             old_name,
-            file.old_path.is_some(),
-            &check,
+            old_present,
+            old_pointer,
+            lfs_failed[0],
         )?),
-        new: Arc::new(prepare_document(
+        new: Arc::new(side(
             new,
             new_name,
-            file.new_path.is_some(),
-            &check,
+            new_present,
+            new_pointer,
+            lfs_failed[1],
         )?),
     }))
 }
@@ -328,6 +432,7 @@ fn prepare_document(
         repository: None,
         source: Arc::from(source),
         navigation: std::sync::Mutex::new(None),
+        literal: None,
     })
 }
 
@@ -411,7 +516,10 @@ pub fn capture_assets(
             cancellation,
         );
         check()?;
-        let mut pixel_budget = 16 * 1024 * 1024usize;
+        let mut pixel_budget = PIXEL_BUDGET;
+        // Once one of this document's AVIF or JPEG 2000 images times out or
+        // stops its helper, the rest are not sent to one (requirement 17).
+        let mut images = crate::image_helper::DocumentImages::default();
         match results {
             Ok(results) => {
                 for (index, result) in indices.into_iter().zip(results) {
@@ -424,21 +532,22 @@ pub fn capture_assets(
                     if let Some(asset) = result.asset {
                         let decoded = (|| {
                             check()?;
-                            anyhow::ensure!(
-                                pixel_budget > 0,
-                                "Markdown images exceed the 16 MiB decoded-pixel budget"
-                            );
-                            let decoded = gitturtle_preview::decode_image(
-                                &asset.bytes,
-                                &asset.path.to_string_lossy(),
-                                1000,
-                            )?;
+                            let decoded = decode_within(pixel_budget, &asset.bytes, || {
+                                #[cfg(test)]
+                                DECODED.with_borrow_mut(|decoded| {
+                                    decoded.push(asset.path.to_string_lossy().into_owned());
+                                });
+                                // The document's own check kills a helper as
+                                // soon as the document is closed or replaced.
+                                images.decode(
+                                    &asset.bytes,
+                                    &asset.path.to_string_lossy(),
+                                    IMAGE_EDGE,
+                                    &check,
+                                )
+                            })?;
                             check()?;
                             let bytes = decoded.rgba.len();
-                            anyhow::ensure!(
-                                bytes <= pixel_budget,
-                                "Markdown images exceed the 16 MiB decoded-pixel budget"
-                            );
                             let render = worker::render_image(&decoded)?;
                             check()?;
                             pixel_budget -= bytes;
@@ -477,6 +586,39 @@ pub fn capture_assets(
         }
     }
     check()
+}
+
+/// One of a document's local images, `bytes`, decoded by `decode` within
+/// the `remaining` bytes of its decoded-pixel budget. The size the image's
+/// header declares (`gitturtle_preview::declared_dimensions`), at the edge
+/// it is decoded to, bounds the work before it starts: an image that cannot
+/// fit is refused without being decoded, where QA-93's document of 32 JPEG
+/// 2000 images spent about 8 s decoding the images it then refused. A
+/// header can lie, so the decoded pixels are checked again; an image whose
+/// header is not read here is decoded as before.
+fn decode_within(
+    remaining: usize,
+    bytes: &[u8],
+    decode: impl FnOnce() -> anyhow::Result<gitturtle_preview::ImagePreview>,
+) -> anyhow::Result<gitturtle_preview::ImagePreview> {
+    anyhow::ensure!(remaining > 0, OVER_BUDGET);
+    if let Some((width, height)) = gitturtle_preview::declared_dimensions(bytes) {
+        let (width, height) = gitturtle_preview::scaled_dimensions(width, height, IMAGE_EDGE);
+        anyhow::ensure!(
+            u64::from(width) * u64::from(height) * 4 <= remaining as u64,
+            OVER_BUDGET
+        );
+    }
+    let decoded = decode()?;
+    anyhow::ensure!(decoded.rgba.len() <= remaining, OVER_BUDGET);
+    Ok(decoded)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The local images this thread's captures sent to their decoder, by
+    /// path, in order.
+    static DECODED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 struct Builder<'a, F> {
@@ -540,15 +682,19 @@ impl<F: Fn() -> anyhow::Result<()>> Builder<'_, F> {
             }
             Node::Code(code) => {
                 let language = code.lang.clone().unwrap_or_default();
-                if language.eq_ignore_ascii_case("mermaid") {
+                // A blank fence is no diagram: it takes no slot and, past the
+                // last slot, says no limit.
+                if language.eq_ignore_ascii_case("mermaid") && !code.value.trim().is_empty() {
                     if self.diagrams < gitturtle_preview::mermaid::MAX_DIAGRAMS {
-                        self.diagrams += 1;
                         if let Some(document) = gitturtle_preview::mermaid::preview(
                             &code.value,
                             std::path::Path::new("diagram.mmd"),
                             1200,
                             self.check,
                         )? {
+                            // A render error still takes a slot, which is
+                            // what bounds the work.
+                            self.diagrams += 1;
                             for diagram in document.diagrams {
                                 let (render, width, height) = if let Some(image) = diagram.image {
                                     (
@@ -762,6 +908,14 @@ pub struct View {
     link_task: Option<Task<()>>,
     depth: usize,
     notice: Option<String>,
+    /// The window's keyboard ring, which the view draws on its own edge
+    /// while it holds focus; none where nothing gave it one.
+    ring: Option<crate::focus_ring::FocusRing>,
+    /// Whether each side's blocks had room below its heading as the last
+    /// frame laid them out, where the active side's ring lies; a heading
+    /// wrapped past the pane, as at 18 pt in a 461 × 490 half tile, leaves
+    /// them none, and the ring then lies on the whole side.
+    blocks_room: std::rc::Rc<std::cell::Cell<[bool; 2]>>,
 }
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -769,6 +923,24 @@ pub struct Bookmark {
     linked: bool,
 }
 impl View {
+    /// The view drawing `ring`, the window's keyboard ring, on its edge
+    /// while it holds focus.
+    pub(crate) fn with_ring(mut self, ring: crate::focus_ring::FocusRing) -> Self {
+        self.ring = Some(ring);
+        self
+    }
+    /// The rendered text's focus handle, its own stop, which a change of
+    /// Quick source's mode moves focus from to what the new mode shows
+    /// (`GitTurtle::quick_source_text_pane_is_focused`).
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+    /// Whether the view draws its keyboard ring this frame.
+    pub(crate) fn ring_shows(&self) -> bool {
+        self.ring
+            .as_ref()
+            .is_some_and(|ring| ring.shows(&self.focus))
+    }
     pub fn bookmark(&self) -> Bookmark {
         Bookmark {
             positions: self.lists.each_ref().map(|list| {
@@ -882,6 +1054,7 @@ impl View {
         });
         self.notice = Some("Opening captured local document…".into());
         let depth = self.depth + 1;
+        let ring = self.ring.clone();
         self.link_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| {
                 Err(anyhow::anyhow!(
@@ -896,7 +1069,7 @@ impl View {
                 match result {
                     Ok((path, source, markdown)) => {
                         this.notice = None;
-                        open_local_document(path, source, markdown, depth, window, cx);
+                        open_local_document(path, source, markdown, depth, ring, window, cx);
                     }
                     Err(error) => this.notice = Some(format!("{error:#}")),
                 }
@@ -905,9 +1078,35 @@ impl View {
         }));
         cx.notify();
     }
+    /// Whether the two sides' blocks can scroll together: a side that stays
+    /// its pointer holds no blocks that correspond to the other's.
+    fn linkable(&self) -> bool {
+        self.comparison.old.literal.is_none() && self.comparison.new.literal.is_none()
+    }
+    /// Moves the other side to where the wheel took `side`, where the two
+    /// are linked. A restored bookmark can say linked beside a pointer, with
+    /// no control left to turn it off, so it is checked here as in a jump.
+    fn follow_scroll(&mut self, side: usize, cx: &mut Context<Self>) {
+        // The toolkit event's visible_range describes the position before
+        // this wheel delta. Read its committed offset after the list
+        // releases its mutable scroll-state borrow.
+        if self.linked && self.linkable() {
+            let offset = self.lists[side].logical_scroll_top();
+            let count = if side == 0 {
+                self.comparison.new.blocks.len()
+            } else {
+                self.comparison.old.blocks.len()
+            };
+            self.lists[1 - side].scroll_to(ListOffset {
+                item_ix: offset.item_ix.min(count.saturating_sub(1)),
+                offset_in_item: offset.offset_in_item,
+            });
+            cx.notify();
+        }
+    }
     fn jump(&mut self, side: usize, index: usize) {
         for target in 0..2 {
-            if target == side || self.linked {
+            if target == side || (self.linked && self.linkable()) {
                 let count = if target == 0 {
                     self.comparison.old.blocks.len()
                 } else {
@@ -931,24 +1130,7 @@ impl View {
                 cx.defer({
                     let owner = owner.clone();
                     move |cx| {
-                        let _ = owner.update(cx, |this, cx| {
-                            // The toolkit event's visible_range describes the position
-                            // before this wheel delta. Read its committed offset after
-                            // the list releases its mutable scroll-state borrow.
-                            if this.linked {
-                                let offset = this.lists[side].logical_scroll_top();
-                                let count = if side == 0 {
-                                    this.comparison.new.blocks.len()
-                                } else {
-                                    this.comparison.old.blocks.len()
-                                };
-                                this.lists[1 - side].scroll_to(ListOffset {
-                                    item_ix: offset.item_ix.min(count.saturating_sub(1)),
-                                    offset_in_item: offset.offset_in_item,
-                                });
-                                cx.notify();
-                            }
-                        });
+                        let _ = owner.update(cx, |this, cx| this.follow_scroll(side, cx));
                     }
                 });
             });
@@ -957,12 +1139,16 @@ impl View {
             comparison,
             lists,
             quick,
-            focus: cx.focus_handle(),
+            // The rendered text is a Tab stop: GPUI ignores the `tab_stop`
+            // of the div that tracks this handle, so the handle carries it.
+            focus: cx.focus_handle().tab_stop(true),
             active_side: 1,
             linked: false,
             link_task: None,
             depth: 0,
             notice: None,
+            ring: None,
+            blocks_room: std::rc::Rc::new(std::cell::Cell::new([true; 2])),
         }
     }
     fn block(&mut self, side: usize, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -989,6 +1175,12 @@ impl View {
                 },
                 index,
             ))
+            .debug_selector(move || {
+                format!(
+                    "markdown-{}-block-{index}",
+                    if side == 0 { "before" } else { "after" }
+                )
+            })
             .w_full()
             .min_w_0()
             .px_3()
@@ -1033,10 +1225,15 @@ impl View {
                     } else {
                         Role::Label
                     })
-                    .aria_label(prose.text.clone())
                     .child(StyledText::new(prose.text.clone()).with_highlights(spans));
+                // A heading is named by its label, a label by its value, as
+                // AccessKit's adapters read each.
                 if block.heading > 0 {
-                    text = text.aria_level(block.heading as usize);
+                    text = text
+                        .aria_label(prose.text.clone())
+                        .aria_level(block.heading as usize);
+                } else {
+                    text = text.aria_value(prose.text.clone());
                 }
                 row = row.child(text);
                 if !prose.links.is_empty() {
@@ -1068,23 +1265,20 @@ impl View {
             Kind::Code(language, source) => {
                 row = row
                     .role(Role::Label)
-                    .aria_label(format!(
-                        "{language} code, source line {}.\n{source}",
-                        block.line
-                    ))
+                    .aria_value(document.code_value(language, block.line, source))
                     .bg(rgb(colors.panel))
                     .child(
                         div()
                             .text_size(appearance::ui_text(10.))
                             .text_color(rgb(colors.muted))
-                            .child(format!("{language} · line {}", block.line)),
+                            .child(document.code_caption(language, block.line)),
                     )
                     .child(code_block(index, source, cx));
             }
             Kind::Table(cells, header) => {
                 row = row
                     .role(Role::Label)
-                    .aria_label(format!(
+                    .aria_value(format!(
                         "Table {}, {}",
                         if *header { "column headings" } else { "row" },
                         cells.join("; ")
@@ -1169,13 +1363,13 @@ impl View {
             Kind::Rule => {
                 row = row
                     .role(Role::Label)
-                    .aria_label("Section break")
+                    .aria_value("Section break")
                     .child(div().w_full().h(px(1.)).bg(rgb(colors.border)));
             }
             Kind::Notice(message) => {
                 row = row
                     .role(Role::Label)
-                    .aria_label(message.clone())
+                    .aria_value(message.clone())
                     .text_color(rgb(colors.muted))
                     .child(message.clone());
             }
@@ -1228,26 +1422,34 @@ fn open_local_document(
     source: Arc<str>,
     markdown: Option<Arc<Comparison>>,
     depth: usize,
+    ring: Option<crate::focus_ring::FocusRing>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<LocalDocument> {
     let view = cx.new(|cx| LocalDocument {
+        depth,
         source,
         editor: None,
         rendered: markdown.map(|markdown| {
             cx.new(|cx| {
                 let mut view = View::new(markdown, true, cx);
                 view.depth = depth;
+                view.ring = ring;
                 view
             })
         }),
         show_rendered: true,
     });
     let document = view.clone();
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
         dialog
-            .title(format!("Captured local document · {}", path.display()))
-            .width(px(900.))
+            .title(local_document_title(
+                &path.display().to_string(),
+                window,
+                cx,
+            ))
+            .width(appearance::dialog_width(LOCAL_DOCUMENT_WIDTH, window))
+            .max_h(appearance::dialog_max_height(window))
             .child(document.clone())
             .footer(gpui_kit::component::dialog::DialogFooter::new().child(
                 button("close-local-markdown", "Back to document", "", false).on_click(
@@ -1264,13 +1466,104 @@ fn open_local_document(
     });
     view
 }
+/// Opens a captured local document's dialog for `path`, as a link in a
+/// rendered Markdown opens one, `depth` documents deep, its Markdown rendered
+/// and drawing the window's keyboard `ring`, and hands back the rendered
+/// text's focus handle.
+#[cfg(test)]
+pub(crate) fn open_local_markdown(
+    path: &str,
+    depth: usize,
+    ring: crate::focus_ring::FocusRing,
+    window: &mut Window,
+    cx: &mut App,
+) -> FocusHandle {
+    let source: Arc<str> = "# Companion\n\nCaptured target.\n".into();
+    let path = PathBuf::from(path);
+    let markdown = Arc::new(Comparison {
+        old: Arc::new(Document::notice(&path, false, "No file on this side")),
+        new: Arc::new(prepare_document(&source, &path, true, &|| Ok(())).unwrap()),
+    });
+    let document = open_local_document(path, source, Some(markdown), depth, Some(ring), window, cx);
+    let rendered = document.read(cx).rendered.clone().expect("rendered");
+    rendered.read(cx).focus.clone()
+}
+/// The widest the captured local document's dialog is.
+const LOCAL_DOCUMENT_WIDTH: Pixels = px(900.);
+/// What the kit takes off a nested dialog's height cap for each layer under
+/// it (`LAYER_OFFSET` in `gpui_kit::component::dialog`).
+const DIALOG_LAYER_OFFSET: Pixels = px(16.);
+/// The words before the path in the captured local document's title.
+const LOCAL_DOCUMENT_TITLE: &str = "Captured local document · ";
+
+/// The title's line in `available`, as `width` measures text: its words
+/// whole and the path elided in the room they leave, a pixel of it spare for
+/// layout's rounding, as the GitHub panel's path line is
+/// (`views::location_tail`).
+fn local_document_title_line(
+    path: &str,
+    available: Pixels,
+    width: impl Fn(&str) -> Pixels + Copy,
+) -> String {
+    let room = (available - px(1.) - width(LOCAL_DOCUMENT_TITLE)).max(Pixels::ZERO);
+    let path = crate::views::location_tail(path, room, width);
+    format!("{LOCAL_DOCUMENT_TITLE}{path}")
+}
+
+/// The dialog's title on one line, so a long path takes no height from the
+/// document below it (DESIGN.md's responsive order: content stays whole
+/// first). Its tooltip and its accessible name, which names the dialog, keep
+/// the whole path. Elided to fit, it needs no clip, which at the title's
+/// line height of one would cut its descenders.
+fn local_document_title(path: &str, window: &Window, cx: &App) -> Stateful<Div> {
+    let whole: SharedString = format!("{LOCAL_DOCUMENT_TITLE}{path}").into();
+    let tooltip = whole.clone();
+    let side = gpui_kit::component::dialog::dialog_side_padding(window, cx);
+    let available = appearance::dialog_width(LOCAL_DOCUMENT_WIDTH, window) - px(2.) - side * 2.;
+    let line = local_document_title_line(path, available, |text| {
+        crate::views::laid_out_text_width(
+            crate::views::shaped_width(text, window.rem_size(), FontWeight::SEMIBOLD, window),
+            window,
+        )
+    });
+    div()
+        .id("local-document-title")
+        .debug_selector(|| "local-document-title".into())
+        .role(Role::Label)
+        .aria_label(whole.clone())
+        .aria_value(whole)
+        .whitespace_nowrap()
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(line)
+}
+
 struct LocalDocument {
+    /// How many local documents deep this one is, the first being 1: each
+    /// one under it is a dialog layer the kit takes off its height cap.
+    depth: usize,
     source: Arc<str>,
     editor: Option<Entity<EditorState>>,
     rendered: Option<Entity<View>>,
     show_rendered: bool,
 }
 impl LocalDocument {
+    /// The height the document takes in `window`: 65% of the window's, at
+    /// most 700 px, and at most what this dialog's height cap, less the
+    /// kit's offset for each layer under it, leaves below its chrome, as the
+    /// GitHub panel's body is capped (`github_view::body_max_height`).
+    /// Taller than that, the dialog's body cut the view and the ring on its
+    /// edge as the dialog opened, at 13 pt in a 461 × 490 window. It has no
+    /// floor, as that body has: a floor past the room would cut the ring
+    /// again.
+    fn height(&self, window: &Window) -> Pixels {
+        let cap = appearance::dialog_max_height(window)
+            - crate::github_view::dialog_chrome(window)
+            - DIALOG_LAYER_OFFSET * self.depth.saturating_sub(1) as f32;
+        (window.viewport_size().height * 0.65)
+            .min(px(700.))
+            .min(cap)
+            .max(Pixels::ZERO)
+    }
     fn focus_visible(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.show_rendered
             && let Some(rendered) = &self.rendered
@@ -1299,13 +1592,18 @@ impl Render for LocalDocument {
         if source && self.editor.is_none() {
             self.editor = Some(text::editor(&self.source, "markdown", None, window, cx));
         }
+        // The dialog body clips at this row's top, so the row keeps its
+        // toggles' ring room there; its sides have the body's own padding.
+        let room = appearance::button_ring_room(cx);
+        let height = self.height(window);
         div()
-            .h((window.viewport_size().height * 0.65).min(px(700.)))
+            .h(height)
             .flex()
             .flex_col()
             .gap_2()
             .child(
                 div()
+                    .pt(room)
                     .flex()
                     .gap_2()
                     .child(
@@ -1346,8 +1644,8 @@ impl Render for LocalDocument {
 fn open_link(destination: &str, window: &mut Window, cx: &mut App) {
     let external = destination.starts_with("https://") || destination.starts_with("http://");
     let destination = destination.to_owned();
-    window.open_alert_dialog(cx,move|dialog,_,_| {
-        let target=destination.clone();dialog.title(if external {"Open external link"}else{"Local Markdown link"}).child(destination.clone())
+    window.open_alert_dialog(cx,move|dialog,window,_| {
+        let target=destination.clone();dialog.max_h(appearance::dialog_max_height(window)).title(if external {"Open external link"}else{"Local Markdown link"}).child(destination.clone())
             .child(if external {"This opens your browser."}else{"This destination is local to the captured document. Use Quick Open to inspect repository files; no external application will be opened."})
             .footer(gpui_kit::component::dialog::DialogFooter::new().child(button("cancel-markdown-link","Close","",false).on_click(|_,window,cx|window.close_dialog(cx)))
                 .child(button("open-markdown-link","Open in browser","external-link",true).disabled(!external).on_click(move|_,window,cx| {cx.open_url(&target);window.close_dialog(cx);})))
@@ -1361,6 +1659,7 @@ impl Render for View {
             .role(Role::Group)
             .aria_label("Rendered Markdown preview")
             .size_full()
+            .relative()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let modifiers = &event.keystroke.modifiers;
@@ -1395,6 +1694,7 @@ impl Render for View {
                 } else {
                     "After"
                 };
+                let kind = document.kind();
                 let mut header = div()
                     .flex()
                     .flex_wrap()
@@ -1403,9 +1703,12 @@ impl Render for View {
                     .p_2()
                     .border_b_1()
                     .border_color(rgb(colors.border))
-                    .child(format!("{label} · Markdown"))
+                    .child(crate::native_accessibility::text(
+                        SharedString::from(format!("markdown-heading-{side}")),
+                        format!("{label} · {kind}"),
+                    ))
                     .child(button(("markdown-read",side),"Read","",false)
-                        .accessibility_label(format!("Read {label} Markdown. Arrow keys move blocks; Page Up and Page Down move six blocks; Home and End move to the document boundaries."))
+                        .accessibility_label(format!("Read {label} {kind}. Arrow keys move blocks; Page Up and Page Down move six blocks; Home and End move to the document boundaries."))
                         .on_click(cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);cx.notify();})));
                 for (name, last) in [("Top", false), ("End", true)] {
                     header = header.child(
@@ -1432,8 +1735,8 @@ impl Render for View {
                         })),
                     );
                 }
-                if !self.quick {
-                    header = header.child(
+                if !self.quick && self.linkable() {
+                    header = header.child(div().debug_selector(move || format!("markdown-link-scroll-{side}")).child(
                         button(
                             ("markdown-link-scroll", side),
                             if self.linked {
@@ -1453,8 +1756,20 @@ impl Render for View {
                             }
                             cx.notify();
                         })),
-                    );
+                    ));
                 }
+                // In Split, the keys move only the active side, so its list
+                // area under its header takes the keyboard ring on its own
+                // edge, over the blocks, so none moves, or the whole side where
+                // its header leaves the blocks no room; Quick Open's one side
+                // is the whole view's.
+                let ring = (!self.quick && side == self.active_side)
+                    .then(|| self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent))))
+                    .flatten();
+                let room = self.blocks_room.get()[side];
+                let (blocks_ring, side_ring) = if room { (ring, None) } else { (None, ring) };
+                let blocks_room = self.blocks_room.clone();
+                let view = cx.entity().downgrade();
                 let owner = cx.entity().downgrade();
                 let list = gpui_kit::list(self.lists[side].clone(), move |index, _, cx| {
                     owner
@@ -1468,7 +1783,7 @@ impl Render for View {
                             .id(("markdown-notice", side))
                             .role(Role::Status)
                             .aria_label(notice.clone())
-                            .a11y_synthetic_children(native_accessibility::polite)
+                            .polite()
                             .text_size(appearance::ui_text(11.))
                             .child(notice.clone()),
                     );
@@ -1477,10 +1792,27 @@ impl Render for View {
                     header = header.child("Absent");
                 }
                 div()
+                    // The blocks have room where the layout gives them some
+                    // height; a change draws the ring again where it now lies.
+                    .on_children_prepainted(move |children, window, _| {
+                        let Some(blocks) = children.get(1) else {
+                            return;
+                        };
+                        let mut rooms = blocks_room.get();
+                        let has_room = blocks.size.height >= px(2.);
+                        if rooms[side] != has_room {
+                            rooms[side] = has_room;
+                            blocks_room.set(rooms);
+                            let view = view.clone();
+                            window.on_next_frame(move |_, cx| {
+                                view.update(cx, |_, cx| cx.notify()).ok();
+                            });
+                        }
+                    })
                     .id(("markdown-side", side))
                     .role(Role::Document)
                     .aria_label(format!(
-                        "{label} Markdown: {}{}",
+                        "{label} {kind}: {}{}",
                         document.name.display(),
                         if document.present {
                             ""
@@ -1495,9 +1827,14 @@ impl Render for View {
                     .flex_col()
                     .border_r_1()
                     .border_color(rgb(colors.border))
+                    .relative()
                     .child(header)
-                    .child(div().flex_1().min_h_0().on_mouse_down(MouseButton::Left,cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);})).child(list))
+                    .child(div().debug_selector(move || format!("markdown-side-{side}-blocks")).flex_1().min_h_0().relative().on_mouse_down(MouseButton::Left,cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);cx.notify();})).child(list).children(blocks_ring))
+                    .children(side_ring)
             }))
+            // Quick Open's one side: its keyboard ring on the view's own
+            // edge, over the side, so nothing moves.
+            .children(self.quick.then(|| self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent)))).flatten())
     }
 }
 
@@ -1505,6 +1842,26 @@ impl Render for View {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    /// The title keeps its words and the path's end in the room it has, and
+    /// a path that fits is left whole.
+    #[test]
+    fn the_local_document_s_title_elides_only_its_path() {
+        let width = |text: &str| px(text.chars().count() as f32 * 7.);
+        let path =
+            "a-very-long-directory/another-long-directory/yet-another-directory/companion.md";
+        let room = px(400.);
+        let line = local_document_title_line(path, room, width);
+        assert!(line.starts_with(LOCAL_DOCUMENT_TITLE), "{line}");
+        assert!(line.ends_with("companion.md"), "{line}");
+        assert!(line.contains('…'), "{line}");
+        assert!(width(&line) <= room, "{line} fits {room:?}");
+        assert_eq!(
+            local_document_title_line("docs/a.md", px(900.), width),
+            format!("{LOCAL_DOCUMENT_TITLE}docs/a.md"),
+        );
+    }
+
     #[gpui::test]
     fn markdown_code_blocks_use_the_code_font(cx: &mut TestAppContext) {
         let font = shaped_code_font(cx, |probe, cx| {
@@ -1528,9 +1885,8 @@ mod tests {
         };
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             cx.bind_keys([
                 KeyBinding::new(find_shortcut, Search, Some("GitTurtleList")),
                 KeyBinding::new("escape", ClearSearch, Some("GitTurtle")),
@@ -1571,7 +1927,7 @@ mod tests {
             // the dialog at rest instead.
             cx.set_reduce_motion(true);
             app.read(cx).file_focus.clone().focus(window, cx);
-            open_local_document(path, source.clone(), Some(markdown), 1, window, cx)
+            open_local_document(path, source.clone(), Some(markdown), 1, None, window, cx)
         });
         fn settle(cx: &mut VisualTestContext) {
             for _ in 0..2 {
@@ -1711,7 +2067,9 @@ mod tests {
             status: gitturtle_core::ChangeStatus::Modified,
         };
         let control = gitturtle_core::HistoryCancellation::default();
-        let mut comparison = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut comparison = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         capture_assets(
             &mut comparison,
             &repo,
@@ -1729,16 +2087,777 @@ mod tests {
             old: Some(gitturtle_core::PreviewAssetScope::Index),
             new: Some(gitturtle_core::PreviewAssetScope::Worktree),
         };
-        let mut first = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut first = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         capture_assets(&mut first, &repo, &file, &origins, &control).unwrap();
         assert_eq!(pixel(&first.new), [0, 255, 0, 255]);
         image_file(&path.join("docs/figure.png"), [255, 255, 0, 255]);
-        let mut next = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let mut next = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
         capture_assets(&mut next, &repo, &file, &origins, &control).unwrap();
         assert!(!first.same_source(&next));
         assert_eq!(std::fs::read(path.join(".git/index")).unwrap(), index);
         control.cancel();
         assert!(capture_assets(&mut next, &repo, &file, &origins, &control).is_err());
+    }
+    /// A raw JPEG 2000 codestream of one 8-bit component sampled every
+    /// `sampling` columns and rows that declares `width` × `height` in its
+    /// SIZ marker and holds nothing after it.
+    fn codestream_declaring(width: u32, height: u32, sampling: (u8, u8)) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0x4f, 0xff, 0x51, 0, 41, 0, 0];
+        for value in [width, height, 0, 0, width, height, 0, 0] {
+            bytes.extend(value.to_be_bytes());
+        }
+        bytes.extend([0, 1, 7, sampling.0, sampling.1]);
+        bytes
+    }
+    /// QA-93: a document's image is refused before it is decoded once the
+    /// size its header declares, at the 1,000-pixel edge images are decoded
+    /// to, would take more than is left of the decoded-pixel budget. Four
+    /// 1,000 × 1,000 PNGs take 16,000,000 of its 16,777,216 bytes, so a
+    /// fifth, and a JPEG 2000 codestream declaring 2,000 × 1,500 (1,000 ×
+    /// 750 at that edge, as QA-93's were), each say the budget is spent
+    /// without reaching a decoder, while a 10 × 10 PNG after them still fits
+    /// and renders. The 32 JPEG 2000 images of QA-93's document were each
+    /// decoded, about 8 s, before 28 of them were refused.
+    #[test]
+    fn images_past_the_pixel_budget_are_refused_before_they_are_decoded() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "Markdown Fixture"]);
+        git(path, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::create_dir(path.join("docs")).unwrap();
+        // JPEG 2000's size is read where the confined helper decodes it
+        // (Linux): macOS's ImageIO may draw any size up to the grid.
+        let helper = cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ));
+        let mut names = vec!["a.png", "b.png", "c.png", "d.png", "e.png"];
+        names.extend(helper.then_some("f.j2k"));
+        names.push("g.png");
+        let source = names
+            .iter()
+            .map(|name| format!("![{name}]({name})\n\n"))
+            .collect::<String>();
+        std::fs::write(path.join("docs/readme.md"), &source).unwrap();
+        for (shade, name) in (0_u8..).zip(&names[..5]) {
+            image::RgbaImage::from_pixel(1000, 1000, image::Rgba([shade * 40, 0, 0, 255]))
+                .save(path.join("docs").join(name))
+                .unwrap();
+        }
+        if helper {
+            std::fs::write(
+                path.join("docs/f.j2k"),
+                codestream_declaring(2000, 1500, (1, 1)),
+            )
+            .unwrap();
+        }
+        image::RgbaImage::from_pixel(10, 10, image::Rgba([0, 255, 0, 255]))
+            .save(path.join("docs/g.png"))
+            .unwrap();
+        git(path, &["add", "."]);
+        git(path, &["commit", "-qm", "figures"]);
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let oid = git(path, &["rev-parse", "HEAD:docs/readme.md"]);
+        let repo = GitRepository::open(path).unwrap();
+        let file = FileChange {
+            old_oid: None,
+            new_oid: Some(oid),
+            old_path: None,
+            new_path: Some("docs/readme.md".into()),
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+            status: gitturtle_core::ChangeStatus::Added,
+        };
+        let control = gitturtle_core::HistoryCancellation::default();
+        let mut comparison = prepare(&source, &source, &file, [None; 2], [false; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
+        DECODED.take();
+        capture_assets(
+            &mut comparison,
+            &repo,
+            &file,
+            &Origins::revisions(None, Some(head)),
+            &control,
+        )
+        .unwrap();
+        assert_eq!(
+            comparison
+                .new
+                .image_identities()
+                .map(|(pixels, error)| (pixels.is_some(), error))
+                .collect::<Vec<_>>(),
+            [
+                [(true, None); 4].as_slice(),
+                &[(false, Some(OVER_BUDGET))],
+                if helper {
+                    &[(false, Some(OVER_BUDGET))]
+                } else {
+                    &[]
+                },
+                &[(true, None)],
+            ]
+            .concat()
+        );
+        let decoded = DECODED.take();
+        assert_eq!(
+            decoded
+                .iter()
+                .map(|path| path.rsplit('/').next().unwrap())
+                .collect::<Vec<_>>(),
+            ["a.png", "b.png", "c.png", "d.png", "g.png"],
+            "the images past the budget never reach a decoder"
+        );
+    }
+    /// A header can lie, so the pixels a decode returns are checked against
+    /// what is left of the budget too: an image whose header declares 10 ×
+    /// 10 but decodes to 1,000 × 1,000 is refused once decoded, as is one
+    /// whose header is not read here (an SVG), while a header that declares
+    /// more than is left is refused before its decoder runs.
+    #[test]
+    fn a_lying_header_still_meets_the_decoded_pixel_check() {
+        let png = |side| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::new(side, side)
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            bytes.into_inner()
+        };
+        let decodes = std::cell::Cell::new(0);
+        let large = || {
+            decodes.set(decodes.get() + 1);
+            Ok(gitturtle_preview::ImagePreview {
+                width: 1000,
+                height: 1000,
+                original_width: 1000,
+                original_height: 1000,
+                rgba: vec![0; 4_000_000],
+                format: "PNG".into(),
+            })
+        };
+        let small = png(10);
+        let error = decode_within(1_000_000, &small, large).unwrap_err();
+        assert_eq!(error.to_string(), OVER_BUDGET);
+        assert_eq!(decodes.get(), 1, "the lying header's image was decoded");
+        assert!(decode_within(4_000_000, &small, large).is_ok());
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>"#;
+        let error = decode_within(1_000_000, svg, large).unwrap_err();
+        assert_eq!(error.to_string(), OVER_BUDGET);
+        assert_eq!(decodes.get(), 3);
+        let error = decode_within(1_000_000, &png(1000), large).unwrap_err();
+        assert_eq!(error.to_string(), OVER_BUDGET);
+        assert_eq!(
+            decodes.get(),
+            3,
+            "a declared size past the budget is not decoded"
+        );
+    }
+    /// The size read before decoding is never more than the decode: a JPEG
+    /// 2000 codestream of 4,000 × 1,000 whose one component samples every
+    /// fourth row decodes on Linux to 4,000 × 250, 1,000 × 63 at the edge
+    /// (252,000 bytes), which fits the 300,000 left, so it is decoded. Read
+    /// at its default size, 4,000 × 1,000 (1,000,000 bytes at the edge), it
+    /// was refused undecoded with room for its decode. Where no header
+    /// bounds the decode (JPEG 2000 on macOS) it is decoded and checked.
+    #[test]
+    fn a_subsampled_image_is_budgeted_at_the_size_it_decodes_to() {
+        let decodes = std::cell::Cell::new(0);
+        let decoded = decode_within(300_000, &codestream_declaring(4000, 1000, (1, 4)), || {
+            decodes.set(decodes.get() + 1);
+            Ok(gitturtle_preview::ImagePreview {
+                width: 1000,
+                height: 63,
+                original_width: 4000,
+                original_height: 250,
+                rgba: vec![0; 252_000],
+                format: "JPEG 2000 / J2K codestream".into(),
+            })
+        });
+        assert!(decoded.is_ok(), "{:#}", decoded.unwrap_err());
+        assert_eq!(decodes.get(), 1, "the image is decoded");
+    }
+    /// Requirement 17: once one of a document's AVIF or JPEG 2000 images
+    /// runs past its helper's deadline, the document's later ones start no
+    /// helper and each says why in the image's place, while a PNG after them
+    /// still renders. Three confined images start exactly one helper.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn a_documents_confined_images_stop_at_the_first_that_times_out() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "Markdown Fixture"]);
+        git(path, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::create_dir(path.join("docs")).unwrap();
+        let source = "# Figures\n\n![one](one.avif)\n\n![two](two.jp2)\n\n![three](three.avif)\n\n![four](four.png)\n";
+        std::fs::write(path.join("docs/readme.md"), source).unwrap();
+        let avif = include_bytes!("../../preview/tests/fixtures/half-red-blue.avif").as_slice();
+        let jp2 = include_bytes!("../../preview/tests/fixtures/half-red-blue.jp2").as_slice();
+        // Each image its own bytes, and so its own helper, each of which
+        // writes its pid and sleeps past a 200 ms deadline.
+        let pids = tempfile::tempdir().unwrap();
+        for (name, base) in [("one.avif", avif), ("two.jp2", jp2), ("three.avif", avif)] {
+            let bytes = [base, name.as_bytes()].concat();
+            std::fs::write(path.join("docs").join(name), &bytes).unwrap();
+            let script = format!(
+                "PATH=/usr/bin:/bin; printf %s $$ > '{}'; exec sleep 30",
+                pids.path().join(name).display()
+            );
+            crate::image_helper::named::name(
+                &bytes,
+                crate::pdf_helper::HelperCommand::new("/bin/sh", ["-c", script.as_str()]),
+                std::time::Duration::from_millis(200),
+            );
+        }
+        image_file(&path.join("docs/four.png"), [0, 255, 0, 255]);
+        git(path, &["add", "."]);
+        git(path, &["commit", "-qm", "figures"]);
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let oid = git(path, &["rev-parse", "HEAD:docs/readme.md"]);
+        let repo = GitRepository::open(path).unwrap();
+        let file = FileChange {
+            old_oid: None,
+            new_oid: Some(oid),
+            old_path: None,
+            new_path: Some("docs/readme.md".into()),
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+            status: gitturtle_core::ChangeStatus::Added,
+        };
+        let control = gitturtle_core::HistoryCancellation::default();
+        let mut comparison = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
+        capture_assets(
+            &mut comparison,
+            &repo,
+            &file,
+            &Origins::revisions(None, Some(head)),
+            &control,
+        )
+        .unwrap();
+        let images: Vec<_> = comparison.new.image_identities().collect();
+        let stopped = crate::image_helper::AFTER_EARLIER_IMAGES;
+        assert_eq!(
+            images
+                .iter()
+                .map(|(pixels, error)| (pixels.is_some(), *error))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    false,
+                    Some("The image took longer than 10 seconds to decode and was stopped.")
+                ),
+                (false, Some(stopped)),
+                (false, Some(stopped)),
+                (true, None),
+            ]
+        );
+        let started: Vec<_> = ["one.avif", "two.jp2", "three.avif"]
+            .into_iter()
+            .filter(|name| pids.path().join(name).exists())
+            .collect();
+        assert_eq!(started, ["one.avif"], "exactly one helper started");
+    }
+    /// A document's images pass the document's own check: closing or
+    /// replacing it (its cancellation, set here from another thread) while
+    /// an AVIF decodes kills and reaps that image's helper at once rather
+    /// than at its deadline, and the capture fails with the check's error.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn closing_a_document_kills_the_helper_of_the_image_it_decodes() {
+        use crate::worker::helper_image_tests::{BLOCKS, PROMPTLY, pid_in, reaped_within};
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "Markdown Fixture"]);
+        git(path, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::create_dir(path.join("docs")).unwrap();
+        let source = "# Figure\n\n![slow](slow.avif)\n";
+        std::fs::write(path.join("docs/readme.md"), source).unwrap();
+        let avif = include_bytes!("../../preview/tests/fixtures/half-red-blue.avif").as_slice();
+        let bytes = [avif, b"closing a document"].concat();
+        std::fs::write(path.join("docs/slow.avif"), &bytes).unwrap();
+        // A helper that writes its pid and never answers, with a deadline
+        // ten times the time the test allows its reap.
+        let pids = tempfile::tempdir().unwrap();
+        let started = pids.path().join("slow");
+        let script = format!(
+            "PATH=/usr/bin:/bin; printf %s $$ > '{}'; {BLOCKS}",
+            started.display()
+        );
+        crate::image_helper::named::name(
+            &bytes,
+            crate::pdf_helper::HelperCommand::new("/bin/sh", ["-c", script.as_str()]),
+            PROMPTLY * 10,
+        );
+        git(path, &["add", "."]);
+        git(path, &["commit", "-qm", "figure"]);
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let oid = git(path, &["rev-parse", "HEAD:docs/readme.md"]);
+        let repo = GitRepository::open(path).unwrap();
+        let file = FileChange {
+            old_oid: None,
+            new_oid: Some(oid),
+            old_path: None,
+            new_path: Some("docs/readme.md".into()),
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+            status: gitturtle_core::ChangeStatus::Added,
+        };
+        let control = gitturtle_core::HistoryCancellation::default();
+        let mut comparison = prepare(source, source, &file, [None; 2], [false; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
+        let origins = Origins::revisions(None, Some(head));
+        std::thread::scope(|scope| {
+            let capture =
+                scope.spawn(|| capture_assets(&mut comparison, &repo, &file, &origins, &control));
+            let helper = pid_in(&started);
+            control.cancel();
+            assert!(
+                reaped_within(helper, std::time::Instant::now()),
+                "closing the document kills and reaps its image's helper"
+            );
+            let error = capture.join().unwrap().unwrap_err();
+            assert_eq!(error.to_string(), "Markdown local-image capture cancelled");
+        });
+    }
+    fn markdown_change(old: bool, new: bool) -> FileChange {
+        FileChange {
+            old_path: old.then(|| "README.md".into()),
+            new_path: new.then(|| "README.md".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        }
+    }
+    fn lfs_pointer() -> String {
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 12\n",
+            "a".repeat(64)
+        )
+    }
+    /// The pointer side's words and exact text, drawn in that order.
+    fn literal_parts(document: &Document) -> (&str, &str) {
+        let [
+            Block {
+                kind: Kind::Notice(words),
+                ..
+            },
+            Block {
+                kind: Kind::Code(language, text),
+                ..
+            },
+        ] = document.blocks.as_slice()
+        else {
+            panic!("a literal side is its words and its text");
+        };
+        assert_eq!(language, "Git LFS pointer");
+        (words, text)
+    }
+    /// Only the side that is a Git LFS pointer stays literal: the regular
+    /// side still renders, and the pointer side shows its exact text under
+    /// the words saying why, what is wrong with it where it failed. With no
+    /// regular side left to render there is no Rendered view, as before.
+    #[test]
+    fn a_pointer_side_stays_literal_and_only_that_side() {
+        const MISSING: &str = "This side's Git LFS object is not in the local store, and no \
+                               download was attempted; its stored text is below.";
+        let pointer = lfs_pointer();
+        let regular = "# Regular side\n";
+        let both = markdown_change(true, true);
+        let prepared = |old: &str, new: &str, file: &FileChange, failed| {
+            prepare(old, new, file, failed, [false; 2], || Ok(())).unwrap()
+        };
+        for (name, old, new, literal_side) in [
+            ("the new side a pointer", regular, pointer.as_str(), 1),
+            ("the old side a pointer", pointer.as_str(), regular, 0),
+        ] {
+            let comparison = prepared(old, new, &both, [None; 2]).expect(name);
+            let [regular_side, literal] = if literal_side == 1 {
+                [&comparison.old, &comparison.new]
+            } else {
+                [&comparison.new, &comparison.old]
+            };
+            assert!(
+                regular_side
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block.kind, Kind::Prose(_))),
+                "{name}: the regular side renders"
+            );
+            assert!(regular_side.literal.is_none(), "{name}");
+            assert_eq!(literal.literal.as_deref(), Some(MISSING), "{name}");
+            assert_eq!(
+                literal_parts(literal),
+                (MISSING, pointer.as_str()),
+                "{name}"
+            );
+            assert_eq!(literal.source.as_ref(), pointer.as_str(), "{name}");
+        }
+        // A side that failed says what is wrong with it.
+        let comparison = prepared(
+            regular,
+            &pointer,
+            &both,
+            [None, Some(gitturtle_core::LfsObjectFailure::Corrupt)],
+        )
+        .unwrap();
+        assert_eq!(
+            literal_parts(&comparison.new).0,
+            "The local copy of this Git LFS object is damaged; its stored text is below."
+        );
+        // Stored as a pointer on both sides: none while either is still a
+        // pointer in the text shown, and with both resolved it renders.
+        let stored_both = |old: &str, new: &str| {
+            prepare(old, new, &both, [None; 2], [true; 2], || Ok(())).unwrap()
+        };
+        assert!(stored_both(regular, &pointer).is_none());
+        assert!(stored_both(&pointer, regular).is_none());
+        assert!(stored_both(regular, regular).is_some());
+        // Nothing regular to render keeps today's source tabs alone.
+        assert!(prepared(&pointer, &pointer, &both, [None; 2]).is_none());
+        assert!(prepared("", &pointer, &markdown_change(false, true), [None; 2]).is_none());
+        // A stored link is still refused whole, whichever side it is.
+        let mut link = both.clone();
+        link.old_mode = "120000".into();
+        assert!(prepared(regular, regular, &link, [None; 2]).is_none());
+    }
+    /// Markdown's Diagrams view shares the document's sides, so a literal
+    /// pointer side stays one there too: it says why, captures nothing for
+    /// another application and still offers its exact text, while the
+    /// regular side draws.
+    #[test]
+    fn a_literal_pointer_side_stays_literal_in_diagrams() {
+        let pointer = lfs_pointer();
+        let regular = "# Title\n\n```mermaid\nflowchart LR\n  A --> B\n```\n";
+        let comparison = prepare(
+            regular,
+            &pointer,
+            &markdown_change(true, true),
+            [None; 2],
+            [false; 2],
+            || Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+        let diagrams = comparison.diagrams().expect("the regular side draws");
+        assert_eq!(diagrams.old.pages.len(), 1);
+        assert!(diagrams.old.pages[0].render.is_some());
+        let literal = &diagrams.new;
+        assert_eq!(literal.literal, Some(rich_preview::Literal::LfsPointer));
+        assert_eq!(literal.metadata.format, "Git LFS pointer");
+        assert_eq!(
+            literal.metadata.details,
+            [
+                "This side's Git LFS object is not in the local store, and no download was \
+              attempted; its stored text is below."
+            ]
+        );
+        assert!(literal.captured.is_none());
+        assert_eq!(literal.metadata.source.as_deref(), Some(pointer.as_str()));
+        assert!(literal.pages.is_empty());
+    }
+    /// A pointer side is headed and named for what it is, where its heading
+    /// and its accessible name once called it Markdown. The regular side
+    /// beside it still is.
+    #[gpui::test]
+    fn a_pointer_side_is_named_for_what_it_is(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        crate::views::tests::init_app(cx);
+        let comparison = Arc::new(
+            prepare(
+                "# Regular side\n",
+                &lfs_pointer(),
+                &markdown_change(true, true),
+                [None; 2],
+                [false; 2],
+                || Ok(()),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        assert_eq!(comparison.old.kind(), "Markdown");
+        assert_eq!(comparison.new.kind(), "Git LFS pointer");
+        written::forget();
+        let (_, cx) = cx.add_window_view(|_, cx| View::new(comparison, false, cx));
+        crate::tags::tests::draw(cx);
+        for (id, heading) in [
+            ("markdown-heading-0", "Before · Markdown"),
+            ("markdown-heading-1", "After · Git LFS pointer"),
+        ] {
+            assert_eq!(
+                written::get(id).map(|line| line.node.value().map(str::to_owned)),
+                Some(Some(heading.to_owned())),
+            );
+        }
+    }
+    /// A pointer's stored text is the whole file, not a block at a line of
+    /// it, so its caption and accessible value carry no source line, as a
+    /// rendered side's code block still does.
+    #[test]
+    fn a_pointer_sides_text_has_no_source_line() {
+        let pointer = lfs_pointer();
+        let comparison = prepare(
+            "# Regular side\n",
+            &pointer,
+            &markdown_change(true, true),
+            [None; 2],
+            [false; 2],
+            || Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+        let literal = &comparison.new;
+        assert_eq!(
+            literal.code_caption("Git LFS pointer", 1),
+            "Git LFS pointer"
+        );
+        assert_eq!(
+            literal.code_value("Git LFS pointer", 1, &pointer),
+            format!("Git LFS pointer.\n{pointer}")
+        );
+        let regular = &comparison.old;
+        assert_eq!(regular.code_caption("rust", 3), "rust · line 3");
+        assert_eq!(
+            regular.code_value("rust", 3, "fn a() {}"),
+            "rust code, source line 3.\nfn a() {}"
+        );
+    }
+    /// Linked blocks ties the two sides' lists together, and a pointer's
+    /// side has nothing to tie to: beside one the control is gone and a
+    /// jump on one side leaves the other where it is, even if the two were
+    /// linked before.
+    #[gpui::test]
+    fn linked_blocks_is_offered_only_between_two_rendered_sides(cx: &mut TestAppContext) {
+        crate::views::tests::init_app(cx);
+        let document = "# One\n\nTwo\n\nThree\n\nFour\n";
+        let file = markdown_change(true, true);
+        let open = |new: &str| {
+            Arc::new(
+                prepare(document, new, &file, [None; 2], [false; 2], || Ok(()))
+                    .unwrap()
+                    .unwrap(),
+            )
+        };
+        let (regular, literal) = (open(document), open(&lfs_pointer()));
+        let (view, regular_cx) = cx.add_window_view(|_, cx| View::new(regular, false, cx));
+        crate::tags::tests::draw(regular_cx);
+        assert!(
+            regular_cx.debug_bounds("markdown-link-scroll-0").is_some(),
+            "two rendered sides can be linked"
+        );
+        let linked_top = |view: &Entity<View>, cx: &mut VisualTestContext| {
+            // Read as the jump asks, before a layout clamps a short list.
+            view.update_in(cx, |view, _, _| {
+                view.linked = true;
+                view.jump(0, 2);
+                view.lists[1].logical_scroll_top().item_ix
+            })
+        };
+        assert_eq!(
+            linked_top(&view, regular_cx),
+            2,
+            "linked sides move together"
+        );
+        // The wheel's own path, as a restored bookmark can reach it.
+        let wheeled_top = |view: &Entity<View>, cx: &mut VisualTestContext| {
+            view.update_in(cx, |view, _, cx| {
+                view.linked = true;
+                for (list, item_ix) in view.lists.iter().zip([2, 0]) {
+                    list.scroll_to(ListOffset {
+                        item_ix,
+                        offset_in_item: px(0.),
+                    });
+                }
+                view.follow_scroll(0, cx);
+                view.lists[1].logical_scroll_top().item_ix
+            })
+        };
+        assert_eq!(wheeled_top(&view, regular_cx), 2, "the wheel moves both");
+        let (view, literal_cx) = cx.add_window_view(|_, cx| View::new(literal, false, cx));
+        crate::tags::tests::draw(literal_cx);
+        assert!(
+            literal_cx.debug_bounds("markdown-link-scroll-0").is_none(),
+            "nothing to link beside a pointer"
+        );
+        assert_eq!(
+            linked_top(&view, literal_cx),
+            0,
+            "a pointer's side stays where it is"
+        );
+        assert_eq!(
+            wheeled_top(&view, literal_cx),
+            0,
+            "the wheel leaves a pointer's side where it is"
+        );
+    }
+    /// Rendered draws both sides of a mixed file: the regular side's blocks
+    /// and the pointer's words and literal text, each row laid out inside
+    /// the window and each side named for what it is, at the default size
+    /// and at 18 pt in a 461 × 490 window.
+    #[gpui::test]
+    fn a_mixed_markdown_file_draws_the_regular_side_and_the_literal_pointer(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        crate::views::tests::init_app(cx);
+        let comparison = Arc::new(
+            prepare(
+                "# Regular side\n\nBody text.\n",
+                &lfs_pointer(),
+                &markdown_change(true, true),
+                [None; 2],
+                [false; 2],
+                || Ok(()),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let (_, cx) = cx.add_window_view(|_, cx| View::new(comparison, false, cx));
+        for (text, room) in [(13, None), (18, Some((461., 490.)))] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            if let Some((width, height)) = room {
+                cx.simulate_resize(size(px(width), px(height)));
+            }
+            written::forget();
+            crate::tags::tests::draw(cx);
+            let window = cx.update(|window, _| window.viewport_size());
+            for selector in [
+                "markdown-before-block-0",
+                "markdown-before-block-1",
+                "markdown-after-block-0",
+                "markdown-after-block-1",
+            ] {
+                let bounds = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{text} pt: {selector} is drawn"));
+                assert!(
+                    bounds.size.height > px(0.),
+                    "{text} pt: {selector}: {bounds:?}"
+                );
+                assert!(
+                    bounds.right() <= window.width + px(1.),
+                    "{text} pt: {selector} ends inside the window: {bounds:?}"
+                );
+            }
+            for (id, heading) in [
+                ("markdown-heading-0", "Before · Markdown"),
+                ("markdown-heading-1", "After · Git LFS pointer"),
+            ] {
+                assert_eq!(
+                    written::get(id).map(|line| line.node.value().map(str::to_owned)),
+                    Some(Some(heading.to_owned())),
+                    "{text} pt"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+    /// A blank Mermaid fence in a Markdown preview is no diagram: no page
+    /// and no error page, where a fence with no text once parsed as an empty
+    /// diagram and drew a render error. With nothing else in the document to
+    /// draw, Diagrams has nothing for it either.
+    #[test]
+    fn a_blank_mermaid_fence_draws_no_page_and_no_error_page() {
+        let prepared = |source: &str, present: bool| {
+            prepare_document(source, std::path::Path::new("README.md"), present, &|| {
+                Ok(())
+            })
+            .unwrap()
+        };
+        for (name, source) in [
+            ("an empty fence", "```mermaid\n```\n"),
+            ("a fence of blank lines", "```mermaid\n\n\n```\n"),
+            ("a fence of spaces and tabs", "```mermaid\n \t\n```\n"),
+        ] {
+            let document = prepared(source, true);
+            assert!(
+                !document
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block.kind, Kind::Diagram(_) | Kind::Notice(_))),
+                "{name} draws no page, no error page and no notice"
+            );
+            let comparison = Comparison {
+                old: Arc::new(prepared("", false)),
+                new: Arc::new(document),
+            };
+            assert!(
+                comparison.diagrams().is_none(),
+                "{name} leaves Diagrams nothing to show"
+            );
+        }
+    }
+    /// A blank fence draws nothing, so it leaves all four diagram slots to
+    /// the fences that draw, and the fifth real fence is where the notice
+    /// lands. A fence that fails to render still takes its slot, so the
+    /// bound on diagram work holds.
+    #[test]
+    fn only_a_fence_that_draws_uses_a_diagram_slot() {
+        let fence = |source: &str| format!("```mermaid\n{source}```\n\n");
+        let prepared = |source: &str| {
+            prepare_document(source, std::path::Path::new("README.md"), true, &|| Ok(())).unwrap()
+        };
+        // The lines of a document's diagram pages, those of its pages that
+        // draw an error, and those of its notices.
+        let read = |document: &Document| {
+            let (mut pages, mut failed, mut notices) = (Vec::new(), Vec::new(), Vec::new());
+            for block in &document.blocks {
+                match &block.kind {
+                    Kind::Diagram(page) => {
+                        pages.push(block.line);
+                        if page.error.is_some() {
+                            failed.push(block.line);
+                        }
+                    }
+                    Kind::Notice(_) => notices.push(block.line),
+                    _ => {}
+                }
+            }
+            (pages, failed, notices)
+        };
+        let real = fence("flowchart LR\n  A --> B\n");
+        let (pages, failed, notices) =
+            read(&prepared(&format!("{}{}", fence("\n"), real.repeat(5))));
+        assert_eq!(
+            pages,
+            [5, 10, 15, 20],
+            "after a blank fence, the first four real fences draw"
+        );
+        assert!(failed.is_empty(), "the real fences render");
+        assert_eq!(notices, [25], "the fifth real fence shows the notice");
+        let (pages, failed, notices) =
+            read(&prepared(&format!("{}{}", real.repeat(4), fence("\n"))));
+        assert_eq!(pages, [1, 6, 11, 16], "the four real fences draw");
+        assert!(failed.is_empty(), "the real fences render");
+        assert!(
+            notices.is_empty(),
+            "a blank fence past the last slot shows no notice"
+        );
+        let broken = fence("not a diagram\n");
+        let (pages, failed, notices) = read(&prepared(&format!("{}{real}", broken.repeat(4))));
+        assert_eq!(
+            pages,
+            [1, 5, 9, 13],
+            "four broken fences each draw their error"
+        );
+        assert_eq!(failed, pages, "and each reads as a render error");
+        assert_eq!(notices, [17], "a render error still takes its slot");
     }
     #[test]
     fn gfm_structure_preserves_text_and_never_executes_html() {

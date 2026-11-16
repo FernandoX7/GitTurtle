@@ -35,13 +35,13 @@ impl GitRepository {
     /// .gitignore files, common info/exclude, and effective global excludes.
     /// No hooks, filters, object reads, index refresh or networking are needed.
     pub fn local_watch_policy(&self) -> Result<LocalWatchPolicy> {
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command.args(["ls-files", "--cached", "-z"]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
         ensure!(
             output.status.success(),
             "Read tracked paths for local watching: {}",
-            text(&output.stderr).trim()
+            reported(&output.stderr).trim()
         );
         ensure!(
             output.stdout.len() <= MAX_POLICY_BYTES,
@@ -83,7 +83,7 @@ impl GitRepository {
             tracked.insert(path);
         }
         let config = |key: &str| -> Result<Option<PathBuf>> {
-            let mut command = work::normal_command(&self.path);
+            let mut command = work::normal_command(self.target());
             command.arg("--no-optional-locks").args([
                 "config",
                 if key == "core.ignorecase" {
@@ -102,7 +102,7 @@ impl GitRepository {
             ensure!(
                 output.status.success(),
                 "Read local watch configuration: {}",
-                text(&output.stderr).trim()
+                reported(&output.stderr).trim()
             );
             Ok(Some(path_from_bytes(
                 output.stdout.strip_suffix(&[0]).unwrap_or(&output.stdout),

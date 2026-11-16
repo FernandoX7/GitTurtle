@@ -162,10 +162,27 @@ impl HistoryCancellation {
     }
 
     fn check(&self) -> Result<()> {
-        ensure!(!self.is_cancelled(), "History read cancelled");
+        if self.is_cancelled() {
+            return Err(ReadCancelled.into());
+        }
         Ok(())
     }
 }
+
+/// The error a read ends with when its [`HistoryCancellation`] stopped it,
+/// found with `downcast_ref` through any context added on the way out, so a
+/// caller can tell a cancel the person asked for from a failure the read met
+/// before the cancel reached it, which still ends with its own error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadCancelled;
+
+impl std::fmt::Display for ReadCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("History read cancelled")
+    }
+}
+
+impl std::error::Error for ReadCancelled {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistorySearchStop {
@@ -231,7 +248,7 @@ impl GitRepository {
             HistoryScope::AllRefs => self.pin_history_refs(cancellation)?,
             other => other.clone(),
         };
-        let mut command = history_command(&self.path);
+        let mut command = history_command(self.target());
         let input = match &scope {
             HistoryScope::PinnedRefs(refs) => {
                 ensure!(
@@ -298,7 +315,7 @@ impl GitRepository {
             }
             other => other.clone(),
         };
-        let mut command = history_command(&self.path);
+        let mut command = history_command(self.target());
         command.arg(format!("--skip={offset}"));
         let input = match &scope {
             HistoryScope::PinnedRefs(refs) => {
@@ -404,7 +421,7 @@ impl GitRepository {
     }
 
     fn pin_history_refs(&self, cancellation: &HistoryCancellation) -> Result<HistoryScope> {
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command.args(["rev-parse", "--revs-only", "--all", "HEAD"]);
         let mut bytes = Vec::new();
         let end = stream_history(command, None, cancellation, GIT_TIMEOUT, |chunk| {
@@ -470,7 +487,7 @@ impl GitRepository {
             .checked_add(limit)
             .and_then(|count| count.checked_add(1))
             .context("File-history offset overflow")?;
-        let mut command = history_command(&self.path);
+        let mut command = history_command(self.target());
         command
             .args([
                 "--follow",
@@ -523,8 +540,8 @@ impl GitRepository {
     }
 }
 
-pub(super) fn history_command(path: &Path) -> Command {
-    let mut command = git_command(path);
+pub(super) fn history_command(target: GitTarget<'_>) -> Command {
+    let mut command = git_command(target);
     command.arg("--literal-pathspecs").args([
         "-c",
         "log.follow=false",
@@ -784,11 +801,9 @@ impl HistoryStream {
                     .is_none_or(|writer| writer.is_finished())
                 && let Some(status) = self.child.try_wait()?
             {
-                ensure!(
-                    status.success(),
-                    "Git history read failed: {}",
-                    text(stderr).trim()
-                );
+                if !status.success() {
+                    return Err(history_failure(stderr));
+                }
                 ensure!(
                     self.pending.is_empty() && self.fields.is_empty(),
                     "Incomplete commit metadata from Git"
@@ -820,6 +835,52 @@ impl Drop for HistoryStream {
     }
 }
 
+/// How many messages [`stream_history`]'s pipe readers queue ahead of it.
+const READ_QUEUE: usize = 8;
+
+/// A history read Git failed, "Git history read failed: …" with Git's
+/// `stderr` as a terminal leaves it, typed where Git found no repository
+/// ([`git_failure`]): every history, search, attribution and inspection
+/// stream ends so, so a tab whose `.git` went away is told apart whatever
+/// the message keeps of Git's words.
+fn history_failure(stderr: &[u8]) -> anyhow::Error {
+    git_failure(
+        stderr,
+        format!("Git history read failed: {}", reported(stderr).trim()),
+    )
+}
+
+/// What [`stream_history`] ends with once its cancellation stopped it: [`ReadCancelled`],
+/// unless Git had already failed. A failure already queued, Git's exit with its error output
+/// or a failed pipe read, ends the read as that failure, as it would have a moment before the
+/// cancel: the cancel once masked it, so a caller said "Cancelled" for a read Git had already
+/// refused. It reads only what is queued, no more than the queue holds and the readers' last
+/// two messages, so a cancel never waits on Git.
+fn cancelled_end(
+    receive: &mpsc::Receiver<ReadMessage>,
+    mut stderr: Option<Vec<u8>>,
+    status: impl FnOnce() -> std::io::Result<Option<std::process::ExitStatus>>,
+) -> anyhow::Error {
+    for _ in 0..READ_QUEUE + 2 {
+        match receive.try_recv() {
+            Ok(ReadMessage::Stderr(bytes)) => stderr = Some(bytes),
+            Ok(ReadMessage::Error(error)) => return error.into(),
+            Ok(ReadMessage::Stdout(_) | ReadMessage::StdoutEnd) => {}
+            Err(_) => break,
+        }
+    }
+    match (status(), stderr) {
+        (Ok(Some(status)), Some(stderr)) if !status.success() => {
+            if stderr.len() > 128 * 1024 {
+                anyhow::anyhow!("Git history error output exceeded its limit")
+            } else {
+                history_failure(&stderr)
+            }
+        }
+        _ => ReadCancelled.into(),
+    }
+}
+
 /// Drains both pipes through a bounded queue. Cancellation and the deadline
 /// cover the process and descendants which retain its pipes after it exits.
 pub(super) fn stream_history(
@@ -846,7 +907,7 @@ pub(super) fn stream_history(
     });
     let mut stdout = pipes.output;
     let stderr = pipes.error.expect("Requested Git error pipe");
-    let (send, receive) = mpsc::sync_channel(8);
+    let (send, receive) = mpsc::sync_channel(READ_QUEUE);
     let errors = send.clone();
     let output_reader = thread::spawn(move || {
         let mut chunk = [0u8; 8192];
@@ -881,7 +942,12 @@ pub(super) fn stream_history(
         let mut stderr = None;
         let mut status = None;
         loop {
-            cancellation.check()?;
+            if cancellation.is_cancelled() {
+                return Err(cancelled_end(&receive, stderr.take(), || match status {
+                    Some(status) => Ok(Some(status)),
+                    None => child.try_wait(),
+                }));
+            }
             if start.elapsed() >= timeout {
                 return Ok(ReadEnd::TimedOut);
             }
@@ -911,11 +977,9 @@ pub(super) fn stream_history(
                     .is_none_or(|writer| writer.is_finished())
                 && let (Some(status), Some(stderr)) = (status, stderr.as_ref())
             {
-                ensure!(
-                    status.success(),
-                    "Git history read failed: {}",
-                    text(stderr).trim()
-                );
+                if !status.success() {
+                    return Err(history_failure(stderr));
+                }
                 return Ok(ReadEnd::Complete);
             }
         }
@@ -1088,6 +1152,124 @@ mod tests {
         )
         .unwrap();
         assert_eq!(end, ReadEnd::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A read Git has already failed ends with Git's failure though the cancel comes before
+    /// the read handles it: the cancel once masked the failure as [`ReadCancelled`]. Git has
+    /// exited with its error while a descendant still holds its output, whose first bytes,
+    /// a second later, bring the cancel.
+    #[cfg(unix)]
+    #[test]
+    fn a_failure_git_already_reported_outlasts_a_later_cancel() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "( exec 2>&-; sleep 1; printf x ) & echo 'fatal: bad revision' >&2; exit 128",
+        ]);
+        let cancellation = HistoryCancellation::default();
+        let error = stream_history(
+            command,
+            None,
+            &cancellation,
+            Duration::from_secs(20),
+            |_| {
+                cancellation.cancel();
+                Ok(true)
+            },
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<ReadCancelled>().is_none(), "{error:#}");
+        assert_eq!(
+            error.to_string(),
+            "Git history read failed: fatal: bad revision"
+        );
+    }
+
+    /// A history read whose `.git` went away, where the path Git names holds
+    /// a carriage return: a traversal's page, a stream, and a stream whose
+    /// cancel came after Git failed each end as finding no repository, by
+    /// the type their failure carries ([`NotARepository`]), through any
+    /// context, and each shows the message it showed before the type, Git's
+    /// words as a terminal leaves them, with none of "not a git repository".
+    /// Told apart by that message, History's read of a gone tab left it
+    /// unmarked, showing "Could not read local history: … b/.git/worktrees/x".
+    #[cfg(unix)]
+    #[test]
+    fn a_history_read_finding_no_repository_is_told_apart_whatever_its_message_keeps() {
+        use std::os::unix::process::ExitStatusExt;
+        let git = || {
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                r"printf 'fatal: not a git repository: /a\rb/.git/worktrees/x\n' >&2; exit 128",
+            ]);
+            command
+        };
+        let cancellation = HistoryCancellation::default();
+        let mut traversal = HistoryTraversal {
+            scope: HistoryScope::PinnedRefs(Vec::new()),
+            offset: 0,
+            stream: Some(HistoryStream::start(git(), None).unwrap()),
+            deferred: None,
+            failed: false,
+        };
+        let page = traversal.next_page(10, &cancellation).unwrap_err();
+        let stream = stream_history(git(), None, &cancellation, Duration::from_secs(20), |_| {
+            Ok(true)
+        })
+        .unwrap_err();
+        let (_send, queued) = mpsc::sync_channel(READ_QUEUE);
+        let cancelled = cancelled_end(
+            &queued,
+            Some(b"fatal: not a git repository: /a\rb/.git/worktrees/x\n".to_vec()),
+            || Ok(Some(std::process::ExitStatus::from_raw(128 << 8))),
+        );
+        let shown = "Git history read failed: b/.git/worktrees/x";
+        for error in [page, stream, cancelled] {
+            assert_eq!(error.to_string(), shown);
+            assert_eq!(format!("{error:#}"), shown);
+            assert!(error.is::<NotARepository>(), "{error:#}");
+            assert!(finds_no_repository(&error), "{error:#}");
+            let read = error.context("Read local history");
+            assert_eq!(format!("{read:#}"), format!("Read local history: {shown}"));
+            assert!(finds_no_repository(&read), "{read:#}");
+        }
+        // Git's other failures carry no type.
+        let mut other = Command::new("/bin/sh");
+        other.args(["-c", "echo 'fatal: bad revision' >&2; exit 128"]);
+        let other = stream_history(other, None, &cancellation, Duration::from_secs(20), |_| {
+            Ok(true)
+        })
+        .unwrap_err();
+        assert!(!other.is::<NotARepository>(), "{other:#}");
+        assert!(!finds_no_repository(&other), "{other:#}");
+    }
+
+    /// A read its cancellation stopped while Git still runs ends with [`ReadCancelled`],
+    /// which a caller finds through the context added on the way out, as the app does to
+    /// say "Cancelled" rather than show a failure.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_read_is_found_through_added_context() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf x; sleep 20"]);
+        let cancellation = HistoryCancellation::default();
+        let started = Instant::now();
+        let error = stream_history(
+            command,
+            None,
+            &cancellation,
+            Duration::from_secs(20),
+            |_| {
+                cancellation.cancel();
+                Ok(true)
+            },
+        )
+        .context("Compare the captured revisions")
+        .context("PR changes")
+        .unwrap_err();
+        assert!(error.downcast_ref::<ReadCancelled>().is_some(), "{error:#}");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

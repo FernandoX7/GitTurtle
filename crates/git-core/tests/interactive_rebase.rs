@@ -389,6 +389,38 @@ fn signing_and_message_hook_failures_remain_paused_and_can_be_retried_explicitly
     }
 }
 
+/// A rebase stopped by a hook that writes a credential marker, a carriage
+/// return and then its secret reports the secret redacted: Git's output is
+/// redacted before it is read as a terminal leaves it, where reading it so
+/// first left the secret alone, which no marker then names.
+#[cfg(unix)]
+#[test]
+fn a_stopped_rebase_never_shows_a_secret_after_a_carriage_return() {
+    for (written, secret) in [
+        (b"password=\rSECRET1\n".as_slice(), "SECRET1"),
+        (b"Authorization: Bearer \rSECRET2\n", "SECRET2"),
+    ] {
+        let f = Fixture::new();
+        f.commit("one", "one");
+        let head = f.git(&["rev-parse", "HEAD"]);
+        let hooks = f.root.join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        fs::write(f.root.join(".git/written"), written).unwrap();
+        executable(
+            &hooks.join("pre-rebase"),
+            "#!/bin/sh\ncat .git/written >&2\nexit 1\n",
+        );
+        let error = f.start(&[RebaseAction::Pick]).unwrap_err();
+        let report = format!("{error:#}");
+        assert!(
+            report.starts_with("Interactive rebase stopped: ") && report.contains("[redacted]"),
+            "{report:?}"
+        );
+        assert!(!report.contains(secret), "{report:?}");
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), head, "nothing was rebased");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn cancellation_during_message_hook_preserves_paused_state_and_never_retries() {

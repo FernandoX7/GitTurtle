@@ -97,8 +97,9 @@ pub(crate) fn decode_pdf_page_text(
         // pageAtIndex: raises an Objective-C exception for an out-of-range index.
         ensure!(
             page_index < page_count,
-            "PDF page {} is outside this document's {page_count} pages",
-            page_index.saturating_add(1)
+            "PDF page {} is outside this document's {}",
+            page_index.saturating_add(1),
+            crate::metadata::counted(page_count, "page", "pages")
         );
         check()?;
         let page = indexed(

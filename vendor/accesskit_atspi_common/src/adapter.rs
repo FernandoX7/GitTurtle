@@ -10,17 +10,17 @@
 
 use crate::{
     AdapterCallback, CacheEvent, Event, ObjectEvent, WindowEvent,
-    context::{ActionHandlerNoMut, ActionHandlerWrapper, AppContext, Context},
+    context::{ActionHandlerNoMut, ActionHandlerWrapper, AppContext, Context, Removed},
     filters::filter,
     node::{NodeIdOrRoot, NodeWrapper, PlatformNode, PlatformRoot},
     util::WindowBounds,
 };
 use accesskit::{ActionHandler, Role, TreeUpdate};
 use accesskit_consumer::{FilterResult, Node, NodeId, Tree, TreeChangeHandler, TreeState};
-use atspi_common::{InterfaceSet, Politeness, State};
+use atspi_common::{Interface, InterfaceSet, Politeness, State};
 use std::fmt::{Debug, Formatter};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, RwLock,
         atomic::{AtomicUsize, Ordering},
@@ -33,6 +33,11 @@ struct AdapterChangeHandler<'a> {
     removed_nodes: HashSet<NodeId>,
     checked_text_change: HashSet<NodeId>,
     selection_changed: HashSet<NodeId>,
+    // GitTurtle patch (GITTURTLE-PATCH.md): each selectable item this update
+    // took out of the tree, with the parent it had there, kept on the bus
+    // with its `Accessible` interface until `keep_removed` sees whether that
+    // parent stayed.
+    left_tree: Vec<(NodeId, NodeId)>,
 }
 
 impl<'a> AdapterChangeHandler<'a> {
@@ -43,6 +48,7 @@ impl<'a> AdapterChangeHandler<'a> {
             removed_nodes: HashSet::new(),
             checked_text_change: HashSet::new(),
             selection_changed: HashSet::new(),
+            left_tree: Vec::new(),
         }
     }
 
@@ -88,7 +94,7 @@ impl<'a> AdapterChangeHandler<'a> {
         }
     }
 
-    fn remove_node(&mut self, node: &Node) {
+    fn remove_node(&mut self, node: &Node, left_tree: bool) {
         let id = node.id();
         if self.removed_nodes.contains(&id) {
             return;
@@ -103,9 +109,23 @@ impl<'a> AdapterChangeHandler<'a> {
         }
         self.adapter
             .emit_object_event(node.id(), ObjectEvent::StateChanged(State::Defunct, true));
-        self.adapter.emit_cache_removed(node.id());
-        self.adapter
-            .unregister_interfaces(node.id(), wrapper.interfaces());
+        let interfaces = wrapper.interfaces();
+        // GitTurtle patch: a selectable item, such as a list's row, that
+        // left the tree keeps its `Accessible` interface, to answer its
+        // parent, and its place in AT-SPI's cache, until `keep_removed`
+        // decides: libatspi disposes an object the cache drops, and Orca
+        // takes the row it last spoke as dead if so.
+        let row = left_tree && node.is_selected().is_some();
+        let parent = row.then(|| node.filtered_parent(&filter)).flatten();
+        if let Some(parent) = parent {
+            let accessible = InterfaceSet::new(Interface::Accessible);
+            self.adapter
+                .unregister_interfaces(id, interfaces ^ (interfaces & accessible));
+            self.left_tree.push((id, parent.id()));
+        } else {
+            self.adapter.emit_cache_removed(id);
+            self.adapter.unregister_interfaces(id, interfaces);
+        }
         if let Some(true) = node.is_selected() {
             self.enqueue_selection_changed_if_needed(node);
         }
@@ -115,7 +135,75 @@ impl<'a> AdapterChangeHandler<'a> {
         for child in node.filtered_children(&filter) {
             self.remove_subtree(&child);
         }
-        self.remove_node(node);
+        self.remove_node(node, false);
+    }
+
+    // GitTurtle patch (GITTURTLE-PATCH.md): once the update is applied, a
+    // selectable item that left the tree while its parent stayed, included,
+    // is kept on the bus answering that parent; any other leaves it, and the
+    // cache, now, as does a kept item whose parent this update took out of
+    // the tree or excluded, and so do the oldest kept beyond `Removed::KEPT`.
+    fn keep_removed(&mut self) {
+        let accessible = InterfaceSet::new(Interface::Accessible);
+        let gone = {
+            let tree = self.adapter.context.read_tree();
+            let state = tree.state();
+            let mut removed = self.adapter.context.lock_removed();
+            if self.left_tree.is_empty() && removed.is_empty() {
+                return;
+            }
+            // Each parent is checked once: the kept items mostly share one.
+            let mut checked = HashMap::new();
+            let mut stays = |parent| {
+                *checked
+                    .entry(parent)
+                    .or_insert_with(|| Removed::stays(state, parent))
+            };
+            let mut gone = removed.orphans(&mut stays);
+            for (id, parent) in self.left_tree.drain(..) {
+                if stays(parent) {
+                    gone.extend(removed.keep(id, parent));
+                } else {
+                    gone.push(id);
+                }
+            }
+            gone
+        };
+        for id in gone {
+            self.adapter.emit_cache_removed(id);
+            self.adapter.unregister_interfaces(id, accessible);
+        }
+    }
+
+    // GitTurtle patch: a node back in the tree is no longer kept as removed;
+    // its own registration follows its filter as before, and one that came
+    // back excluded leaves the bus and the cache.
+    fn forget_removed(&mut self, node: &Node) {
+        if self.adapter.context.lock_removed().forget(node.id())
+            && filter(node) != FilterResult::Include
+        {
+            self.adapter.emit_cache_removed(node.id());
+            self.adapter
+                .unregister_interfaces(node.id(), InterfaceSet::new(Interface::Accessible));
+        }
+    }
+
+    // GitTurtle patch (GITTURTLE-PATCH.md): puts back on the bus everything
+    // an excluded node holds once it is no longer hidden. Nothing in it was
+    // added: it was covered, so a live region it holds is not announced
+    // again. A node added in this update keeps its own registration, and a
+    // node whose own change includes it again is still added, and
+    // announced, by `node_updated`.
+    fn show_children(&mut self, node: &Node) {
+        for child in node.filtered_children(&filter) {
+            let id = child.id();
+            if !self.added_nodes.contains(&id) {
+                self.adapter
+                    .register_interfaces(id, NodeWrapper(&child).interfaces());
+                self.adapter.emit_cache_added(id);
+            }
+            self.show_children(&child);
+        }
     }
 
     fn emit_text_change_if_needed_parent(&mut self, old_node: &Node, new_node: &Node) {
@@ -279,6 +367,7 @@ impl<'a> AdapterChangeHandler<'a> {
 
 impl TreeChangeHandler for AdapterChangeHandler<'_> {
     fn node_added(&mut self, node: &Node) {
+        self.forget_removed(node);
         if filter(node) == FilterResult::Include {
             self.add_node(node);
         }
@@ -299,8 +388,19 @@ impl TreeChangeHandler for AdapterChangeHandler<'_> {
                 if filter_new == FilterResult::ExcludeSubtree {
                     self.remove_subtree(old_node);
                 } else {
-                    self.remove_node(old_node);
+                    self.remove_node(old_node, false);
                 }
+            } else if filter_new == FilterResult::ExcludeSubtree {
+                // GitTurtle patch: a node passed over, such as a generic
+                // container, that is now hidden takes what it holds off the
+                // bus, as an included node's subtree leaves it.
+                for child in old_node.filtered_children(&filter) {
+                    self.remove_subtree(&child);
+                }
+            } else {
+                // GitTurtle patch: and once shown again it puts it back,
+                // including what changed or appeared while it was hidden.
+                self.show_children(new_node);
             }
         } else if filter_new == FilterResult::Include {
             let old_wrapper = NodeWrapper(old_node);
@@ -344,7 +444,7 @@ impl TreeChangeHandler for AdapterChangeHandler<'_> {
 
     fn node_removed(&mut self, node: &Node) {
         if filter(node) == FilterResult::Include {
-            self.remove_node(node);
+            self.remove_node(node, true);
         }
     }
 }
@@ -530,6 +630,7 @@ impl Adapter {
         let mut tree = self.context.tree.write().unwrap();
         tree.update_and_process_changes(update, &mut handler);
         drop(tree);
+        handler.keep_removed();
         handler.emit_selection_changed();
     }
 
@@ -615,11 +716,17 @@ impl Drop for Adapter {
 #[cfg(test)]
 mod tests {
     use super::Adapter;
-    use crate::{AdapterCallback, AppContext, CacheEvent, Event, InterfaceSet, WindowBounds};
+    use crate::context::Removed;
+    use crate::{
+        AdapterCallback, AppContext, CacheEvent, Error, Event, InterfaceSet, NodeIdOrRoot,
+        WindowBounds,
+    };
     use accesskit::{
         ActionHandler, ActionRequest, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
     };
     use accesskit_consumer::NodeId;
+    use atspi_common::{Interface, State};
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -806,6 +913,233 @@ mod tests {
         let ops = ops.lock().unwrap();
         assert_eq!(ops.len(), 1);
         assert!(matches!(ops[0], CacheOp::Added(_)));
+    }
+
+    /// GitTurtle patch: the objects on the bus, each node's interfaces as
+    /// the adapter registers and unregisters them, and the nodes it reports
+    /// removed from AT-SPI's cache, whose proxies libatspi disposes.
+    #[derive(Clone, Default)]
+    struct Registered {
+        objects: Arc<Mutex<HashMap<NodeId, InterfaceSet>>>,
+        uncached: Arc<Mutex<Vec<NodeId>>>,
+    }
+
+    impl AdapterCallback for Registered {
+        fn register_interfaces(&self, _: &Adapter, id: NodeId, interfaces: InterfaceSet) {
+            let mut objects = self.objects.lock().unwrap();
+            let object = objects.entry(id).or_insert(InterfaceSet::empty());
+            *object = *object | interfaces;
+        }
+        fn unregister_interfaces(&self, _: &Adapter, id: NodeId, interfaces: InterfaceSet) {
+            let mut objects = self.objects.lock().unwrap();
+            if let Some(object) = objects.get_mut(&id) {
+                *object = *object ^ (*object & interfaces);
+                if *object == InterfaceSet::empty() {
+                    objects.remove(&id);
+                }
+            }
+        }
+        fn emit_event(&self, _: &Adapter, event: Event) {
+            if let Event::Cache(CacheEvent::Removed(id)) = event {
+                self.uncached.lock().unwrap().push(id);
+            }
+        }
+    }
+
+    impl Registered {
+        fn interfaces(&self, id: NodeId) -> Option<InterfaceSet> {
+            self.objects.lock().unwrap().get(&id).copied()
+        }
+
+        /// Whether the adapter reported `id` removed from the cache.
+        fn uncached(&self, id: NodeId) -> bool {
+            self.uncached.lock().unwrap().contains(&id)
+        }
+    }
+
+    /// A window holding a list of `rows` selectable options, the first
+    /// selected, as a search's results are: window 0, list 1, rows from 2,
+    /// each drawn, so it has a `Component` interface besides `Accessible`.
+    fn list_of(rows: &[LocalNodeId]) -> Vec<(LocalNodeId, Node)> {
+        let mut list = with_children(Role::ListBox, rows);
+        list.set_label("Results");
+        let mut nodes = vec![
+            (
+                LocalNodeId(0),
+                with_children(Role::Window, &[LocalNodeId(1)]),
+            ),
+            (LocalNodeId(1), list),
+        ];
+        for (index, &row) in rows.iter().enumerate() {
+            let mut option = Node::new(Role::ListBoxOption);
+            option.set_label(format!("Row {}", row.0));
+            option.set_selected(index == 0);
+            let top = 20. * index as f64;
+            option.set_bounds(accesskit::Rect::new(0., top, 200., top + 20.));
+            nodes.push((row, option));
+        }
+        nodes
+    }
+
+    fn build_registered(rows: &[LocalNodeId]) -> (Adapter, Registered) {
+        let registered = Registered::default();
+        let adapter = Adapter::new(
+            &AppContext::new(None),
+            registered.clone(),
+            TreeUpdate {
+                nodes: list_of(rows),
+                tree: Some(Tree::new(LocalNodeId(0))),
+                tree_id: TreeId::ROOT,
+                focus: LocalNodeId(0),
+            },
+            false,
+            WindowBounds::default(),
+            NoOpActionHandler,
+        );
+        (adapter, registered)
+    }
+
+    /// The bus IDs of the list and of its rows, in order.
+    fn list_and_rows(adapter: &Adapter) -> (NodeId, Vec<NodeId>) {
+        let root = adapter.platform_node(adapter.root_id());
+        let list = root.child_at_index(0).unwrap().unwrap();
+        let list_node = adapter.platform_node(list);
+        let count = list_node.child_count().unwrap() as usize;
+        let rows = (0..count)
+            .map(|index| list_node.child_at_index(index).unwrap().unwrap())
+            .collect();
+        (list, rows)
+    }
+
+    /// GitTurtle patch: a row a search takes out of its list stays on the
+    /// bus, defunct, with only its `Accessible` interface, and answers its
+    /// list as its parent while the list stays: Orca asks it of the row it
+    /// last spoke at the next move, and with no answer it found no common
+    /// ancestor and read the window, the dialog and the list again. It stays
+    /// in AT-SPI's cache too: libatspi disposes an object the cache drops,
+    /// and Orca, taking the row as dead, reads the dialog and the list. Once
+    /// the list is gone too, it answers nothing.
+    #[test]
+    fn a_row_taken_out_of_its_list_answers_the_list_while_it_stays() {
+        let rows = [LocalNodeId(2), LocalNodeId(3)];
+        let (mut adapter, registered) = build_registered(&rows);
+        let (list, ids) = list_and_rows(&adapter);
+        assert_eq!(
+            adapter.platform_node(ids[0]).parent().unwrap(),
+            NodeIdOrRoot::Node(list)
+        );
+        adapter.update(update(list_of(&rows[1..])));
+        let removed = adapter.platform_node(ids[0]);
+        assert_eq!(removed.parent().unwrap(), NodeIdOrRoot::Node(list));
+        assert!(removed.state().contains(State::Defunct));
+        assert!(matches!(removed.name(), Err(Error::Defunct)));
+        assert_eq!(
+            registered.interfaces(ids[0]),
+            Some(InterfaceSet::new(Interface::Accessible)),
+            "only its Accessible interface stays on the bus"
+        );
+        assert!(!registered.uncached(ids[0]), "and it stays in the cache");
+        adapter.update(update(vec![(
+            LocalNodeId(0),
+            with_children(Role::Window, &[]),
+        )]));
+        assert!(matches!(removed.parent(), Err(Error::Defunct)));
+        assert!(
+            registered.interfaces(ids[1]).is_none(),
+            "a row gone with its list"
+        );
+        assert!(
+            registered.uncached(ids[1]) && registered.uncached(list),
+            "leaves the cache with it"
+        );
+        assert!(
+            matches!(adapter.platform_node(list).parent(), Err(Error::Defunct)),
+            "the list, no selectable item, answers nothing once gone"
+        );
+        assert!(registered.interfaces(list).is_none(), "and leaves the bus");
+    }
+
+    /// GitTurtle patch: a row back in its list answers as any row does, and
+    /// leaves the bus with its list; of the rows taken out one at a time,
+    /// the oldest beyond `Removed::KEPT` leave the bus and AT-SPI's cache.
+    #[test]
+    fn rows_kept_as_removed_are_bounded_and_forgotten_on_return() {
+        let count = Removed::KEPT + 2;
+        let rows: Vec<_> = (2..2 + count as u64).map(LocalNodeId).collect();
+        let (mut adapter, registered) = build_registered(&rows);
+        let (list, ids) = list_and_rows(&adapter);
+        adapter.update(update(list_of(&rows[1..])));
+        adapter.update(update(list_of(&rows)));
+        assert_eq!(
+            adapter.platform_node(ids[0]).parent().unwrap(),
+            NodeIdOrRoot::Node(list)
+        );
+        assert!(
+            registered
+                .interfaces(ids[0])
+                .is_some_and(|interfaces| interfaces.contains(Interface::Component)),
+            "back with all its interfaces"
+        );
+        assert!(
+            !registered.uncached(ids[0]),
+            "never out of the cache, which adds it again"
+        );
+        for taken in 1..=count {
+            adapter.update(update(list_of(&rows[taken..])));
+        }
+        assert!(registered.interfaces(ids[0]).is_none());
+        assert!(registered.interfaces(ids[1]).is_none());
+        assert!(registered.uncached(ids[0]) && registered.uncached(ids[1]));
+        assert!(!registered.uncached(ids[2]));
+        assert!(matches!(
+            adapter.platform_node(ids[1]).parent(),
+            Err(Error::Defunct)
+        ));
+        assert_eq!(
+            adapter.platform_node(ids[2]).parent().unwrap(),
+            NodeIdOrRoot::Node(list)
+        );
+        assert_eq!(
+            registered.interfaces(ids[count - 1]),
+            Some(InterfaceSet::new(Interface::Accessible))
+        );
+    }
+
+    /// GitTurtle patch: a kept row stays through a later update that leaves
+    /// its list in place, and leaves the bus and AT-SPI's cache once a later
+    /// update takes its list out of the tree or hides it: kept, it would
+    /// stay on the bus and in libatspi's cache for good.
+    #[test]
+    fn a_kept_row_leaves_the_bus_when_its_list_leaves_later() {
+        let rows = [LocalNodeId(2), LocalNodeId(3)];
+        let mut hidden = with_children(Role::ListBox, &rows[1..]);
+        hidden.set_hidden();
+        let leaving = [
+            vec![(LocalNodeId(0), with_children(Role::Window, &[]))],
+            vec![(LocalNodeId(1), hidden)],
+        ];
+        for nodes in leaving {
+            let (mut adapter, registered) = build_registered(&rows);
+            let (list, ids) = list_and_rows(&adapter);
+            adapter.update(update(list_of(&rows[1..])));
+            let mut renamed = with_children(Role::ListBox, &rows[1..]);
+            renamed.set_label("Found");
+            adapter.update(update(vec![(LocalNodeId(1), renamed)]));
+            let kept = adapter.platform_node(ids[0]);
+            assert_eq!(kept.parent().unwrap(), NodeIdOrRoot::Node(list));
+            assert_eq!(
+                registered.interfaces(ids[0]),
+                Some(InterfaceSet::new(Interface::Accessible))
+            );
+            assert!(!registered.uncached(ids[0]));
+            adapter.update(update(nodes));
+            assert!(matches!(kept.parent(), Err(Error::Defunct)));
+            assert!(
+                registered.interfaces(ids[0]).is_none(),
+                "the kept row leaves the bus with its list"
+            );
+            assert!(registered.uncached(ids[0]), "and the cache");
+        }
     }
 
     #[test]

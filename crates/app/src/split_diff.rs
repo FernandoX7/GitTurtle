@@ -2,8 +2,10 @@
 use crate::{
     appearance::palette,
     diff_view::{self, LineNumbers},
+    focus_ring::FocusRing,
     text::PatchPresentation,
 };
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, canvas,
@@ -11,6 +13,34 @@ use gpui_kit::{
     div, point, px, rgb,
 };
 use std::{mem::size_of, ops::Range, sync::Arc};
+
+/// The height of the heading over each side's text, at the default size.
+pub(crate) const SIDE_HEADING_HEIGHT: f32 = 30.;
+
+/// How Split's headings stand in the room its sides have, which Compare
+/// decides in the frame it draws them (`views::split_room`): labels give
+/// way before content (DESIGN.md, "One responsive order").
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Headings {
+    /// Whole above the text.
+    #[default]
+    Whole,
+    /// Given way to the text's one whole row, which the room holds but not
+    /// with them: each side's accessible name says which side it is.
+    GivenWay,
+    /// The room, this tall, holds no whole row: they take its height, their
+    /// padding giving way first and their words drawn only while the room
+    /// holds them whole, the text none, and the focused side's ring lies on
+    /// the whole side. Kept at their own height there, they ran past the
+    /// room, which cut them, and the ring lay on a text 0 px tall.
+    Room(Pixels),
+}
+
+/// How tall a heading's words stand: its 11 pt text on GPUI's line height,
+/// the golden ratio times the text's size.
+fn heading_words_height() -> Pixels {
+    crate::appearance::ui_text(11.) * std::f32::consts::GOLDEN_RATIO
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Row {
@@ -209,18 +239,34 @@ pub(crate) fn align_rows(sources: &[Vec<&str>; 2], patch: &PatchPresentation) ->
     rows
 }
 
-/// Each side's changed-line tint and changed-word tint, old side first, from the applied
-/// palette and its fitted editor highlights.
-fn side_tints(cx: &App) -> [(u32, u32); 2] {
+/// Each side's changed-line tint, changed-word tint and, under More contrast, the rule a changed
+/// word draws along its box's bottom edge, old side first, from the applied palette and its
+/// fitted editor highlights.
+fn side_tints(cx: &App) -> [(u32, u32, Option<u32>); 2] {
     let (colors, highlights) = (palette(cx), crate::appearance::editor_highlights(cx));
     [
-        (colors.removed_background, highlights.removed_word),
-        (colors.added_background, highlights.added_word),
+        (
+            colors.removed_background,
+            highlights.removed_word,
+            highlights.removed_rule,
+        ),
+        (
+            colors.added_background,
+            highlights.added_word,
+            highlights.added_rule,
+        ),
     ]
 }
 
 impl SplitSide {
-    fn decorations(&self, (line, word): (u32, u32)) -> Vec<TextDecoration> {
+    /// The side's changed lines in `line` and its emphasized words in `word`, each word with a
+    /// `rule` along its box's bottom edge where there is one, on a decoration of its own, as
+    /// `text::theme_decorations` gives a unified patch's words theirs. Each run of adjacent
+    /// changed source lines also fills its lines' whole rows in `line`, on one decoration of
+    /// its own, as a unified patch's changed blocks do, blank lines included; a filler row,
+    /// which holds no source line, stays out of every run and draws nothing (decision,
+    /// 2026-11-05).
+    fn decorations(&self, (line, word, rule): (u32, u32, Option<u32>)) -> Vec<TextDecoration> {
         let style = HighlightStyle {
             background_color: Some(rgb(line).into()),
             ..Default::default()
@@ -231,7 +277,27 @@ impl SplitSide {
         };
         let mut result = Vec::new();
         let mut words = self.words.iter().peekable();
+        // A changed row holds a source line where a source span starts with it.
+        let mut spans = self.source_spans.iter().peekable();
+        let mut block: Option<Range<usize>> = None;
+        let fill = |block: Option<Range<usize>>, result: &mut Vec<TextDecoration>| {
+            if let Some(block) = block {
+                result.push(
+                    TextDecoration::new(block, HighlightStyle::default())
+                        .with_row_background(rgb(line).into()),
+                );
+            }
+        };
         for range in &self.changes {
+            while spans.next_if(|span| span.start < range.start).is_some() {}
+            let source = spans.peek().is_some_and(|span| span.start == range.start);
+            match &mut block {
+                Some(block) if source && block.end == range.start => block.end = range.end,
+                _ => fill(
+                    std::mem::replace(&mut block, source.then(|| range.clone())),
+                    &mut result,
+                ),
+            }
             let mut cursor = range.start;
             while let Some(word) = words.peek() {
                 if word.start >= range.end {
@@ -242,12 +308,19 @@ impl SplitSide {
                     result.push(TextDecoration::new(cursor..word.start, style));
                 }
                 result.push(TextDecoration::new(word.clone(), emphasized));
+                if let Some(rule) = rule {
+                    result.push(
+                        TextDecoration::new(word.clone(), HighlightStyle::default())
+                            .with_bottom_rule(rgb(rule).into()),
+                    );
+                }
                 cursor = word.end;
             }
             if cursor < range.end {
                 result.push(TextDecoration::new(cursor..range.end, style));
             }
         }
+        fill(block, &mut result);
         result
     }
 
@@ -278,10 +351,14 @@ pub struct SplitView {
     editors: [Entity<EditorState>; 2],
     views: [Entity<diff_view::DiffView>; 2],
     decorations: [crate::editor_find::PatchDecorations; 2],
-    search_heights: [Pixels; 2],
     scroll: LinkedScroll,
+    /// How its headings stand in the frame being drawn ([`Headings`]).
+    headings: std::cell::Cell<Headings>,
     initial_row: Option<usize>,
     change_index: Option<usize>,
+    /// The window's keyboard focus ring, which a side's text rings its edge
+    /// with while its editor holds focus.
+    focus_ring: FocusRing,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -318,6 +395,7 @@ impl LinkedScroll {
 pub fn new(
     presentation: Arc<SplitPresentation>,
     language: &str,
+    focus_ring: FocusRing,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<SplitView> {
@@ -404,14 +482,16 @@ pub fn new(
                 }
             }));
         }
+        // The sides share one Find bar, which `render` draws across both
+        // (`editor_find::Editor::sharing_find_with`).
         for (side, view) in views.iter().enumerate() {
-            subscriptions.push(cx.observe(view, move |this: &mut SplitView, view, cx| {
-                let height = view.read(cx).find_header_height(cx);
-                if (this.search_heights[side] - height).abs() > px(0.5) {
-                    this.search_heights[side] = height;
-                    cx.notify();
-                }
-            }));
+            let partner = editors[1 - side].clone();
+            let side = if side == 0 {
+                crate::editor_find::Side::Before
+            } else {
+                crate::editor_find::Side::After
+            };
+            view.update(cx, |view, _| view.share_find_with(partner, side));
         }
         SplitView {
             initial_row: Some(presentation.first_change.saturating_sub(3)),
@@ -420,14 +500,33 @@ pub fn new(
             editors,
             views,
             decorations,
-            search_heights: [px(0.); 2],
             scroll: LinkedScroll::default(),
+            headings: Default::default(),
+            focus_ring,
             _subscriptions: subscriptions,
         }
     })
 }
 
 impl SplitView {
+    /// The Before and After sides' editors.
+    pub(crate) fn editors(&self) -> &[Entity<EditorState>; 2] {
+        &self.editors
+    }
+
+    /// Draws its headings as `headings` says in the frame being drawn, which
+    /// lays it out next.
+    pub(crate) fn fit_headings(&self, headings: Headings) {
+        self.headings.set(headings);
+    }
+
+    /// The Before and After sides' text views, for a test to read their
+    /// accessible names.
+    #[cfg(test)]
+    pub(crate) fn views(&self) -> &[Entity<diff_view::DiffView>; 2] {
+        &self.views
+    }
+
     pub fn rescale_code(&mut self, ratio: f32, cx: &mut Context<Self>) {
         // An editor that has never painted still owns its initial logical
         // change row; the first measured layout will resolve that request.
@@ -510,12 +609,57 @@ impl SplitView {
 impl Render for SplitView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let search_heights = self.search_heights;
-        let reserved_height = search_heights[0].max(search_heights[1]);
         let trace_editors = diff_view::scroll_trace_enabled().then(|| self.editors.clone());
-        div().size_full().relative().flex().children((0..2).map(|side| {
+        // A side whose editor holds keyboard focus rings its text's edge,
+        // over its lines, so none of them moves.
+        let mut edges: [_; 2] = std::array::from_fn(|side| {
+            self.focus_ring
+                .edge(&self.editors[side].read(cx).focus_handle(cx), rgb(p.accent))
+        });
+        // The sides' one Find bar, open on either, stands across both in
+        // their headings' row, so their rows start level under it and a
+        // narrow window's bar takes the comparison's width, as the unified
+        // patch's does, and the headings' height: on a side of its own it
+        // took four lines in a 461 × 490 window and left no row in view.
+        let shared_bar = crate::editor_find::shared_bar(&self.editors, cx);
+        // Where the room holds a whole row but not the headings with it,
+        // they give way; where it holds no row, they take its height, and
+        // the focused side, being all heading, rings its heading's edge.
+        let fit = self.headings.get();
+        let (height, words) = match fit {
+            Headings::Room(room) => (room, room >= heading_words_height()),
+            _ => (crate::appearance::ui_size(SIDE_HEADING_HEIGHT), true),
+        };
+        let headings = (shared_bar.is_none() && fit != Headings::GivenWay).then(|| {
+            div().flex().flex_none().children((0..2).map(|side| {
+                div()
+                    .debug_selector(move || format!("split-heading-{side}"))
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h(height)
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .border_r_1()
+                    .border_color(rgb(p.border))
+                    .bg(rgb(p.panel))
+                    .text_size(crate::appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    .when(words, |heading| {
+                        heading.child(
+                            div()
+                                .debug_selector(move || format!("split-heading-words-{side}"))
+                                .child(if side == 0 { "Before" } else { "After" }),
+                        )
+                    })
+                    .when(matches!(fit, Headings::Room(_)), |heading| {
+                        heading.children(edges[side].take())
+                    })
+            }))
+        });
+        let sides = div().flex_1().min_h_0().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
-            let padding = reserved_height - search_heights[side];
             let presentation = Arc::clone(&self.presentation);
             div()
                 .flex_1()
@@ -539,26 +683,25 @@ impl Render for SplitView {
                 })
                 .child(
                     div()
-                        .h(crate::appearance::ui_size(30.))
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .bg(rgb(p.panel))
-                        .text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child(if side == 0 { "Before" } else { "After" }),
-                )
-                .child(
-                    div()
+                        .debug_selector(move || format!("split-text-{side}"))
                         .flex_1()
                         .min_h_0()
                         .relative()
                         .flex()
                         .flex_col()
-                        .pt(padding)
-                        .child(div().flex_1().min_h_0().child(self.views[side].clone())),
+                        .child(div().flex_1().min_h_0().child(self.views[side].clone()))
+                        .children(edges[side].take()),
                 )
-        })).children(trace_editors.map(|editors| {
+        }));
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .children(headings)
+            .children(shared_bar)
+            .child(sides)
+            .children(trace_editors.map(|editors| {
             // Painted after both panes, so one record contains their actual
             // same-frame geometry. The transparent observer has no hitbox and
             // never requests another frame or changes either editor.
@@ -645,7 +788,13 @@ mod tests {
     fn fractional_split_layout_preserves_both_measured_viewports(cx: &mut gpui::TestAppContext) {
         cx.update(gpui::init);
         let (probe, cx) = cx.add_window_view(|window, cx| FontProbe {
-            split: new(long_presentation(), "text", window, cx),
+            split: new(
+                long_presentation(),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ),
             font_size: px(12.),
         });
         let split = cx.read(|cx| probe.read(cx).split.clone());
@@ -694,7 +843,13 @@ mod tests {
     fn scale_change_before_first_paint_keeps_the_split_change_row(cx: &mut gpui::TestAppContext) {
         cx.update(gpui::init);
         let (probe, cx) = cx.add_window_view(move |window, cx| {
-            let split = new(long_presentation(), "text", window, cx);
+            let split = new(
+                long_presentation(),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            );
             split.update(cx, |split, cx| {
                 assert_eq!(split.initial_row, Some(546));
                 assert!(
@@ -728,6 +883,444 @@ mod tests {
             assert_eq!(split.scroll.applied, [px(-23. * 546.); 2]);
             assert_eq!(split.scroll.pending, [None; 2]);
         });
+    }
+
+    /// Under More contrast each side's emphasized words in Split draw a rule inside their
+    /// highlight box's bottom edge, a 1 px stroke as wide as the box, in the side's fitted
+    /// colour, removed on Before and added on After, at 13 and 18 pt, in a dark palette, one
+    /// whose removed words nearly vanish in colour-blind models, and a light one; no other quad
+    /// of a rule's colour and height is painted, so a whole changed line and unchanged text draw
+    /// none. Off, no word draws one, and each side's decorations carry no rule.
+    #[gpui::test]
+    fn more_contrast_rules_each_emphasized_word_in_split(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+
+        struct Root(Entity<SplitView>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1200.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let [before, after, patch] = crate::text::DENSE_HUNK;
+        let presentation = Arc::new(prepare(before, after, patch));
+        let words = presentation.sides.each_ref().map(|side| side.words.len());
+        assert_eq!(words, [4, 4], "four changed words a side");
+        cx.update(gpui::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            Root(new(
+                Arc::clone(&presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ))
+        });
+        let split = cx.read(|cx| root.read(cx).0.clone());
+        for choice in [
+            ThemeChoice::Midnight,
+            ThemeChoice::SolarizedDark,
+            ThemeChoice::Daylight,
+        ] {
+            for code in [13, 18] {
+                for more in [true, false] {
+                    let at = format!("{choice:?} at {code} pt, More contrast {more}");
+                    let highlights = cx.update(|window, cx| {
+                        set_more_contrast(more, cx);
+                        choice.apply(Some(&mut *window), cx);
+                        apply_text_sizes(13, code, window, cx);
+                        split.update(cx, |split, cx| split.refresh_theme(cx));
+                        editor_highlights(cx)
+                    });
+                    cx.update(|window, cx| window.draw(cx).clear(cx));
+                    // Old side first: removed words on Before, added on After.
+                    let sides = [
+                        (highlights.removed_word, highlights.removed_rule),
+                        (highlights.added_word, highlights.added_rule),
+                    ];
+                    let rules = sides.iter().filter_map(|side| side.1).collect::<Vec<_>>();
+                    let (drawn, stray) = cx.update(|window, _| {
+                        crate::text::painted_word_rules(window, &sides.map(|side| side.0), &rules)
+                    });
+                    assert_eq!(stray, 0, "{at}: a rule off every emphasized word's box");
+                    for (side, (tint, rule)) in sides.into_iter().enumerate() {
+                        let boxes = drawn
+                            .iter()
+                            .filter(|(_, drawn, _)| *drawn == tint)
+                            .collect::<Vec<_>>();
+                        assert_eq!(boxes.len(), words[side], "{at}: side {side}'s word boxes");
+                        let want = rule.map(|rule| vec![Some(rule)]).unwrap_or_default();
+                        for (bounds, _, along) in boxes {
+                            assert_eq!(
+                                along, &want,
+                                "{at}: side {side}'s word box {bounds:?} draws {want:?} inside its bottom edge"
+                            );
+                        }
+                    }
+                    if !more {
+                        let tints = cx.read(side_tints);
+                        assert!(
+                            (0..2)
+                                .flat_map(|side| presentation.sides[side].decorations(tints[side]))
+                                .all(|decoration| decoration.bottom_rule.is_none()),
+                            "{at}: no decoration has a rule"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Under More contrast the Diff view draws a patch's text in the syntax roles fitted from
+    /// the diff colours, as Split does (decision, 2026-11-05: one file never draws one change in
+    /// two colours by view): a compared patch file's removed line, added line and hunk location
+    /// draw one colour each in the Diff view, through its decorations, and on Split's sides,
+    /// through the diff grammar under each side's tints, in a dark and a light built-in whose
+    /// raised roles differ from their diff colours. Off, the Diff view keeps the palette's diff
+    /// colours (`text::tests::patch_headers_and_changes_draw_palette_colors_in_every_built_in`).
+    #[gpui::test]
+    fn more_contrast_draws_a_change_in_one_colour_in_diff_and_split(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{ThemeChoice, packed, palette, set_more_contrast};
+        use gpui::{
+            combine_highlights,
+            component::{Rope, Theme, highlighter::SyntaxHighlighter},
+        };
+
+        // A patch file whose old side holds a removed line and whose new side an added one.
+        let (before, after) = ("@@ -1 +1 @@\n-old\n", "@@ -1 +1 @@\n+new\n");
+        let patch = "@@ -1,2 +1,2 @@\n @@ -1 +1 @@\n--old\n++new\n";
+        let unified = crate::text::PatchPresentation::prepare(patch);
+        let presentation = Arc::new(prepare(before, after, patch));
+        cx.update(gpui::init);
+        let cx = cx.add_empty_window();
+        // The Diff view's editor is held for the test's life, as Compare holds it.
+        let (_editor, diff, split) = cx.update(|window, cx| {
+            let (editor, decorations) =
+                crate::text::editor_with_decorations(patch, "diff", Some(&unified), window, cx);
+            let split = new(
+                Arc::clone(&presentation),
+                "diff",
+                FocusRing::default(),
+                window,
+                cx,
+            );
+            let decorations = decorations.expect("a prepared patch is decorated");
+            (editor, decorations, split)
+        });
+        for choice in [ThemeChoice::SolarizedDark, ThemeChoice::SolarizedLight] {
+            cx.update(|_, cx| {
+                set_more_contrast(true, cx);
+                choice.apply(None, cx);
+                crate::text::refresh_theme(&diff, &unified, cx);
+                split.update(cx, |split, cx| split.refresh_theme(cx));
+                let theme = Theme::global(cx).highlight_theme.clone();
+                let compose = |syntax: Vec<(Range<usize>, HighlightStyle)>,
+                               decorations: Vec<TextDecoration>| {
+                    combine_highlights(
+                        syntax,
+                        decorations
+                            .into_iter()
+                            .map(|decoration| (decoration.range, decoration.style)),
+                    )
+                    .collect::<Vec<_>>()
+                };
+                // The colour drawn at the first byte of `needle` in `text`, where a style sets
+                // one.
+                let color_at =
+                    |text: &str, styles: &[(Range<usize>, HighlightStyle)], needle: &str| {
+                        let at = text.find(needle).expect("the text holds it");
+                        styles
+                            .iter()
+                            .find(|(range, _)| range.contains(&at))
+                            .and_then(|(_, style)| style.color)
+                            .map(packed)
+                    };
+                // The Diff view draws a patch as plain text, so its decorations decide.
+                let unified_drawn = compose(Vec::new(), diff.drawn(cx));
+                let sides = [0, 1].map(|side| {
+                    let text = presentation.sides[side].text.as_str();
+                    let mut highlighter = SyntaxHighlighter::new("diff");
+                    highlighter.update(None, &Rope::from(text), None);
+                    let syntax = highlighter.styles(&(0..text.len()), theme.as_ref());
+                    let syntax = combine_highlights(Vec::new(), syntax).collect();
+                    compose(syntax, split.read(cx).decorations[side].drawn(cx))
+                });
+                let chosen = choice.palette();
+                for (what, in_diff, (side, needle), off) in [
+                    ("removed line", "--old", (0, "-old"), chosen.removed),
+                    ("added line", "++new", (1, "+new"), chosen.added),
+                    ("hunk location", "@@ -1,2", (1, "@@ -1 +1"), chosen.hunk),
+                ] {
+                    let text = presentation.sides[side].text.as_str();
+                    let drawn = (
+                        color_at(patch, &unified_drawn, in_diff),
+                        color_at(text, &sides[side], needle),
+                    );
+                    assert!(
+                        drawn.0.is_some() && drawn.0 == drawn.1,
+                        "{choice:?}: the {what} draws #{:06x} in the Diff view and #{:06x} in \
+                         Split",
+                        drawn.0.unwrap_or_default(),
+                        drawn.1.unwrap_or_default(),
+                    );
+                    // The raised role differs from the diff colour drawn off, so the Diff view's
+                    // colour drawn off would fail here.
+                    assert_ne!(drawn.0, Some(off), "{choice:?}: the {what} is raised");
+                }
+                assert_eq!(
+                    palette(cx).added,
+                    chosen.added,
+                    "{choice:?}: More contrast keeps the diff colours"
+                );
+            });
+        }
+    }
+
+    /// Under More contrast, Find on a Split side over its emphasized words, as in the Diff view
+    /// (`text::tests::find_hides_a_changed_word_s_rule_only_under_its_current_match`): a word's
+    /// rule stays under Find's other matches, so a matched word still reads as changed, and
+    /// gives way under the current match, whose accent underline, on the side's reserved first
+    /// collection, would run about 2.6 px above it. "n" on After matches the emphasized "new"
+    /// and "green" and the unchanged "one" and "line".
+    #[gpui::test]
+    fn find_hides_an_emphasized_word_s_rule_only_under_its_current_match(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+
+        struct Root(Entity<SplitView>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1200.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let [before, after, patch] = crate::text::DENSE_HUNK;
+        let presentation = Arc::new(prepare(before, after, patch));
+        cx.update(gpui::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            set_more_contrast(true, cx);
+            ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+            apply_text_sizes(13, 13, window, cx);
+            Root(new(
+                Arc::clone(&presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ))
+        });
+        let after = cx.read(|cx| root.read(cx).0.read(cx).editors[1].clone());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let focus = cx.update(|_, cx| after.focus_handle(cx));
+        cx.update(|window, cx| window.focus(&focus, cx));
+        cx.dispatch_action(gpui::component::input::Search);
+        cx.simulate_input("n");
+        cx.run_until_parked();
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let highlights = cx.update(|_, cx| editor_highlights(cx));
+        let fill = |color: u32| gpui::Background::from(gpui::Hsla::from(rgb(color)));
+        let rule = fill(highlights.added_rule.expect("More contrast is on"));
+        let (quads, stroke) = cx.update(|window, _| {
+            let stroke = (window.scale_factor() - 0.5).ceil().max(1.);
+            (window.painted_quads(), stroke)
+        });
+        let painted = |color: u32| {
+            quads
+                .iter()
+                .filter(|quad| quad.background == fill(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>()
+        };
+        let (current, others) = (
+            painted(highlights.find_current),
+            painted(highlights.find_match),
+        );
+        assert_eq!(
+            (current.len(), others.len()),
+            (1, 3),
+            "one current match and three others: {current:?}, {others:?}"
+        );
+        let ruled = quads
+            .iter()
+            .filter(|quad| quad.bounds.size.height.0 == stroke && quad.background == rule)
+            .map(|quad| quad.bounds)
+            .collect::<Vec<_>>();
+        let keeps = |at: &gpui::Bounds<gpui::ScaledPixels>| {
+            ruled.iter().any(|rule| {
+                rule.bottom() == at.bottom()
+                    && rule.left() <= at.left()
+                    && rule.right() >= at.right()
+            })
+        };
+        let current = current[0];
+        assert!(
+            !ruled.iter().any(|rule| rule.bottom() == current.bottom()
+                && rule.left() < current.right()
+                && rule.right() > current.left()),
+            "the current match {current:?} hides its word's rule: {ruled:?}"
+        );
+        // The current match is the first, in "new"; "green"'s match keeps its rule.
+        assert_eq!(
+            others.iter().filter(|other| keeps(other)).count(),
+            1,
+            "the other match in an emphasized word keeps its rule: {others:?}, {ruled:?}"
+        );
+    }
+
+    /// Each side of Split carries a changed line's tint across its editor's whole row, so a
+    /// replacement reads as one block a side with a straight right edge (decision, 2026-11-05):
+    /// a short changed line, a blank one, which drew no tint at all, and one wider than the view
+    /// carry it from the text's left edge, where it always started, to the side's visible right
+    /// edge, also scrolled to the far right, where the long lines' text ends short of that edge;
+    /// at 13 and 18 pt, More contrast off and on, in Midnight and in Tokyo Night, whose More
+    /// contrast moves its added line tint. Unchanged lines and Before's filler rows beside the
+    /// extra added lines draw no line tint, and each emphasized word drawn keeps its box, with
+    /// its rule under More contrast.
+    #[gpui::test]
+    fn a_changed_line_s_tint_spans_its_row_on_each_split_side(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+        use crate::text::RowTint;
+
+        struct Root(Entity<SplitView>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1200.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let [before, after, patch] = crate::text::row_tint_hunk();
+        let presentation = Arc::new(prepare(&before, &after, &patch));
+        assert_eq!(
+            numbers(&presentation, 0),
+            [
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                None,
+                None,
+                Some(5),
+                None
+            ],
+            "Before pads the extra added lines with two filler rows"
+        );
+        cx.update(gpui::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            Root(new(
+                Arc::clone(&presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ))
+        });
+        let split = cx.read(|cx| root.read(cx).0.clone());
+        let editors = cx.read(|cx| split.read(cx).editors.clone());
+        let mut moved = false;
+        for choice in [ThemeChoice::Midnight, ThemeChoice::TokyoNight] {
+            let chosen = cx.update(|window, cx| {
+                set_more_contrast(false, cx);
+                choice.apply(Some(&mut *window), cx);
+                palette(cx).added_background
+            });
+            for code in [13, 18] {
+                for more in [false, true] {
+                    for far_right in [false, true] {
+                        let at = format!(
+                            "{choice:?} at {code} pt, More contrast {more}, scrolled to the {}",
+                            if far_right { "far right" } else { "start" }
+                        );
+                        let (colors, highlights) = cx.update(|window, cx| {
+                            set_more_contrast(more, cx);
+                            choice.apply(Some(&mut *window), cx);
+                            apply_text_sizes(13, code, window, cx);
+                            split.update(cx, |split, cx| split.refresh_theme(cx));
+                            (palette(cx), editor_highlights(cx))
+                        });
+                        moved |= colors.added_background != chosen;
+                        let x = if far_right { -100_000. } else { 0. };
+                        for _ in 0..2 {
+                            cx.update(|window, cx| {
+                                for editor in &editors {
+                                    editor.update(cx, |state, cx| {
+                                        state.set_scroll_offset(point(px(x), px(0.)), cx)
+                                    });
+                                }
+                                window.draw(cx).clear(cx);
+                            });
+                        }
+                        let (removed, added) = (colors.removed_background, colors.added_background);
+                        // Scrolled to the far right, the long lines end short of the edge.
+                        let long = |tint| {
+                            if far_right {
+                                RowTint::ToEdge(tint)
+                            } else {
+                                RowTint::PastEdge(tint)
+                            }
+                        };
+                        let sides = [
+                            [
+                                RowTint::Untinted,
+                                RowTint::ToEdge(removed),
+                                RowTint::ToEdge(removed),
+                                long(removed),
+                                RowTint::Untinted,
+                                RowTint::Untinted,
+                                RowTint::Untinted,
+                            ],
+                            [
+                                RowTint::Untinted,
+                                RowTint::ToEdge(added),
+                                RowTint::ToEdge(added),
+                                long(added),
+                                RowTint::ToEdge(added),
+                                RowTint::ToEdge(added),
+                                RowTint::Untinted,
+                            ],
+                        ];
+                        for (side, rows) in sides.iter().enumerate() {
+                            cx.update(|window, cx| {
+                                crate::text::assert_row_tints(
+                                    &format!("{at}, side {side}"),
+                                    window,
+                                    editors[side].read(cx),
+                                    [removed, added],
+                                    rows,
+                                )
+                            });
+                        }
+                        let words = [
+                            (highlights.removed_word, highlights.removed_rule),
+                            (highlights.added_word, highlights.added_rule),
+                        ];
+                        let rules = words.iter().filter_map(|word| word.1).collect::<Vec<_>>();
+                        let (drawn, stray) = cx.update(|window, _| {
+                            crate::text::painted_word_rules(
+                                window,
+                                &words.map(|word| word.0),
+                                &rules,
+                            )
+                        });
+                        assert_eq!(stray, 0, "{at}: a rule off every emphasized word's box");
+                        for (bounds, tint, along) in drawn {
+                            let rule = words[usize::from(tint == highlights.added_word)].1;
+                            let want = rule.map(|rule| vec![Some(rule)]).unwrap_or_default();
+                            assert_eq!(along, want, "{at}: the word box {bounds:?}'s rule");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(moved, "More contrast moves Tokyo Night's added line tint");
     }
 
     #[test]
@@ -802,5 +1395,452 @@ mod tests {
             numbers(&p, 0),
             (1..=30).map(Some).chain([None]).collect::<Vec<_>>()
         );
+    }
+
+    /// Scrolling a dense diff, for a release build: 2,400 replaced lines,
+    /// each with four changed words a side, so every visible line carries a
+    /// line decoration and word decorations, in the Diff view and in Split,
+    /// at 13 and 18 pt, in Midnight, with More contrast off and on. After
+    /// one untimed pass, each of sixty steps of 800 px down the text times
+    /// the scroll from the call that sets the offset (Split's first side,
+    /// which its observer mirrors to the second) through the frame drawn
+    /// after it: the scroll's effects, then layout, prepaint and paint of the
+    /// whole window on the test platform, with no GPU, compositor or display
+    /// link, and with the test platform's text system, which places glyphs
+    /// without shaping a font. The last step must show row 1,000 or later on
+    /// both sides, so the steps move the text. Then the same steps over many
+    /// one-line changed blocks (`diff_blocks` and `split_blocks`), the slowest
+    /// input for the changed lines' row fills: 1,600 unchanged lines, each
+    /// followed by a removed and an added line, every other added line blank.
+    /// Then the security review's
+    /// crafted worst case: 37 replaced pairs of 16,384-byte lines, each with
+    /// 81 changed words a side, the most pairs one file's word budget gives
+    /// words, in the Diff view at 13 pt with More contrast off and on, Find
+    /// closed and then open on `.`, which matches every changed word's
+    /// separator, sixty steps between the top and 600 px down. It names no More contrast API beyond the setting, so it measures
+    /// the same steps on a build without the changed-word rule.
+    #[gpui::test]
+    #[ignore = "Opt-in release benchmark: set GITTURTLE_DIFF_SCROLL_BENCH_OUTPUT and run with --release --ignored"]
+    fn diff_scroll_release_benchmark(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{ThemeChoice, apply_text_sizes, set_more_contrast};
+        const LINES: usize = 2_400;
+        const STEPS: usize = 60;
+        const STEP: f32 = 800.;
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "performance evidence requires --release"
+        );
+        let output = std::env::var_os("GITTURTLE_DIFF_SCROLL_BENCH_OUTPUT")
+            .expect("the runner supplies the result destination");
+
+        struct Root {
+            split: bool,
+            diff: Entity<diff_view::DiffView>,
+            split_view: Entity<SplitView>,
+            crafted: Option<Entity<diff_view::DiffView>>,
+        }
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let view = if let Some(crafted) = &self.crafted {
+                    crafted.clone().into_any_element()
+                } else if self.split {
+                    self.split_view.clone().into_any_element()
+                } else {
+                    self.diff.clone().into_any_element()
+                };
+                div().w(px(1200.)).h(px(900.)).child(view)
+            }
+        }
+
+        let line = |index: usize, names: [&str; 4]| {
+            format!(
+                "call({}{index}, keep, {}{index}, same, {}{index}, still, {}{index});\n",
+                names[0], names[1], names[2], names[3]
+            )
+        };
+        let before: String = (0..LINES).map(|i| line(i, ["a", "b", "c", "d"])).collect();
+        let after: String = (0..LINES).map(|i| line(i, ["w", "x", "y", "z"])).collect();
+        let mut patch = format!("@@ -1,{LINES} +1,{LINES} @@\n");
+        for text in before.split_inclusive('\n') {
+            patch.push('-');
+            patch.push_str(text);
+        }
+        for text in after.split_inclusive('\n') {
+            patch.push('+');
+            patch.push_str(text);
+        }
+        let presentation = PatchPresentation::prepare(&patch);
+        let split_presentation =
+            Arc::new(SplitPresentation::prepare(&before, &after, &presentation));
+        cx.update(gpui::init);
+        let mut handles = None;
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+            let (editor, decorations) = crate::text::editor_with_decorations(
+                &patch,
+                "diff",
+                Some(&presentation),
+                window,
+                cx,
+            );
+            let diff = diff_view::new(editor.clone(), &presentation, window, cx);
+            let split_view = new(
+                Arc::clone(&split_presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            );
+            handles = Some((editor, decorations.expect("a prepared patch is decorated")));
+            Root {
+                split: false,
+                diff,
+                split_view,
+                crafted: None,
+            }
+        });
+        let (diff_editor, decorations) = handles.expect("the window was built");
+        let draw =
+            |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        let mut series = Vec::new();
+        for split in [false, true] {
+            for text in [13, 18] {
+                for more in [false, true] {
+                    let editor = cx.update(|window, cx| {
+                        set_more_contrast(more, cx);
+                        ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+                        apply_text_sizes(13, text, window, cx);
+                        crate::text::refresh_theme(&decorations, &presentation, cx);
+                        let split_view = root.read(cx).split_view.clone();
+                        split_view.update(cx, |view, cx| view.refresh_theme(cx));
+                        root.update(cx, |root, cx| {
+                            root.split = split;
+                            cx.notify();
+                        });
+                        if split {
+                            split_view.read(cx).editors[0].clone()
+                        } else {
+                            diff_editor.clone()
+                        }
+                    });
+                    let mut step_ms = Vec::new();
+                    for pass in 0..2 {
+                        cx.update(|_, cx| {
+                            editor.update(cx, |state, cx| {
+                                state.set_scroll_offset(point(px(0.), px(0.)), cx)
+                            })
+                        });
+                        draw(cx);
+                        draw(cx);
+                        for step in 1..=STEPS {
+                            let offset = point(px(0.), px(-STEP * step as f32));
+                            let started = std::time::Instant::now();
+                            cx.update(|_, cx| {
+                                editor.update(cx, |state, cx| state.set_scroll_offset(offset, cx))
+                            });
+                            draw(cx);
+                            let elapsed = started.elapsed().as_secs_f64() * 1000.;
+                            if pass == 1 {
+                                step_ms.push(elapsed);
+                            }
+                        }
+                    }
+                    // The steps moved the text, on both of Split's sides.
+                    let rows = cx.read(|cx| {
+                        let split_view = root.read(cx).split_view.read(cx);
+                        let first = |editor: &Entity<EditorState>| {
+                            editor.read(cx).visible_row_range().map(|rows| rows.start)
+                        };
+                        if split {
+                            [first(&split_view.editors[0]), first(&split_view.editors[1])]
+                        } else {
+                            [first(&editor); 2]
+                        }
+                    });
+                    assert!(
+                        rows[0].is_some_and(|row| row >= 1_000) && rows[0] == rows[1],
+                        "split {split}, {text} pt: the last step shows rows {rows:?}"
+                    );
+                    let mut sorted = step_ms.clone();
+                    sorted.sort_by(f64::total_cmp);
+                    let at = |share: f64| {
+                        sorted[((share * sorted.len() as f64).ceil() as usize)
+                            .clamp(1, sorted.len())
+                            - 1]
+                    };
+                    series.push(serde_json::json!({
+                        "surface": if split { "split" } else { "diff" },
+                        "text_pt": text,
+                        "more_contrast": more,
+                        "find_open": false,
+                        "step_ms": step_ms,
+                        "median_ms": at(0.5),
+                        "p95_ms": at(0.95),
+                        "max_ms": sorted[sorted.len() - 1],
+                    }));
+                }
+            }
+        }
+        // Many one-line blocks, the slowest input for the changed lines' row
+        // fills: 1,600 unchanged lines, each followed by one removed line and
+        // one added line, every other added line blank, so the Diff view
+        // draws a one-line removed block and a one-line added block between
+        // each pair of unchanged lines, and each Split side a one-line block
+        // every other row. The views take the main ones' place in the root,
+        // whose series are already recorded, and run the same steps.
+        const BLOCK_PAIRS: usize = 1_600;
+        let block_before: String = (0..BLOCK_PAIRS)
+            .map(|i| format!("keep{i}();\nold{i}();\n"))
+            .collect();
+        let added = |i: usize| {
+            if i.is_multiple_of(2) {
+                format!("new{i}();\n")
+            } else {
+                "\n".to_owned()
+            }
+        };
+        let block_after: String = (0..BLOCK_PAIRS)
+            .map(|i| format!("keep{i}();\n{}", added(i)))
+            .collect();
+        let mut block_patch = format!("@@ -1,{0} +1,{0} @@\n", 2 * BLOCK_PAIRS);
+        for i in 0..BLOCK_PAIRS {
+            block_patch.push_str(&format!(" keep{i}();\n-old{i}();\n+{}", added(i)));
+        }
+        let block_presentation = PatchPresentation::prepare(&block_patch);
+        let block_split = Arc::new(SplitPresentation::prepare(
+            &block_before,
+            &block_after,
+            &block_presentation,
+        ));
+        let (block_editor, block_decorations) = cx.update(|window, cx| {
+            let (editor, decorations) = crate::text::editor_with_decorations(
+                &block_patch,
+                "diff",
+                Some(&block_presentation),
+                window,
+                cx,
+            );
+            let diff = diff_view::new(editor.clone(), &block_presentation, window, cx);
+            let split_view = new(
+                Arc::clone(&block_split),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            );
+            root.update(cx, |root, cx| {
+                root.diff = diff;
+                root.split_view = split_view;
+                cx.notify();
+            });
+            (editor, decorations.expect("a prepared patch is decorated"))
+        });
+        for split in [false, true] {
+            for text in [13, 18] {
+                for more in [false, true] {
+                    let editor = cx.update(|window, cx| {
+                        set_more_contrast(more, cx);
+                        ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+                        apply_text_sizes(13, text, window, cx);
+                        crate::text::refresh_theme(&block_decorations, &block_presentation, cx);
+                        let split_view = root.read(cx).split_view.clone();
+                        split_view.update(cx, |view, cx| view.refresh_theme(cx));
+                        root.update(cx, |root, cx| {
+                            root.split = split;
+                            cx.notify();
+                        });
+                        if split {
+                            split_view.read(cx).editors[0].clone()
+                        } else {
+                            block_editor.clone()
+                        }
+                    });
+                    let mut step_ms = Vec::new();
+                    for pass in 0..2 {
+                        cx.update(|_, cx| {
+                            editor.update(cx, |state, cx| {
+                                state.set_scroll_offset(point(px(0.), px(0.)), cx)
+                            })
+                        });
+                        draw(cx);
+                        draw(cx);
+                        for step in 1..=STEPS {
+                            let offset = point(px(0.), px(-STEP * step as f32));
+                            let started = std::time::Instant::now();
+                            cx.update(|_, cx| {
+                                editor.update(cx, |state, cx| state.set_scroll_offset(offset, cx))
+                            });
+                            draw(cx);
+                            let elapsed = started.elapsed().as_secs_f64() * 1000.;
+                            if pass == 1 {
+                                step_ms.push(elapsed);
+                            }
+                        }
+                    }
+                    // The steps moved the text, on both of Split's sides.
+                    let rows = cx.read(|cx| {
+                        let split_view = root.read(cx).split_view.read(cx);
+                        let first = |editor: &Entity<EditorState>| {
+                            editor.read(cx).visible_row_range().map(|rows| rows.start)
+                        };
+                        if split {
+                            [first(&split_view.editors[0]), first(&split_view.editors[1])]
+                        } else {
+                            [first(&editor); 2]
+                        }
+                    });
+                    assert!(
+                        rows[0].is_some_and(|row| row >= 1_000) && rows[0] == rows[1],
+                        "blocks, split {split}, {text} pt: the last step shows rows {rows:?}"
+                    );
+                    let mut sorted = step_ms.clone();
+                    sorted.sort_by(f64::total_cmp);
+                    let at = |share: f64| {
+                        sorted[((share * sorted.len() as f64).ceil() as usize)
+                            .clamp(1, sorted.len())
+                            - 1]
+                    };
+                    series.push(serde_json::json!({
+                        "surface": if split { "split_blocks" } else { "diff_blocks" },
+                        "text_pt": text,
+                        "more_contrast": more,
+                        "find_open": false,
+                        "step_ms": step_ms,
+                        "median_ms": at(0.5),
+                        "p95_ms": at(0.95),
+                        "max_ms": sorted[sorted.len() - 1],
+                    }));
+                }
+            }
+        }
+        // The crafted worst case: 37 pairs of 16,384-byte lines with 81
+        // changed words a side, the most pairs one file's word budget gives
+        // words (`text::WordBudget`), as the security review's probe made them.
+        const CRAFTED_PAIRS: usize = 37;
+        const CRAFTED_WORDS: usize = 81;
+        const CRAFTED_STEP: f32 = 600.;
+        let shared = "A".repeat(16 * 1024 - 2 * CRAFTED_WORDS - 2);
+        let mut crafted_patch = format!("@@ -1,{CRAFTED_PAIRS} +1,{CRAFTED_PAIRS} @@\n");
+        for (sign, word) in [('-', "x."), ('+', "y.")] {
+            for _ in 0..CRAFTED_PAIRS {
+                crafted_patch.push(sign);
+                crafted_patch.push_str(&shared);
+                crafted_patch.push_str(&word.repeat(CRAFTED_WORDS));
+                crafted_patch.push('\n');
+            }
+        }
+        let crafted = PatchPresentation::prepare(&crafted_patch);
+        let (crafted_editor, crafted_decorations) = cx.update(|window, cx| {
+            let (editor, decorations) = crate::text::editor_with_decorations(
+                &crafted_patch,
+                "diff",
+                Some(&crafted),
+                window,
+                cx,
+            );
+            let view = diff_view::new(editor.clone(), &crafted, window, cx);
+            root.update(cx, |root, cx| {
+                root.crafted = Some(view);
+                cx.notify();
+            });
+            (editor, decorations.expect("a prepared patch is decorated"))
+        });
+        draw(cx);
+        for find in [false, true] {
+            if find {
+                let focus = cx.update(|_, cx| crafted_editor.focus_handle(cx));
+                cx.update(|window, cx| window.focus(&focus, cx));
+                cx.dispatch_action(gpui::component::input::Search);
+                cx.simulate_input(".");
+                cx.run_until_parked();
+            }
+            for more in [false, true] {
+                cx.update(|window, cx| {
+                    set_more_contrast(more, cx);
+                    ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+                    apply_text_sizes(13, 13, window, cx);
+                    crate::text::refresh_theme(&crafted_decorations, &crafted, cx);
+                });
+                let mut step_ms = Vec::new();
+                for pass in 0..2 {
+                    cx.update(|_, cx| {
+                        crafted_editor.update(cx, |state, cx| {
+                            state.set_scroll_offset(point(px(0.), px(0.)), cx)
+                        })
+                    });
+                    draw(cx);
+                    draw(cx);
+                    for step in 1..=STEPS {
+                        let y = if step % 2 == 1 { -CRAFTED_STEP } else { 0. };
+                        let started = std::time::Instant::now();
+                        cx.update(|_, cx| {
+                            crafted_editor.update(cx, |state, cx| {
+                                state.set_scroll_offset(point(px(0.), px(y)), cx)
+                            })
+                        });
+                        draw(cx);
+                        let elapsed = started.elapsed().as_secs_f64() * 1000.;
+                        if pass == 1 {
+                            step_ms.push(elapsed);
+                        }
+                        if pass == 1 && step == 1 {
+                            let row = cx.read(|cx| {
+                                crafted_editor
+                                    .read(cx)
+                                    .visible_row_range()
+                                    .map(|rows| rows.start)
+                            });
+                            assert!(
+                                row.is_some_and(|row| row > 0),
+                                "find {find}: a step down moves the crafted text, at row {row:?}"
+                            );
+                        }
+                    }
+                }
+                let mut sorted = step_ms.clone();
+                sorted.sort_by(f64::total_cmp);
+                let at = |share: f64| {
+                    sorted
+                        [((share * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len()) - 1]
+                };
+                series.push(serde_json::json!({
+                    "surface": "diff_crafted",
+                    "text_pt": 13,
+                    "more_contrast": more,
+                    "find_open": find,
+                    "step_ms": step_ms,
+                    "median_ms": at(0.5),
+                    "p95_ms": at(0.95),
+                    "max_ms": sorted[sorted.len() - 1],
+                }));
+            }
+        }
+        let result = serde_json::json!({
+            "schema": 1,
+            "palette": "Midnight",
+            "changed_lines": LINES,
+            "changed_words_per_line_a_side": 4,
+            "steps": STEPS,
+            "step_px": STEP,
+            "window": [1200, 900],
+            "crafted": {
+                "pairs": CRAFTED_PAIRS,
+                "line_bytes": 16 * 1024 - 1,
+                "changed_words_per_line_a_side": CRAFTED_WORDS,
+                "step_px": CRAFTED_STEP,
+                "find_query": ".",
+            },
+            "blocks": {
+                "pairs": BLOCK_PAIRS,
+                "shape": "an unchanged line, then one removed line and one added line, every other added line blank: one-line changed blocks between unchanged lines",
+                "steps": STEPS,
+                "step_px": STEP,
+            },
+            "warmup_passes": 1,
+            "boundary": "One scroll step on the UI thread: from before the call that sets the editor's scroll offset (Split's first side, mirrored to the second by its observer as the update's effects flush) through the return of the next `window.draw`: the scroll's effects, layout, prepaint and paint of the whole window on the test platform (no GPU, compositor or display link; the test text system places glyphs without shaping a font).",
+            "series": series,
+        });
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        cx.update(|window, cx| apply_text_sizes(13, 12, window, cx));
     }
 }

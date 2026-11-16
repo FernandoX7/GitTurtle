@@ -480,3 +480,63 @@ fn cancellation_after_remote_update_reports_uncertainty_without_replaying() {
         "A second attempt needs a new remote review"
     );
 }
+
+/// A series whose patch passes the 4 MiB a review read keeps is refused as
+/// too large to review here, naming Git's own comparison, alone: it read
+/// as an unavailable series and a write that may have completed ("Git
+/// output exceeded its limit. The operation may have completed…").
+#[test]
+fn a_series_past_the_review_read_limit_is_refused_for_its_size() {
+    let fixture = Fixture::new();
+    let large: String = (0..450_000).map(|line| format!("line {line}\n")).collect();
+    fs::write(fixture.root.join("large.txt"), large).unwrap();
+    git(&fixture.root, &["add", "large.txt"]);
+    git(&fixture.root, &["commit", "-m", "large"]);
+    let head = git(&fixture.root, &["rev-parse", "HEAD"]);
+    let error = fixture
+        .repo()
+        .rewrite_review(&fixture.base, &head, "main")
+        .unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        "This series is too large to review here: its patches pass the review's 4 MiB read \
+         limit. Compare it with `git range-diff`."
+    );
+}
+
+/// A remote that moved to a series past the review's read limit, with its
+/// objects local, is refused as too large to review here, alone: the
+/// publication check's advice to Fetch the remote, which cannot make the
+/// series reviewable, once led the reason. Nothing is pushed.
+#[test]
+fn a_moved_remote_series_past_the_review_read_limit_is_refused_for_its_size() {
+    let fixture = Fixture::new();
+    let review = fixture.rewrite();
+    git(
+        &fixture.root,
+        &["checkout", "--quiet", "--detach", &fixture.original],
+    );
+    let large: String = (0..450_000).map(|line| format!("line {line}\n")).collect();
+    fs::write(fixture.root.join("large.txt"), large).unwrap();
+    git(&fixture.root, &["add", "large.txt"]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "large remote work"],
+    );
+    let moved = git(&fixture.root, &["rev-parse", "HEAD"]);
+    git(
+        &fixture.root,
+        &["push", "--quiet", "origin", "HEAD:refs/heads/main"],
+    );
+    git(&fixture.root, &["checkout", "--quiet", "main"]);
+    let error = fixture
+        .repo()
+        .inspect_rewrite_publication(&review, "origin", "main")
+        .unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        "This series is too large to review here: its patches pass the review's 4 MiB read \
+         limit. Compare it with `git range-diff`."
+    );
+    assert_eq!(fixture.remote_head(), moved);
+}

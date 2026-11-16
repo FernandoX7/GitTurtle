@@ -1,5 +1,6 @@
 use gitturtle_core::{
-    GitRepository, LfsDownloadTarget, OperationControl, WriteCommand, run_controlled,
+    ChangeStatus, FileChange, GitRepository, LfsDownloadTarget, LfsObjectFailure, OperationControl,
+    TextPreview, WriteCommand, run_controlled,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -132,6 +133,353 @@ fn installed_lfs() -> Option<(u64, u64, u64)> {
         eprintln!("Git LFS unavailable; local transfer fixture not run");
     }
     release
+}
+
+/// Each side of a text comparison resolves on its own from the local store:
+/// one missing object no longer turns the other side back into its pointer.
+/// Where no side resolves, or the one that does has no text, the two pointers
+/// stay, and a failure beside a missing side stays what it was.
+#[test]
+fn each_lfs_text_side_resolves_on_its_own_and_reads_only_the_local_store() {
+    let fixture = Fixture::create();
+    let repo = fixture.repo();
+    let store = fixture.root.join(".git/lfs");
+    let local = |bytes: &[u8]| {
+        let oid = format!("{:x}", Sha256::digest(bytes));
+        let path = object(&store, &oid);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        pointer(&oid, bytes.len())
+    };
+    let (before, after) = (b"before\n".as_slice(), b"after\n".as_slice());
+    let (old_local, new_local) = (local(before), local(after));
+    let binary = local(b"\0binary\n");
+    let large = local("x\n".repeat(1_100_000).as_bytes());
+    let corrupt = local(b"corrupt\n");
+    fs::write(
+        object(&store, &format!("{:x}", Sha256::digest(b"corrupt\n"))),
+        b"tampered",
+    )
+    .unwrap();
+    let missing = pointer(&"c".repeat(64), 42);
+    let missing_too = pointer(&"d".repeat(64), 43);
+    let oversize = pointer(&"e".repeat(64), 33 * 1024 * 1024);
+    let file = FileChange {
+        old_path: Some("notes.txt".into()),
+        new_path: Some("notes.txt".into()),
+        old_oid: None,
+        new_oid: None,
+        status: ChangeStatus::Modified,
+        old_mode: "100644".into(),
+        new_mode: "100644".into(),
+    };
+    let listing = || {
+        fn walk(path: &Path, found: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, found);
+                }
+                found.push(path);
+            }
+        }
+        let mut found = Vec::new();
+        walk(&store, &mut found);
+        found.sort();
+        found
+    };
+    let held = listing();
+    let resolve = |old: &[u8], new: &[u8]| repo.resolved_lfs_text(&file, old, new);
+
+    // Both local, as ever.
+    let both = resolve(&old_local, &new_local).unwrap();
+    assert_eq!(both.missing, [false, false]);
+    assert_eq!(both.pointers, [true, true], "as stored, not as resolved");
+    assert_eq!(
+        resolve(before, &missing).unwrap().pointers,
+        [false, true],
+        "plain text is no pointer"
+    );
+    let both = both.text.unwrap();
+    assert_eq!((both.old.as_slice(), both.new.as_slice()), (before, after));
+    assert!(matches!(both.preview, TextPreview::Patch(_)));
+
+    // One missing: the other is still resolved.
+    for (name, old, new, shown_old, shown_new, absent) in [
+        (
+            "only the new object missing",
+            old_local.as_slice(),
+            missing.as_slice(),
+            before,
+            missing.as_slice(),
+            [false, true],
+        ),
+        (
+            "only the old object missing",
+            missing.as_slice(),
+            new_local.as_slice(),
+            missing.as_slice(),
+            after,
+            [true, false],
+        ),
+    ] {
+        let outcome = resolve(old, new).unwrap();
+        assert_eq!(outcome.missing, absent, "{name}");
+        let resolved = outcome
+            .text
+            .unwrap_or_else(|| panic!("{name}: the other side resolves"));
+        assert_eq!(resolved.old, shown_old, "{name}");
+        assert_eq!(resolved.new, shown_new, "{name}");
+        assert!(matches!(resolved.preview, TextPreview::Patch(_)), "{name}");
+    }
+
+    // Nothing resolved keeps the two pointers, and says which are truly
+    // absent: a local object that cannot be shown is not one of them.
+    for (name, old, new, absent) in [
+        (
+            "both missing",
+            missing.as_slice(),
+            missing_too.as_slice(),
+            [true, true],
+        ),
+        ("no pointer on either side", before, after, [false, false]),
+        (
+            "a missing object and plain text",
+            missing.as_slice(),
+            after,
+            [true, false],
+        ),
+        (
+            "plain text and a missing object",
+            before,
+            missing.as_slice(),
+            [false, true],
+        ),
+        // A resolved side with no text has nothing to set beside a pointer.
+        (
+            "binary content beside a missing object",
+            binary.as_slice(),
+            missing.as_slice(),
+            [false, true],
+        ),
+        (
+            "a missing object beside binary content",
+            missing.as_slice(),
+            binary.as_slice(),
+            [true, false],
+        ),
+        (
+            "a missing object beside text past the preview limit",
+            missing.as_slice(),
+            large.as_slice(),
+            [true, false],
+        ),
+        // What a missing side once left the pointers for, it still does.
+        (
+            "a missing object before a corrupt one",
+            missing.as_slice(),
+            corrupt.as_slice(),
+            [true, false],
+        ),
+        (
+            "a missing object before one past the limit",
+            missing.as_slice(),
+            oversize.as_slice(),
+            [true, false],
+        ),
+    ] {
+        let outcome = resolve(old, new).unwrap();
+        assert!(outcome.text.is_none(), "{name}");
+        assert_eq!(outcome.missing, absent, "{name}");
+    }
+
+    // Both resolved, a binary side keeps its explicit state.
+    let resolved = resolve(&binary, &new_local).unwrap().text.unwrap();
+    assert!(matches!(resolved.preview, TextPreview::Binary));
+
+    // One side's object failing is that side's alone: it stays its pointer,
+    // is never called missing, and the other side keeps its preview.
+    let (corrupt, oversize, missing_side) =
+        (corrupt.as_slice(), oversize.as_slice(), missing.as_slice());
+    let (old_side, new_side) = (old_local.as_slice(), new_local.as_slice());
+    use LfsObjectFailure::{Corrupt, TooLarge};
+    for (name, old, new, shown, absent, failed) in [
+        (
+            "corrupt first beside a missing object",
+            corrupt,
+            missing_side,
+            None,
+            [false, true],
+            [Some(Corrupt), None],
+        ),
+        (
+            "past the limit first beside a missing object",
+            oversize,
+            missing_side,
+            None,
+            [false, true],
+            [Some(TooLarge), None],
+        ),
+        (
+            "corrupt second beside a local object",
+            old_side,
+            corrupt,
+            Some((before, corrupt)),
+            [false, false],
+            [None, Some(Corrupt)],
+        ),
+        (
+            "corrupt first beside a local object",
+            corrupt,
+            new_side,
+            Some((corrupt, after)),
+            [false, false],
+            [Some(Corrupt), None],
+        ),
+        (
+            "past the limit first beside a local object",
+            oversize,
+            new_side,
+            Some((oversize, after)),
+            [false, false],
+            [Some(TooLarge), None],
+        ),
+        (
+            "corrupt first beside plain text",
+            corrupt,
+            after,
+            None,
+            [false, false],
+            [Some(Corrupt), None],
+        ),
+        (
+            "plain text first beside past the limit",
+            before,
+            oversize,
+            None,
+            [false, false],
+            [None, Some(TooLarge)],
+        ),
+        (
+            "both failing",
+            corrupt,
+            oversize,
+            None,
+            [false, false],
+            [Some(Corrupt), Some(TooLarge)],
+        ),
+    ] {
+        let outcome = resolve(old, new).unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert_eq!(outcome.missing, absent, "{name}");
+        assert_eq!(outcome.failed, failed, "{name}");
+        match (outcome.text, shown) {
+            (Some(text), Some((shown_old, shown_new))) => {
+                assert_eq!(text.old, shown_old, "{name}");
+                assert_eq!(text.new, shown_new, "{name}");
+                assert!(matches!(text.preview, TextPreview::Patch(_)), "{name}");
+            }
+            (None, None) => {}
+            (text, shown) => panic!("{name}: resolved {:?}, expected {shown:?}", text.is_some()),
+        }
+    }
+
+    assert_eq!(listing(), held, "resolving writes nothing to the store");
+}
+
+/// A store that cannot be read is no statement about the object: a link in
+/// the store's place or in its layout, or a read the system refuses, is the
+/// store's failure, and only what the read found wrong with the object's own
+/// bytes calls the object corrupt. Either way the side stays its pointer and
+/// is not called missing, so nothing offers a download.
+#[cfg(unix)]
+#[test]
+fn a_store_that_cannot_be_read_is_not_called_a_corrupt_object() {
+    use LfsObjectFailure::{Corrupt, StoreUnreadable};
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let fixture = Fixture::create();
+    let repo = fixture.repo();
+    let store = fixture.root.join(".git/lfs");
+    let bytes = b"the object's bytes\n";
+    let oid = format!("{:x}", Sha256::digest(bytes));
+    let stored = pointer(&oid, bytes.len());
+    let file = FileChange {
+        old_path: Some("notes.txt".into()),
+        new_path: Some("notes.txt".into()),
+        old_oid: None,
+        new_oid: None,
+        status: ChangeStatus::Modified,
+        old_mode: "100644".into(),
+        new_mode: "100644".into(),
+    };
+    let plain = b"plain text\n";
+    let failed = |name: &str, expected: LfsObjectFailure| {
+        let outcome = repo
+            .resolved_lfs_text(&file, &stored, plain)
+            .unwrap_or_else(|error| panic!("{name}: the preview failed: {error:#}"));
+        assert_eq!(outcome.failed, [Some(expected), None], "{name}");
+        assert_eq!(outcome.missing, [false, false], "{name}");
+    };
+    let path = object(&store, &oid);
+    let leaf = path.parent().unwrap().to_owned();
+    // A good copy of the object, in a directory a link can lead to.
+    let hold = |directory: &Path| {
+        fs::create_dir_all(directory).unwrap();
+        fs::write(directory.join(&oid), bytes).unwrap();
+    };
+
+    // A link in the store's place, though the object it leads to is good.
+    let linked_store = fixture.root.join(".git/linked-store");
+    hold(object(&linked_store, &oid).parent().unwrap());
+    symlink(&linked_store, &store).unwrap();
+    failed("a linked store", StoreUnreadable);
+    fs::remove_file(&store).unwrap();
+
+    // A link in one of the store's directories.
+    let elsewhere = fixture.root.join(".git/elsewhere");
+    hold(&elsewhere);
+    fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+    symlink(&elsewhere, &leaf).unwrap();
+    failed("a linked directory", StoreUnreadable);
+    fs::remove_file(&leaf).unwrap();
+
+    // A link in the object's place.
+    fs::create_dir_all(&leaf).unwrap();
+    symlink(elsewhere.join(&oid), &path).unwrap();
+    failed("a linked object", StoreUnreadable);
+    fs::remove_file(&path).unwrap();
+
+    // What the read found wrong with the object itself stays corrupt.
+    fs::write(&path, b"short").unwrap();
+    failed("the wrong size", Corrupt);
+    fs::write(&path, vec![b'x'; bytes.len()]).unwrap();
+    failed("the wrong digest", Corrupt);
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    failed("a directory in the object's place", Corrupt);
+    fs::remove_dir(&path).unwrap();
+
+    // Permissions, where they bind: a superuser's read is never refused.
+    fs::write(&path, bytes).unwrap();
+    let chmod = |target: &Path, bits: u32| {
+        fs::set_permissions(target, fs::Permissions::from_mode(bits)).unwrap();
+    };
+    let objects = store.join("objects");
+    chmod(&path, 0o000);
+    let bound = fs::File::open(&path).is_err();
+    if bound {
+        failed("an object the read is refused", StoreUnreadable);
+    }
+    chmod(&path, 0o644);
+    chmod(&objects, 0o000);
+    if bound {
+        failed("a directory the read is refused", StoreUnreadable);
+    }
+    chmod(&objects, 0o755);
+
+    // Repaired, the same pointer resolves: the failure was the store's.
+    let outcome = repo.resolved_lfs_text(&file, &stored, plain).unwrap();
+    assert_eq!(outcome.failed, [None, None]);
+    assert_eq!(outcome.text.expect("it resolves").old, bytes);
 }
 
 #[test]

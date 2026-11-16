@@ -1,7 +1,6 @@
 //! Local history discovery, independent of the selected inspector and paging cursor.
 use crate::*;
 use gitturtle_core::HistoryScope;
-use gpui_kit::prelude::FluentBuilder;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Update {
@@ -29,12 +28,23 @@ pub(super) struct State {
     observed: Option<HistoryScope>,
     complete: Option<HashSet<String>>,
     pub pending: Option<Update>,
-    followed: bool,
     scope_error: Option<String>,
     /// The vanished scope already reported, so later quiet refreshes and
     /// accepted writes do not raise it again after it is dismissed.
     reported_vanished: Option<worker::VanishedScope>,
     pub committed: Option<String>,
+    /// Counts the histories a quiet read installed that differ from the one
+    /// shown ([`GitTurtle::install_current_history`]), the only place its
+    /// landing replaces History's rows, graph or page: the landing compares
+    /// this count, not the rows (`automatic_refresh::QuietDrawn`).
+    pub installed: u64,
+    /// History's read in place ([`GitTurtle::read_all_history_in_place`])
+    /// is owed: asked for, and neither answered by its own reply nor
+    /// settled by a snapshot that installs History ([`Self::captured`]).
+    /// A status read landing in Changes stops every read
+    /// (`invalidate_read`), this one with them, and asks for it again
+    /// ([`GitTurtle::read_owed_history_in_place`]).
+    owes_in_place: bool,
 }
 impl State {
     pub fn retained_bytes(&self) -> usize {
@@ -65,40 +75,51 @@ impl State {
         self.observed = None;
         self.complete = None;
         self.pending = None;
-        self.followed = false;
     }
     pub fn scope_unavailable(&mut self) {
         self.pending = Some(Update::Changed);
-        self.followed = false;
     }
     /// A quiet read could not resolve the scope; the displayed history stays.
     /// One vanished scope is reported once: after its report is dismissed,
-    /// later quiet refreshes and accepted writes leave it dismissed.
+    /// later quiet refreshes and accepted writes leave it dismissed. The
+    /// banner says `summary`, the line the failure carries, where it has one
+    /// (`worker::QuietHistory::Retained`), in the same sentence as the whole
+    /// `error`, which stays behind Details….
     pub fn report_scope_error(
         &mut self,
         error: &str,
+        summary: Option<&str>,
         vanished: Option<&worker::VanishedScope>,
-        operation_error: &mut Option<String>,
+        operation_error: &mut Option<crate::views::OperationFailure>,
     ) {
         if vanished.is_some() && vanished == self.reported_vanished.as_ref() {
             return;
         }
         self.scope_unavailable();
-        let message = format!(
-            "History scope changed: {error}. The displayed history is retained; choose a current branch to browse its history."
-        );
-        if operation_error.is_none() || operation_error.as_ref() == self.scope_error.as_ref() {
-            *operation_error = Some(message.clone());
+        let sentence = |what: &str| {
+            format!(
+                "History scope changed: {what}. The displayed history is retained; choose a current branch to browse its history."
+            )
+        };
+        let message = sentence(error);
+        if operation_error.is_none() || operation_error.as_deref() == self.scope_error.as_deref() {
+            *operation_error = Some(crate::views::OperationFailure::summarized(
+                message.clone(),
+                summary.map(sentence),
+            ));
             self.scope_error = Some(message);
             self.reported_vanished = vanished.cloned();
         }
     }
     /// A snapshot resolved its scope (or replaced it): a later disappearance
     /// is a new change and is reported again.
-    pub fn clear_scope_error(&mut self, operation_error: &mut Option<String>) {
+    pub fn clear_scope_error(
+        &mut self,
+        operation_error: &mut Option<crate::views::OperationFailure>,
+    ) {
         self.reported_vanished = None;
         if let Some(previous) = self.scope_error.take()
-            && operation_error.as_ref() == Some(&previous)
+            && operation_error.as_deref() == Some(previous.as_str())
         {
             *operation_error = None;
         }
@@ -106,18 +127,22 @@ impl State {
     pub fn captured(&mut self, snapshot: &worker::Snapshot) {
         self.remember(snapshot);
         self.pending = None;
-        self.followed = false;
+        self.owes_in_place = false;
     }
+    /// A quiet read's `snapshot`. Where History is `following` its newest
+    /// rows, the read is installed at the top of the list it follows, so the
+    /// rows a cue would announce, this read's and any an earlier one cued,
+    /// are the ones it shows: the cue ends rather than staying, as it did
+    /// through the reads after Pull and Push with the new commit already on
+    /// top. Elsewhere the list keeps its rows and the update is cued.
     fn observe(&mut self, snapshot: &worker::Snapshot, following: bool) {
-        if let Some(previous) = &self.observed
+        if following {
+            self.pending = None;
+        } else if let Some(previous) = &self.observed
             && let Some(update) =
                 classify_snapshot_update(previous, self.complete.as_ref(), snapshot)
         {
             self.pending = Some(self.pending.map_or(update, |pending| pending.merge(update)));
-            self.followed = following;
-        }
-        if following && self.pending.is_some() {
-            self.followed = true;
         }
         self.remember(snapshot);
     }
@@ -204,6 +229,20 @@ fn classify_update(
     Some(Update::Changed)
 }
 
+/// What a history discovery read reads for, which decides where its
+/// landing shows the history it read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Discovery {
+    /// Show latest: History is shown and its search ends.
+    Latest,
+    /// The commit a write created, selected in History.
+    CreatedCommit,
+    /// All history in place of a scope that vanished with the repository a
+    /// quiet read replaced ([`GitTurtle::read_all_history_in_place`]): the
+    /// window stays where it stands, and a typed search runs again.
+    InPlace,
+}
+
 fn follows_latest(mode: WorkspaceMode, searching: bool, deep: bool, offset: f32) -> bool {
     mode == WorkspaceMode::History && !searching && !deep && offset >= -0.5
 }
@@ -260,13 +299,30 @@ impl GitTurtle {
         self.install_current_history(snapshot, following, window, cx);
     }
 
-    fn install_current_history(
+    pub(super) fn install_current_history(
         &mut self,
         snapshot: worker::Snapshot,
         following: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        // Commits are immutable, so the same pinned tips read from the same
+        // place give the same rows and graph: only a history that differs
+        // from the one shown counts as installed, which the landing draws.
+        // A shallow repository's is never the same: deepened outside the
+        // app, its commits take new parents, and rows can come and go, with
+        // the tips, the page and its length as they were.
+        let retained = usize::from(self.automatic.retained_commit.is_some());
+        let same = !snapshot.shallow
+            && !matches!(snapshot.history_scope, HistoryScope::AllRefs)
+            && self.history_paging.scope.as_ref() == Some(&snapshot.history_scope)
+            && self.history_paging.offset == snapshot.history_offset
+            && self.history_paging.next_offset == snapshot.history_next_offset
+            && self.commits.len().saturating_sub(retained) == snapshot.commits.len()
+            && self.graph_notice == snapshot.graph_notice;
+        if !same {
+            self.history_updates.installed = self.history_updates.installed.wrapping_add(1);
+        }
         self.history_paging = history_paging::State::from_snapshot(&snapshot);
         let selected = self
             .selected_commit
@@ -334,16 +390,82 @@ impl GitTurtle {
         let Some(path) = self.path.clone() else {
             return;
         };
+        // The shown repository's latest history, from its own root: its
+        // landing installs the snapshot in place, so it must never be the
+        // work tree enclosing the root, its `.git` gone.
         self.request_history_discovery(
             Job::Open {
+                root: Some(path.clone()),
+                git_dir: self
+                    .repository_tabs
+                    .reopen_root(&path, self.scope.as_ref().map(|scope| &scope.1))
+                    .and_then(|(_, git_dir)| git_dir),
                 path,
                 scope: self.scope.as_ref().map(|scope| scope.1.clone()),
                 limit: history_paging::PAGE_SIZE,
             },
-            false,
+            Discovery::Latest,
             window,
             cx,
         );
+    }
+
+    /// Reads the tab's history again from its root, where the window
+    /// stands, as an Open with a vanished scope reads it: the worker reads
+    /// All history where the scope is gone, and the landing says so
+    /// ("History scope changed: …. Showing All history.",
+    /// [`Self::accept_snapshot_scope`]), drops the scope, selects as an Open
+    /// does and runs a typed search again. A quiet read that captured a
+    /// re-clone lacking History's scope asks for it
+    /// (`worker::QuietHistory::Retained`), the rows gone with the replaced
+    /// repository: it showed an empty History under "The displayed history
+    /// is retained". An Open would leave Changes and cancel an open form.
+    /// The read stays owed until its own reply lands or a snapshot installs
+    /// History ([`State::captured`]), so a status read that stops it as it
+    /// lands in Changes asks for it again
+    /// ([`Self::read_owed_history_in_place`]).
+    pub(super) fn read_all_history_in_place(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        self.history_updates.owes_in_place = true;
+        self.request_history_discovery(
+            Job::Open {
+                root: Some(path.clone()),
+                git_dir: self
+                    .repository_tabs
+                    .reopen_root(&path, self.scope.as_ref().map(|scope| &scope.1))
+                    .and_then(|(_, git_dir)| git_dir),
+                path,
+                scope: self.scope.as_ref().map(|scope| scope.1.clone()),
+                limit: history_paging::PAGE_SIZE,
+            },
+            Discovery::InPlace,
+            window,
+            cx,
+        );
+    }
+
+    /// Asks again for History's read in place while it is owed
+    /// ([`Self::read_all_history_in_place`]), with a fresh generation, as a
+    /// status read landing in Changes has just stopped it with every other
+    /// read (`apply_worktree_state`'s `invalidate_read`). A re-clone's
+    /// landing behind Changes asks for both reads, the found repository's
+    /// status on the operation executor and this one on the reader, and a
+    /// status read landing first left History with no rows of the
+    /// repository it found.
+    pub(super) fn read_owed_history_in_place(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.history_updates.owes_in_place {
+            self.read_all_history_in_place(window, cx);
+        }
     }
 
     pub(super) fn view_created_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -360,7 +482,7 @@ impl GitTurtle {
                 offset: 0,
                 limit: 1,
             },
-            true,
+            Discovery::CreatedCommit,
             window,
             cx,
         );
@@ -369,7 +491,7 @@ impl GitTurtle {
     fn request_history_discovery(
         &mut self,
         job: Job,
-        view_commit: bool,
+        discovery: Discovery,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -381,7 +503,7 @@ impl GitTurtle {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let path = self.path.clone();
-        self.loading = Some(if view_commit {
+        self.loading = Some(if discovery == Discovery::CreatedCommit {
             "Reading created commit…"
         } else {
             "Reading latest local history…"
@@ -396,22 +518,62 @@ impl GitTurtle {
                 }
                 this.loading = None;
                 this.task = None;
+                if discovery == Discovery::InPlace {
+                    this.history_updates.owes_in_place = false;
+                }
                 match result {
                     Ok(Ok(output)) => {
-                        this.show_history(window, cx);
-                        if view_commit && this.history_search_active() {
-                            this.restore_normal_history(window, cx);
+                        let in_place = discovery == Discovery::InPlace;
+                        if !in_place {
+                            this.show_history(window, cx);
+                            if discovery == Discovery::CreatedCommit && this.history_search_active()
+                            {
+                                this.restore_normal_history(window, cx);
+                            }
+                            this.discard_history_search();
+                            this.search
+                                .update(cx, |input, cx| input.set_value("", window, cx));
                         }
-                        this.discard_history_search();
-                        this.search
-                            .update(cx, |input, cx| input.set_value("", window, cx));
                         match output {
                             Output::Snapshot(snapshot) => {
+                                // A repository cloned again at the tab's
+                                // path is installed in place, as a fresh
+                                // capture, as an accepted Refresh's is
+                                // (`shows_another_repository`): what was read
+                                // of the other goes, History's rows and
+                                // selection with it, and the found one's
+                                // status is read. Installed over the status
+                                // and remotes read before, Push pushed its
+                                // branch to its own remote while Targets
+                                // named the other's until a status read
+                                // landed (security probe S1, FU44-A), and
+                                // the other's selected commit stayed,
+                                // retained as a row, its menu offering to
+                                // revert it in the found one.
+                                let replaced = this.shows_another_repository(&snapshot.repository);
+                                if replaced {
+                                    this.forget_captured_history(window, cx);
+                                }
+                                this.repository_tabs
+                                    .follow_read_repository(&snapshot.repository);
                                 this.accept_snapshot_scope(&snapshot);
                                 this.history_updates.captured(&snapshot);
                                 this.install_current_history(snapshot, true, window, cx);
-                                this.status =
-                                    "Latest local history · selected inspector retained".into();
+                                if !in_place {
+                                    this.status =
+                                        "Latest local history · selected inspector retained".into();
+                                }
+                                if replaced {
+                                    this.seed_navigation_folders();
+                                    this.rebuild_navigation(cx);
+                                    this.refresh_worktree(window, cx);
+                                }
+                                if replaced || in_place {
+                                    this.select_newest_as_an_open_does(window, cx);
+                                }
+                                if in_place && !this.search.read(cx).value().is_empty() {
+                                    this.history_query_changed(window, cx);
+                                }
                             }
                             Output::HistoryPage(result) => {
                                 if let Some(commit) = result.page.commits.into_iter().next() {
@@ -447,6 +609,16 @@ impl GitTurtle {
                             _ => {}
                         }
                     }
+                    // Gone from its root, or with no repository found
+                    // there at all, the tab is read as Refresh reads it,
+                    // which marks it and says why; Show latest once left it
+                    // unmarked, saying "Could not read local history: …".
+                    Ok(Err(error))
+                        if error.is::<worker::RepositoryGone>()
+                            || crate::repository_access::finds_no_repository(&error) =>
+                    {
+                        this.tab_repository_gone(window, cx);
+                    }
                     Ok(Err(error)) => {
                         this.error = Some(format!("Could not read local history: {error:#}"))
                     }
@@ -459,28 +631,29 @@ impl GitTurtle {
         cx.notify();
     }
 
-    pub(super) fn render_history_update_notice(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    /// The cue History's scope toolbar shows while a quiet read has
+    /// observed history the list does not show yet
+    /// (`views::render_history_scope_toolbar`). It lives in the toolbar,
+    /// where the bar it replaced, a full-width row above History in every
+    /// mode, pushed the page down 35 px after a Fetch; Latest, beside it, is
+    /// its action, which reads current local tips and ends it, as the bar's
+    /// Show latest and Dismiss did. A later quiet read that History follows
+    /// at its top, such as the one after a Pull, shows those rows and ends
+    /// it too, as Refresh, which captures current tips, does.
+    pub(super) fn history_update_cue(&self) -> Option<UpdateCue> {
         let update = self.history_updates.pending?;
-        let colors = palette(cx);
-        let label = update.label();
-        let following = self.history_updates.followed
-            && follows_latest(
-                self.mode,
-                self.history_search_active(),
-                self.history_paging.is_deep(self.visible.len()),
-                f32::from(self.history_scroll.0.borrow().base_handle.offset().y),
-            );
-        Some(div().px_4().py_1().flex().items_center().gap_2().border_b_1().border_color(rgb(colors.border)).text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted))
-            .child(div().id("history-update-status").role(Role::Status).a11y_synthetic_children(native_accessibility::polite).aria_label(label.clone()).child(label))
-            .when(following, |row| row.child("· Latest rows visible"))
-            .when(!following, |row| row.child("·").child(button("show-latest-history", "Show latest", "", false).disabled(self.loading.is_some() || self.operation_busy.is_some()).tooltip("Read current local tips and show the newest rows; leaves the captured search and keeps the selected inspector").on_click(cx.listener(|this, _, window, cx| this.show_latest_history(window, cx)))))
-            .child(div().flex_1())
-            .when(following, |row| row.child(button("dismiss-history-update", "Dismiss", "", false).on_click(cx.listener(|this, _, _, cx| { this.history_updates.pending = None; cx.notify(); }))))
-            .into_any_element())
+        Some(UpdateCue {
+            label: update.label().into(),
+        })
     }
+}
+
+/// [`GitTurtle::history_update_cue`].
+pub(super) struct UpdateCue {
+    /// The words the toolbar draws where they fit and announces once,
+    /// politely: "1 new commit", "History updated". They stay the same as
+    /// History scrolls, so the status is not announced again.
+    pub label: SharedString,
 }
 
 #[cfg(test)]
@@ -583,7 +756,7 @@ mod tests {
         // the deterministic scheduler from another thread, including on macOS.
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let repo = GitRepository::init(fixture.path().join("repo"), "main").unwrap();
+        let repo = crate::views::tests::fixture_repository(fixture.path().join("repo"));
         let snapshot = move |commits: Vec<Commit>| worker::Snapshot {
             repository: repo.clone(),
             branches: vec![],
@@ -593,15 +766,13 @@ mod tests {
             history_next_offset: None,
             graph: vec![graph::GraphRow::default(); commits.len()],
             graph_notice: None,
-            refs: HashMap::new(),
+            refs: Default::default(),
             elapsed: std::time::Duration::ZERO,
             vanished_scope: None,
+            shallow: false,
             commits,
         };
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, window_cx) = cx.add_window_view(move |window, cx| {
@@ -679,7 +850,9 @@ mod tests {
                 );
                 assert!(Arc::ptr_eq(app.content.as_ref().unwrap(), &content));
                 assert_eq!(window.focused(cx), focus);
-                assert_eq!(app.history_updates.pending, Some(Update::New(3)));
+                // "b", followed at the top, is shown; "c" and "d", read
+                // while History kept its rows, are cued.
+                assert_eq!(app.history_updates.pending, Some(Update::New(2)));
                 app
             });
             *captured.borrow_mut() = Some(app.clone());
@@ -726,6 +899,8 @@ mod tests {
                 path: fixture.path().to_owned(),
                 scope: None,
                 limit: history_paging::PAGE_SIZE,
+                root: None,
+                git_dir: None,
             }))
             .unwrap()
             .unwrap();
@@ -808,20 +983,15 @@ mod tests {
     fn bursts_coalesce_and_uncertainty_remains_honest() {
         let mut state = State {
             pending: Some(Update::New(2)),
-            followed: true,
             ..Default::default()
         };
         state.scope_unavailable();
         assert_eq!(state.pending, Some(Update::Changed));
-        assert!(
-            !state.followed,
-            "a vanished scope cannot claim current rows are visible"
-        );
         let mut error = None;
-        state.report_scope_error("branch missing", None, &mut error);
+        state.report_scope_error("branch missing", None, None, &mut error);
         state.clear_scope_error(&mut error);
         assert!(error.is_none());
-        state.report_scope_error("branch missing", None, &mut error);
+        state.report_scope_error("branch missing", None, None, &mut error);
         error = Some("unrelated commit failure".into());
         state.clear_scope_error(&mut error);
         assert_eq!(error.as_deref(), Some("unrelated commit failure"));
@@ -830,5 +1000,876 @@ mod tests {
             Update::New(2).merge(Update::Changed).merge(Update::New(3)),
             Update::Changed
         );
+    }
+
+    /// Draws History with `update` cued. A quiet read History follows at its
+    /// top, such as the local watcher's after the fixture's own writes, shows
+    /// current rows and ends the cue, and can land between a draw's frames,
+    /// so the cue is set and drawn again until it lasted through them all.
+    fn draw_cued(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, update: Update) {
+        for _ in 0..50 {
+            app.update(cx, |app, _| app.history_updates.pending = Some(update));
+            crate::views::tests::draw(cx);
+            if app.read_with(cx, |app, _| app.history_updates.pending == Some(update)) {
+                return;
+            }
+        }
+        panic!("the cue lasted through a draw");
+    }
+
+    /// The new-history cue lives in History's scope toolbar, so nothing
+    /// below it moves: the full-width bar it replaced pushed the list down
+    /// 35 px after a Fetch. Once a quiet read finds a new commit, as the
+    /// refresh after a Fetch does, the list's first row keeps its place at
+    /// 13 and 18 pt in 1,480 × 980, 1,000 × 680 and 461 × 490 windows; the
+    /// cue's status lies inside the toolbar, its words whole and clear of
+    /// Columns where they fit (not in a half tile, where the toolbar keeps
+    /// only its controls); and Latest, its action, is drawn there marked by
+    /// its dot, and compact, is named for the cue. Pressing Latest ends it.
+    #[gpui::test]
+    async fn new_history_is_cued_inside_the_scope_toolbar_and_moves_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, fixture_git, history_script, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let within = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left()
+                && inner.right() <= outer.right()
+                && inner.top() >= outer.top()
+                && inner.bottom() <= outer.bottom()
+        };
+        let first_row = bounds(cx, "history-row-0").top();
+
+        // A commit made elsewhere, read by a quiet refresh as a Fetch's is,
+        // in Changes, where History keeps its rows: at History's top the
+        // read would show it there, with nothing to cue.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        fixture_git(
+            &fixture.path().join("narrow"),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "fetched",
+            ],
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        git: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        for _ in 0..2000 {
+            cx.run_until_parked();
+            if app.read_with(cx, |app, _| app.history_updates.pending.is_some()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            Some(Update::New(1))
+        );
+        // Back at History's top, a later quiet read, such as the local
+        // watcher's of the same commit, is followed and ends the cue
+        // (`a_followed_quiet_read_shows_the_cued_rows_and_ends_the_cue`), so
+        // each layout below draws the cue from the update this read found.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            bounds(cx, "history-row-0").top(),
+            first_row,
+            "nothing moved"
+        );
+
+        for (text, width, height, words) in [
+            (13, 1480., 980., true),
+            (18, 1480., 980., true),
+            (13, 1000., 680., true),
+            (18, 1000., 680., true),
+            (13, 461., 490., false),
+            (18, 461., 490., false),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            crate::views::COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+            draw_cued(&app, cx, Update::New(1));
+            let toolbar = bounds(cx, "history-scope-toolbar");
+            let status = bounds(cx, "history-update-status");
+            assert!(within(status, toolbar), "{at}: {status:?} in {toolbar:?}");
+            assert_eq!(status.size.width > px(1.), words, "{at}: the words");
+            if words {
+                let columns = bounds(cx, "columns");
+                assert!(status.right() <= columns.left(), "{at}: {status:?}");
+            }
+            let latest = bounds(cx, "history-newest");
+            assert!(within(latest, toolbar), "{at}: Latest {latest:?}");
+            let dot = bounds(cx, "history-newest-dot");
+            assert!(within(dot, latest), "{at}: its dot {dot:?}");
+            if cx.debug_bounds("history-scope-label").is_some() {
+                let name = crate::views::COMPACT_LABELS
+                    .with(|names| names.borrow().get("history-newest").cloned());
+                assert_eq!(
+                    name.as_deref(),
+                    Some("Latest · 1 new commit"),
+                    "{at}: compact Latest's name"
+                );
+            }
+            let with_cue = bounds(cx, "history-row-0").top();
+            let pending = app.update(cx, |app, _| app.history_updates.pending.take());
+            draw(cx);
+            assert_eq!(
+                bounds(cx, "history-row-0").top(),
+                with_cue,
+                "{at}: the cue moved the list"
+            );
+            assert!(cx.debug_bounds("history-update-status").is_none());
+            assert!(cx.debug_bounds("history-newest-dot").is_none());
+            app.update(cx, |app, _| app.history_updates.pending = pending);
+        }
+
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw_cued(&app, cx, Update::New(1));
+        let latest = bounds(cx, "history-newest");
+        cx.simulate_click(latest.center(), Modifiers::default());
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            None
+        );
+        assert!(cx.debug_bounds("history-update-status").is_none());
+    }
+
+    /// A quiet read History follows at its top, as the read after a Pull or
+    /// a Push from History is (`refresh_after_write` queues it), installs
+    /// its rows there and ends the cue an earlier read, made in Changes,
+    /// raised: the rows it announced are shown, so its status and Latest's
+    /// dot go. The cue once stayed through Pull and Push with the new commit
+    /// already the top row.
+    #[gpui::test]
+    async fn a_followed_quiet_read_shows_the_cued_rows_and_ends_the_cue(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, history_script, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        let repository = fixture.path().join("narrow");
+        let commit = |message: &str| {
+            fixture_git(
+                &repository,
+                &[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "--quiet",
+                    "-m",
+                    message,
+                ],
+            )
+        };
+        let quiet_read = |cx: &mut VisualTestContext, done: &dyn Fn(&GitTurtle) -> bool| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.queue_automatic_refresh(
+                        local_refresh::LocalChange {
+                            git: true,
+                            worktree: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            });
+            for _ in 0..2000 {
+                cx.run_until_parked();
+                if app.read_with(cx, |app, _| done(app)) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("the quiet read landed");
+        };
+        let rows = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.visible
+                    .iter()
+                    .take(2)
+                    .map(|&row| app.commits[row].subject.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // A commit read in Changes, where History keeps its rows, is cued.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        commit("fetched");
+        quiet_read(cx, &|app| app.history_updates.pending.is_some());
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            Some(Update::New(1))
+        );
+        // Back at History's top the cue lasts exactly while the list does
+        // not show the commit: the local watcher's own read of it, followed
+        // there, may already have shown it and ended the cue.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        let cued = app.read_with(cx, |app, _| app.history_updates.pending.is_some());
+        assert_eq!(
+            cued,
+            rows(cx).first().map(String::as_str) != Some("fetched"),
+            "the cue lasts while the list does not show the commit"
+        );
+        assert_eq!(cx.debug_bounds("history-newest-dot").is_some(), cued);
+
+        // The read after a Pull, followed at History's top, shows it and
+        // the commit the Pull brought, and the cue ends.
+        commit("pulled");
+        quiet_read(cx, &|app| {
+            app.visible
+                .first()
+                .is_some_and(|&row| app.commits[row].subject == "pulled")
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(rows(cx), ["pulled", "fetched"]);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            None,
+            "the rows the cue announced are shown"
+        );
+        assert!(cx.debug_bounds("history-update-status").is_none());
+        assert!(cx.debug_bounds("history-newest-dot").is_none());
+    }
+
+    /// A quiet read that finds a re-clone at the tab's path while Changes
+    /// is shown and History is scoped to a branch the found repository
+    /// lacks lands as it does with History shown
+    /// (`repository_tabs::tests::a_quiet_read_that_finds_a_re_clone_beside_a_vanished_scope_reads_all_history`):
+    /// it reads the found repository's All history in place, says so and
+    /// drops the scope, and nothing from before stays, neither History's
+    /// rows, the traversal they were read at and the files it kept for its
+    /// selection, nor Changes' rows. Changes stays shown, its landing
+    /// skipping the switch to History that Show latest's makes, with the
+    /// found repository's newest row selected behind it, so History opens
+    /// there on that commit's changed files, read as it opens. Here History's
+    /// read in place lands before the found repository's status read.
+    #[gpui::test]
+    async fn a_re_clone_beside_a_vanished_scope_lands_behind_changes_with_nothing_from_before(
+        cx: &mut TestAppContext,
+    ) {
+        land_a_re_clone_behind_changes(cx, FirstLanding::History).await;
+    }
+
+    /// The landing of
+    /// [`a_re_clone_beside_a_vanished_scope_lands_behind_changes_with_nothing_from_before`]
+    /// with the found repository's status read landing first: it stops
+    /// every read as it lands in Changes (`invalidate_read`), History's read
+    /// in place among them, and asks for that one again, so History still
+    /// shows the found repository's rows. It once kept none.
+    #[gpui::test]
+    async fn a_re_clone_behind_changes_reads_history_again_when_its_status_lands_first(
+        cx: &mut TestAppContext,
+    ) {
+        land_a_re_clone_behind_changes(cx, FirstLanding::Status).await;
+    }
+
+    /// History's read in place, owed behind Changes and stopped by Back
+    /// before the reader took it, is settled by the history History's
+    /// Refresh installs ([`State::captured`]): a status read landing in
+    /// Changes afterwards reads nothing in place, and History keeps the
+    /// commit selected since, where All history read again in place would
+    /// select its newest row.
+    #[gpui::test]
+    async fn a_history_read_owed_behind_changes_ends_with_the_history_a_refresh_installs(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{
+            history_script, history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        // Asked for as a re-clone's landing asks for it, and stopped by Back
+        // while the reader is held.
+        let reader_held = app.read_with(cx, |app, _| app.worker.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.read_all_history_in_place(window, cx);
+                app.back_to_history(window, cx);
+            })
+        });
+        drop(reader_held);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let path = app.path.clone().expect("a repository");
+                app.open(path, app.scope.clone(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        // The reader's reads but a working row's comparison.
+        let reads =
+            |app: &GitTurtle, _: &App| app.worker.submissions() - app.worker.working_previews();
+        let before = app.read_with(cx, reads);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        assert_eq!(
+            app.read_with(cx, |app, cx| (app.status_task.is_some(), reads(app, cx))),
+            (false, before),
+            "the status read landed in Changes and read nothing in place"
+        );
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.selected_commit),
+            Some(1),
+            "History keeps the commit selected"
+        );
+    }
+
+    /// Which of the two reads a re-clone's landing behind Changes asks for
+    /// lands first: History's read in place, on the reader, or the found
+    /// repository's status read, on the operation executor.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FirstLanding {
+        History,
+        Status,
+    }
+
+    async fn land_a_re_clone_behind_changes(cx: &mut TestAppContext, first: FirstLanding) {
+        use crate::views::tests::{
+            fixture_git, fixture_git_output, fixture_repository, history_script,
+            history_window_from, hold_quiet_reads_for_test, settle,
+        };
+        let page = history_paging::PAGE_SIZE;
+        let (fixture, app, cx) = history_window_from(cx, history_script(page + 1, 1)).await;
+        let base = fixture.path().to_owned();
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        hold_quiet_reads_for_test(&app, cx);
+        fixture_git(&root, &["branch", "before"]);
+        let scope = worker::Scope::Branch {
+            name: "before".into(),
+            remote: false,
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open(root.clone(), Some(("before".into(), scope)), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        std::fs::write(root.join("staged.txt"), "the person's\n").unwrap();
+        fixture_git(&root, &["add", "staged.txt"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        let staged = |app: &GitTurtle| {
+            (app.work_status.iter())
+                .flat_map(|status| &status.entries)
+                .filter(|entry| entry.staged.is_some())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let kept = |app: &GitTurtle| {
+            (app.retained_history_files.iter())
+                .flat_map(|(files, _)| files)
+                .filter_map(|file| file.new_path.clone())
+                .collect::<Vec<_>>()
+        };
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working, "Changes is shown");
+            assert!(
+                staged(app).contains(&PathBuf::from("staged.txt")),
+                "the replaced repository's staged rows: {:?}",
+                staged(app)
+            );
+            assert_eq!(
+                kept(app),
+                [PathBuf::from("notes.txt")],
+                "History keeps its selection's changed files"
+            );
+            assert_eq!(
+                (app.scope.is_some(), app.history_paging.next_offset),
+                (true, Some(page)),
+                "the scoped history read a page at a time"
+            );
+        });
+        let tip = |root: &std::path::Path| {
+            let output = fixture_git_output(root, &["rev-parse", "HEAD"]);
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        let replaced_tip = tip(&root);
+        let third = fixture_repository(base.join("third"));
+        std::fs::write(third.path().join("third.txt"), "third\n").unwrap();
+        fixture_git(third.path(), &["add", "third.txt"]);
+        fixture_git(third.path(), &["commit", "-q", "-m", "Third"]);
+        std::fs::write(third.path().join("planted.txt"), "not the person's\n").unwrap();
+        fixture_git(third.path(), &["add", "planted.txt"]);
+        std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+        std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+        let found_tip = tip(&root);
+        let found = gitturtle_core::GitRepository::open(&root)
+            .unwrap()
+            .git_dir_inode();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(false);
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        // The quiet read answers on the reader before anything runs here,
+        // and lands with the reader and the operation executor both held,
+        // so the two reads its landing asks for, History's in place and the
+        // found repository's status, wait and land in the order named as
+        // each thread is let go. Neither thread is the test's to schedule:
+        // parked before the holds, the quiet read could land with both
+        // free, and with the executor free where the status read lands
+        // first, that read could land as it was asked for.
+        assert!(
+            app.read_with(cx, |app, _| app.automatic.quiet_read_running()),
+            "the quiet read runs"
+        );
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        let reader_held = app.read_with(cx, |app, _| app.worker.hold());
+        let executor_held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.executor().run_until_parked();
+        let asked = |app: &GitTurtle, _: &App| {
+            (
+                (app.repository.as_ref()).is_some_and(|repo| repo.git_dir_inode() == found),
+                app.loading,
+                app.task.is_some(),
+                app.status_task.is_some(),
+            )
+        };
+        let reading = Some("Reading latest local history…");
+        assert_eq!(
+            app.read_with(cx, asked),
+            (true, reading, true, true),
+            "the quiet read landed, asking for History's read in place and the status read"
+        );
+        if first == FirstLanding::Status {
+            drop(executor_held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            assert_eq!(
+                app.read_with(cx, asked),
+                (true, reading, true, false),
+                "the status read landed, and History's read in place is asked for again"
+            );
+            drop(reader_held);
+        } else {
+            drop(reader_held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            assert_eq!(
+                app.read_with(cx, asked),
+                (true, None, false, true),
+                "History's read in place landed before the status read"
+            );
+            drop(executor_held);
+        }
+        // Landed once the found repository's status read and watch, asked
+        // for on the operation thread, and the history read in place have
+        // answered too, as with History shown.
+        let landed = |app: &GitTurtle, _: &App| {
+            app.repository
+                .as_ref()
+                .is_some_and(|repo| repo.git_dir_inode() == found)
+                && app.loading.is_none()
+                && app.task.is_none()
+                && !app.automatic.quiet_read_requested()
+                && app.automatic.replies_landed()
+                && app.status_task.is_none()
+        };
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, landed) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        assert!(
+            app.read_with(cx, landed),
+            "the capture and its reads landed"
+        );
+        app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let subjects = (app.commits.iter())
+                .map(|commit| commit.subject.as_str())
+                .collect::<Vec<_>>();
+            assert!(app.mode == WorkspaceMode::Working, "Changes stays shown");
+            assert_eq!(
+                subjects.first(),
+                Some(&"Third"),
+                "the found repository's history, newest first: {subjects:?}"
+            );
+            assert!(
+                subjects.len() < page,
+                "no row from before: {} rows",
+                subjects.len()
+            );
+            assert_eq!(
+                app.selected_commit,
+                Some(0),
+                "its newest row selected behind Changes, the row History opens on"
+            );
+            assert!(app.scope.is_none(), "All history");
+            assert!(
+                matches!(&app.history_paging.scope, Some(HistoryScope::PinnedRefs(tips))
+                    if tips.contains(&found_tip) && !tips.contains(&replaced_tip)),
+                "the found repository's tips, none from before: {:?}",
+                app.history_paging.scope
+            );
+            assert_eq!(app.history_paging.next_offset, None, "no page from before");
+            let notice = app.operation_notice.as_deref();
+            assert!(
+                notice.is_some_and(|notice| {
+                    notice.starts_with("History scope changed: ")
+                        && notice.ends_with("Showing All history.")
+                }),
+                "it says so: {notice:?}"
+            );
+            let banner = app.operation_error_text();
+            assert!(
+                !(banner.as_deref()).is_some_and(|banner| banner.contains("retained")),
+                "no claim of a history it does not show: {banner:?}"
+            );
+            assert_eq!(
+                staged(app),
+                [PathBuf::from("planted.txt")],
+                "Changes shows the found repository's rows, none from before"
+            );
+            assert_eq!(kept(app), Vec::<PathBuf>::new(), "no files from before");
+        });
+        // Its own reply ended the read owed: Refresh in Changes reads the
+        // status, and the reader nothing but a selected row's comparison,
+        // which takes the place of any read asked for before it.
+        let reads =
+            |app: &GitTurtle, _: &App| app.worker.submissions() - app.worker.working_previews();
+        let before = app.read_with(cx, reads);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        assert_eq!(
+            app.read_with(cx, |app, cx| (app.status_task.is_some(), reads(app, cx))),
+            (false, before),
+            "Refresh in Changes landed its status read and read nothing in place"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let selected = app.selected_commit.map(|index| &app.commits[index]);
+            assert_eq!(
+                selected.map(|commit| commit.subject.as_str()),
+                Some("Third")
+            );
+            let files = (app.files.iter())
+                .filter_map(|file| file.new_path.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                files,
+                [PathBuf::from("third.txt")],
+                "History opens on the found commit's changed files"
+            );
+        });
+    }
+
+    /// While the cue lasts, Latest's dot is 5 px across, 1 px inside the
+    /// button's top right corner, scaled with the text, at 13 and 18 pt in
+    /// the labelled and the compact toolbar. In the compact square it stands
+    /// at least 2 px clear of the up arrow, whose ink beside the rows the
+    /// dot covers ends 8.8 px in from the square's right edge at 13 pt: the
+    /// 6 px dot 2 px in stood 0.8 px from it there and 0.9 px at 18 pt.
+    #[gpui::test]
+    async fn latest_marks_the_cue_with_a_dot_clear_of_its_arrow(cx: &mut TestAppContext) {
+        use crate::views::tests::{history_script, history_window_from, settle};
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        let near = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() <= 0.5;
+        for (text, width, height, compact) in [
+            (13, 1480., 980., false),
+            (18, 1480., 980., false),
+            (13, 461., 490., true),
+            (18, 461., 490., true),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw_cued(&app, cx, Update::New(1));
+            let latest = cx.debug_bounds("history-newest").expect("Latest is drawn");
+            let dot = cx
+                .debug_bounds("history-newest-dot")
+                .expect("its dot is drawn");
+            let inset = appearance::ui_size(1.);
+            assert!(
+                near(dot.size.width, appearance::ui_size(5.)),
+                "{at}: {dot:?}"
+            );
+            assert!(
+                near(dot.size.height, appearance::ui_size(5.)),
+                "{at}: {dot:?}"
+            );
+            assert!(
+                near(dot.top() - latest.top(), inset),
+                "{at}: {dot:?} in {latest:?}"
+            );
+            assert!(
+                near(latest.right() - dot.right(), inset),
+                "{at}: {dot:?} in {latest:?}"
+            );
+            assert_eq!(
+                near(latest.size.width, latest.size.height),
+                compact,
+                "{at}: Latest's square {latest:?}"
+            );
+            if compact {
+                let ink = latest.right() - appearance::ui_size(8.8);
+                assert!(
+                    f32::from(dot.left() - ink) >= 2.,
+                    "{at}: {dot:?} clear of the arrow's ink at {ink:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod deepened_shallow_tests {
+    use crate::views::tests::{fixture_git, history_window_from, settle};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// Commits on `main` and on its side branch.
+    const LINE: usize = 400;
+
+    /// A `git fast-import` stream: `main`'s [`LINE`] commits, a side branch
+    /// of [`LINE`] more from main's first, and `main` merging the side
+    /// branch on top, so History's topological page shows the side branch's
+    /// line and then main's.
+    fn merged_script() -> String {
+        let mut input = String::new();
+        let mut commit = |reference: &str, mark: usize, message: String, parents: &str| {
+            input.push_str(&format!(
+                "commit refs/heads/{reference}\nmark :{mark}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n{parents}",
+                1_700_000_000 + mark,
+                message.len(),
+            ));
+        };
+        for index in 0..LINE {
+            commit("main", index + 1, format!("main {index}"), "");
+        }
+        for index in 0..LINE {
+            let from = if index == 0 { "from :1\n" } else { "" };
+            commit("side", 1_001 + index, format!("side {index}"), from);
+        }
+        commit(
+            "main",
+            2_001,
+            "merge side".into(),
+            &format!("merge :{}\n", 1_000 + LINE),
+        );
+        input + "done\n"
+    }
+
+    /// Lands every reply the window waits for and each that they ask for
+    /// in turn, drawing no frame of its own, as
+    /// `views::tests::land_every_reply` does: each executor answers on a
+    /// thread of its own, which `run_until_parked` cannot wait for.
+    fn land(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..16 {
+            let asked = app.update(cx, |app, _| {
+                app.worker.wait_idle();
+                app.operations.drain();
+                app.preferences_writer.drain();
+                app.file_paths.drain();
+                app.worker.submissions()
+            });
+            cx.run_until_parked();
+            if app.read_with(cx, |app, _| {
+                app.worker.submissions() == asked
+                    && app.automatic.replies_landed()
+                    && !app.working_paths.pending
+                    && !app.file_paths.pending
+            }) {
+                return;
+            }
+        }
+        panic!("the window's replies kept asking for more");
+    }
+
+    /// A shallow clone deepened in place outside the app draws its deepened
+    /// page in one landing, though the page is as long as it was and every
+    /// reference stays where it was: a clone at depth 300, from a local
+    /// bare repository, of a history whose top merges a side branch as
+    /// long as `main`, fills History's 500-row page with the merge, the
+    /// side branch's 299 commits it holds and then 200 of main's, the last
+    /// side commit it holds without parents. `git fetch --deepen=50` from
+    /// the same bare repository, with no network, gives that commit its
+    /// parent and brings the side branch's next 50 commits into the page,
+    /// pushing 50 of main's out. A quiet rescan then installs the page in
+    /// one landing, which draws one frame: the side commits it brought in,
+    /// on the page, and the commit that had none drawn with its parent below
+    /// it. Counted as the page shown, as it was where only references,
+    /// paging and length were compared, the landing drew nothing and the
+    /// page kept the rows and graph the clone had before.
+    #[gpui::test]
+    async fn a_shallow_clone_deepened_in_place_draws_its_page_in_one_landing(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window_from(cx, merged_script()).await;
+        let origin = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clones = tempfile::tempdir().unwrap();
+        let bare = clones.path().join("bare.git");
+        fixture_git(
+            clones.path(),
+            &[
+                "clone",
+                "--quiet",
+                "--bare",
+                origin.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        let url = format!("file://{}", bare.display());
+        fixture_git(
+            clones.path(),
+            &[
+                "clone",
+                "--quiet",
+                "--depth",
+                "300",
+                url.as_str(),
+                "shallow",
+            ],
+        );
+        let shallow = clones.path().join("shallow");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(shallow.clone(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        land(&app, cx);
+        settle(&app, cx).await;
+        let page = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.commits
+                    .iter()
+                    .map(|commit| (commit.oid.clone(), commit.subject.clone()))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let before = page(cx);
+        assert_eq!(before.len(), 500, "the clone fills History's page");
+        let boundary = app.read_with(cx, |app, _| {
+            let index = app
+                .commits
+                .iter()
+                .position(|commit| commit.parents.is_empty())
+                .expect("the clone's deepest side commit, without parents");
+            (
+                app.commits[index].oid.clone(),
+                app.commits[index].subject.clone(),
+            )
+        });
+        assert!(boundary.1.starts_with("side "), "{boundary:?}");
+
+        fixture_git(&shallow, &["fetch", "--quiet", "--deepen=50", "origin"]);
+        crate::in_frame::probe::watch();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        git: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        land(&app, cx);
+        let frames = crate::in_frame::probe::take()
+            .iter()
+            .filter(|frame| frame.region == "repository-columns")
+            .count();
+        crate::in_frame::probe::stop();
+        assert_eq!(frames, 1, "the deepened page draws in one landing");
+
+        let after = page(cx);
+        assert_eq!(after.len(), 500, "the page is as long as it was");
+        let entered = after
+            .iter()
+            .filter(|row| !before.contains(row))
+            .collect::<Vec<_>>();
+        assert_eq!(entered.len(), 50, "the side commits the fetch brought in");
+        assert!(
+            entered
+                .iter()
+                .all(|(_, subject)| subject.starts_with("side ")),
+            "{entered:?}"
+        );
+        assert!(
+            before
+                .iter()
+                .filter(|row| !after.contains(row))
+                .all(|(_, subject)| subject.starts_with("main ")),
+            "main's oldest rows leave the page"
+        );
+        app.read_with(cx, |app, _| {
+            let index = app
+                .commits
+                .iter()
+                .position(|commit| commit.oid == boundary.0)
+                .expect("the commit that had no parents stays on the page");
+            let parent = &app.commits[index].parents;
+            assert_eq!(parent.len(), 1, "{boundary:?} has its parent");
+            assert_eq!(
+                app.commits[index + 1].oid,
+                parent[0],
+                "{boundary:?}'s parent is the row below it"
+            );
+            assert!(
+                !app.graph[index].edges.is_empty(),
+                "{boundary:?} is drawn joined to its parent"
+            );
+        });
     }
 }

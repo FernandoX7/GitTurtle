@@ -4,10 +4,7 @@ use crate::*;
 use gitturtle_core::{CreateWorktreePlan, WorktreeCommand, WorktreeDetails, WriteCommand};
 
 mod removal_review;
-use gpui_kit::{
-    component::{WindowExt, dialog::DialogButtonProps},
-    prelude::FluentBuilder,
-};
+use gpui_kit::{component::WindowExt, prelude::FluentBuilder};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -33,19 +30,36 @@ impl RemovalMode {
     }
 }
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
+/// Where the worktree manager's text starts, in from its content edge: the
+/// filter's text inset, where its placeholder starts at every size. The
+/// title, the labels, the details and each worktree row's name start here,
+/// as the Reflog's text does; the rows centred their names, and the other
+/// lines started at the content's edge.
+const TEXT_INSET: Pixels = appearance::FIELD_TEXT_INSET;
+
+/// [`native_accessibility::text`] at the manager's [`TEXT_INSET`].
+fn label(
+    id: impl Into<ElementId>,
+    value: impl Into<SharedString>,
+) -> native_accessibility::StaticText<Stateful<Div>> {
+    native_accessibility::text(id, value).ml(TEXT_INSET)
 }
 
 impl GitTurtle {
     pub(super) fn open_worktree_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_worktree_manager(None, window, cx);
+    }
+
+    /// Opens Worktrees as [`Self::open_worktree_manager`] does and returns
+    /// the manager, `None` where it did not open, for a test that reads the
+    /// dialog once its reads have landed (`focus_ring::sweep::Opened`).
+    #[cfg(test)]
+    pub(crate) fn open_worktree_manager_entity(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<WorktreeManager>> {
+        self.show_worktree_manager(None, window, cx)
     }
 
     pub(super) fn open_worktree_actions(
@@ -63,13 +77,11 @@ impl GitTurtle {
         target: Option<(Worktree, Option<RemovalMode>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<Entity<WorktreeManager>> {
         if self.operation_busy.is_some() {
-            return;
+            return None;
         }
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
+        let repo = self.repository.clone()?;
         let owner = cx.entity().downgrade();
         let manager = self
             .worktree_management
@@ -80,8 +92,7 @@ impl GitTurtle {
             .unwrap_or_else(|| cx.new(|cx| WorktreeManager::new(owner, repo, window, cx)));
         self.worktree_management.draft = Some(manager.clone());
         manager.update(cx, |this, cx| {
-            this.closed
-                .store(false, std::sync::atomic::Ordering::Release);
+            this.reveal_field = true;
             if let Some((tree, removal)) = target {
                 this.creating = false;
                 this.filter
@@ -91,22 +102,37 @@ impl GitTurtle {
                 this.refresh(window, cx);
             }
         });
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        let opened = manager.clone();
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = manager.clone();
             let cancel = manager.clone();
-            let closing = manager.downgrade();
-            let closed = manager.read(cx).closed.clone();
+            let shown = manager.clone();
             // The dialog clips its body to the body's bounds, and the manager
             // keeps the focus ring's room inside them above Manage and below
             // its last control. The title's margin and the footer's gap give
-            // the room back, so nothing in the dialog moves.
+            // the room back, so nothing in the dialog moves. The manager lies
+            // in the dialog's content rather than its scrolling body, whose
+            // scroller lays what it holds out at full height: there its
+            // content, sized from the window's height, ran past the dialog's
+            // fold at 18 pt in a 1480 × 800 window, its foot cut with
+            // nothing to cue it. Here the content takes what the dialog's
+            // cap leaves it, above Done, and scrolls the rest, cued.
             let room = appearance::button_ring_room(cx);
             dialog
-                .title(label("worktree-manager-title", "Worktrees").mb(-room))
-                .width(px(700.))
+                .title(
+                    native_accessibility::dialog_title("worktree-manager-title", "Worktrees")
+                        .ml(TEXT_INSET)
+                        .mb(-room),
+                )
+                .width(appearance::dialog_width(px(700.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
-                .child(manager.clone())
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
+                .footer(crate::tags::dialog_footer("Done", None))
+                // Done and Escape close the dialog here, stopping the read.
+                // The kit's alert dialog never calls an `on_close` (its
+                // surface takes the alert's own button props, which hold
+                // none), so one set here never ran.
                 .on_ok(move |_, _, cx| {
                     done.update(cx, |this, _| this.cancel());
                     true
@@ -115,14 +141,21 @@ impl GitTurtle {
                     cancel.update(cx, |this, _| this.cancel());
                     true
                 })
-                .on_close(move |_, _, cx| {
-                    closed.store(true, std::sync::atomic::Ordering::Release);
-                    let closing = closing.clone();
-                    cx.defer(move |cx| {
-                        let _ = closing.update(cx, |this, _| this.cancel());
-                    });
-                })
         });
+        // Opening the dialog focuses its shell, which draws no ring: focus
+        // the shown form's first field, the filter in Manage or the branch
+        // field in Create, so the first frame draws its ring, as the Reflog
+        // focuses its filter. The dialog keeps the opener to return to.
+        let field = self
+            .worktree_management
+            .draft
+            .as_ref()
+            .map(|manager| manager.read(cx).first_field(cx));
+        if let Some(field) = field {
+            field.focus(window, cx);
+        }
+        window.refresh();
+        Some(opened)
     }
 
     pub(super) fn finish_worktree_write(
@@ -141,55 +174,66 @@ impl GitTurtle {
         };
         let plan = plan.clone();
         let owner = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
-            let open_owner = owner.clone(); let open_path = plan.destination.clone();
-            let finder = plan.destination.clone(); let editor_owner = owner.clone(); let editor_path = plan.destination.clone();
-            dialog.title(label("worktree-created-title", "Worktree created"))
-                .width(px(600.)).child(div().flex().flex_col().gap_3()
-                    .child(label("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
-                    .child(label("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(button("open-created-worktree", "Open in GitTurtle", "", false).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
-                        .child(button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }, "", false).on_click(move |_, _, cx| cx.reveal_path(&finder)))
-                        .child(button("edit-created-worktree", "Open in editor", "", false).on_click(move |_, window, cx| { let _ = editor_owner.update(cx, |this, cx| this.open_worktree_editor(editor_path.clone(), window, cx)); }))))
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+        // The body's scroll, which reveals the action Tab moves onto, kept
+        // across the frames the dialog builds its content in.
+        let body = crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard);
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let (plan, owner, body) = (plan.clone(), owner.clone(), body.clone());
+            // In the dialog's content, as the profile form is: the body takes
+            // what the cap leaves it and scrolls the rest, revealing the
+            // action Tab moves onto, with the ring's room around the actions,
+            // given back through its margin, and below them inside the
+            // dialog's clip, which the footer's gap gives back. In the
+            // dialog's own scrolling body, which reveals nothing, Open in
+            // editor's ring was cut at its foot at 18 pt in a 461 × 490
+            // window.
+            dialog.title(native_accessibility::dialog_title("worktree-created-title", "Worktree created"))
+                .width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+                .content(move |content, window, cx| {
+                    let open_owner = owner.clone(); let open_path = plan.destination.clone();
+                    let finder = plan.destination.clone(); let editor_owner = owner.clone(); let editor_path = plan.destination.clone();
+                    let room = appearance::button_ring_room(cx);
+                    let lead = crate::ghost_pull(window) + room;
+                    body.reveal(window, cx);
+                    let actions = ["open-created-worktree", "reveal-created-worktree", "edit-created-worktree"].map(|id| body.focus(id, cx));
+                    let cue = crate::tags::ScrollCue::revealing(&body, room);
+                    content.min_h_0().child(div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(body.observe())).id("worktree-created-body").debug_selector(|| "worktree-created-body".into()).min_h_0().overflow_y_scroll().track_scroll(body.scroll()).p(room).m(-room).pl(lead).ml(-lead).flex().flex_col().gap_3()
+                        .child(native_accessibility::text("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
+                        .child(native_accessibility::text("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
+                        // Ghost Buttons at the dialog's text edge, each line's
+                        // first standing its label on it (`crate::edge_row`).
+                        .child(crate::edge_row(window).on_children_prepainted(body.controls(actions.iter().cloned().map(Some).collect(), room))
+                            .child(crate::edge_button("open-created-worktree", "Open in GitTurtle").track_focus(&actions[0]).debug_selector(|| "open-created-worktree".into()).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
+                            .child(crate::edge_button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }).track_focus(&actions[1]).debug_selector(|| "reveal-created-worktree".into()).on_click(move |_, _, cx| cx.reveal_path(&finder)))
+                            .child(crate::edge_button("edit-created-worktree", "Open in editor").track_focus(&actions[2]).debug_selector(|| "edit-created-worktree".into()).on_click(move |_, window, cx| { let _ = editor_owner.update(cx, |this, cx| this.open_worktree_editor(editor_path.clone(), window, cx)); }))), "worktree-created-scrollbar").min_h_0()))
+                })
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 
     fn open_worktree_editor(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let editor = self.settings.external_editor.trim().to_owned();
-        if editor.is_empty() {
-            window.close_dialog(cx);
-            self.show_settings(window, cx);
-            self.operation_notice = Some(
-                "Choose an editor in Settings → Projects, then use Worktrees → Open in editor."
-                    .into(),
-            );
-            return;
-        }
-        let response = self.preferences_writer.submit_read(move || {
-            let mut command = if cfg!(target_os = "macos") { let mut command = std::process::Command::new("/usr/bin/open"); command.args(["-a", &editor, "--"]); command } else { std::process::Command::new(&editor) };
-            let mut child = command.arg(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
-            if cfg!(target_os = "macos") {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                loop {
-                    if let Some(status) = child.try_wait()? { anyhow::ensure!(status.success(), "Could not open the configured editor. Check its application name in Settings."); break; }
-                    if std::time::Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); anyhow::bail!("The editor launcher did not report a result. Check whether it opened before trying again."); }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-            } else { std::thread::spawn(move || { let _ = child.wait(); }); }
-            Ok(())
-        });
+        let response = self
+            .preferences_writer
+            .submit_read(move || platform_polish::open_in_editor(&editor, &path));
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ =
-                this.update_in(cx, |this, _, cx| {
+                this.update_in(cx, |this, window, cx| {
                     match result {
-                        Ok(Ok(())) => {
+                        Ok(Ok(Some(_))) => {
                             this.operation_notice =
                                 Some("Opened the selected worktree in your editor.".into())
                         }
-                        Ok(Err(error)) => this.operation_error = Some(format!("{error:#}")),
+                        Ok(Ok(None)) => {
+                            window.close_dialog(cx);
+                            this.show_settings(window, cx);
+                            this.operation_notice = Some(
+                                "Choose an editor in Settings → Projects, then use Worktrees → Open in editor."
+                                    .into(),
+                            );
+                        }
+                        Ok(Err(error)) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                         Err(_) => this.operation_error = Some(
                             "Editor launcher interrupted; check whether it opened before retrying."
                                 .into(),
@@ -202,8 +246,7 @@ impl GitTurtle {
     }
 }
 
-struct WorktreeManager {
-    closed: Arc<std::sync::atomic::AtomicBool>,
+pub(crate) struct WorktreeManager {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     reader: operations::SerialExecutor,
@@ -214,6 +257,22 @@ struct WorktreeManager {
     selected: Option<PathBuf>,
     details: Option<WorktreeDetails>,
     pending: bool,
+    /// The loading row's Cancel, which hands focus to the shown form's first
+    /// field as the row goes.
+    cancel_read: focus_ring::LoadingCancel,
+    /// Whether the next frame scrolls the content to show the shown form's
+    /// first field, if it holds focus: set as the dialog opens.
+    reveal_field: bool,
+    /// The content's scroll, which its scrollbar follows and which reveals
+    /// the control the keyboard moves focus onto, the worktree list or
+    /// Create's branch choices as a whole for one of theirs.
+    content: crate::focus_reveal::FocusReveal,
+    /// The worktree list's scroll, which its scroll cue follows and which
+    /// reveals the row the keyboard moves focus onto.
+    rows: crate::focus_reveal::FocusReveal,
+    /// Create's branch choices' scroll, which reveals the choice the
+    /// keyboard moves focus onto.
+    choices: crate::focus_reveal::FocusReveal,
     reviewing: bool,
     error: Option<String>,
     creating: bool,
@@ -246,7 +305,6 @@ impl WorktreeManager {
             .into();
         let parent = repo.path().parent().unwrap_or(repo.path()).to_owned();
         Self {
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             owner,
             repo,
             reader: operations::SerialExecutor::new("worktree-manager"),
@@ -257,6 +315,11 @@ impl WorktreeManager {
             selected: None,
             details: None,
             pending: false,
+            cancel_read: focus_ring::LoadingCancel::new(cx),
+            reveal_field: false,
+            content: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            rows: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            choices: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             reviewing: false,
             error: None,
             creating: false,
@@ -279,13 +342,50 @@ impl WorktreeManager {
         self.pending = false;
         self.reviewing = false;
     }
+    /// The shown form's first field: the filter in Manage, the branch field
+    /// in Create.
+    fn first_field(&self, cx: &App) -> FocusHandle {
+        let field = if self.creating {
+            &self.branch
+        } else {
+            &self.filter
+        };
+        field.read(cx).focus_handle(cx)
+    }
+    /// As the loading row goes, focus its Cancel holds moves to the first
+    /// field below it: the filter in Manage, the branch field in Create.
+    fn leave_loading_row(&self, window: &mut Window, cx: &mut App) {
+        let field = self.first_field(cx);
+        self.cancel_read.release_to(&field, window, cx);
+    }
+    /// Whether the app refuses the dialog's actions, and whether they look
+    /// it: refused while its repository is no longer the one shown or a
+    /// write runs, and dimmed with a write only once it looks busy
+    /// (`workspace::BusyLook`), as everywhere else; they dimmed the moment
+    /// any write started. Its own Create and Remove close the dialog before
+    /// their review submits, so a write it sees is never its own.
+    fn refusal(&self, cx: &App) -> (bool, bool) {
+        crate::workspace::dialog_refusal(&self.owner, Some(self.repo.path()), cx)
+    }
+    /// Whether the dialog may act now ([`Self::refusal`]).
     fn current(&self, cx: &App) -> bool {
-        self.owner.upgrade().is_some_and(|owner| {
-            let owner = owner.read(cx);
-            owner.path.as_deref() == Some(self.repo.path())
-                && owner.page == AppPage::Repository
-                && owner.operation_busy.is_none()
-        })
+        !self.refusal(cx).0
+    }
+    /// [`Self::refusal`], with the dialog's own read in progress.
+    fn unavailable(&self, cx: &App) -> (bool, bool) {
+        let (refused, dimmed) = self.refusal(cx);
+        (self.pending || refused, self.pending || dimmed)
+    }
+    /// Shows Manage or Create from its tab. Focus the hidden form's first
+    /// field held, as it does from the dialog's opening, moves to the shown
+    /// form's first field: left on a field no frame draws, Tab started from
+    /// nowhere and Enter reached no dialog action.
+    fn switch_form(&mut self, creating: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let held = self.first_field(cx).contains_focused(window, cx);
+        self.set_creating(creating, cx);
+        if held {
+            self.first_field(cx).focus(window, cx);
+        }
     }
     fn set_creating(&mut self, creating: bool, cx: &mut Context<Self>) {
         if self.creating != creating {
@@ -295,8 +395,24 @@ impl WorktreeManager {
                 self.cancel();
             }
             self.creating = creating;
+            self.show_first_choice();
             cx.notify();
         }
+    }
+    /// Shows Create for an existing branch, with its choices, or a new one.
+    fn set_new_branch(&mut self, new_branch: bool, cx: &mut Context<Self>) {
+        if self.new_branch != new_branch {
+            self.new_branch = new_branch;
+            self.show_first_choice();
+        }
+        self.error = None;
+        cx.notify();
+    }
+    /// The branch choices' scroll stays with the manager while they are
+    /// hidden, so they show again from their first choice rather than where
+    /// a reveal or a wheel last left them.
+    fn show_first_choice(&self) {
+        self.choices.scroll().set_offset(Point::default());
     }
     fn read<T: Send + 'static>(
         &mut self,
@@ -318,7 +434,7 @@ impl WorktreeManager {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Worktree read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.reviewing = false; if !this.current(cx) { this.error = Some("The repository context changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let _ = this.update_in(cx, |this, window, cx| { this.pending = false; this.reviewing = false; this.leave_loading_row(window, cx); if !this.current(cx) { crate::tags::set_error_line(&mut this.error, "The repository context changed or an operation started. Reopen Worktrees when it finishes.", window, cx); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => crate::tags::set_error_line(&mut this.error, format!("{error:#}"), window, cx) } } cx.notify(); });
         }));
         cx.notify();
     }
@@ -394,7 +510,7 @@ impl WorktreeManager {
         });
         cx.spawn_in(window, async move |this, cx| {
             let response = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match response {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.into_iter().next() {
@@ -402,8 +518,15 @@ impl WorktreeManager {
                         }
                     }
                     Ok(Ok(None)) => {}
-                    Ok(Err(error)) => this.error = Some(error.to_string()),
-                    Err(_) => this.error = Some("Folder picker was interrupted.".into()),
+                    Ok(Err(error)) => {
+                        crate::tags::set_error_line(&mut this.error, error.to_string(), window, cx)
+                    }
+                    Err(_) => crate::tags::set_error_line(
+                        &mut this.error,
+                        "Folder picker was interrupted.",
+                        window,
+                        cx,
+                    ),
                 }
                 cx.notify();
             });
@@ -424,8 +547,12 @@ impl WorktreeManager {
                 Some(std::path::Component::Normal(_))
             )
         {
-            self.error =
-                Some("Enter one new folder name; use Choose parent to select its location.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "Enter one new folder name; use Choose parent to select its location.",
+                window,
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -500,7 +627,9 @@ const ROW_RING_CLEARANCE: Pixels = px(2.);
 /// One row of the managed worktree list. A selected row shows its selection
 /// through the selected surface and its selected and toggled state, and keeps
 /// the neutral border of every other row, so an accent outline around a row
-/// always means keyboard focus: the focused row's ring, drawn once.
+/// always means keyboard focus: the focused row's ring, drawn once. Its name
+/// starts inside its 1 px border at the field's padding, on the manager's
+/// [`TEXT_INSET`], rather than centred as the kit centres a Button's label.
 fn worktree_row(index: usize, text: String, selected: bool, p: appearance::Palette) -> Button {
     Button::new(("managed-worktree-row", index))
         .debug_selector(move || format!("managed-worktree-row-{index}"))
@@ -508,10 +637,13 @@ fn worktree_row(index: usize, text: String, selected: bool, p: appearance::Palet
         .w_full()
         .h_auto()
         .min_h(crate::appearance::ui_size(36.))
-        .justify_start()
-        .px_3()
+        .pl(appearance::FIELD_TEXT_PADDING)
+        .pr_3()
         .py_2()
-        .label(text.clone())
+        .child(crate::tags::row_text(
+            format!("managed-worktree-row-text-{index}"),
+            text.clone(),
+        ))
         .accessibility_label(text)
         .selected(selected)
         .toggled(selected)
@@ -526,8 +658,15 @@ fn worktree_row(index: usize, text: String, selected: bool, p: appearance::Palet
 impl Render for WorktreeManager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
-        let unavailable = self.pending || !self.current(cx);
+        let (unavailable, dimmed) = self.unavailable(cx);
+        let refusing = |control: Button, key: &'static str, refused: bool, dims: bool| {
+            crate::workspace::refusing(
+                control,
+                || key.into(),
+                unavailable || refused,
+                dimmed || dims,
+            )
+        };
         let query = self.filter.read(cx).value().trim().to_lowercase();
         let trees: Vec<_> = self
             .trees
@@ -560,59 +699,243 @@ impl Render for WorktreeManager {
         // the list did. No control moves. The worktree rows stand apart by
         // the ring's room and `ROW_RING_CLEARANCE` more, so a focused row's
         // ring keeps some of the list's surface before the next row's border.
+        // The list's wrapper shrinks no shorter than two whole rows, or the
+        // one a single worktree takes, so in a short window, or a narrow one
+        // where the details below wrap, the content scrolls rather than
+        // squeeze the list: at 13 pt in a 461 × 490 half tile it kept one of
+        // two worktrees, too short a track for a scrollbar's thumb to move
+        // in. A list with no worktree keeps its whole explanation: at 18 pt
+        // in the half tile, with a worktree's details shown, a filter that
+        // matched nothing left "No worktrees match this filter" in a list
+        // 6 px tall. Past its height the list cues the rest with its
+        // scrollbar, and the content, beside it in the dialog's side
+        // padding, cues its own. Create's branch choices keep two whole
+        // choices, or the one there is, or their whole explanation, the
+        // same way, and cue theirs: in the half tile the content squeezed
+        // them to nothing, so a choice Tab moved onto showed nowhere.
         let room = appearance::button_ring_room(cx);
-        div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll()
-            .child(div().flex().gap_2()
-                .child(button("worktree-browse-tab", "Manage", "", !self.creating).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(false, cx))))
-                .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(true, cx))))
-                .child(button("refresh-worktrees", "Refresh", "refresh", false).debug_selector(|| "refresh-worktrees".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
-            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("worktree-loading", "Reading worktree identities and content…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
-            .children(self.error.as_ref().map(|error| label("worktree-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+        let row = appearance::ui_size(36.);
+        let floor_rows = trees.len().clamp(1, 2) as f32;
+        let rows_floor = row * floor_rows + (room + ROW_RING_CLEARANCE) * (floor_rows - 1.);
+        let floor_choices = choices.len().clamp(1, 2) as f32;
+        let choices_floor = appearance::ui_size(28.) * floor_choices
+            + rems(0.25).to_pixels(window.rem_size()) * (floor_choices - 1.);
+        // A control the keyboard moves focus onto scrolls into view in this
+        // frame with its ring: the list shows the row, and the content the
+        // whole list, or the control, as the Reflog's do. Each control
+        // reports where it lies to the content; the selected worktree's
+        // details, below the list, once stayed below the content's fold, as
+        // did every control of Create's form. Create's branch choices reveal
+        // a choice as the worktree list reveals a row, and the content shows
+        // the choices' list.
+        self.rows.reveal(window, cx);
+        self.choices.reveal(window, cx);
+        self.content.reveal(window, cx);
+        let rows: Vec<_> = (0..trees.len().min(100))
+            .map(|index| self.rows.focus(("managed-worktree-row", index), cx))
+            .collect();
+        let reveal = self.rows.items(rows.clone(), room);
+        // Each list's own box keeps the ring's room around its rows and is
+        // what its group reads, its cue drawn over it (`tags::Cued`), so the
+        // reveal keeps no room of its own.
+        let show_list = self.content.group(rows.clone(), Pixels::ZERO);
+        let tabs = [
+            "worktree-browse-tab",
+            "worktree-create-tab",
+            "refresh-worktrees",
+        ]
+        .map(|id| self.content.focus(id, cx));
+        let filter = self.filter.read(cx).focus_handle(cx);
+        let actions = [
+            "open-managed-worktree",
+            "reveal-managed-worktree",
+            "edit-managed-worktree",
+            "remove-managed-worktree",
+            "force-remove-managed-worktree",
+        ]
+        .map(|id| self.content.focus(id, cx));
+        let kinds = ["worktree-existing-branch", "worktree-new-branch"]
+            .map(|id| self.content.focus(id, cx));
+        let branch_field = self.branch.read(cx).focus_handle(cx);
+        let start_field = self.start.read(cx).focus_handle(cx);
+        let folder_field = self.folder.read(cx).focus_handle(cx);
+        let [parent_action, review_action] = ["choose-worktree-parent", "review-create-worktree"]
+            .map(|id| self.content.focus(id, cx));
+        let choice_focus: Vec<_> = (0..choices.len())
+            .map(|index| self.choices.focus(("worktree-branch-choice", index), cx))
+            .collect();
+        let reveal_choice = self.choices.items(choice_focus.clone(), room);
+        let show_choices = self.content.group(choice_focus.clone(), Pixels::ZERO);
+        let cue = crate::tags::ScrollCue::revealing(&self.rows, room);
+        let choice_cue = crate::tags::ScrollCue::revealing(&self.choices, room);
+        // As the dialog opens, the content scrolls the shown form's first
+        // field into view with its ring: it follows the tabs' row, the
+        // loading row and the error, and in Create the branch choice and its
+        // label.
+        if std::mem::take(&mut self.reveal_field) && self.first_field(cx).is_focused(window) {
+            let field = 1
+                + usize::from(self.pending)
+                + usize::from(self.error.is_some())
+                + if self.creating { 2 } else { 0 };
+            self.content.scroll().scroll_to_item(field);
+        }
+        let content = crate::native_accessibility::clips_children(div().on_children_prepainted(self.content.observe()).id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.) + room * 2.).min_h_0().p(room).mx(-room).overflow_y_scroll().track_scroll(self.content.scroll())
+            .child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.content.controls(tabs.iter().cloned().map(Some).collect(), room))
+                .child(button("worktree-browse-tab", "Manage", "", !self.creating).track_focus(&tabs[0]).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(false, window, cx))))
+                .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).track_focus(&tabs[1]).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(true, window, cx))))
+                .child(button("refresh-worktrees", "Refresh", "refresh", false).track_focus(&tabs[2]).debug_selector(|| "refresh-worktrees".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
+            .when(self.pending, |element| element.child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![None, Some(self.cancel_read.handle().clone())], room)).child(label("worktree-loading", "Reading worktree identities and content…").min_w_0().text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("worktree-error", error, Some(crate::appearance::ui_text(12.)), window, cx).ml(TEXT_INSET).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
-                .child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true))
-                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().child(div().id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).enumerate().map(|(index, tree)| {
+                // Each first field stands in the ring's room, given back
+                // through its margin, so revealing it shows its ring whole.
+                .child(div().on_children_prepainted(self.content.control(filter, room)).py(room).my(-room).child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true)))
+                // Past its height, as where a half tile leaves it one row,
+                // the list cues the rest with its scrollbar, and a row Tab
+                // moves onto scrolls into view with its ring.
+                .child(div().debug_selector(|| "managed-worktree-entries".into()).on_children_prepainted(show_list).flex().flex_col().min_h_0().map(|entries| if trees.is_empty() { entries.flex_shrink_0() } else { entries.min_h(rows_floor) }).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).zip(rows).enumerate().map(|(index, (tree, focus))| {
                     let tree = tree.clone(); let selected = self.selected.as_ref() == Some(&tree.path); let text = format!("{} · {}{}{}", tree.branch.as_deref().unwrap_or("Detached HEAD"), tree.path.display(), if tree.locked { " · Locked" } else { "" }, if tree.prunable { " · Missing or stale" } else { "" });
-                    worktree_row(index, text, selected, p).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
-                })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.))))))
+                    worktree_row(index, text, selected, p).track_focus(&focus).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
+                })).when(trees.is_empty() && !self.pending, |element| element.child(div().py_3().ml(TEXT_INSET).child(crate::empty_state::EmptyState::new("worktrees-empty", "No worktrees match this filter").block(cx)))), "managed-worktree-scrollbar").min_h_0()))
                 .when(trees.len() > 100, |element| element.child(label("worktrees-match-limit", "Showing 100 matches. Narrow the filter to find another worktree.").text_size(crate::appearance::ui_text(12.))))
                 .when_some(self.details.as_ref(), |element, details| {
                     let details = details.clone(); let path = details.tree.path.clone(); let finder = path.clone(); let editor = path.clone();
                     element.child(div().flex().flex_col().gap_2()
                         .child(label("worktree-selected-identity", format!("{}{} · {}\n{}", details.tree.branch.as_deref().unwrap_or("Detached HEAD"), if details.main { " · Main worktree" } else if details.current { " · Current worktree" } else { "" }, short_oid(&details.tree.oid), details.tree.path.display())).text_size(crate::appearance::ui_text(12.)))
-                        .child(label("worktree-selected-status", if details.missing { "Folder missing or unavailable".into() } else { format!("{} changed/untracked files · {} ignored files{}", details.changed_files, details.ignored_files, if details.removal_blocked.is_none() { " · Clean" } else { "" }) }).text_size(crate::appearance::ui_text(12.)))
+                        .child(label("worktree-selected-status", if details.missing { "Folder missing or unavailable".into() } else { format!("{} · {}{}", crate::counted(details.changed_files, "changed/untracked file", "changed/untracked files"), crate::counted(details.ignored_files, "ignored file", "ignored files"), if details.removal_blocked.is_none() { " · Clean" } else { "" }) }).text_size(crate::appearance::ui_text(12.)))
                         .when(details.force_removal_blocked.is_none(), |element| element.when_some(details.removal_blocked.as_ref(), |element, reason| element.child(label("worktree-removal-protection", reason.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
-                        .child(div().flex().flex_wrap().gap_2()
-                            .child(button("open-managed-worktree", "Open in GitTurtle", "", false).disabled(unavailable || details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
-                            .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
-                            .child(button("edit-managed-worktree", "Editor", "", false).disabled(unavailable || details.missing).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
-                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
-                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).debug_selector(|| "force-remove-managed-worktree".to_string()).when(!unavailable && details.force_removal_blocked.is_none(), |button| button.text_color(rgb(p.removed))).disabled(unavailable || details.force_removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx)))))
+                        .child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.content.controls(actions.iter().cloned().map(Some).collect(), room))
+                            .child(refusing(button("open-managed-worktree", "Open in GitTurtle", "", false).track_focus(&actions[0]), "open-managed-worktree", details.missing || details.current, details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
+                            .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).track_focus(&actions[1]).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
+                            .child(refusing(button("edit-managed-worktree", "Editor", "", false).track_focus(&actions[2]).debug_selector(|| "edit-managed-worktree".into()), "edit-managed-worktree", details.missing, details.missing).on_click(cx.listener(move |this, _, window, cx| { if this.unavailable(cx).0 { return; } let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
+                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).track_focus(&actions[3]).debug_selector(|| "remove-managed-worktree".to_string()).map(|remove| refusing(remove, "remove-managed-worktree", details.removal_blocked.is_some(), details.removal_blocked.is_some())).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
+                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).track_focus(&actions[4]).debug_selector(|| "force-remove-managed-worktree".to_string()).when(!dimmed && details.force_removal_blocked.is_none(), |button| button.text_color(rgb(p.removed))).map(|remove| refusing(remove, "force-remove-managed-worktree", details.force_removal_blocked.is_some(), details.force_removal_blocked.is_some())).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx)))))
                         .when_some(details.force_removal_blocked.as_ref(), |element, reason| element.child(label("worktree-force-removal-protection", format!("Force removal unavailable: {reason}")).debug_selector(|| "worktree-force-removal-protection".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
                 }))
             .when(self.creating, |element| element
-                .child(div().flex().gap_2().children([(false, "Existing branch"), (true, "New branch")].map(|(new, name)| button(name, name, "", self.new_branch == new).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.new_branch = new; this.error = None; cx.notify(); })))))
+                .child(div().flex().gap_2().on_children_prepainted(self.content.controls(kinds.iter().cloned().map(Some).collect(), room)).children([(false, "Existing branch", "worktree-existing-branch"), (true, "New branch", "worktree-new-branch")].into_iter().zip(kinds).map(|((new, name, selector), focus)| button(name, name, "", self.new_branch == new).track_focus(&focus).debug_selector(move || selector.to_string()).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| this.set_new_branch(new, cx))))))
                 .child(label("worktree-branch-label", if self.new_branch { "New branch name" } else { "Choose a local branch" }).text_size(crate::appearance::ui_text(12.)))
-                .child(Input::new(&self.branch).aria_label("Worktree branch name"))
-                .when(!self.new_branch, |element| element.child(div().debug_selector(|| "worktree-branch-entries".into()).flex().flex_col().min_h_0().child(div().id("worktree-branch-choices").debug_selector(|| "worktree-branch-choices".into()).max_h(px(140.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(choices.iter().enumerate().map(|(index, branch)| {
+                .child(div().on_children_prepainted(self.content.control(branch_field, room)).py(room).my(-room).child(Input::new(&self.branch).aria_label("Worktree branch name")))
+                // A choice Tab moves onto scrolls into the list's view with
+                // its ring, and the content shows the list.
+                .when(!self.new_branch, |element| element.child(div().debug_selector(|| "worktree-branch-entries".into()).on_children_prepainted(show_choices).flex().flex_col().min_h_0().map(|entries| if choices.is_empty() { entries.flex_shrink_0() } else { entries.min_h(choices_floor) }).child(choice_cue.list(div().on_children_prepainted(choice_cue.observe(reveal_choice)).id("worktree-branch-choices").debug_selector(|| "worktree-branch-choices".into()).max_h(px(140.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.choices.scroll()).flex().flex_col().gap_1().children(choices.iter().zip(choice_focus).enumerate().map(|(index, (branch, focus))| {
                     let name = branch.name.clone(); let occupied = self.trees.iter().any(|tree| tree.branch.as_deref() == Some(&name));
-                    button(("worktree-branch-choice", index), format!("{}{}", name, if occupied { " · In use" } else { "" }), "", false).debug_selector(move || format!("worktree-branch-choice-{index}")).disabled(occupied || self.pending).on_click(cx.listener(move |this, _, window, cx| { this.branch.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); cx.notify(); }))
-                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.)))))))
-                .when(self.new_branch, |element| element.child(label("worktree-start-label", "Start from local branch, tag, or commit").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.start).aria_label("New worktree starting revision")))
-                .child(label("worktree-parent", format!("Parent folder: {}", self.parent.display())).text_size(crate::appearance::ui_text(12.)))
-                .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
-                .child(Input::new(&self.folder).aria_label("New worktree folder name"))
-                .child(label("worktree-destination-rule", "Choose a new folder inside the parent. Existing folders and branches checked out elsewhere are protected. Review the resolved branch and destination before creating.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-                .child(button("review-create-worktree", "Review worktree…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx)))))
+                    button(("worktree-branch-choice", index), format!("{}{}", name, if occupied { " · In use" } else { "" }), "", false).track_focus(&focus).debug_selector(move || format!("worktree-branch-choice-{index}")).disabled(occupied || self.pending).on_click(cx.listener(move |this, _, window, cx| { this.branch.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); cx.notify(); }))
+                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.)))), "worktree-branch-choices-scrollbar").min_h_0())))
+                .when(self.new_branch, |element| element.child(label("worktree-start-label", "Start from local branch, tag, or commit").text_size(crate::appearance::ui_text(12.))).child(div().on_children_prepainted(self.content.control(start_field, room)).child(Input::new(&self.start).aria_label("New worktree starting revision"))))
+                // The rest of the form, laid out as the content's own
+                // children are, so that its controls report where they lie.
+                .child(div().flex().flex_col().gap_3().on_children_prepainted(self.content.controls(vec![None, Some(parent_action.clone()), Some(folder_field), None, Some(review_action.clone())], room))
+                    .child(label("worktree-parent", format!("Parent folder: {}", self.parent.display())).text_size(crate::appearance::ui_text(12.)))
+                    .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).track_focus(&parent_action).debug_selector(|| "choose-worktree-parent".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
+                    .child(Input::new(&self.folder).aria_label("New worktree folder name"))
+                    .child(label("worktree-destination-rule", "Choose a new folder inside the parent. Existing folders and branches checked out elsewhere are protected. Review the resolved branch and destination before creating.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
+                    .child(refusing(button("review-create-worktree", "Review worktree…", "", false).track_focus(&review_action).debug_selector(|| "review-create-worktree".to_string()), "review-create-worktree", false, false).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx)))))));
+        // The content's scrollbar stands in the dialog's side padding, beside
+        // the content and its ring room, as the Reflog's does, and paints
+        // only while the content overflows.
+        div()
+            .relative()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(content)
+            .child(
+                div()
+                    .debug_selector(|| "worktree-manager-scrollbar".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(-gpui_kit::component::scroll::Scrollbar::width() - room)
+                    .w(gpui_kit::component::scroll::Scrollbar::width())
+                    .child(
+                        gpui_kit::component::scroll::Scrollbar::vertical(self.content.scroll())
+                            .id("worktree-manager-scrollbar")
+                            .mode(gpui_kit::component::scroll::ScrollbarMode::Always)
+                            .viewport_from_layout(),
+                    ),
+            )
     }
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+
+/// The focus sweep (`focus_ring::sweep`) and the dialog tests read Worktrees
+/// once its reads have landed: the worktrees with their branches, and then
+/// the details of the row that reply selects. Both run on the manager's own
+/// executor, which neither `run_until_parked` nor the drain of the app's
+/// executors waits for: opened with nothing to wait on, the dialog tests
+/// read it while either could still change it.
+#[cfg(test)]
+impl crate::focus_ring::sweep::Opened for Option<Entity<WorktreeManager>> {
+    fn finish(self, cx: &mut gpui::VisualTestContext) {
+        let Some(manager) = self else {
+            return;
+        };
+        // Each read has answered once the executor drains, and its reply
+        // lands as the test parks; the list's reply starts the next read.
+        for _ in 0..4 {
+            if !manager.read_with(cx, |manager, _| manager.pending) {
+                break;
+            }
+            manager.read_with(cx, |manager, _| manager.reader.drain());
+            cx.executor().run_until_parked();
+        }
+        assert!(
+            !manager.read_with(cx, |manager, _| manager.pending),
+            "the Worktrees reads land"
+        );
+    }
+}
+
+/// Lets the open manager's reads land, the registrations and then the row a
+/// targeted refresh inspects, so the narrow-window walk (`width_walk`)
+/// measures the manager with its worktrees listed. They run on the
+/// manager's own tasks, which `run_until_parked` alone does not finish.
+#[cfg(test)]
+pub(crate) async fn settle_manager(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    let Some(manager) = app.read_with(cx, |app, _| app.worktree_management.draft.clone()) else {
+        return;
+    };
+    for _ in 0..4 {
+        cx.executor().run_until_parked();
+        let Some(task) = manager.update(cx, |manager, _| manager.task.take()) else {
+            break;
+        };
+        task.await;
+    }
+    cx.executor().run_until_parked();
+    assert!(!manager.read_with(cx, |manager, _| manager.pending));
+}
+
+/// The open manager's first field: the filter in Manage, the branch field
+/// in Create, for the focus sweep.
+#[cfg(test)]
+pub(crate) fn first_field(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> FocusHandle {
+    let manager = app
+        .read_with(cx, |app, _| app.worktree_management.draft.clone())
+        .expect("the manager is open");
+    manager.read_with(cx, |manager, cx| manager.first_field(cx))
+}
+
+/// Shows the open manager as it stands while a read runs, its reading row
+/// and Cancel above the list, until the next read lands.
+#[cfg(test)]
+pub(crate) fn show_reading(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    let manager = app
+        .read_with(cx, |app, _| app.worktree_management.draft.clone())
+        .expect("the manager is open");
+    manager.update(cx, |manager, cx| {
+        manager.pending = true;
+        cx.notify();
+    });
+}
 
 /// The manager's room for focus rings, on the shared clipping fixtures of the
 /// Tags and Reflog dialogs.
 #[cfg(test)]
-mod ring_room_tests {
+pub(crate) mod ring_room_tests {
     use super::*;
     use crate::tags::tests::{
         assert_rings_whole, assert_room_for_rings, assert_room_moves_nothing, draw, git, rendered,
@@ -621,6 +944,20 @@ mod ring_room_tests {
     use ::core::prelude::v1::test;
     use gpui::accesskit::Toggled;
     use gpui_kit::component::Theme;
+
+    /// A fixture directory whose path is short on every platform, so the
+    /// selected worktree's path in its details takes one line at 13 pt in a
+    /// 461 × 490 half tile, as the test text system lays it out:
+    /// `/tmp/.tmp…/second` on Linux and `/private/tmp/.tmp…/second` on
+    /// macOS. In the system's temporary directory, macOS's
+    /// `/private/var/folders/…/T/.tmp…/second` wrapped, and the details,
+    /// 3 px clear of the content's fold with the path on one line, ran past
+    /// it there (hosted run 42154950197).
+    fn short_fixture() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .expect("a fixture directory in /tmp")
+    }
 
     /// The manager on `repo`, opened in a window, with its first refresh
     /// finished.
@@ -1071,7 +1408,10 @@ mod ring_room_tests {
     /// asks that element. The kit's Button renders a base Button, which GPUI
     /// renders in turn when it is laid out, to an element type of the base's
     /// own; a base Button rendered beside it names that type.
-    fn row_nodes(cx: &mut VisualTestContext, rows: Vec<Button>) -> Vec<gpui::accesskit::Node> {
+    pub(crate) fn row_nodes(
+        cx: &mut VisualTestContext,
+        rows: Vec<Button>,
+    ) -> Vec<gpui::accesskit::Node> {
         use gpui::Element as _;
         type Nodes = std::rc::Rc<std::cell::RefCell<Vec<gpui::accesskit::Node>>>;
         /// The element `element` renders when it is laid out.
@@ -1131,5 +1471,256 @@ mod ring_room_tests {
         });
         probe.update(|window, cx| window.draw(cx).clear(cx));
         nodes.take()
+    }
+
+    /// The manager's text starts at one inset, where its filter's text and
+    /// placeholder start, at 13 and 18 pt in a 1480 × 980 window and a
+    /// 461 × 490 half tile: its title, each worktree row's name and the
+    /// selected worktree's details. A row's name was centred in its row,
+    /// and the other lines started at the content's edge.
+    #[gpui::test]
+    async fn manager_text_starts_at_the_filters_inset(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        let filter = manager.read_with(cx, |manager, _| manager.filter.clone());
+        for (width, height) in [(1480., 980.), (461., 490.)] {
+            for size in [13, 18] {
+                cx.simulate_resize(gpui::size(px(width), px(height)));
+                set_interface_text_size(cx, &app, size);
+                park_pointer(cx);
+                let at = format!("{size} pt in {width} × {height}");
+                let text = cx.read(|cx| filter.read(cx).input_bounds().left());
+                for selector in [
+                    "worktree-manager-title",
+                    "managed-worktree-row-text-0",
+                    "managed-worktree-row-text-3",
+                ] {
+                    let start = rendered(cx, selector).left();
+                    assert!(
+                        (start - text).abs() < px(0.01),
+                        "{at}: {selector} starts at {start:?}, the filter's text at {text:?}"
+                    );
+                }
+            }
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// In a 461 × 490 half tile, with a worktree selected and its details
+    /// below the list, the manager's list shows both of two worktrees whole
+    /// at 13 and 18 pt: it kept one, with nothing to cue the other.
+    #[gpui::test]
+    async fn a_half_tile_keeps_two_worktree_rows_whole(cx: &mut TestAppContext) {
+        let fixture = short_fixture();
+        let repo = tagged_repository(fixture.path());
+        let folder = fixture.path().join("second");
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "second",
+                folder.to_str().unwrap(),
+            ],
+        );
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        let tree = manager.read_with(cx, |manager, _| manager.trees[1].clone());
+        cx.update(|window, cx| manager.update(cx, |manager, cx| manager.select(tree, window, cx)));
+        for _ in 0..4 {
+            cx.executor().run_until_parked();
+            let Some(task) = manager.update(cx, |manager, _| manager.task.take()) else {
+                break;
+            };
+            task.await;
+        }
+        // The half tile at both sizes, then a shorter window at 13 pt, where
+        // the details still run past the content's fold.
+        for (height, size) in [(490., 13), (490., 18), (400., 13)] {
+            cx.simulate_resize(gpui::size(px(461.), px(height)));
+            set_interface_text_size(cx, &app, size);
+            park_pointer(cx);
+            assert!(
+                cx.debug_bounds("worktree-selected-identity").is_some(),
+                "at {size} pt a worktree's details are shown"
+            );
+            let list = rendered(cx, "managed-worktree-list");
+            for selector in ["managed-worktree-row-0", "managed-worktree-row-1"] {
+                let row = rendered(cx, selector);
+                assert!(
+                    row.top() >= list.top() - px(0.01) && row.bottom() <= list.bottom() + px(0.01),
+                    "at {size} pt {selector} {row:?} lies whole in the list {list:?}"
+                );
+            }
+            // Where the details run past the content's fold, at 18 pt in the
+            // half tile and at 13 pt in the shorter window, its scrollbar
+            // cues them beside it, clear of the content and its rings' room.
+            // Taking all the dialog's cap leaves it, the content holds them
+            // whole at 13 pt in the half tile, where the worktree's path
+            // takes one line of them (`short_fixture`), and paints no thumb.
+            let content = rendered(cx, "worktree-manager-content");
+            let track = rendered(cx, "worktree-manager-scrollbar");
+            let overflows = rendered(cx, "worktree-selected-identity").bottom() > content.bottom()
+                || cx
+                    .debug_bounds("remove-managed-worktree")
+                    .is_none_or(|remove| remove.bottom() > content.bottom());
+            let fits = height == 490. && size == 13;
+            assert!(
+                overflows != fits,
+                "at {size} pt in 461 × {height} the details {:?} overflow the content \
+                 {content:?}: {overflows}",
+                rendered(cx, "worktree-selected-identity")
+            );
+            if fits {
+                assert!(
+                    crate::tags::tests::painted_thumb(cx, track).is_none(),
+                    "at {size} pt in 461 × {height} a content that holds its details paints no thumb"
+                );
+                continue;
+            }
+            let thumb = crate::tags::tests::painted_thumb(cx, track).unwrap_or_else(|| {
+                panic!("at {size} pt in 461 × {height} the content's scrollbar {track:?} paints a thumb")
+            });
+            assert!(
+                thumb.left() >= content.right() && track.left() >= content.right() - px(0.01),
+                "at {size} pt the thumb {thumb:?} stands beside the content {content:?}"
+            );
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// At 13 and 18 pt, in a 461 × 490 half tile and in a 1480 × 800 window,
+    /// the manager's content ends above Done, in Manage with a worktree's
+    /// details shown and in Create with its branch choices: it takes what
+    /// the dialog's cap leaves it and scrolls the rest, cued by its
+    /// scrollbar's thumb while it overflows.
+    #[gpui::test]
+    async fn the_manager_content_ends_above_done(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        for index in 0..11 {
+            git(repo.path(), &["branch", &format!("feature-{index:02}")]);
+        }
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        let tree = manager.read_with(cx, |manager, _| manager.trees[1].clone());
+        cx.update(|window, cx| manager.update(cx, |manager, cx| manager.select(tree, window, cx)));
+        for _ in 0..4 {
+            cx.executor().run_until_parked();
+            let Some(task) = manager.update(cx, |manager, _| manager.task.take()) else {
+                break;
+            };
+            task.await;
+        }
+        let scroll = manager.read_with(cx, |manager, _| manager.content.scroll().clone());
+        for creating in [false, true] {
+            manager.update(cx, |manager, cx| {
+                manager.set_creating(creating, cx);
+                manager.new_branch = false;
+                cx.notify();
+            });
+            for (width, height) in [(461., 490.), (1480., 800.)] {
+                cx.simulate_resize(gpui::size(px(width), px(height)));
+                for size in [13, 18] {
+                    set_interface_text_size(cx, &app, size);
+                    park_pointer(cx);
+                    let form = if creating { "Create" } else { "Manage" };
+                    let at = format!("{form} at {size} pt in {width} × {height}");
+                    let content = rendered(cx, "worktree-manager-content");
+                    let done = rendered(cx, "dialog-ok: Done");
+                    assert!(
+                        content.bottom() <= done.top() + px(0.01),
+                        "{at}: the content {content:?} runs past Done {done:?}"
+                    );
+                    if scroll.max_offset().y > px(0.) {
+                        let track = rendered(cx, "worktree-manager-scrollbar");
+                        assert!(
+                            crate::tags::tests::painted_thumb(cx, track).is_some(),
+                            "{at}: the overflowing content paints a thumb in {track:?}"
+                        );
+                    }
+                }
+            }
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// In a 461 × 490 half tile four worktrees overflow the manager's list
+    /// at 13 and 18 pt, and its scrollbar's thumb follows the list's offset
+    /// in a gutter clear of every row's ring; the list cued nothing.
+    #[gpui::test]
+    async fn a_short_worktree_list_cues_rows_beyond_its_edge(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        cx.simulate_resize(gpui::size(px(461.), px(490.)));
+        draw(cx);
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let scroll = manager.read_with(cx, |manager, _| manager.rows.scroll().clone());
+        let rows = crate::tags::tests::selectors("managed-worktree-row", 4);
+        crate::tags::tests::assert_scroll_cue(
+            cx,
+            &app,
+            &scroll,
+            "managed-worktree-list",
+            room,
+            &rows,
+        );
+    }
+
+    /// Create's twelve branch choices overflow their list in a 461 px wide
+    /// window and in a 1480 × 980 one, at 13 and 18 pt, and their
+    /// scrollbar's thumb follows the list's offset in a gutter clear of
+    /// every choice's ring, as the worktree list's does; the choices cued
+    /// nothing. With one choice, the list keeps no gutter and draws none.
+    #[gpui::test]
+    async fn branch_choices_cue_choices_beyond_their_edge(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for index in 0..11 {
+            git(repo.path(), &["branch", &format!("feature-{index:02}")]);
+        }
+        git(repo.path(), &["checkout", "--quiet", "--detach"]);
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        manager.update(cx, |manager, cx| {
+            manager.set_creating(true, cx);
+            manager.set_new_branch(false, cx);
+        });
+        draw(cx);
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let scroll = manager.read_with(cx, |manager, _| manager.choices.scroll().clone());
+        let choices = crate::tags::tests::selectors("worktree-branch-choice", 12);
+        // In a 461 × 490 half tile at 18 pt the list lies below the
+        // content's fold until a choice Tab moves onto reveals it, so its
+        // thumb is checked in a window as narrow and taller.
+        for (width, height) in [(461., 900.), (1480., 980.)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            draw(cx);
+            crate::tags::tests::assert_scroll_cue(
+                cx,
+                &app,
+                &scroll,
+                "worktree-branch-choices",
+                room,
+                &choices,
+            );
+        }
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| {
+                manager
+                    .branch
+                    .update(cx, |input, cx| input.set_value("feature-07", window, cx))
+            })
+        });
+        draw(cx);
+        draw(cx);
+        crate::tags::tests::assert_no_scroll_cue(
+            cx,
+            &app,
+            "worktree-branch-choices",
+            room,
+            &["worktree-branch-choice-0"],
+        );
     }
 }

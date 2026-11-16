@@ -27,12 +27,12 @@ GitTurtle is a Git client for **macOS and Linux**, built with Rust and GPUI. Bro
 - **Work with Git deliberately.** Branch, stash, merge, rebase, edit local commits and recover through named actions and reviews. Fetch, pull and push start when you ask, and Git keeps your hooks, signing and credential helpers.
 - **Stay responsive.** Repository reads, diffs and image decoding run in the background, and long lists draw only the rows on screen.
 
-Previews go beyond text: rendered Markdown with Mermaid diagrams, animated GIF comparison, interactive 3D models (STL, OBJ, FBX, GLB, 3MF and a subset of STEP) and, on macOS, PDF pages. See the [format matrix](docs/file-previews.md) and [full feature guide](docs/user-guide.md#current-source-features) for capabilities and limits.
+Previews go beyond text: rendered Markdown with Mermaid diagrams, animated GIF comparison, interactive 3D models (STL, OBJ, FBX, GLB, 3MF and a subset of STEP) and PDF pages with their text (on Linux, x86-64 and AArch64, rendered in a confined helper process). See the [format matrix](docs/file-previews.md) and [full feature guide](docs/user-guide.md#current-source-features) for capabilities and limits.
 
 ## Make it yours
 
 - **Themes.** Choose from twenty built-in light and dark themes, follow the system's appearance, or design up to 32 themes of your own in a live editor and share them as files.
-- **Omarchy.** On an Omarchy desktop, the Omarchy theme takes its colors from your current Omarchy theme and changes with it when you switch, adjusting them where needed so text and diffs stay readable.
+- **Omarchy.** On an Omarchy desktop, GitTurtle starts with the Omarchy theme, which takes its colors from your current Omarchy theme and changes with it when you switch, adjusting them where needed so text and diffs stay readable. Code uses your Omarchy monospace font. Either can be changed in **Settings**.
 - **Code as you typed it.** Diffs and source views turn ligatures off, so `->`, `!=` and `--` never merge into one glyph. On Linux, code uses a bundled DejaVu Sans Mono, or your desktop's monospace font when you turn on **Use the desktop's monospace font** in Settings.
 - **Sizes and spacing.** Set interface and code text sizes separately, and choose comfortable or compact density.
 
@@ -79,7 +79,17 @@ sudo pacman -S --needed rustup python-pillow cmake
 python3 dist/gitturtle-linux-$(uname -m)/install.py
 ```
 
-The packager builds for the machine it runs on, so the same steps work on an Apple Silicon Mac running Omarchy on [Asahi Linux](docs/linux.md#aarch64-and-asahi-linux). On another Arch system, first install the [additional packages](docs/linux.md#arch-linux-and-omarchy) listed in the Linux guide. Hyprland draws no title bar, so GitTurtle shows no window buttons there: quit with **Ctrl+Q** or close the window with your compositor binding. To match your desktop, choose the **Omarchy** theme in **Settings**.
+The packager builds for the machine it runs on, so the same steps work on an Apple Silicon Mac running Omarchy on [Asahi Linux](docs/linux.md#aarch64-and-asahi-linux). On another Arch system, first install the [additional packages](docs/linux.md#arch-linux-and-omarchy) listed in the Linux guide. Hyprland draws no title bar, so GitTurtle shows no window buttons there: quit with **Ctrl+Q** or close the window with your compositor binding. On Omarchy the first launch already matches your desktop: the **Omarchy** theme and your monospace font are selected, and **Settings** offers every other theme.
+
+### On Omarchy
+
+GitTurtle follows your desktop as it changes: `omarchy theme set` retints the open window, `omarchy font set` changes its code font, and Omarchy's Super+C, Super+V, Super+X and Super+A work in its text, with Super+C also copying a selected commit's hash or a file's path from its lists. With no editor chosen in **Settings**, **Menu → Open repository in editor** opens your Omarchy editor, and **Open repository in terminal** opens your default terminal in the repository.
+
+To open GitTurtle with a key, or focus it when it is already open, add this to `~/.config/hypr/bindings.lua` (Super+Shift+T is free in Omarchy 4.0's default bindings):
+
+```lua
+o.bind("SUPER + SHIFT + T", "GitTurtle", { launch = "gitturtle", focus = "com.gitturtle.GitTurtle" })
+```
 
 ### Open a repository
 
@@ -106,7 +116,7 @@ See [commands and keyboard navigation](docs/command-palette.md) for contextual a
 | **macOS · Apple Silicon** | The first platform. CI builds and tests every product change on macOS 15 and packages it on macOS 26. The newest appearance work, the theme picker and custom themes, has been checked natively on Linux but not yet on a Mac. |
 | **Ubuntu 24.04 · x86-64** | The reference Linux target. CI builds, tests, packages and installs every product change on Ubuntu 24.04, and a clean Ubuntu 24.04 build and installation has been checked. **A full pass on a physical Ubuntu GNOME desktop is still pending.** |
 | **Omarchy · Arch Linux with Hyprland** | Supported. Checked natively on Omarchy as a Wayland client: installation, launch, history, Quick Open, opening the folder picker, tiled windows, fractional scales of 1.25, 1.5 and 2, the desktop's monospace font, and the Omarchy theme following real `omarchy theme set` switches. CI builds and tests every product change against current Arch Linux packages. The [Linux guide](docs/linux.md#arch-linux-and-omarchy) lists what has not been checked yet, including other Arch-based desktops. |
-| **Omarchy on Asahi Linux · Apple Silicon (AArch64)** | Works. Checked natively on an Apple Silicon MacBook running Omarchy on Asahi Linux, as a Wayland client with the Asahi Vulkan driver: native build, packaging, installation, launch, history and image comparison. No CI job builds for AArch64 Linux, and other ARM Linux systems have no recorded check; see the [Linux guide](docs/linux.md#aarch64-and-asahi-linux). |
+| **Omarchy on Asahi Linux · Apple Silicon (AArch64)** | Works. Checked natively on an Apple Silicon MacBook running Omarchy on Asahi Linux, as a Wayland client with the Asahi Vulkan driver: native build, packaging, installation, launch, history and image comparison. Quality's release job builds and packages it on a hosted ARM runner; no CI job checks its desktop behavior, and other ARM Linux systems have no recorded check; see the [Linux guide](docs/linux.md#aarch64-and-asahi-linux). |
 
 Checks, builds and environments are recorded in [validation](docs/validation.md). A successful build or CI run does not stand in for a desktop check.
 
@@ -115,11 +125,11 @@ Checks, builds and environments are recorded in [validation](docs/validation.md)
 GitTurtle is young, and some things are not there yet:
 
 - **No prebuilt downloads, notarization or automatic updates.** Local macOS apps are ad-hoc signed; Linux bundles are unsigned.
-- **Linux gaps.** PDF pages, AVIF, HEIC and JPEG 2000 images and the system Quick Look preview need macOS. A GitHub account cannot be stored securely on Linux yet, so pull-request review is macOS-only for now; Git's own authentication for fetch, pull and push works as configured. Screen reader and input-method support on Linux has not been checked.
-- **Early pull-request review.** On macOS, GitTurtle connects a GitHub.com account through the GitHub CLI to browse pull requests, review changed files and submit comments and reviews. It is covered by tests and offline checks, not yet by a run against a live account.
+- **Linux gaps.** AVIF and JPEG 2000 images now show on Linux, decoded in the same confined helper process as PDF pages (an animated AVIF shows its first frame, and AVIF image grids are not decoded yet); HEIC images still need macOS. In place of Quick Look, Linux opens only passive file types in the desktop's default app: raster images, PDF, and the plain text of a Mermaid or Markdown file's Diagrams view or of a text 3D model, never a source diff or Markdown's Rendered view. Linux stores the GitHub account in your desktop keyring; pull-request review there is covered by tests and the offline fixture, and a live sign-in is still to be checked. Git's own authentication for fetch, pull and push works as configured. Screen reader and input-method support on Linux has not been checked.
+- **Early pull-request review.** On macOS and Linux, GitTurtle connects a GitHub.com account through the GitHub CLI to browse pull requests, review changed files and submit comments and reviews. It is covered by tests and offline checks, not yet by a run against a live account.
 - **Bounded Git workflows.** Merge-preserving and root rebases and submodule management stay with Git's own tools, and previews, history windows and partial staging have documented size limits.
 
-Read the [Linux limits](docs/linux.md#platform-limits) and [current feature limits](docs/user-guide.md#current-limits) before relying on a workflow. Next up are prebuilt releases, secure GitHub sign-in on Linux, and desktop checks on Ubuntu GNOME and, for the newest features, on a Mac.
+Read the [Linux limits](docs/linux.md#platform-limits) and [current feature limits](docs/user-guide.md#current-limits) before relying on a workflow. Next up are prebuilt releases, a live GitHub sign-in check on Linux, and desktop checks on Ubuntu GNOME and, for the newest features, on a Mac.
 
 ## Documentation and community
 

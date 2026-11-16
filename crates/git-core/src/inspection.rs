@@ -73,7 +73,7 @@ impl GitRepository {
                 format!("refs/tags/{expression}"),
                 format!("refs/remotes/{expression}"),
             ];
-            let mut command = git_command(&self.path);
+            let mut command = git_command(self.target());
             command.args(["for-each-ref", "--format=%(refname)", "--"]);
             command.args(&names);
             let refs = inspection_read(command, cancellation, MAX_INSPECTION_BYTES)?;
@@ -86,7 +86,7 @@ impl GitRepository {
                 "Ambiguous revision {expression}. Use refs/heads/… or refs/tags/… to select the intended target"
             );
         }
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command
             .args(["rev-parse", "--verify", "--end-of-options"])
             .arg(format!("{expression}^{{commit}}"));
@@ -110,7 +110,7 @@ impl GitRepository {
         let before = self.resolve_inspection_revision(before, cancellation)?;
         let after = self.resolve_inspection_revision(after, cancellation)?;
         let base_oid = if mode == ComparisonMode::SinceBranching {
-            let mut command = git_command(&self.path);
+            let mut command = git_command(self.target());
             command.args(["merge-base", "--all", &before.oid, &after.oid]);
             let bases = inspection_read(command, cancellation, 64 * 1024)
                 .context("Cannot establish a common ancestor. Histories may be unrelated or required local objects unavailable; endpoint comparison remains available")?;
@@ -124,7 +124,7 @@ impl GitRepository {
         } else {
             before.oid.clone()
         };
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         command.args([
             "diff-tree",
             "--no-commit-id",
@@ -160,7 +160,7 @@ impl GitRepository {
         cancellation: &HistoryCancellation,
     ) -> Result<TrackedPaths> {
         ensure!(query.len() <= 4096, "Path query exceeds 4 KiB");
-        let mut command = git_command(&self.path);
+        let mut command = git_command(self.target());
         let scope = match scope {
             PathScope::Worktree => {
                 ensure!(

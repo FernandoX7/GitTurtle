@@ -1,31 +1,38 @@
-//! Captured-byte document and media information, with static native PDF pages.
+//! Captured-byte document and media information, with a PDF's first page
+//! prepared through `pdf_view::prepare_page`.
 use crate::{appearance::CodeFont, *};
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
+use native_accessibility::DrawnButton as _;
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-#[cfg(target_os = "macos")]
+/// At most four external viewers or launchers at once: a Quick Look process
+/// until it closes on macOS, and on Linux a portal request until it answers or
+/// an `xdg-open`, which runs the application in the foreground, until it ends.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 static EXTERNAL_PREVIEWS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(target_os = "macos")]
-struct ExternalPreviewSlot;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) struct ExternalPreviewSlot;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ExternalPreviewSlot {
-    fn reserve() -> anyhow::Result<Self> {
+    pub(crate) fn reserve() -> anyhow::Result<Self> {
         EXTERNAL_PREVIEWS
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 4).then_some(count + 1)
             })
             .map_err(|_| {
-                anyhow::anyhow!(
+                anyhow::anyhow!(if cfg!(target_os = "macos") {
                     "Close an existing system preview before opening another (four-viewer limit)."
-                )
+                } else {
+                    "Close a file GitTurtle opened before opening another (four at a time)."
+                })
             })?;
         Ok(Self)
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for ExternalPreviewSlot {
     fn drop(&mut self) {
         EXTERNAL_PREVIEWS.fetch_sub(1, Ordering::AcqRel);
@@ -45,12 +52,20 @@ pub struct Side {
     pub model: Option<Arc<crate::model_view::Document>>,
     pub metadata: metadata::Metadata,
     pub captured: Option<Arc<[u8]>>,
+    /// Whether the captured bytes offer the open action, decided with them.
+    pub system_preview: Option<crate::system_preview::Offer>,
     pub name: PathBuf,
     pub pages: Vec<Page>,
     pub page_count: usize,
     pub page_kind: &'static str,
     pub error: Option<String>,
     pub present: bool,
+    /// What the side stays as rather than a source of diagrams, if it does:
+    /// a literal side captures no bytes, so its text alone cannot say.
+    pub(super) literal: Option<Literal>,
+    /// Whether the side is a Git LFS pointer whose object the local store
+    /// does not hold, the only state a download can change.
+    pub(super) lfs_missing: bool,
     selected_page: AtomicUsize,
 }
 
@@ -70,14 +85,36 @@ impl Side {
                 source: None,
             },
             captured: None,
+            system_preview: None,
             name: name.into(),
             pages: Vec::new(),
             page_count: 0,
             page_kind: "Page",
             error,
             present,
+            literal: None,
+            lfs_missing: false,
             selected_page: AtomicUsize::new(0),
         }
+    }
+    /// Retains the captured bytes and decides, here on the worker, whether
+    /// they offer the open action, so a render only reads the answer. A Git
+    /// LFS pointer offers none, whatever lies beside it: its text stands in
+    /// for a file the side does not hold, as an image's or a model's pointer
+    /// side offers none. Its bytes stay captured, where a download reads them.
+    pub fn capture(
+        &mut self,
+        bytes: Arc<[u8]>,
+        check: &impl Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.system_preview = if gitturtle_preview::detect_lfs_pointer(&bytes).is_some() {
+            check()?;
+            None
+        } else {
+            crate::system_preview::offer(&bytes, check)?
+        };
+        self.captured = Some(bytes);
+        Ok(())
     }
     pub fn prepare(
         bytes: Vec<u8>,
@@ -94,12 +131,15 @@ impl Side {
             model: None,
             metadata: metadata::inspect(&bytes, name),
             captured: None,
+            system_preview: None,
             name: name.into(),
             pages: Vec::new(),
             page_count: 0,
             page_kind: "Page",
             error: None,
             present: true,
+            literal: None,
+            lfs_missing: false,
             selected_page: AtomicUsize::new(0),
         };
         if side.metadata.source.is_none()
@@ -108,20 +148,14 @@ impl Side {
         {
             side.metadata.source = std::str::from_utf8(&bytes).ok().map(Arc::from);
         }
+        // A PDF's first page and its text, prepared here on the repository
+        // worker as the page view prepares every later page.
+        let mut first_page = None;
         if bytes.starts_with(b"%PDF-") {
-            match gitturtle_preview::decode_pdf(&bytes, &check) {
-                Ok(document) => {
-                    side.page_count = document.page_count;
-                    for page in document.pages {
-                        check()?;
-                        side.pages.push(Page {
-                            render: Some(worker::render_image(&page)?),
-                            width: page.width,
-                            height: page.height,
-                            caption: None,
-                            error: None,
-                        });
-                    }
+            match crate::pdf_view::prepare_page(&bytes, 0, &check) {
+                Ok(prepared) => {
+                    side.page_count = prepared.count;
+                    first_page = Some(prepared.page);
                 }
                 Err(error) => side.error = Some(format!("{error:#}")),
             }
@@ -154,13 +188,22 @@ impl Side {
             side.pdf = Some(Arc::new(crate::pdf_view::Document::new(
                 captured.clone(),
                 side.page_count,
-                side.pages.pop(),
+                first_page,
                 &check,
             )?));
-            side.pages.clear();
         }
-        side.captured = Some(captured);
+        side.capture(captured, &check)?;
         Ok(side)
+    }
+    /// Whether the side holds a PDF, decided from its captured bytes as its
+    /// pages are, whether or not they could be prepared: a locked PDF holds
+    /// one, an absent side none.
+    pub fn holds_pdf(&self) -> bool {
+        self.pdf.is_some()
+            || self
+                .captured
+                .as_deref()
+                .is_some_and(|bytes| bytes.starts_with(b"%PDF-"))
     }
     pub fn retained_bytes(&self) -> usize {
         self.captured.as_ref().map_or(0, |b| b.len())
@@ -210,29 +253,84 @@ impl Comparison {
     }
 }
 
+/// A side kept as literal text rather than read as a source of diagrams: a
+/// link, whose text names a target no preview follows, or a Git LFS pointer
+/// whose object the local store does not hold, whose text is only the
+/// pointer. The one judgement of a side: [`prepare_mermaid`] keeps such a
+/// side literal, and the rewritten-series review says why a file with no
+/// side left to draw shows no diagrams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Literal {
+    Link,
+    LfsPointer,
+}
+
+impl Literal {
+    /// What the side stored with `mode` and holding `text` is, if it stays
+    /// literal.
+    pub(super) fn of(mode: &str, text: &str) -> Option<Self> {
+        if mode == "120000" {
+            Some(Self::Link)
+        } else if gitturtle_preview::detect_lfs_pointer(text.as_bytes()).is_some() {
+            Some(Self::LfsPointer)
+        } else {
+            None
+        }
+    }
+    /// The side's caption beside the other side's diagrams.
+    pub(super) fn format(self) -> &'static str {
+        match self {
+            Self::Link => "Symbolic link",
+            Self::LfsPointer => "Git LFS pointer",
+        }
+    }
+    /// What the side says in the place of diagrams: why it stays literal,
+    /// and for a pointer whose object could not be used, what is wrong with
+    /// that object rather than that it is absent.
+    pub(super) fn reason(self, failure: Option<gitturtle_core::LfsObjectFailure>) -> String {
+        match (self, failure) {
+            (Self::Link, _) => {
+                "This side is stored as a link, which Diagrams never follows; its stored text is \
+                 below."
+                    .into()
+            }
+            (Self::LfsPointer, Some(failure)) => format!(
+                "{}; its stored text is below.",
+                crate::lfs_download::failure_opening(failure)
+            ),
+            (Self::LfsPointer, None) => {
+                "This side's Git LFS object is not in the local store, and no download was \
+                 attempted; its stored text is below."
+                    .into()
+            }
+        }
+    }
+}
+
+/// What Diagrams draws, the sentence one side of a comparison carries.
+const STATIC_MERMAID: &str = "Static Mermaid: flowchart, sequence, class, state, ER and pie. \
+                              Source tabs retain exact text and staging.";
+
 pub(super) fn prepare_mermaid(
     old: &str,
     new: &str,
     file: &gitturtle_core::FileChange,
+    lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
     check: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Comparison>> {
     // Symlinks and unresolved LFS pointers remain literal identities, including
     // those with Mermaid suffixes; only verified content is a diagram source.
-    if [file.old_mode.as_str(), file.new_mode.as_str()].contains(&"120000")
-        || [old, new]
-            .iter()
-            .any(|source| gitturtle_preview::detect_lfs_pointer(source.as_bytes()).is_some())
-    {
-        return Ok(None);
-    }
+    // Each side is judged alone, so the other side, regular text, still draws.
+    let old_literal = Literal::of(&file.old_mode, old);
+    let new_literal = Literal::of(&file.new_mode, new);
     let old_name = file.old_path.as_deref().unwrap_or_else(|| file.path());
     let new_name = file.new_path.as_deref().unwrap_or_else(|| file.path());
-    let old_document = if file.old_path.is_some() {
+    let old_document = if file.old_path.is_some() && old_literal.is_none() {
         gitturtle_preview::mermaid::preview(old, old_name, 1600, &check)?
     } else {
         None
     };
-    let new_document = if file.new_path.is_some() {
+    let new_document = if file.new_path.is_some() && new_literal.is_none() {
         gitturtle_preview::mermaid::preview(new, new_name, 1600, &check)?
     } else {
         None
@@ -240,17 +338,47 @@ pub(super) fn prepare_mermaid(
     if old_document.is_none() && new_document.is_none() {
         return Ok(None);
     }
+    // What Diagrams draws is said once, by the first side that draws a
+    // diagram: on both sides it was read twice. Where neither draws one,
+    // only errors stand in their place, the first side with any says it.
+    let draws = |document: &Option<gitturtle_preview::mermaid::Document>| {
+        document
+            .as_ref()
+            .is_some_and(|document| document.diagrams.iter().any(|page| page.image.is_some()))
+    };
+    let says_what_draws =
+        usize::from(!(draws(&old_document) || (!draws(&new_document) && old_document.is_some())));
     let mut sides = Vec::with_capacity(2);
-    for (source, name, present, document) in [
-        (old, old_name, file.old_path.is_some(), old_document),
-        (new, new_name, file.new_path.is_some(), new_document),
-    ] {
+    for (index, (source, name, present, document, literal)) in [
+        (
+            old,
+            old_name,
+            file.old_path.is_some(),
+            old_document,
+            old_literal,
+        ),
+        (
+            new,
+            new_name,
+            file.new_path.is_some(),
+            new_document,
+            new_literal,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         check()?;
         let mut side = Side::unavailable(name, present, None);
         side.page_kind = "Diagram";
-        side.metadata.format = "Mermaid diagrams".into();
+        side.metadata.format = literal.map_or("Mermaid diagrams", Literal::format).into();
+        side.literal = literal;
         if present {
-            side.captured = Some(Arc::from(source.as_bytes()));
+            // A literal side's text is not captured either: capturing reads
+            // it to decide what another application could open it as.
+            if literal.is_none() {
+                side.capture(Arc::from(source.as_bytes()), &check)?;
+            }
             side.metadata.source = Some(Arc::from(source));
         }
         if let Some(document) = document {
@@ -278,7 +406,9 @@ pub(super) fn prepare_mermaid(
                     error: diagram.error,
                 });
             }
-            side.metadata.details.push("Static Mermaid: flowchart, sequence, class, state, ER and pie. Source tabs retain exact text and staging.".into());
+            if index == says_what_draws {
+                side.metadata.details.push(STATIC_MERMAID.into());
+            }
             if side.pages.len() < side.page_count {
                 side.metadata.details.push(format!(
                     "First {} of {} Mermaid blocks rendered; inspect Source for all blocks.",
@@ -287,9 +417,10 @@ pub(super) fn prepare_mermaid(
                 ));
             }
         } else if present {
-            side.metadata
-                .details
-                .push("No Mermaid diagrams on this side; literal Source remains available.".into());
+            side.metadata.details.push(literal.map_or_else(
+                || "No Mermaid diagrams on this side; literal Source remains available.".into(),
+                |literal| literal.reason(lfs_failed[index]),
+            ));
         }
         sides.push(Arc::new(side));
     }
@@ -299,144 +430,531 @@ pub(super) fn prepare_mermaid(
     }))
 }
 
+thread_local! {
+    /// Each side header's heading and format, laid out.
+    static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// The room the first line of side `index`'s header leaves its open control
+/// in a side `side` wide: the side less its right edge, the header's `px_3`
+/// either side, and its 12 pt semibold `heading` and 11 pt `format`, each
+/// followed by `gap_2`.
+fn header_room(index: usize, side: Pixels, heading: &str, format: &str, window: &Window) -> Pixels {
+    let cache = if index == 0 {
+        &BEFORE_HEADING
+    } else {
+        &AFTER_HEADING
+    };
+    let texts =
+        crate::views::cached_text_width(cache, &format!("{heading}\n{format}"), window, || {
+            crate::views::shaped_width(
+                heading,
+                appearance::ui_text(12.),
+                FontWeight::SEMIBOLD,
+                window,
+            )
+            .ceil()
+                + crate::views::line_widths(&[(format, appearance::ui_text(11.))], window)
+        });
+    side - px(1.) - window.rem_size() * (0.75 * 2. + 0.5 * 2.) - texts
+}
+
+/// What a side holds, as the caption after its heading that names it:
+/// its format, in 11 pt muted text, found by tests as `selector`, `-`, the
+/// side's `index`, `/` and the format, a selector built only when a test
+/// build sets it (`debug_selector` is a no-op in release), so drawing the
+/// caption builds no string for it. Every side of this surface is headed
+/// so, and in the page view a side that holds no PDF, an absent one above
+/// all, so an absent side reads its absence alike beside any partner
+/// (`pdf_view::side_heading`).
+pub(super) fn format_caption(
+    selector: &'static str,
+    index: usize,
+    format: SharedString,
+    muted: u32,
+) -> Div {
+    let reads = format.clone();
+    div()
+        .debug_selector(move || format!("{selector}-{index}/{reads}"))
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .font_weight(FontWeight::NORMAL)
+        .text_size(appearance::ui_text(11.))
+        .text_color(rgb(muted))
+        .child(format)
+}
+
+/// The width [`format_caption`] lays `format` out at, cached in `cache`.
+pub(super) fn format_caption_width(
+    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    format: &str,
+    window: &Window,
+) -> Pixels {
+    crate::views::cached_text_width(cache, format, window, || {
+        crate::views::line_widths(&[(format, appearance::ui_text(11.))], window)
+    })
+}
+
 /// Render only supplied content. A dialog child must not borrow its parent
-/// entity while that parent is already rendering the dialog layer.
+/// entity while that parent is already rendering the dialog layer; `opener`
+/// opens captured bytes for the comparison's open controls, which take the
+/// form the comparison's `width` leaves them room for
+/// ([`crate::system_preview::Offer::form`]): Compare's column, or the box
+/// Stashes or the rewrite review draws it in, in the frame it is drawn
+/// ([`crate::in_frame`]).
 pub(super) fn render_comparison<T: 'static>(
     preview: &Comparison,
     quick: bool,
-    owner: WeakEntity<GitTurtle>,
+    opener: crate::system_preview::Opener,
+    width: Pixels,
+    window: &Window,
     cx: &mut Context<T>,
 ) -> AnyElement {
     if preview.old.pdf.is_some() || preview.new.pdf.is_some() {
-        return crate::pdf_view::render_comparison(preview, quick, owner, cx);
+        return crate::pdf_view::render_comparison(preview, quick, opener, width, window, cx);
     }
     if [&preview.old, &preview.new]
         .into_iter()
         .any(|side| side.model.is_some() || gitturtle_preview::model3d::is_model_path(&side.name))
     {
-        return crate::model_view::render_comparison(preview, quick, owner, cx);
+        return crate::model_view::render_comparison(preview, quick, opener, width, window, cx);
     }
     let colors = palette(cx);
-    div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
-            let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
-            let mut header=div().flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
-            if side.captured.is_some() {
-                let captured=Arc::clone(side);
-                let target=owner.clone();
-                header=header.child(button(("system-preview",index),"System preview","external-link",false).tooltip("Inspect an isolated copy of these captured revision bytes").on_click(move |_,window,cx| { let _=target.update(cx,|this,cx|this.open_captured_preview(Arc::clone(&captured),window,cx)); window.refresh(); }));
+    // Each side takes an equal share.
+    let side_width = width / if quick { 1. } else { 2. };
+    let (headers, bodies): (Vec<_>, Vec<_>) = [
+        ("Before", &preview.old),
+        (
+            if quick {
+                crate::system_preview::ONE_SIDE
+            } else {
+                "After"
+            },
+            &preview.new,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    .filter(|(index, _)| !quick || *index == 1)
+    .map(|(index, (label, side))| {
+        let selected = side
+            .selected_page
+            .load(Ordering::Relaxed)
+            .min(side.pages.len().saturating_sub(1));
+        // The heading's line is as tall as the scaled 28 px controls, and
+        // the headers share one row, which gives both the taller one's
+        // height: Before and After align whether or not a side offers a
+        // control or wraps it, its lines kept at the top.
+        let mut header = div()
+            .debug_selector(move || format!("rich-side-header-{index}"))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .content_start()
+            .flex_wrap()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_r_1()
+            .border_color(rgb(colors.border))
+            // The side's name and what it holds are each read as static
+            // text, as the rest of the side is: drawn as plain text, neither
+            // reached an assistive technology.
+            .child(
+                native_accessibility::text(
+                    SharedString::from(format!("rich-side-heading-{index}")),
+                    label,
+                )
+                .min_h(appearance::ui_size(28.))
+                .flex()
+                .items_center()
+                .text_size(appearance::ui_text(12.))
+                .font_weight(FontWeight::SEMIBOLD),
+            )
+            .child(native_accessibility::static_text(
+                format_caption(
+                    "rich-side-format",
+                    index,
+                    side.metadata.format.clone().into(),
+                    colors.muted,
+                )
+                .id(SharedString::from(format!("rich-side-caption-{index}"))),
+                side.metadata.format.clone(),
+            ));
+        let mut answer = None;
+        if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
+            let target = opener.target(
+                ("system-preview", index),
+                label,
+                bytes,
+                &side.name,
+                "file",
+                offer,
+            );
+            // Labelled where it fits beside the side's name and format,
+            // otherwise its icon.
+            let room = header_room(index, side_width, label, &side.metadata.format, window);
+            header = header.child(target.control(offer.form(room, window), cx));
+            answer = target.answered(cx);
+        }
+        if !side.pages.is_empty() {
+            for (name, delta, disabled) in [
+                (
+                    format!("Previous {}", side.page_kind.to_ascii_lowercase()),
+                    -1isize,
+                    selected == 0,
+                ),
+                (
+                    format!("Next {}", side.page_kind.to_ascii_lowercase()),
+                    1isize,
+                    selected + 1 >= side.pages.len(),
+                ),
+            ] {
+                let side = Arc::clone(side);
+                let accessible = SharedString::from(format!("{label}: {name}"));
+                // Tests find each control by the name it gives assistive
+                // technology, to read which one a key focused: a selector
+                // built only in a test build, as `format_caption`'s.
+                let named = accessible.clone();
+                header = header.child(
+                    button(
+                        (
+                            if delta < 0 {
+                                "pdf-previous"
+                            } else {
+                                "pdf-next"
+                            },
+                            index,
+                        ),
+                        "",
+                        if delta < 0 {
+                            "chevron-left"
+                        } else {
+                            "chevron-right"
+                        },
+                        false,
+                    )
+                    .accessibility_label(accessible)
+                    .debug_selector(move || format!("rich-control: {named}"))
+                    .tooltip(name)
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        let next = side
+                            .selected_page
+                            .load(Ordering::Relaxed)
+                            .saturating_add_signed(delta)
+                            .min(side.pages.len().saturating_sub(1));
+                        side.selected_page.store(next, Ordering::Relaxed);
+                        window.refresh();
+                        cx.notify();
+                    })),
+                );
             }
-            if !side.pages.is_empty() {
-                for (name,delta,disabled) in [(format!("Previous {}",side.page_kind.to_ascii_lowercase()),-1isize,selected==0),(format!("Next {}",side.page_kind.to_ascii_lowercase()),1isize,selected+1>=side.pages.len())] {
-                    let side=Arc::clone(side);
-                    header=header.child(button((if delta<0 {"pdf-previous"}else{"pdf-next"},index),"",if delta<0 {"chevron-left"}else{"chevron-right"},false).accessibility_label(format!("{label}: {name}")).tooltip(name).disabled(disabled).on_click(cx.listener(move|_,_,window,cx| { let next=side.selected_page.load(Ordering::Relaxed).saturating_add_signed(delta).min(side.pages.len().saturating_sub(1)); side.selected_page.store(next,Ordering::Relaxed); window.refresh(); cx.notify(); })));
+            header = header.child(
+                native_accessibility::text(
+                    SharedString::from(format!("rich-side-position-{index}")),
+                    format!(
+                        "{} {} / {}{}",
+                        side.page_kind,
+                        selected + 1,
+                        side.page_count,
+                        if side.pages.len() < side.page_count {
+                            format!(" · first {} available", side.pages.len())
+                        } else {
+                            String::new()
+                        }
+                    ),
+                )
+                .text_size(appearance::ui_text(11.)),
+            );
+        }
+        let mut body = div()
+            .id(("rich-side-scroll", index))
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_3();
+        // Why a side shows nothing, an absent file or the document's error,
+        // is read as static text, as the page view's messages are
+        // (`pdf_view`): drawn as plain text, a password-protected PDF's
+        // sentence and the absent side's line reached no assistive
+        // technology.
+        if !side.present {
+            body = body.child(div().text_color(rgb(colors.muted)).child(
+                native_accessibility::text(
+                    SharedString::from(format!("rich-side-absent-{index}")),
+                    "No file on this side",
+                ),
+            ));
+        }
+        if let Some(page) = side.pages.get(selected) {
+            if let Some(caption) = &page.caption {
+                body = body.child(
+                    native_accessibility::text(
+                        SharedString::from(format!("rich-page-caption-{index}")),
+                        caption.clone(),
+                    )
+                    .text_size(appearance::ui_text(12.)),
+                );
+            }
+            if let Some(render) = &page.render {
+                if matches!(side.page_kind, "Diagram" | "View") {
+                    // Explicit natural height avoids aspect-ratio layout
+                    // retaining a pre-clamp height. Canvas containment uses
+                    // the final frame bounds, so metadata stays below it.
+                    body = body.child(
+                        div()
+                            .w_full()
+                            .max_w(px(page.width as f32))
+                            .h(px(page.height as f32))
+                            .max_h(relative(0.7))
+                            .flex_shrink_0()
+                            .self_center()
+                            .overflow_hidden()
+                            .child(crate::gif_playback::static_image(render.clone())),
+                    );
+                } else {
+                    // PDF pages remain width-readable with natural scrolling.
+                    body = body.child(
+                        div()
+                            .w_full()
+                            .aspect_ratio(page.width as f32 / page.height as f32)
+                            .bg(rgb(0xffffff))
+                            .child(crate::gif_playback::static_image(render.clone())),
+                    );
                 }
-                header=header.child(div().text_size(appearance::ui_text(11.)).child(format!("{} {} / {}{}",side.page_kind,selected+1,side.page_count,if side.pages.len()<side.page_count {format!(" · first {} available",side.pages.len())}else{String::new()})));
             }
-            let mut body=div().id(("rich-side-scroll",index)).flex_1().min_h_0().overflow_y_scroll().p_3().flex().flex_col().gap_3();
-            if !side.present { body=body.child(div().text_color(rgb(colors.muted)).child("No file on this side")); }
-            if let Some(page)=side.pages.get(selected) {
-                if let Some(caption)=&page.caption { body=body.child(div().text_size(appearance::ui_text(12.)).child(caption.clone())); }
-                if let Some(render)=&page.render {
-                    if matches!(side.page_kind,"Diagram"|"View") {
-                        // Explicit natural height avoids aspect-ratio layout
-                        // retaining a pre-clamp height. Canvas containment uses
-                        // the final frame bounds, so metadata stays below it.
-                        body=body.child(div().w_full().max_w(px(page.width as f32))
-                            .h(px(page.height as f32)).max_h(relative(0.7))
-                            .flex_shrink_0().self_center().overflow_hidden()
-                            .child(crate::gif_playback::static_image(render.clone())));
-                    } else {
-                        // PDF pages remain width-readable with natural scrolling.
-                        body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff))
-                            .child(crate::gif_playback::static_image(render.clone())));
-                    }
-                }
-                if let Some(error)=&page.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
+            if let Some(error) = &page.error {
+                body = body.child(
+                    div()
+                        .text_color(rgb(colors.modified))
+                        .text_size(appearance::ui_text(12.))
+                        .child(native_accessibility::text(
+                            SharedString::from(format!("rich-page-message-{index}")),
+                            error.clone(),
+                        )),
+                );
             }
-            if let Some(error)=&side.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
-            for detail in &side.metadata.details { body=body.child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(detail.clone())); }
-            if let Some(source)=&side.metadata.source {
-                let copied=source.clone();
-                body=body.child(button(("copy-decoded-source",index),"Copy source","copy",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))));
-                let mut end=source.len().min(16*1024); while !source.is_char_boundary(end) { end-=1; }
-                body=body.child(decoded_source(&source[..end],cx));
-                if end<source.len() { body=body.child(div().text_color(rgb(colors.muted)).child("Excerpt limited to 16 KiB; Copy source includes the complete available text.")); }
+        }
+        if let Some(error) = &side.error {
+            body = body.child(
+                div()
+                    .text_color(rgb(colors.modified))
+                    .text_size(appearance::ui_text(12.))
+                    .child(native_accessibility::text(
+                        SharedString::from(format!("rich-side-message-{index}")),
+                        error.clone(),
+                    )),
+            );
+        }
+        // What a side says of itself is read as static text too: a literal
+        // side's reason is why it shows no diagrams.
+        for (line, detail) in side.metadata.details.iter().enumerate() {
+            body = body.child(
+                div()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(colors.muted))
+                    .child(native_accessibility::text(
+                        SharedString::from(format!("rich-side-detail-{index}-{line}")),
+                        detail.clone(),
+                    )),
+            );
+        }
+        if let Some(source) = &side.metadata.source {
+            let copied = source.clone();
+            // An LFS pointer's text is the pointer, and the control and its
+            // feedback say so, as a model's do; a link's is its source.
+            let (copy_label, content) = if side.literal == Some(Literal::LfsPointer) {
+                ("Copy pointer", "LFS pointer")
+            } else {
+                ("Copy source", "source")
+            };
+            let what = if quick {
+                content.to_owned()
+            } else {
+                format!("{label} {content}")
+            };
+            // The control's id names the side; the mark adds its path.
+            let mark = copy_feedback::Mark::new(("copy-decoded-source", index), &side.name);
+            let copy_mark = mark.clone();
+            body = body.child(
+                crate::system_preview::copy_source_button(mark, label, copy_label, true, cx)
+                    .on_click(move |_, window, cx| {
+                        copy_feedback::copy(
+                            window,
+                            cx,
+                            Some(copy_mark.clone()),
+                            &what,
+                            copied.to_string(),
+                        )
+                    })
+                    .node_recorded(),
+            );
+            let mut end = source.len().min(16 * 1024);
+            while !source.is_char_boundary(end) {
+                end -= 1;
             }
-            div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(body)
-        })).into_any_element()
+            // Whole: an accessible value carries as much as this excerpt
+            // holds, and the one shared string serves both.
+            let excerpt = native_accessibility::bounded_accessible_text(&source[..end]);
+            body = body.child(native_accessibility::static_text(
+                decoded_source(excerpt.clone(), cx)
+                    .id(SharedString::from(format!("rich-side-excerpt-{index}"))),
+                excerpt,
+            ));
+            if end < source.len() {
+                body = body.child(
+                    native_accessibility::text(
+                        SharedString::from(format!("rich-side-excerpt-limit-{index}")),
+                        "Excerpt limited to 16 KiB; Copy source includes the complete available \
+                         text.",
+                    )
+                    .text_color(rgb(colors.muted)),
+                );
+            }
+        }
+        (
+            (header, answer),
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .border_r_1()
+                .border_color(rgb(colors.border))
+                .child(body),
+        )
+    })
+    .unzip();
+    let (headers, answers): (Vec<_>, Vec<_>) = headers.into_iter().unzip();
+    // Each header ends, beneath its controls, with the line saying why its
+    // last click opened nothing, laid out with the bodies beneath, the
+    // headers' padding beneath and their rules ending them there.
+    let end = crate::system_preview::HeaderEnd {
+        inset: window.rem_size() * 0.75,
+        bottom: window.rem_size() * 0.5,
+        right_rule: true,
+        border: colors.border,
+    };
+    div()
+        .size_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .key_context(SIDES_CONTEXT)
+        .child(div().flex().min_w_0().children(headers))
+        .child(crate::system_preview::header_ends(
+            "rich-sides",
+            None,
+            answers,
+            end,
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .children(bodies)
+                .into_any_element(),
+        ))
+        .into_any_element()
 }
 
-fn decoded_source(excerpt: &str, cx: &App) -> Div {
+fn decoded_source(excerpt: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .code_font(cx)
         .text_size(appearance::code_text())
-        .child(excerpt.to_owned())
+        .child(excerpt.into())
+}
+
+/// The key context [`render_comparison`] draws its own sides in, a PDF's or
+/// a model's aside, found on the focused element's path by
+/// [`holds_focus`].
+const SIDES_CONTEXT: &str = "GitTurtleRichSides";
+
+/// Whether focus is on a control [`render_comparison`] drew in its own sides
+/// in the last frame, as Diagrams draws a diagram's Previous and Next, its
+/// open control and Copy source: each keeps a focus of its own, so Quick
+/// source's text pane, which counts focus drawn inside it as its own as its
+/// mode changes (`GitTurtle::quick_source_text_pane_is_focused`), asks
+/// this. Uncounted, Source chosen from Next diagram left focus on a button
+/// no frame drew.
+pub(super) fn holds_focus(window: &Window) -> bool {
+    window
+        .context_stack()
+        .iter()
+        .any(|context| context.contains(SIDES_CONTEXT))
 }
 
 impl GitTurtle {
+    /// The comparison in Compare's preview column, `width` wide in the frame
+    /// it is drawn.
     pub(super) fn render_rich_preview(
         &self,
         preview: &Comparison,
+        width: Pixels,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        render_comparison(preview, self.is_quick_source(), cx.entity().downgrade(), cx)
+        let opener =
+            crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing)
+                .ringed_by(self.focus_ring.clone());
+        render_comparison(preview, self.is_quick_source(), opener, width, window, cx)
     }
 
-    pub(super) fn open_captured_preview(
-        &mut self,
-        side: Arc<Side>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(bytes) = side.captured.clone() else {
-            return;
-        };
-        let name = side.name.clone();
-        self.open_captured_bytes(bytes, name, window, cx);
-    }
-    pub(super) fn open_captured_bytes(
+    /// Quick Look's copy of captured `bytes`, suffixed from what they are
+    /// with `name` as a hint; the task ends with whether it opened.
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn quick_look(
         &mut self,
         bytes: Arc<[u8]>,
         name: PathBuf,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let response=self.preferences_writer.submit_read(move|| {
-            #[cfg(target_os="macos")]
-            let slot=ExternalPreviewSlot::reserve()?;
-            let (directory,path)=captured_copy(&bytes,&name)?;
-            #[cfg(target_os="macos")]
+    ) -> Task<Result<(), crate::system_preview::NotOpened>> {
+        let response = self.preferences_writer.submit_read(move || {
+            #[cfg(target_os = "macos")]
+            let slot = ExternalPreviewSlot::reserve()?;
+            let (directory, path) = captured_copy(&bytes, &name)?;
+            #[cfg(target_os = "macos")]
             {
-                let mut child=std::process::Command::new("/usr/bin/qlmanage").arg("-p").arg(&path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
-                std::thread::spawn(move|| { let _=child.wait(); drop(directory); drop(slot); });
+                let mut child = std::process::Command::new("/usr/bin/qlmanage")
+                    .arg("-p")
+                    .arg(&path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()?;
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    drop(directory);
+                    drop(slot);
+                });
                 Ok(())
             }
-            #[cfg(not(target_os="macos"))]
+            #[cfg(not(target_os = "macos"))]
             {
                 drop(directory);
-                let _=path;
-                anyhow::bail!("System Quick Look requires macOS; native external preview is unavailable on this platform")
+                let _ = path;
+                anyhow::bail!("System preview is not available on this platform")
             }
         });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                this.operation_notice = Some(match result {
-                    Ok(Ok(())) => {
-                        "System preview opened a read-only copy of the captured file bytes.".into()
-                    }
-                    Ok(Err(error)) => format!("System preview could not open: {error:#}"),
-                    Err(_) => "System preview stopped before reporting a result.".into(),
-                });
-                cx.notify();
-            });
+        cx.spawn(async move |_, _| match response.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(format!("{error:#}").into()),
+            Err(_) => Err("System preview stopped before reporting a result.".into()),
         })
-        .detach();
     }
 }
 
 /// A private directory and newly created file prevent following any stored path
 /// or symlink. Never reuse the worktree filename as a path or executable suffix.
+/// Quick Look's copy; Linux writes its own through `system_preview`, typed by
+/// content alone, and keeps these tests of the macOS copy running.
+#[cfg(any(test, not(target_os = "linux")))]
 fn captured_copy(bytes: &[u8], name: &Path) -> anyhow::Result<(tempfile::TempDir, PathBuf)> {
     use std::io::Write;
     anyhow::ensure!(
@@ -632,11 +1150,20 @@ mod tests {
                     .details
                     .contains(&format!("{} captured bytes", bytes.len()))
             );
+            // The triangle count, agreeing with its noun: the binary STL's
+            // one facet reads "1 triangle", where it read "1 triangles".
+            let counted = if name == "binary.STL" {
+                "1 triangle ·"
+            } else {
+                " triangles ·"
+            };
             assert!(
                 side.metadata
                     .details
                     .iter()
-                    .any(|detail| detail.contains("triangles"))
+                    .any(|detail| detail.contains(counted)),
+                "{name}: {:?}",
+                side.metadata.details
             );
             assert!(
                 !side
@@ -699,6 +1226,473 @@ mod tests {
             );
         }
     }
+    /// Before holds a desktop entry, which offers nothing; After holds PDF
+    /// bytes under that launcher's name, which open as a PDF. The decision
+    /// travels with the prepared side, so the render only reads it.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn open_in_default_app_shows_for_a_passive_type_and_not_a_launcher(cx: &mut TestAppContext) {
+        struct Probe(Comparison);
+        impl Render for Probe {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let opener = crate::system_preview::Opener::new(
+                    WeakEntity::new_invalid(),
+                    crate::system_preview::Showing::next(),
+                );
+                render_comparison(&self.0, false, opener, px(1000.), window, cx)
+            }
+        }
+        cx.update(gpui_kit::init);
+        let launcher = b"[Desktop Entry]\nType=Application\nName=Readme\nExec=sh -c id\n".to_vec();
+        let refused = Side::prepare(launcher, Path::new("readme.desktop"), || Ok(())).unwrap();
+        let pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n".to_vec();
+        let allowed = Side::prepare(pdf, Path::new("launcher.desktop"), || Ok(())).unwrap();
+        assert!(refused.captured.is_some() && allowed.captured.is_some());
+        let comparison = Comparison {
+            old: Arc::new(refused),
+            new: Arc::new(allowed),
+        };
+        let (_, cx) = cx.add_window_view(move |_, _| Probe(comparison));
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+        assert!(cx.debug_bounds("system-preview-1").is_some());
+        assert!(cx.debug_bounds("system-preview-0").is_none());
+    }
+
+    /// A pointer whose object could not be used says what is wrong with it,
+    /// never that it is absent, and the regular side still draws.
+    #[test]
+    fn a_failed_pointer_side_says_what_is_wrong_in_diagrams() {
+        use gitturtle_core::LfsObjectFailure::{Corrupt, StoreUnreadable, TooLarge};
+        let file = gitturtle_core::FileChange {
+            old_path: Some("a.mmd".into()),
+            new_path: Some("a.mmd".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        };
+        let diagram = "flowchart LR\n  A --> B\n";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "a".repeat(64)
+        );
+        for (failure, says) in [
+            (
+                TooLarge,
+                "This Git LFS object is over the 32 MiB preview limit; its stored text is below.",
+            ),
+            (
+                Corrupt,
+                "The local copy of this Git LFS object is damaged; its stored text is below.",
+            ),
+            (
+                StoreUnreadable,
+                "The local Git LFS store could not be read; its stored text is below.",
+            ),
+        ] {
+            let prepared =
+                prepare_mermaid(&pointer, diagram, &file, [Some(failure), None], || Ok(()))
+                    .unwrap()
+                    .expect("the regular side draws");
+            assert_eq!(prepared.old.literal, Some(Literal::LfsPointer));
+            assert_eq!(prepared.old.metadata.details, [says]);
+            assert!(prepared.new.pages[0].render.is_some());
+        }
+    }
+
+    /// Only a side that is itself a link or a Git LFS pointer stays literal,
+    /// and what it stores never reaches a decoder, even text that would
+    /// parse as a diagram: the other side, regular text, draws its own.
+    /// Where no side is left to draw, there is no comparison.
+    #[test]
+    fn prepare_mermaid_keeps_only_the_literal_side_literal() {
+        let file = |old_mode: &str, new_mode: &str| gitturtle_core::FileChange {
+            old_path: Some("a.mmd".into()),
+            new_path: Some("a.mmd".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: old_mode.into(),
+            new_mode: new_mode.into(),
+        };
+        let diagram = "flowchart LR\n  A --> B\n";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "a".repeat(64)
+        );
+        let link = "This side is stored as a link, which Diagrams never follows; its stored \
+                    text is below.";
+        let lfs = "This side's Git LFS object is not in the local store, and no download was \
+                   attempted; its stored text is below.";
+        let regular = "100644";
+        for (name, old, new, old_mode, new_mode, says, literal_is_old) in [
+            (
+                "a link before",
+                diagram,
+                diagram,
+                "120000",
+                regular,
+                link,
+                true,
+            ),
+            (
+                "a link after",
+                diagram,
+                diagram,
+                regular,
+                "120000",
+                link,
+                false,
+            ),
+            (
+                "a pointer before",
+                pointer.as_str(),
+                diagram,
+                regular,
+                regular,
+                lfs,
+                true,
+            ),
+            (
+                "a pointer after",
+                diagram,
+                pointer.as_str(),
+                regular,
+                regular,
+                lfs,
+                false,
+            ),
+        ] {
+            let prepared =
+                prepare_mermaid(old, new, &file(old_mode, new_mode), [None; 2], || Ok(()))
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{name}: the regular side draws its diagram"));
+            let (literal, drawn, stored) = if literal_is_old {
+                (&prepared.old, &prepared.new, old)
+            } else {
+                (&prepared.new, &prepared.old, new)
+            };
+            assert!(
+                drawn.pages.len() == 1 && drawn.pages[0].error.is_none(),
+                "{name}: the regular side draws one diagram"
+            );
+            assert!(
+                literal.pages.is_empty() && literal.page_count == 0,
+                "{name}: the literal side is never decoded"
+            );
+            assert!(
+                literal.captured.is_none() && literal.system_preview.is_none(),
+                "{name}: the literal side offers nothing to open"
+            );
+            assert_eq!(
+                literal.metadata.details,
+                [says],
+                "{name}: the literal side says what it is"
+            );
+            assert_eq!(
+                literal.metadata.source.as_deref(),
+                Some(stored),
+                "{name}: its literal text stays available"
+            );
+        }
+        for (name, old, new, old_mode, new_mode) in [
+            ("links on both sides", diagram, diagram, "120000", "120000"),
+            (
+                "pointers on both sides",
+                pointer.as_str(),
+                pointer.as_str(),
+                regular,
+                regular,
+            ),
+            (
+                "a pointer then a link",
+                pointer.as_str(),
+                diagram,
+                regular,
+                "120000",
+            ),
+            (
+                "a link then a blank file",
+                diagram,
+                " \n",
+                "120000",
+                regular,
+            ),
+        ] {
+            assert!(
+                prepare_mermaid(old, new, &file(old_mode, new_mode), [None; 2], || Ok(()))
+                    .unwrap()
+                    .is_none(),
+                "{name}: no side is left to draw"
+            );
+        }
+    }
+
+    /// A blank Mermaid fence in Markdown is no block on the file route
+    /// either: a `.md` file with a link or a pointer on one side has no
+    /// Rendered view and reaches `prepare_mermaid`, where a blank fence once
+    /// drew an error page and used one of the four slots.
+    #[test]
+    fn prepare_mermaid_leaves_out_a_markdown_files_blank_fence() {
+        let file = gitturtle_core::FileChange {
+            old_path: Some("a.md".into()),
+            new_path: Some("a.md".into()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "120000".into(),
+            new_mode: "100644".into(),
+        };
+        let fence = |source: &str| format!("```mermaid\n{source}```\n\n");
+        let new = format!(
+            "{}{}",
+            fence("\n"),
+            fence("flowchart LR\n  A --> B\n").repeat(4)
+        );
+        let prepared = prepare_mermaid("notes.txt", &new, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .expect("the regular side draws its diagrams");
+        assert!(prepared.old.pages.is_empty(), "the link side has no pages");
+        assert_eq!(prepared.new.pages.len(), 4, "the four real fences draw");
+        assert_eq!(prepared.new.page_count, 4, "the blank fence is not counted");
+        assert!(
+            prepared.new.pages.iter().all(|page| page.error.is_none()),
+            "no page is an error page"
+        );
+    }
+
+    /// A file at `old_path` and `new_path`, each a regular file where present.
+    fn mermaid_change(
+        old_path: Option<&str>,
+        new_path: Option<&str>,
+    ) -> gitturtle_core::FileChange {
+        gitturtle_core::FileChange {
+            old_path: old_path.map(Into::into),
+            new_path: new_path.map(Into::into),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Modified,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+        }
+    }
+
+    /// Draws `comparison` in a window `quick` or side by side, with every
+    /// static text it writes recorded.
+    fn drawn(
+        cx: &mut TestAppContext,
+        comparison: Comparison,
+        quick: bool,
+    ) -> &mut gpui_kit::VisualTestContext {
+        struct Probe(Comparison, bool);
+        impl Render for Probe {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let opener = crate::system_preview::Opener::new(
+                    WeakEntity::new_invalid(),
+                    crate::system_preview::Showing::next(),
+                );
+                render_comparison(&self.0, self.1, opener, px(1000.), window, cx)
+            }
+        }
+        cx.update(gpui_kit::init);
+        cx.update(crate::image_lifetime::init);
+        native_accessibility::written::forget();
+        let (_, cx) = cx.add_window_view(move |_, _| Probe(comparison, quick));
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+        cx
+    }
+
+    /// Whose details say what Diagrams draws, Before's and After's.
+    fn carriers(comparison: &Comparison) -> [bool; 2] {
+        [&comparison.old, &comparison.new]
+            .map(|side| side.metadata.details.iter().any(|d| d == STATIC_MERMAID))
+    }
+
+    /// Two drawn sides say what Diagrams draws once, on the first that draws
+    /// a diagram; each side keeps its own count of the blocks it left out.
+    /// Read in a comparison, the sentence came twice.
+    #[gpui::test]
+    fn the_static_mermaid_sentence_is_read_once_across_two_drawn_sides(cx: &mut TestAppContext) {
+        let fence = "```mermaid\nflowchart LR\n  A --> B\n```\n\n".repeat(5);
+        let file = mermaid_change(Some("a.md"), Some("a.md"));
+        let prepared = prepare_mermaid(&fence, &fence, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .expect("both sides draw");
+        assert_eq!(carriers(&prepared), [true, false]);
+        let limit = "First 4 of 5 Mermaid blocks rendered; inspect Source for all blocks.";
+        assert_eq!(prepared.old.metadata.details, [STATIC_MERMAID, limit]);
+        assert_eq!(
+            prepared.new.metadata.details,
+            [limit],
+            "the count of what a side left out stays on that side"
+        );
+        let cx = drawn(cx, prepared, false);
+        let read = native_accessibility::written::labels()
+            .into_iter()
+            .filter(|(_, name)| name.as_deref() == Some(STATIC_MERMAID))
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read,
+            ["rich-side-detail-0-0"],
+            "assistive technology reads it once, where it is drawn"
+        );
+        assert!(cx.debug_bounds("rich-side-detail-0-0").is_some());
+        assert!(cx.debug_bounds("rich-side-detail-1-1").is_none());
+    }
+
+    /// A view of one side, which draws the side after the change alone,
+    /// reads the sentence there.
+    #[gpui::test]
+    fn a_one_sided_view_reads_the_static_mermaid_sentence(cx: &mut TestAppContext) {
+        let file = mermaid_change(None, Some("a.mmd"));
+        let prepared =
+            prepare_mermaid("", "flowchart LR\n  A --> B\n", &file, [None; 2], || Ok(()))
+                .unwrap()
+                .expect("the one side draws");
+        let _cx = drawn(cx, prepared, true);
+        let read = native_accessibility::written::get("rich-side-detail-1-0")
+            .expect("the side's sentence is written")
+            .node;
+        assert_eq!(read.value(), Some(STATIC_MERMAID));
+    }
+
+    /// Every line a side draws as text is its own label, read by its value:
+    /// the side's name, what it holds, which diagram is shown, that
+    /// diagram's caption, the literal excerpt and the line saying it was cut.
+    /// Drawn as plain text they reached no assistive technology.
+    #[gpui::test]
+    fn each_line_of_a_rich_side_is_read_as_its_own_text(cx: &mut TestAppContext) {
+        let fence = "```mermaid\nflowchart LR\n  A --> B\n```\n\n".repeat(5);
+        // Past the excerpt's 16 KiB, cut within a two-byte character.
+        let old = format!("{fence}{}é tail", "x".repeat(16 * 1024 - fence.len() - 1));
+        let file = mermaid_change(Some("a.md"), Some("a.md"));
+        let prepared = prepare_mermaid(&old, &fence, &file, [None; 2], || Ok(()))
+            .unwrap()
+            .expect("both sides draw");
+        let excerpt = old[..16 * 1024 - 1].to_owned();
+        let cx = drawn(cx, prepared, false);
+        for (id, text) in [
+            ("rich-side-heading-0", "Before"),
+            ("rich-side-heading-1", "After"),
+            ("rich-side-caption-0", "Mermaid diagrams"),
+            ("rich-side-caption-1", "Mermaid diagrams"),
+            ("rich-side-position-0", "Diagram 1 / 5 · first 4 available"),
+            ("rich-page-caption-0", "Diagram 1 · source line 2"),
+            ("rich-page-caption-1", "Diagram 1 · source line 2"),
+            ("rich-side-excerpt-0", excerpt.as_str()),
+            ("rich-side-excerpt-1", fence.as_str()),
+            (
+                "rich-side-excerpt-limit-0",
+                "Excerpt limited to 16 KiB; Copy source includes the complete available text.",
+            ),
+        ] {
+            let node = native_accessibility::written::get(id)
+                .unwrap_or_else(|| panic!("{id} is written"))
+                .node;
+            assert_eq!(node.role(), Role::Label, "{id} is static text");
+            assert_eq!(node.value(), Some(text), "{id} reads its own line");
+        }
+        assert!(
+            native_accessibility::written::get("rich-side-excerpt-limit-1").is_none(),
+            "a whole excerpt says nothing of a cut"
+        );
+        // The selectors the sides' layout tests find stay on these lines.
+        for selector in ["rich-side-heading-0", "rich-side-format-0/Mermaid diagrams"] {
+            assert!(cx.debug_bounds(selector).is_some(), "{selector} is drawn");
+        }
+    }
+
+    /// The sentence stays with whichever side is the first to draw, and a
+    /// one-sided view keeps it on its one side.
+    #[test]
+    fn the_static_mermaid_sentence_goes_to_the_first_side_that_draws() {
+        let diagram = "flowchart LR\n  A --> B\n";
+        // A control character fails its block, which stands as an error.
+        let failing = "flowchart LR\n  A --> \u{1}B\n";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "a".repeat(64)
+        );
+        let both = mermaid_change(Some("a.mmd"), Some("a.mmd"));
+        for (name, old, new, file, says) in [
+            (
+                "a file the change added",
+                "",
+                diagram,
+                mermaid_change(None, Some("a.mmd")),
+                [false, true],
+            ),
+            (
+                "a file the change removed",
+                diagram,
+                "",
+                mermaid_change(Some("a.mmd"), None),
+                [true, false],
+            ),
+            (
+                "After alone holds diagrams",
+                "notes\n",
+                diagram,
+                both.clone(),
+                [false, true],
+            ),
+            (
+                "Before stays a pointer",
+                pointer.as_str(),
+                diagram,
+                both.clone(),
+                [false, true],
+            ),
+            (
+                "Before fails and After draws",
+                failing,
+                diagram,
+                both.clone(),
+                [false, true],
+            ),
+            (
+                "Before draws and After fails",
+                diagram,
+                failing,
+                both.clone(),
+                [true, false],
+            ),
+            (
+                "neither draws, so the first with a document says it",
+                failing,
+                failing,
+                both.clone(),
+                [true, false],
+            ),
+        ] {
+            let prepared = prepare_mermaid(old, new, &file, [None; 2], || Ok(()))
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name}: a side has a document"));
+            assert_eq!(carriers(&prepared), says, "{name}");
+        }
+        let failed = prepare_mermaid(failing, failing, &both, [None; 2], || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert!(
+            failed.old.pages[0].render.is_none() && failed.old.pages[0].error.is_some(),
+            "the failing block draws nothing"
+        );
+    }
+
     #[test]
     fn absent_and_empty_are_distinct_and_source_is_counted() {
         let empty = Side::prepare(vec![], Path::new("empty.bin"), || Ok(())).unwrap();
@@ -708,5 +1702,100 @@ mod tests {
         let bytes = vec![0; 1024];
         let side = Side::prepare(bytes, Path::new("file.bin"), || Ok(())).unwrap();
         assert!(side.retained_bytes() >= 1024);
+    }
+
+    /// Beside a blob over the 32 MiB captured preview limit, Compare falls
+    /// back to the captured comparison, where a readable side offers the
+    /// open action and the oversize side, which captures nothing, does not.
+    /// A side that is a Git LFS pointer offers none: its text stands in for
+    /// a file the side does not hold, as an image's or a model's pointer
+    /// side offers none. Its pointer text stays shown and copyable.
+    #[gpui::test]
+    async fn a_pointer_beside_an_oversize_blob_offers_no_open(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_window_from, settle};
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
+            "b".repeat(64)
+        );
+        let oversize = MAX_INPUT_BYTES + 1;
+        let mut input = format!("blob\nmark :1\ndata {oversize}\n").into_bytes();
+        input.resize(input.len() + oversize, b'\n');
+        input.push(b'\n');
+        for (index, files) in [
+            [
+                ("notes.txt", Some(pointer.as_str())),
+                ("plain.txt", Some("small text\n")),
+            ],
+            [("notes.txt", None), ("plain.txt", None)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            input.extend_from_slice(
+                format!(
+                    "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata 7\nchange\n",
+                    1_700_000_000 + index
+                )
+                .as_bytes(),
+            );
+            for (path, text) in files {
+                input.extend_from_slice(
+                    &match text {
+                        Some(text) => {
+                            format!("M 100644 inline {path}\ndata {}\n{text}\n", text.len())
+                        }
+                        None => format!("M 100644 :1 {path}\n"),
+                    }
+                    .into_bytes(),
+                );
+            }
+        }
+        input.extend_from_slice(b"done\n");
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        for (path, before_offers) in [("plain.txt", true), ("notes.txt", false)] {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            settle(&app, cx).await;
+            draw(cx);
+            let (before_text, before_offer) =
+                app.read_with(cx, |app, _| match app.content.as_deref() {
+                    Some(Content::Rich(preview)) => {
+                        assert!(
+                            preview.new.captured.is_none() && preview.new.error.is_some(),
+                            "{path}: After is over the limit and captures nothing"
+                        );
+                        (
+                            preview.old.metadata.source.clone(),
+                            preview.old.system_preview.is_some(),
+                        )
+                    }
+                    _ => panic!("{path}: the captured comparison"),
+                });
+            assert!(
+                before_text.is_some(),
+                "{path}: Before's text stays copyable"
+            );
+            assert_eq!(before_offer, before_offers, "{path}: Before's offer");
+            assert!(
+                cx.debug_bounds("rich-side-header-0").is_some(),
+                "{path}: Before is drawn"
+            );
+            assert_eq!(
+                cx.debug_bounds("system-preview-0").is_some(),
+                before_offers,
+                "{path}: Before draws the open action only where it offers it"
+            );
+            assert!(
+                cx.debug_bounds("system-preview-1").is_none(),
+                "{path}: the oversize side offers nothing"
+            );
+        }
     }
 }

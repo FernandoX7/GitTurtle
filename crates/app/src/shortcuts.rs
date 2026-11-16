@@ -1,6 +1,8 @@
 //! The app-owned bindings are also the source for menu, palette and help labels.
 //! Toolkit text-editing bindings keep their own focused input contexts.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
+use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::kbd::Kbd;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,11 +39,14 @@ pub(super) enum ShortcutId {
     #[cfg(target_os = "macos")]
     HideOthers,
     Refresh,
+    FindInComparison,
     Search,
     Sidebar,
+    ProjectPane,
     Back,
     Copy,
     SelectWorking,
+    SelectText,
     ExtendNext,
     ExtendPrevious,
     NextChange,
@@ -78,6 +83,16 @@ macro_rules! shortcut {
 
 const APP: Option<&str> = Some("GitTurtle");
 const LIST: Option<&str> = Some("GitTurtleList");
+/// Compare open, which the window's context names: a binding here is tried
+/// wherever focus is in the window, and in any list inside it (the Changed
+/// files list, File History's revisions, Blame's lines) at the list's own
+/// depth, ahead of the list's binding of the same key where it comes first
+/// in [`SHORTCUTS`] (bound last). Named on the window alone, a list's
+/// binding ran first: Blame's lines left Compare for History's search.
+const COMPARE: Option<&str> = Some("(GitTurtleCompare > GitTurtleList) || GitTurtleCompare");
+/// Selectable read-only text, such as the commit message. Copy there is the
+/// toolkit root's binding of the same key.
+const TEXT: Option<&str> = Some("GitTurtleText");
 pub(super) const SHORTCUTS: &[Shortcut] = &[
     shortcut!(
         Palette,
@@ -179,12 +194,32 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         APP
     ),
     shortcut!(
+        ProjectPane,
+        "Toggle Project List",
+        "Repository",
+        "primary-shift-b",
+        ToggleProjectPane,
+        APP
+    ),
+    shortcut!(
         Back,
         "Back to Retained Context",
         "Repository",
         "primary-[",
         BackHistory,
         APP
+    ),
+    // Ahead of Search Focused List, which takes the same key in a list: in
+    // Compare it is tried first in every list too and keeps the key, so it
+    // never leaves Compare for History's search; where the comparison shows
+    // no text it does nothing (`GitTurtle::find_in_comparison`).
+    shortcut!(
+        FindInComparison,
+        "Find in Comparison",
+        "Repository",
+        "primary-f",
+        FindInComparison,
+        COMPARE
     ),
     shortcut!(
         Search,
@@ -357,6 +392,14 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         LIST
     ),
     shortcut!(
+        SelectText,
+        "Select All Message Text",
+        "Lists and Selection",
+        "primary-a",
+        gpui_kit::component::input::SelectAll,
+        TEXT
+    ),
+    shortcut!(
         ExtendNext,
         "Extend Working Selection Down",
         "Lists and Selection",
@@ -422,7 +465,7 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
     ),
 ];
 
-fn resolve_key(key: &str, macos: bool) -> String {
+pub(super) fn resolve_key(key: &str, macos: bool) -> String {
     key.replace("primary", if macos { "cmd" } else { "ctrl" })
 }
 
@@ -446,12 +489,62 @@ pub(super) fn bind_keys(cx: &mut App) {
     }));
 }
 
+/// `field`, a multi-line prose field, in a wrapper from which Tab and
+/// Shift-Tab move focus to the next and the previous stop, as from every other
+/// stop (DESIGN.md's keyboard contract), changing none of its text. The kit's
+/// multi-line field binds them to indenting its lines, so focus never left
+/// it; the wrapper takes the indent actions in their capture phase, ahead of
+/// the field. The commit description, the rebase message, the amended
+/// description, the tag annotation and the remote form's URL and refspec
+/// lists take it. The GitHub panel's composers grow with their text, a mode
+/// the kit never indents, and the conflict editors keep Tab for indenting
+/// code.
+pub(crate) fn tab_leaves(field: impl IntoElement) -> Div {
+    use gpui_kit::component::input::{IndentInline, OutdentInline};
+    div()
+        .capture_action(|_: &IndentInline, window, cx| {
+            window.focus_next(cx);
+            cx.stop_propagation();
+        })
+        .capture_action(|_: &OutdentInline, window, cx| {
+            window.focus_prev(cx);
+            cx.stop_propagation();
+        })
+        .child(field)
+}
+
 #[cfg(target_os = "linux")]
 pub(super) fn action(id: ShortcutId) -> Option<Box<dyn Action>> {
     SHORTCUTS
         .iter()
         .find(|spec| spec.id == id)
         .map(|spec| (spec.action)())
+}
+
+/// The Enter key as prose names it: Mac keyboards label it Return.
+pub(super) const ENTER: &str = if cfg!(target_os = "macos") {
+    "Return"
+} else {
+    "Enter"
+};
+
+/// A Shift-modified click as prose names it, in the platform's modifier style.
+pub(super) const SHIFT_CLICK: &str = if cfg!(target_os = "macos") {
+    "Shift-click"
+} else {
+    "Shift+click"
+};
+
+/// `key` held with Shift, as prose and accessible names name it in the
+/// platform's modifier style, as [`SHIFT_CLICK`] names a click:
+/// "Shift-Return" on a Mac and "Shift+Enter" elsewhere for [`ENTER`].
+pub(super) fn shifted(key: &str) -> String {
+    let shift = if cfg!(target_os = "macos") {
+        "Shift-"
+    } else {
+        "Shift+"
+    };
+    format!("{shift}{key}")
 }
 
 pub(super) fn key_label(key: &str) -> String {
@@ -476,6 +569,9 @@ pub(super) fn tab_label(index: usize) -> String {
 
 #[derive(Clone)]
 struct HelpEntry {
+    /// The entry's place in the whole list, which no search changes: the
+    /// identity of its row ([`HelpRow::id`]).
+    place: usize,
     group: &'static str,
     label: &'static str,
     key: String,
@@ -484,11 +580,7 @@ struct HelpEntry {
 fn help_entries() -> Vec<HelpEntry> {
     let mut entries: Vec<_> = SHORTCUTS
         .iter()
-        .map(|spec| HelpEntry {
-            group: spec.group,
-            label: spec.label,
-            key: label(spec.id),
-        })
+        .map(|spec| (spec.group, spec.label, label(spec.id)))
         .collect();
     // These belong to GPUI's focused inputs, not the application key context.
     // In particular, the toolkit uses Ctrl+Y for Redo on Linux.
@@ -508,31 +600,74 @@ fn help_entries() -> Vec<HelpEntry> {
         ("Select All Text", "primary-a"),
         ("Find in Editor", "primary-f"),
     ] {
-        entries.push(HelpEntry {
-            group: "Text Editing",
-            label,
-            key: key_label(key),
-        });
+        entries.push(("Text Editing", label, key_label(key)));
     }
     for (label, key) in [
         ("Next Control", "tab"),
         ("Previous Control", "shift-tab"),
         ("Activate Focused Button", "space"),
+        ("Select Lines to Stage or Unstage in a Diff", "space"),
         ("Branch / Worktree Actions in Navigator", "shift-f10"),
+        ("Project Actions in the Project List", "shift-f10"),
+        ("Commit Actions in History", "shift-f10"),
+        ("File Actions in a File List", "shift-f10"),
+        // Linux reports the Menu key; macOS keyboards have none.
+        #[cfg(not(target_os = "macos"))]
+        ("Branch / Worktree Actions in Navigator", "menu"),
+        #[cfg(not(target_os = "macos"))]
+        ("Project Actions in the Project List", "menu"),
+        #[cfg(not(target_os = "macos"))]
+        ("Commit Actions in History", "menu"),
+        #[cfg(not(target_os = "macos"))]
+        ("File Actions in a File List", "menu"),
     ] {
-        entries.push(HelpEntry {
-            group: "Keyboard Navigation",
-            label,
-            key: key_label(key),
-        });
+        entries.push(("Keyboard Navigation", label, key_label(key)));
     }
     entries
+        .into_iter()
+        .enumerate()
+        .map(|(place, (group, label, key))| HelpEntry {
+            place,
+            group,
+            label,
+            key,
+        })
+        .collect()
 }
 
 #[derive(Clone)]
 enum HelpRow {
-    Group(&'static str),
+    /// A group's heading, with the place in the whole list of the group's
+    /// first entry ([`HelpEntry::place`]), its identity.
+    Group(&'static str, usize),
     Entry(HelpEntry),
+}
+
+impl HelpRow {
+    /// The row's element ID, by the group or entry it shows rather than its
+    /// place in the list a search left, so the window's accessibility tree
+    /// keeps one node for each entry across searches and a search that
+    /// changes the list takes nodes away and adds others rather than
+    /// renaming them. Each row was its place in the list: after Down, a
+    /// key or Backspace renamed the node that had held the entry moved to,
+    /// and Orca spoke the entry that now took its place, "not selected",
+    /// before the entry the search selected (QA-92). Its debug selector is
+    /// still its place, which tests read.
+    fn id(&self) -> ElementId {
+        match self {
+            Self::Group(_, first) => ElementId::named_usize("shortcut-help-group", *first),
+            Self::Entry(entry) => ElementId::named_usize("shortcut-help-entry", entry.place),
+        }
+    }
+}
+
+/// How many shortcuts the help lists before a search narrows it.
+#[cfg(test)]
+pub(crate) fn listed_shortcuts() -> usize {
+    help_matches("")
+        .iter()
+        .filter(|row| matches!(row, HelpRow::Entry(_)))
+        .count()
 }
 
 fn help_matches(query: &str) -> Vec<HelpRow> {
@@ -543,7 +678,12 @@ fn help_matches(query: &str) -> Vec<HelpRow> {
     let terms: Vec<_> = query.split_whitespace().collect();
     let mut rows = Vec::new();
     let mut group = None;
+    // The whole list's group, by name and its first entry's place.
+    let mut run = (None, 0);
     for entry in help_entries() {
+        if run.0 != Some(entry.group) {
+            run = (Some(entry.group), entry.place);
+        }
         let key_words = entry
             .key
             .replace('⌃', "ctrl control ")
@@ -557,34 +697,317 @@ fn help_matches(query: &str) -> Vec<HelpRow> {
         }
         if group != Some(entry.group) {
             group = Some(entry.group);
-            rows.push(HelpRow::Group(entry.group));
+            rows.push(HelpRow::Group(entry.group, run.1));
         }
         rows.push(HelpRow::Entry(entry));
     }
     rows
 }
 
-pub(super) fn open_help(window: &mut Window, cx: &mut Context<GitTurtle>) {
+/// A dialog control with keys of its own, which the status bar names while
+/// that control holds focus, in place of the page's hints beneath the dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DialogKeys {
+    /// The command palette's search, which moves through its commands.
+    Palette,
+    /// Quick Open's search, which moves through its files.
+    QuickOpen,
+    /// Keyboard Shortcuts' search, which browses its list.
+    Shortcuts,
+    /// The interactive rebase's planned sequence.
+    RebaseSequence,
+    /// The GitHub panel's changed files.
+    GithubFiles,
+    /// The GitHub panel's patch lines.
+    GithubPatch,
+    /// The GitHub panel's outbound confirmation, which scrolls.
+    GithubConfirmation,
+}
+
+/// Keyboard hints for the status bar: each key and what it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct KeyHints {
+    /// The hints the strip keeps first, giving way as
+    /// `GitTurtle::fit_status_bar` describes.
+    pub(super) keys: Vec<(String, &'static str)>,
+    /// Hints that follow them, whole, only where the status line keeps its
+    /// whole text beside them, so they give way before the status line does.
+    pub(super) spare: Vec<(String, &'static str)>,
+}
+
+impl KeyHints {
+    /// `keys`, with none spare.
+    pub(super) fn new(keys: Vec<(String, &'static str)>) -> Self {
+        Self {
+            keys,
+            spare: Vec::new(),
+        }
+    }
+
+    /// The whole form of every hint, the spare ones last: `Key Action · Key
+    /// Action`.
+    pub(super) fn whole(&self) -> String {
+        Self::join(self.keys.iter().chain(&self.spare), |(key, action)| {
+            format!("{key} {action}")
+        })
+    }
+
+    /// The forms the hints kept first take as the strip's room narrows, in
+    /// the order they give way (`GitTurtle::fit_status_bar`): whole; their
+    /// keys alone, `Key · Key`, where the status line or the refresh warning
+    /// needs their room; then fewer keys, each dropping the last key but Escape,
+    /// so the way out is the last hint to go and the keys left keep their
+    /// order. Under Keyboard Shortcuts "↑↓ Browse · Esc Close" gives way to
+    /// "↑↓ · Esc" and then "Esc"; it once ended with "↑↓", the way out gone
+    /// first, though the design keeps Escape longest.
+    pub(super) fn giving_way(&self) -> Vec<String> {
+        let mut kept = self.keys.clone();
+        let mut forms = Vec::new();
+        if !kept.is_empty() {
+            forms.push(Self::new(kept.clone()).whole());
+        }
+        while !kept.is_empty() {
+            forms.push(Self::join(kept.iter(), |(key, _)| key.clone()));
+            let dropped = kept
+                .iter()
+                .rposition(|(key, _)| key != ESCAPE)
+                .unwrap_or(kept.len() - 1);
+            kept.remove(dropped);
+        }
+        forms
+    }
+
+    fn join<'a>(
+        hints: impl Iterator<Item = &'a (String, &'static str)>,
+        phrase: impl Fn(&(String, &'static str)) -> String,
+    ) -> String {
+        hints.map(phrase).collect::<Vec<_>>().join(" · ")
+    }
+}
+
+/// Page Up and Page Down as the status bar's hints name them: the toolkit
+/// spells them out, which took the strip's room from the status line.
+const PAGE_KEYS: &str = "PgUp / PgDn";
+
+/// Escape as the status bar's hints name it: the way out of the page or
+/// dialog, kept longest as they give way ([`KeyHints::giving_way`]).
+pub(super) const ESCAPE: &str = "Esc";
+
+impl DialogKeys {
+    /// The hints the status bar names, each key with what it does. Escape
+    /// is named by the dialog's own button it stands for ([`Self::dismiss`]):
+    /// the palette's hints said "Esc Close" beside its Cancel button, while
+    /// Quick Open's said "Esc Cancel".
+    ///
+    /// Keyboard Shortcuts keeps "↑↓ Browse · Esc Close" first, Escape kept
+    /// longest as they give way ([`KeyHints::giving_way`]), and names its
+    /// page and end keys as spare hints after them, which give way before
+    /// the status line does: named with the rest, they took 358 px at 18 pt
+    /// in a 461 × 490 window and cut "Up to date with origin · nothing new"
+    /// to about 53 px. Its inline help names every key.
+    pub(super) fn key_hints(self) -> KeyHints {
+        let escape = (ESCAPE.to_owned(), self.dismiss());
+        let paging = || {
+            vec![
+                (PAGE_KEYS.to_owned(), "Page"),
+                (
+                    format!("{} / {}", key_label("home"), key_label("end")),
+                    "Ends",
+                ),
+            ]
+        };
+        match self {
+            Self::Palette | Self::QuickOpen => KeyHints::new(vec![
+                ("↑↓".into(), "Select"),
+                (ENTER.into(), "Open"),
+                escape,
+            ]),
+            Self::Shortcuts => KeyHints {
+                keys: vec![("↑↓".into(), "Browse"), escape],
+                spare: paging(),
+            },
+            Self::GithubFiles => KeyHints {
+                keys: vec![("↑↓".into(), "Select"), (ENTER.into(), "Open"), escape],
+                spare: paging(),
+            },
+            Self::GithubPatch => KeyHints {
+                keys: vec![
+                    ("↑↓".into(), "Line"),
+                    (
+                        format!("{} / {}", key_label("shift-up"), key_label("shift-down")),
+                        "Extend",
+                    ),
+                    (ENTER.into(), "Comment"),
+                    escape,
+                ],
+                spare: paging(),
+            },
+            Self::GithubConfirmation => KeyHints {
+                keys: vec![("↑↓".into(), "Scroll"), escape],
+                spare: paging(),
+            },
+            Self::RebaseSequence => KeyHints::new(vec![
+                ("↑↓".into(), "Select"),
+                (
+                    format!("{} / {}", key_label("alt-up"), key_label("alt-down")),
+                    "Reorder",
+                ),
+                escape,
+            ]),
+        }
+    }
+
+    /// The verb of the dialog's button that Escape stands for, as the button
+    /// and hints say it and as its inline help does: Cancel in the command
+    /// palette and Quick Open, which leave without acting, Close in
+    /// Keyboard Shortcuts, a read-only sheet, and the rebase dialog, and
+    /// Back to repository in the GitHub panel, its footer's one button.
+    fn verb(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Palette | Self::QuickOpen => ("Cancel", "cancels"),
+            Self::Shortcuts | Self::RebaseSequence => ("Close", "closes"),
+            Self::GithubFiles | Self::GithubPatch | Self::GithubConfirmation => {
+                ("Back to repository", "returns to the repository")
+            }
+        }
+    }
+
+    /// The label of the dialog's button that Escape stands for, the one verb
+    /// its hints, its footer and its inline help share ([`Self::verb`]).
+    pub(super) fn dismiss(self) -> &'static str {
+        self.verb().0
+    }
+
+    /// The clause the dialog's inline help says Escape with, in the button's
+    /// verb: "Escape cancels" or "Escape closes".
+    pub(super) fn escape_help(self) -> String {
+        format!("Escape {}", self.verb().1)
+    }
+
+    /// The dialog's footer button that Escape stands for, labelled
+    /// [`Self::dismiss`] and named `dialog-dismiss: <label>` for tests.
+    pub(super) fn dismiss_button(self, id: &'static str, primary: bool) -> Button {
+        let label = self.dismiss();
+        button(id, label, "", primary).debug_selector(move || format!("dialog-dismiss: {label}"))
+    }
+}
+
+/// A dialog's inline help line, `text`, drawn with ID `id` as static text
+/// read by the whole line, laid out by phrase ([`dialog_help_by_phrase`])
+/// with its phrases named `{id}-{index}`. The line had no node, so the
+/// command palette's, Quick Open's and Keyboard Shortcuts' keys were never
+/// read; drawn as one wrapping text, it broke "Page Up" and started a line
+/// with "/" or "·" where it wrapped.
+pub(super) fn dialog_help(
+    id: &'static str,
+    text: String,
+) -> native_accessibility::StaticText<Stateful<Div>> {
+    native_accessibility::static_text(help_by_phrase(id, &text).id(id), text)
+}
+
+/// [`dialog_help`]'s line for a dialog that names it itself, as Quick Open
+/// does, its phrases named `dialog-help-phrase-{index}`.
+pub(super) fn dialog_help_by_phrase(text: String) -> Div {
+    help_by_phrase("dialog-help-phrase", &text)
+}
+
+/// A help line laid out by phrase, as every line of "·"-separated phrases is
+/// (`crate::PhraseLine`, its phrases named `{prefix}-{index}`): it breaks
+/// between phrases, inside one only where that phrase alone is wider than
+/// the line and there only between its runs, so Quick Open's hint at 18 pt
+/// in a 461 px window leaves no "cancels" alone on its last line, no key
+/// name such as Page Up breaks, and no line starts with a "/" or a "·". On
+/// one line it reads as the text does. It is named for tests by the clause
+/// in it that says what Escape does (`dialog-help-escape: <clause>`, empty
+/// where the line has none), because GPUI's test scene does not expose
+/// glyphs.
+fn help_by_phrase(prefix: &'static str, text: &str) -> Div {
+    let escape = text
+        .split(" · ")
+        .find(|clause| clause.starts_with("Escape"))
+        .unwrap_or_default()
+        .to_owned();
+    div()
+        .debug_selector(move || format!("dialog-help-escape: {escape}"))
+        .child(crate::PhraseLine::new(prefix, text))
+}
+
+/// The dialog controls whose keys the status bar names, registered as their
+/// dialogs open. A control is held weakly, so a closed dialog's entry lapses
+/// with its view, and each registration drops the lapsed ones.
+#[derive(Default)]
+pub(super) struct DialogHints(Vec<(WeakFocusHandle, DialogKeys)>);
+
+impl DialogHints {
+    pub(super) fn register(&mut self, focus: &FocusHandle, keys: DialogKeys) {
+        self.0
+            .retain(|(handle, _)| handle.upgrade().is_some() && handle != focus);
+        self.0.push((focus.downgrade(), keys));
+    }
+
+    /// The keys of the registered control that holds focus, if one does.
+    pub(super) fn focused(&self, window: &Window) -> Option<DialogKeys> {
+        self.0.iter().find_map(|(handle, keys)| {
+            handle
+                .upgrade()
+                .is_some_and(|handle| handle.is_focused(window))
+                .then_some(*keys)
+        })
+    }
+}
+
+pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut Context<GitTurtle>) {
     use gpui_kit::component::{WindowExt, dialog::DialogFooter};
     if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
         return;
     }
     let return_focus = window.focused(cx);
     let help = cx.new(|cx| ShortcutHelpView::new(return_focus, window, cx));
+    #[cfg(test)]
+    OPENED_HELP.with_borrow_mut(|opened| *opened = Some(help.downgrade()));
     let focus = help.read(cx).query.read(cx).focus_handle(cx);
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    hints.register(&focus, DialogKeys::Shortcuts);
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
         let done = help.clone();
         let cancel = help.clone();
         let confirm = help.clone();
+        // A list of commands' keys floats as the menus and the command
+        // palette do: on the raised surface with their fitted edge, read on
+        // every frame so a theme switch retints it with them.
+        let surface = palette(cx);
+        // The dialog clips its body at the body's top, where the search
+        // field stands, so the view keeps the focus ring's room above the
+        // field and the title's margin gives it back: nothing moves.
+        let room = appearance::button_ring_room(cx);
         dialog
-            .title("Keyboard Shortcuts")
-            .width(appearance::ui_size(650.))
-            .child(help.clone())
-            .footer(DialogFooter::new().child(
-                button("close-shortcut-help", "Done", "", true).on_click(move |_, window, cx| {
-                    done.update(cx, |view, cx| view.close(window, cx))
-                }),
-            ))
+            .title(
+                native_accessibility::dialog_title(
+                    "keyboard-shortcuts-title",
+                    "Keyboard Shortcuts",
+                )
+                .mb(-room),
+            )
+            .width(help_dialog_width(window))
+            .max_h(appearance::dialog_max_height(window))
+            .bg(rgb(surface.raised()))
+            .border_color(rgb(surface.raised_edge()))
+            // In the dialog's content rather than its scrolling body, whose
+            // scroller lays what it holds out at full height: here the view
+            // shrinks with the dialog's height cap and its list gives up the
+            // height, so the field, the hint and Done stay in view.
+            .content({
+                let help = help.clone();
+                move |content, _, _| content.min_h_0().child(help.clone())
+            })
+            .footer(
+                DialogFooter::new().child(
+                    DialogKeys::Shortcuts
+                        .dismiss_button("close-shortcut-help", true)
+                        .on_click(move |_, window, cx| {
+                            done.update(cx, |view, cx| view.close(window, cx))
+                        }),
+                ),
+            )
             .on_cancel(move |_, window, cx| {
                 cancel.update(cx, |view, cx| view.close(window, cx));
                 false
@@ -598,37 +1021,878 @@ pub(super) fn open_help(window: &mut Window, cx: &mut Context<GitTurtle>) {
     window.refresh();
 }
 
+/// Keyboard Shortcuts' width in this window: 650 px at the interface size,
+/// narrowed to keep the dialog's margin from the window's sides.
+fn help_dialog_width(window: &Window) -> Pixels {
+    appearance::dialog_width(appearance::ui_size(650.), window)
+}
+
+/// The width Keyboard Shortcuts lays its view out in, the dialog's width
+/// ([`help_dialog_width`]) inside the kit dialog's side padding (16 px, or
+/// the room a ghost Button's pull and ring take where that is larger:
+/// `crate::dialog_ghost_room`, 17 px at 18 pt) and its 1 px border, each as
+/// layout draws it on this display's device pixels: the width on whole
+/// device pixels, halves toward zero (`Window::pixel_snap`), the padding
+/// already on them (`crate::dialog_ghost_room` rounds it up to one), and the
+/// border at least one, as GPUI rounds a stroke. Summed unrounded, it
+/// measured the view 318 px wide at scale 1.5 in a 400 px window, where the
+/// border is one device pixel, 0.67 px, and the view 318.67 px.
+pub(crate) fn help_width(window: &Window, cx: &App) -> Pixels {
+    let scale = window.scale_factor();
+    let border = px(((scale - 0.5).ceil()).max(1.) / scale);
+    let padding = gpui_kit::component::dialog::dialog_side_padding(window, cx);
+    window.pixel_snap(help_dialog_width(window)) - (padding + border) * 2.
+}
+
+/// The platform's modifier keys, which the line above the shortcut list
+/// names after the count where the line fits ([`legend_fits`]).
+pub(crate) fn modifier_legend() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift"
+    } else {
+        "Ctrl, Alt and Shift"
+    }
+}
+
+/// What the line above the shortcut list draws between the count and
+/// [`modifier_legend`].
+pub(crate) const LEGEND_SEPARATOR: &str = " · ";
+
+/// Whether Keyboard Shortcuts draws [`modifier_legend`] after `count`'s
+/// count, which agrees with its noun ("1 shortcuts" once read for a search
+/// that left one), `width` wide: only where the interface font lays the
+/// whole line out on one line there, the count and the legend each as its
+/// own text lays it out. Otherwise the count stands alone ("61 shortcuts"),
+/// the legend giving way as words beside a count do (DESIGN.md, "One
+/// responsive order"). Decided from the font before layout, so the line is
+/// one line in the frame that draws it. The macOS legend, wrapped to a
+/// second line at 18 pt in a 461 px window, took the 27 px the hint needed
+/// below a list already at its floor, and the hint ran under Close.
+pub(crate) fn legend_fits(count: usize, width: Pixels, window: &Window) -> bool {
+    let weight = window.text_style().font_weight;
+    let laid_out = |text: &str| {
+        crate::views::laid_out_text_width(
+            crate::views::shaped_width(text, appearance::ui_text(12.), weight, window),
+            window,
+        )
+    };
+    let counted = crate::counted(count, "shortcut", "shortcuts");
+    let legend = format!("{LEGEND_SEPARATOR}{}", modifier_legend());
+    laid_out(&counted) + laid_out(&legend) <= width
+}
+
+/// The shortcut list's height at the default interface size, where the
+/// dialog has the room.
+const SHORTCUT_LIST_HEIGHT: f32 = 430.;
+/// The least the list gives up its height to, at the default interface size:
+/// one 42 px row inside its 1 px border, as at 18 pt in a 461 × 490 window,
+/// where the hint below it wraps to three lines ([`list_floor`]).
+const SHORTCUT_LIST_FLOOR: f32 = 44.;
+/// An entry's row, at the default interface size.
+const SHORTCUT_ROW: f32 = 42.;
+/// A group's heading row, at the default interface size: the group gap
+/// above its 11 px name, the name's 14 px line, and 3 px below it to the rule
+/// under it, about 30 px at 18 pt. As tall as an entry, the heading's row
+/// (58 px at 18 pt) had its top cut by the list's edge after a one-match
+/// search in a 461 × 490 window, whose 99 px list held its entry whole below
+/// it; heading and entry now take about 88 px there.
+const SHORTCUT_HEADING: f32 = 22.;
+/// The name's line in a heading row and the room below it, at the default
+/// interface size; the rest of the row is the group gap above it.
+const SHORTCUT_HEADING_LINE: f32 = 14.;
+const SHORTCUT_HEADING_BELOW: f32 = 3.;
+
+/// The shortcut list's height where the dialog has the room, at the
+/// interface size.
+pub(crate) fn list_height() -> Pixels {
+    appearance::ui_size(SHORTCUT_LIST_HEIGHT)
+}
+
+/// The least the list gives up its height to: exactly one entry's row at
+/// the interface size inside the list's 1 px border, which does not grow
+/// with the text. Scaled whole from [`SHORTCUT_LIST_FLOOR`], the border grew
+/// too, and at 18 pt the floor held the 58.15 px entry and 0.77 px of the
+/// row above it.
+pub(crate) fn list_floor() -> Pixels {
+    appearance::ui_size(SHORTCUT_LIST_FLOOR - 2.) + px(2.)
+}
+
+/// The height of `row` in the shortcut list, at the interface size.
+fn row_height(row: &HelpRow) -> Pixels {
+    appearance::ui_size(match row {
+        HelpRow::Group(..) => SHORTCUT_HEADING,
+        HelpRow::Entry(_) => SHORTCUT_ROW,
+    })
+}
+
+/// The rows' heights in the list's order at one interface size, as the
+/// toolkit's virtual list takes them, and where each row starts.
+struct RowLayout {
+    sizes: std::rc::Rc<Vec<Size<Pixels>>>,
+    /// Each row's top in the list, summed in the order the virtual list sums
+    /// them, and then the list's whole height; shared with the list's
+    /// prepaint, which scrolls by whole rows at the floor ([`Span::reveal`]).
+    tops: std::rc::Rc<Vec<Pixels>>,
+    /// The interface size they were measured at, `appearance::ui_scale`.
+    scale: f32,
+}
+
+impl RowLayout {
+    fn new(rows: &[HelpRow]) -> Self {
+        let mut tops = Vec::with_capacity(rows.len() + 1);
+        let mut top = px(0.);
+        let sizes = rows
+            .iter()
+            .map(|row| {
+                let height = row_height(row);
+                tops.push(top);
+                top += height;
+                Size {
+                    width: px(0.),
+                    height,
+                }
+            })
+            .collect();
+        tops.push(top);
+        Self {
+            sizes: std::rc::Rc::new(sizes),
+            tops: std::rc::Rc::new(tops),
+            scale: appearance::ui_scale(),
+        }
+    }
+
+    /// What the list brings into view with the entry at `index` among `rows`.
+    fn span(&self, rows: &[HelpRow], index: usize) -> Option<Span> {
+        let bottom = *self.tops.get(index + 1)?;
+        let heading = index
+            .checked_sub(1)
+            .filter(|&above| matches!(rows[above], HelpRow::Group(..)))
+            .map(|above| self.tops[above]);
+        Some(Span {
+            heading,
+            top: self.tops[index],
+            bottom,
+        })
+    }
+}
+
+/// What the list brings into view with an entry: the entry's top and bottom
+/// in the list, and the top of its group's heading where it is the group's
+/// first entry, which comes with it where the list holds both, so no reveal
+/// leaves the heading cut above a group's first entry.
+#[derive(Clone, Copy)]
+struct Span {
+    heading: Option<Pixels>,
+    top: Pixels,
+    bottom: Pixels,
+}
+
+/// How the list was laid out: its height inside its border, and the
+/// interface size its rows were measured at (`appearance::ui_scale`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Laid {
+    view: Pixels,
+    scale: f32,
+}
+
+/// How the list brings the selected entry into view where some of it lies
+/// outside the list.
+#[derive(Clone, Copy)]
+enum Reveal {
+    /// Centred, as Up and Down centre the entry they reach, as in the
+    /// palette and Quick Open.
+    Centre,
+    /// Scrolled the least that shows it whole, for a click on it or a list
+    /// whose new height would cut it.
+    Nearest,
+}
+
+/// A key that moves the list's selection through its entries, passing over
+/// group headings.
+#[derive(Clone, Copy)]
+enum Step {
+    /// Up: the entry above.
+    Previous,
+    /// Down: the entry below.
+    Next,
+    /// Page Up: a page of entries above ([`ShortcutHelpView::page`]).
+    PageUp,
+    /// Page Down: a page of entries below.
+    PageDown,
+    /// Home: the list's first entry.
+    First,
+    /// End: the list's last entry.
+    Last,
+}
+
+gpui_kit::actions!(
+    shortcut_help,
+    [
+        FirstShortcut,
+        LastShortcut,
+        PreviousShortcutPage,
+        NextShortcutPage
+    ]
+);
+
+/// Where Home, End, Page Up and Page Down move the list's selection: in the
+/// search field, which holds focus while the dialog is open. Bound at the
+/// field's own depth and later than the toolkit binds the field's keys, they
+/// come before its Home and End, which would move its caret, as macOS's
+/// single-line fields leave those keys to the list or view beside them;
+/// Shift-Home and Shift-End still select in the field. Up and Down, which a
+/// single-line field passes on, reach the view's key handler.
+const LIST_KEYS: &str = "GitTurtleShortcuts > Input";
+
+/// Marks [`bind_list_keys`] done for the application.
+struct ListBindings;
+impl gpui_kit::Global for ListBindings {}
+
+/// Binds the list's keys ([`LIST_KEYS`]) once, as the dialog first opens.
+fn bind_list_keys(cx: &mut App) {
+    if cx.try_global::<ListBindings>().is_some() {
+        return;
+    }
+    cx.set_global(ListBindings);
+    cx.bind_keys([
+        KeyBinding::new("home", FirstShortcut, Some(LIST_KEYS)),
+        KeyBinding::new("end", LastShortcut, Some(LIST_KEYS)),
+        KeyBinding::new("pageup", PreviousShortcutPage, Some(LIST_KEYS)),
+        KeyBinding::new("pagedown", NextShortcutPage, Some(LIST_KEYS)),
+    ]);
+}
+
+impl Span {
+    /// How far past the list's edge a row may lie and still count as whole:
+    /// the toolkit scrolls a row to an edge in window coordinates, so a row
+    /// it placed there can read a rounding error past it here.
+    const ROUNDING: Pixels = px(0.01);
+
+    /// Whether the entry itself, without its group's heading, lies whole in
+    /// a list `view` tall scrolled by `scrolled`.
+    fn whole(self, scrolled: Pixels, view: Pixels) -> bool {
+        self.top >= scrolled - Self::ROUNDING && self.bottom <= scrolled + view + Self::ROUNDING
+    }
+
+    /// Whether the list, laid out `now` after `was` and scrolled by
+    /// `scrolled`, brings the entry into view: as it is first laid out; after
+    /// a text size chosen with it open, which changes every row's height
+    /// under the scroll, whether or not the list's height changes with it
+    /// (where the dialog's cap held the height, the entry stayed wherever the
+    /// scaled rows put it); and after a resize only where the new height
+    /// would cut the entry the list showed whole, so a list the wheel moved
+    /// away from it stays where the person put it.
+    fn follows(self, was: Laid, now: Laid, scrolled: Pixels) -> bool {
+        if was.view <= px(0.) || was.scale.to_bits() != now.scale.to_bits() {
+            return true;
+        }
+        was.view != now.view && self.whole(scrolled, was.view) && !self.whole(scrolled, now.view)
+    }
+
+    /// The scroll, from the list's top, that brings the span whole into a
+    /// list `view` tall whose rows start at `tops` (the last being the whole
+    /// list's height) and which is scrolled by `scrolled`, or `None` where it
+    /// lies whole there already.
+    ///
+    /// Where the list holds fewer than two entries, as at its floor, it
+    /// scrolls by whole rows: the scroll it sets starts the list at a row's
+    /// top, so no row is cut at the list's top, and where the list holds the
+    /// entry but not its heading with it, the heading leaves the list whole
+    /// and the row after the entry shows at its foot, as a list cut at its
+    /// foot does. At 18 pt in a 461 × 490 window, whose list is about 72 px
+    /// tall, the General heading stood as a 13 px sliver above the first
+    /// entry, which ended at the list's foot, and Up and Down centred an
+    /// entry between two slivers. Only the scroll changes, so nothing the
+    /// dialog draws moves; a floor sized to hold the heading with its entry
+    /// would need about 16 px more than the dialog's cap leaves there and
+    /// scroll the dialog's body. Past the list's last row the scroll stops
+    /// short of a row's top: the list's end holds it.
+    fn reveal(
+        self,
+        scrolled: Pixels,
+        view: Pixels,
+        tops: &[Pixels],
+        how: Reveal,
+    ) -> Option<Pixels> {
+        let content = tops.last().copied().unwrap_or_default();
+        if view <= px(0.) {
+            return None;
+        }
+        let top = self
+            .heading
+            .filter(|&heading| self.bottom - heading <= view)
+            .unwrap_or(self.top);
+        let above = top < scrolled - Self::ROUNDING;
+        let below = self.bottom > scrolled + view + Self::ROUNDING;
+        let to = match how {
+            _ if !above && !below => return None,
+            Reveal::Centre => (top + self.bottom) / 2. - view / 2.,
+            Reveal::Nearest if above => top,
+            Reveal::Nearest => self.bottom - view,
+        };
+        let to = if view < (self.bottom - self.top) * 2. {
+            // The first row's top at or below the scroll, and never past the
+            // span's own top, so the span stays whole.
+            tops.iter()
+                .copied()
+                .find(|&row| row >= to - Self::ROUNDING)
+                .unwrap_or(to)
+                .min(top)
+        } else {
+            to
+        };
+        Some(to.min(content - view).max(px(0.)))
+    }
+}
+
 struct ShortcutHelpView {
     query: Entity<InputState>,
     rows: Vec<HelpRow>,
+    /// Each row's height and top, built with the rows and again when the
+    /// interface size changes, rather than on every frame or key press.
+    layout: RowLayout,
     selected: usize,
-    scroll: UniformListScrollHandle,
+    /// A group's heading row is shorter than an entry's, so the list is the
+    /// toolkit's virtual list, which takes each row's height, rather than a
+    /// `uniform_list`, which gives every row the first one's.
+    scroll: gpui_kit::base::VirtualListScrollHandle,
+    /// How the list was last laid out ([`Span::follows`]): when the dialog's
+    /// height cap changes its height, it keeps a selected entry it showed
+    /// whole in view.
+    list_height: std::rc::Rc<std::cell::Cell<Laid>>,
+    /// The dialog's one status, its accessible name: what it last
+    /// announced. Once the search has rested ([`COUNT_REST`]) it reads the
+    /// count and the selected entry together, "16 shortcuts · Open
+    /// Repository Tab: Ctrl+T", in one announcement ([`resting_reading`]),
+    /// or the count alone where Orca spoke the change of selection the rest
+    /// follows ([`Self::settle_count`]). An assistive technology announces a
+    /// live node as its name changes: a name that followed each key press
+    /// was announced on each one, the echo of the next key cutting it off,
+    /// and as two statuses, the count's and the entry's, changed in one
+    /// frame, Orca spoke the count and dropped the entry announced a
+    /// millisecond after it (QA-90). The line
+    /// above the list draws each key's count at once. A move the list speaks
+    /// itself sets it to that entry quietly ([`Self::quiet`]), so it always
+    /// reads what was last spoken.
+    status: SharedString,
+    /// Whether the status last changed quietly, for a move to an entry the
+    /// list speaks itself ([`Self::announce_entry`]): it is no live region
+    /// until it next announces, so it does not say that entry a second
+    /// time, and since its name follows the entry, the next rest or move it
+    /// announces changes its name even where its reading is the one it
+    /// announced before the move, which an unchanged name would not say.
+    quiet: bool,
+    /// The count the status last announced.
+    announced_count: SharedString,
+    /// The selected entry last spoken: the entry the search last rested on,
+    /// or the one Up, Down, Home, End, a page key or a click moved to since,
+    /// whether the list spoke it or the status ([`Self::announce_entry`]).
+    /// It follows the selection on every platform, so a rest that comes
+    /// back to the entry the search selected before a move announces it
+    /// again: kept at the rest's entry on Linux, where the list spoke the
+    /// move, a rest after Down, a key and Backspace said nothing.
+    announced_entry: SharedString,
+    /// The list's last change of its selected entry, which on Linux tells a
+    /// rest whether Orca spoke the entry it would read ([`Listed::spoken()`]).
+    listed: Listed,
+    /// The rest the search's next count waits for ([`Self::settle_count`]):
+    /// replaced by each change to the search, so only the last one runs,
+    /// and dropped as the dialog closes.
+    settling: Option<Task<()>>,
     return_focus: Option<FocusHandle>,
     closed: bool,
     _subscription: Subscription,
 }
 
+/// How long the search in Keyboard Shortcuts rests before its count is
+/// announced: longer than the pause between keys in steady typing, so the
+/// count is announced once per pause, after the screen reader has echoed the
+/// last key (decision, 2026-11-02: typing "palette" at 60 ms a key, Orca
+/// spoke "34 shortcuts" and never the settled "1 shortcut", each status cut
+/// off by the echo of the next key). The command palette's status announces
+/// its query's reading after the same rest: announced at each key, Orca
+/// 51.1 dropped the reading for "go" typed 60 ms after "g" (QA-94).
+pub(crate) const COUNT_REST: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether the platform's screen reader speaks, on its own, the entry a key
+/// or a click selects in Keyboard Shortcuts' list while focus stays in the
+/// search. On Linux it does for every move: the AT-SPI adapter reports each
+/// change of the list's selection (`object:selection-changed`), and Orca
+/// speaks the list's selected item on it. A row the virtual list had not
+/// drawn, which End, Home, a page key or Down past its edge reach, enters
+/// the tree already selected, which the adapter reports as no change of the
+/// item's own state (`accesskit_atspi_common`'s `add_node`) but as a change
+/// of its list's selection all the same. So the status announces no move
+/// there. It once announced the entry of a row the list had not drawn, on
+/// the premise that the list would not speak it, and Orca 51.1 spoke End's
+/// and Home's entry twice, the status's announcement and, 10 to 30 ms later,
+/// the list's `selection-changed`, in the whole list and in a search's;
+/// Down and Page Down, which the status left to the list, once each (QA-92,
+/// 2026-11-03). Before that the status announced every move and Orca spoke
+/// Down's entry twice (QA-90). macOS's adapter reports the change on the
+/// list (`NSAccessibilitySelectedRowsChangedNotification`), not on the item,
+/// and VoiceOver's cursor follows focus into the search field, so nothing
+/// shows that VoiceOver speaks it (not yet checked natively): there the
+/// status announces the entry a move selects. The command palette's list
+/// follows the same rule: its status announced each Up and Down on Linux
+/// too, and Orca 51.1 spoke the move twice, 41 ms apart, the status's "Go to
+/// History · 2 of 3" and the list's "Go to History" (QA-94, 2026-11-04).
+pub(crate) const LIST_SPEAKS_SELECTION: bool = cfg!(target_os = "linux");
+
+/// How long after a list's previous change of selection a change must come
+/// for Keyboard Shortcuts or the command palette to take it as spoken
+/// ([`Listed`]). Orca 51.1's spam filter drops an event of a type the
+/// application sent less than 100 ms before, and times each one it sees,
+/// dropped or not ("Ignoring object:selection-changed due to multiple
+/// instances in short time", QA-97), so of keys typed 60 ms apart that each
+/// select another entry it speaks the first key's and none after it
+/// (`atspi_state_tests::Bus::heard_by_orca` models that window). The AT-SPI
+/// adapter reports a change as the frame that draws it is drawn, so the list
+/// measures from the latest the change before can have been reported, the
+/// first frame after the one that drew it, to the earliest this one can, the
+/// render that draws it ([`Listed::stamp`]): a lower bound on the time
+/// between the two, and this leaves 50 ms beyond Orca's window.
+const LIST_SPEAKS_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// A list's last change of its selected item, by a key, a click or the
+/// search, which on Linux the AT-SPI adapter reports as the frame that draws
+/// it is drawn, and Orca speaks ([`LIST_SPEAKS_SELECTION`]): the one timing
+/// Keyboard Shortcuts' entries and the command palette's commands share. A
+/// status leaves the item out of a rest's reading only where it is sure Orca
+/// spoke that change ([`Self::spoken()`]): in doubt it says the item again,
+/// which is heard twice at worst, where the rest of the reading alone could
+/// leave it unheard or follow the item Orca spoke before.
+pub(crate) struct Listed {
+    /// How many changes there have been, the list's opening, as its first
+    /// selected item entered the window's tree selected, the first: a frame
+    /// times only the last.
+    changes: u64,
+    /// The change a frame is due to time ([`Self::time`]).
+    asked: Option<u64>,
+    /// When the first render that drew the last change ran: the adapter
+    /// cannot have reported it earlier.
+    rendered: Option<std::time::Instant>,
+    /// When the first frame came after the one that drew the last change:
+    /// the adapter cannot have reported it later. None while it waits.
+    drawn: Option<std::time::Instant>,
+    /// The same for the change before it.
+    before: Option<std::time::Instant>,
+    /// Whether a change came while the one before it waited for its frame,
+    /// so that Orca may have spoken either.
+    doubt: bool,
+    /// Whether Orca spoke the item the last change selected: its render ran
+    /// [`LIST_SPEAKS_AFTER`] or more after the frame that timed the change
+    /// before it, and no change came between it and its frame. Of keys typed
+    /// 60 ms apart Orca 51.1 drops each change of selection after the first
+    /// as one of a burst (QA-97), and a frame drawn late, as on a loaded
+    /// host, can send two changes handled far apart within its window.
+    spoken: bool,
+    /// Whether the status has taken no reading since: the rest that comes
+    /// next follows it ([`Self::take_unread`]).
+    unread: bool,
+    /// The selected item as the last frame laid the list out, and whether it
+    /// drew that item's row ([`Self::laid_out`]).
+    row_shown: Option<(Option<usize>, bool)>,
+}
+
+impl Listed {
+    /// The list opened: its first frame times that change.
+    pub(crate) fn opened() -> Self {
+        Self {
+            changes: 0,
+            asked: None,
+            rendered: None,
+            drawn: None,
+            before: None,
+            doubt: false,
+            spoken: false,
+            unread: false,
+            row_shown: None,
+        }
+    }
+
+    /// The selected item changed: the rest that comes next follows it.
+    pub(crate) fn changed(&mut self) {
+        self.changes += 1;
+        match self.drawn.take() {
+            Some(drawn) => self.before = Some(drawn),
+            None => self.doubt = true,
+        }
+        self.rendered = None;
+        self.spoken = false;
+        self.unread = true;
+    }
+
+    /// The selected item changed other than by the search, as by a key, a
+    /// click or its row coming back into the list ([`Self::laid_out`]): the
+    /// rest that follows it is the one `pending` then, if any, and a later
+    /// rest does not. A move with none pending is heard from the list, and a
+    /// search that keeps its item selected long after is a reading no change
+    /// of selection led to, read whole: counted toward that later rest, Down
+    /// in Keyboard Shortcuts and, 5 s on, "y", which keeps Open Repository
+    /// first, rested on "38 shortcuts" alone.
+    pub(crate) fn moved(&mut self, pending: bool) {
+        self.changed();
+        self.unread = pending;
+    }
+
+    /// How many changes the list has counted, its opening's among them.
+    #[cfg(test)]
+    pub(crate) fn changes(&self) -> u64 {
+        self.changes
+    }
+
+    /// Whether Orca spoke the item the last change selected.
+    pub(crate) fn spoken(&self) -> bool {
+        self.spoken
+    }
+
+    /// Whether a change of selection led to the rest that asks: the status
+    /// takes its reading now.
+    pub(crate) fn take_unread(&mut self) -> bool {
+        std::mem::take(&mut self.unread)
+    }
+
+    /// Times the list's last change of selection, where the list speaks it
+    /// ([`LIST_SPEAKS_SELECTION`]) and no frame has yet: the AT-SPI adapter
+    /// reports a change once the frame that draws it is drawn, no earlier
+    /// than now, and no later than the frame after it, which times it
+    /// ([`Self::stamp`]). `listed` finds this in `cx`'s view as that frame
+    /// runs. Where the list does not speak its selection (macOS), nothing
+    /// reads the times.
+    pub(crate) fn time<V: 'static>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<V>,
+        listed: fn(&mut V) -> &mut Listed,
+    ) {
+        if !LIST_SPEAKS_SELECTION || self.drawn.is_some() || self.asked == Some(self.changes) {
+            return;
+        }
+        let change = self.changes;
+        self.render(cx.background_executor().now());
+        let view = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = view.update(cx, |this, cx| {
+                listed(this).stamp(change, cx.background_executor().now());
+            });
+        });
+    }
+
+    /// A render that draws the last change ran `now`, the first frame after
+    /// it to time it as drawn ([`Self::stamp`]).
+    fn render(&mut self, now: std::time::Instant) {
+        self.asked = Some(self.changes);
+        self.rendered.get_or_insert(now);
+    }
+
+    /// A frame came `now` after the one that drew `change`. Whether Orca
+    /// spoke it is judged from when its render ran, the earliest the adapter
+    /// can have reported it, since this frame can come late, as behind a
+    /// long task: timed by it, a change reported 60 ms after the one before
+    /// and timed 152 ms after it was taken as spoken.
+    fn stamp(&mut self, change: u64, now: std::time::Instant) {
+        if change != self.changes || self.drawn.is_some() {
+            return;
+        }
+        self.spoken = !self.doubt
+            && self
+                .before
+                .zip(self.rendered)
+                .is_some_and(|(before, rendered)| {
+                    rendered.saturating_duration_since(before) >= LIST_SPEAKS_AFTER
+                });
+        self.drawn = Some(now);
+        self.doubt = false;
+    }
+
+    /// Notes whether this frame draws the row of the `selected` item, by the
+    /// identity its row's node keeps across searches, `drawn`, as the list
+    /// lays out its rows, and says whether that row came back into the list.
+    /// A selected row coming back into the list, as the wheel, a resize, a
+    /// text size, or Home, End or a page key on the item already selected can
+    /// bring it, enters the window's tree already selected, which the AT-SPI
+    /// adapter reports as a change of the list's selection
+    /// ([`LIST_SPEAKS_SELECTION`]), so it is one ([`Self::moved`]), timed by
+    /// this frame and the next ([`Self::time`]). Untimed, a key that selected
+    /// another entry 50 ms after the wheel brought the row back was taken as
+    /// spoken, though Orca dropped it as one of a burst, and Keyboard
+    /// Shortcuts' rest said the count alone.
+    pub(crate) fn laid_out(&mut self, selected: Option<usize>, drawn: bool) -> bool {
+        if !LIST_SPEAKS_SELECTION {
+            return false;
+        }
+        let back = drawn && self.row_shown == Some((selected, false));
+        self.row_shown = Some((selected, drawn));
+        back
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The count Keyboard Shortcuts last drew above its list, for a test to
+    /// compare with what its status announces.
+    static DRAWN_COUNT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// The Keyboard Shortcuts view last opened, for a test to read its state.
+    static OPENED_HELP: std::cell::RefCell<Option<WeakEntity<ShortcutHelpView>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The selected entry's status reading of `rows`' row `selected`, its label
+/// and its key ("Command Palette: Ctrl+Shift+P"), or nothing where that row
+/// is not an entry.
+fn entry_reading(rows: &[HelpRow], selected: usize) -> SharedString {
+    match rows.get(selected) {
+        Some(HelpRow::Entry(entry)) => format!("{}: {}", entry.label, entry.key).into(),
+        _ => SharedString::default(),
+    }
+}
+
+/// The status's reading of `rows`' entries, "1 shortcut" or "61 shortcuts".
+fn counted_entries(rows: &[HelpRow]) -> SharedString {
+    let count = rows
+        .iter()
+        .filter(|row| matches!(row, HelpRow::Entry(_)))
+        .count();
+    crate::counted(count, "shortcut", "shortcuts").into()
+}
+
+/// What the status announces once the search rests: the count and the
+/// selected entry as one reading, "16 shortcuts · Open Repository Tab:
+/// Ctrl+T", joined as the command palette's status joins its command and
+/// its place, or the count alone where no entry is selected ("0
+/// shortcuts").
+fn resting_reading(count: &str, entry: &str) -> SharedString {
+    if entry.is_empty() {
+        count.to_owned().into()
+    } else {
+        format!("{count} · {entry}").into()
+    }
+}
+
 impl ShortcutHelpView {
     fn new(return_focus: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        bind_list_keys(cx);
         let query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search shortcuts or groups…"));
         let subscription = cx.subscribe(&query, |this, _, event, cx| {
             if matches!(event, InputEvent::Change) {
-                this.rows = help_matches(&this.query.read(cx).value());
+                let was = this.selected_entry();
+                this.set_rows(help_matches(&this.query.read(cx).value()));
                 this.selected = 1.min(this.rows.len().saturating_sub(1));
-                this.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                if this.selected_entry() != was {
+                    this.listed.changed();
+                }
+                // The list starts at its top, unless the selected entry
+                // would not then lie whole in it: it ends at the list's foot
+                // instead, with as much of its group's heading as fits above
+                // it. Started at the heading, a list the dialog's height cap
+                // had given less than both cut the one entry a search left,
+                // its key chip at the list's foot; a heading row as short as
+                // its line and the group gap lets both fit, as at 18 pt in a
+                // 461 × 490 window after a search for "command palette".
+                this.scroll.set_offset(point(px(0.), px(0.)));
+                this.scroll
+                    .scroll_to_item(this.selected, ScrollStrategy::Bottom);
+                this.settle_count(cx);
                 cx.notify();
             }
         });
+        let rows = help_matches("");
+        let (count, entry) = (counted_entries(&rows), entry_reading(&rows, 1));
         Self {
             query,
-            rows: help_matches(""),
+            layout: RowLayout::new(&rows),
+            status: resting_reading(&count, &entry),
+            quiet: false,
+            announced_count: count,
+            announced_entry: entry,
+            listed: Listed::opened(),
+            settling: None,
+            rows,
             selected: 1,
-            scroll: UniformListScrollHandle::new(),
+            scroll: gpui_kit::base::VirtualListScrollHandle::new(),
+            list_height: Default::default(),
             return_focus,
             closed: false,
             _subscription: subscription,
         }
+    }
+
+    /// Announces the list's count and the entry the search selected, in one
+    /// reading, once the search has rested for [`COUNT_REST`] since this
+    /// change, unless both are the ones the status last announced: each
+    /// change drops the rest the one before it began, so a burst of keys
+    /// announces only the count and entry it ends on, once, and what the
+    /// search comes back to is not announced again.
+    ///
+    /// Where the list speaks a change of its selection itself
+    /// ([`LIST_SPEAKS_SELECTION`], Linux) and Orca spoke the one this rest
+    /// follows ([`Listed::spoken()`]), by the search or a move inside the rest,
+    /// the status says only the count: the row Orca spoke names the entry,
+    /// and the whole reading said it again, as the command palette's status
+    /// said its command again (QA-105). A rest no change of selection led to
+    /// reads whole.
+    fn settle_count(&mut self, cx: &mut Context<Self>) {
+        let rest = cx.background_executor().timer(COUNT_REST);
+        self.settling = Some(cx.spawn(async move |this, cx| {
+            rest.await;
+            let _ = this.update(cx, |this, cx| {
+                this.settling = None;
+                let count = counted_entries(&this.rows);
+                let entry = entry_reading(&this.rows, this.selected);
+                let listed = this.listed.take_unread();
+                if count != this.announced_count || entry != this.announced_entry {
+                    this.status = if LIST_SPEAKS_SELECTION && listed && this.listed.spoken() {
+                        count.clone()
+                    } else {
+                        resting_reading(&count, &entry)
+                    };
+                    this.quiet = false;
+                    this.announced_count = count;
+                    this.announced_entry = entry;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// Keeps the entry a person's key or click moved the selection to as the
+    /// one last spoken, and announces it, alone and at once, unless the list
+    /// speaks it itself ([`LIST_SPEAKS_SELECTION`]), as it does every move on
+    /// Linux: there the status takes the entry quietly ([`Self::quiet`]).
+    fn announce_entry(&mut self) {
+        self.announced_entry = entry_reading(&self.rows, self.selected);
+        self.status = self.announced_entry.clone();
+        self.quiet = LIST_SPEAKS_SELECTION;
+    }
+
+    /// Selects `rows`' row `row` for a key or a click, a change of the list's
+    /// selection where it selects another entry ([`Self::listed`]), and
+    /// keeps its entry as the one last spoken ([`Self::announce_entry`]).
+    fn select(&mut self, row: usize) {
+        if row != self.selected {
+            self.list_changed();
+        }
+        self.selected = row;
+        self.announce_entry();
+    }
+
+    /// The list's selection changed other than by the search
+    /// ([`Listed::moved`]): the rest pending then follows it, where one is
+    /// ([`Self::settle_count`]), and a later rest does not. A search starts
+    /// the only rests, so a move with none pending is heard from the list
+    /// alone, its entry taken quietly.
+    fn list_changed(&mut self) {
+        self.listed.moved(self.settling.is_some());
+    }
+
+    /// Notes whether this frame draws the selected entry's row, `drawn`, as
+    /// the list lays out its rows: a selected row coming back into the list
+    /// is a change of its selection ([`Listed::laid_out`]), timed by this
+    /// frame and the next.
+    fn note_selected_row(&mut self, drawn: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.listed.laid_out(self.selected_entry(), drawn) {
+            self.list_changed();
+            self.listed.time(window, cx, |this| &mut this.listed);
+        }
+    }
+
+    /// The selected entry, by its place in the whole reference, the identity
+    /// its row's node has ([`HelpRow::id`]); none where no entry is selected.
+    fn selected_entry(&self) -> Option<usize> {
+        match self.rows.get(self.selected) {
+            Some(HelpRow::Entry(entry)) => Some(entry.place),
+            _ => None,
+        }
+    }
+
+    /// Lists `rows`, with their heights at the interface size.
+    fn set_rows(&mut self, rows: Vec<HelpRow>) {
+        self.layout = RowLayout::new(&rows);
+        self.rows = rows;
+    }
+
+    /// Measures the rows again when the interface size has changed since
+    /// they were, as when a text size is chosen with the dialog open.
+    fn measure(&mut self) {
+        if appearance::ui_scale().to_bits() != self.layout.scale.to_bits() {
+            self.layout = RowLayout::new(&self.rows);
+        }
+    }
+
+    /// Brings the selected entry into view, `how` where any of it lies
+    /// outside the list, and leaves the list where it lies whole in it: Up
+    /// and Down centre it, as the palette's and Quick Open's lists do, and a
+    /// click scrolls the least. The toolkit's virtual list centres on every
+    /// request, so holding Down kept the highlight at the list's middle and
+    /// scrolled the list on each press.
+    ///
+    /// A group's first entry brings its group's heading with it, as a search
+    /// does, where the list holds both (`Span`): counted whole on its own,
+    /// the entry left its heading as the wheel had cut it at the list's top,
+    /// and nothing brought the heading back. The toolkit brings a single row
+    /// into view, so the scroll is set here.
+    ///
+    /// A key reads the list as laid out for it: GPUI draws a frame still
+    /// pending before it dispatches a key (`Window::dispatch_key_event`). The
+    /// scroll the press before it set and the list's height after a text size
+    /// chosen with the dialog open, which refreshes the window
+    /// (`appearance::apply_text_sizes`), are laid out by then, and `measure`
+    /// has the rows' heights at that size.
+    fn reveal_selected(&mut self, how: Reveal) {
+        self.measure();
+        let Some(span) = self.layout.span(&self.rows, self.selected) else {
+            return;
+        };
+        // How far the list is scrolled, and its height, as last laid out.
+        let (offset, view) = (self.scroll.offset(), self.scroll.bounds().size.height);
+        if let Some(to) = span.reveal(-offset.y, view, &self.layout.tops, how) {
+            self.scroll.set_offset(point(offset.x, -to));
+        }
+    }
+
+    /// How many entries Page Up and Page Down move: as many as the list's
+    /// height holds whole rows, at least one, as a page in a macOS list. A
+    /// heading's shorter row is not counted: the selection passes over it.
+    fn page(&self) -> usize {
+        let view = self.scroll.bounds().size.height;
+        ((view / appearance::ui_size(SHORTCUT_ROW)).floor() as usize).max(1)
+    }
+
+    /// Moves the selection by `step` and brings the entry it reaches into
+    /// view by Up's and Down's rules (`reveal_selected`): an entry outside
+    /// the list or cut by its edge is centred, a group's first entry with
+    /// its heading, and the list's ends hold it, so End leaves the last entry
+    /// whole at the list's foot and Home the first heading at its top. Up and
+    /// Down at either end move nothing; Home, End, Page Up and Page Down,
+    /// which name a place rather than a neighbour, show their entry even
+    /// where the selection is already on it, as after the wheel moved the
+    /// list away from it.
+    fn step(&mut self, step: Step, cx: &mut Context<Self>) {
+        let entries: Vec<usize> = (0..self.rows.len())
+            .filter(|&row| matches!(self.rows[row], HelpRow::Entry(_)))
+            .collect();
+        let (Some(last), Some(at)) = (
+            entries.len().checked_sub(1),
+            entries.iter().position(|&row| row == self.selected),
+        ) else {
+            return;
+        };
+        let to = match step {
+            Step::Previous => at.saturating_sub(1),
+            Step::Next => (at + 1).min(last),
+            Step::PageUp => at.saturating_sub(self.page()),
+            Step::PageDown => (at + self.page()).min(last),
+            Step::First => 0,
+            Step::Last => last,
+        };
+        if to == at && matches!(step, Step::Previous | Step::Next) {
+            return;
+        }
+        self.select(entries[to]);
+        self.reveal_selected(Reveal::Centre);
+        cx.notify();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -637,6 +1901,8 @@ impl ShortcutHelpView {
             return;
         }
         self.closed = true;
+        // A count still resting is never announced.
+        self.settling = None;
         window.close_dialog(cx);
         if let Some(focus) = &self.return_focus {
             focus.focus(window, cx);
@@ -648,119 +1914,363 @@ impl ShortcutHelpView {
 impl Render for ShortcutHelpView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::prelude::FluentBuilder;
+        // This frame draws the list's last change of selection.
+        self.listed.time(window, cx, |this| &mut this.listed);
         let p = palette(cx);
         let count = self
             .rows
             .iter()
             .filter(|row| matches!(row, HelpRow::Entry(_)))
             .count();
-        let height = (window.viewport_size().height - appearance::ui_size(280.))
-            .max(appearance::ui_size(88.))
-            .min(appearance::ui_size(430.));
-        let list = uniform_list(
+        // The list asks for its full height and gives up what the dialog's
+        // height cap (`appearance::dialog_max_height`) takes, down to its
+        // floor, by layout: the chrome around it, such as the hint that wraps
+        // in a narrow window, is never estimated.
+        let height = list_height();
+        self.measure();
+        let list = gpui_kit::base::v_virtual_list(
+            cx.entity(),
             "shortcut-help-list",
-            self.rows.len(),
-            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            self.layout.sizes.clone(),
+            |this, range: std::ops::Range<usize>, window, cx| {
+                // Each frame the list first lays out its first row alone to
+                // measure it (`VirtualList::measure_item`), a group's heading,
+                // which says nothing of the rows it draws, and then the rows
+                // it draws. Read from both, the selected row read as leaving
+                // and coming back on every frame.
+                if range != (0..1) {
+                    this.note_selected_row(range.contains(&this.selected), window, cx);
+                }
                 let p = palette(cx);
+                // Fitted once for the rows drawn, not for each row.
+                let (edge, selected_edge) = (p.raised_edge(), p.selected_edge());
                 range
                     .map(|index| {
                         let row = div()
-                            .id(("shortcut-help-row", index))
-                            .h(appearance::ui_size(42.))
+                            .id(this.rows[index].id())
+                            .h(row_height(&this.rows[index]))
                             .w_full()
                             .px_3()
                             .flex()
-                            .items_center()
                             .gap_4();
-                        match &this.rows[index] {
-                            HelpRow::Group(group) => row
+                        // Recorded for tests, which read the entries the
+                        // window's tree holds and which of them is selected.
+                        native_accessibility::recorded(match &this.rows[index] {
+                            // The group gap above the name, which sits on its
+                            // rule.
+                            HelpRow::Group(group, _) => row
+                                .debug_selector(move || format!("shortcut-help-heading-{index}"))
+                                .items_end()
+                                .pb(appearance::ui_size(SHORTCUT_HEADING_BELOW))
                                 .role(Role::Heading)
                                 .aria_label(*group)
                                 .text_size(appearance::ui_text(11.))
+                                .line_height(appearance::ui_size(SHORTCUT_HEADING_LINE))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(p.muted))
+                                // Ruled with the edge, as a menu's
+                                // separators are.
                                 .border_b_1()
-                                .border_color(rgb(p.border))
+                                .border_color(rgb(edge))
                                 .child(*group),
                             HelpRow::Entry(entry) => row
+                                .items_center()
+                                .debug_selector(move || format!("shortcut-help-row-{index}"))
                                 .role(Role::ListBoxOption)
                                 .aria_label(format!("{}: {}", entry.label, entry.key))
                                 .aria_selected(index == this.selected)
-                                .when(index == this.selected, |row| row.bg(rgb(p.selected)))
+                                .relative()
+                                // The highlight is the keyboard's cursor, as
+                                // in the other pickers.
+                                .when(index == this.selected, |row| {
+                                    row.bg(rgb(p.selected)).child(appearance::cursor_marker(p))
+                                })
                                 .child(div().flex_1().min_w_0().truncate().child(entry.label))
                                 .child(
                                     div()
+                                        .debug_selector(move || {
+                                            format!("shortcut-help-key-{index}")
+                                        })
                                         .flex_shrink_0()
+                                        // The row's trailing inset is kept
+                                        // from the scrollbar's gutter, whose
+                                        // track rests over the rows' end:
+                                        // measured from the list's side, the
+                                        // chip's edge and padding lay under
+                                        // the track.
+                                        .mr(gpui_kit::base::Scrollbar::width())
                                         .rounded(px(4.))
                                         .px_2()
                                         .py_1()
                                         .text_size(appearance::ui_text(11.))
                                         .font_family(mono())
-                                        .bg(rgb(p.panel))
                                         .border_1()
-                                        .border_color(rgb(p.border))
+                                        // The raised edge nearly equals the
+                                        // selected fill in some palettes.
+                                        .border_color(rgb(if index == this.selected {
+                                            selected_edge
+                                        } else {
+                                            edge
+                                        }))
                                         .child(entry.key.clone()),
                                 )
+                                // A click on an entry the list's edge cuts,
+                                // or on a group's first entry whose heading
+                                // it cuts, scrolls the least that shows it
+                                // whole; it once scrolled nothing, leaving
+                                // the heading cut.
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.selected = index;
+                                    this.select(index);
+                                    this.reveal_selected(Reveal::Nearest);
                                     cx.notify();
                                 })),
-                        }
+                        })
                         .into_any_element()
                     })
-                    .collect()
-            }),
+                    .collect::<Vec<_>>()
+            },
         )
         .track_scroll(&self.scroll)
         .size_full();
-        div().id("keyboard-shortcuts-view").key_context("GitTurtleShortcuts")
-            .flex().flex_col().gap_3().text_size(appearance::ui_text(12.))
-            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
-                this.close(window, cx); cx.stop_propagation();
-            }))
+        div()
+            .id("keyboard-shortcuts-view")
+            .debug_selector(|| "keyboard-shortcuts-view".into())
+            .key_context("GitTurtleShortcuts")
+            .relative()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .gap_3()
+            .pt(appearance::button_ring_room(cx))
+            .text_size(appearance::ui_text(12.))
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                    this.close(window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| {
-                this.close(window, cx); cx.stop_propagation();
-            }))
-            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| {
-                this.close(window, cx); cx.stop_propagation();
-            }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.modifiers.modified() { return; }
-                let forward = match event.keystroke.key.as_str() { "down" => true, "up" => false, _ => return };
-                let next = if forward {
-                    (this.selected + 1..this.rows.len()).find(|index| matches!(this.rows[*index], HelpRow::Entry(_)))
-                } else {
-                    (0..this.selected).rev().find(|index| matches!(this.rows[*index], HelpRow::Entry(_)))
-                };
-                if let Some(index) = next {
-                    this.selected = index;
-                    this.scroll.scroll_to_item(index, ScrollStrategy::Center);
-                    cx.notify();
-                }
+                this.close(window, cx);
                 cx.stop_propagation();
             }))
-            .child(Input::new(&self.query).aria_label("Search keyboard shortcuts").cleanable(true))
-            .child(div().id("shortcut-help-count").role(Role::Status)
-                .a11y_synthetic_children(native_accessibility::polite)
-                .aria_label(format!("{count} matching shortcuts"))
-                .text_color(rgb(p.muted)).child(format!("{count} shortcuts · {}",
-                    if cfg!(target_os = "macos") { "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift" } else { "Ctrl, Alt and Shift" })))
-            .child(div().id("shortcut-help-results").role(Role::ListBox)
-                .aria_label("Keyboard shortcuts by group").h(height).overflow_hidden()
-                .rounded(px(7.)).border_1().border_color(rgb(p.border))
-                .when(count > 0, |view| view.child(list))
-                .when(count == 0, |view| view.child(div().p_4().text_color(rgb(p.muted)).child(
-                    if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
-                    else { "No shortcuts match. Try tabs, compare, editing or Ctrl." }))))
-            .child(div().id("shortcut-help-selected").role(Role::Status)
-                .a11y_synthetic_children(native_accessibility::polite)
-                .aria_label(match self.rows.get(self.selected) {
-                    Some(HelpRow::Entry(entry)) => format!("{}: {}", entry.label, entry.key),
-                    _ => String::new(),
-                }).h(px(1.)).overflow_hidden())
-            .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
-                .child("↑ / ↓ browse · Escape closes · Shortcuts act in the focused view; text editing keeps its own keys."))
+            .on_action(cx.listener(
+                |this, _: &gpui_kit::component::dialog::Cancel, window, cx| {
+                    this.close(window, cx);
+                    cx.stop_propagation();
+                },
+            ))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                let step = match event.keystroke.key.as_str() {
+                    "down" => Step::Next,
+                    "up" => Step::Previous,
+                    _ => return,
+                };
+                this.step(step, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &FirstShortcut, _, cx| this.step(Step::First, cx)))
+            .on_action(cx.listener(|this, _: &LastShortcut, _, cx| this.step(Step::Last, cx)))
+            .on_action(
+                cx.listener(|this, _: &PreviousShortcutPage, _, cx| this.step(Step::PageUp, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NextShortcutPage, _, cx| this.step(Step::PageDown, cx)),
+            )
+            .child(
+                Input::new(&self.query)
+                    .aria_label("Search keyboard shortcuts")
+                    .cleanable(true),
+            )
+            // The count is text read by what it draws, each key's count at
+            // once: it was named "61 matching shortcuts" while it drew "61
+            // shortcuts". It is no live region: the dialog's one status
+            // (below) announces it with the selected entry once the search
+            // rests (`settle_count`). The modifier legend after it, where the
+            // line fits, is text of its own, so a resize that brings or takes
+            // the legend changes neither.
+            .child({
+                let counted = crate::counted(count, "shortcut", "shortcuts");
+                #[cfg(test)]
+                DRAWN_COUNT.with_borrow_mut(|drawn| drawn.clone_from(&counted));
+                let legend = legend_fits(count, help_width(window, cx), window).then(|| {
+                    native_accessibility::static_text(
+                        div().id("shortcut-help-legend"),
+                        modifier_legend(),
+                    )
+                    .child(format!("{LEGEND_SEPARATOR}{}", modifier_legend()))
+                });
+                div()
+                    .flex()
+                    .text_color(rgb(p.muted))
+                    .child(
+                        native_accessibility::static_text(
+                            div().id("shortcut-help-count"),
+                            counted.clone(),
+                        )
+                        .child(counted),
+                    )
+                    .children(legend)
+            })
+            .child(crate::native_accessibility::clips_children(
+                div()
+                    .id("shortcut-help-results")
+                    .debug_selector(|| "shortcut-help-results".into())
+                    .role(Role::ListBox)
+                    .aria_label("Keyboard shortcuts by group")
+                    .h(height)
+                    .min_h(list_floor())
+                    .overflow_hidden()
+                    // Prepainted before the rows, so the scroll lands in the
+                    // frame whose height changed: a list given up to its floor,
+                    // as at 18 pt in a 461 × 490 window, shows the selected entry
+                    // whole rather than its group's heading over a sliver of it.
+                    // It scrolls the least that shows the entry whole, with its
+                    // group's heading where it is the group's first and the list
+                    // holds both: the toolkit's nearest row brought a first entry
+                    // the wheel had passed back alone to the list's top, its
+                    // heading cut above it.
+                    //
+                    // A window resized under the list moves it only to keep a
+                    // selected entry it showed whole from being cut, and
+                    // otherwise leaves it where the wheel or a key left it, as
+                    // the toolkit clamps it to its rows: the person put it
+                    // there. It brought the selection back on every frame of a
+                    // resize, undoing the wheel. As the list opens, and after a
+                    // text size chosen with it open, which changes every row's
+                    // height under the scroll, the selection comes into view.
+                    .on_prepaint({
+                        let (seen, scroll) = (self.list_height.clone(), self.scroll.clone());
+                        let (span, tops, scale) = (
+                            self.layout.span(&self.rows, self.selected),
+                            self.layout.tops.clone(),
+                            self.layout.scale,
+                        );
+                        move |bounds, _, _| {
+                            // The canvas fills the list inside its 1 px border,
+                            // as the rows' list does, so its height is the
+                            // list's view. Taken 2 px shorter, it ended an entry
+                            // it revealed from below 2 px above the list's foot
+                            // and, at the floor, cut the entry's top.
+                            let now = Laid {
+                                view: bounds.size.height,
+                                scale,
+                            };
+                            let was = seen.replace(now);
+                            let offset = scroll.offset();
+                            if let Some(span) = span
+                                && span.follows(was, now, -offset.y)
+                                && let Some(to) =
+                                    span.reveal(-offset.y, now.view, &tops, Reveal::Nearest)
+                            {
+                                scroll.set_offset(point(offset.x, -to));
+                            }
+                        }
+                    })
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(rgb(p.raised_edge()))
+                    // The list shows its scroll while it holds more than it
+                    // draws, as the message and the Reflog's lists do: given up
+                    // to a few rows, as three of 61 at 18 pt in a 461 × 490
+                    // window, it showed no sign of the rest. The bar hides while
+                    // every row fits. Its track rests over the rows' end, so each
+                    // key chip ends the rows' trailing inset before the track
+                    // rather than the list's side, its margin taking the bar's
+                    // width, and the thumb never covers a chip.
+                    .relative()
+                    .when(count > 0, |view| {
+                        view.child(list).child(
+                            gpui_kit::base::Scrollbar::vertical(&self.scroll)
+                                .id("shortcut-help-scrollbar")
+                                .mode(gpui_kit::base::ScrollbarMode::Always)
+                                // The track rests on the picker's raised surface, as
+                                // the dialogs' list tracks rest on theirs; the kit's
+                                // track is the page's canvas.
+                                .styles(|styles| {
+                                    styles.track(|track| track.bg(rgb(p.raised()).into()))
+                                }),
+                        )
+                    })
+                    .when(count == 0, |view| {
+                        view.child(
+                            native_accessibility::text(
+                                "shortcut-help-empty",
+                                if self.query.read(cx).value().len() > 4096 {
+                                    "Search is limited to 4,096 bytes."
+                                } else {
+                                    "No shortcuts match. Try tabs, compare, editing or Ctrl."
+                                },
+                            )
+                            .p_4()
+                            .text_color(rgb(p.muted)),
+                        )
+                    }),
+            ))
+            // The dialog's one status draws nothing, so it takes no place in
+            // the column: laid out between the list and the hint, its 1 px
+            // took a gap of its own, which stood the hint two gaps below the
+            // list (about 20 px at 13 pt) where the column's other parts
+            // stand one apart, and at 18 pt in a 461 × 490 window, the list
+            // at its floor, took the 10 px the hint's last line needed above
+            // the dialog's clip. It lies along the view's top instead, which
+            // the dialog always draws: along its foot, it lay past the clip
+            // wherever the dialog cut its foot, and the AT-SPI adapter
+            // reported it not showing. It is named by what it last announced
+            // (`status`): the count and the selected entry once the search
+            // rests, or the count alone after a change of selection Orca
+            // spoke (`settle_count`), and a moved selection's entry at once where the list
+            // does not speak it (`LIST_SPEAKS_SELECTION`), or quietly, as no
+            // live region, where it does (`quiet`). AT-SPI announces its
+            // name and macOS's adapter its value, so both carry it, as the
+            // window's announcement node's do.
+            .child(native_accessibility::static_text(
+                div()
+                    .id("shortcut-help-status")
+                    .role(Role::Status)
+                    .live_region(
+                        if self.quiet {
+                            gpui::accesskit::Live::Off
+                        } else {
+                            gpui::accesskit::Live::Polite
+                        },
+                        false,
+                    )
+                    .aria_value(self.status.clone())
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w_full()
+                    .h(px(1.))
+                    .overflow_hidden(),
+                self.status.clone(),
+            ))
+            .child(
+                div()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    // Every key the list takes: it named Up and Down alone. The
+                    // search keeps its other editing keys, Shift-Home and
+                    // Shift-End among them; it said text editing kept its own
+                    // keys, while its Home and End browse the list.
+                    .child(dialog_help("shortcut-help-keys", help_keys())),
+            )
     }
+}
+
+/// Keyboard Shortcuts' inline help: every key its list takes, in the
+/// platform's key labels.
+fn help_keys() -> String {
+    format!(
+        "↑ / ↓, {} / {}, {} / {} browse · {} · Shortcuts act in the focused view; the search keeps its other editing keys.",
+        key_label("pageup"),
+        key_label("pagedown"),
+        key_label("home"),
+        key_label("end"),
+        DialogKeys::Shortcuts.escape_help()
+    )
 }
 
 #[cfg(test)]
@@ -813,6 +2323,56 @@ mod tests {
         }
     }
 
+    /// Toggle Project List stands beside Toggle Sidebar in the Repository
+    /// group of Keyboard Shortcuts, with the key each platform binds. It
+    /// once had no key and no row, so only the menu and palette reached it.
+    #[test]
+    fn the_project_list_toggle_is_listed_beside_the_sidebars() {
+        let place = |id| SHORTCUTS.iter().position(|spec| spec.id == id).unwrap();
+        let (sidebar, pane) = (place(ShortcutId::Sidebar), place(ShortcutId::ProjectPane));
+        assert_eq!(pane, sidebar + 1, "next to Toggle Sidebar");
+        assert_eq!(SHORTCUTS[pane].group, SHORTCUTS[sidebar].group);
+        assert_eq!(SHORTCUTS[pane].label, "Toggle Project List");
+        assert_eq!(resolve_key(SHORTCUTS[pane].key, true), "cmd-shift-b");
+        assert_eq!(resolve_key(SHORTCUTS[pane].key, false), "ctrl-shift-b");
+        let listed = help_matches("project list");
+        assert!(
+            listed.iter().any(|row| matches!(
+                row,
+                HelpRow::Entry(entry)
+                    if entry.label == "Toggle Project List"
+                        && entry.key == label(ShortcutId::ProjectPane)
+            )),
+            "Keyboard Shortcuts lists it with its key"
+        );
+    }
+
+    /// The listed key is the one the window binds: pressed from the window
+    /// it turns the project list on and off, as the menu does.
+    #[gpui::test]
+    async fn the_project_list_key_turns_the_pane_on_and_off(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|window, cx| {
+            bind_keys(cx);
+            let focus = app.read(cx).app_focus.clone();
+            window.focus(&focus, cx);
+        });
+        let key = resolve_key("primary-shift-b", cfg!(target_os = "macos"));
+        let shown = app.read_with(cx, |app, _| app.settings.project_pane);
+        cx.simulate_keystrokes(&key);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.settings.project_pane),
+            !shown,
+            "the key turns the list over"
+        );
+        cx.simulate_keystrokes(&key);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.settings.project_pane),
+            shown,
+            "and back"
+        );
+    }
+
     #[test]
     fn help_binding_matches_backend_normalized_shifted_punctuation() {
         let help = SHORTCUTS
@@ -853,7 +2413,7 @@ mod tests {
         let rows = help_matches("tabs ctrl");
         assert!(matches!(
             rows.first(),
-            Some(HelpRow::Group("Tabs and Windows"))
+            Some(HelpRow::Group("Tabs and Windows", _))
         ));
         assert!(rows.iter().any(
             |row| matches!(row, HelpRow::Entry(entry) if entry.label == "Next Repository Tab")
@@ -876,5 +2436,2902 @@ mod tests {
                 "Ctrl+Y"
             }
         );
+    }
+
+    /// The list brings the selected entry into view as it is first laid
+    /// out, after a text size chosen with it open, with or without its
+    /// height changing, and after a resize only where the new height would
+    /// cut the entry it showed whole: with the entry 42 px tall 380 px down
+    /// a 428 px list, a text size with the height held, which the window
+    /// tests cannot hold to the pixel, brings it in, as does a 400 px list
+    /// that would cut it, while a resize with the list scrolled past it, or
+    /// one that leaves it whole, keeps the list where it was. With the
+    /// height held, a text size brought nothing back.
+    #[test]
+    fn the_list_follows_the_entry_through_a_text_size_but_not_a_resize_past_it() {
+        let span = Span {
+            heading: None,
+            top: px(380.),
+            bottom: px(422.),
+        };
+        let laid = |view: f32, scale: f32| Laid {
+            view: px(view),
+            scale,
+        };
+        for (was, now, scrolled, follows, what) in [
+            (
+                Laid::default(),
+                laid(428., 1.),
+                px(0.),
+                true,
+                "first laid out",
+            ),
+            (
+                laid(428., 1.),
+                laid(428., 1.4),
+                px(1000.),
+                true,
+                "a text size, height held",
+            ),
+            (
+                laid(428., 1.),
+                laid(560., 1.4),
+                px(1000.),
+                true,
+                "a text size, height grown",
+            ),
+            (
+                laid(428., 1.),
+                laid(400., 1.),
+                px(0.),
+                true,
+                "a resize that cuts it",
+            ),
+            (
+                laid(428., 1.),
+                laid(300., 1.),
+                px(1000.),
+                false,
+                "a resize past it",
+            ),
+            (
+                laid(428., 1.),
+                laid(500., 1.),
+                px(0.),
+                false,
+                "a resize that keeps it whole",
+            ),
+            (
+                laid(428., 1.),
+                laid(428., 1.),
+                px(1000.),
+                false,
+                "nothing changed",
+            ),
+        ] {
+            assert_eq!(span.follows(was, now, scrolled), follows, "{what}");
+        }
+    }
+
+    /// Quick Open's hint, laid out by phrase in a box swept from 461 px down to its widest
+    /// run at 13 and 18 pt, never starts a line with its separator or breaks a key name, and
+    /// reads as its text does inside the box, its accessible text the whole hint: it lays its
+    /// phrases out as every line of phrases does (`crate::PhraseLine`).
+    #[gpui::test]
+    fn quick_opens_hint_keeps_its_key_names_and_separators_whole(cx: &mut TestAppContext) {
+        let help = format!(
+            "{} · ↑/↓ select · {ENTER} opens · {}",
+            crate::counted(2, "match", "matches"),
+            DialogKeys::QuickOpen.escape_help()
+        );
+        let keys = ["↑/↓".to_owned(), ENTER.to_owned(), "Escape".to_owned()];
+        let runs: Vec<SharedString> = crate::phrase_runs(&help)
+            .into_iter()
+            .flat_map(|phrase| phrase.runs)
+            .collect();
+        let line = help.clone();
+        crate::phrase_tests::sweep(
+            cx,
+            ("quick-open-help", "dialog-help-phrase"),
+            &help,
+            &keys,
+            move |window| crate::phrase_tests::widest(&runs, appearance::ui_text(12.), window),
+            move || {
+                native_accessibility::static_text(
+                    dialog_help_by_phrase(line.clone()).id("quick-open-help"),
+                    line.clone(),
+                )
+                .text_size(appearance::ui_text(12.))
+                .into_any_element()
+            },
+        );
+    }
+
+    /// Keyboard Shortcuts' inline help, swept as Quick Open's hint is, never breaks Page Up,
+    /// Page Down, Home, End or Escape across two lines nor starts a line with its separator,
+    /// and its accessible text is the whole help. Drawn as one wrapping text, it broke
+    /// "Page Up" at its space and started lines with "/" and "·" (FU30-D6 design review).
+    #[gpui::test]
+    fn the_shortcut_helps_key_names_and_separators_stay_whole(cx: &mut TestAppContext) {
+        let help = help_keys();
+        let keys = [
+            key_label("pageup"),
+            key_label("pagedown"),
+            key_label("home"),
+            key_label("end"),
+            "Escape".to_owned(),
+        ];
+        let runs: Vec<SharedString> = crate::phrase_runs(&help)
+            .into_iter()
+            .flat_map(|phrase| phrase.runs)
+            .collect();
+        crate::phrase_tests::sweep(
+            cx,
+            ("shortcut-help-keys", "shortcut-help-keys"),
+            &help,
+            &keys,
+            move |window| crate::phrase_tests::widest(&runs, appearance::ui_text(11.), window),
+            || {
+                dialog_help("shortcut-help-keys", help_keys())
+                    .text_size(appearance::ui_text(11.))
+                    .into_any_element()
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use crate::tags::tests::{draw, scroll_down, tagged_repository, window};
+    use core::prelude::v1::test;
+
+    /// How far apart two drawn edges may read and still meet: GPUI rounds
+    /// each edge to the device pixel, half a pixel in the test window, and
+    /// lays each of the list's rows out on its own, so at 18 pt a row's top
+    /// can read half a pixel below the foot of the row above it. A whole
+    /// pixel let a list that cut its entry 1 px at its foot pass for one
+    /// that ended the entry there. An edge that must not be cut is checked
+    /// on its own side, with the list's own allowance (`Shown::whole`).
+    const EDGE: Pixels = px(0.5);
+
+    /// The selector of the row at `index` among `rows`.
+    fn row_selector(rows: &[HelpRow], index: usize) -> &'static str {
+        match rows[index] {
+            HelpRow::Group(..) => format!("shortcut-help-heading-{index}"),
+            HelpRow::Entry(_) => format!("shortcut-help-row-{index}"),
+        }
+        .leak()
+    }
+
+    /// The list keeps each row's height beside its rows, so a text size
+    /// chosen with the dialog open measures them again: at 18 pt each row is
+    /// drawn where the one above it ends, the first at the list's top, and
+    /// grown with the text, the General heading's 22 px row to about 30 px.
+    /// Measured only with the rows, the list would place them at their 13 pt
+    /// tops while drawing them at 18 pt, each over the one above.
+    #[gpui::test]
+    async fn a_text_size_chosen_with_the_list_open_lays_its_rows_out_again(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+        let rows = help_matches("");
+        let mut heights = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            // Inside the list's 1 px border.
+            let mut top = list.top() + px(1.);
+            // The first group's heading and the entries below it.
+            for index in 0..6 {
+                let bounds = cx
+                    .debug_bounds(row_selector(&rows, index))
+                    .unwrap_or_else(|| panic!("{text} pt: row {index} is drawn"));
+                assert!(
+                    (bounds.top() - top).abs() <= EDGE,
+                    "{text} pt: row {index} {bounds:?} starts where the row above it ends, \
+                     {top:?}"
+                );
+                if text == 13 {
+                    heights.push(bounds.size.height);
+                } else {
+                    let grown = heights[index] * (18. / 13.);
+                    assert!(
+                        (bounds.size.height - grown).abs() <= EDGE,
+                        "18 pt: row {index}, {:?} tall at 13 pt, grows to {grown:?}: {:?}",
+                        heights[index],
+                        bounds.size.height
+                    );
+                }
+                top = bounds.bottom();
+            }
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Opens Keyboard Shortcuts at `text` pt in a `width` × `height` window.
+    fn open(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        text: u8,
+        (width, height): (f32, f32),
+    ) {
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+    }
+
+    /// Closes the dialog and restores the default text size.
+    fn close(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Presses `keys`, then draws.
+    fn press(cx: &mut VisualTestContext, keys: &str) {
+        cx.simulate_keystrokes(keys);
+        draw(cx);
+    }
+
+    /// The open list's rows for a search, and where the list and its rows
+    /// are drawn. Every expectation is read from the drawn rows and the
+    /// list's own bounds, never from the list's layout (`RowLayout`), which a
+    /// wrong layout would agree with.
+    struct Shown {
+        rows: Vec<HelpRow>,
+        /// The list's top and foot inside its 1 px border, and its centre.
+        top: Pixels,
+        foot: Pixels,
+        centre: Point<Pixels>,
+        /// A heading's and an entry's height as drawn.
+        heading: Pixels,
+        entry: Pixels,
+    }
+
+    impl Shown {
+        /// Reads the list as it opens, at its top, where its first rows, a
+        /// heading and an entry, give the rows' heights.
+        fn read(cx: &mut VisualTestContext, query: &str) -> Self {
+            let mut shown = Self {
+                rows: help_matches(query),
+                top: px(0.),
+                foot: px(0.),
+                centre: point(px(0.), px(0.)),
+                heading: px(0.),
+                entry: px(0.),
+            };
+            shown.relist(cx);
+            shown.heading = shown.at(cx, 0).size.height;
+            shown.entry = shown.at(cx, 1).size.height;
+            shown
+        }
+
+        /// Reads where the list is drawn again, as after the window's size
+        /// changed.
+        fn relist(&mut self, cx: &mut VisualTestContext) {
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            self.top = list.top() + px(1.);
+            self.foot = list.bottom() - px(1.);
+            self.centre = list.center();
+        }
+
+        /// The list's height inside its border.
+        fn view(&self) -> Pixels {
+            self.foot - self.top
+        }
+
+        /// The least height of the 1200 px wide window whose list is `view`
+        /// tall inside its border or more, found by resizing the window,
+        /// halving between a 300 px tall one, whose list is at its floor, and
+        /// an 800 px one: the dialog's height cap takes a tenth of the
+        /// window's height, snapped to the half pixel, besides the chrome.
+        fn size_to(&mut self, cx: &mut VisualTestContext, view: Pixels) -> f32 {
+            let (mut short, mut tall) = (300., 800.);
+            for _ in 0..16 {
+                let height = (short + tall) / 2.;
+                cx.simulate_resize(size(px(1200.), px(height)));
+                draw(cx);
+                self.relist(cx);
+                if self.view() < view {
+                    short = height;
+                } else {
+                    tall = height;
+                }
+            }
+            tall
+        }
+
+        /// The entries, in the list's order.
+        fn entries(&self) -> Vec<usize> {
+            (0..self.rows.len())
+                .filter(|&row| matches!(self.rows[row], HelpRow::Entry(_)))
+                .collect()
+        }
+
+        /// The rows that are group headings, in the list's order.
+        fn headings(&self) -> Vec<usize> {
+            (0..self.rows.len())
+                .filter(|&row| matches!(self.rows[row], HelpRow::Group(..)))
+                .collect()
+        }
+
+        /// Where row `index` is drawn, if it is.
+        fn drawn(&self, cx: &mut VisualTestContext, index: usize) -> Option<Bounds<Pixels>> {
+            cx.debug_bounds(row_selector(&self.rows, index))
+        }
+
+        /// Where row `index` is drawn, which it must be.
+        fn at(&self, cx: &mut VisualTestContext, index: usize) -> Bounds<Pixels> {
+            self.drawn(cx, index)
+                .unwrap_or_else(|| panic!("row {index} is drawn"))
+        }
+
+        /// Whether row `index` is drawn whole in the list, as the list counts
+        /// a row whole, no further past its edge than its own allowance
+        /// (`Span::ROUNDING`). The window draws a row at its top rounded to
+        /// the half pixel with its height rounded on its own, so its drawn
+        /// top is its top rounded but its drawn bottom is not its bottom
+        /// rounded. A row the list cuts by half a pixel or more is drawn cut
+        /// at either edge, and one it holds whole is never drawn above the
+        /// list's top; but where a row's height rounds up by more than a
+        /// quarter pixel less the allowance, a row the list holds whole can be
+        /// drawn half a pixel past the list's foot. The allowance holds here
+        /// because the list tests' text sizes round no row's height up by
+        /// more than 0.04 px: at 13 pt the rows are 22 and 42 px, and at 18 pt
+        /// about 30.46 px, drawn 30.5, and 58.15 px, drawn 58.
+        fn whole(&self, cx: &mut VisualTestContext, index: usize) -> bool {
+            self.drawn(cx, index).is_some_and(|row| {
+                row.top() >= self.top - Span::ROUNDING && row.bottom() <= self.foot + Span::ROUNDING
+            })
+        }
+
+        /// The heading that comes into view with `entry`: its group's, where
+        /// it is the group's first entry and the list holds both.
+        fn heading(&self, entry: usize) -> Option<usize> {
+            (matches!(self.rows[entry - 1], HelpRow::Group(..))
+                && self.heading + self.entry <= self.view() + EDGE)
+                .then_some(entry - 1)
+        }
+
+        /// Whether `entry` lies whole in the list with the heading that comes
+        /// into view with it.
+        fn shown(&self, cx: &mut VisualTestContext, entry: usize) -> bool {
+            self.whole(cx, entry)
+                && self
+                    .heading(entry)
+                    .is_none_or(|heading| self.whole(cx, heading))
+        }
+
+        /// Asserts that `entry` and the heading that comes into view with it
+        /// lie whole in the list, centred together, or as near the centre as
+        /// the list's ends let them: above it with the list at its top, its
+        /// first row drawn there, or below it with the list at its end, its
+        /// last row's foot at the list's.
+        fn centred(&self, cx: &mut VisualTestContext, entry: usize, what: &str) {
+            let row = self.at(cx, entry);
+            let top = self
+                .heading(entry)
+                .map_or(row.top(), |heading| self.at(cx, heading).top());
+            let (above, below) = (top - self.top, self.foot - row.bottom());
+            let start = self
+                .drawn(cx, 0)
+                .is_some_and(|first| (first.top() - self.top).abs() <= EDGE);
+            let end = self
+                .drawn(cx, self.rows.len() - 1)
+                .is_some_and(|last| (last.bottom() - self.foot).abs() <= EDGE);
+            assert!(
+                above >= -Span::ROUNDING
+                    && below >= -Span::ROUNDING
+                    && ((above - below).abs() <= EDGE
+                        || (start && above < below)
+                        || (end && below < above)),
+                "{what}: entry {entry} and what comes with it lie {above:?} below the \
+                 list's top and {below:?} above its foot"
+            );
+        }
+
+        /// The entry drawn as the keyboard's cursor, with the selection's
+        /// fill, if one is drawn.
+        fn selected(&self, cx: &mut VisualTestContext) -> Option<usize> {
+            let fill = cx.update(|_, cx| Background::from(Hsla::from(rgb(palette(cx).selected))));
+            self.entries().into_iter().find(|&entry| {
+                self.drawn(cx, entry)
+                    .is_some_and(|row| appearance::painted_row(cx, row).0.contains(&fill))
+            })
+        }
+
+        /// Wheels the list `by` down it (up where negative), checking that row
+        /// `index`, drawn before and after, moved that far.
+        fn wheel(&self, cx: &mut VisualTestContext, by: Pixels, index: usize) {
+            let before = self.at(cx, index).top();
+            scroll_down(cx, self.centre, ScrollDelta::Pixels(point(px(0.), -by)));
+            let moved = before - self.at(cx, index).top();
+            assert!(
+                (moved - by).abs() <= EDGE,
+                "the wheel scrolls the list {by:?}: row {index} moved {moved:?}"
+            );
+        }
+    }
+
+    /// Up and Down move the highlight through the entries the list shows
+    /// whole without scrolling it, as the palette's and Quick Open's lists
+    /// do, and scroll it only for an entry outside it or cut by its edge,
+    /// centring that entry, with its group's heading where it is the group's
+    /// first: at 13 pt in a 1200 × 800 window, Down from the first entry
+    /// keeps the list at its top until it passes the foot, and Up from a
+    /// scrolled list keeps it still until it passes the top. The toolkit's
+    /// virtual list centred the entry on every press, so holding Down kept
+    /// the highlight at the list's middle and scrolled it each time.
+    #[gpui::test]
+    async fn up_and_down_scroll_the_list_only_past_its_edges(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let shown = Shown::read(cx, "");
+        let entries = shown.entries();
+        let held = entries
+            .iter()
+            .filter(|&&entry| shown.whole(cx, entry))
+            .count();
+        assert!(
+            held * 3 < entries.len(),
+            "the list scrolls: it holds {held} of {} entries",
+            entries.len()
+        );
+        let mut selected = entries[0];
+        // Down three times past the list's foot, then Up once past its top.
+        for (key, scrolls) in [("down", 3), ("up", 1)] {
+            let (mut kept, mut moved) = (0, 0);
+            while moved < scrolls {
+                let at = entries.iter().position(|&entry| entry == selected).unwrap();
+                let next = entries[if key == "down" { at + 1 } else { at - 1 }];
+                let inside = shown.shown(cx, next);
+                let before = shown.drawn(cx, next).map(|row| row.top());
+                press(cx, key);
+                let now = shown.at(cx, next).top();
+                if inside {
+                    let before = before.unwrap();
+                    assert!(
+                        (now - before).abs() <= EDGE,
+                        "{key} to entry {next}, whole in the list, moved it from \
+                         {before:?} to {now:?}"
+                    );
+                    kept += 1;
+                } else {
+                    let what = format!("{key} to entry {next}, outside the list");
+                    shown.centred(cx, next, &what);
+                    assert!(
+                        before.is_none_or(|before| (now - before).abs() > EDGE),
+                        "{what} scrolls it: the entry stayed at {now:?}"
+                    );
+                    moved += 1;
+                }
+                selected = next;
+            }
+            assert!(kept >= 3, "{key} kept the list still for {kept} entries");
+        }
+        close(cx);
+    }
+
+    /// Up onto a group's first entry brings back the group's heading that
+    /// the wheel left cut at the list's top, centring the two together: at
+    /// 13 pt in a 1200 × 800 window, with each of the first three groups'
+    /// headings 10 px above the list's top and the second entry selected,
+    /// Up shows the heading whole. Counted whole on its own, the first entry
+    /// left the heading cut, and no key brought it back.
+    #[gpui::test]
+    async fn up_onto_a_groups_first_entry_brings_its_heading_back(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let shown = Shown::read(cx, "");
+        let entries = shown.entries();
+        let headings: Vec<usize> = shown
+            .headings()
+            .into_iter()
+            .filter(|&row| matches!(shown.rows.get(row + 2), Some(HelpRow::Entry(_))))
+            .take(3)
+            .collect();
+        assert_eq!(headings.len(), 3, "three groups of two entries or more");
+        let mut selected = entries[0];
+        for heading in headings {
+            let (first, second) = (heading + 1, heading + 2);
+            while selected != second {
+                press(cx, "down");
+                selected = entries[entries.iter().position(|&e| e == selected).unwrap() + 1];
+            }
+            // The heading stands an entry and its own height above the second
+            // entry; the wheel leaves it 10 px above the list's top.
+            let top = shown.at(cx, second).top() - shown.entry - shown.heading;
+            shown.wheel(cx, top - (shown.top - px(10.)), second);
+            let cut = shown.at(cx, heading);
+            assert!(
+                (cut.top() - (shown.top - px(10.))).abs() <= EDGE
+                    && shown.whole(cx, first)
+                    && shown.whole(cx, second),
+                "group {heading}: the wheel cuts its heading 10 px, {cut:?} in the list \
+                 from {:?}, above its whole entries",
+                shown.top
+            );
+            press(cx, "up");
+            selected = first;
+            let what = format!("group {heading}: Up onto its first entry, heading cut 10 px");
+            shown.centred(cx, first, &what);
+        }
+        close(cx);
+    }
+
+    /// Presses delivered back to back end where they do with a frame drawn
+    /// after each, each deciding against the scroll the one before it set:
+    /// GPUI draws the frame a press leaves pending before it dispatches the
+    /// next key. At 13 pt in a 1200 × 800 window, Down twice past the list's
+    /// foot centres the first entry past it and keeps the second whole below,
+    /// and Up past the top then Down back leaves the entry above centred.
+    #[gpui::test]
+    async fn presses_back_to_back_end_where_they_do_a_frame_apiece(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let mut ends = Vec::new();
+        for one_frame in [false, true] {
+            let frames = if one_frame {
+                "back to back"
+            } else {
+                "a frame apiece"
+            };
+            open(&app, cx, 13, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            // Down to the last entry the list holds whole at its top.
+            let last = entries
+                .iter()
+                .rposition(|&entry| shown.shown(cx, entry))
+                .unwrap();
+            let rest = shown.at(cx, entries[last]).top();
+            for _ in 0..last {
+                press(cx, "down");
+            }
+            assert!(
+                (shown.at(cx, entries[last]).top() - rest).abs() <= EDGE,
+                "Down to entry {} keeps the list at its top",
+                entries[last]
+            );
+            let (past, beyond) = (entries[last + 1], entries[last + 2]);
+            if one_frame {
+                press(cx, "down down");
+            } else {
+                press(cx, "down");
+                press(cx, "down");
+            }
+            shown.centred(cx, past, &format!("Down twice {frames}"));
+            assert!(
+                shown.shown(cx, beyond),
+                "Down twice {frames} keeps entry {beyond} whole"
+            );
+            let down = shown.at(cx, beyond).top() - shown.top;
+            // The wheel leaves `beyond`, with the heading that comes into
+            // view with it, at the list's top, `past` above it.
+            let top = match shown.heading(beyond) {
+                Some(heading) => shown.at(cx, heading).top(),
+                None => shown.at(cx, beyond).top(),
+            };
+            shown.wheel(cx, top - shown.top, beyond);
+            if one_frame {
+                press(cx, "up down");
+            } else {
+                press(cx, "up");
+                press(cx, "down");
+            }
+            shown.centred(cx, past, &format!("Up then Down {frames}"));
+            assert!(
+                shown.shown(cx, beyond),
+                "Up then Down {frames} keeps entry {beyond} whole"
+            );
+            let back = shown.at(cx, beyond).top() - shown.top;
+            ends.push((down, back));
+            close(cx);
+        }
+        assert!(
+            (ends[0].0 - ends[1].0).abs() <= EDGE && (ends[0].1 - ends[1].1).abs() <= EDGE,
+            "a frame apiece ends with the entry past them at {:?}, back to back at {:?}",
+            ends[0],
+            ends[1]
+        );
+    }
+
+    /// Up and Down read a scroll the wheel set: at 13 pt in a 1200 × 800
+    /// window, with the wheel leaving an entry cut 3 px by the list's top,
+    /// Down and Up through the whole entries below it keep the list still,
+    /// and Up onto the cut entry centres it.
+    #[gpui::test]
+    async fn a_wheeled_list_keeps_whole_entries_still_and_centres_a_cut_one(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let shown = Shown::read(cx, "");
+        let entries = shown.entries();
+        // An entry below the list's first screen, not its group's first,
+        // with two entries of its group below it.
+        let at = (1..entries.len() - 2)
+            .find(|&at| {
+                let entry = entries[at];
+                shown
+                    .drawn(cx, entry)
+                    .is_none_or(|row| row.top() >= shown.foot - EDGE)
+                    && matches!(shown.rows[entry - 1], HelpRow::Entry(_))
+                    && entries[at + 2] == entry + 2
+            })
+            .expect("an entry the wheel can cut");
+        let (cut, below) = (entries[at], entries[at + 1]);
+        for _ in 0..=at {
+            press(cx, "down");
+        }
+        let by = shown.at(cx, cut).top() - shown.top + px(3.);
+        shown.wheel(cx, by, below);
+        let wheeled = shown.at(cx, below).top();
+        for (key, entry) in [("down", entries[at + 2]), ("up", below)] {
+            press(cx, key);
+            let now = shown.at(cx, below).top();
+            assert!(
+                (now - wheeled).abs() <= EDGE,
+                "{key} to entry {entry}, whole in the list the wheel scrolled, moved \
+                 entry {below} from {wheeled:?} to {now:?}"
+            );
+        }
+        press(cx, "up");
+        shown.centred(
+            cx,
+            cut,
+            &format!("Up to entry {cut}, cut 3 px by the list's top"),
+        );
+        assert!(
+            (shown.at(cx, below).top() - wheeled).abs() > EDGE,
+            "Up to entry {cut}, cut 3 px by the list's top, scrolls the list"
+        );
+        close(cx);
+    }
+
+    /// A window resized under a list the wheel moved away from the selected
+    /// entry keeps the list where the wheel left it, clamped to its rows:
+    /// at 13 and 18 pt, with the second group's first entry selected and the
+    /// wheel leaving it 5 px above a 1200 × 800 window's list, a 560 px tall
+    /// window and then the 800 px one again leave every row where it was
+    /// drawn from the list's top, the entry and its heading still above it;
+    /// and with the wheel at the 560 px list's end, the 800 px window keeps
+    /// the last row's foot at the list's foot. A resize brought the
+    /// selection back on each frame, undoing the wheel.
+    #[gpui::test]
+    async fn a_resize_keeps_the_wheels_scroll_where_the_selection_lies_outside_the_list(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let first = heading + 1;
+            for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
+                press(cx, "down");
+            }
+            // The wheel leaves the entry 5 px above the list's top, its
+            // heading above it; the row below it is cut 5 px there.
+            let below = first + 1;
+            let by = shown.at(cx, first).bottom() - shown.top + px(5.);
+            shown.wheel(cx, by, below);
+            let rest = shown.at(cx, below).top() - shown.top;
+            for (height, list) in [(560., "shorter"), (800., "taller")] {
+                let view = shown.view();
+                cx.simulate_resize(size(px(1200.), px(height)));
+                draw(cx);
+                shown.relist(cx);
+                assert!(
+                    (shown.view() - view).abs() > EDGE,
+                    "{text} pt: a {height} px tall window gives the list {:?}, not {view:?}",
+                    shown.view()
+                );
+                let now = shown.at(cx, below).top() - shown.top;
+                assert!(
+                    (now - rest).abs() <= EDGE
+                        && !shown.whole(cx, first)
+                        && !shown.whole(cx, heading),
+                    "{text} pt: a {list} list keeps the wheel's scroll, row {below} {rest:?} \
+                     below its top, with entry {first} and its heading above it: row {below} \
+                     is drawn {now:?} below it"
+                );
+            }
+            cx.simulate_resize(size(px(1200.), px(560.)));
+            draw(cx);
+            shown.relist(cx);
+            // Far past the list's end, which the list holds.
+            scroll_down(
+                cx,
+                shown.centre,
+                ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+            );
+            let last = shown.rows.len() - 1;
+            let ends = |shown: &Shown, cx: &mut VisualTestContext| {
+                shown.drawn(cx, last).map(|row| row.bottom() - shown.foot)
+            };
+            assert!(
+                ends(&shown, cx).is_some_and(|off| off.abs() <= EDGE),
+                "{text} pt: the wheel takes the list to its end: row {last} ends {:?} off \
+                 its foot",
+                ends(&shown, cx)
+            );
+            cx.simulate_resize(size(px(1200.), px(800.)));
+            draw(cx);
+            shown.relist(cx);
+            assert!(
+                ends(&shown, cx).is_some_and(|off| off.abs() <= EDGE) && !shown.whole(cx, first),
+                "{text} pt: a taller list keeps its end at its foot, entry {first} above \
+                 it: row {last} ends {:?} off its foot",
+                ends(&shown, cx)
+            );
+            close(cx);
+        }
+    }
+
+    /// A window resized under a list that shows the selected entry whole
+    /// brings it back only where the new height would cut it: at 13 and
+    /// 18 pt, with the second group's first entry selected and the wheel
+    /// cutting its heading 10 px at a 1200 × 800 window's list's top, a
+    /// 560 px tall window, whose list still holds the entry whole, moves
+    /// nothing and leaves the heading cut, and a 300 px one, whose list at
+    /// its floor would cut the entry's foot, brings the entry whole to the
+    /// list's foot. Before, the 560 px window brought the heading back.
+    #[gpui::test]
+    async fn a_resize_brings_back_only_a_selected_entry_it_would_cut(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let first = heading + 1;
+            for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
+                press(cx, "down");
+            }
+            let by = shown.at(cx, heading).top() - (shown.top - px(10.));
+            shown.wheel(cx, by, first);
+            assert!(
+                !shown.whole(cx, heading) && shown.whole(cx, first),
+                "{text} pt: the wheel cuts group {heading}'s heading above entry {first}"
+            );
+            let rest = shown.at(cx, heading).top() - shown.top;
+            cx.simulate_resize(size(px(1200.), px(560.)));
+            draw(cx);
+            shown.relist(cx);
+            let now = shown.at(cx, heading).top() - shown.top;
+            assert!(
+                (now - rest).abs() <= EDGE && shown.whole(cx, first),
+                "{text} pt: a shorter list that holds entry {first} whole keeps the wheel's \
+                 scroll, group {heading}'s heading {rest:?} from its top: {now:?}"
+            );
+            cx.simulate_resize(size(px(1200.), px(300.)));
+            draw(cx);
+            shown.relist(cx);
+            let drawn = shown.drawn(cx, first);
+            assert!(
+                drawn.is_some_and(|row| (row.bottom() - shown.foot).abs() <= EDGE)
+                    && shown.whole(cx, first),
+                "{text} pt: a list at its floor, {:?}, that would cut entry {first} brings it \
+                 whole to its foot, {:?}: {drawn:?}",
+                shown.view(),
+                shown.foot
+            );
+            close(cx);
+        }
+    }
+
+    /// A text size chosen with the list open brings the selected entry back
+    /// whole, even where the wheel had moved the list away from it, as a
+    /// resize would not: at 13 pt in a 1200 × 800 window, with the second
+    /// group's first entry selected and the wheel 1,000 px past it, 18 pt,
+    /// which grows the list, shows the entry whole. Taken for a resize, the
+    /// larger size left the entry where the scaled rows put it, out of the
+    /// list. Where the dialog's cap holds the list's height through the
+    /// change, `Span::follows` is checked directly: the cap snaps to the half
+    /// pixel and the dialog's other parts take fractional heights, so no
+    /// window from 14 to 18 pt held the 13 pt list's 428 px to 0.01 px.
+    #[gpui::test]
+    async fn a_text_size_chosen_with_the_list_open_brings_the_selection_back(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        {
+            let (text, height) = (18, 800.);
+            open(&app, cx, 13, (1200., height));
+            let mut shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let first = heading + 1;
+            for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
+                press(cx, "down");
+            }
+            scroll_down(
+                cx,
+                shown.centre,
+                ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+            );
+            assert!(
+                shown.drawn(cx, first).is_none(),
+                "the wheel moves entry {first} out of the list"
+            );
+            let view = shown.view();
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            shown.relist(cx);
+            let at = format!("{text} pt in a 1200 × {height} window");
+            assert!(
+                (shown.view() - view).abs() > EDGE,
+                "{at}: the list grows from its 13 pt {view:?}: {:?}",
+                shown.view()
+            );
+            assert!(
+                shown.selected(cx) == Some(first) && shown.whole(cx, first),
+                "{at}: entry {first} comes back whole: it is drawn at {:?}",
+                shown.drawn(cx, first)
+            );
+            close(cx);
+        }
+    }
+
+    /// Whether a resize cuts the selected entry is judged at the list's
+    /// height to the pixel: at 13 and 18 pt, with the wheel bringing the
+    /// second group's heading to a 1200 × 800 window's list's top and its
+    /// first entry, selected, whole below it, a window whose list is a pixel
+    /// taller than the heading and the entry keeps both whole where they
+    /// were, and one whose list is a pixel shorter, which would cut the
+    /// entry's foot and holds fewer than two entries, brings the entry whole
+    /// to its top, scrolled by whole rows, the heading wholly above it.
+    /// Judged 2 px short, the taller list counted the entry cut and moved
+    /// it, its heading above the list; judged 2 px long, the shorter one left
+    /// the entry cut at its foot. No other list test's list lies within 2 px
+    /// of both. (The shorter list once ended the entry at its foot with a
+    /// pixel of the heading above it.)
+    #[gpui::test]
+    async fn a_list_a_pixel_past_a_heading_and_an_entry_keeps_both_and_one_a_pixel_short_the_entry(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let both = shown.heading + shown.entry;
+            let windows = [(px(1.), "taller"), (px(-1.), "shorter")]
+                .map(|(by, list)| (shown.size_to(cx, both + by), both + by, list));
+            close(cx);
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let first = heading + 1;
+            for (height, view, list) in windows {
+                open(&app, cx, text, (1200., 800.));
+                shown.relist(cx);
+                for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
+                    press(cx, "down");
+                }
+                let by = shown.at(cx, heading).top() - shown.top;
+                shown.wheel(cx, by, first);
+                cx.simulate_resize(size(px(1200.), px(height)));
+                draw(cx);
+                shown.relist(cx);
+                assert!(
+                    (shown.view() - view).abs() < EDGE,
+                    "{text} pt: a {height} px tall window gives the list {view:?}, a pixel \
+                     {list} than a heading and an entry, {both:?}: {:?}",
+                    shown.view()
+                );
+                // Where the list holds both, the heading stays at its top;
+                // else the entry comes whole to its top, by whole rows.
+                let holds = view > both;
+                let (row, edge, off) = if holds {
+                    let off = shown.drawn(cx, heading).map(|row| row.top() - shown.top);
+                    (heading, "top", off)
+                } else {
+                    let off = shown.drawn(cx, first).map(|row| row.top() - shown.top);
+                    (first, "top", off)
+                };
+                assert!(
+                    off.is_some_and(|off| off.abs() <= EDGE)
+                        && shown.whole(cx, first)
+                        && shown.whole(cx, heading) == holds,
+                    "{text} pt: a list a pixel {list} than group {heading}'s heading and \
+                     entry {first} leaves row {row} at its {edge}, with the entry whole and \
+                     the heading {}: row {row} is drawn {off:?} off it, entry {first} at {:?}",
+                    if holds { "whole" } else { "cut" },
+                    shown.drawn(cx, first)
+                );
+                close(cx);
+            }
+        }
+    }
+
+    /// A list that holds an entry but not its heading with it, as at 18 pt
+    /// in a 461 × 490 window, where it is about 72 px tall, scrolls by whole
+    /// rows: at 13 and 18 pt, opened in a window whose list is an entry and
+    /// half a heading tall, it starts with the first entry whole at its top
+    /// and no heading cut there, and Down brings the next entry to its top
+    /// the same way. It ended the first entry at its foot, the General
+    /// heading a 13 px sliver above it, and Down centred an entry between
+    /// two slivers.
+    #[gpui::test]
+    async fn a_list_shorter_than_two_entries_scrolls_by_whole_rows(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let view = shown.entry + shown.heading / 2.;
+            let height = shown.size_to(cx, view);
+            close(cx);
+            open(&app, cx, text, (1200., height));
+            shown.relist(cx);
+            assert!(
+                shown.view() > shown.entry + EDGE && shown.view() < shown.heading + shown.entry,
+                "{text} pt: a {height} px tall window's list, {:?}, holds an entry but not \
+                 its heading with it",
+                shown.view()
+            );
+            let entries = shown.entries();
+            for (step, entry) in [(None, entries[0]), (Some("down"), entries[1])] {
+                if let Some(key) = step {
+                    press(cx, key);
+                }
+                let drawn = shown.at(cx, entry);
+                assert!(
+                    (drawn.top() - shown.top).abs() <= EDGE && shown.whole(cx, entry),
+                    "{text} pt, after {step:?}: entry {entry} starts whole at the list's top, \
+                     {:?}: {drawn:?}",
+                    shown.top
+                );
+                for heading in shown.headings() {
+                    if let Some(row) = shown.drawn(cx, heading) {
+                        assert!(
+                            row.bottom() <= shown.top + EDGE || row.top() >= shown.top - EDGE,
+                            "{text} pt, after {step:?}: heading {heading} is cut at the \
+                             list's top, {:?}: {row:?}",
+                            shown.top
+                        );
+                    }
+                }
+            }
+            close(cx);
+        }
+    }
+
+    /// Each key chip ends at the row's trailing inset measured from the
+    /// scrollbar's gutter, whose track rests over the rows' end: at 18 pt in
+    /// a 461 × 490 window and at 13 pt in a 1200 × 800 one, the selected
+    /// entry's chip ends 0.75 rem before the track. Measured from the list's
+    /// side, its right edge and padding lay under the track, cut where the
+    /// row's selected fill ends.
+    #[gpui::test]
+    async fn key_chips_end_at_the_rows_inset_before_the_scrollbar(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for (text, size) in [(18, (461., 490.)), (13, (1200., 800.))] {
+            open(&app, cx, text, size);
+            draw(cx);
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            let chip = cx
+                .debug_bounds("shortcut-help-key-1")
+                .expect("the key chip");
+            // Inside the list's 1 px edge.
+            let track = list.right() - px(1.) - gpui_kit::base::Scrollbar::width();
+            let inset = cx.update(|window, _| window.rem_size() * 0.75);
+            assert!(
+                (chip.right() - (track - inset)).abs() <= EDGE,
+                "{text} pt in {size:?}: the chip ends {inset:?} before the track at \
+                 {track:?}: {chip:?}"
+            );
+            close(cx);
+        }
+    }
+
+    /// A shorter list brings the selected entry its foot cuts back from
+    /// below, scrolled the least that shows it whole, its foot on the
+    /// list's: at 13 and 18 pt, with the last entry a 1200 × 800 window's
+    /// list holds whole at its top selected, a 700 px tall window ends the
+    /// entry at the shorter list's foot, and a 300 px one, whose list is at
+    /// its floor and holds the entry but not its heading too, shows it whole
+    /// there; opened at its floor, the list shows its first entry so. Read
+    /// 2 px shorter than it is drawn, the list ended the entry 2 px above its
+    /// foot and, at the floor, cut its top: 2 px at 13 pt, 1 px at 18 pt.
+    #[gpui::test]
+    async fn a_shorter_list_brings_an_entry_its_foot_cuts_back_to_its_foot(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let last = entries
+                .iter()
+                .rposition(|&entry| shown.whole(cx, entry))
+                .unwrap();
+            for _ in 0..last {
+                press(cx, "down");
+            }
+            let selected = entries[last];
+            // How far below the list's top the entry ends.
+            let mut ends = shown.at(cx, selected).bottom() - shown.top;
+            for height in [700., 300.] {
+                cx.simulate_resize(size(px(1200.), px(height)));
+                draw(cx);
+                shown.relist(cx);
+                assert!(
+                    ends > shown.view(),
+                    "{text} pt: a {height} px tall window's list, {:?} inside its border, \
+                     cuts entry {selected}, which ended {ends:?} below its top",
+                    shown.view()
+                );
+                let drawn = shown.at(cx, selected);
+                assert!(
+                    (drawn.bottom() - shown.foot).abs() <= EDGE && shown.whole(cx, selected),
+                    "{text} pt: a {height} px tall window brings entry {selected} whole to \
+                     its list's foot, {:?}: {drawn:?}",
+                    shown.foot
+                );
+                ends = drawn.bottom() - shown.top;
+            }
+            // The list is at its floor, which holds an entry but not a
+            // heading with it.
+            let floor = list_floor() - px(2.);
+            assert!(
+                (shown.view() - floor).abs() <= EDGE
+                    && shown.entry <= shown.view()
+                    && shown.view() < shown.heading + shown.entry,
+                "{text} pt: a 300 px tall window gives the list its floor, {floor:?}, \
+                 an entry {:?} tall but not a heading too: {:?}",
+                shown.entry,
+                shown.view()
+            );
+            close(cx);
+            open(&app, cx, text, (1200., 300.));
+            shown.relist(cx);
+            let first = entries[0];
+            let drawn = shown.at(cx, first);
+            assert!(
+                (drawn.bottom() - shown.foot).abs() <= EDGE && shown.whole(cx, first),
+                "{text} pt: the list opened at its floor shows entry {first} whole at its \
+                 foot, {:?}: {drawn:?}",
+                shown.foot
+            );
+            close(cx);
+        }
+    }
+
+    /// A click selects the entry it lands on and brings it into view,
+    /// scrolled the least that shows it whole, a group's first entry with its
+    /// group's heading: at 13 and 18 pt, with the wheel leaving the second
+    /// group's heading cut 10 px by the list's top, a click on the group's
+    /// first entry brings the heading back to the top, and a click on an
+    /// entry the list's foot cuts by 10 px brings the entry's foot to the
+    /// list's. A click scrolled nothing, leaving the heading cut.
+    #[gpui::test]
+    async fn a_click_brings_its_entry_into_view_with_its_groups_heading(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let (first, second) = (heading + 1, heading + 2);
+            for _ in 0..entries.iter().position(|&entry| entry == second).unwrap() {
+                press(cx, "down");
+            }
+            // The heading stands an entry and its own height above the second
+            // entry; the wheel leaves it 10 px above the list's top.
+            let top = shown.at(cx, second).top() - shown.entry - shown.heading;
+            shown.wheel(cx, top - (shown.top - px(10.)), second);
+            assert!(
+                !shown.whole(cx, heading) && shown.whole(cx, first),
+                "{text} pt: the wheel cuts group {heading}'s heading above entry {first}"
+            );
+            let click = shown.at(cx, first).center();
+            cx.simulate_click(click, Modifiers::default());
+            draw(cx);
+            let drawn = shown.drawn(cx, heading).map(|row| row.top());
+            assert!(
+                drawn.is_some_and(|top| (top - shown.top).abs() <= EDGE) && shown.whole(cx, first),
+                "{text} pt: a click on entry {first} brings group {heading}'s heading \
+                 back to the list's top: the heading is drawn at {drawn:?}, the list from \
+                 {:?}",
+                shown.top
+            );
+            // The last entry the list holds whole, which the wheel leaves cut
+            // 10 px by the list's foot.
+            let cut = *entries
+                .iter()
+                .rev()
+                .find(|&&entry| shown.whole(cx, entry))
+                .unwrap();
+            let by = shown.at(cx, cut).bottom() - (shown.foot + px(10.));
+            shown.wheel(cx, by, cut);
+            let click = shown.at(cx, cut).center();
+            cx.simulate_click(click, Modifiers::default());
+            draw(cx);
+            let drawn = shown.at(cx, cut);
+            assert!(
+                (drawn.bottom() - shown.foot).abs() <= EDGE && shown.shown(cx, cut),
+                "{text} pt: a click on entry {cut}, cut 10 px by the list's foot, brings \
+                 its foot to the list's, {:?}: {drawn:?}",
+                shown.foot
+            );
+            close(cx);
+        }
+    }
+
+    /// Down to the list's last entry leaves it whole at the list's foot: the
+    /// centring Down asks for there lies past the list's end, which holds it,
+    /// and Down again there moves nothing. At 13 and 18 pt in a 1200 × 800
+    /// window.
+    #[gpui::test]
+    async fn down_to_the_last_entry_leaves_it_whole_at_the_lists_foot(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let last = entries[entries.len() - 1];
+            for presses in [entries.len() - 1, 1] {
+                for _ in 0..presses {
+                    press(cx, "down");
+                }
+                let drawn = shown.at(cx, last);
+                assert!(
+                    (drawn.bottom() - shown.foot).abs() <= EDGE && shown.whole(cx, last),
+                    "{text} pt: {presses} Down presses leave the last entry, {last}, whole \
+                     at the list's foot, {:?}: {drawn:?}",
+                    shown.foot
+                );
+            }
+            close(cx);
+        }
+    }
+
+    /// Down past the list's foot onto a group's first entry brings the
+    /// group's heading with it, the two centred together: at 13 and 18 pt in
+    /// a 1200 × 800 window, with the last entry of the group above selected
+    /// and the wheel leaving it at the list's foot, Down shows the next
+    /// group's heading and first entry whole, centred together. Centred
+    /// alone, the entry stood half a heading's height below the list's
+    /// centre.
+    #[gpui::test]
+    async fn down_past_the_foot_onto_a_groups_first_entry_shows_its_heading(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            // The first heading at or below the list's foot as it opens, so
+            // the wheel can bring the entry above it to the foot.
+            let heading = shown
+                .headings()
+                .into_iter()
+                .find(|&heading| {
+                    shown
+                        .drawn(cx, heading)
+                        .is_none_or(|row| row.top() >= shown.foot - EDGE)
+                })
+                .expect("a heading below the list's first screen");
+            let (above, first) = (heading - 1, heading + 1);
+            for _ in 0..entries.iter().position(|&entry| entry == above).unwrap() {
+                press(cx, "down");
+            }
+            let by = shown.at(cx, above).bottom() - shown.foot;
+            shown.wheel(cx, by, above);
+            assert!(
+                shown.whole(cx, above) && !shown.whole(cx, heading) && !shown.whole(cx, first),
+                "{text} pt: the wheel leaves entry {above} at the list's foot, group \
+                 {heading} below it"
+            );
+            assert!(
+                shown.heading(first) == Some(heading),
+                "{text} pt: the list holds a heading and an entry"
+            );
+            press(cx, "down");
+            let what =
+                format!("{text} pt: Down past the list's foot onto group {heading}'s first entry");
+            shown.centred(cx, first, &what);
+            close(cx);
+        }
+    }
+
+    /// End selects the list's last entry and leaves it whole at the list's
+    /// foot, and Home selects the first and brings the first group's heading
+    /// to the list's top with it, from the search field, which keeps focus:
+    /// at 13 and 18 pt in a 1200 × 800 window, and again with the wheel
+    /// having moved the list away from an entry already selected. The field
+    /// took both keys to move its caret, and the selection stayed put.
+    #[gpui::test]
+    async fn home_and_end_reach_the_first_heading_and_the_last_entry_whole(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let (first, last) = (entries[0], entries[entries.len() - 1]);
+            let heading = shown.headings()[0];
+            assert_eq!(
+                shown.selected(cx),
+                Some(first),
+                "{text} pt: the list opens on its first entry"
+            );
+            // End, then End again after the wheel moved the list two
+            // entries up from its foot.
+            for again in [false, true] {
+                if again {
+                    shown.wheel(cx, -shown.entry * 2., entries[entries.len() - 4]);
+                    assert!(
+                        !shown.whole(cx, last),
+                        "{text} pt: the wheel moves entry {last} below the list's foot"
+                    );
+                }
+                press(cx, "end");
+                let drawn = shown.drawn(cx, last);
+                assert!(
+                    shown.selected(cx) == Some(last)
+                        && drawn.is_some_and(|row| (row.bottom() - shown.foot).abs() <= EDGE)
+                        && shown.whole(cx, last),
+                    "{text} pt: End selects the last entry, {last}, whole at the list's foot, \
+                     {:?}: it is drawn at {drawn:?}, the selection on {:?}",
+                    shown.foot,
+                    shown.selected(cx)
+                );
+            }
+            for again in [false, true] {
+                if again {
+                    shown.wheel(cx, shown.entry * 2., entries[3]);
+                    assert!(
+                        !shown.whole(cx, heading) && !shown.whole(cx, first),
+                        "{text} pt: the wheel moves group {heading} above the list's top"
+                    );
+                }
+                press(cx, "home");
+                let drawn = shown.drawn(cx, heading).map(|row| row.top());
+                assert!(
+                    shown.selected(cx) == Some(first)
+                        && drawn.is_some_and(|top| (top - shown.top).abs() <= EDGE)
+                        && shown.whole(cx, heading)
+                        && shown.whole(cx, first),
+                    "{text} pt: Home selects the first entry, {first}, with group {heading}'s \
+                     heading whole at the list's top, {:?}: the heading is drawn at {drawn:?}, \
+                     the selection on {:?}",
+                    shown.top,
+                    shown.selected(cx)
+                );
+            }
+            assert_eq!(
+                cx.update(|window, cx| app.read(cx).dialog_hints.focused(window)),
+                Some(DialogKeys::Shortcuts),
+                "{text} pt: the search field keeps focus"
+            );
+            close(cx);
+        }
+    }
+
+    /// Page Down and Page Up move the selection by as many entries as the
+    /// list's height holds whole rows, passing over headings, as a macOS
+    /// list does, and bring the entry they reach into view by Up's and
+    /// Down's rules: left where it lies whole, otherwise centred with its
+    /// group's heading where it is the group's first, the list's ends
+    /// holding it. At 13 and 18 pt in a 1200 × 800 window, Page Down from the
+    /// first entry to the last, which it leaves whole at the list's foot and
+    /// keeps there, and Page Up back to the first, with the first heading at
+    /// the list's top. Neither key moved the selection.
+    #[gpui::test]
+    async fn page_down_and_page_up_move_by_the_whole_rows_the_list_shows(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let rows = shown.view() / shown.entry;
+            let page = rows.floor() as usize;
+            assert!(
+                page >= 2 && (0.02..0.98).contains(&rows.fract()),
+                "{text} pt: the list holds {rows} entry rows, a page of {page} clear of the \
+                 rounding of a row's drawn height"
+            );
+            let mut at = 0;
+            for (key, back) in [("pagedown", false), ("pageup", true)] {
+                loop {
+                    let to = if back {
+                        at - page.min(at)
+                    } else {
+                        (at + page).min(entries.len() - 1)
+                    };
+                    let entry = entries[to];
+                    let inside = shown.shown(cx, entry);
+                    let before = shown.drawn(cx, entry).map(|row| row.top());
+                    press(cx, key);
+                    let what = format!("{text} pt: {key} from entry {} to {entry}", entries[at]);
+                    assert_eq!(shown.selected(cx), Some(entry), "{what} selects it");
+                    if inside {
+                        let now = shown.at(cx, entry).top();
+                        assert!(
+                            before.is_some_and(|before| (now - before).abs() <= EDGE),
+                            "{what}, whole in the list, moved it from {before:?} to {now:?}"
+                        );
+                    } else {
+                        shown.centred(cx, entry, &what);
+                    }
+                    if to == at {
+                        break;
+                    }
+                    at = to;
+                }
+                let (end, drawn) = if back {
+                    let heading = shown.headings()[0];
+                    (heading, shown.at(cx, heading).top() - shown.top)
+                } else {
+                    let last = entries[entries.len() - 1];
+                    (last, shown.at(cx, last).bottom() - shown.foot)
+                };
+                assert!(
+                    drawn.abs() <= EDGE && shown.whole(cx, end),
+                    "{text} pt: {key} to the list's end leaves row {end} whole at it, \
+                     {drawn:?} off"
+                );
+            }
+            close(cx);
+        }
+    }
+
+    /// Keyboard Shortcuts names the keys its list takes wherever it names
+    /// its own: its inline help names Page Up / Page Down and Home / End
+    /// beside Up and Down, in the platform's key labels, and the status
+    /// bar's hints, while its search holds focus, name PgUp / PgDn and
+    /// Home / End where they have the room, at 13 pt in a 1200 × 800 window.
+    /// Both named Up and Down alone.
+    #[gpui::test]
+    async fn the_help_and_the_status_bar_name_every_key_the_list_takes(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        written::forget();
+        draw(cx);
+        // Static text is read by its value, the words it draws.
+        let help = written::get("shortcut-help-keys")
+            .and_then(|line| line.node.value().map(str::to_owned))
+            .expect("the inline help is written");
+        let hints = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
+            .expect("the status bar names the search's keys");
+        for key in ["pageup", "pagedown", "home", "end"].map(key_label) {
+            assert!(
+                help.contains(&key),
+                "{key} is named in the inline help, {help:?}"
+            );
+        }
+        let ends = format!("{} / {}", key_label("home"), key_label("end"));
+        for key in [PAGE_KEYS, &ends] {
+            assert!(
+                hints.contains(key),
+                "{key} is named in the status bar, {hints:?}"
+            );
+        }
+        close(cx);
+    }
+
+    /// The status bar's hints under Keyboard Shortcuts give way before the
+    /// status line does: at 18 pt in 461 and 600 px wide windows, the wider
+    /// one with room for every hint beside the line's ellipsis but not
+    /// beside its whole text, they keep "↑↓ Browse · Esc Close" and the
+    /// status line is drawn whole, and at 13 pt in a 1480 × 980 window, with
+    /// room left after the whole status line, they name the page and end
+    /// keys after Escape. Named with the rest, they took 358 px at 18 pt in a
+    /// 461 × 490 window and cut the status line to about 53 px.
+    #[gpui::test]
+    async fn the_status_line_stays_whole_beside_the_lists_hints(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        // A status line the strip holds whole at 18 pt in a 461 × 490
+        // window beside "↑↓ Browse · Esc Close", about 183 px of the 236 px
+        // left to it there.
+        app.update(cx, |app, cx| {
+            app.status = "Up to date with origin".into();
+            cx.notify();
+        });
+        let keys = DialogKeys::Shortcuts.key_hints();
+        for (text, size, spare) in [
+            (18, (461., 490.), false),
+            // Room for every hint beside the line's ellipsis, not beside
+            // its whole text.
+            (18, (600., 490.), false),
+            (13, (1480., 980.), true),
+        ] {
+            open(&app, cx, text, size);
+            let at = format!("{text} pt in a {size:?} window");
+            let (hints, line, whole) = cx.update(|window, cx| {
+                let hints = app.update(cx, |app, cx| app.status_hints(window, cx));
+                let line = app.read(cx).status_line().to_owned();
+                let whole = crate::views::line_widths(&[(&line, appearance::ui_text(10.))], window);
+                (hints, line, whole)
+            });
+            let drawn = cx.debug_bounds("status-line").expect("the status line");
+            assert!(
+                drawn.size.width >= whole - px(0.5),
+                "{at}: the status line {line:?}, {whole:?} wide, is drawn whole: {drawn:?}"
+            );
+            let expected = if spare {
+                keys.whole()
+            } else {
+                KeyHints::new(keys.keys.clone()).whole()
+            };
+            assert_eq!(hints, Some(expected), "{at}: the status bar's hints");
+            close(cx);
+        }
+    }
+
+    /// The way out is the last hint to go: under Keyboard Shortcuts at
+    /// 18 pt in a 461 × 490 window, as a fresh outcome grows in the status
+    /// line, the hints give way from "↑↓ Browse · Esc Close" to "↑↓ · Esc",
+    /// then, where the room holds one key, to "Esc", which the bar draws,
+    /// and then leave. They once gave way to "↑↓", Escape gone first,
+    /// though the design keeps it longest.
+    #[gpui::test]
+    async fn escape_is_the_last_hint_to_go(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 18, (461., 490.));
+        let path = app
+            .read_with(cx, |app, _| app.path.clone())
+            .expect("a repository");
+        let keys = DialogKeys::Shortcuts.key_hints();
+        let mut forms: Vec<Option<String>> = Vec::new();
+        // The shortest outcome that leaves the hints one key.
+        let mut one = None;
+        for length in 0..400 {
+            let hints = cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.record_outcome(&path, format!("Pushed {}", "e".repeat(length)), cx);
+                    app.status_hints(window, cx)
+                })
+            });
+            if one.is_none() && hints.as_ref().is_some_and(|hints| !hints.contains(" · ")) {
+                one = Some(length);
+            }
+            if forms.last() != Some(&hints) {
+                forms.push(hints);
+            }
+        }
+        assert_eq!(
+            forms,
+            [
+                Some(KeyHints::new(keys.keys.clone()).whole()),
+                Some(format!("↑↓ · {ESCAPE}")),
+                Some(ESCAPE.to_owned()),
+                None,
+            ],
+            "the forms the hints give way through"
+        );
+        let length = one.expect("an outcome leaves the hints one key");
+        app.update(cx, |app, cx| {
+            app.record_outcome(&path, format!("Pushed {}", "e".repeat(length)), cx);
+            cx.notify();
+        });
+        draw(cx);
+        let drawn = cx.debug_bounds("status-hints").expect("the one hint");
+        let [escape, browse] = cx.update(|window, _| {
+            [ESCAPE, "↑↓"]
+                .map(|key| crate::views::line_widths(&[(key, appearance::ui_text(10.))], window))
+        });
+        assert!(
+            (drawn.size.width - escape).abs() < px(1.)
+                && (drawn.size.width - browse).abs() >= px(1.),
+            "the bar draws Escape, {escape:?} wide, not Up and Down, {browse:?}: {drawn:?}"
+        );
+        close(cx);
+    }
+
+    /// A write whose status the header draws leaves the status line its
+    /// text, so Keyboard Shortcuts' spare hints stay beside it: at 13 pt in
+    /// a 1480 × 980 window, once a Fetch looks busy, its status stands in
+    /// the header and the bar still names the page and end keys. They once
+    /// hid through every write, though only a write whose status takes the
+    /// line's place ([`crate::views`]' `OperationPlace::StatusBar`) leaves
+    /// them without the line's whole text.
+    #[gpui::test]
+    async fn the_spare_hints_stay_through_a_write_the_header_shows(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 980.));
+        let keys = DialogKeys::Shortcuts.key_hints();
+        let hints = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
+        };
+        assert_eq!(hints(cx), Some(keys.whole()), "at rest");
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        let header = cx.debug_bounds("repository-header").expect("the header");
+        let status = cx
+            .debug_bounds("operation-status")
+            .expect("the write looks busy");
+        assert!(
+            header.contains(&status.center()),
+            "the header draws the write's status: {status:?} in {header:?}"
+        );
+        assert_eq!(
+            hints(cx),
+            Some(keys.whole()),
+            "the spare hints stay beside the line's whole text"
+        );
+        let drawn = cx.debug_bounds("status-hints").expect("the hints");
+        let whole = cx.update(|window, _| {
+            crate::views::line_widths(&[(&keys.whole(), appearance::ui_text(10.))], window)
+        });
+        assert!(
+            (drawn.size.width - whole).abs() < px(1.),
+            "the bar draws them whole, {whole:?}: {drawn:?}"
+        );
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        close(cx);
+    }
+
+    /// The status line's whole text, which the spare hints are fitted
+    /// beside, is kept for each text drawn lately, so two windows under
+    /// Keyboard Shortcuts, each with its own status line, measure their
+    /// lines once each: at 13 pt in a 1480 × 980 window, two lines drawn in
+    /// turn three times are measured twice in all, and each keeps the spare
+    /// hints beside it. One slot, shared by every window, measured each line
+    /// again whenever the other had been drawn. A line with parts is never
+    /// measured whole on its own: its whole width is the last of those its
+    /// parts are read from, one layout of it (`views::status_part_widths`);
+    /// measured on its own as well, it was laid out twice.
+    #[gpui::test]
+    async fn two_status_lines_drawn_in_turn_are_measured_once_each(cx: &mut TestAppContext) {
+        use crate::views::STATUS_TEXT_MEASURED;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 980.));
+        let keys = DialogKeys::Shortcuts.key_hints();
+        // Empty, as a GPUI test's seeds share the thread and its cache.
+        crate::views::forget_status_text();
+        let before = STATUS_TEXT_MEASURED.with(std::cell::Cell::get);
+        for _ in 0..3 {
+            for line in [
+                "Up to date with origin",
+                "2 commits ahead of origin",
+                "Up to date with origin · nothing new",
+            ] {
+                app.update(cx, |app, cx| {
+                    app.status = line.into();
+                    cx.notify();
+                });
+                draw(cx);
+                let hints =
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)));
+                assert_eq!(hints, Some(keys.whole()), "{line:?}: the spare hints stay");
+            }
+        }
+        assert_eq!(
+            STATUS_TEXT_MEASURED.with(std::cell::Cell::get) - before,
+            2,
+            "each line is measured once"
+        );
+        close(cx);
+    }
+
+    /// The search keeps Shift-Home and Shift-End, which select from the
+    /// caret to the start and end of its text, while Home and End browse the
+    /// list: at 13 pt in a 1200 × 800 window, with "tab" typed and the caret
+    /// moved one character back, Shift-Home selects "ta", and from that
+    /// selection's end Shift-End selects "b", each as the field copies it.
+    #[gpui::test]
+    async fn the_search_keeps_shift_home_and_shift_end(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        cx.simulate_input("tab");
+        draw(cx);
+        let copy = resolve_key("primary-c", cfg!(target_os = "macos"));
+        for (keys, selected) in [("left shift-home", "ta"), ("right shift-end", "b")] {
+            press(cx, &format!("{keys} {copy}"));
+            let copied = cx.read_from_clipboard().and_then(|item| item.text());
+            assert_eq!(
+                copied.as_deref(),
+                Some(selected),
+                "{keys} selects {selected:?} in the search"
+            );
+        }
+        close(cx);
+    }
+
+    /// What a screen reader hears from Keyboard Shortcuts, frame by frame:
+    /// its status's name each time it changes while it is polite, as AT-SPI
+    /// announces a live node whose name changes, and none it takes quietly;
+    /// on Linux every announcement the window's AT-SPI adapter itself made,
+    /// fed each frame's tree, so a second live node announcing beside the
+    /// status is heard too, and the item a list holds selected each time it
+    /// reported a change of its selection, which Orca speaks; and of both,
+    /// what Orca 51.1's spam filter lets it speak
+    /// (`atspi_state_tests::Bus::heard_by_orca`).
+    struct Heard {
+        named: Option<String>,
+        heard: Vec<String>,
+        /// The list's selected row's name as the window's tree last held it.
+        row: Option<String>,
+        #[cfg(target_os = "linux")]
+        bus: crate::native_accessibility::atspi_state_tests::Bus,
+        #[cfg(target_os = "linux")]
+        adapter: Vec<String>,
+        #[cfg(target_os = "linux")]
+        listed: Vec<String>,
+        #[cfg(target_os = "linux")]
+        orca: Vec<String>,
+        /// Orca's locus of focus, where a test follows it
+        /// (`atspi_state_tests::Bus::heard_by_orca_from`).
+        #[cfg(target_os = "linux")]
+        locus: Option<Option<accesskit_atspi_common::NodeId>>,
+    }
+
+    impl Heard {
+        /// The dialog's one status, by element ID.
+        const STATUS: &str = "shortcut-help-status";
+
+        /// Starts listening to the open dialog, as it opened already heard.
+        fn new(cx: &mut VisualTestContext) -> Self {
+            #[cfg(target_os = "linux")]
+            let bus = crate::native_accessibility::atspi_state_tests::Bus::new(
+                crate::native_accessibility::atspi_state_tests::next_frame(cx),
+            );
+            let mut heard = Self {
+                named: None,
+                heard: Vec::new(),
+                row: None,
+                #[cfg(target_os = "linux")]
+                bus,
+                #[cfg(target_os = "linux")]
+                adapter: Vec::new(),
+                #[cfg(target_os = "linux")]
+                listed: Vec::new(),
+                #[cfg(target_os = "linux")]
+                orca: Vec::new(),
+                #[cfg(target_os = "linux")]
+                locus: None,
+            };
+            heard.frame(cx);
+            heard.heard.clear();
+            #[cfg(target_os = "linux")]
+            {
+                heard.adapter.clear();
+                heard.listed.clear();
+                heard.orca.clear();
+            }
+            heard
+        }
+
+        /// Draws a frame and records what it announces.
+        fn frame(&mut self, cx: &mut VisualTestContext) {
+            use crate::native_accessibility::written;
+            #[cfg(target_os = "linux")]
+            let tree = crate::native_accessibility::atspi_state_tests::next_frame(cx);
+            #[cfg(not(target_os = "linux"))]
+            {
+                written::forget();
+                draw(cx);
+            }
+            // A status added with a name is announced as it is added, as
+            // the dialog opens; one no longer drawn is gone. It is polite,
+            // or off for a change it takes quietly.
+            let mut polite = true;
+            let name = written::get(Self::STATUS).and_then(|status| {
+                let live = written::announced(Self::STATUS).map(|live| live.live);
+                polite = live == Some(gpui::accesskit::Live::Polite);
+                assert!(
+                    polite || live == Some(gpui::accesskit::Live::Off),
+                    "the dialog's status is polite, or quiet: {live:?}"
+                );
+                status.node.label().map(str::to_owned)
+            });
+            if name != self.named {
+                if polite {
+                    self.heard.extend(name.clone());
+                }
+                self.named = name;
+            }
+            self.row = written::inside("shortcut-help-results")
+                .into_iter()
+                .find_map(|id| {
+                    let row = written::get(&id)?;
+                    (row.node.role() == Role::ListBoxOption && row.node.is_selected() == Some(true))
+                        .then(|| row.node.label().map(str::to_owned))
+                })
+                .flatten();
+            #[cfg(target_os = "linux")]
+            {
+                self.bus.update(tree);
+                self.adapter.extend(self.bus.announced());
+                self.listed.extend(self.bus.selection_changed());
+                let now = cx.executor().now();
+                let orca = match &mut self.locus {
+                    Some(locus) => self.bus.heard_by_orca_from(now, locus),
+                    None => self.bus.heard_by_orca(now),
+                };
+                self.orca.extend(orca);
+            }
+        }
+
+        /// The list's selected row's name as the window's tree holds it.
+        fn row_name(&self) -> Option<&str> {
+            self.row.as_deref()
+        }
+
+        /// What Orca spoke since the last call, in order.
+        #[cfg(target_os = "linux")]
+        fn take_orca(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.orca)
+        }
+
+        /// Lets the test clock run `millis` and draws, recording what the
+        /// frame announces.
+        fn wait(&mut self, cx: &mut VisualTestContext, millis: u64) {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(millis));
+            cx.run_until_parked();
+            self.frame(cx);
+        }
+
+        /// What was announced since the last call, which on Linux is all the
+        /// AT-SPI adapter announced, nothing besides it.
+        fn take(&mut self) -> Vec<String> {
+            let heard = std::mem::take(&mut self.heard);
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                std::mem::take(&mut self.adapter),
+                heard,
+                "the AT-SPI adapter announces what the status's name says, and nothing else"
+            );
+            heard
+        }
+
+        /// The entries the list held selected each time the AT-SPI adapter
+        /// reported a change of its selection since the last call, each of
+        /// which Orca speaks.
+        #[cfg(target_os = "linux")]
+        fn take_listed(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.listed)
+        }
+    }
+
+    /// What the status announces once a search for `query` rests: its count
+    /// and its first entry, the one a search selects, in one reading.
+    fn resting_for(query: &str) -> String {
+        let rows = help_matches(query);
+        format!("{} · {}", count_for(query), entry_reading(&rows, 1))
+    }
+
+    /// The count Keyboard Shortcuts draws above its list.
+    fn drawn_count() -> String {
+        DRAWN_COUNT.with_borrow(Clone::clone)
+    }
+
+    /// The count a search for `query` draws.
+    fn count_for(query: &str) -> String {
+        counted_entries(&help_matches(query)).to_string()
+    }
+
+    /// Typing "palette" into Keyboard Shortcuts' search 60 ms a key, as
+    /// steady typing does, draws each key's count at once and makes one
+    /// announcement, 500 ms after the last key ([`COUNT_REST`]), not at
+    /// 499 ms and nothing more after it, which reads the count the search
+    /// rests on and the entry it selected together, "1 shortcut · Command
+    /// Palette: Ctrl+Shift+P". The status was named by each key's count, so
+    /// each was announced, and Orca's echo of the next key cut it off: at
+    /// 60 ms a key it spoke "34 shortcuts" and never the settled "1
+    /// shortcut". The count and the entry were then two statuses announced
+    /// a millisecond apart, and Orca dropped the second, the entry (QA-90).
+    #[gpui::test]
+    async fn a_burst_of_keys_announces_once_the_count_and_entry_it_rests_on(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        let settled = count_for("palette");
+        assert_ne!(count_for("p"), settled, "the first key counts more");
+        let entry = format!("Command Palette: {}", label(ShortcutId::Palette));
+        let mut typed = String::new();
+        for key in "palette".chars() {
+            typed.push(key);
+            cx.simulate_input(&key.to_string());
+            heard.frame(cx);
+            assert_eq!(
+                drawn_count(),
+                count_for(&typed),
+                "after {typed:?} the line draws its count at once"
+            );
+            heard.wait(cx, 60);
+        }
+        heard.wait(cx, 499 - 60);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the search has rested under 500 ms"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            [format!("{settled} · {entry}")],
+            "one announcement: the settled count and its selected entry together"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        assert_eq!(drawn_count(), settled, "the line draws the count announced");
+        close(cx);
+    }
+
+    /// A pause after each key announces each key's count with its entry:
+    /// "p", a rest, then "a" and a rest announce both. A count and entry the
+    /// search comes back to within the rest are not announced again: "l" and
+    /// Backspace inside the rest leave those announced for "pa", and nothing
+    /// is said.
+    #[gpui::test]
+    async fn a_pause_after_each_key_announces_each_count_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        assert_ne!(
+            count_for("p"),
+            count_for("pa"),
+            "the second key counts fewer"
+        );
+        assert_ne!(
+            count_for("pal"),
+            count_for("pa"),
+            "and the third fewer still"
+        );
+        for (key, typed) in [("p", "p"), ("a", "pa")] {
+            cx.simulate_input(key);
+            heard.frame(cx);
+            heard.wait(cx, COUNT_REST.as_millis() as u64);
+            assert_eq!(
+                heard.take(),
+                [resting_for(typed)],
+                "{typed:?} and a rest announce its count and entry"
+            );
+        }
+        cx.simulate_input("l");
+        heard.wait(cx, 100);
+        cx.simulate_keystrokes("backspace");
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(drawn_count(), count_for("pa"), "back at \"pa\"");
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "the count and entry announced last are not announced again"
+        );
+        close(cx);
+    }
+
+    /// A search that rests announces its count and the entry it selected in
+    /// one reading, 500 ms after its last key and not at 499. A move the
+    /// person makes after it, by Down, Up, End, Home or a click on an entry,
+    /// announces nothing of the app's own where the list speaks the entry it
+    /// selects itself ([`LIST_SPEAKS_SELECTION`], Linux, where the AT-SPI
+    /// adapter hears nothing from the dialog and the list reports each
+    /// move's entry), and elsewhere the entry it reaches, alone and at once;
+    /// nothing follows. The status announced each move's entry on Linux too,
+    /// so Orca spoke Down's entry twice, from the status and from the list
+    /// (QA-90).
+    #[gpui::test]
+    async fn a_move_after_the_rest_is_left_to_the_list_where_it_speaks_it(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        let view = OPENED_HELP
+            .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+            .expect("the open view");
+        let entries = |rows: &[HelpRow]| -> Vec<usize> {
+            (0..rows.len())
+                .filter(|&row| matches!(rows[row], HelpRow::Entry(_)))
+                .collect()
+        };
+        // A search of two keys that finds three entries or more and selects
+        // another first entry than the whole list's.
+        let whole = entry_reading(&help_matches(""), 1);
+        let query = ["ta", "hi", "br", "co", "st", "re"]
+            .into_iter()
+            .find(|query| {
+                let rows = help_matches(query);
+                entries(&rows).len() > 2 && entry_reading(&rows, 1) != whole
+            })
+            .expect("a two-key search selects another entry");
+        let rows = help_matches(query);
+        let found = entries(&rows);
+        for key in query.chars() {
+            let key = key.to_string();
+            cx.simulate_input(&key);
+            heard.frame(cx);
+            heard.wait(cx, 60);
+        }
+        heard.wait(cx, 499 - 60);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the search has rested under 500 ms"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            [format!(
+                "{} · {}",
+                count_for(query),
+                entry_reading(&rows, 1)
+            )],
+            "the count and the entry the search rests on, in one announcement"
+        );
+        #[cfg(target_os = "linux")]
+        heard.take_listed();
+        let moved = |cx: &mut VisualTestContext, heard: &mut Heard, how: &str, to: usize| {
+            heard.frame(cx);
+            assert_eq!(
+                cx.update(|_, cx| view.read(cx).selected),
+                to,
+                "{how} selects row {to}"
+            );
+            let entry = entry_reading(&rows, to).to_string();
+            let own = if LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![entry.clone()]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "{how}: the app announces the entry only where the list does not"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(heard.take_listed(), [entry], "{how}: the list speaks it");
+        };
+        let last = *found.last().unwrap();
+        for (keys, to) in [
+            ("down", found[1]),
+            ("up", found[0]),
+            ("end", last),
+            ("home", found[0]),
+        ] {
+            cx.simulate_keystrokes(keys);
+            moved(cx, &mut heard, keys, to);
+        }
+        let row = format!("shortcut-help-row-{}", found[1]).leak();
+        let click = cx.debug_bounds(row).expect("the entry is drawn").center();
+        cx.simulate_click(click, Modifiers::default());
+        moved(cx, &mut heard, "a click", found[1]);
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        close(cx);
+    }
+
+    /// In a list longer than its view, each move is spoken once, also to a
+    /// row the list had not drawn, which enters the window's tree already
+    /// selected: End's, Home's from the list's foot and a second Page
+    /// Down's, past the rows drawn. Where the list speaks a moved selection
+    /// ([`LIST_SPEAKS_SELECTION`], Linux) the AT-SPI adapter reports a change
+    /// of the list's selection for every move, that row's too, and the app
+    /// announces nothing: the status announced End's and Home's entry, which
+    /// Orca then spoke twice, from the status and from the list's
+    /// `selection-changed` 10 to 30 ms later (QA-92). Elsewhere the status
+    /// announces every move.
+    #[gpui::test]
+    async fn a_move_in_a_long_list_is_spoken_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        let view = OPENED_HELP
+            .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+            .expect("the open view");
+        let rows = help_matches("");
+        let entries: Vec<usize> = (0..rows.len())
+            .filter(|&row| matches!(rows[row], HelpRow::Entry(_)))
+            .collect();
+        let last = *entries.last().unwrap();
+        let page = cx.update(|_, cx| view.read(cx).page());
+        for (keys, to, shown) in [
+            ("down", entries[1], true),
+            ("end", last, false),
+            ("up", entries[entries.len() - 2], true),
+            ("home", entries[0], false),
+            // The first page's entry is the one the list's foot cuts.
+            ("pagedown", entries[page], true),
+            ("pagedown", entries[2 * page], false),
+        ] {
+            let row = format!("shortcut-help-row-{to}").leak();
+            assert_eq!(
+                cx.debug_bounds(row).is_some(),
+                shown,
+                "{keys}: whether row {to} of {} is drawn before it",
+                rows.len()
+            );
+            cx.simulate_keystrokes(keys);
+            heard.frame(cx);
+            assert_eq!(
+                cx.update(|_, cx| view.read(cx).selected),
+                to,
+                "{keys} selects row {to}"
+            );
+            let entry = entry_reading(&rows, to).to_string();
+            let own = if LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![entry.clone()]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "{keys}: the app announces the entry only where the list does not"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                heard.take_listed(),
+                [entry],
+                "{keys}: the list reports its selection changed, and Orca speaks the entry"
+            );
+        }
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        close(cx);
+    }
+
+    /// The rows of `rows` that are entries, not group headings.
+    fn entry_rows(rows: &[HelpRow]) -> Vec<usize> {
+        (0..rows.len())
+            .filter(|&row| matches!(rows[row], HelpRow::Entry(_)))
+            .collect()
+    }
+
+    /// The entry a search for `query` selects, its first.
+    fn first_entry(query: &str) -> String {
+        entry_reading(&help_matches(query), 1).to_string()
+    }
+
+    /// A change of selection is heard once, made by Down or by a search
+    /// typed 150 ms a key. The selected row's accessible name is its entry,
+    /// "Command Palette: Ctrl+Shift+P", which the list speaks where it
+    /// speaks a change of its selection itself ([`LIST_SPEAKS_SELECTION`],
+    /// Linux): there a move announces nothing of the status's own, and the
+    /// rest of a search whose change of selection Orca spoke announces only
+    /// what the row does not say, the count ("3 shortcuts"), never the entry
+    /// again. Elsewhere (macOS) the status announces the whole reading each
+    /// time. A reading no change of selection led to stays whole on both: a
+    /// search that keeps the selected entry and changes the count, and "0
+    /// shortcuts". The status announced the count with the entry after Orca
+    /// 51.1 had spoken the entry from the list, as the command palette's
+    /// status did (QA-105).
+    #[gpui::test]
+    async fn a_change_of_selection_is_heard_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        // Past the list's change of selection as the dialog opened.
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        let whole = help_matches("");
+        let found = entry_rows(&whole);
+
+        // Down twice, a second apart.
+        for to in [found[1], found[2]] {
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+            let entry = entry_reading(&whole, to).to_string();
+            assert_eq!(
+                heard.row_name(),
+                Some(entry.as_str()),
+                "Down selects {entry:?}"
+            );
+            let own = if LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![entry.clone()]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "Down to {entry:?}: the status announces it only where the list does not speak it"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                heard.take_orca(),
+                [entry],
+                "Orca speaks the entry Down reaches, once"
+            );
+            heard.wait(cx, 1000);
+            assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        }
+        #[cfg(target_os = "linux")]
+        heard.take_listed();
+
+        // Keys typed 150 ms apart, each drawn at once, and then the rest.
+        let typed = |cx: &mut VisualTestContext, heard: &mut Heard, keys: &str| {
+            for key in keys.split_inclusive(|_| true) {
+                cx.simulate_input(key);
+                heard.frame(cx);
+                heard.wait(cx, 150);
+            }
+            heard.wait(cx, 2000);
+        };
+        // What the rest of `query` is heard as: where its keys `changed` the
+        // selection and the list speaks that (Linux), the entry and then the
+        // status's count; otherwise the status's whole reading.
+        let rests = |heard: &mut Heard, query: &str, changed: bool| {
+            let entry = first_entry(query);
+            let count = count_for(query);
+            assert_eq!(
+                heard.row_name(),
+                Some(entry.as_str()),
+                "{query:?} selects its first entry"
+            );
+            let said = if changed && LIST_SPEAKS_SELECTION {
+                count
+            } else {
+                resting_reading(&count, &entry).to_string()
+            };
+            assert_eq!(
+                heard.take(),
+                std::slice::from_ref(&said),
+                "{query:?}'s rest announces {said:?}, once"
+            );
+            assert_eq!(heard.named.as_ref(), Some(&said), "and the status reads it");
+            #[cfg(target_os = "linux")]
+            {
+                let listed = heard.take_listed();
+                let orca = heard.take_orca();
+                if changed {
+                    assert_eq!(
+                        listed.last(),
+                        Some(&entry),
+                        "{query:?}: the list reports its change of selection to {entry:?}"
+                    );
+                    assert!(
+                        orca.ends_with(&[entry, said]),
+                        "{query:?}: Orca speaks the entry and then the count, the entry once: \
+                         {orca:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        listed,
+                        Vec::<String>::new(),
+                        "{query:?}: the list reports no change of selection"
+                    );
+                    assert_eq!(orca, [said], "{query:?}: Orca speaks the whole reading");
+                }
+            }
+        };
+
+        // A search of two keys that selects another entry than Down's.
+        let selected = entry_reading(&whole, found[2]).to_string();
+        let query = ["ta", "hi", "br", "co", "st", "re", "pa"]
+            .into_iter()
+            .find(|query| {
+                entry_rows(&help_matches(query)).len() > 1 && first_entry(query) != selected
+            })
+            .expect("a two-key search selects another entry");
+        typed(cx, &mut heard, query);
+        rests(&mut heard, query, true);
+        // One more key that keeps its entry selected and narrows the count.
+        let kept = ('a'..='z')
+            .flat_map(|key| [format!("{query}{key}"), format!("{query} {key}")])
+            .find(|longer| {
+                !entry_rows(&help_matches(longer)).is_empty()
+                    && first_entry(longer) == first_entry(query)
+                    && count_for(longer) != count_for(query)
+            })
+            .expect("a longer search keeps the entry and narrows the count");
+        typed(cx, &mut heard, &kept[query.len()..]);
+        rests(&mut heard, &kept, false);
+        // One that matches none.
+        let none = ["#", "9", "q", "z", "x"]
+            .into_iter()
+            .find(|key| entry_rows(&help_matches(&format!("{kept}{key}"))).is_empty())
+            .expect("a key that matches nothing");
+        typed(cx, &mut heard, none);
+        let zero = count_for(&format!("{kept}{none}"));
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&zero),
+            "a search that matches nothing is announced whole"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            assert_eq!(heard.take_orca(), [zero], "and Orca speaks it");
+        }
+        // Backspace brings back the entry, a change of selection.
+        cx.simulate_keystrokes("backspace");
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        rests(&mut heard, &kept, true);
+        close(cx);
+    }
+
+    /// A move inside a search's rest is the change of selection the rest
+    /// follows. A key that selects another entry, then Down 200 ms later,
+    /// each drawn at once: Orca speaks both entries, and the rest says the
+    /// count alone where the list speaks its selection (Linux), never
+    /// Down's entry again; elsewhere Down announces its entry and the rest
+    /// the count with it. Down 60 ms after the key, a change Orca 51.1 drops
+    /// as one of a burst, leaves the rest the whole reading, Down's entry
+    /// included, which Orca has not spoken.
+    #[gpui::test]
+    async fn a_move_inside_the_rest_is_heard_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let key = ["t", "h", "b", "c", "s", "r", "p"]
+            .into_iter()
+            .find(|key| {
+                entry_rows(&help_matches(key)).len() > 1 && first_entry(key) != first_entry("")
+            })
+            .expect("a key that selects another entry, of two or more");
+        let rows = help_matches(key);
+        let down = entry_reading(&rows, entry_rows(&rows)[1]).to_string();
+        let count = count_for(key);
+        for (after, spoken) in [(200, true), (60, false)] {
+            open(&app, cx, 13, (1480., 973.));
+            let mut heard = Heard::new(cx);
+            heard.wait(cx, 1000);
+            heard.take();
+            #[cfg(target_os = "linux")]
+            {
+                heard.take_listed();
+                heard.take_orca();
+            }
+            cx.simulate_input(key);
+            heard.frame(cx);
+            heard.wait(cx, after);
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+            assert_eq!(
+                heard.row_name(),
+                Some(down.as_str()),
+                "Down selects {down:?}"
+            );
+            heard.wait(cx, 2000);
+            let said = if spoken && LIST_SPEAKS_SELECTION {
+                count.clone()
+            } else {
+                resting_reading(&count, &down).to_string()
+            };
+            let own = if LIST_SPEAKS_SELECTION {
+                vec![said.clone()]
+            } else {
+                vec![down.clone(), said.clone()]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "Down {after} ms after {key:?}: the rest says {said:?}"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                let orca = heard.take_orca();
+                let expected = if spoken {
+                    vec![first_entry(key), down.clone(), said]
+                } else {
+                    vec![first_entry(key), said]
+                };
+                assert_eq!(
+                    orca, expected,
+                    "Down {after} ms after {key:?}: Orca speaks each entry it hears once"
+                );
+            }
+            close(cx);
+        }
+    }
+
+    /// A selected row the wheel brings back into the list is a change of
+    /// selection: it enters the window's tree already selected, which the
+    /// AT-SPI adapter reports as a change of the list's selection, and Orca
+    /// speaks it. A key that selects another entry 50 ms after it makes a
+    /// change Orca 51.1 drops as one of a burst, so the rest announces the
+    /// count with the entry the search rests on. Untimed, the row's return
+    /// left that key's change timed against the dialog's opening, and the
+    /// rest said the count alone, the entry unheard.
+    #[gpui::test]
+    async fn a_selected_row_brought_back_into_the_list_is_a_change(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        heard.wait(cx, 1000);
+        heard.take();
+        let first = first_entry("");
+        let key = ["b", "t", "h", "c", "s", "r", "p"]
+            .into_iter()
+            .find(|key| first_entry(key) != first)
+            .expect("a key that selects another entry");
+        let centre = cx
+            .debug_bounds("shortcut-help-results")
+            .expect("the list")
+            .center();
+        let row = "shortcut-help-row-1";
+        assert!(cx.debug_bounds(row).is_some(), "the selected row is drawn");
+        scroll_down(cx, centre, ScrollDelta::Pixels(point(px(0.), px(-600.))));
+        heard.frame(cx);
+        assert!(
+            cx.debug_bounds(row).is_none(),
+            "the wheel takes the selected row out of the list"
+        );
+        heard.wait(cx, 1000);
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        scroll_down(cx, centre, ScrollDelta::Pixels(point(px(0.), px(600.))));
+        heard.frame(cx);
+        assert!(cx.debug_bounds(row).is_some(), "and brings it back");
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_listed(),
+            std::slice::from_ref(&first),
+            "the adapter reports the row's return as a change of the list's selection"
+        );
+        // A key that selects another entry 50 ms later.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(50));
+        cx.simulate_input(key);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        let whole = resting_reading(&count_for(key), &first_entry(key)).to_string();
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the count with the entry"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [first, whole],
+            "Orca speaks the returned row, drops the key's change 50 ms after it, and speaks \
+             the status's reading"
+        );
+        close(cx);
+    }
+
+    /// A search that keeps the selected entry reads whole, even where a move
+    /// outside any rest selected that entry: Down to the second entry, then,
+    /// 5 s later, a key that keeps it first and narrows the count. The rest
+    /// announces the count with the entry, on every platform; Down, heard
+    /// from the list and taken quietly on Linux, led to no rest. Counted
+    /// toward the search's rest, Down had the status say the count alone,
+    /// "38 shortcuts", though no change of selection led to it.
+    #[gpui::test]
+    async fn a_search_that_keeps_a_moved_entry_reads_whole(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        heard.wait(cx, 1000);
+        heard.take();
+        let whole = help_matches("");
+        let found = entry_rows(&whole);
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        heard.wait(cx, 5000);
+        heard.take();
+        let down = entry_reading(&whole, found[1]).to_string();
+        let label = match &whole[found[1]] {
+            HelpRow::Entry(entry) => entry.label.to_lowercase(),
+            HelpRow::Group(..) => unreachable!("an entry row"),
+        };
+        // The shortest part of Down's label that keeps it first.
+        let query = (1..=label.len())
+            .flat_map(|len| (0..=label.len() - len).map(move |at| (at, len)))
+            .filter_map(|(at, len)| label.get(at..at + len).map(str::to_owned))
+            .find(|query| first_entry(query) == down && count_for(query) != count_for(""))
+            .expect("a search whose first entry is Down's");
+        cx.simulate_input(&query);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            [resting_reading(&count_for(&query), &down).to_string()],
+            "{query:?}, which keeps {down:?} selected, reads whole"
+        );
+        close(cx);
+    }
+
+    /// Three keys after a rest, the second and third each selecting another
+    /// entry: `(prefix, second, third)`.
+    fn three_changes() -> (String, String, String) {
+        let letters = || ('a'..='z').map(String::from);
+        letters()
+            .flat_map(|prefix| letters().map(move |second| (prefix.clone(), second)))
+            .flat_map(|(prefix, second)| {
+                letters().map(move |third| (prefix.clone(), second.clone(), third))
+            })
+            .find(|(prefix, second, third)| {
+                let (two, three) = (
+                    format!("{prefix}{second}"),
+                    format!("{prefix}{second}{third}"),
+                );
+                !entry_rows(&help_matches(&three)).is_empty()
+                    && first_entry(prefix) != first_entry(&two)
+                    && first_entry(&two) != first_entry(&three)
+            })
+            .expect("three keys whose last two each select another entry")
+    }
+
+    /// A change of selection whose frame is drawn late, as on a loaded host,
+    /// keeps the entry in the status's reading. The second key selects
+    /// another entry and its frame is drawn 140 ms after it is handled; the
+    /// third, handled 156 ms after the second, selects another in a frame
+    /// drawn at once, so the AT-SPI adapter reports the two changes 16 ms
+    /// apart and Orca 51.1 drops the second. The rest announces the count
+    /// with the entry the search rests on, the last thing Orca says, and
+    /// Orca never names that entry otherwise. Timed as their keys were
+    /// handled, the third key's change would be taken as spoken, and the
+    /// status would say the count alone after the entry Orca spoke for the
+    /// second key, as the command palette's did before its frames timed it.
+    #[gpui::test]
+    async fn a_late_frame_keeps_the_entry_in_the_reading(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        let (prefix, second, third) = three_changes();
+        heard.wait(cx, 1000);
+        cx.simulate_input(&prefix);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        // The second key, whose frame is drawn 140 ms after it is handled.
+        cx.simulate_input(&second);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(140));
+        heard.frame(cx);
+        let two = format!("{prefix}{second}");
+        assert_eq!(heard.row_name(), Some(first_entry(&two).as_str()));
+        // The third 16 ms after that frame, drawn at once.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.simulate_input(&third);
+        heard.frame(cx);
+        let three = format!("{two}{third}");
+        let entry = first_entry(&three);
+        assert_eq!(heard.row_name(), Some(entry.as_str()));
+        heard.wait(cx, 2000);
+        let whole = resting_reading(&count_for(&three), &entry).to_string();
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the count with the entry"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [first_entry(&two), whole],
+            "Orca speaks the second key's entry, drops the change the third made 16 ms after it, \
+             and speaks the status's reading"
+        );
+        close(cx);
+    }
+
+    /// A change of selection reported soon after the one before it keeps the
+    /// entry in the status's reading even where the frame after the one that
+    /// drew it comes late, as behind a long task. The second key selects
+    /// another entry, drawn and timed at once; the third, 60 ms later,
+    /// selects another in a frame drawn at once, so the AT-SPI adapter
+    /// reports it 60 ms after the second's and Orca 51.1 drops it, and the
+    /// frame after that one comes 110 ms later. The rest announces the count
+    /// with the entry. Timed by that late frame, 170 ms after the second
+    /// key's, the change would be taken as spoken. The test's AT-SPI model
+    /// sees the window's tree only with frames that also run the next
+    /// frame's callbacks, so it hears the third key's change at 170 ms and
+    /// cannot show Orca dropping it; the status is what this checks.
+    #[gpui::test]
+    async fn a_late_frame_after_a_change_keeps_the_entry_in_the_reading(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        let (prefix, second, third) = three_changes();
+        heard.wait(cx, 1000);
+        cx.simulate_input(&prefix);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        heard.take();
+        // The second key, drawn and timed at once.
+        cx.simulate_input(&second);
+        heard.frame(cx);
+        // The third 60 ms later, drawn at once, and the frame after that one
+        // 110 ms later.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(60));
+        cx.simulate_input(&third);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(110));
+        heard.frame(cx);
+        let three = format!("{prefix}{second}{third}");
+        let entry = first_entry(&three);
+        assert_eq!(heard.row_name(), Some(entry.as_str()));
+        heard.wait(cx, 2000);
+        let whole = resting_reading(&count_for(&three), &entry).to_string();
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the count with the entry"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(
+                orca.last(),
+                Some(&whole),
+                "Orca speaks the status's reading last: {orca:?}"
+            );
+        }
+        close(cx);
+    }
+
+    /// The entry last spoken follows the selection on every platform: after
+    /// a search for "p" rests, Down, then "a" and Backspace inside the next
+    /// rest bring the search back to "p" and its first entry, which the rest
+    /// announces with the count, as that entry differs from Down's, the last
+    /// spoken. On Linux, where the list spoke Down's entry, the app kept the
+    /// rest's entry as the last spoken, and the rest said nothing.
+    #[gpui::test]
+    async fn a_rest_after_a_move_announces_the_entry_it_comes_back_to(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        cx.simulate_input("p");
+        heard.frame(cx);
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(
+            heard.take(),
+            [resting_for("p")],
+            "\"p\" and a rest announce its count and entry"
+        );
+        let rows = help_matches("p");
+        let next = (2..rows.len())
+            .find(|&row| matches!(rows[row], HelpRow::Entry(_)))
+            .expect("\"p\" finds a second entry");
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let own = if LIST_SPEAKS_SELECTION {
+            Vec::new()
+        } else {
+            vec![entry_reading(&rows, next).to_string()]
+        };
+        assert_eq!(heard.take(), own, "Down is spoken once");
+        cx.simulate_input("a");
+        heard.wait(cx, 100);
+        cx.simulate_keystrokes("backspace");
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(drawn_count(), count_for("p"), "back at \"p\"");
+        assert_eq!(
+            heard.take(),
+            [resting_for("p")],
+            "the rest announces the count with the entry it comes back to, which Down's had followed"
+        );
+        close(cx);
+    }
+
+    /// A search changed after a move takes rows away and adds others,
+    /// renaming none: after "tab" rests and Down, Backspace ("ta") leaves
+    /// each row node the window's tree holds before and after it with the
+    /// name it had. On Linux the AT-SPI adapter then reports no list item
+    /// or heading renamed, the list's change of selection reports the entry
+    /// the search selects, once, the app says nothing at the key, and the
+    /// rest announces the count with that entry. Each row was its place in
+    /// the list, so Backspace renamed the node that had held Down's entry,
+    /// and Orca spoke the entry now in its place, "not selected", before the
+    /// one the search selected (QA-92).
+    #[gpui::test]
+    async fn a_search_changed_after_a_move_renames_no_row(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        // The rows the window's tree holds as last drawn, by node, with
+        // their names.
+        let rows = || -> std::collections::HashMap<String, Option<String>> {
+            written::inside("shortcut-help-results")
+                .into_iter()
+                .filter_map(|id| {
+                    let row = written::get(&id)?;
+                    matches!(row.node.role(), Role::ListBoxOption | Role::Heading)
+                        .then(|| (id, row.node.label().map(str::to_owned)))
+                })
+                .collect()
+        };
+        cx.simulate_input("tab");
+        heard.frame(cx);
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(heard.take(), [resting_for("tab")], "\"tab\" rests");
+        let found = help_matches("tab");
+        let next = (2..found.len())
+            .find(|&row| matches!(found[row], HelpRow::Entry(_)))
+            .expect("\"tab\" finds a second entry");
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let own = if LIST_SPEAKS_SELECTION {
+            Vec::new()
+        } else {
+            vec![entry_reading(&found, next).to_string()]
+        };
+        assert_eq!(heard.take(), own, "Down is spoken once");
+        let before = rows();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.bus.renamed();
+        }
+        cx.simulate_keystrokes("backspace");
+        heard.frame(cx);
+        assert_eq!(drawn_count(), count_for("ta"), "Backspace leaves \"ta\"");
+        let after = rows();
+        let kept: Vec<_> = after
+            .iter()
+            .filter(|(id, _)| before.contains_key(*id))
+            .collect();
+        assert!(
+            !kept.is_empty(),
+            "rows of \"tab\" stay in the tree for \"ta\": {after:?}"
+        );
+        let renamed: Vec<_> = kept
+            .iter()
+            .filter(|(id, name)| before[*id] != **name)
+            .map(|(id, name)| format!("{id}: {:?} → {name:?}", before[*id]))
+            .collect();
+        assert_eq!(
+            renamed,
+            Vec::<String>::new(),
+            "a row node keeps its name across the search's change"
+        );
+        let selects = entry_reading(&help_matches("ta"), 1).to_string();
+        #[cfg(target_os = "linux")]
+        {
+            use accesskit_atspi_common::Role as AtspiRole;
+            let renamed: Vec<_> = heard
+                .bus
+                .renamed()
+                .into_iter()
+                .filter(|(role, _)| matches!(role, AtspiRole::ListItem | AtspiRole::Heading))
+                .collect();
+            assert_eq!(renamed, [], "the adapter reports no row renamed");
+            assert_eq!(
+                heard.take_listed(),
+                std::slice::from_ref(&selects),
+                "the list's change of selection reports the entry the search selects, once"
+            );
+        }
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing of the app's own at the key"
+        );
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(
+            heard.take(),
+            [format!("{} · {selects}", count_for("ta"))],
+            "the rest announces the count with the entry the search selects"
+        );
+        close(cx);
+    }
+
+    /// The first Down after a search took away the row Orca last spoke
+    /// speaks only the entry it moves to. Orca keeps its locus on the row it
+    /// last heard selected: typing "tab" 60 ms a key, the one "t" selects,
+    /// since its spam filter drops the changes of selection of the keys
+    /// after it. "a" takes that row out of the list, and at Down Orca asks
+    /// the row for its parent. Answered nothing, it found no ancestor the
+    /// two share and read the window, the dialog and the list first, then
+    /// "Close Repository Tab: Ctrl+W" (QA-94); the row now answers the list
+    /// it left. It also stays in libatspi's cache, which the vendored
+    /// `accesskit_unix` now tells of every other removal: a row libatspi
+    /// disposed would be dead to Orca, which then reads the dialog and the
+    /// list (the vendored AT-SPI adapter's patches).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_first_down_after_a_search_took_the_heard_row_speaks_only_the_entry(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        heard.locus = Some(None);
+        let orca = |_: &mut VisualTestContext, heard: &mut Heard| heard.take_orca();
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let rows = help_matches("");
+        let first = (2..rows.len())
+            .find(|&row| matches!(rows[row], HelpRow::Entry(_)))
+            .unwrap();
+        let spoken = entry_reading(&rows, first).to_string();
+        assert_eq!(
+            orca(cx, &mut heard),
+            std::slice::from_ref(&spoken),
+            "Down speaks its entry"
+        );
+        heard.wait(cx, 1000);
+        orca(cx, &mut heard);
+        let mut typed = Vec::new();
+        for key in ["t", "a", "b"] {
+            cx.simulate_input(key);
+            heard.frame(cx);
+            typed.extend(orca(cx, &mut heard));
+            heard.wait(cx, 60);
+            typed.extend(orca(cx, &mut heard));
+        }
+        heard.wait(cx, 2000);
+        typed.extend(orca(cx, &mut heard));
+        assert!(
+            !typed.iter().any(|said| said == "<context>"),
+            "nothing of the window, the dialog or the list while typing: {typed:?}"
+        );
+        let entries: Vec<_> = (0..rows.len())
+            .map(|row| entry_reading(&rows, row))
+            .collect();
+        let last = typed
+            .iter()
+            .rev()
+            .find(|said| entries.iter().any(|entry| entry.as_ref() == said.as_str()))
+            .unwrap_or(&spoken);
+        let tab = help_matches("tab");
+        assert!(
+            (0..tab.len()).all(|row| entry_reading(&tab, row).as_ref() != last.as_str()),
+            "the search takes away the row Orca last spoke, {last:?}"
+        );
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let next = (2..tab.len())
+            .find(|&row| matches!(tab[row], HelpRow::Entry(_)))
+            .unwrap();
+        assert_eq!(
+            orca(cx, &mut heard),
+            [entry_reading(&tab, next).to_string()],
+            "only the entry, with nothing of the window, the dialog or the list before it"
+        );
+        close(cx);
+    }
+
+    /// Closing Keyboard Shortcuts while its count rests announces nothing:
+    /// "p" typed and Escape pressed 100 ms later, the rest passes in silence,
+    /// and the dialog opened again announces only its own whole count and
+    /// first entry as it opens.
+    #[gpui::test]
+    async fn closing_while_the_count_rests_announces_nothing(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        let view = OPENED_HELP
+            .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+            .expect("the open view");
+        cx.simulate_input("p");
+        heard.wait(cx, 100);
+        assert!(
+            cx.update(|_, cx| view.read(cx).settling.is_some()),
+            "the count rests"
+        );
+        cx.simulate_keystrokes("escape");
+        heard.frame(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the dialog"
+        );
+        // Held here past its close, the view no longer waits for the rest.
+        assert!(
+            cx.update(|_, cx| view.read(cx).settling.is_none()),
+            "closing drops the count's rest"
+        );
+        drop(view);
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "the rest passes in silence"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        assert_eq!(
+            drawn_count(),
+            count_for(""),
+            "the dialog opens on its whole list"
+        );
+        let whole = resting_for("");
+        assert!(
+            heard.take().iter().all(|said| *said == whole),
+            "nothing of the closed search is announced"
+        );
+        close(cx);
     }
 }

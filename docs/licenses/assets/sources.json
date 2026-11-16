@@ -64,5 +64,11 @@
     "file": "dejavu-fonts-LICENSE",
     "url": "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/0eda8a319c08835009849583cd090bb5b141ce25/LICENSE",
     "sha256": "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93"
+  },
+  {
+    "name": "ibm-plex-sans",
+    "file": "ibm-plex-sans-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/IBM/plex/1da12f02587b630c07e92692d21492d722f53614/LICENSE.txt",
+    "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
   }
 ]

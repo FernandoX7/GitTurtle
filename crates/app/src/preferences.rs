@@ -20,7 +20,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 const MAX_RECENT: usize = 10;
@@ -35,6 +38,10 @@ pub const MAX_CUSTOM_THEMES: usize = 32;
 /// The store version this build writes. Every earlier version still loads.
 const STORE_VERSION: u32 = 6;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// The settings a missing store stands for. Launch fixes them once for the desktop
+/// ([`Preferences::load_at_launch`]); until then, and in tests, a missing store has the
+/// defaults.
+static FIRST_LAUNCH: OnceLock<AppSettings> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -54,6 +61,14 @@ pub struct AppSettings {
     /// Linux: draw code in the desktop's fontconfig `monospace` family when
     /// it loads and is monospace; the bundled DejaVu Sans Mono otherwise.
     pub system_code_font: bool,
+    /// Settings' Reduce motion: follow the desktop's (or macOS's) reduced
+    /// motion, or turn it on or off whatever the desktop asks
+    /// (`native_accessibility::sync_preferences`).
+    pub reduce_motion: DisplayChoice,
+    /// Settings' Increase contrast: follow the desktop's (or macOS's)
+    /// request for more contrast, or turn More contrast on or off whatever
+    /// the desktop asks.
+    pub increase_contrast: DisplayChoice,
     pub reopen_last: bool,
     pub default_branch: String,
     /// Show the project list on the far left of the window.
@@ -75,6 +90,8 @@ impl Default for AppSettings {
             interface_text_size: crate::appearance::DEFAULT_INTERFACE_TEXT_SIZE,
             code_text_size: crate::appearance::DEFAULT_CODE_TEXT_SIZE,
             system_code_font: false,
+            reduce_motion: DisplayChoice::Follow,
+            increase_contrast: DisplayChoice::Follow,
             reopen_last: true,
             default_branch: "main".into(),
             project_pane: false,
@@ -83,7 +100,63 @@ impl Default for AppSettings {
     }
 }
 
+/// A display preference the person can leave to the desktop or decide
+/// themselves. Stored as `"follow"`, `"on"` or `"off"`; a value this build
+/// does not know loads as [`Self::Follow`]. The fields holding it were added
+/// to version 6 without a version bump: a store without them loads as
+/// Follow, and an older build reads a newer store and saves it without them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayChoice {
+    On,
+    Off,
+    /// Whatever the desktop (macOS's accessibility settings, or the Linux
+    /// desktop's settings portal) asks. Last, as serde's catch-all must be.
+    #[default]
+    #[serde(other)]
+    Follow,
+}
+
+impl DisplayChoice {
+    /// The order Settings offers them in.
+    pub const ALL: [Self; 3] = [Self::Follow, Self::On, Self::Off];
+
+    /// Whether the preference is on with the desktop's answer, `desktop`:
+    /// `None` while following a desktop that has not answered, when the
+    /// caller leaves the preference as it is.
+    pub fn resolve(self, desktop: Option<bool>) -> Option<bool> {
+        match self {
+            Self::Follow => desktop,
+            Self::On => Some(true),
+            Self::Off => Some(false),
+        }
+    }
+}
+
 impl AppSettings {
+    /// The settings a first launch starts with on this desktop. On a Linux desktop running
+    /// Omarchy they follow it ([`Self::omarchy_first_launch`]); elsewhere they are the
+    /// defaults.
+    pub fn for_first_launch() -> Self {
+        #[cfg(target_os = "linux")]
+        if crate::appearance::omarchy::desktop_runs_omarchy() {
+            return Self::omarchy_first_launch();
+        }
+        Self::default()
+    }
+
+    /// The defaults with the Omarchy theme and the desktop's monospace font, so the first
+    /// window already matches the desktop's colors and code font. Either can be changed in
+    /// Settings like any other default.
+    #[cfg(any(target_os = "linux", test))]
+    fn omarchy_first_launch() -> Self {
+        Self {
+            theme: ThemeSelection::Omarchy,
+            system_code_font: true,
+            ..Self::default()
+        }
+    }
+
     /// The theme to apply on this desktop: the rule of [`Self::resolve_selection`]
     /// for the selection the desktop honours (`ThemeSelection::on_desktop`), with the
     /// desktop's Omarchy palette on Linux.
@@ -528,12 +601,47 @@ impl StoredPath {
 }
 
 impl Preferences {
-    /// Missing, invalid, or unavailable preferences do not prevent startup.
-    /// Loading does not create a settings directory or modify a settings file.
+    /// Launch's read of the store, before the application starts; `main` is its only caller.
+    /// Missing, invalid, or unavailable preferences do not prevent startup. Loading does not
+    /// create a settings directory or modify a settings file. A missing store is a first
+    /// launch: it has `AppSettings::for_first_launch`, and every later write that still finds
+    /// no store keeps those settings, so the first save records the desktop's defaults rather
+    /// than the built-in ones.
+    pub fn load_at_launch() -> Self {
+        let Ok(path) = settings_path() else {
+            return Self::default();
+        };
+        Self::load_at_launch_from(&path, &FIRST_LAUNCH, AppSettings::for_first_launch)
+    }
+
+    /// The store as tests left it, or the defaults; it never fixes the first-launch settings.
+    #[cfg(test)]
     pub fn load() -> Self {
         settings_path()
             .and_then(|path| Self::load_from(&path))
             .unwrap_or_default()
+    }
+
+    /// [`Self::load_at_launch`] from `path`, fixing `first_launch` with `desktop` when no
+    /// store exists.
+    fn load_at_launch_from(
+        path: &Path,
+        first_launch: &OnceLock<AppSettings>,
+        desktop: impl FnOnce() -> AppSettings,
+    ) -> Self {
+        match Self::load_from(path) {
+            Ok(preferences) => preferences,
+            Err(error) if is_missing(&error) => Self::missing(first_launch.get_or_init(desktop)),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// A store that does not exist yet: nothing remembered, and `settings`.
+    fn missing(settings: &AppSettings) -> Self {
+        Self {
+            settings: settings.clone(),
+            ..Self::default()
+        }
     }
 
     pub fn last_repository(&self) -> Option<PathBuf> {
@@ -749,14 +857,15 @@ impl Preferences {
     }
 
     fn load_for_write(path: &Path) -> Result<Self> {
+        Self::load_for_write_with(path, FIRST_LAUNCH.get())
+    }
+
+    /// A missing store has the settings launch fixed for it, when it fixed any.
+    fn load_for_write_with(path: &Path, first_launch: Option<&AppSettings>) -> Result<Self> {
         match Self::load_from(path) {
             Ok(preferences) => Ok(preferences),
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                Ok(Self::default())
+            Err(error) if is_missing(&error) => {
+                Ok(first_launch.map_or_else(Self::default, Self::missing))
             }
             Err(error) => Err(error).context("Read current preferences before saving"),
         }
@@ -907,6 +1016,13 @@ pub(super) fn home_directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// The store does not exist yet, as opposed to one that cannot be read or used.
+fn is_missing(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
 #[cfg(not(test))]
 pub(super) fn settings_path() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -928,30 +1044,742 @@ pub(super) fn settings_path() -> Result<PathBuf> {
 // concurrent fixtures cannot overwrite each other's read/merge/write stores.
 #[cfg(test)]
 thread_local! {
-    static TEST_SETTINGS_DIRECTORY: std::cell::RefCell<Option<std::sync::Arc<tempfile::TempDir>>> =
+    static TEST_SETTINGS_DIRECTORY: std::cell::RefCell<Option<std::sync::Arc<test_directories::TestDirectory>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-pub(super) fn test_settings_directory() -> std::sync::Arc<tempfile::TempDir> {
+pub(super) fn test_settings_directory() -> std::sync::Arc<test_directories::TestDirectory> {
     TEST_SETTINGS_DIRECTORY.with(|directory| {
         directory
             .borrow_mut()
             .get_or_insert_with(|| {
-                std::sync::Arc::new(
-                    tempfile::Builder::new()
-                        .prefix("gitturtle-app-tests-")
-                        .tempdir()
-                        .expect("create isolated test preferences"),
-                )
+                std::sync::Arc::new(test_directories::TestDirectory::new("settings"))
             })
             .clone()
     })
 }
 
+/// Gives this thread a new, empty settings directory. A `#[gpui::test]` runs
+/// every seed on one thread, so the next seed's window would otherwise read
+/// the stores the last one saved, its recent projects among them. Executors
+/// started before keep the directory they inherited until they finish.
 #[cfg(test)]
-pub(super) fn inherit_test_settings_directory(directory: std::sync::Arc<tempfile::TempDir>) {
+pub(super) fn fresh_test_settings_directory() {
+    TEST_SETTINGS_DIRECTORY.with(|directory| directory.borrow_mut().take());
+}
+
+#[cfg(test)]
+pub(super) fn inherit_test_settings_directory(
+    directory: std::sync::Arc<test_directories::TestDirectory>,
+) {
     TEST_SETTINGS_DIRECTORY.with(|current| *current.borrow_mut() = Some(directory));
+}
+
+/// Temporary directories for app tests, every one inside a single root per
+/// test process, which goes when the process exits.
+///
+/// A test's directory can outlive the test: its serial executors inherit it,
+/// and a test app's executors can wait for work that never comes until the
+/// process ends. A process exits without dropping what its other threads hold
+/// (thread-local destructors run only on threads that finish), so a directory
+/// that only its last owner's drop removes stayed behind, one or more for
+/// every run. Each process therefore keeps one root,
+/// `gitturtle-app-tests-<pid>-<suffix>` in the system's temporary directory,
+/// and names each directory in it by a process-wide sequence, never by pid and
+/// time alone. A directory still goes when its last holder drops it; the root
+/// goes in an `atexit` hook, which runs on Linux and macOS whenever the process
+/// exits through `exit`, as libtest does when it returns from `main` or calls
+/// `process::exit` after a failure, whatever its other threads still hold.
+///
+/// A process killed by a signal or a runner's timeout runs no hook, so the
+/// first directory of every later process removes the roots no live process
+/// owns ([`remove_abandoned`]). Each root holds a lock file its process keeps
+/// locked until it ends, and the kernel releases that lock however it ends: a
+/// root whose lock can be taken is abandoned. Unlike the pid in the name, the
+/// lock holds across reused pids and across pid namespaces that share the
+/// temporary directory. A root is staged under its own prefix and renamed into
+/// place only once locked, so a process killed in between leaves a staged
+/// root: the sweep takes one once it last changed before the sweeping process
+/// started, and only while it holds the root's lock, which it makes if the
+/// root has none yet, renaming the root to a tombstone before it removes it.
+/// A process that loses its staged root that way fails at its lock and stages
+/// another.
+#[cfg(test)]
+pub(crate) mod test_directories {
+    #[cfg(target_os = "linux")]
+    use std::time::Duration;
+    use std::{
+        fs, io,
+        path::{Path, PathBuf},
+        sync::{
+            OnceLock,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::SystemTime,
+    };
+
+    const PREFIX: &str = "gitturtle-app-tests-";
+    const STAGING: &str = ".gitturtle-app-tests-staging-";
+    /// A staged root a sweep took, renamed out of its owner's reach.
+    const REMOVING: &str = ".gitturtle-app-tests-removing-";
+    const LOCK: &str = ".lock";
+
+    struct Root {
+        path: PathBuf,
+        /// Locked for the life of the process, never dropped.
+        _lock: fs::File,
+    }
+
+    static ROOT: OnceLock<Root> = OnceLock::new();
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A directory for one test in this process's root, removed when it drops
+    /// and, if something still holds it, with the root when the process exits.
+    #[derive(Debug)]
+    pub(crate) struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        /// A new, empty directory named `<sequence>-<label>`.
+        pub(crate) fn new(label: &str) -> Self {
+            Self(until_exit(label))
+        }
+
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            remove_tree(&self.0);
+        }
+    }
+
+    /// A new, empty directory named `<sequence>-<label>` that stays until the
+    /// root goes at exit, for files that work still running after a test
+    /// writes: a save makes its folder again, so one aimed at a directory the
+    /// test removed would otherwise bring it back outside the root.
+    pub(crate) fn until_exit(label: &str) -> PathBuf {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = root().join(format!("{sequence}-{label}"));
+        fs::create_dir(&path).expect("create a test directory");
+        path
+    }
+
+    fn root() -> &'static Path {
+        &ROOT
+            .get_or_init(|| {
+                let temporary = std::env::temp_dir();
+                remove_abandoned(&temporary);
+                let root = create_root(&temporary);
+                // SAFETY: `remove_root` takes nothing and cannot unwind; a panic in
+                // an `extern "C"` function aborts instead.
+                let registered = unsafe { libc::atexit(remove_root) };
+                assert_eq!(registered, 0, "register the test root's removal at exit");
+                root
+            })
+            .path
+    }
+
+    /// This process's root, locked. Another process's sweep can take a staged
+    /// root before its lock is held ([`remove_abandoned`]); the attempt then
+    /// fails at the lock or the rename, and the next one stages another.
+    fn create_root(temporary: &Path) -> Root {
+        let mut failure = None;
+        for _ in 0..8 {
+            match stage_root(temporary) {
+                Ok(root) => return root,
+                Err(error) => failure = Some(error),
+            }
+        }
+        panic!("create the test root: {failure:?}");
+    }
+
+    fn stage_root(temporary: &Path) -> io::Result<Root> {
+        let staged = tempfile::Builder::new()
+            .prefix(STAGING)
+            .tempdir_in(temporary)?;
+        let lock = fs::File::create(staged.path().join(LOCK))?;
+        lock.try_lock().map_err(io::Error::other)?;
+        let suffix = staged
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(STAGING))
+            .ok_or_else(|| io::Error::other("a staged root name"))?
+            .to_owned();
+        let path = temporary.join(format!("{PREFIX}{}-{suffix}", std::process::id()));
+        fs::rename(staged.path(), &path)?;
+        let _ = staged.keep();
+        Ok(Root { path, _lock: lock })
+    }
+
+    extern "C" fn remove_root() {
+        if let Some(root) = ROOT.get() {
+            // A worker still saving can recreate a folder while the tree goes.
+            for _ in 0..3 {
+                remove_tree(&root.path);
+                if fs::symlink_metadata(&root.path).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Removes the roots in `temporary` that no live process owns: those whose
+    /// lock this process can take, and those without one, which a worker still
+    /// saving made again while its exiting process removed its root. A staged
+    /// root, which a process killed between staging and placing its root
+    /// leaves with or without its lock, goes once it last changed before this
+    /// process started (a newer one may be a live process's that has not
+    /// taken its lock yet) and only while this sweep holds its lock, made if
+    /// missing ([`staged_lock`]), renamed to a tombstone first; tombstones,
+    /// which no process holds, go too. It skips links, other users' entries
+    /// and names without a pid, which older builds used and which no rule
+    /// tells dead from live.
+    fn remove_abandoned(temporary: &Path) {
+        let Ok(entries) = fs::read_dir(temporary) else {
+            return;
+        };
+        let started = process_start();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let staged = name.starts_with(STAGING);
+            let removing = name.starts_with(REMOVING);
+            if !staged && !removing && !named_by_pid(name) {
+                continue;
+            }
+            // Not followed: a link's metadata is the link's.
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.is_dir() || !owned(&metadata) {
+                continue;
+            }
+            if staged && !metadata.modified().is_ok_and(|modified| modified < started) {
+                continue;
+            }
+            let path = entry.path();
+            let remove = |path: &Path| {
+                BEFORE_REMOVAL.with(|hook| {
+                    if let Some(hook) = hook.borrow().as_ref() {
+                        hook(path);
+                    }
+                });
+                remove_tree(path);
+            };
+            if removing {
+                // A sweep's tombstone: no process holds one.
+                remove(&path);
+                continue;
+            }
+            if staged {
+                // Taken only under its lock, made if missing, and renamed to
+                // a tombstone before anything in it goes. Its owner places it
+                // only once it holds that lock, so it cannot while this sweep
+                // holds it; once renamed, the owner's lock under the staged
+                // name fails to open, so it stages another. Removing the
+                // folder in place could unlink a lock the owner made after
+                // the sweep's own lock went, and the owner would place a
+                // root without one.
+                if let Some(_lock) = staged_lock(&path) {
+                    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                    let tombstone =
+                        temporary.join(format!("{REMOVING}{}-{sequence}", std::process::id()));
+                    if fs::rename(&path, &tombstone).is_ok() {
+                        remove(&tombstone);
+                    }
+                }
+                continue;
+            }
+            match fs::File::open(path.join(LOCK)) {
+                Ok(lock) => {
+                    if lock.try_lock().is_ok() {
+                        remove(&path);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => remove(&path),
+                Err(_) => {}
+            }
+        }
+    }
+
+    /// What [`BEFORE_REMOVAL`] runs, given the folder about to go.
+    type BeforeRemoval = Box<dyn Fn(&Path)>;
+
+    thread_local! {
+        /// Runs on the sweeping thread just before the sweep removes a
+        /// folder, where a test stands in for the folder's owner.
+        static BEFORE_REMOVAL: std::cell::RefCell<Option<BeforeRemoval>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// The lock of the staged root at `path`, made if it is missing and taken,
+    /// or `None` while another process holds it.
+    fn staged_lock(path: &Path) -> Option<fs::File> {
+        let lock = fs::File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(path.join(LOCK))
+            .ok()?;
+        lock.try_lock().ok()?;
+        Some(lock)
+    }
+
+    /// Whether `name` is a placed root's, `gitturtle-app-tests-<pid>-<suffix>`.
+    fn named_by_pid(name: &str) -> bool {
+        name.strip_prefix(PREFIX)
+            .and_then(|rest| rest.split_once('-'))
+            .is_some_and(|(pid, _)| {
+                !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    }
+
+    /// When this process started, or a time before that: Linux reads it from
+    /// `/proc/self/stat`, which rounds down to a clock tick.
+    #[cfg(target_os = "linux")]
+    fn process_start() -> SystemTime {
+        let now = SystemTime::now();
+        let age = || -> Option<Duration> {
+            let stat = fs::read_to_string("/proc/self/stat").ok()?;
+            // Field 22, `starttime`, in clock ticks since boot; the fields after
+            // the name's closing parenthesis start at 3.
+            let ticks: u64 = stat[stat.rfind(')')? + 1..]
+                .split_whitespace()
+                .nth(19)?
+                .parse()
+                .ok()?;
+            // SAFETY: `sysconf` has no preconditions.
+            let per_second = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+                .ok()
+                .filter(|&per_second| per_second > 0)?;
+            let mut boot = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: writes the clock `starttime` counts on into a local.
+            if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut boot) } != 0 {
+                return None;
+            }
+            let since_boot = Duration::new(
+                u64::try_from(boot.tv_sec).ok()?,
+                u32::try_from(boot.tv_nsec).ok()?,
+            );
+            let at = Duration::from_secs(ticks / per_second)
+                + Duration::from_nanos((ticks % per_second) * 1_000_000_000 / per_second);
+            since_boot.checked_sub(at)
+        };
+        age().and_then(|age| now.checked_sub(age)).unwrap_or(now)
+    }
+
+    /// Elsewhere the sweep's own time stands in, later than the start: a live
+    /// process whose staged root this sweep takes stages another
+    /// ([`create_root`]).
+    #[cfg(not(target_os = "linux"))]
+    fn process_start() -> SystemTime {
+        SystemTime::now()
+    }
+
+    #[cfg(unix)]
+    fn owned(metadata: &fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: `getuid` has no preconditions and cannot fail.
+        metadata.uid() == unsafe { libc::getuid() }
+    }
+
+    #[cfg(not(unix))]
+    fn owned(_: &fs::Metadata) -> bool {
+        true
+    }
+
+    /// Removes `path`, making its folders writable first if a test left one
+    /// read-only, as captured copies are.
+    fn remove_tree(path: &Path) {
+        if fs::remove_dir_all(path).is_ok() || fs::symlink_metadata(path).is_err() {
+            return;
+        }
+        make_writable(path);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    /// Makes the folder at `path` and the folders under it writable for their
+    /// owner. Each is changed from its parent's descriptor without following
+    /// a link and listed from its own descriptor, so a link swapped in after
+    /// a check is never changed through and cannot hide a folder's entries.
+    /// Links stay as they are.
+    fn make_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return;
+            };
+            let Ok(name) = std::ffi::CString::new(name.as_bytes()) else {
+                return;
+            };
+            if let Ok(parent) = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY)
+                .open(parent)
+            {
+                make_entry_writable(&parent, &name);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+
+    /// Makes the folder `name` in the open folder `parent`, and the folders
+    /// under it, writable. It is changed before it is opened, so one without
+    /// read or search permission opens too, by name and without following a
+    /// link: an entry swapped for a link since the check is refused on Linux
+    /// and changed itself, never its target, on macOS.
+    #[cfg(unix)]
+    fn make_entry_writable(parent: &fs::File, name: &std::ffi::CStr) {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: fills a local `stat` for a NUL-terminated name relative to
+        // an open folder.
+        let found = unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        // SAFETY: `fstatat` filled `status` when it returned 0.
+        if found != 0 || unsafe { status.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return;
+        }
+        // SAFETY: a NUL-terminated name relative to an open folder.
+        let _ = unsafe {
+            libc::fchmodat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                0o700,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        // SAFETY: opens a NUL-terminated name relative to an open folder.
+        let opened = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if opened >= 0 {
+            // SAFETY: `openat` returned a new descriptor that nothing else owns.
+            make_tree_writable(&unsafe { fs::File::from_raw_fd(opened) });
+        }
+    }
+
+    /// Makes the folders in the open folder `directory` writable.
+    #[cfg(unix)]
+    fn make_tree_writable(directory: &fs::File) {
+        for name in entry_names(directory) {
+            make_entry_writable(directory, &name);
+        }
+    }
+
+    /// The names in the open folder `directory`, read from its own
+    /// descriptor rather than a path a link could take over.
+    #[cfg(unix)]
+    fn entry_names(directory: &fs::File) -> Vec<std::ffi::CString> {
+        use std::os::fd::AsRawFd;
+        let mut names = Vec::new();
+        // SAFETY: duplicates an open descriptor for `fdopendir`, which owns
+        // the copy once it succeeds; `closedir` closes it.
+        let copy = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        if copy < 0 {
+            return names;
+        }
+        // SAFETY: as above.
+        let stream = unsafe { libc::fdopendir(copy) };
+        if stream.is_null() {
+            // SAFETY: `fdopendir` failed, so the copy is still this call's.
+            unsafe { libc::close(copy) };
+            return names;
+        }
+        loop {
+            // SAFETY: reads the open stream; each entry stays valid until the
+            // next read, and its name is copied before then.
+            let entry = unsafe { libc::readdir(stream) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: `d_name` holds a NUL-terminated name.
+            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+            if name != c"." && name != c".." {
+                names.push(name.to_owned());
+            }
+        }
+        // SAFETY: closes the stream `fdopendir` opened, and the copy with it.
+        unsafe { libc::closedir(stream) };
+        names
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use core::prelude::v1::test;
+        use std::{
+            io::{BufRead, BufReader, Read},
+            process::{Command, Stdio},
+        };
+
+        /// Names the part a child process of this test binary plays.
+        const CHILD: &str = "GITTURTLE_TEST_DIRECTORIES_CHILD";
+        const HOLD: &str = "hold";
+        const WAIT: &str = "wait";
+
+        /// This test binary running only [`child`], with `temporary` as its system
+        /// temporary directory.
+        fn child_process(temporary: &Path, part: &str) -> Command {
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args([
+                    "--exact",
+                    "preferences::test_directories::tests::child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("TMPDIR", temporary)
+                .env(CHILD, part)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped());
+            command
+        }
+
+        fn names(directory: &Path) -> Vec<String> {
+            let mut names: Vec<_> = fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+
+        /// Runs only in a child process of the tests below. Holding its settings
+        /// directory in an executor that never finishes, as a test app's do, it
+        /// writes a preference and returns; waiting, it reports its root and waits
+        /// until its parent closes its input or kills it. What it reports lands on
+        /// the line where libtest named the test, so the parent finds its marker
+        /// anywhere in a line.
+        #[test]
+        fn child() {
+            let Some(part) = std::env::var_os(CHILD) else {
+                return;
+            };
+            let directory = crate::preferences::test_settings_directory();
+            if part == HOLD {
+                let executor = crate::operations::SerialExecutor::new("test-directories-hold");
+                crate::preferences::atomic_write(
+                    &crate::preferences::settings_path().unwrap(),
+                    b"{}",
+                )
+                .unwrap();
+                std::mem::forget(executor);
+                println!("HELD {}", directory.path().display());
+            } else {
+                println!("WAITING {}", directory.path().parent().unwrap().display());
+                let _ = std::io::stdin().read_to_end(&mut Vec::new());
+            }
+        }
+
+        #[test]
+        fn a_process_leaves_no_directory_behind_whatever_its_executors_still_hold() {
+            let temporary = TestDirectory::new("temporary");
+            let output = child_process(temporary.path(), HOLD).output().unwrap();
+            let output = String::from_utf8(output.stdout).unwrap();
+            assert!(output.contains("test result: ok. 1 passed"), "{output}");
+            let held = output
+                .lines()
+                .find_map(|line| line.split_once("HELD ").map(|(_, held)| held))
+                .expect("the child's settings directory");
+            assert!(Path::new(held).starts_with(temporary.path()), "{held}");
+            assert!(held.ends_with("-settings"), "{held}");
+            assert_eq!(names(temporary.path()), Vec::<String>::new());
+        }
+
+        #[test]
+        fn a_killed_process_root_goes_with_the_next_sweep_and_a_live_one_stays() {
+            let temporary = TestDirectory::new("temporary");
+            let mut waiting = child_process(temporary.path(), WAIT)
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let root = BufReader::new(waiting.stdout.take().unwrap())
+                .lines()
+                .map_while(Result::ok)
+                .find_map(|line| {
+                    line.split_once("WAITING ")
+                        .map(|(_, root)| PathBuf::from(root))
+                })
+                .expect("the waiting child's root");
+            let name = root.file_name().unwrap().to_str().unwrap().to_owned();
+            let pid = waiting.id().to_string();
+            assert!(name.starts_with(&format!("{PREFIX}{pid}-")), "{name}");
+            // Left by a worker that saved while its process removed its root.
+            let unlocked = format!("{PREFIX}1-unlocked");
+            fs::create_dir(temporary.path().join(&unlocked)).unwrap();
+            // An older build's, without a pid.
+            let older = format!("{PREFIX}AbC123");
+            fs::create_dir(temporary.path().join(&older)).unwrap();
+
+            remove_abandoned(temporary.path());
+            assert_eq!(names(temporary.path()), vec![name.clone(), older.clone()]);
+
+            waiting.kill().unwrap();
+            waiting.wait().unwrap();
+            assert!(root.is_dir(), "a killed process runs no exit hook");
+            remove_abandoned(temporary.path());
+            assert_eq!(names(temporary.path()), vec![older]);
+        }
+
+        fn set_modified(path: &Path, time: SystemTime) {
+            fs::File::open(path).unwrap().set_modified(time).unwrap();
+        }
+
+        #[test]
+        fn the_sweep_takes_staged_roots_no_live_process_holds_once_older_than_this_process() {
+            let temporary = TestDirectory::new("temporary");
+            let staged = |name: &str| {
+                let path = temporary.path().join(format!("{STAGING}{name}"));
+                fs::create_dir(&path).unwrap();
+                path
+            };
+            // Killed after staging, before its lock; and before its rename.
+            let unlocked = staged("unlocked");
+            let lock_free = staged("lock-free");
+            fs::File::create(lock_free.join(LOCK)).unwrap();
+            let held = staged("held");
+            let lock = fs::File::create(held.join(LOCK)).unwrap();
+            lock.try_lock().unwrap();
+            // As a live process leaves one between staging and its lock.
+            let newer = staged("newer");
+            // A tombstone another sweep left: no process holds one.
+            fs::create_dir(temporary.path().join(format!("{REMOVING}left"))).unwrap();
+            let day = std::time::Duration::from_secs(86_400);
+            for path in [&unlocked, &lock_free, &held] {
+                set_modified(path, SystemTime::now() - day);
+            }
+            set_modified(&newer, SystemTime::now() + day);
+            #[cfg(unix)]
+            {
+                let elsewhere = temporary.path().join("elsewhere");
+                fs::create_dir(&elsewhere).unwrap();
+                set_modified(&elsewhere, SystemTime::now() - day);
+                std::os::unix::fs::symlink(
+                    &elsewhere,
+                    temporary.path().join(format!("{STAGING}link")),
+                )
+                .unwrap();
+            }
+
+            remove_abandoned(temporary.path());
+            let mut expected = vec![format!("{STAGING}held"), format!("{STAGING}newer")];
+            if cfg!(unix) {
+                expected.extend([format!("{STAGING}link"), "elsewhere".to_owned()]);
+            }
+            expected.sort();
+            assert_eq!(names(temporary.path()), expected);
+            drop(lock);
+        }
+
+        /// The sweep takes a staged root only while it holds the root's
+        /// lock and renames it to a tombstone before removing anything, so
+        /// its owner, going on once the sweep holds the lock, cannot even
+        /// make its lock under the staged name and never places the root.
+        #[test]
+        fn a_staged_root_goes_only_under_its_lock_so_a_live_owner_cannot_place_it() {
+            let temporary = TestDirectory::new("temporary");
+            // An owner between staging and its lock, its folder older than
+            // this process.
+            let staged = temporary.path().join(format!("{STAGING}live"));
+            fs::create_dir(&staged).unwrap();
+            set_modified(
+                &staged,
+                SystemTime::now() - std::time::Duration::from_secs(86_400),
+            );
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let record = seen.clone();
+            BEFORE_REMOVAL.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
+                    // As `stage_root` goes on: its lock, then the rename once
+                    // it holds it.
+                    let owner = fs::File::create(staged.join(LOCK))
+                        .map(|lock| lock.try_lock().is_ok())
+                        .map_err(|error| error.kind());
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    record
+                        .borrow_mut()
+                        .push((name.starts_with(REMOVING), owner));
+                }));
+            });
+            remove_abandoned(temporary.path());
+            BEFORE_REMOVAL.with(|hook| hook.borrow_mut().take());
+            assert_eq!(
+                *seen.borrow(),
+                vec![(true, Err(io::ErrorKind::NotFound))],
+                "one removal, a tombstone's, with the owner's lock refused"
+            );
+            assert_eq!(names(temporary.path()), Vec::<String>::new());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn making_a_tree_writable_never_changes_a_link_swapped_in_for_it() {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            let temporary = TestDirectory::new("writable");
+            let (tree, moved, elsewhere) = (
+                temporary.path().join("tree"),
+                temporary.path().join("moved"),
+                temporary.path().join("elsewhere"),
+            );
+            for folder in [
+                "tree/inner",
+                "tree/only-here",
+                "tree/unreadable",
+                "elsewhere/inner",
+            ] {
+                fs::create_dir_all(temporary.path().join(folder)).unwrap();
+            }
+            let opened = fs::File::open(&tree).unwrap();
+            // A link takes the tree's place once the walk has opened it.
+            fs::rename(&tree, &moved).unwrap();
+            symlink(&elsewhere, &tree).unwrap();
+            let set = |path: PathBuf, mode| {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap()
+            };
+            set(moved.join("inner"), 0o500);
+            set(moved.join("only-here"), 0o500);
+            set(moved.join("unreadable"), 0o000);
+            set(elsewhere.join("inner"), 0o500);
+            set(elsewhere.clone(), 0o500);
+            let modes = |top: &Path, names: &[&str]| {
+                names
+                    .iter()
+                    .map(|name| fs::metadata(top.join(name)).unwrap().permissions().mode() & 0o777)
+                    .collect::<Vec<_>>()
+            };
+
+            make_tree_writable(&opened);
+            assert_eq!(
+                modes(&moved, &["inner", "only-here", "unreadable"]),
+                [0o700; 3]
+            );
+            assert_eq!(modes(&elsewhere, &["", "inner"]), [0o500; 2]);
+            make_writable(&tree);
+            assert_eq!(modes(&elsewhere, &["", "inner"]), [0o500; 2]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1280,6 +2108,204 @@ mod tests {
                 ..saved.settings
             }
         );
+    }
+
+    /// A version-6 store written before Reduce motion and Increase contrast
+    /// loads both as Follow, its other settings as stored, and loading writes
+    /// nothing: the fields are additive, so no version bump.
+    #[test]
+    fn a_version_six_store_without_the_display_choices_follows_the_desktop() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let original = serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 6,
+            "settings": {"theme": "nord", "density": "compact", "system_code_font": true},
+            "custom_themes": []
+        }))
+        .unwrap();
+        fs::write(&path, &original).unwrap();
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(
+            (
+                loaded.settings.reduce_motion,
+                loaded.settings.increase_contrast
+            ),
+            (DisplayChoice::Follow, DisplayChoice::Follow)
+        );
+        assert_eq!(
+            loaded.settings,
+            AppSettings {
+                theme: ThemeSelection::BuiltIn(ThemeChoice::Nord),
+                density: Density::Compact,
+                system_code_font: true,
+                ..AppSettings::default()
+            }
+        );
+        assert_eq!(fs::read(&path).unwrap(), original, "loading never writes");
+    }
+
+    /// "on" and "off" are saved as those strings by a settings save, read back
+    /// as they were saved, and carried through by the writers that reread the
+    /// store and merge one section (drafts, recents), still at version 6.
+    #[test]
+    fn display_choices_round_trip_through_a_settings_save_and_every_merge() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let project = directory.0.join("project");
+        fs::create_dir(&project).unwrap();
+        for (motion, contrast) in [
+            (DisplayChoice::On, DisplayChoice::Off),
+            (DisplayChoice::Off, DisplayChoice::On),
+            (DisplayChoice::Follow, DisplayChoice::Follow),
+        ] {
+            let at = format!("{motion:?} motion, {contrast:?} contrast");
+            let settings = AppSettings {
+                reduce_motion: motion,
+                increase_contrast: contrast,
+                density: Density::Compact,
+                ..AppSettings::default()
+            };
+            let saved = Preferences::save_settings_at(&settings, &path).unwrap();
+            assert_eq!(saved.settings, settings, "{at}: the save's reply");
+            let stored = |path: &Path| -> serde_json::Value {
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+            };
+            let word = |choice: DisplayChoice| match choice {
+                DisplayChoice::Follow => "follow",
+                DisplayChoice::On => "on",
+                DisplayChoice::Off => "off",
+            };
+            assert_eq!(stored(&path)["version"], STORE_VERSION, "{at}");
+            assert_eq!(
+                (
+                    &stored(&path)["settings"]["reduce_motion"],
+                    &stored(&path)["settings"]["increase_contrast"]
+                ),
+                (
+                    &serde_json::json!(word(motion)),
+                    &serde_json::json!(word(contrast))
+                ),
+                "{at}: stored as words"
+            );
+            assert_eq!(
+                Preferences::load_from(&path).unwrap().settings,
+                settings,
+                "{at}: read back"
+            );
+            // Writers of other sections reread the store and keep the choices.
+            let mut stale = Preferences::default();
+            stale.remember_at(&project, &path).unwrap();
+            assert_eq!(stale.settings, settings, "{at}: a recent-project save");
+            Preferences::save_commit_drafts_at(
+                &HashMap::from([(
+                    project.canonicalize().unwrap(),
+                    CommitDraft {
+                        title: "Draft".into(),
+                        description: String::new(),
+                    },
+                )]),
+                &path,
+            )
+            .unwrap();
+            assert_eq!(
+                Preferences::load_from(&path).unwrap().settings,
+                settings,
+                "{at}: after a draft save"
+            );
+        }
+    }
+
+    /// A choice this build does not know, such as a later build's, loads as
+    /// Follow beside the other settings, without failing the store or
+    /// rewriting it, and the next save goes through.
+    #[test]
+    fn an_unknown_display_choice_follows_the_desktop_without_failing_the_store() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let original = serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 6,
+            "settings": {
+                "theme": "nord",
+                "reduce_motion": "sometimes",
+                "increase_contrast": "on"
+            },
+            "custom_themes": []
+        }))
+        .unwrap();
+        fs::write(&path, &original).unwrap();
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(
+            loaded.settings,
+            AppSettings {
+                theme: ThemeSelection::BuiltIn(ThemeChoice::Nord),
+                reduce_motion: DisplayChoice::Follow,
+                increase_contrast: DisplayChoice::On,
+                ..AppSettings::default()
+            }
+        );
+        assert_eq!(fs::read(&path).unwrap(), original, "loading never writes");
+        Preferences::save_commit_drafts_at(&HashMap::new(), &path).unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["settings"]["reduce_motion"], "follow");
+        assert_eq!(stored["settings"]["increase_contrast"], "on");
+    }
+
+    /// A missing store is a first launch: it takes the desktop's settings, and a write that
+    /// still finds no store (opening the first repository, say) records those, not the
+    /// built-in defaults. An existing store, even one on the default theme, keeps its own
+    /// settings, and one that cannot be read starts with the defaults without fixing any.
+    #[test]
+    fn a_first_launch_takes_the_desktop_defaults_and_the_first_write_keeps_them() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let omarchy = AppSettings::omarchy_first_launch();
+        assert_eq!(omarchy.theme, ThemeSelection::Omarchy);
+        assert!(omarchy.system_code_font);
+        assert_eq!(
+            AppSettings {
+                theme: ThemeSelection::default(),
+                system_code_font: false,
+                ..omarchy.clone()
+            },
+            AppSettings::default()
+        );
+
+        let first_launch = OnceLock::new();
+        let launched = Preferences::load_at_launch_from(&path, &first_launch, || omarchy.clone());
+        assert_eq!(launched.settings, omarchy);
+        assert!(launched.recent_repositories.is_empty());
+        assert!(!path.exists(), "loading writes nothing");
+
+        let mut first_write = Preferences::load_for_write_with(&path, first_launch.get()).unwrap();
+        assert_eq!(first_write.settings, omarchy);
+        first_write.recent_repositories = vec![directory.0.clone()];
+        first_write.save_to(&path).unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["settings"]["theme"], "omarchy");
+        assert_eq!(stored["settings"]["system_code_font"], true);
+
+        // Before launch fixes anything, and in every other test, a missing store is the
+        // defaults.
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            Preferences::load_for_write_with(&path, None)
+                .unwrap()
+                .settings,
+            AppSettings::default()
+        );
+
+        // An existing install keeps its stored theme, whatever the desktop runs.
+        Preferences::default().save_to(&path).unwrap();
+        let existing = OnceLock::new();
+        let launched = Preferences::load_at_launch_from(&path, &existing, || unreachable!());
+        assert_eq!(launched.settings, AppSettings::default());
+        assert!(existing.get().is_none());
+
+        fs::write(&path, b"{not json").unwrap();
+        let unreadable = OnceLock::new();
+        let launched = Preferences::load_at_launch_from(&path, &unreadable, || unreachable!());
+        assert_eq!(launched.settings, AppSettings::default());
+        assert!(unreadable.get().is_none());
     }
 
     /// Follow system never overrides the Omarchy theme on Linux; elsewhere the

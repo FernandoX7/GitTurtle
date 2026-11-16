@@ -29,13 +29,39 @@ _spec = importlib.util.spec_from_file_location("ci_package_identity", ROOT / "sc
 identity = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(identity)
 Error = identity.PackageError
-TARGETS = {"x86_64-unknown-linux-gnu": "linux-x86_64", "aarch64-apple-darwin": "macos-arm64"}
+# Each declared target and the platform-architecture label in its archive and
+# artifact names; the two Linux labels keep the two Linux legs' names apart.
+TARGETS = {"x86_64-unknown-linux-gnu": "linux-x86_64", "aarch64-unknown-linux-gnu": "linux-aarch64",
+           "aarch64-apple-darwin": "macos-arm64"}
 # This records C0's known gaps, not license exemptions. Any remaining gap blocks
 # upload; a new gap fails validation and requires explicit inventory review.
+# Linux has had none since the license review of 2026-11-15, so any gap on
+# either Linux target is new.
 KNOWN_GAPS = {
-    "x86_64-unknown-linux-gnu": {"mac-0.1.1", "ufbx-0.11.3"},
-    "aarch64-apple-darwin": {"mac-0.1.1", "ufbx-0.11.3", "block-0.1.6", "objc_exception-0.1.2", "leak-0.1.2", "leaky-cow-0.1.1"},
+    "x86_64-unknown-linux-gnu": set(),
+    "aarch64-unknown-linux-gnu": set(),
+    "aarch64-apple-darwin": {"block-0.1.6", "objc_exception-0.1.2", "leak-0.1.2", "leaky-cow-0.1.1"},
 }
+# The platforms whose verified complete-notice archive Quality uploads. Being
+# listed here is the only way a platform uploads: no flag, environment variable
+# or workflow input adds one, and a listed platform whose notices are incomplete
+# uploads nothing either.
+# Linux is listed (the owner's decision of 2026-11-15). Every main push, manual
+# Quality run and product pull request therefore publishes, for each Linux
+# target, a public Actions artifact kept UPLOAD_RETENTION_DAYS days: the release
+# archive, its .sha256 and .manifest.json, and ci-provenance.json. It is a CI
+# build, not a release. `prepare` writes `eligible=true`, which runs the upload,
+# download and verify steps of quality.yml's release job.
+# macOS is not listed, so its archive never leaves the job, whatever its
+# notices: it is still collected strictly, packaged and verified there. Adding
+# "macos" would publish an ad-hoc signed, not notarized macOS archive as the
+# same public artifact from the same events, from the day its notices are
+# complete. That entry waits for the macOS distribution decision, which is made
+# with signing.
+HOSTED_UPLOAD_PLATFORMS = frozenset({"linux"})
+PLATFORM_NAMES = {"linux": "Linux", "macos": "macOS"}
+# What quality.yml's upload step asks of Actions; the step summary states it.
+UPLOAD_RETENTION_DAYS = 7
 MAX_TREE = 2 * 1024**3
 MAX_ENTRIES = 30000
 MAX_LOG = 8 * 1024**2
@@ -78,6 +104,15 @@ def run(command, *, cwd=ROOT, env=None, allowed=(0,), timeout=600):
             except ProcessLookupError:
                 pass
             child.wait()
+
+
+def platform_of(target):
+    """The platform a declared target is packaged for: "linux" or "macos"."""
+    if target in TARGETS and target in identity.LINUX_TARGETS:
+        return "linux"
+    if target in TARGETS and target.endswith("-apple-darwin"):
+        return "macos"
+    raise Error("Target has no declared package platform")
 
 
 def notice_state(code, inventory, target, lock):
@@ -284,7 +319,7 @@ def verify_payload(directory, expected, *, complete, probe=True, manifest_valida
     unpacked = directory / "extracted"
     extract(archive, unpacked)
     target = expected["target"]
-    if target == "x86_64-unknown-linux-gnu":
+    if platform_of(target) == "linux":
         payload = unpacked / archive.name.removesuffix(".tar.gz")
         if set(p.name for p in unpacked.iterdir()) != {payload.name}:
             raise Error("Unexpected Linux archive root")
@@ -317,7 +352,7 @@ def verify_payload(directory, expected, *, complete, probe=True, manifest_valida
 
 
 def platform_checks(payload, binary, package, directory):
-    if package["target"] == "x86_64-unknown-linux-gnu":
+    if platform_of(package["target"]) == "linux":
         run([sys.executable, ROOT / "scripts/test-install-linux.py", "--bundle", payload])
         home = directory / "install-home"
         home.mkdir()
@@ -326,7 +361,7 @@ def platform_checks(payload, binary, package, directory):
         installed = home / ".local/bin/gitturtle"
         if identity.digest(installed) != identity.digest(binary) or identity.probe(installed) != package["compiled_identity"]:
             raise Error("Installed executable differs from the downloaded package")
-        run(["desktop-file-validate", home / ".local/share/applications/com.gitturtle.desktop.desktop"])
+        run(["desktop-file-validate", home / f".local/share/applications/{identity.APP_ID}.desktop"])
         _, linked = run(["ldd", installed])
         if "not found" in linked:
             raise Error("Installed package has unresolved native libraries")
@@ -359,15 +394,19 @@ def prepare(args):
                    "--require-complete", output / "strict-notices"], allowed=(0, 2))
     inventory = identity.read_json(output / "strict-notices/dependencies.json")
     complete = notice_state(code, inventory, args.target, lock)
+    # The one read of the upload set: it decides the upload, never how the package is built or checked.
+    platform = platform_of(args.target)
+    listed = platform in HOSTED_UPLOAD_PLATFORMS
+    upload = complete and listed
     stem = f"GitTurtle-{version}-{revision[:12]}-{TARGETS[args.target]}-release"
     prepared = output / "prepared"
     prepared.mkdir()
-    command = [ROOT / f"scripts/package-{'linux' if args.target.endswith('linux-gnu') else 'macos'}.sh",
+    command = [ROOT / f"scripts/package-{platform}.sh",
                "--no-build", "--binary", binary, "--expected-revision", revision,
                "--expected-version", version, "--expected-sha256", original]
     if complete:
         command.append("--distribution")
-    if args.target.endswith("linux-gnu"):
+    if platform == "linux":
         command.append(prepared / stem)
         archive = prepared / (stem + ".tar.gz")
     else:
@@ -383,7 +422,7 @@ def prepare(args):
                     cargo_lock_sha256=lock, input_binary_sha256=original, archive=archive.name,
                     archive_sha256=identity.digest(archive),
                     manifest_sha256=identity.digest(Path(str(archive) + ".manifest.json")),
-                    upload_eligible=complete, license_review_required=inventory["review_required"],
+                    upload_eligible=upload, license_review_required=inventory["review_required"],
                     artifact_name=f"{stem}-{trust}-{args.run_id}-{args.attempt}",
                     event=args.event, run_id=args.run_id, run_attempt=args.attempt,
                     release_input=False, native_smoke="not-performed", hosted_transfer="not-performed")
@@ -394,7 +433,7 @@ def prepare(args):
     write_json(output / "prepared.json", expected)
     if args.report:
         write_json(args.report, expected)
-    if complete:
+    if upload:
         publish = output / "publish"
         publish.mkdir()
         for suffix in ("", ".sha256", ".manifest.json"):
@@ -402,16 +441,24 @@ def prepare(args):
         write_json(publish / "ci-provenance.json", expected)
     if args.output:
         with args.output.open("a") as stream:
-            stream.write(f"eligible={str(complete).lower()}\nartifact-name={expected['artifact_name']}\n")
+            stream.write(f"eligible={str(upload).lower()}\nartifact-name={expected['artifact_name']}\n")
     summary = (f"### {TARGETS[args.target]} CI package\n\n"
                f"Source `{revision}`, version `{version}`, release profile. "
                f"Archive SHA-256 `{expected['archive_sha256']}`.\n\n"
                "Local archive/executable/package checks passed. Native desktop verification remains separate.\n\n")
-    if complete:
-        summary += "Complete notices verified. Upload and download verification follow; this is an early-development CI build, not a release.\n"
+    held = f"the {PLATFORM_NAMES[platform]} upload is held until {PLATFORM_NAMES[platform]} distribution is decided"
+    if upload:
+        summary += (f"Complete notices verified. This job uploads the archive next as the Actions artifact "
+                    f"`{expected['artifact_name']}`, kept {UPLOAD_RETENTION_DAYS} days, then downloads and verifies "
+                    "that artifact. It is an early-development CI build, not a release.\n")
+    elif complete:
+        summary += f"Complete notices verified. **Download unavailable: {held}; C3 hosted transfer remains open.** "
+        summary += "The verified complete-notice archive stays in this job and is not uploaded.\n"
     else:
         summary += "**Download unavailable: C0 license notices are incomplete; C3 hosted transfer remains open.** "
-        summary += "The development archive is withheld from public upload. Verified strict refusal: " + ", ".join(f"`{item}`" for item in inventory["review_required"]) + ".\n"
+        summary += "The development archive is withheld from public upload. Verified strict refusal: " + ", ".join(f"`{item}`" for item in inventory["review_required"]) + "."
+        # Completing the notices alone would not change this for a platform that is not listed.
+        summary += "\n" if listed else f" Separately, {held}.\n"
     if args.summary:
         with args.summary.open("a") as stream:
             stream.write(summary)
@@ -421,7 +468,7 @@ def prepare(args):
 def verify(args):
     expected = identity.read_json(args.expected)
     if expected.get("format") != 1 or expected.get("upload_eligible") is not True or expected.get("release_input") is not False:
-        raise Error("Expected a prepared, complete-notice CI package; CI outputs cannot be release inputs")
+        raise Error("Expected a prepared, upload-eligible CI package; CI outputs cannot be release inputs")
     # Exact names prevent unrelated assets being silently treated as verified.
     names = {expected["archive"] + suffix for suffix in ("", ".sha256", ".manifest.json")} | {"ci-provenance.json"}
     if set(path.name for path in args.directory.iterdir()) != names:

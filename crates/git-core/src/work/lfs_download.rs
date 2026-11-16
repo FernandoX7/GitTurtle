@@ -32,40 +32,145 @@ pub struct LfsDownloadPlan {
     config_token: String,
 }
 
+/// The app's tests cannot run Git LFS to prepare a plan, so they stand one
+/// in for `target` from `remote`: it captures no repository, so its
+/// execution refuses before any command runs, as for a repository that
+/// changed after review.
+#[cfg(feature = "test-support")]
+impl LfsDownloadPlan {
+    pub fn stand_in(target: LfsDownloadTarget, remote: &str) -> Self {
+        let (oid, size) = parse_download_pointer(&target.pointer).unwrap_or_default();
+        Self {
+            target,
+            oid,
+            size,
+            remote: remote.to_owned(),
+            source: format!("Stand-in source for {remote}"),
+            root: PathBuf::new(),
+            directories: (PathBuf::new(), PathBuf::new()),
+            storage: PathBuf::new(),
+            config_token: String::new(),
+        }
+    }
+}
+
+/// What is wrong with a Git LFS object a preview cannot use, judged of that
+/// object and the store that holds it: a failure of the repository it is read
+/// through is an error instead. A download cannot help any of them, so none
+/// is offered one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LfsObjectFailure {
+    /// Its pointer declares more than a preview reads, so the store is not
+    /// read at all.
+    TooLarge,
+    /// The store holds something that is not the object its pointer names.
+    Corrupt,
+    /// The store could not be read at this object, which says nothing about
+    /// the object: a link stands in the store's place, in its layout or in
+    /// the object's place, or the system refused or failed the read.
+    StoreUnreadable,
+}
+
+/// What the local LFS store held for one pointer
+/// ([`GitRepository::local_lfs_read`]).
+#[derive(Debug)]
+pub enum LocalLfsObject {
+    /// The object, matching the pointer's size and digest.
+    Verified(Vec<u8>),
+    /// None there: a download could still bring it.
+    Absent,
+    /// There or declared, and unusable: why, and in what words.
+    Failed(LfsObjectFailure, anyhow::Error),
+}
+
+/// What the local LFS store held for the two sides of a text comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedLfsText {
+    /// The comparison with every object that could be shown, or `None` to
+    /// keep the two stored texts.
+    pub text: Option<TextPreviewWithSources>,
+    /// Which sides, old then new, are pointers whose object was found absent
+    /// from the local store. `false` means not found absent, not present: a
+    /// side can be no pointer, or its object there but binary or too large
+    /// to set as text, or one of those [`Self::failed`] names. A pointer's
+    /// text cannot say which.
+    pub missing: [bool; 2],
+    /// Which sides, old then new, are pointers whose object could not be
+    /// used, and why. Such a side stays its pointer, as a missing one does,
+    /// and the other side keeps its preview; none of them is also `missing`.
+    pub failed: [Option<LfsObjectFailure>; 2],
+    /// Which sides, old then new, are stored as Git LFS pointers, whatever
+    /// became of their objects: the text in [`Self::text`] no longer shows
+    /// it for a side that resolved.
+    pub pointers: [bool; 2],
+}
+
 impl GitRepository {
-    /// Resolve both available LFS text sides together. Missing objects keep the
-    /// original pointer comparison visible; resolved content has no partial
-    /// staging semantics because Git's underlying blobs remain pointers.
+    /// Resolve each LFS text side on its own, from the local store alone: a
+    /// side whose object is there shows it, and a side whose object is
+    /// missing or unusable stays its pointer. `text` is `None`, keeping the
+    /// original pointer comparison visible, with no side resolved or with a
+    /// resolved side that has no text to set beside the other's pointer;
+    /// `missing` and `failed` say which sides are which either way. Resolved
+    /// content has no partial staging semantics because Git's underlying
+    /// blobs remain pointers.
+    ///
+    /// The read stays passive: it opens the local store and runs no process
+    /// that writes, whatever the pointers name.
     pub fn resolved_lfs_text(
         &self,
         file: &FileChange,
         old: &[u8],
         new: &[u8],
-    ) -> Result<Option<TextPreviewWithSources>> {
+    ) -> Result<ResolvedLfsText> {
         let mut resolved = [None, None];
-        let mut found = false;
+        let mut missing = [false; 2];
+        let mut failed = [None; 2];
+        let pointers = [old, new].map(|bytes| parse_download_pointer(bytes).is_ok());
         for (index, bytes) in [old, new].into_iter().enumerate() {
-            if let Ok((oid, size)) = parse_download_pointer(bytes) {
-                found = true;
-                let Some(local) =
-                    self.local_lfs_object(&oid, size, MAX_LFS_PREVIEW_DOWNLOAD as usize)?
-                else {
-                    return Ok(None);
-                };
-                resolved[index] = Some(local);
+            let Ok((oid, size)) = parse_download_pointer(bytes) else {
+                continue;
+            };
+            match self.local_lfs_read(&oid, size, MAX_LFS_PREVIEW_DOWNLOAD as usize) {
+                Ok(LocalLfsObject::Verified(local)) => resolved[index] = Some(local),
+                Ok(LocalLfsObject::Absent) => missing[index] = true,
+                Ok(LocalLfsObject::Failed(failure, _)) => failed[index] = Some(failure),
+                // A failure of the repository itself, after a side was
+                // already found out, still leaves the two pointers.
+                Err(_) if missing.contains(&true) || failed.iter().any(Option::is_some) => {
+                    return Ok(ResolvedLfsText {
+                        text: None,
+                        missing,
+                        failed,
+                        pointers,
+                    });
+                }
+                Err(error) => return Err(error),
             }
         }
-        if !found {
-            return Ok(None);
+        let stored = ResolvedLfsText {
+            text: None,
+            missing,
+            failed,
+            pointers,
+        };
+        if resolved.iter().all(Option::is_none) {
+            return Ok(stored);
         }
         let [before, after] = resolved;
         let old = before.unwrap_or_else(|| old.to_vec());
         let new = after.unwrap_or_else(|| new.to_vec());
-        Ok(Some(TextPreviewWithSources {
-            preview: preview_bytes(file, &old, &new),
-            old,
-            new,
-        }))
+        let preview = preview_bytes(file, &old, &new);
+        let a_pointer_stays = missing.contains(&true) || failed.iter().any(Option::is_some);
+        if a_pointer_stays && !matches!(preview, TextPreview::Patch(_)) {
+            return Ok(stored);
+        }
+        Ok(ResolvedLfsText {
+            text: Some(TextPreviewWithSources { preview, old, new }),
+            missing,
+            failed,
+            pointers,
+        })
     }
 
     pub fn lfs_download_plan(
@@ -106,19 +211,25 @@ impl GitRepository {
         );
         let directories = self.git_directories()?;
         let storage = self.preview_lfs_storage()?;
-        let mut version = normal_command(&self.path);
+        let mut version = normal_command(self.target());
         version.args(["lfs", "version"]);
         let output = bounded_output(version, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Git LFS tooling is unavailable. Install Git LFS 3.8.1 or newer, then review this download again. {}",
-            redact_diagnostic(&text(&output.stderr))
-        );
+        if !output.status.success() {
+            const HEADLINE: &str = "Git LFS tooling is unavailable. Install Git LFS 3.8.1 or newer, then review this download again.";
+            return Err(git_failure_summarized(
+                &output.stderr,
+                Some(HEADLINE.into()),
+                format!(
+                    "{HEADLINE} {}",
+                    reported_redacted(&output.stderr, redact_diagnostic)
+                ),
+            ));
+        }
         require_patched_lfs(&text(&output.stdout))?;
         // `git lfs env` creates storage directories, even though it is a config
         // query. Redirect that side effect into our private temporary directory.
         let temporary = LfsTemporary::new()?;
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command
             .arg("-c")
             .arg(format!("remote.lfsdefault={remote}"))
@@ -126,11 +237,17 @@ impl GitRepository {
             .arg(config_path("lfs.storage", &temporary.path))
             .args(["lfs", "env"]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Git LFS tooling is unavailable or its configuration cannot be read. Install Git LFS, then review this download again. {}",
-            redact_diagnostic(&text(&output.stderr))
-        );
+        if !output.status.success() {
+            const HEADLINE: &str = "Git LFS tooling is unavailable or its configuration cannot be read. Install Git LFS, then review this download again.";
+            return Err(git_failure_summarized(
+                &output.stderr,
+                Some(HEADLINE.into()),
+                format!(
+                    "{HEADLINE} {}",
+                    reported_redacted(&output.stderr, redact_diagnostic)
+                ),
+            ));
+        }
         let environment = text(&output.stdout);
         let endpoints = environment
             .lines()
@@ -145,15 +262,9 @@ impl GitRepository {
             !endpoints.is_empty(),
             "Git LFS did not report a download endpoint for this remote. Check its LFS URL configuration."
         );
-        let mut config = normal_command(&self.path);
-        config.args(["config", "--null", "--list"]);
-        let output = bounded_output(config, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Cannot read the effective Git configuration for LFS."
-        );
+        let config = effective_lfs_config(self.target())?;
         let mut digest = Sha256::new();
-        digest.update(output.stdout);
+        digest.update(config);
         digest.update(endpoints.as_bytes());
         Ok(LfsDownloadPlan {
             target: target.clone(),
@@ -183,7 +294,7 @@ impl GitRepository {
             oid.clone()
         } else {
             std::fs::create_dir(&objects)?;
-            let mut hash = normal_command(&self.path);
+            let mut hash = normal_command(self.target());
             hash.env("GIT_OBJECT_DIRECTORY", &objects)
                 .args(["hash-object", "-w", "--stdin"]);
             let oid = text(trim_line(
@@ -192,7 +303,7 @@ impl GitRepository {
             validate_oid(&oid)?;
             oid
         };
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         configure_network(&mut command, self)?;
         // A blob has no reachable commits or sibling files. Passing exactly one
         // pointer blob to --all scans and transfers exactly that object's OID.
@@ -220,18 +331,34 @@ impl GitRepository {
             "Git LFS finished without making the selected object available. Check the configured source and server object; no working files were changed."
         );
         Ok(WriteOutcome {
-            message: format!(
-                "Downloaded and verified LFS preview for {} · {} bytes. Working files and the index are preserved.",
-                plan.target.path.display(),
-                plan.size
-            ),
+            message: downloaded(&plan.target.path, plan.size),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }
 
-pub(crate) fn lfs_storage_config(path: &Path) -> Result<Output> {
-    let mut command = normal_command(path);
+/// The effective configuration a download plan's digest covers. A failure is
+/// typed as any configuration read's is ([`git_failure`]): in a linked
+/// worktree whose administration directory is gone even `git config` finds
+/// no repository.
+pub(super) fn effective_lfs_config(target: GitTarget<'_>) -> Result<Vec<u8>> {
+    let mut config = normal_command(target);
+    config.args(["config", "--null", "--list"]);
+    let output = bounded_output(config, GIT_TIMEOUT)?;
+    if !output.status.success() {
+        const HEADLINE: &str = "Cannot read the effective Git configuration for LFS.";
+        return Err(git_failure_summarized(
+            &output.stderr,
+            Some(HEADLINE.into()),
+            HEADLINE.into(),
+        ));
+    }
+    Ok(output.stdout)
+}
+
+pub(crate) fn lfs_storage_config(target: GitTarget<'_>) -> Result<Output> {
+    let mut command = normal_command(target);
     command.env("GIT_OPTIONAL_LOCKS", "0").args([
         "config",
         "--null",
@@ -360,9 +487,28 @@ impl Drop for LfsTemporary {
     }
 }
 
+/// What a verified download of `path`'s object, `size` bytes, says it did,
+/// its size agreeing with its noun: a one-byte object read "1 bytes".
+fn downloaded(path: &Path, size: u64) -> String {
+    format!(
+        "Downloaded and verified LFS preview for {} · {}. Working files and the index are preserved.",
+        path.display(),
+        crate::counted(size, "byte", "bytes")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::require_patched_lfs;
+
+    #[test]
+    fn a_download_counts_its_bytes_with_their_noun() {
+        assert_eq!(
+            super::downloaded(std::path::Path::new("tiny.bin"), 1),
+            "Downloaded and verified LFS preview for tiny.bin · 1 byte. Working files and the index are preserved."
+        );
+        assert!(super::downloaded(std::path::Path::new("image.png"), 2).contains(" · 2 bytes."));
+    }
 
     #[test]
     fn lfs_downloads_require_a_release_with_the_configuration_command_fixes() {

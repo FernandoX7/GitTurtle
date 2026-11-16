@@ -184,7 +184,7 @@ impl GitRepository {
             // Both status and ordinary `git worktree remove` can overlook
             // modified files marked assume-unchanged or skip-worktree. Never
             // treat an index that skips these checks as proof of a clean tree.
-            let index = run_git(&repo.path, &["ls-files", "-v", "-z"])?;
+            let index = run_git(repo.target(), &["ls-files", "-v", "-z"])?;
             let unchecked_index = index
                 .split(|byte| *byte == 0)
                 .filter_map(|entry| entry.first())
@@ -231,26 +231,7 @@ impl GitRepository {
             }
             // git worktree remove permits ignored files. Refuse those as well;
             // users must explicitly move/remove their content outside this UI.
-            let mut command = passive_status_command(repo.path())?;
-            command.args([
-                "ls-files",
-                "--others",
-                "--ignored",
-                "--exclude-standard",
-                "-z",
-            ]);
-            let output = bounded_output(command, GIT_TIMEOUT)?;
-            ensure!(
-                output.status.success(),
-                "Unable to inspect ignored worktree content: {}",
-                text(&output.stderr)
-            );
-            let ignored: Vec<PathBuf> = output
-                .stdout
-                .split(|b| *b == 0)
-                .filter(|p| !p.is_empty())
-                .map(path_from_bytes)
-                .collect();
+            let ignored = ignored_worktree_files(repo.target())?;
             details.ignored_files = ignored.len();
             // Keep status/index identities in the content snapshot as well
             // as the raw bytes captured by the no-follow filesystem walk.
@@ -313,7 +294,7 @@ impl GitRepository {
             // An initialized submodule keeps its repository under this
             // worktree's private Git directory or inside its own checkout;
             // a deinitialized one can leave a retained repository behind.
-            let stages = run_git(&repo.path, &["ls-files", "-s", "-z"])?;
+            let stages = run_git(repo.target(), &["ls-files", "-s", "-z"])?;
             let mut submodule = None;
             for record in stages
                 .split(|byte| *byte == 0)
@@ -440,7 +421,7 @@ impl GitRepository {
             &reference
         };
         let target_oid = text(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -460,7 +441,7 @@ impl GitRepository {
     }
 
     pub(super) fn execute_worktree(&self, operation: &WorktreeCommand) -> Result<WriteOutcome> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         let message = match operation {
             WorktreeCommand::Create(plan) => {
                 ensure!(
@@ -583,6 +564,7 @@ impl GitRepository {
                 format!("{message}\n{}", diagnostic.trim())
             },
             commit_oid: None,
+            up_to_date: false,
         })
     }
 
@@ -612,6 +594,35 @@ impl GitRepository {
         }
         Ok(())
     }
+}
+
+/// The ignored files in the worktree `target` names, which `git worktree
+/// remove` permits, read passively with configured filters disabled.
+pub(super) fn ignored_worktree_files(target: GitTarget<'_>) -> Result<Vec<PathBuf>> {
+    let mut command = passive_status_command(target)?;
+    command.args([
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+    ]);
+    let output = bounded_output(command, GIT_TIMEOUT)?;
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to inspect ignored worktree content: {}",
+                reported(&output.stderr)
+            ),
+        ));
+    }
+    Ok(output
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(path_from_bytes)
+        .collect())
 }
 
 fn worktree_directory_identity(path: &Path) -> Result<WorktreeDirectoryIdentity> {

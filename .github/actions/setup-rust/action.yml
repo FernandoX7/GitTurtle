@@ -49,13 +49,20 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # A SYSTEM_DEPS_ variable can make dav1d-sys git-clone dav1d and link
+        # that copy statically; the build links only the signed system package.
+        if names=$(compgen -e | grep '^SYSTEM_DEPS_'); then
+          echo "::error::SYSTEM_DEPS_ variables must not reach the build: $(tr '\n' ' ' <<<"$names")"
+          exit 1
+        fi
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           build-essential clang cmake pkg-config git openssh-client ca-certificates \
           libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-          libssl-dev libzstd-dev libvulkan-dev \
+          libssl-dev libzstd-dev libvulkan-dev libdav1d-dev \
           python3 python3-pil desktop-file-utils xdg-utils
-        pkg-config --exists xkbcommon-x11 x11-xcb
+        pkg-config --exists xkbcommon-x11 x11-xcb dav1d
+        echo "libdav1d $(pkg-config --modversion dav1d) in $(pkg-config --variable=libdir dav1d)"
     # A container job installs the toolchain as its build account first.
     - name: Install pinned workspace Rust toolchain
       if: inputs.phase == 'setup' && inputs.container == ''

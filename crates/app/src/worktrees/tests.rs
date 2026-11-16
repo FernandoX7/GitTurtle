@@ -56,6 +56,7 @@ impl Fixture {
         let main = directory.path().join("main");
         std::fs::create_dir(&main).unwrap();
         git(&main, &["init", "--initial-branch=main"]);
+        crate::views::tests::fixture_identity(&main);
         std::fs::write(main.join("tracked.txt"), "original\n").unwrap();
         std::fs::write(main.join(".gitignore"), "*.ignored\n").unwrap();
         git(&main, &["add", "."]);
@@ -95,9 +96,8 @@ fn app_window(
     repo: GitRepository,
 ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
     cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
     cx.update(|cx| {
-        gpui_kit::init(cx);
-        image_lifetime::init(cx);
         native_accessibility::bind_keys(cx);
     });
     let captured = Rc::new(RefCell::new(None));
@@ -122,6 +122,11 @@ fn app_window(
         *captured.borrow_mut() = Some(app.clone());
         Root::new(app, window, cx)
     });
+    // A dialog slides in on a wall-clock animation, so under load a control
+    // can move between the frame a click takes its bounds from and the press,
+    // and the click never lands. Open dialogs at rest; no worktree test covers
+    // motion, and `click` refuses a control that is still moving.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
     cx.simulate_resize(size(px(1480.), px(981.)));
     draw(cx);
     let app = observed.borrow_mut().take().unwrap();
@@ -147,6 +152,12 @@ async fn settle(manager: &Entity<WorktreeManager>, cx: &mut VisualTestContext) {
     assert!(!manager.read_with(cx, |manager, _| manager.pending));
 }
 
+/// [`settle`] for `app`'s open Worktrees dialog, for tests in other modules.
+pub(crate) async fn settle_open_manager(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    let manager = manager(app, cx);
+    settle(&manager, cx).await;
+}
+
 fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);
@@ -155,9 +166,21 @@ fn draw(cx: &mut VisualTestContext) {
     cx.executor().run_until_parked();
 }
 
+/// Clicks `selector`'s control, which must be at rest. A control that moves
+/// between frames, as one in a dialog still sliding in does, can move away
+/// before a delayed press, which then misses it and leaves the state from
+/// before the click: the symptom of the one loaded failure of
+/// `manager_removal_rechecks_changes_since_selection`. Compared across two
+/// frames, motion fails every run rather than only the loaded ones.
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
     draw(cx);
     let bounds = cx.debug_bounds(selector).expect(selector);
+    draw(cx);
+    assert_eq!(
+        cx.debug_bounds(selector),
+        Some(bounds),
+        "{selector} moved between frames"
+    );
     cx.simulate_click(bounds.center(), Modifiers::default());
     cx.executor().run_until_parked();
 }
@@ -359,7 +382,10 @@ async fn keyboard_actions_review_focused_worktree_without_opening_it(cx: &mut Te
         });
     });
     draw(cx);
+    // Shift-F10 opens the row's menu, the one a right-click opens, whose
+    // Worktree actions… reviews it.
     cx.simulate_keystrokes("shift-f10");
+    click(cx, "menu-item: Worktree actions… · MenuItem");
     let manager = manager(&app, cx);
     settle(&manager, cx).await;
     manager.read_with(cx, |manager, _| {
@@ -775,6 +801,10 @@ async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
             assert!(confirm.bottom() < px(680.), "font {font}: {confirm:?}");
             assert!(cancel.bottom() < px(680.));
             assert!(confirm.left() >= px(0.) && confirm.right() <= px(1000.));
+            // Each pass copies again rather than reading the first pass's copy.
+            cx.update(|_, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("nothing copied".into()))
+            });
             click(cx, "copy-worktree-removal-path");
             cx.read(|cx| {
                 assert_eq!(
@@ -793,8 +823,8 @@ async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
             let scrolled_body = cx.debug_bounds("worktree-force-effects").unwrap();
             let fixed_warning = cx.debug_bounds("worktree-force-warning").unwrap();
             let fixed_identity = cx.debug_bounds("worktree-force-target").unwrap();
-            // The toolkit's opening animation may still translate the whole
-            // dialog; only the effect list's contents should move relative to it.
+            // Only the effect list's contents move; the warning and target stay
+            // fixed in the dialog.
             assert_eq!(fixed_warning.size, warning.size);
             assert_eq!(fixed_identity.size, identity.size);
             assert_eq!(
@@ -884,4 +914,436 @@ async fn force_confirmation_cannot_follow_a_changed_repository_context(cx: &mut 
     );
     assert!(fixture.first.path.join("tracked.txt").is_file());
     assert_eq!(fixture.repo.worktrees().unwrap().len(), 3);
+}
+
+/// The focus sweep (`focus_ring::sweep`) over the forced removal review of a
+/// dirty worktree, at the default and the largest interface size.
+#[gpui::test]
+async fn the_forced_removal_review_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    std::fs::write(fixture.second.path.join("notes.txt"), "discard").unwrap();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    let mut failures = Vec::new();
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_worktree_actions(
+                    fixture.second.clone(),
+                    Some(RemovalMode::Ordinary),
+                    window,
+                    cx,
+                )
+            });
+        });
+        let manager = manager(&app, cx);
+        settle(&manager, cx).await;
+        click(cx, "force-remove-managed-worktree");
+        settle(&manager, cx).await;
+        draw(cx);
+        assert!(cx.debug_bounds("operation-consequences").is_some());
+        let effects = cx.debug_bounds("worktree-force-effects").unwrap();
+        let rings = sweep::walk(
+            &app,
+            cx,
+            "the forced removal review",
+            interface,
+            &mut failures,
+        );
+        // The effects scroll by key, so Tab stops there and rings their edge.
+        assert!(
+            sweep::rings_edge(&rings, effects),
+            "{interface} pt: Tab rings the effects {effects:?}: {rings:?}"
+        );
+        sweep::close_dialogs(cx, "the forced removal review", interface, &mut failures);
+    }
+    sweep::assert_whole(failures);
+}
+
+/// In a 461 × 490 half tile, at 13 and 18 pt, with a worktree selected,
+/// every Tab stop of the worktree manager draws its ring whole and in view
+/// while the pointer moves: the content scrolls the control the keyboard
+/// moves onto into view with its ring, the list as a whole for a row, as the
+/// Reflog's and Stashes' do. The selected worktree's details, Open in
+/// GitTurtle to Force remove, lay below the content's fold at both sizes,
+/// where only the first field was revealed as the manager opened, so Tab
+/// moved onto controls the fold cut or no frame showed.
+#[gpui::test]
+async fn a_narrow_manager_shows_every_detail_stop_whole(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    let mut failures = Vec::new();
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_worktree_actions(fixture.second.clone(), None, window, cx)
+            })
+        });
+        let manager = manager(&app, cx);
+        settle(&manager, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("force-remove-managed-worktree").is_some(),
+            "{interface} pt: the selected worktree's details are drawn"
+        );
+        sweep::walk(
+            &app,
+            cx,
+            "the narrow worktree manager",
+            interface,
+            &mut failures,
+        );
+        sweep::close_dialogs(cx, "the narrow worktree manager", interface, &mut failures);
+    }
+    sweep::assert_whole(failures);
+}
+
+/// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
+/// manager's Create form draws its ring whole and in view, walked with Tab
+/// and then back with Shift+Tab, in its New branch form and in its Existing
+/// branch form, whose branch choices, more than their list shows at once,
+/// scroll on their own.
+#[gpui::test]
+async fn a_narrow_create_form_shows_every_stop_whole(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    // Local branches free to check out, more than the choices list shows.
+    for index in 0..8 {
+        git(fixture.repo.path(), &["branch", &format!("topic-{index}")]);
+    }
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    let mut failures = Vec::new();
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        for (existing, surface) in [
+            (false, "the narrow Create form, New branch"),
+            (true, "the narrow Create form, Existing branch"),
+        ] {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+            let manager = manager(&app, cx);
+            settle(&manager, cx).await;
+            cx.update(|window, cx| {
+                manager.update(cx, |manager, cx| {
+                    manager.switch_form(true, window, cx);
+                    manager.new_branch = !existing;
+                })
+            });
+            draw(cx);
+            draw(cx);
+            assert!(
+                cx.debug_bounds("worktree-branch-choices").is_some() == existing,
+                "{interface} pt: {surface} shows its branch choices only for an existing branch"
+            );
+            sweep::walk(&app, cx, surface, interface, &mut failures);
+            if existing {
+                // Tab reached the free choices below the list's fold.
+                let offset =
+                    manager.read_with(cx, |manager, _| manager.choices.scroll().offset().y);
+                assert!(
+                    offset < px(0.),
+                    "{interface} pt: Tab scrolled the branch choices"
+                );
+            }
+            sweep::walk_back(&app, cx, surface, interface, &mut failures);
+            sweep::close_dialogs(cx, surface, interface, &mut failures);
+        }
+    }
+    sweep::assert_whole(failures);
+}
+
+/// The branch choices' scroll stays with the manager, as the worktree
+/// list's does, so the choices kept the offset a reveal or a wheel left
+/// them at while they were hidden. Each time they show again, after New
+/// branch and Existing branch or Manage and Create worktree…, they start at
+/// their first choice.
+#[gpui::test]
+async fn the_branch_choices_show_again_from_their_first_choice(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    for index in 0..8 {
+        git(fixture.repo.path(), &["branch", &format!("topic-{index}")]);
+    }
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    draw(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    click(cx, "worktree-create-tab");
+    click(cx, "worktree-existing-branch");
+    let offset = |cx: &mut VisualTestContext| {
+        manager.read_with(cx, |manager, _| manager.choices.scroll().offset().y)
+    };
+    let scroll_to_end = |cx: &mut VisualTestContext| {
+        manager.update(cx, |manager, _| {
+            let scroll = manager.choices.scroll();
+            scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+        });
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        assert!(offset(cx) < px(0.), "the choices scroll");
+    };
+    let first = |cx: &mut VisualTestContext, at: &str| {
+        assert_eq!(offset(cx), px(0.), "{at}: the choices start at the top");
+        let list = cx
+            .debug_bounds("worktree-branch-choices")
+            .expect("the choices");
+        let choice = cx
+            .debug_bounds("worktree-branch-choice-0")
+            .expect("the first choice");
+        assert!(
+            choice.top() >= list.top(),
+            "{at}: the first choice {choice:?} shows in {list:?}"
+        );
+    };
+    scroll_to_end(cx);
+    click(cx, "worktree-new-branch");
+    click(cx, "worktree-existing-branch");
+    first(cx, "after New branch");
+    scroll_to_end(cx);
+    click(cx, "worktree-browse-tab");
+    click(cx, "worktree-create-tab");
+    first(cx, "after Manage");
+}
+
+/// With a worktree's details shown in a 461 × 490 half tile, a filter that
+/// matches no worktree leaves the list its whole explanation at 13 and 18
+/// pt, though the details run past the content's fold.
+#[gpui::test]
+async fn a_narrow_manager_shows_its_whole_no_match_line(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_worktree_actions(fixture.second.clone(), None, window, cx)
+            })
+        });
+        let manager = manager(&app, cx);
+        settle(&manager, cx).await;
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| {
+                manager.filter.update(cx, |input, cx| {
+                    input.set_value("no such worktree", window, cx)
+                })
+            })
+        });
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("worktree-selected-identity").is_some(),
+            "{interface} pt: the details stay shown"
+        );
+        let line = cx
+            .debug_bounds("worktrees-empty")
+            .unwrap_or_else(|| panic!("{interface} pt: the no-match line"));
+        let list = cx
+            .debug_bounds("managed-worktree-list")
+            .unwrap_or_else(|| panic!("{interface} pt: the list"));
+        assert!(
+            line.top() >= list.top() - px(0.01) && line.bottom() <= list.bottom() + px(0.01),
+            "{interface} pt: the no-match line {line:?} lies whole in the list {list:?}"
+        );
+        sweep::close_dialogs(cx, "the filtered manager", interface, &mut Vec::new());
+    }
+}
+
+/// A filter that matches no worktree says so as Tags says a filter matched
+/// no tag: one muted line, the shared empty state's, with no closing period,
+/// at the list's text inset. It was drawn in primary text and ended in a
+/// period, unlike "No tags match this filter" beside it.
+#[gpui::test]
+async fn the_no_match_line_reads_as_the_tags_list_does(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    git(fixture.repo.path(), &["tag", "v1.0"]);
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    let muted = cx.read(|cx| gpui_kit::Hsla::from(rgb(palette(cx).muted)));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    cx.update(|window, cx| {
+        manager.update(cx, |manager, cx| {
+            manager.filter.update(cx, |input, cx| {
+                input.set_value("no such worktree", window, cx)
+            })
+        })
+    });
+    draw(cx);
+    let list = cx
+        .debug_bounds("managed-worktree-list")
+        .expect("the worktree list");
+    let line = cx
+        .debug_bounds("worktrees-empty-line")
+        .expect("the no-match line is the shared empty state's");
+    assert_eq!(
+        crate::empty_state::shown("worktrees-empty").as_deref(),
+        Some("No worktrees match this filter")
+    );
+    let worktrees = crate::appearance::drawn_color("worktrees-empty-line");
+    assert_eq!(worktrees, Some(muted), "the worktree line is muted");
+    // Inside the list's padding, the ring's room, as the rows are.
+    let room = cx.read(crate::appearance::button_ring_room);
+    assert!(
+        (line.left() - list.left() - room - TEXT_INSET).abs() <= px(0.5),
+        "the line {line:?} starts at the list's text inset in {list:?}"
+    );
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+    crate::tags::tests::read_lands(&app, cx).await;
+    draw(cx);
+    // Tags opens with its filter focused.
+    cx.simulate_input("no such tag");
+    draw(cx);
+    let tags = crate::empty_state::shown("tag-list-empty");
+    assert_eq!(tags.as_deref(), Some("No tags match this filter"));
+    assert!(
+        !tags.unwrap().ends_with('.')
+            && !crate::empty_state::shown("worktrees-empty")
+                .unwrap()
+                .ends_with('.'),
+        "neither line ends in a period"
+    );
+    assert_eq!(
+        worktrees,
+        crate::appearance::drawn_color("tag-list-empty-line"),
+        "the worktree line is drawn in the tags line's color"
+    );
+}
+
+/// A read that answers while keyboard focus is on its loading row's Cancel
+/// takes the row away and hands focus to the first field below it, ringed
+/// whole: the filter in Manage, the branch field in Create. Escape still
+/// closes the manager. Focus stayed on the Cancel no frame drew, where
+/// Escape reached nothing.
+#[gpui::test]
+async fn a_read_landing_while_its_cancel_holds_focus_moves_focus_to_the_first_field(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    draw(cx);
+    for creating in [false, true] {
+        cx.update(|_, cx| manager.update(cx, |this, cx| this.set_creating(creating, cx)));
+        // Refresh while the manager's thread is held, as by a slow read, with
+        // keyboard focus on the loading row's Cancel.
+        let held = manager.read_with(cx, |this, _| this.reader.hold());
+        cx.update(|window, cx| manager.update(cx, |this, cx| this.refresh(window, cx)));
+        draw(cx);
+        let cancel = manager.read_with(cx, |this, _| this.cancel_read.handle().clone());
+        cx.update(|window, cx| window.focus(&cancel, cx));
+        draw(cx);
+        assert!(cx.debug_bounds("cancel-worktree-read").is_some());
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the Cancel holds focus, drawn"
+        );
+
+        drop(held);
+        settle(&manager, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("cancel-worktree-read").is_none(),
+            "the reply takes the loading row away"
+        );
+        let (field, text) = cx.read(|cx| {
+            let this = manager.read(cx);
+            let field = if creating { &this.branch } else { &this.filter }.read(cx);
+            (field.focus_handle(cx), field.input_bounds())
+        });
+        let name = if creating {
+            "the branch field"
+        } else {
+            "the filter"
+        };
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "focus moves from the Cancel to {name}"
+        );
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the frame draws {name}, which holds focus"
+        );
+        focus_ring::assert_input_ringed(cx, text, name);
+    }
+    cx.simulate_keystrokes("escape");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    draw(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Escape closes the manager"
+    );
+}
+
+/// The manager's error line is said once, at once, from the window's alert,
+/// in the frame that draws it in place: a folder name of two parts refuses
+/// Review create. Drawing the line again says nothing more, and the same
+/// press refused again is said again, from a fresh node. The line was no
+/// live region, and nothing was said.
+#[gpui::test]
+async fn the_managers_error_is_said_as_its_line_appears(cx: &mut TestAppContext) {
+    use crate::copy_feedback::tests::alerted;
+    use crate::views::tests::draw;
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    settle_manager(&app, cx).await;
+    let manager = app
+        .read_with(cx, |app, _| app.worktree_management.draft.clone())
+        .expect("the manager opens");
+    cx.update(|window, cx| {
+        manager.update(cx, |manager, cx| {
+            manager
+                .folder
+                .update(cx, |folder, cx| folder.set_value("one/two", window, cx))
+        })
+    });
+    draw(cx);
+    assert_eq!(alerted(cx), None, "nothing is said before a press");
+    let press = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| manager.prepare_create(window, cx))
+        });
+        draw(cx);
+    };
+    press(cx);
+    let error = manager
+        .read_with(cx, |manager, _| manager.error.clone())
+        .expect("two parts are refused");
+    assert!(
+        cx.debug_bounds("worktree-error").is_some(),
+        "the line stands in place"
+    );
+    let (first, said) = alerted(cx).expect("the frame that draws the line says it");
+    assert_eq!(said, error);
+    draw(cx);
+    assert_eq!(
+        alerted(cx).map(|(id, _)| id),
+        Some(first.clone()),
+        "drawing the line again says nothing more"
+    );
+    press(cx);
+    let (second, said) = alerted(cx).expect("refused again, it is said again");
+    assert!(
+        second != first && said == error,
+        "a fresh node says it again"
+    );
 }

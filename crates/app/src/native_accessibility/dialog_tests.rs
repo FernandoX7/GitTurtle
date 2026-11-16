@@ -1,3 +1,6 @@
+// Only the tree-assembly test reads these, built with debug assertions.
+#[cfg(debug_assertions)]
+use crate::native_accessibility::{reachable, written};
 use crate::*;
 use core::prelude::v1::test;
 use gpui_kit::base::{Dialog as BaseDialog, DialogTitle, FocusTrapElement};
@@ -285,4 +288,326 @@ fn focused_reader_closes_find_before_the_dialog(cx: &mut TestAppContext) {
     assert_eq!(*observed.borrow(), 0, "first Escape closes Find");
     cx.simulate_keystrokes("escape");
     assert_eq!(*observed.borrow(), 1, "second Escape closes the dialog");
+}
+
+/// A styled title that names itself, as the Reflog's, the rebase form's and
+/// the GitHub panel's do (a `div` with an ID, a role and an accessible
+/// name, styled), names its dialog through the component Dialog's erased
+/// title, as plain text does. Each was announced by the fallback "Alert
+/// dialog".
+#[gpui::test]
+fn self_named_titles_name_their_dialog(cx: &mut TestAppContext) {
+    struct Titles {
+        nodes: Nodes,
+    }
+    impl Render for Titles {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.nodes.borrow_mut().clear();
+            let titles = [
+                div()
+                    .id("reflog-title")
+                    .role(Role::Label)
+                    .aria_label("Local reflog and recovery")
+                    .child("Local reflog and recovery")
+                    .into_any_element(),
+                div()
+                    .id("interactive-rebase-title")
+                    .role(Role::Label)
+                    .aria_label("Edit local commits")
+                    .mb(px(-2.))
+                    .child("Edit local commits")
+                    .into_any_element(),
+                // Static text, its text its value alone, as AccessKit's
+                // adapters read a label.
+                div()
+                    .id("quick-open-title")
+                    .role(Role::Label)
+                    .aria_value("Quick Open File")
+                    .child("Quick Open File")
+                    .into_any_element(),
+                // Neither readable text nor a name: the fallback stays.
+                div().child("Custom rich title").into_any_element(),
+            ];
+            div().children(titles.into_iter().enumerate().map(|(index, title)| {
+                Observe {
+                    inner: div()
+                        .id(("self-named-modal", index))
+                        .role(Role::AlertDialog)
+                        .focus_trap(("self-named-trap", index), &cx.focus_handle())
+                        .child(gpui_kit::component::dialog::DialogTitle::new().child(title)),
+                    nodes: self.nodes.clone(),
+                }
+            }))
+        }
+    }
+    cx.update(gpui_kit::init);
+    let nodes: Nodes = Default::default();
+    let observed = nodes.clone();
+    let (_, cx) = cx.add_window_view(move |_, _| Titles { nodes });
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    let nodes = observed.borrow();
+    assert_eq!(
+        nodes.iter().map(|node| node.label()).collect::<Vec<_>>(),
+        [
+            Some("Local reflog and recovery"),
+            Some("Edit local commits"),
+            Some("Quick Open File"),
+            Some("Alert dialog")
+        ]
+    );
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node.role() == Role::AlertDialog && node.is_modal())
+    );
+}
+
+/// Every dialog the repository window opens is a modal dialog named by its
+/// title, never by the toolkit's fallback "Alert dialog", which announced
+/// the Reflog and the interactive rebase form, their styled titles unread.
+/// Only a confirmation that interrupts with a warning, such as a reviewed
+/// write's last step, is an alert dialog: every dialog was one, so Orca
+/// announced the Reflog, a picker or a sheet as an alert. Each is read from
+/// the node its focus trap was laid out to write, which the toolkit records
+/// in debug builds: GPUI writes the window's tree only while an assistive
+/// technology is active.
+#[cfg(debug_assertions)]
+#[gpui::test]
+async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep::{AnyOpened, Opened as _};
+    // A dialog that reads on a thread or worker of its own opens through an
+    // opener that returns it, whose `Opened` waits for those reads.
+    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> AnyOpened;
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    crate::focus_ring::sweep::prepare(&app, cx);
+    let dialogs: [(&str, Open); 15] = [
+        ("Local reflog and recovery", |app, window, cx| {
+            app.open_reflog_browser(window, cx).erased()
+        }),
+        ("Edit local commits", |app, window, cx| {
+            app.open_interactive_rebase(None, window, cx);
+            ().erased()
+        }),
+        ("Review rewritten series", |app, window, cx| {
+            app.open_series_review(window, cx).erased()
+        }),
+        ("Command palette", |app, window, cx| {
+            app.open_command_palette(window, cx);
+            ().erased()
+        }),
+        ("Quick Open File", |app, window, cx| {
+            app.open_quick_form(window, cx).erased()
+        }),
+        ("Keyboard Shortcuts", |app, window, cx| {
+            app.shortcut_help(window, cx);
+            ().erased()
+        }),
+        ("Tags", |app, window, cx| {
+            app.open_tags(window, cx);
+            ().erased()
+        }),
+        ("Stashes", |app, window, cx| {
+            app.open_stash_browser(window, cx).erased()
+        }),
+        ("Worktrees", |app, window, cx| {
+            app.open_worktree_manager_entity(window, cx).erased()
+        }),
+        ("GitHub pull requests", |app, window, cx| {
+            app.open_github(window, cx);
+            ().erased()
+        }),
+        ("New theme", |app, window, cx| {
+            app.open_theme_editor(None, window, cx);
+            ().erased()
+        }),
+        ("GitTurtle activity", |app, window, cx| {
+            app.open_activity(window, cx);
+            ().erased()
+        }),
+        ("Git profiles", |app, window, cx| {
+            app.open_profiles(window, cx);
+            ().erased()
+        }),
+        ("Compare local revisions", |app, window, cx| {
+            app.open_compare_form(window, cx).erased()
+        }),
+        ("Saved recovery drafts", |app, window, cx| {
+            app.open_recovery_drafts(window, cx);
+            ().erased()
+        }),
+    ];
+    for (title, open) in dialogs {
+        crate::focus_ring::sweep::open_dialog(&app, cx, title, open).await;
+        let nodes = cx.update(|window, cx| gpui_kit::base::focused_modal_nodes(window, cx));
+        let [node] = nodes.as_slice() else {
+            panic!("{title}: one modal holds focus, {nodes:?}");
+        };
+        // None of these interrupts with a warning: a dialog, not an alert.
+        assert_eq!(node.role(), Role::Dialog, "{title}");
+        assert!(node.is_modal(), "{title}");
+        assert_eq!(node.label(), Some(title), "{title}");
+        cx.update(|window, cx| window.close_dialog(cx));
+        views::tests::draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "{title} closes"
+        );
+    }
+    // A reviewed write's last step, shared by every Git write the window
+    // confirms (Delete local tag, Drop saved stash, Abort operation…),
+    // interrupts with its consequences: an alert dialog. Nothing runs, as
+    // the review closes unconfirmed.
+    let title = "Stage every file";
+    crate::focus_ring::sweep::open_dialog(&app, cx, title, |app, window, cx| {
+        app.confirm_git_write(
+            title.into(),
+            "Stage every working change.".into(),
+            "Stage all",
+            gitturtle_core::WriteCommand::StageAll,
+            window,
+            cx,
+        )
+    })
+    .await;
+    let nodes = cx.update(|window, cx| gpui_kit::base::focused_modal_nodes(window, cx));
+    let [node] = nodes.as_slice() else {
+        panic!("{title}: one modal holds focus, {nodes:?}");
+    };
+    assert_eq!(node.role(), Role::AlertDialog, "{title}");
+    assert!(node.is_modal(), "{title}");
+    assert_eq!(node.label(), Some(title), "{title}");
+    cx.update(|window, cx| window.close_dialog(cx));
+    views::tests::draw(cx);
+}
+
+/// A dialog whose title is plain text, such as the command palette's, reads
+/// that title through the label the toolkit's focus trap adds for it, named
+/// by its text through AccessKit's filter and, on Linux, the AT-SPI adapter.
+/// The trap wrote the text as the label's label property alone, which
+/// AccessKit's adapters never read for a label, so AT-SPI reached the
+/// palette's title without a name. Its text is its value alone, so macOS
+/// reports it as the static text's `AXValue` with no `AXTitle` repeating it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+async fn a_plain_text_dialog_title_is_read_by_its_text(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    crate::focus_ring::sweep::prepare(&app, cx);
+    let title = "Command palette";
+    crate::focus_ring::sweep::open_dialog(&app, cx, title, |app, window, cx| {
+        app.open_command_palette(window, cx)
+    })
+    .await;
+    let (nodes, titles) = cx.update(|window, cx| {
+        (
+            gpui_kit::base::focused_modal_nodes(window, cx),
+            gpui_kit::base::focused_modal_titles(window, cx),
+        )
+    });
+    let ([dialog], [heading]) = (nodes.as_slice(), titles.as_slice()) else {
+        panic!("{title}: one modal holds focus, titled by one label: {nodes:?}, {titles:?}");
+    };
+    assert_eq!(heading.role(), Role::Label);
+    assert_eq!(
+        heading.value(),
+        Some(title),
+        "the title's text is its value"
+    );
+    assert_eq!(
+        heading.label(),
+        None,
+        "no label property repeats the text, which macOS reads as a second title"
+    );
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let window = gpui::accesskit::Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: f64::from(f32::from(viewport.width)),
+        y1: f64::from(f32::from(viewport.height)),
+    };
+    let mut dialog = dialog.clone();
+    dialog.set_bounds(window);
+    let mut heading = heading.clone();
+    heading.set_bounds(window);
+    let tree = written::Assembly::default()
+        .node("dialog", dialog, None)
+        .node("title", heading, Some("dialog"))
+        .tree(window, Some("dialog"));
+    let read: Vec<Option<String>> = reachable(tree.clone())
+        .into_iter()
+        .filter(|node| node.role == Role::Label)
+        .map(|node| node.name)
+        .collect();
+    assert_eq!(read, [Some(title.to_owned())], "through AccessKit's filter");
+    #[cfg(target_os = "linux")]
+    {
+        use crate::native_accessibility::atspi_state_tests::reached;
+        use accesskit_atspi_common::Role as AtspiRole;
+        let served: Vec<String> = reached(tree)
+            .into_iter()
+            .filter(|node| node.role == AtspiRole::Label)
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(served, [title], "through the AT-SPI adapter");
+    }
+    cx.update(|window, cx| window.close_dialog(cx));
+    views::tests::draw(cx);
+}
+
+/// A dialog closed with Escape leaves every node of the page it covered on
+/// the AT-SPI bus: the page is hidden while any dialog is open, and the
+/// adapter put none of what it held back once it was shown, so a page node
+/// that changed or appeared beneath the dialog, here one a window that
+/// grows beneath it draws, answered "Unknown object" for good. Closing it
+/// announces nothing. The tracking-branch review has its own test beside
+/// its confirmation.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn a_dialog_closed_with_escape_leaves_the_page_on_the_bus(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep::{AnyOpened, Opened as _};
+    use crate::native_accessibility::atspi_state_tests::closed_with_escape;
+    // The Reflog and Stashes read on threads of their own, which their
+    // openers' `Opened` waits for.
+    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> AnyOpened;
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    crate::focus_ring::sweep::prepare(&app, cx);
+    let dialogs: [(&str, Open); 3] = [
+        ("Local reflog and recovery", |app, window, cx| {
+            app.open_reflog_browser(window, cx).erased()
+        }),
+        ("Stashes", |app, window, cx| {
+            app.open_stash_browser(window, cx).erased()
+        }),
+        // A reviewed write's last step, which the discard review and every
+        // Git write share; Escape runs nothing.
+        ("Stage every file", |app, window, cx| {
+            app.confirm_git_write(
+                "Stage every file".into(),
+                "Stage every working change.".into(),
+                "Stage all",
+                gitturtle_core::WriteCommand::StageAll,
+                window,
+                cx,
+            );
+            ().erased()
+        }),
+    ];
+    for (surface, open) in dialogs {
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let grow = |cx: &mut VisualTestContext| cx.simulate_resize(size(px(1280.), px(800.)));
+        let escaped = closed_with_escape(&app, cx, surface, open, grow).await;
+        assert_eq!(escaped.unknown, Vec::<String>::new(), "{surface}");
+        assert_eq!(escaped.announced, Vec::<String>::new(), "{surface}");
+        let (on_the_bus, drawn) = escaped.shown;
+        assert_eq!(
+            on_the_bus, drawn,
+            "{surface}: the window's objects after Escape"
+        );
+        let (on_the_bus, drawn) = escaped.covered;
+        assert_eq!(
+            on_the_bus, drawn,
+            "{surface}: the window's objects under it"
+        );
+    }
 }

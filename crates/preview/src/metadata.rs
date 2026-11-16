@@ -112,6 +112,16 @@ fn extension(path: &Path) -> String {
         .unwrap_or_default()
         .to_ascii_lowercase()
 }
+/// `count` with the noun that agrees with it ("1 channel", "2 channels"),
+/// as the app's `counted` builds every count it shows; this crate cannot
+/// reach the app's, so every count this crate words is built here. A mono
+/// WAV read "1 channels".
+pub(crate) fn counted<T>(count: T, one: &str, many: &str) -> String
+where
+    T: std::fmt::Display + PartialEq + From<u8>,
+{
+    format!("{count} {}", if count == T::from(1) { one } else { many })
+}
 fn u16le(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_le_bytes(
         bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
@@ -145,16 +155,104 @@ fn visible(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The container a captured file's leading bytes establish, without its name.
+/// [`inspect`] reports its format from this, so a caller that needs a type
+/// rather than a label, such as the suffix of a copy handed to another
+/// application, agrees with what the preview shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    Pdf,
+    Wav,
+    Mp3,
+    /// ISO base media or QuickTime (`ftyp` or `moov` at offset 4), which also
+    /// frames HEIF/AVIF images; [`iso_image_format`] tells those apart.
+    IsoMedia,
+    Matroska,
+    Flac,
+    Ogg,
+    Zip,
+    Ole,
+    Sfnt,
+    Woff,
+    Gzip,
+    SevenZip,
+    Rar,
+    Bzip2,
+    Xz,
+    Tar,
+    Utf16,
+    Utf8Text,
+}
+
+/// The first container signature the bytes carry, in [`inspect`]'s order.
+pub fn container(bytes: &[u8]) -> Option<Container> {
+    Some(if bytes.starts_with(b"%PDF-") {
+        Container::Pdf
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        Container::Wav
+    } else if bytes.starts_with(b"ID3")
+        || (bytes.len() >= 2
+            && bytes[0] == 0xff
+            && bytes[1] & 0xe0 == 0xe0
+            && !bytes.starts_with(&[0xff, 0xfe]))
+    {
+        Container::Mp3
+    } else if bytes.get(4..8) == Some(b"ftyp") || bytes.get(4..8) == Some(b"moov") {
+        Container::IsoMedia
+    } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        Container::Matroska
+    } else if bytes.starts_with(b"fLaC") {
+        Container::Flac
+    } else if bytes.starts_with(b"OggS") {
+        Container::Ogg
+    } else if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        Container::Zip
+    } else if bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) {
+        Container::Ole
+    } else if bytes.starts_with(b"\x00\x01\x00\x00")
+        || bytes.starts_with(b"OTTO")
+        || bytes.starts_with(b"true")
+    {
+        Container::Sfnt
+    } else if bytes.starts_with(b"wOFF") || bytes.starts_with(b"wOF2") {
+        Container::Woff
+    } else if bytes.starts_with(b"\x1f\x8b") {
+        Container::Gzip
+    } else if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+        Container::SevenZip
+    } else if bytes.starts_with(b"Rar!\x1a\x07") {
+        Container::Rar
+    } else if bytes.starts_with(b"BZh") {
+        Container::Bzip2
+    } else if bytes.starts_with(b"\xfd7zXZ\0") {
+        Container::Xz
+    } else if bytes.get(257..262) == Some(b"ustar") {
+        Container::Tar
+    } else if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+        Container::Utf16
+    } else if is_literal_text(bytes) {
+        Container::Utf8Text
+    } else {
+        return None;
+    })
+}
+
+/// The format [`inspect`] gives bytes of no encoding it knows, which an
+/// application may name in words of its own (GitTurtle's Quick source says
+/// "Binary file · no preview").
+pub const UNKNOWN_ENCODING: &str = "Binary / unknown encoding";
+
 /// Useful bounded metadata with explicit container/codec uncertainty. Filename
 /// hints never count as content detection. Exact original bytes stay in the app.
 pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
     let mut result = Metadata {
-        format: "Binary / unknown encoding".into(),
-        details: vec![format!("{} captured bytes", bytes.len())],
+        format: UNKNOWN_ENCODING.into(),
+        details: vec![counted(bytes.len(), "captured byte", "captured bytes")],
         source: None,
     };
     let ext = extension(name);
-    if bytes.starts_with(b"%PDF-") {
+    let container = container(bytes);
+    if container == Some(Container::Pdf) {
         result.format = "PDF".into();
         result.details.push(format!(
             "PDF version {}",
@@ -163,15 +261,10 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
         result.details.push(
             "Visual page comparison; document pages cannot be used for partial staging.".into(),
         );
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+    } else if container == Some(Container::Wav) {
         result.format = "WAV audio".into();
         wav(bytes, &mut result.details);
-    } else if bytes.starts_with(b"ID3")
-        || (bytes.len() >= 2
-            && bytes[0] == 0xff
-            && bytes[1] & 0xe0 == 0xe0
-            && !bytes.starts_with(&[0xff, 0xfe]))
-    {
+    } else if container == Some(Container::Mp3) {
         result.format = "MPEG audio / MP3".into();
         result
             .details
@@ -196,7 +289,7 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
                 }
             }
         }
-    } else if bytes.get(4..8) == Some(b"ftyp") || bytes.get(4..8) == Some(b"moov") {
+    } else if container == Some(Container::IsoMedia) {
         result.format = iso_image_format(bytes)
             .unwrap_or("ISO media / QuickTime container")
             .into();
@@ -206,23 +299,20 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
                 .push(format!("Container brand: {}", visible(brand)));
         }
         result.details.push("The container does not establish its audio/video codecs. Use external inspection for playback.".into());
-    } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+    } else if container == Some(Container::Matroska) {
         result.format = "WebM / Matroska container".into();
         result.details.push("EBML container detected; codec and playback support depend on the external application.".into());
-    } else if bytes.starts_with(b"fLaC") {
+    } else if container == Some(Container::Flac) {
         result.format = "FLAC audio".into();
-    } else if bytes.starts_with(b"OggS") {
+    } else if container == Some(Container::Ogg) {
         result.format = "Ogg media container".into();
-    } else if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+    } else if container == Some(Container::Zip) {
         result.format = "ZIP archive / packaged document".into();
         zip(bytes, &mut result);
-    } else if bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) {
+    } else if container == Some(Container::Ole) {
         result.format = "OLE compound document".into();
         result.details.push("Legacy Office or another OLE container. Macros and document content are not executed or extracted.".into());
-    } else if bytes.starts_with(b"\x00\x01\x00\x00")
-        || bytes.starts_with(b"OTTO")
-        || bytes.starts_with(b"true")
-    {
+    } else if container == Some(Container::Sfnt) {
         result.format = if bytes.starts_with(b"OTTO") {
             "OpenType font"
         } else {
@@ -230,7 +320,7 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
         }
         .into();
         font(bytes, &mut result.details);
-    } else if bytes.starts_with(b"wOFF") || bytes.starts_with(b"wOF2") {
+    } else if container == Some(Container::Woff) {
         result.format = if bytes.starts_with(b"wOF2") {
             "WOFF2 web font"
         } else {
@@ -239,22 +329,23 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
         .into();
         if let Some(tables) = u16be(bytes, 12) {
             result.details.push(format!(
-                "{tables} declared font tables; font is not installed"
+                "{}; font is not installed",
+                counted(tables, "declared font table", "declared font tables")
             ));
         }
-    } else if bytes.starts_with(b"\x1f\x8b") {
+    } else if container == Some(Container::Gzip) {
         result.format = "Gzip archive".into();
-    } else if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+    } else if container == Some(Container::SevenZip) {
         result.format = "7-Zip archive".into();
-    } else if bytes.starts_with(b"Rar!\x1a\x07") {
+    } else if container == Some(Container::Rar) {
         result.format = "RAR archive".into();
-    } else if bytes.starts_with(b"BZh") {
+    } else if container == Some(Container::Bzip2) {
         result.format = "Bzip2 archive".into();
-    } else if bytes.starts_with(b"\xfd7zXZ\0") {
+    } else if container == Some(Container::Xz) {
         result.format = "XZ archive".into();
-    } else if bytes.get(257..262) == Some(b"ustar") {
+    } else if container == Some(Container::Tar) {
         result.format = "Tar archive".into();
-    } else if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+    } else if container == Some(Container::Utf16) {
         let little = bytes.starts_with(&[0xff, 0xfe]);
         result.format = if little {
             "UTF-16 little-endian source"
@@ -290,7 +381,7 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
                 "Decoded source exceeds the 2 MiB limit or has an incomplete code unit.".into(),
             );
         }
-    } else if is_literal_text(bytes) {
+    } else if container == Some(Container::Utf8Text) {
         result.format = "UTF-8 source".into();
         if bytes.len() <= 2 * 1024 * 1024 {
             result.source = std::str::from_utf8(bytes).ok().map(Arc::from);
@@ -300,7 +391,8 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
             .push("Literal UTF-8 source. The filename does not change its encoding.".into());
     } else if !ext.is_empty() {
         result.details.push(format!(
-            "Filename hint: .{ext}; content signature is unrecognized or corrupt."
+            "Filename hint: .{}; content signature is unrecognized or corrupt.",
+            visible(ext.as_bytes())
         ));
     }
     result
@@ -327,8 +419,8 @@ fn wav(bytes: &[u8], details: &mut Vec<String>) {
             let data = &bytes[at + 8..end];
             let codec = u16le(data, 0).unwrap();
             details.push(format!(
-                "{} channels · {} Hz · {} bits/sample · WAV codec {}",
-                u16le(data, 2).unwrap(),
+                "{} · {} Hz · {} bits/sample · WAV codec {}",
+                counted(u16le(data, 2).unwrap(), "channel", "channels"),
                 u32le(data, 4).unwrap(),
                 u16le(data, 14).unwrap(),
                 codec
@@ -364,7 +456,8 @@ fn zip(bytes: &[u8], result: &mut Metadata) {
         return;
     };
     result.details.push(format!(
-        "{count} declared entries; listing at most 64, without extraction"
+        "{}; listing at most 64, without extraction",
+        counted(count, "declared entry", "declared entries")
     ));
     for _ in 0..usize::from(count).min(64) {
         if bytes.get(at..at.saturating_add(4)) != Some(b"PK\x01\x02") {
@@ -393,9 +486,13 @@ fn zip(bytes: &[u8], result: &mut Metadata) {
             result.format = "OpenDocument / XML package".into();
         }
         result.details.push(format!(
-            "{} · {} uncompressed bytes",
+            "{} · {}",
             visible(name),
-            u32le(bytes, at + 24).unwrap_or_default()
+            counted(
+                u32le(bytes, at + 24).unwrap_or_default(),
+                "uncompressed byte",
+                "uncompressed bytes"
+            )
         ));
         at = at.saturating_add(
             46 + usize::from(name_len) + usize::from(extra_len) + usize::from(comment_len),
@@ -412,7 +509,8 @@ fn font(bytes: &[u8], details: &mut Vec<String>) {
         return;
     };
     details.push(format!(
-        "{count} declared font tables; font is not installed"
+        "{}; font is not installed",
+        counted(count, "declared font table", "declared font tables")
     ));
     for index in 0..usize::from(count).min(128) {
         let at = 12 + index * 16;
@@ -475,6 +573,36 @@ mod tests {
         assert!(is_svg(b"<?xml version='1.0'?><svg/>"));
         assert!(!is_svg(b"<html><script>test</script></html>"));
     }
+    /// A file's extension is a repository's text, and a detail is read aloud
+    /// and drawn on a label: control characters show as their escapes and
+    /// its length is bounded, as every other detail read from a file is.
+    #[test]
+    fn a_filename_hint_shows_its_extension_as_visible_text() {
+        let hint = |name: &str| {
+            inspect(&[0; 8], Path::new(name))
+                .details
+                .into_iter()
+                .find(|detail| detail.starts_with("Filename hint: ."))
+                .unwrap_or_else(|| panic!("{name:?} has a filename hint"))
+        };
+        assert_eq!(
+            hint("plain.dat"),
+            "Filename hint: .dat; content signature is unrecognized or corrupt."
+        );
+        assert_eq!(
+            hint("a.b\u{1b}[31m\nc"),
+            "Filename hint: .b\\u{1b}[31m\\nc; content signature is unrecognized or corrupt."
+        );
+        let long = format!("a.{}", "x".repeat(400));
+        assert_eq!(
+            hint(&long),
+            format!(
+                "Filename hint: .{}; content signature is unrecognized or corrupt.",
+                "x".repeat(160)
+            )
+        );
+    }
+
     #[test]
     fn checks_iso_brands_and_declared_box_bounds() {
         let bytes = b"\0\0\0\x18ftypmif1\0\0\0\0mif1avif";
@@ -514,29 +642,35 @@ mod tests {
             }
         }
     }
+    /// A WAV's channels, rate and duration, the channel count agreeing with
+    /// its noun: a mono file read "1 channels".
     #[test]
     fn wav_reports_channels_rate_and_duration() {
-        let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
-        bytes.extend_from_slice(&[1, 0, 2, 0]);
-        bytes.extend_from_slice(&48000u32.to_le_bytes());
-        bytes.extend_from_slice(&192000u32.to_le_bytes());
-        bytes.extend_from_slice(&[4, 0, 16, 0]);
-        bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&1920u32.to_le_bytes());
-        bytes.resize(bytes.len() + 1920, 0);
-        let metadata = inspect(&bytes, Path::new("sound.bin"));
-        assert!(
-            metadata
-                .details
-                .iter()
-                .any(|line| line.contains("2 channels · 48000 Hz · 16 bits"))
-        );
-        assert!(
-            metadata
-                .details
-                .iter()
-                .any(|line| line.contains("0.01 seconds"))
-        );
+        for (channels, said) in [(2u8, "2 channels · 48000 Hz"), (1, "1 channel · 48000 Hz")] {
+            let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
+            bytes.extend_from_slice(&[1, 0, channels, 0]);
+            bytes.extend_from_slice(&48000u32.to_le_bytes());
+            bytes.extend_from_slice(&192000u32.to_le_bytes());
+            bytes.extend_from_slice(&[4, 0, 16, 0]);
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&1920u32.to_le_bytes());
+            bytes.resize(bytes.len() + 1920, 0);
+            let metadata = inspect(&bytes, Path::new("sound.bin"));
+            assert!(
+                metadata
+                    .details
+                    .iter()
+                    .any(|line| line.starts_with(said) && line.contains(" · 16 bits")),
+                "{said}: {:?}",
+                metadata.details
+            );
+            assert!(
+                metadata
+                    .details
+                    .iter()
+                    .any(|line| line.contains("0.01 seconds"))
+            );
+        }
     }
     #[test]
     fn zip_metadata_lists_entries_without_expanding_or_following_them() {
@@ -556,6 +690,15 @@ mod tests {
         bytes.extend(end);
         let result = inspect(&bytes, Path::new("wrong.zip"));
         assert_eq!(result.format, "Word / OOXML package");
+        // One entry, counted as one: it read "1 declared entries".
+        assert!(
+            result
+                .details
+                .iter()
+                .any(|d| d.starts_with("1 declared entry;")),
+            "{:?}",
+            result.details
+        );
         assert!(
             result
                 .details

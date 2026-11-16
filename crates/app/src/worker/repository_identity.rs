@@ -2,6 +2,7 @@
 use anyhow::{Result, ensure};
 use gitturtle_core::GitRepository;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Cheap worker-side checks retain object readers across normal ref/index edits,
 /// but never across replacement of the worktree or its administration directory.
@@ -10,14 +11,38 @@ pub(super) struct RepositoryIdentity {
     links: Vec<(PathBuf, Option<std::fs::Metadata>)>,
 }
 
-#[derive(PartialEq)]
 struct DirectoryIdentity {
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
     inode: u64,
+    /// When the directory was created, where the filesystem records it
+    /// (`statx` on Linux, `st_birthtime` on macOS), read by the same
+    /// `metadata` call: a directory created after another was deleted can
+    /// take its inode number (ext4 and XFS reuse them), and an overlayfs
+    /// copy-up keeps the inode while the directory is the upper layer's
+    /// new one. Compared only where both reads have one, as
+    /// `repository_tabs::same_git_directories` compares the open's.
+    #[cfg(unix)]
+    created: Option<SystemTime>,
     #[cfg(not(unix))]
-    created: std::time::SystemTime,
+    created: SystemTime,
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    /// A birth time a test gives the directory at a path on this thread in
+    /// place of the one its filesystem records, as a copy-up or a reused
+    /// inode number leaves a directory: the same inode, born again.
+    static BIRTH: std::cell::RefCell<Option<(PathBuf, SystemTime)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Gives the directory at `path` the birth time `born` in every
+/// [`DirectoryIdentity`] read on this thread, or none of them with `None`.
+#[cfg(all(test, unix))]
+pub(super) fn born_for_test(born: Option<(PathBuf, SystemTime)>) {
+    BIRTH.with_borrow_mut(|birth| *birth = born);
 }
 
 impl DirectoryIdentity {
@@ -27,15 +52,42 @@ impl DirectoryIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
+            let created = metadata.created().ok();
+            #[cfg(test)]
+            let created = BIRTH
+                .with_borrow(|birth| {
+                    (birth.as_ref())
+                        .filter(|(born, _)| born == path)
+                        .map(|(_, at)| *at)
+                })
+                .or(created);
             Ok(Self {
                 device: metadata.dev(),
                 inode: metadata.ino(),
+                created,
             })
         }
         #[cfg(not(unix))]
         Ok(Self {
             created: metadata.created()?,
         })
+    }
+
+    /// Whether `current` is still this directory: the same device and
+    /// inode and, where both reads have a birth time, the same one.
+    fn is(&self, current: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            self.device == current.device
+                && self.inode == current.inode
+                && (self.created)
+                    .zip(current.created)
+                    .is_none_or(|(before, now)| before == now)
+        }
+        #[cfg(not(unix))]
+        {
+            self.created == current.created
+        }
     }
 }
 
@@ -60,7 +112,7 @@ impl RepositoryIdentity {
 
     pub(super) fn is_current(&self) -> bool {
         self.directories.iter().all(|(path, identity)| {
-            DirectoryIdentity::read(path).is_ok_and(|current| current == *identity)
+            DirectoryIdentity::read(path).is_ok_and(|current| identity.is(&current))
         }) && self.links.iter().all(|(path, previous)| {
             let current = std::fs::symlink_metadata(path)
                 .ok()

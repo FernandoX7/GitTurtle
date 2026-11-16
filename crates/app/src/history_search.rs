@@ -1,11 +1,65 @@
 //! Repository-wide search shares the replaceable reader with previews.
 use crate::*;
 use gitturtle_core::{HistoryScope, HistorySearchStop};
+use gpui_kit::prelude::FluentBuilder;
 use std::time::Duration;
 
 const SEARCH_LABEL: &str = "Searching repository history…";
+/// How long typing must pause before a query is searched.
+pub(crate) const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const MAX_RESULTS: usize = 10_000;
 const MAX_RESULT_BYTES: usize = 64 * 1024 * 1024;
+/// The narrowest the controls' summary is drawn beside its buttons, at the
+/// default interface size: below it the summary wrapped a character to a
+/// line.
+const SUMMARY_FLOOR: f32 = 160.;
+
+thread_local! {
+    /// Cancel's, Continue's and Restart's labels, laid out together once per
+    /// font and size.
+    static CONTROL_LABELS: std::cell::RefCell<Option<(views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// How the search's controls fit History's column (DESIGN.md, "One
+/// responsive order"), decided from widths measured once per font and size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ControlsForm {
+    /// Cancel, Continue and Restart keep only their icons, names and
+    /// tooltips: the column cannot hold the summary's floor beside their
+    /// labels. The list's running, paused and failed states then say only
+    /// their title, their explanation in its tooltip and accessible
+    /// description.
+    pub icons: bool,
+    /// The summary is drawn: its floor fits beside the buttons as they are
+    /// drawn. Where it does not, as in History's column of a half tile, it
+    /// leaves; the scope toolbar keeps the match count.
+    pub summary: bool,
+}
+
+impl ControlsForm {
+    /// The form for a `column`-wide History.
+    fn of(column: Pixels, window: &Window) -> Self {
+        let rem = window.rem_size();
+        // The row's room inside `px_3`, and its three `gap_2` gaps.
+        let room = column - rem * 1.5;
+        let gaps = rem * 1.5;
+        let floor = appearance::ui_size(SUMMARY_FLOOR);
+        let labels = views::cached_width(&CONTROL_LABELS, &views::LineKey::current(window), || {
+            let label = appearance::ui_text(12.);
+            views::line_widths(
+                &[("Cancel", label), ("Continue", label), ("Restart", label)],
+                window,
+            )
+        });
+        // Each labelled button is its label between the shared helper's
+        // insets; each icon a 28 px square.
+        let labelled = floor + gaps + labels + appearance::ui_size(LABEL_INSET * 6.);
+        let icons = room < labelled;
+        let summary = !icons || room >= floor + gaps + appearance::ui_size(3. * 28.);
+        Self { icons, summary }
+    }
+}
 
 #[derive(Default)]
 pub struct State {
@@ -86,6 +140,26 @@ impl Progress {
     }
 }
 
+/// Runs `app`'s search to its end, for tests in other modules: past its
+/// typing pause, then its read, awaited rather than polled.
+#[cfg(test)]
+pub(crate) async fn settle_history_search(
+    app: &Entity<GitTurtle>,
+    cx: &mut gpui::VisualTestContext,
+) {
+    for _ in 0..8 {
+        cx.executor().advance_clock(Duration::from_millis(250));
+        cx.executor().run_until_parked();
+        match app.update(cx, |app, _| app.history_search.task.take()) {
+            Some(task) => task.await,
+            None if !app.read_with(cx, |app, _| app.history_search_pending()) => break,
+            None => {}
+        }
+    }
+    cx.executor().run_until_parked();
+    assert!(!app.read_with(cx, |app, _| app.history_search_pending()));
+}
+
 impl GitTurtle {
     pub(super) fn history_search_active(&self) -> bool {
         self.history_search.progress.is_some()
@@ -96,7 +170,10 @@ impl GitTurtle {
 
     /// Every foreground read may supersede a search. Keep its immutable results
     /// and cursor so selecting a match never silently restarts the search.
+    /// A cold tab's restore whose read this one replaces ends here too
+    /// (`end_replaced_restore`).
     pub(super) fn pause_history_search_for_read(&mut self) {
+        self.end_replaced_restore();
         if !self.history_search_pending() {
             return;
         }
@@ -155,7 +232,7 @@ impl GitTurtle {
         self.error = None;
         if self.history_search.normal.is_none() {
             self.history_search.normal = Some(Retained {
-                paging: std::mem::take(&mut self.history_paging),
+                paging: self.history_paging.take_settled(),
                 commits: std::mem::take(&mut self.commits),
                 visible: std::mem::take(&mut self.visible),
                 graph: std::mem::take(&mut self.graph),
@@ -198,7 +275,7 @@ impl GitTurtle {
             return;
         }
         let epoch = self.history_search.epoch;
-        let timer = cx.background_executor().timer(Duration::from_millis(250));
+        let timer = cx.background_executor().timer(SEARCH_DEBOUNCE);
         self.history_search.debounce = Some(cx.spawn_in(window, async move |this, cx| {
             timer.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -225,7 +302,7 @@ impl GitTurtle {
         self.graph_lanes = self.graph.iter().map(|row| row.width).max().unwrap_or(1);
         self.selected_commit = normal.selected_commit;
         self.files = normal.files;
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         self.selected_file = normal.selected_file;
         self.parent = normal.parent;
         self.preferred_file = normal.preferred_file;
@@ -242,10 +319,18 @@ impl GitTurtle {
     }
 
     pub(super) fn continue_history_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.history_search_pending()
-            || self.operation_busy.is_some()
-            || self.commits.len() >= MAX_RESULTS
-        {
+        if self.history_search_pending() || self.commits.len() >= MAX_RESULTS {
+            return;
+        }
+        if self.operation_busy.is_some() {
+            // A cold tab's restore whose saved query a running write keeps
+            // from being searched, with no read of its own under way, starts
+            // none, and nothing searches it once the write ends: the restore
+            // ends in History (`end_restore_in_history`), where the search
+            // can be run again.
+            if self.task.is_none() {
+                self.end_restore_in_history(window, cx);
+            }
             return;
         }
         let (Some(repo), Some(progress)) = (self.repository.clone(), &self.history_search.progress)
@@ -269,6 +354,9 @@ impl GitTurtle {
                 .collect(),
             remaining_bytes: MAX_RESULT_BYTES.saturating_sub(progress.retained_bytes),
         };
+        // The next page drops the read in flight, which may be a cold tab's
+        // restore's.
+        self.end_replaced_restore();
         self.cancel_automatic_read();
         self.generation = self.generation.wrapping_add(1);
         self.task = None;
@@ -296,6 +384,15 @@ impl GitTurtle {
                 }
                 this.history_search.task = None;
                 this.loading = None;
+                // A search that ends with no page to use, failed or
+                // dropped, ends a cold tab's restore waiting for it, as a
+                // read that replaces it does (`end_replaced_restore`). A
+                // restore that would have gone on to Compare stays in
+                // History then, where History's search asked for meanwhile
+                // opens once the reply is recorded (`run_pending_search`);
+                // held for that Compare, it was lost.
+                let restore_ended = !matches!(&result, Ok(Ok(Output::SearchHistory(_))))
+                    && this.repository_tabs.restoring.take().is_some();
                 match result {
                     Ok(Ok(Output::SearchHistory(result))) => {
                         if let Some(progress) = &mut this.history_search.progress {
@@ -337,6 +434,9 @@ impl GitTurtle {
                         }
                     }
                 }
+                if restore_ended {
+                    this.run_pending_search(window, cx);
+                }
                 this.try_automatic_refresh(window, cx);
                 cx.notify();
             });
@@ -345,10 +445,50 @@ impl GitTurtle {
     }
 
     fn restart_history_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Refused at once while a write runs, before Restart looks so.
+        if self.operation_busy.is_some() {
+            return;
+        }
         if let Some(progress) = &mut self.history_search.progress {
             progress.query.clear();
         }
         self.history_query_changed(window, cx);
+    }
+
+    /// An exhausted search's one line, when it found nothing: how much of
+    /// which scope it searched (`empty_state`).
+    pub(super) fn history_search_no_match(&self) -> Option<String> {
+        let progress = self.history_search.progress.as_ref()?;
+        (progress.error.is_none() && !self.history_search_pending() && progress.exhausted()).then(
+            || {
+                format!(
+                    "No commits match · searched {} in {}",
+                    crate::counted(progress.scanned, "commit", "commits"),
+                    progress.scope_label
+                )
+            },
+        )
+    }
+
+    /// History's state for a search with no match: `line`, and Clear search.
+    pub(super) fn history_no_match(&self, line: String, cx: &mut Context<Self>) -> AnyElement {
+        EmptyState::new("history-no-match", line)
+            .action(
+                crate::empty_state::action("history-clear-search", "Clear search", "close")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.clear_history_search(window, cx)),
+                    ),
+            )
+            .pane(cx)
+    }
+
+    /// Empties the search and restores the selection context it replaced,
+    /// the list holding focus, as Escape and Clear search do.
+    pub(super) fn clear_history_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |s, cx| s.set_value("", window, cx));
+        self.history_query_changed(window, cx);
+        window.focus(&self.focus, cx);
+        cx.notify();
     }
 
     pub(super) fn history_search_empty(&self) -> Option<(&'static str, String)> {
@@ -369,8 +509,9 @@ impl GitTurtle {
             return Some((
                 "No matching commits",
                 format!(
-                    "Searched {} commits in {}.",
-                    progress.scanned, progress.scope_label
+                    "Searched {} in {}.",
+                    crate::counted(progress.scanned, "commit", "commits"),
+                    progress.scope_label
                 ),
             ));
         }
@@ -381,18 +522,78 @@ impl GitTurtle {
                 "No matches in this part of history"
             },
             format!(
-                "{} commits searched. Continue to inspect older history in {}.",
-                progress.scanned, progress.scope_label
+                "{} searched. Continue to inspect older history in {}.",
+                crate::counted(progress.scanned, "commit", "commits"),
+                progress.scope_label
             ),
         ))
     }
 
-    pub(super) fn render_history_search_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// How the search's controls fit the width History last measured.
+    pub(super) fn history_search_form(&self, window: &Window) -> ControlsForm {
+        ControlsForm::of(px(self.history_width), window)
+    }
+
+    /// History's list while a search with nothing to list runs, paused or
+    /// failed: its title and explanation, or, in a column whose controls keep
+    /// only their icons, its title alone as one line, the explanation its
+    /// tooltip and accessible description. In a half tile the explanation
+    /// wrapped over the list's whole height and ran past it.
+    pub(super) fn history_search_state(
+        &self,
+        title: &'static str,
+        description: String,
+        window: &Window,
+        cx: &App,
+    ) -> AnyElement {
+        if self.history_search_form(window).icons {
+            EmptyState::new("history-search-state", title)
+                .tooltip(description)
+                .pane(cx)
+        } else {
+            empty(title, &description)
+        }
+    }
+
+    pub(super) fn render_history_search_controls(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(progress) = &self.history_search.progress else {
             return div().into_any_element();
         };
         let colors = palette(cx);
         let running = self.history_search_pending();
+        let form = self.history_search_form(window);
+        // An exhausted search with no match says how much it searched in the
+        // list's own line beside Clear search, where Cancel and Continue are
+        // disabled. Where the controls keep only their icons the status below
+        // them, which would repeat it, leaves. In the narrowest column, as a
+        // half tile's, and in a window short enough for the compact chrome,
+        // as any 490 px tall one at 18 pt, the row leaves too, so the line
+        // and Clear search keep the list's whole height: beside the row the
+        // list was 94.5 px at 13 pt in 461 × 490 and 68.5 px at 18 pt in
+        // 861 × 490, which the state outgrew. The row returns with a wider
+        // column or a taller window; until then editing the query searches
+        // again from the current tips, as Restart does.
+        let no_match = self.visible.is_empty() && self.history_search_no_match().is_some();
+        if no_match && (!form.summary || self.chrome(window, cx).is_compact()) {
+            return div().into_any_element();
+        }
+        let status = !(form.icons && no_match);
+        // Labelled, or in a narrow column the icon, named and with a tooltip
+        // that leads with the name.
+        let control =
+            |id: &'static str, name: &'static str, symbol: &str, tooltip: &'static str| {
+                if form.icons {
+                    views::compact_control_name(button(id, "", symbol, false), id, name)
+                        .debug_selector(move || id.into())
+                        .tooltip(tooltip)
+                } else {
+                    button(id, name, "", false).debug_selector(move || id.into())
+                }
+            };
         let detail = if let Some(error) = &progress.error {
             error.clone()
         } else if running {
@@ -413,9 +614,18 @@ impl GitTurtle {
                 format!("{} · pinned {}", progress.scope_label, short_oid(oid))
             }
             Some(HistoryScope::PinnedRefs(refs)) => {
-                format!("{} · {} pinned tips", progress.scope_label, refs.len())
+                format!(
+                    "{} · {}",
+                    progress.scope_label,
+                    crate::counted(refs.len(), "pinned tip", "pinned tips")
+                )
             }
             _ => progress.scope_label.clone(),
+        };
+        let (continue_name, continue_tooltip) = if progress.error.is_some() {
+            ("Retry", "Retry · Search this part of history again")
+        } else {
+            ("Continue", "Continue · Search older history in this scope")
         };
         div()
             .px_3()
@@ -425,19 +635,42 @@ impl GitTurtle {
             .gap_1()
             .text_size(crate::appearance::ui_text(10.))
             .text_color(rgb(colors.muted))
+            // Where the column cannot hold the summary's floor beside the
+            // labelled buttons, they keep only their icons, and where it
+            // cannot hold the floor beside those either the summary leaves,
+            // so in a half tile the row is one line of icons: wrapped below
+            // the summary, the labels took three rows there and left the
+            // list 2 px. A summary given no width at all wrapped a character
+            // to a line and pushed the list out of the window.
             .child(
                 div()
+                    .debug_selector(|| "history-search-controls".into())
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().child(format!(
-                        "{scope} · {} matches · {} commits searched",
-                        self.commits.len(),
-                        progress.scanned
-                    )))
+                    .when(form.summary, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(|| "history-search-summary".into())
+                                .flex_grow(1.)
+                                .flex_basis(crate::appearance::ui_size(SUMMARY_FLOOR))
+                                .min_w_0()
+                                .child(format!(
+                                    "{scope} · {} · {} searched",
+                                    crate::counted(self.commits.len(), "match", "matches"),
+                                    crate::counted(progress.scanned, "commit", "commits")
+                                )),
+                        )
+                    })
                     .child(
-                        button("history-search-cancel", "Cancel", "", false)
-                            .disabled(!running)
+                        control(
+                            "history-search-cancel",
+                            "Cancel",
+                            "close",
+                            "Cancel · Stop searching; the matches found so far stay",
+                        )
+                        .disabled(!running)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.pause_history_search_for_read();
                                 this.try_automatic_refresh(window, cx);
@@ -445,38 +678,62 @@ impl GitTurtle {
                             })),
                     )
                     .child(
-                        button(
+                        control(
                             "history-search-continue",
-                            if progress.error.is_some() {
-                                "Retry"
-                            } else {
-                                "Continue"
-                            },
-                            "",
-                            false,
+                            continue_name,
+                            "chevron",
+                            continue_tooltip,
                         )
-                        .disabled(
-                            running
+                        // A write refuses it at once
+                        // (`continue_history_search`); it looks so once the
+                        // write looks busy (`workspace::BusyLook`).
+                        .map(|more| {
+                            let spent = running
                                 || progress.exhausted()
-                                || self.commits.len() >= MAX_RESULTS
-                                || self.operation_busy.is_some(),
-                        )
+                                || self.commits.len() >= MAX_RESULTS;
+                            crate::workspace::refusing(
+                                more,
+                                || "history-search-continue".into(),
+                                spent || self.operation_busy.is_some(),
+                                spent || self.operation_shown().is_some(),
+                            )
+                        })
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.continue_history_search(window, cx)
                         })),
                     )
                     .child(
-                        button("history-search-restart", "Restart", "", false)
-                            .disabled(self.operation_busy.is_some())
-                            .tooltip(
+                        control(
+                            "history-search-restart",
+                            "Restart",
+                            "refresh",
+                            "Restart · Restart this search at the current local branch and worktree tips",
+                        )
+                        .when(!form.icons, |restart| {
+                            restart.tooltip(
                                 "Restart this search at the current local branch and worktree tips",
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.restart_history_search(window, cx)
-                            })),
+                        })
+                        .map(|restart| {
+                            crate::workspace::refusing(
+                                restart,
+                                || "history-search-restart".into(),
+                                self.operation_busy.is_some(),
+                                self.operation_shown().is_some(),
+                            )
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.restart_history_search(window, cx)
+                        })),
                     ),
             )
-            .child(detail)
+            .when(status, |controls| {
+                controls.child(
+                    div()
+                        .debug_selector(|| "history-search-status".into())
+                        .child(detail),
+                )
+            })
             .into_any_element()
     }
 
@@ -508,6 +765,26 @@ fn search_reply_current(
     requested_path: &Option<PathBuf>,
 ) -> bool {
     epoch == requested_epoch && generation == requested_generation && path == requested_path
+}
+
+/// Returns once the search a query change started has finished: past its
+/// debounce on the test clock, then each page read on the app's reader,
+/// a thread `run_until_parked` cannot wait for, has answered and landed.
+/// The test clock moves only by a debounce, and by one more whenever one is
+/// still armed, as a change the app handles while it settles arms it again.
+#[cfg(test)]
+pub(crate) fn search_lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    for _ in 0..8 {
+        if app.read_with(cx, |app, _| app.history_search.debounce.is_some()) {
+            cx.executor().advance_clock(SEARCH_DEBOUNCE);
+        }
+        cx.run_until_parked();
+        if !app.read_with(cx, |app, _| app.history_search_pending()) {
+            return;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    panic!("the search never finished");
 }
 
 #[cfg(test)]
@@ -566,6 +843,23 @@ mod tests {
         assert_eq!(progress.next_offset, 42);
         assert_eq!(progress.scanned, 42);
         assert!(!progress.exhausted());
+    }
+
+    /// A count agrees with its noun wherever a search reports one: Quick
+    /// Open's and History search's matches, the commits searched and the
+    /// pinned tips. History search read "1 matches · 1 commits searched".
+    #[test]
+    fn search_counts_agree_with_their_nouns() {
+        for (count, one, many, shown) in [
+            (0, "match", "matches", "0 matches"),
+            (1, "match", "matches", "1 match"),
+            (2, "match", "matches", "2 matches"),
+            (1, "commit", "commits", "1 commit"),
+            (50_003, "commit", "commits", "50003 commits"),
+            (1, "pinned tip", "pinned tips", "1 pinned tip"),
+        ] {
+            assert_eq!(crate::counted(count, one, many), shown);
+        }
     }
 
     #[test]

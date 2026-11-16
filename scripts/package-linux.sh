@@ -41,7 +41,7 @@ for output in "$bundle" "$bundle.tar.gz" "$bundle.tar.gz.sha256" "$bundle.tar.gz
     echo "Output already exists: $output. Choose a new output directory." >&2; exit 1
   fi
 done
-for command in python3 cargo desktop-file-validate sha256sum tar; do
+for command in python3 cargo desktop-file-validate sha256sum tar readelf; do
   if ! command -v "$command" >/dev/null; then
     echo "Missing $command. Install the packaging prerequisites in docs/linux.md." >&2
     exit 1
@@ -51,11 +51,18 @@ if ! python3 -c 'from PIL import Image' 2>/dev/null; then
   echo "Install python3-pil (Ubuntu: sudo apt-get install python3-pil)." >&2
   exit 1
 fi
+# A SYSTEM_DEPS_ variable can make dav1d-sys git-clone dav1d and link that copy
+# statically. GitTurtle links only the distribution's libdav1d.
+if system_deps="$(compgen -e | grep '^SYSTEM_DEPS_')"; then
+  echo "Unset these variables before packaging; GitTurtle links the system libdav1d: $(tr '\n' ' ' <<<"$system_deps")" >&2
+  exit 1
+fi
 if [[ "$build" == true ]]; then
-  if ! command -v pkg-config >/dev/null || ! pkg-config --exists fontconfig wayland-client xkbcommon-x11 x11-xcb openssl libzstd vulkan; then
+  if ! command -v pkg-config >/dev/null || ! pkg-config --exists fontconfig wayland-client xkbcommon-x11 x11-xcb openssl libzstd vulkan dav1d; then
     echo "Native development libraries are missing. Install all build dependencies in docs/linux.md; do not create local library symlinks." >&2
     exit 1
   fi
+  echo "Building against libdav1d $(pkg-config --modversion dav1d) in $(pkg-config --variable=libdir dav1d)"
   # Force the packaged target, even if the user's Cargo configuration selects
   # another target. Never build one path and silently ship an older executable.
   (cd "$project_root" && cargo build --release --locked -p gitturtle --target "$target" --target-dir "$project_root/target")
@@ -93,6 +100,86 @@ python3 "$project_root/scripts/package-identity.py" \
   --licenses "$staged_bundle/licenses" --target "$target" \
   --profile release --signing unsigned "${identity_args[@]}" \
   --output "$staged_bundle/build-info.json"
+# Once the notices are complete and the executable's format, architecture and
+# identity verified: every ELF file staged so far (the steps below add only
+# text and images) is a dynamically linked executable, one with a PT_INTERP
+# program header; the package ships no other ELF, such as a shared library or
+# a static executable. Each executable links the distribution's libdav1d: it
+# needs libdav1d.so.7, keeps its .symtab, imports dav1d_* symbols and defines
+# none (a static copy from dav1d-sys's internal build would), and carries no
+# RPATH or RUNPATH that could load another copy. A miss names the file and the
+# check.
+check_dav1d_link() {
+  local file="$1" name="${1#"$staged_bundle"/}" dynamic sections symbols imported defined
+  if ! dynamic="$(LC_ALL=C readelf -d -W "$file" 2>&1)"; then
+    echo "Packaged executable $name: readelf could not read its dynamic section." >&2; return 1
+  fi
+  if ! grep -Eq '\(NEEDED\)[[:space:]]+Shared library: \[libdav1d\.so\.7\]' <<<"$dynamic"; then
+    echo "Packaged executable $name does not list NEEDED libdav1d.so.7." >&2; return 1
+  fi
+  if grep -Eq '\((RPATH|RUNPATH)\)' <<<"$dynamic"; then
+    echo "Packaged executable $name sets DT_RPATH or DT_RUNPATH." >&2; return 1
+  fi
+  # "Defines none" holds only while the symbol table exists: a fully stripped
+  # executable keeps just .dynsym, where a static copy's functions need not
+  # appear, so it would pass vacuously. The release profile's
+  # strip = "debuginfo" keeps .symtab. No fixed list of imports is required:
+  # the dav1d_* functions imported are the dav1d crate's internal call set,
+  # which a crate update changes, so such a list would refuse a correct
+  # package. NEEDED libdav1d.so.7, at least one import and no definition in a
+  # present .symtab already prove dynamic linking.
+  if ! sections="$(LC_ALL=C readelf -S -W "$file" 2>&1)"; then
+    echo "Packaged executable $name: readelf could not read its section headers." >&2; return 1
+  fi
+  if ! grep -Eq '^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+\.symtab[[:space:]]+SYMTAB[[:space:]]' <<<"$sections"; then
+    echo "Packaged executable $name has no .symtab section, so a static copy of dav1d would go unseen. Package an executable that keeps its symbol table, as the release profile's strip = \"debuginfo\" does." >&2
+    return 1
+  fi
+  # One line per dav1d_* symbol of code or data: its table, whether it is
+  # defined, its name. FILE and SECTION symbols (Type, the fourth column) name
+  # a source or codegen unit, such as dav1d_sys.<hash>-cgu.0, or a section,
+  # never a definition, so they are skipped. Ndx follows the visibility and any
+  # bracketed annotation such as [VARIANT_PCS]; a version suffix is dropped
+  # from the name.
+  if ! symbols="$(LC_ALL=C readelf -s -W "$file" | awk '
+    /^Symbol table / { table = $3; gsub(/\047/, "", table); next }
+    $1 ~ /^[0-9]+:$/ {
+      if ($4 == "FILE" || $4 == "SECTION") next
+      for (i = 5; i <= NF && $i !~ /^(DEFAULT|PROTECTED|HIDDEN|INTERNAL)$/; i++) {}
+      for (j = i + 1; j <= NF && $j ~ /^\[/; j++) {}
+      name = $(j + 1); sub(/@.*/, "", name)
+      if (name ~ /^dav1d_/) print table, ($j == "UND" ? "undefined" : "defined"), name
+    }')"; then
+    echo "Packaged executable $name: readelf could not read its symbol tables." >&2; return 1
+  fi
+  imported="$(grep -c '^\.dynsym undefined ' <<<"$symbols" || true)"
+  if [[ "$imported" -eq 0 ]]; then
+    echo "Packaged executable $name imports no dav1d_* symbol in .dynsym." >&2; return 1
+  fi
+  if defined="$(grep ' defined ' <<<"$symbols")"; then
+    echo "Packaged executable $name defines dav1d_* symbols, a static copy of dav1d: $(tr '\n' ' ' <<<"$defined")" >&2
+    return 1
+  fi
+  echo "Checked $name: NEEDED libdav1d.so.7, .symtab present, $imported dav1d_* symbols imported and none defined, no RPATH or RUNPATH"
+}
+elf_count=0
+while IFS= read -r -d '' file; do
+  if [[ "$(head -c 4 -- "$file" | od -An -tx1 | tr -d ' \n')" == 7f454c46 ]]; then
+    name="${file#"$staged_bundle"/}"
+    if ! headers="$(LC_ALL=C readelf -l -W "$file" 2>&1)"; then
+      echo "Packaged ELF $name: readelf could not read its program headers." >&2; exit 1
+    fi
+    if ! grep -Eq '^[[:space:]]+INTERP[[:space:]]' <<<"$headers"; then
+      echo "The package ships an ELF that is not an executable: $name has no PT_INTERP program header." >&2
+      exit 1
+    fi
+    check_dav1d_link "$file" || exit 1
+    elf_count=$((elf_count + 1))
+  fi
+done < <(find "$staged_bundle" -type f -print0)
+if [[ "$elf_count" -eq 0 ]]; then
+  echo "The package holds no ELF executable to check." >&2; exit 1
+fi
 python3 - "$project_root" "$staged_bundle" <<'PY'
 import hashlib
 from pathlib import Path
@@ -108,7 +195,7 @@ readme.write_text(readme.read_text().replace(
 ))
 with Image.open(bundle / "icons/app-icon.png") as image:
     for size in (16, 24, 32, 48, 64, 128, 256, 512):
-        path = bundle / f"icons/hicolor/{size}x{size}/apps/com.gitturtle.desktop.png"
+        path = bundle / f"icons/hicolor/{size}x{size}/apps/com.gitturtle.GitTurtle.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         image.resize((size, size), Image.Resampling.LANCZOS).save(path)
 files = sorted(path for path in bundle.rglob("*") if path.is_file())

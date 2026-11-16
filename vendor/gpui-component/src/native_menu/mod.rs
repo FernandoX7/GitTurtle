@@ -1,9 +1,14 @@
-//! A menu rendered natively by the operating system.
+//! A menu rendered natively by the operating system on macOS and Windows.
 //!
 //! Unlike [`crate::menu::PopupMenu`], which is drawn by GPUI and therefore
 //! clipped to the window bounds, [`NativeMenu`] is rendered by the OS. It can
 //! extend beyond the window — useful for small windows where a GPUI-drawn popup
 //! menu would otherwise be cut off.
+//!
+//! GitTurtle patch: on other platforms, Linux among them, there is no OS
+//! popup to use, and the kit draws the menu inside the window as a
+//! [`crate::menu::PopupMenu`] (the `fallback` module), placed beside the
+//! point it is shown at.
 //!
 //! Items carry a GPUI [`Action`], dispatched via [`Window::dispatch_action`]
 //! when selected — the same mechanism the application menu bar and key bindings
@@ -195,6 +200,10 @@ impl NativeMenu {
     /// The menu is shown without blocking the caller: the OS tracking loop runs
     /// off GPUI's call stack, so GPUI is not borrowed while it is open. When an
     /// item is selected, its action is dispatched via [`Window::dispatch_action`].
+    ///
+    /// GitTurtle patch: on macOS and Windows. Elsewhere, Linux among them,
+    /// the kit draws it in the window as a [`crate::menu::PopupMenu`], whose
+    /// selected action goes to the focus the window held as it was shown.
     pub fn show(self, position: Point<Pixels>, window: &mut Window, cx: &mut App) {
         if self.items.is_empty() {
             return;

@@ -1,0 +1,2205 @@
+{
+ "measured": "Linux PDF pages through the confined helper, one helper per request",
+ "profile": "release",
+ "executable": {
+  "name": "gitturtle",
+  "bytes": 101338992,
+  "revision": "4cfc9a3982b3eff16e2a84252832de93dd08eeea",
+  "revision_embedded": true
+ },
+ "host": {
+  "arch": "aarch64",
+  "kernel": "7.1.12-2-7-ARCH",
+  "cpu": "0x034",
+  "cpus": 8
+ },
+ "runs_per_page": 20,
+ "fixture_directory_given": true,
+ "skipped_fixtures": [],
+ "start": {
+  "first": {
+   "start_us": 2021,
+   "vm_size_kib": 77344,
+   "vm_rss_kib": 9056,
+   "kill_to_reap_idle_us": 98
+  },
+  "warm": {
+   "start_us": {
+    "p50": 827,
+    "p95": 849,
+    "max": 849,
+    "n": 19
+   },
+   "vm_size_kib": {
+    "p50": 78000,
+    "p95": 78880,
+    "max": 78880,
+    "n": 19
+   },
+   "vm_rss_kib": {
+    "p50": 9040,
+    "p95": 9072,
+    "max": 9072,
+    "n": 19
+   },
+   "kill_to_reap_idle_us": {
+    "p50": 80,
+    "p95": 83,
+    "max": 83,
+    "n": 19
+   }
+  }
+ },
+ "fixtures": [
+  {
+   "name": "generated-dense-text-300.pdf",
+   "source": "generated",
+   "bytes": 2380689,
+   "sha256": "7882bf9ded8d4013e8e44f94fa9e1dd3d96e59200fe28255c067caf63564df60",
+   "page_count": 300,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 44,
+      "write_us": 1472,
+      "reply_us": 12827,
+      "reap_us": 35,
+      "request_us": 14380,
+      "reply_bytes": 2011072,
+      "maxrss_kib": 80192,
+      "exited_0": true,
+      "parse_us": 392,
+      "render_us": 10113,
+      "text_us": 1726,
+      "overhead_us": 2149,
+      "start_transfer_parse_us": 2541,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 300,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 72,
+       "p95": 107,
+       "max": 107,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1607,
+       "p95": 2331,
+       "max": 2331,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 11657,
+       "p95": 19402,
+       "max": 19402,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 34,
+       "p95": 51,
+       "max": 51,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 423,
+       "p95": 775,
+       "max": 775,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 9149,
+       "p95": 15406,
+       "max": 15406,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 1416,
+       "p95": 2328,
+       "max": 2328,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 2411,
+       "p95": 3325,
+       "max": 3325,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 2815,
+       "p95": 4100,
+       "max": 4100,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 13414,
+       "p95": 21834,
+       "max": 21834,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 12930,
+     "client_warm": {
+      "request_us": {
+       "p50": 13179,
+       "p95": 13381,
+       "max": 13381,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 129
+    },
+    {
+     "page": 150,
+     "first": {
+      "spawn_us": 107,
+      "write_us": 1531,
+      "reply_us": 11564,
+      "reap_us": 28,
+      "request_us": 13232,
+      "reply_bytes": 2011072,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 429,
+      "render_us": 9056,
+      "text_us": 1297,
+      "overhead_us": 2450,
+      "start_transfer_parse_us": 2879,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 300,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 54,
+       "p95": 83,
+       "max": 83,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1519,
+       "p95": 1616,
+       "max": 1616,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 11572,
+       "p95": 11761,
+       "max": 11761,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 19,
+       "p95": 39,
+       "max": 39,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 419,
+       "p95": 428,
+       "max": 428,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 9085,
+       "p95": 9290,
+       "max": 9290,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 1411,
+       "p95": 1424,
+       "max": 1424,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 2255,
+       "p95": 2430,
+       "max": 2430,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 2673,
+       "p95": 2853,
+       "max": 2853,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 13205,
+       "p95": 13387,
+       "max": 13387,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 13300,
+     "client_warm": {
+      "request_us": {
+       "p50": 13143,
+       "p95": 13523,
+       "max": 13523,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 148
+    },
+    {
+     "page": 299,
+     "first": {
+      "spawn_us": 53,
+      "write_us": 1418,
+      "reply_us": 8601,
+      "reap_us": 23,
+      "request_us": 10096,
+      "reply_bytes": 2011071,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 312,
+      "render_us": 6477,
+      "text_us": 1046,
+      "overhead_us": 2261,
+      "start_transfer_parse_us": 2573,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 300,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 67,
+       "p95": 87,
+       "max": 87,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1553,
+       "p95": 2090,
+       "max": 2090,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 11560,
+       "p95": 15508,
+       "max": 15508,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 30,
+       "p95": 76,
+       "max": 76,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 414,
+       "p95": 634,
+       "max": 634,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 9046,
+       "p95": 12463,
+       "max": 12463,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 1412,
+       "p95": 1722,
+       "max": 1722,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 2327,
+       "p95": 2869,
+       "max": 2869,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 2714,
+       "p95": 3503,
+       "max": 3503,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 13218,
+       "p95": 17423,
+       "max": 17423,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 13235,
+     "client_warm": {
+      "request_us": {
+       "p50": 13295,
+       "p95": 13706,
+       "max": 13706,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 159
+    }
+   ]
+  },
+  {
+   "name": "generated-image-heavy-32mib.pdf",
+   "source": "generated",
+   "bytes": 33244368,
+   "sha256": "7409562bad45db61d49cf457a7210d0050f979bd59b044d4d0178538fa80140b",
+   "page_count": 8,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 128,
+      "write_us": 10916,
+      "reply_us": 7530,
+      "reap_us": 32,
+      "request_us": 18608,
+      "reply_bytes": 2004024,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 43,
+      "render_us": 6149,
+      "text_us": 39,
+      "overhead_us": 12377,
+      "start_transfer_parse_us": 12420,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 8,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 76,
+       "p95": 134,
+       "max": 134,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 10734,
+       "p95": 11304,
+       "max": 11304,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 7360,
+       "p95": 9273,
+       "max": 9273,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 33,
+       "p95": 55,
+       "max": 55,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 40,
+       "p95": 49,
+       "max": 49,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 6118,
+       "p95": 7957,
+       "max": 7957,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 38,
+       "p95": 47,
+       "max": 47,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 12082,
+       "p95": 12643,
+       "max": 12643,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 12117,
+       "p95": 12692,
+       "max": 12692,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 18195,
+       "p95": 20696,
+       "max": 20696,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 14084,
+     "client_warm": {
+      "request_us": {
+       "p50": 16603,
+       "p95": 18233,
+       "max": 18233,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 521
+    },
+    {
+     "page": 4,
+     "first": {
+      "spawn_us": 72,
+      "write_us": 8864,
+      "reply_us": 5675,
+      "reap_us": 38,
+      "request_us": 14651,
+      "reply_bytes": 2004024,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 36,
+      "render_us": 4420,
+      "text_us": 34,
+      "overhead_us": 10161,
+      "start_transfer_parse_us": 10197,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 8,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 87,
+       "p95": 147,
+       "max": 147,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 10598,
+       "p95": 11311,
+       "max": 11311,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 7165,
+       "p95": 9339,
+       "max": 9339,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 30,
+       "p95": 65,
+       "max": 65,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 41,
+       "p95": 50,
+       "max": 50,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 5853,
+       "p95": 7841,
+       "max": 7841,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 36,
+       "p95": 46,
+       "max": 46,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 12029,
+       "p95": 12822,
+       "max": 12822,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 12071,
+       "p95": 12872,
+       "max": 12872,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 17979,
+       "p95": 20759,
+       "max": 20759,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 17635,
+     "client_warm": {
+      "request_us": {
+       "p50": 16539,
+       "p95": 20512,
+       "max": 20512,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 461
+    },
+    {
+     "page": 7,
+     "first": {
+      "spawn_us": 117,
+      "write_us": 10724,
+      "reply_us": 9922,
+      "reap_us": 40,
+      "request_us": 20805,
+      "reply_bytes": 2004024,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 50,
+      "render_us": 8583,
+      "text_us": 40,
+      "overhead_us": 12132,
+      "start_transfer_parse_us": 12182,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 8,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 80,
+       "p95": 97,
+       "max": 97,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 9350,
+       "p95": 10602,
+       "max": 10602,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 7220,
+       "p95": 9884,
+       "max": 9884,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 35,
+       "p95": 54,
+       "max": 54,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 40,
+       "p95": 46,
+       "max": 46,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 5965,
+       "p95": 8640,
+       "max": 8640,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 35,
+       "p95": 38,
+       "max": 38,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 10562,
+       "p95": 11890,
+       "max": 11890,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 10604,
+       "p95": 11931,
+       "max": 11931,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 16654,
+       "p95": 20588,
+       "max": 20588,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 20386,
+     "client_warm": {
+      "request_us": {
+       "p50": 20185,
+       "p95": 21025,
+       "max": 21025,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 511
+    }
+   ]
+  },
+  {
+   "name": "gen-dense-text-300-flate.pdf",
+   "source": "directory",
+   "bytes": 685743,
+   "sha256": "a13f1f7d123bf8080aad66f5f872fe546a43e9cea14345ee4b1d5813e901e1d8",
+   "page_count": 300,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 67,
+      "write_us": 1041,
+      "reply_us": 15437,
+      "reap_us": 26,
+      "request_us": 16571,
+      "reply_bytes": 2013493,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 393,
+      "render_us": 12706,
+      "text_us": 1599,
+      "overhead_us": 1873,
+      "start_transfer_parse_us": 2266,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 300,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 66,
+       "p95": 104,
+       "max": 104,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1067,
+       "p95": 1286,
+       "max": 1286,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 15913,
+       "p95": 24918,
+       "max": 24918,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 31,
+       "p95": 49,
+       "max": 49,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 432,
+       "p95": 561,
+       "max": 561,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 13025,
+       "p95": 20814,
+       "max": 20814,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 1779,
+       "p95": 2700,
+       "max": 2700,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1828,
+       "p95": 2216,
+       "max": 2216,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 2260,
+       "p95": 2777,
+       "max": 2777,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 17101,
+       "p95": 26291,
+       "max": 26291,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 17756,
+     "client_warm": {
+      "request_us": {
+       "p50": 17653,
+       "p95": 17930,
+       "max": 17930,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 142
+    },
+    {
+     "page": 150,
+     "first": {
+      "spawn_us": 104,
+      "write_us": 1001,
+      "reply_us": 16601,
+      "reap_us": 23,
+      "request_us": 17731,
+      "reply_bytes": 2013490,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 436,
+      "render_us": 13609,
+      "text_us": 1790,
+      "overhead_us": 1896,
+      "start_transfer_parse_us": 2332,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 300,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 60,
+       "p95": 82,
+       "max": 82,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1044,
+       "p95": 1217,
+       "max": 1217,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 16552,
+       "p95": 21199,
+       "max": 21199,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 28,
+       "p95": 43,
+       "max": 43,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 440,
+       "p95": 575,
+       "max": 575,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 13730,
+       "p95": 17847,
+       "max": 17847,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 1781,
+       "p95": 2328,
+       "max": 2328,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1747,
+       "p95": 2049,
+       "max": 2049,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 2191,
+       "p95": 2492,
+       "max": 2492,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 17717,
+       "p95": 22263,
+       "max": 22263,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 13498,
+     "client_warm": {
+      "request_us": {
+       "p50": 17482,
+       "p95": 17896,
+       "max": 17896,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 158
+    },
+    {
+     "page": 299,
+     "first": {
+      "spawn_us": 113,
+      "write_us": 1027,
+      "reply_us": 16751,
+      "reap_us": 35,
+      "request_us": 17928,
+      "reply_bytes": 2013491,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 449,
+      "render_us": 13728,
+      "text_us": 1789,
+      "overhead_us": 1962,
+      "start_transfer_parse_us": 2411,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 300,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 58,
+       "p95": 112,
+       "max": 112,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1069,
+       "p95": 1283,
+       "max": 1283,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 16541,
+       "p95": 20416,
+       "max": 20416,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 29,
+       "p95": 38,
+       "max": 38,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 440,
+       "p95": 453,
+       "max": 453,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 13715,
+       "p95": 16538,
+       "max": 16538,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 1784,
+       "p95": 2716,
+       "max": 2716,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1779,
+       "p95": 2102,
+       "max": 2102,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 2221,
+       "p95": 2555,
+       "max": 2555,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 17707,
+       "p95": 21645,
+       "max": 21645,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 17407,
+     "client_warm": {
+      "request_us": {
+       "p50": 17604,
+       "p95": 18522,
+       "max": 18522,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 155
+    }
+   ]
+  },
+  {
+   "name": "gen-image-heavy-32mib-flate.pdf",
+   "source": "directory",
+   "bytes": 33478161,
+   "sha256": "b41a0a83445d20487ddfab301947dd715285596e081e06624dc60f0f234be000",
+   "page_count": 6,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 84,
+      "write_us": 9613,
+      "reply_us": 26813,
+      "reap_us": 29,
+      "request_us": 36541,
+      "reply_bytes": 2004024,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 33,
+      "render_us": 25587,
+      "text_us": 33,
+      "overhead_us": 10888,
+      "start_transfer_parse_us": 10921,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 6,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 83,
+       "p95": 143,
+       "max": 143,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 10853,
+       "p95": 11509,
+       "max": 11509,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 31582,
+       "p95": 51265,
+       "max": 51265,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 38,
+       "p95": 56,
+       "max": 56,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 39,
+       "p95": 70,
+       "max": 70,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 30161,
+       "p95": 49736,
+       "max": 49736,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 33,
+       "p95": 45,
+       "max": 45,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 12038,
+       "p95": 12889,
+       "max": 12889,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 12080,
+       "p95": 12928,
+       "max": 12928,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 42792,
+       "p95": 62345,
+       "max": 62345,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 45219,
+     "client_warm": {
+      "request_us": {
+       "p50": 44991,
+       "p95": 65905,
+       "max": 65905,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 541
+    },
+    {
+     "page": 3,
+     "first": {
+      "spawn_us": 137,
+      "write_us": 10946,
+      "reply_us": 34117,
+      "reap_us": 47,
+      "request_us": 45248,
+      "reply_bytes": 2004024,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 42,
+      "render_us": 32933,
+      "text_us": 35,
+      "overhead_us": 12238,
+      "start_transfer_parse_us": 12280,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 6,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 89,
+       "p95": 153,
+       "max": 153,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 10513,
+       "p95": 13543,
+       "max": 13543,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 32330,
+       "p95": 53603,
+       "max": 53603,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 40,
+       "p95": 63,
+       "max": 63,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 38,
+       "p95": 58,
+       "max": 58,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 31091,
+       "p95": 52208,
+       "max": 52208,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 33,
+       "p95": 42,
+       "max": 42,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 11844,
+       "p95": 14972,
+       "max": 14972,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 11882,
+       "p95": 15030,
+       "max": 15030,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 42132,
+       "p95": 67280,
+       "max": 67280,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 45001,
+     "client_warm": {
+      "request_us": {
+       "p50": 41798,
+       "p95": 54618,
+       "max": 54618,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 524
+    },
+    {
+     "page": 5,
+     "first": {
+      "spawn_us": 84,
+      "write_us": 9563,
+      "reply_us": 3491,
+      "reap_us": 29,
+      "request_us": 13167,
+      "reply_bytes": 2004024,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 40,
+      "render_us": 2390,
+      "text_us": 36,
+      "overhead_us": 10701,
+      "start_transfer_parse_us": 10741,
+      "pixels": [
+       595,
+       842
+      ],
+      "page_count": 6,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 79,
+       "p95": 101,
+       "max": 101,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 10443,
+       "p95": 12356,
+       "max": 12356,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 4430,
+       "p95": 6548,
+       "max": 6548,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 39,
+       "p95": 54,
+       "max": 54,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 36,
+       "p95": 54,
+       "max": 54,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 3153,
+       "p95": 5120,
+       "max": 5120,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 37,
+       "p95": 60,
+       "max": 60,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 11683,
+       "p95": 13898,
+       "max": 13898,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 11720,
+       "p95": 13947,
+       "max": 13947,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 14261,
+       "p95": 18543,
+       "max": 18543,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 15562,
+     "client_warm": {
+      "request_us": {
+       "p50": 15334,
+       "p95": 16072,
+       "max": 16072,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 523
+    }
+   ]
+  },
+  {
+   "name": "hayro-font_cid_2.pdf",
+   "source": "directory",
+   "bytes": 213384,
+   "sha256": "bab0be33a9be359d8b5b47d220eb68c1083f5f415485932ca3822ac8bb155830",
+   "page_count": 4,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 104,
+      "write_us": 27,
+      "reply_us": 3218,
+      "reap_us": 33,
+      "request_us": 3383,
+      "reply_bytes": 2007427,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 36,
+      "render_us": 914,
+      "text_us": 474,
+      "overhead_us": 1959,
+      "start_transfer_parse_us": 1995,
+      "pixels": [
+       596,
+       842
+      ],
+      "page_count": 4,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 66,
+       "p95": 104,
+       "max": 104,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 21,
+       "p95": 26,
+       "max": 26,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 4043,
+       "p95": 5000,
+       "max": 5000,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 29,
+       "p95": 42,
+       "max": 42,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 40,
+       "p95": 51,
+       "max": 51,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 1283,
+       "p95": 1576,
+       "max": 1576,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 717,
+       "p95": 896,
+       "max": 896,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 2129,
+       "p95": 2616,
+       "max": 2616,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 2169,
+       "p95": 2667,
+       "max": 2667,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 4177,
+       "p95": 5136,
+       "max": 5136,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 5091,
+     "client_warm": {
+      "request_us": {
+       "p50": 2890,
+       "p95": 3051,
+       "max": 3051,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 23
+    },
+    {
+     "page": 2,
+     "first": {
+      "spawn_us": 45,
+      "write_us": 22,
+      "reply_us": 2409,
+      "reap_us": 35,
+      "request_us": 2512,
+      "reply_bytes": 2007439,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 20,
+      "render_us": 660,
+      "text_us": 334,
+      "overhead_us": 1498,
+      "start_transfer_parse_us": 1518,
+      "pixels": [
+       596,
+       842
+      ],
+      "page_count": 4,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 65,
+       "p95": 118,
+       "max": 118,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 25,
+       "p95": 37,
+       "max": 37,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 2797,
+       "p95": 4583,
+       "max": 4583,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 26,
+       "p95": 40,
+       "max": 40,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 29,
+       "p95": 48,
+       "max": 48,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 904,
+       "p95": 1563,
+       "max": 1563,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 471,
+       "p95": 879,
+       "max": 879,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1535,
+       "p95": 2617,
+       "max": 2617,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 1562,
+       "p95": 2665,
+       "max": 2665,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 2911,
+       "p95": 4720,
+       "max": 4720,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 2671,
+     "client_warm": {
+      "request_us": {
+       "p50": 2674,
+       "p95": 4731,
+       "max": 4731,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 24
+    },
+    {
+     "page": 3,
+     "first": {
+      "spawn_us": 39,
+      "write_us": 22,
+      "reply_us": 2565,
+      "reap_us": 31,
+      "request_us": 2659,
+      "reply_bytes": 2007451,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 19,
+      "render_us": 705,
+      "text_us": 347,
+      "overhead_us": 1588,
+      "start_transfer_parse_us": 1607,
+      "pixels": [
+       596,
+       842
+      ],
+      "page_count": 4,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 58,
+       "p95": 74,
+       "max": 74,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 22,
+       "p95": 28,
+       "max": 28,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 2687,
+       "p95": 4215,
+       "max": 4215,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 24,
+       "p95": 41,
+       "max": 41,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 25,
+       "p95": 40,
+       "max": 40,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 905,
+       "p95": 1471,
+       "max": 1471,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 468,
+       "p95": 737,
+       "max": 737,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1371,
+       "p95": 2070,
+       "max": 2070,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 1398,
+       "p95": 2110,
+       "max": 2110,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 2786,
+       "p95": 4318,
+       "max": 4318,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 2217,
+     "client_warm": {
+      "request_us": {
+       "p50": 2575,
+       "p95": 3066,
+       "max": 3066,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 22
+    }
+   ]
+  },
+  {
+   "name": "hayro-image_cmyk_icc_jpg.pdf",
+   "source": "directory",
+   "bytes": 2302416,
+   "sha256": "6e15ed3c3da52ca20259cbd0036a22b3161bd1d6519d48fdb78a875d930630e7",
+   "page_count": 1,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 97,
+      "write_us": 1740,
+      "reply_us": 21347,
+      "reap_us": 26,
+      "request_us": 23211,
+      "reply_bytes": 160052,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 30,
+      "render_us": 13213,
+      "text_us": 7888,
+      "overhead_us": 2080,
+      "start_transfer_parse_us": 2110,
+      "pixels": [
+       200,
+       200
+      ],
+      "page_count": 1,
+      "text": "absent"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 58,
+       "p95": 111,
+       "max": 111,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1464,
+       "p95": 1722,
+       "max": 1722,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 21420,
+       "p95": 21733,
+       "max": 21733,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 22,
+       "p95": 39,
+       "max": 39,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 20,
+       "p95": 29,
+       "max": 29,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 13476,
+       "p95": 13663,
+       "max": 13663,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 7745,
+       "p95": 7982,
+       "max": 7982,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1730,
+       "p95": 2010,
+       "max": 2010,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 1750,
+       "p95": 2030,
+       "max": 2030,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 22983,
+       "p95": 23345,
+       "max": 23345,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 23129,
+     "client_warm": {
+      "request_us": {
+       "p50": 23190,
+       "p95": 23604,
+       "max": 23604,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 193
+    }
+   ]
+  },
+  {
+   "name": "hayro-image_jbig2_crash.pdf",
+   "source": "directory",
+   "bytes": 205947,
+   "sha256": "510672f9b411fa698e098fcf1fa04d75b25e2403f63bf0a8552145fd09891b99",
+   "page_count": 1,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 145,
+      "write_us": 31,
+      "reply_us": 12950,
+      "reap_us": 34,
+      "request_us": 13161,
+      "reply_bytes": 1025855,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 31,
+      "render_us": 11419,
+      "text_us": 96,
+      "overhead_us": 1615,
+      "start_transfer_parse_us": 1646,
+      "pixels": [
+       419,
+       612
+      ],
+      "page_count": 1,
+      "text": "present"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 65,
+       "p95": 119,
+       "max": 119,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 27,
+       "p95": 34,
+       "max": 34,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 12503,
+       "p95": 18288,
+       "max": 18288,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 29,
+       "p95": 46,
+       "max": 46,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 31,
+       "p95": 57,
+       "max": 57,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 11127,
+       "p95": 16534,
+       "max": 16534,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 95,
+       "p95": 133,
+       "max": 133,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1383,
+       "p95": 1711,
+       "max": 1711,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 1414,
+       "p95": 1768,
+       "max": 1768,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 12595,
+       "p95": 18407,
+       "max": 18407,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 10101,
+     "client_warm": {
+      "request_us": {
+       "p50": 12732,
+       "p95": 13107,
+       "max": 13107,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 32
+    }
+   ]
+  },
+  {
+   "name": "hayro-mask_luminosity.pdf",
+   "source": "directory",
+   "bytes": 3168,
+   "sha256": "5def60660e4a3c6b27b57f2d38831aa6e70ea7ed1ac71ae9dd6b96d86895c002",
+   "page_count": 1,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 49,
+      "write_us": 15,
+      "reply_us": 1327,
+      "reap_us": 23,
+      "request_us": 1415,
+      "reply_bytes": 102452,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 18,
+      "render_us": 237,
+      "text_us": 14,
+      "overhead_us": 1146,
+      "start_transfer_parse_us": 1164,
+      "pixels": [
+       160,
+       160
+      ],
+      "page_count": 1,
+      "text": "absent"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 43,
+       "p95": 119,
+       "max": 119,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 11,
+       "p95": 23,
+       "max": 23,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 1199,
+       "p95": 2126,
+       "max": 2126,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 17,
+       "p95": 32,
+       "max": 32,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 18,
+       "p95": 33,
+       "max": 33,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 229,
+       "p95": 426,
+       "max": 426,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 14,
+       "p95": 26,
+       "max": 26,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1027,
+       "p95": 1740,
+       "max": 1740,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 1045,
+       "p95": 1773,
+       "max": 1773,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 1302,
+       "p95": 2225,
+       "max": 2225,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 1257,
+     "client_warm": {
+      "request_us": {
+       "p50": 1232,
+       "p95": 1476,
+       "max": 1476,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 28
+    }
+   ]
+  },
+  {
+   "name": "hayro-pattern_shading_type6_2.pdf",
+   "source": "directory",
+   "bytes": 8673,
+   "sha256": "97836365c1fcabc71252cf44d0876d5b3092617464f23b3538b3554b7f0c70b9",
+   "page_count": 1,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 97,
+      "write_us": 19,
+      "reply_us": 20502,
+      "reap_us": 30,
+      "request_us": 20650,
+      "reply_bytes": 57652,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 25,
+      "render_us": 19214,
+      "text_us": 45,
+      "overhead_us": 1366,
+      "start_transfer_parse_us": 1391,
+      "pixels": [
+       120,
+       120
+      ],
+      "page_count": 1,
+      "text": "absent"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 63,
+       "p95": 136,
+       "max": 136,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 13,
+       "p95": 21,
+       "max": 21,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 20310,
+       "p95": 36618,
+       "max": 36618,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 29,
+       "p95": 45,
+       "max": 45,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 26,
+       "p95": 47,
+       "max": 47,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 19303,
+       "p95": 34735,
+       "max": 34735,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 44,
+       "p95": 70,
+       "max": 70,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1149,
+       "p95": 1929,
+       "max": 1929,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 1174,
+       "p95": 1976,
+       "max": 1976,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 20439,
+       "p95": 36781,
+       "max": 36781,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 26666,
+     "client_warm": {
+      "request_us": {
+       "p50": 20641,
+       "p95": 33226,
+       "max": 33226,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 46
+    }
+   ]
+  },
+  {
+   "name": "hayro-stream_jpx_5.pdf",
+   "source": "directory",
+   "bytes": 335859,
+   "sha256": "6afbdc5a29ecc8452f73d6dc2dcca08fc407d3047a46ccfcd3bd4c237376bc86",
+   "page_count": 1,
+   "pages": [
+    {
+     "page": 0,
+     "first": {
+      "spawn_us": 59,
+      "write_us": 1003,
+      "reply_us": 27087,
+      "reap_us": 39,
+      "request_us": 28189,
+      "reply_bytes": 1048628,
+      "maxrss_kib": 82240,
+      "exited_0": true,
+      "parse_us": 26,
+      "render_us": 26510,
+      "text_us": 10,
+      "overhead_us": 1643,
+      "start_transfer_parse_us": 1669,
+      "pixels": [
+       512,
+       512
+      ],
+      "page_count": 1,
+      "text": "absent"
+     },
+     "warm": {
+      "spawn_us": {
+       "p50": 71,
+       "p95": 123,
+       "max": 123,
+       "n": 19
+      },
+      "write_us": {
+       "p50": 1001,
+       "p95": 1306,
+       "max": 1306,
+       "n": 19
+      },
+      "reply_us": {
+       "p50": 28137,
+       "p95": 33868,
+       "max": 33868,
+       "n": 19
+      },
+      "reap_us": {
+       "p50": 28,
+       "p95": 43,
+       "max": 43,
+       "n": 19
+      },
+      "parse_us": {
+       "p50": 25,
+       "p95": 36,
+       "max": 36,
+       "n": 19
+      },
+      "render_us": {
+       "p50": 27752,
+       "p95": 33365,
+       "max": 33365,
+       "n": 19
+      },
+      "text_us": {
+       "p50": 8,
+       "p95": 16,
+       "max": 16,
+       "n": 19
+      },
+      "overhead_us": {
+       "p50": 1494,
+       "p95": 2000,
+       "max": 2000,
+       "n": 19
+      },
+      "start_transfer_parse_us": {
+       "p50": 1519,
+       "p95": 2036,
+       "max": 2036,
+       "n": 19
+      },
+      "request_us": {
+       "p50": 29171,
+       "p95": 35282,
+       "max": 35282,
+       "n": 19
+      },
+      "maxrss_kib": {
+       "p50": 82240,
+       "p95": 82240,
+       "max": 82240,
+       "n": 19
+      }
+     },
+     "client_first_us": 29623,
+     "client_warm": {
+      "request_us": {
+       "p50": 29459,
+       "p95": 29831,
+       "max": 29831,
+       "n": 19
+      }
+     },
+     "errors": [],
+     "kill_to_reap_at_work_us": 138
+    }
+   ]
+  }
+ ]
+}

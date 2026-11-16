@@ -1,0 +1,39 @@
+{
+ "items": [
+  {
+   "role": "check menu item",
+   "name": "Hide whitespace",
+   "states": [
+    "checkable",
+    "checked",
+    "enabled",
+    "selectable",
+    "sensitive",
+    "showing",
+    "visible"
+   ]
+  },
+  {
+   "role": "menu item",
+   "name": "Context 3 +",
+   "states": [
+    "enabled",
+    "selectable",
+    "sensitive",
+    "showing",
+    "visible"
+   ]
+  },
+  {
+   "role": "menu item",
+   "name": "Reset review",
+   "states": [
+    "enabled",
+    "selectable",
+    "sensitive",
+    "showing",
+    "visible"
+   ]
+  }
+ ]
+}

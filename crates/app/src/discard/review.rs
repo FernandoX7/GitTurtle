@@ -1,22 +1,13 @@
 //! Bounded destructive review with a persistent warning and explicit acceptance.
 use super::*;
 use gpui_kit::component::{
-    button::ButtonVariant,
-    dialog::{Cancel, Confirm, DialogButtonProps},
+    dialog::{Cancel, Confirm},
     scroll::{Scrollbar, ScrollbarMode},
 };
 use gpui_kit::prelude::FluentBuilder;
 use std::{cell::Cell, rc::Rc};
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as label;
 
 fn path_field(
     id: &'static str,
@@ -49,7 +40,10 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let plan = Arc::new(plan);
         let scroll = ScrollHandle::new();
-        let focus = cx.focus_handle();
+        // The details scroll by key, so Tab reaches them, and they draw the
+        // window's keyboard ring on their own edge.
+        let focus = cx.focus_handle().tab_stop(true);
+        let ring = self.focus_ring.clone();
         let submitted = Rc::new(Cell::new(false));
         // Enter on the dialog container must never accept irreversible loss.
         // Keyboard and accessibility activation still work on the actual button.
@@ -62,6 +56,9 @@ impl GitTurtle {
             let click_focus = focus.clone();
             let copy_path = repository.join(&plan.entry.path).display().to_string();
             let keyboard_copy_path = copy_path.clone();
+            // Keyed by the file the dialog would discard.
+            let path_mark = copy_feedback::Mark::new("copy-discard-path", (&repository, &plan.entry.path));
+            let (click_mark, keyboard_mark) = (path_mark.clone(), path_mark.clone());
             let request = requested.clone();
             let keyboard_request = requested.clone();
             let requested = requested.clone();
@@ -103,8 +100,9 @@ impl GitTurtle {
                 .child(label("discard-preserved", "Other files and the branch stay unchanged.").text_color(rgb(colors.muted)))
                 .child(label("discard-revalidation", "If this file or Git state changes, the action stops so you can review it again.").text_color(rgb(colors.muted)));
             dialog
-                .title(label("discard-title", title))
-                .width(px(620.).min(window.viewport_size().width - px(48.)))
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title("discard-title", title))
+                .width(appearance::dialog_width(px(620.), window)).max_h(appearance::dialog_max_height(window))
                 .child(
                     div()
                         .id("operation-consequences")
@@ -134,17 +132,15 @@ impl GitTurtle {
                                 .flex_1()
                                 .min_h_0()
                                 .child(
-                                    div()
+                                    crate::native_accessibility::clips_children(div()
                                         .id("discard-details")
                                         .debug_selector(|| "discard-details".into())
                                         .role(Role::Document)
                                         .aria_label("File discard review. Use arrow keys, Page Up, Page Down, Home or End to scroll.")
-                                        .tab_stop(true)
                                         .track_focus(&focus)
                                         .border_1()
-                                        .border_color(gpui_kit::transparent_black())
+                                        .border_color(if ring.shows(&focus) { rgb(colors.accent).into() } else { gpui_kit::transparent_black() })
                                         .rounded_lg()
-                                        .focus_visible(|style| style.border_color(rgb(colors.accent)))
                                         .on_mouse_down(MouseButton::Left, move |_, window, cx| click_focus.focus(window, cx))
                                         .on_key_down(move |event, window, cx| {
                                             let modifiers = event.keystroke.modifiers;
@@ -168,25 +164,22 @@ impl GitTurtle {
                                         .size_full()
                                         .overflow_y_scroll()
                                         .track_scroll(&scroll)
-                                        .child(details),
+                                        .child(details)),
                                 )
                                 .child(Scrollbar::vertical(&scroll).id("discard-scrollbar").mode(ScrollbarMode::Always)),
                         ),
                 )
-                .button_props(DialogButtonProps::default().ok_text(action).ok_variant(ButtonVariant::Danger).show_cancel(true))
                 .footer(
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(button("copy-discard-path", "Copy path", "copy", false)
-                            .debug_selector(|| "copy-discard-path".into())
+                        .child(copy_feedback::copy_button(path_mark, "Copy path", "", cx)
                             .accessibility_label("Copy full path of file to discard")
-                            .on_action(move |_: &Confirm, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(keyboard_copy_path.clone())))
-                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()))))
+                            .on_action(move |_: &Confirm, window, cx| copy_feedback::copy(window, cx, Some(keyboard_mark.clone()), "file path", keyboard_copy_path.clone()))
+                            .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(click_mark.clone()), "file path", copy_path.clone())))
                         .child(div().flex_1())
-                        .child(button("cancel-discard", "Cancel", "", false)
-                            .secondary()
+                        .child(crate::tags::dialog_cancel("cancel-discard", "Cancel")
                             .debug_selector(|| "cancel-discard".into())
                             .on_action(|_: &Confirm, window, cx| window.dispatch_action(Box::new(Cancel), cx))
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)))

@@ -31,6 +31,7 @@ pub struct Switch {
     accessibility_label: Option<SharedString>,
     tab_index: isize,
     tab_stop: bool,
+    provided_focus_handle: Option<FocusHandle>,
 }
 
 /// Semantic root styles supported by [`Switch`].
@@ -254,7 +255,16 @@ impl Switch {
             accessibility_label: None,
             tab_index: 0,
             tab_stop: true,
+            provided_focus_handle: None,
         }
+    }
+
+    /// GitTurtle patch: uses a caller-owned focus handle instead of creating
+    /// keyed state, as [`crate::Button::track_focus`] does, so a wrapper can
+    /// draw its own focus indication.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.provided_focus_handle = Some(focus_handle.clone());
+        self
     }
 
     /// Sets the application-controlled checked value.
@@ -315,10 +325,12 @@ impl Switch {
     }
 
     fn focus_handle(&self, window: &mut Window, cx: &mut App) -> FocusHandle {
-        window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone()
+        self.provided_focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        })
     }
 }
 

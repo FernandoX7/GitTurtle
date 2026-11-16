@@ -1,17 +1,20 @@
 //! Supported GitHub CLI OAuth handoff, native credential storage, and bounded API
 //! subprocesses. No token appears in an argument, preference, log, or diagnostic.
 use super::*;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 use anyhow::Context as _;
 use std::{
     io::{Read, Write},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+#[cfg(target_os = "linux")]
+mod secret_service;
 
-#[cfg(target_os = "macos")]
+// The store's item, which a test build never reaches: it builds no store (`CredentialStore`).
+#[cfg(all(target_os = "macos", not(test)))]
 const SERVICE: &str = "com.gitturtle.github.oauth";
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 const ACCOUNT: &str = "github.com";
 // Legacy macOS Keychain interaction policy is process-wide. Every app-owned
 // credential operation uses this lock so an explicit connection in another
@@ -44,7 +47,7 @@ fn decode_stored_credential(
     }
 }
 /// Caller holds KEYCHAIN_ACCESS until this read restores the interaction policy.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn read_credential_without_interaction() -> Result<Option<Credential>> {
     use security_framework::os::macos::keychain::SecKeychain;
     // The existing item lives in the legacy login Keychain, where per-query
@@ -94,21 +97,47 @@ impl std::fmt::Debug for Credential {
             .finish_non_exhaustive()
     }
 }
-/// Platform abstraction never falls back to ordinary files. Linux can add a
-/// Secret Service implementation without changing collaboration semantics.
+/// Platform abstraction never falls back to ordinary files: macOS Keychain on a Mac, and on
+/// Linux the desktop keyring through the Secret Service (`secret_service`).
+///
+/// A test build has no store, so a test that reads, saves or removes the stored
+/// authorization fails to compile: Connect and Disconnect reach a stand-in there
+/// (`github_view::account`), and a transport opened with the fixture off refuses
+/// (`review::UiTransport::open`), never reaching a developer's stored authorization.
+#[cfg(not(test))]
 pub(crate) trait CredentialStore {
     fn load(&self) -> Result<Option<Credential>>;
-    fn save(&self, credential: &Credential) -> Result<()>;
-    fn remove(&self) -> Result<()>;
+    /// Connect's write, which may wait on the platform's own prompt; on Linux the
+    /// operation's Cancel (`control`) stops it.
+    fn save(&self, credential: &Credential, control: &OperationControl) -> Result<()>;
+    /// Disconnect, which may wait on a prompt and stops at Cancel as [`Self::save`] does.
+    fn remove(&self, control: &OperationControl) -> Result<()>;
 }
 pub(crate) struct SecureStore;
-#[cfg(target_os = "macos")]
+impl SecureStore {
+    /// The store as the panel names it to the person, from this one place: macOS Keychain
+    /// only on a Mac, and on Linux the desktop keyring, never said to be encrypted (a
+    /// keyring without a password keeps it unencrypted on disk). Connect's success once
+    /// named macOS Keychain on every platform.
+    #[cfg(target_os = "macos")]
+    pub(crate) const NAME: &str = "macOS Keychain";
+    #[cfg(target_os = "linux")]
+    pub(crate) const NAME: &str = "your desktop keyring";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub(crate) const NAME: &str = "secure storage";
+    /// Whether the store holds GitTurtle's authorization on this platform: Connect saves it
+    /// there on macOS and Linux, and elsewhere refuses to save, so nothing is ever stored.
+    /// The panel words what a stopped Connect may have left from this one place
+    /// (`github_view::after_stopped_connect`).
+    pub(crate) const HOLDS: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+}
+#[cfg(all(target_os = "macos", not(test)))]
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
         let _access = keychain_access()?;
         read_credential_without_interaction()
     }
-    fn save(&self, credential: &Credential) -> Result<()> {
+    fn save(&self, credential: &Credential, _control: &OperationControl) -> Result<()> {
         let _access = keychain_access()?;
         security_framework::passwords::set_generic_password(
             SERVICE,
@@ -134,7 +163,7 @@ impl CredentialStore for SecureStore {
         verify_saved_credential(credential, read_credential_without_interaction())
             .context("GitHub authorization was saved, but Keychain still requires permission for stored reads. Connect again and approve ongoing access for this GitTurtle build in the macOS dialog.")
     }
-    fn remove(&self) -> Result<()> {
+    fn remove(&self, _control: &OperationControl) -> Result<()> {
         let _access = keychain_access()?;
         match security_framework::passwords::delete_generic_password(SERVICE, ACCOUNT) {
             Ok(()) => Ok(()),
@@ -143,38 +172,60 @@ impl CredentialStore for SecureStore {
         }
     }
 }
-#[cfg(not(target_os = "macos"))]
+/// The desktop keyring: a stored read never prompts and ends within 5 seconds; Connect and
+/// Disconnect may show the keyring's own prompt and stop at the operation's Cancel; every
+/// failure fails closed, with no file or other fallback (`secret_service`).
+#[cfg(all(target_os = "linux", not(test)))]
+impl CredentialStore for SecureStore {
+    fn load(&self) -> Result<Option<Credential>> {
+        secret_service::load(&secret_service::DesktopKeyring::new()?)
+    }
+    fn save(&self, credential: &Credential, control: &OperationControl) -> Result<()> {
+        secret_service::save(&secret_service::DesktopKeyring::new()?, credential, control)
+    }
+    fn remove(&self, control: &OperationControl) -> Result<()> {
+        secret_service::remove(&secret_service::DesktopKeyring::new()?, control)
+    }
+}
+#[cfg(all(not(any(target_os = "macos", target_os = "linux")), not(test)))]
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
         Ok(None)
     }
-    fn save(&self, _: &Credential) -> Result<()> {
+    fn save(&self, _: &Credential, _: &OperationControl) -> Result<()> {
         bail!(
             "Secure GitHub credential storage is not yet available on this platform. No plaintext credential was stored."
         )
     }
-    fn remove(&self) -> Result<()> {
+    fn remove(&self, _: &OperationControl) -> Result<()> {
         Ok(())
     }
 }
 
+/// The connected account's API transport. A test build never makes one: it has no stored
+/// authorization to make it from ([`CredentialStore`]) and no connection.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct GhTransport {
     credential: Credential,
 }
 impl GhTransport {
+    #[cfg(not(test))]
     pub fn stored() -> Result<Self> {
         Ok(Self { credential:SecureStore.load()?.ok_or_else(||anyhow!("Connect a GitHub account first. Sign in through GitHub CLI using ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account."))? })
     }
+    #[cfg_attr(test, allow(dead_code))]
     pub fn login(&self) -> &str {
         &self.credential.login
     }
     /// This is an explicit account connection, including the /user request.
     /// GitHub CLI owns browser OAuth. GitTurtle never invokes auth setup-git,
     /// switches the CLI account, uploads a key, or creates a credential file.
+    /// A test build has none: it connects a stand-in (`github_view::account`).
+    #[cfg(not(test))]
     pub fn connect_existing(control: &OperationControl) -> Result<String> {
         let mut command = gh_command()?;
         command.args(["auth", "token", "--hostname", "github.com"]);
-        let (success, token)=run(command,None,control,16*1024,Duration::from_secs(30)).map_err(|_|anyhow!("GitHub CLI has no usable signed-in account. In Terminal run ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account. Never paste the token here."))?;
+        let (success, token)=run(command,None,control,16*1024,Duration::from_secs(30)).map_err(|_|anyhow!("GitHub CLI has no usable signed-in account. In a terminal, run ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account. Never paste the token here."))?;
         ensure!(
             success,
             "GitHub CLI has no usable signed-in account. Complete its browser sign-in, then connect again."
@@ -203,10 +254,11 @@ impl GhTransport {
             !control.is_cancelled(),
             "GitHub account connection cancelled before saving authorization"
         );
-        SecureStore.save(&client.0.credential)?;
+        SecureStore.save(&client.0.credential, control)?;
         ensure!(
             !control.is_cancelled(),
-            "GitHub account connection cancelled; authorization may be stored in Keychain"
+            "GitHub account connection cancelled; authorization may be stored in {}",
+            SecureStore::NAME
         );
         Ok(user.login)
     }
@@ -266,8 +318,15 @@ fn isolate_api_configuration(command: &mut Command) -> Result<tempfile::TempDir>
     command.env("GH_CONFIG_DIR", directory.path());
     Ok(directory)
 }
+/// Where GitTurtle runs GitHub CLI from, the first that exists winning: Homebrew's prefix only
+/// on a Mac, so elsewhere only the system package's executable runs, `/usr/local/bin` first.
+/// Linux once checked Homebrew's macOS prefix too.
+#[cfg(target_os = "macos")]
+const GH_CANDIDATES: &[&str] = &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
+#[cfg(not(target_os = "macos"))]
+const GH_CANDIDATES: &[&str] = &["/usr/local/bin/gh", "/usr/bin/gh"];
 fn gh_command() -> Result<Command> {
-    let executable=["/opt/homebrew/bin/gh","/usr/local/bin/gh","/usr/bin/gh"].into_iter().map(std::path::Path::new).find(|path|path.is_file()).ok_or_else(||anyhow!("Install GitHub CLI from cli.github.com, sign in with its browser flow, then connect the account."))?;
+    let executable=GH_CANDIDATES.iter().map(std::path::Path::new).find(|path|path.is_file()).ok_or_else(||anyhow!("Install GitHub CLI from cli.github.com, sign in with its browser flow, then connect the account."))?;
     let mut command = Command::new(executable);
     command
         .current_dir(std::env::temp_dir())
@@ -560,6 +619,13 @@ mod tests {
         assert_eq!(response.status, 429);
         assert_eq!(response.headers["retry-after"], "30");
         assert_eq!(response.body, b"{}");
+    }
+    /// A Linux build runs GitHub CLI only from the system package's paths, `/usr/local/bin`
+    /// before `/usr/bin`, never from Homebrew's macOS prefix, which it once checked first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_runs_github_cli_only_from_the_system_paths() {
+        assert_eq!(GH_CANDIDATES, ["/usr/local/bin/gh", "/usr/bin/gh"]);
     }
     #[test]
     fn token_debug_never_displays_secret() {

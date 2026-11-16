@@ -13,12 +13,19 @@ pub(crate) struct PullFile {
     pub status: String,
     pub additions: u32,
     pub deletions: u32,
-    #[serde(default)]
-    pub patch: Option<String>,
+    /// Shared with the file's preparation, which takes it off the UI thread without a copy.
+    #[serde(default, deserialize_with = "shared_patch")]
+    pub patch: Option<std::sync::Arc<str>>,
     #[serde(skip)]
     pub rows: Vec<PatchRow>,
     #[serde(skip)]
     pub unavailable: Option<String>,
+}
+/// Through `String`, so this crate does not rely on serde's `rc` feature.
+fn shared_patch<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<std::sync::Arc<str>>, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.map(Into::into))
 }
 #[derive(Clone, Debug)]
 pub(crate) struct PatchRow {
@@ -266,14 +273,17 @@ impl<T: Transport> Client<T> {
     }
 }
 
+/// What a test build's [`UiTransport::open`] says with the fixture off.
+#[cfg(test)]
+const NO_ACCOUNT_IN_TESTS: &str = "A test build has no GitHub account and reads no stored authorization; use the offline fixture.";
 /// Explicit built-in native QA fixture. This transport has no credential,
 /// process, URL-following or network path, including when a fixture request fails.
 pub(crate) enum UiTransport {
+    // A test build never connects: it reaches no stored authorization (`Self::live`).
+    #[cfg_attr(test, allow(dead_code))]
     Live(super::transport::GhTransport),
     #[cfg(test)]
-    Fixture {
-        moved: bool,
-    },
+    Fixture { moved: bool },
     NativeFixture {
         moved: bool,
         session: std::sync::Arc<std::sync::Mutex<super::native_fixture::Session>>,
@@ -287,8 +297,21 @@ impl UiTransport {
                 session: super::native_fixture::session(),
             })
         } else {
-            Ok(Self::Live(super::transport::GhTransport::stored()?))
+            Self::live()
         }
+    }
+    /// The connected account, from GitTurtle's stored authorization.
+    #[cfg(not(test))]
+    fn live() -> Result<Self> {
+        Ok(Self::Live(super::transport::GhTransport::stored()?))
+    }
+    /// A test build has no connected account: it builds no credential store
+    /// ([`super::transport::SecureStore`]), so a test with the fixture off refuses here,
+    /// where it would have read the developer's stored authorization (on macOS a Keychain
+    /// item).
+    #[cfg(test)]
+    fn live() -> Result<Self> {
+        bail!(NO_ACCOUNT_IN_TESTS)
     }
     pub fn login(&self) -> &str {
         match self {
@@ -380,6 +403,18 @@ fn fixture_response(request: Request, moved: bool, control: &OperationControl) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// With the fixture off, a test build's transport refuses before any credential store:
+    /// the store's reads, saves and removals and the GitHub CLI's connection are not built
+    /// for tests, so no test reads, changes or connects a developer's account. A test's
+    /// Refresh PRs with the fixture off would have read the stored authorization (on macOS
+    /// the Keychain item).
+    #[test]
+    fn a_test_build_opens_no_live_transport() {
+        let Err(error) = UiTransport::open(false, false) else {
+            panic!("a test build opened the connected account's transport");
+        };
+        assert_eq!(error.to_string(), NO_ACCOUNT_IN_TESTS);
+    }
     fn files() -> Vec<PullFile> {
         let mut files = Client(UiTransport::Fixture { moved: false })
             .files(

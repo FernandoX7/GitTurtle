@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tarfile
@@ -27,15 +28,17 @@ release = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = release
 spec.loader.exec_module(release)
 github = release.github
-MAC, LINUX = release.MAC, release.LINUX
+MAC, LINUX_X86, LINUX_ARM, LINUX_TARGETS = release.MAC, release.LINUX_X86, release.LINUX_ARM, release.LINUX_TARGETS
 SHA = "a" * 40
 TAG = "b" * 40
 LOCK = "c" * 64
-REQUIRED = ["Quality gate", "Rust formatting", "Rust tests and Clippy · macos-15",
-            "Rust tests and Clippy · ubuntu-24.04", "Rust release · macos-26", "Rust release · ubuntu-24.04"]
+REQUIRED = ["Quality gate", "Rust formatting", "Rust tests · macos-15", "Rust tests · ubuntu-24.04",
+            "Rust Clippy · macos-15", "Rust Clippy · ubuntu-24.04",
+            "Rust release · macos-26", "Rust release · ubuntu-24.04", "Rust release · ubuntu-24.04-arm"]
+ARM_RELEASE_JOB = "Rust release · ubuntu-24.04-arm"
 
 
-def context(platforms=(LINUX,), signed=False):
+def context(platforms=LINUX_TARGETS, signed=False):
     value = {"format": 1, "identity": {"tag": "v0.1.0", "version": "0.1.0", "commit": SHA,
         "tag_object": TAG, "platforms": sorted(platforms), "cargo_lock_sha256": LOCK},
         "macos_signing": "notarized" if signed else "ad-hoc",
@@ -128,21 +131,27 @@ class Fixture(unittest.TestCase):
         self.inputs.mkdir()
         self.build_index = 0
 
-    def package(self, target=LINUX, *, ctx=None, gaps=False, signing=None):
-        ctx = ctx or self.ctx
+    def executable(self, target):
+        if target in LINUX_TARGETS:
+            machine = release.package_id.ELF_MACHINES[target].to_bytes(2, "little")
+            return b"\x7fELF\x02\x01" + b"\0" * 12 + machine + b"\0" * 12
+        return bytes.fromhex("cffaedfe0c000001") + b"\0" * 24
+
+    def archive(self, directory, target, *, name=None, executable=None, gaps=False, signing=None):
+        """Write one fabricated archive, its checksum and its manifest into directory."""
+        linux = target in LINUX_TARGETS
         self.build_index += 1
         tree = self.root / ("tree" + str(self.build_index))
         tree.mkdir()
-        suffix = ".tar.gz" if target == LINUX else ".zip"
-        name = f"GitTurtle-0.1.0-{SHA[:12]}-{release.packages.TARGETS[target]}-release{suffix}"
-        root = tree / (name.removesuffix(suffix) if target == LINUX else "GitTurtle.app")
+        suffix = ".tar.gz" if linux else ".zip"
+        name = name or f"GitTurtle-0.1.0-{SHA[:12]}-{release.packages.TARGETS[target]}-release{suffix}"
+        root = tree / (name.removesuffix(suffix) if linux else "GitTurtle.app")
         root.mkdir()
-        binary = root / ("bin/gitturtle" if target == LINUX else "Contents/MacOS/gitturtle")
+        binary = root / ("bin/gitturtle" if linux else "Contents/MacOS/gitturtle")
         binary.parent.mkdir(parents=True)
-        binary.write_bytes((b"\x7fELF\x02\x01" + b"\0" * 12 + b"\x3e\x00" + b"\0" * 12) if target == LINUX
-                           else bytes.fromhex("cffaedfe0c000001") + b"\0" * 24)
+        binary.write_bytes(executable or self.executable(target))
         binary.chmod(0o755)
-        licenses = root / ("licenses" if target == LINUX else "Contents/Resources/licenses")
+        licenses = root / ("licenses" if linux else "Contents/Resources/licenses")
         licenses.mkdir(parents=True)
         (licenses / "LICENSE").write_text("Fabricated test license\n")
         (licenses / "THIRD_PARTY_NOTICES.md").write_text("Fixture full notices\n")
@@ -153,7 +162,7 @@ class Fixture(unittest.TestCase):
         release.write_json(licenses / "dependencies.json", inventory)
         if gaps:
             (licenses / "REVIEW_REQUIRED.md").write_text("Fixture gap\n")
-        package = {"format": 2, "application": "GitTurtle", "bundle_id": "com.gitturtle.desktop", "target": target,
+        package = {"format": 2, "application": "GitTurtle", "bundle_id": "com.gitturtle.GitTurtle", "target": target,
             "packaged_from_revision": SHA, "packaging_tree_status": "clean", "release_built_by_packager": False,
             "binary_sha256": release.package_id.digest(binary), "input_binary_sha256": release.package_id.digest(binary),
             "compiled_identity": {"application": "GitTurtle", "source_revision": SHA, "version": "0.1.0",
@@ -161,15 +170,11 @@ class Fixture(unittest.TestCase):
                 "build_unix_seconds": "1"}, "cargo_lock_sha256": LOCK,
             "license_inventory_sha256": release.package_id.digest(licenses / "dependencies.json"),
             "license_review_required": inventory["review_required"], "distribution": "complete-notices",
-            "signing": signing or ("unsigned" if target == LINUX else "ad-hoc")}
-        info = (root if target == LINUX else tree) / "build-info.json"
+            "signing": signing or ("unsigned" if linux else "ad-hoc")}
+        info = (root if linux else tree) / "build-info.json"
         release.write_json(info, package)
-        signed = package["signing"] == "developer-id-notarized"
-        artifact = ("release-signed-" if signed else "release-package-") + target + "-123-1"
-        directory = self.inputs / artifact
-        directory.mkdir()
         archive = directory / name
-        if target == LINUX:
+        if linux:
             with tarfile.open(archive, "w:gz") as stream:
                 stream.add(root, arcname=root.name)
         else:
@@ -179,6 +184,14 @@ class Fixture(unittest.TestCase):
                         stream.write(path, path.relative_to(tree))
         release.write_json(Path(str(archive) + ".manifest.json"), release.package_id.archive_manifest(archive, info))
         Path(str(archive) + ".sha256").write_text(f"{release.package_id.digest(archive)}  {name}\n")
+        return archive, package, binary
+
+    def package(self, target=LINUX_X86, *, ctx=None, name=None, gaps=False, signing=None):
+        ctx = ctx or self.ctx
+        signed = signing == "developer-id-notarized"
+        directory = self.inputs / (("release-signed-" if signed else "release-package-") + target + "-123-1")
+        directory.mkdir()
+        archive, package, binary = self.archive(directory, target, name=name, gaps=gaps, signing=signing)
         expected = release.expected_package(directory, ctx, target)
         receipt = {"format": 1, "context": ctx, "expected": expected,
             "producer": "signed-release-build" if signed else "fresh-release-build", "platform_checks": "passed",
@@ -190,6 +203,15 @@ class Fixture(unittest.TestCase):
             receipt["signing_report_sha256"] = release.package_id.digest(directory / "signing-result.json")
         release.write_json(directory / "receipt.json", receipt)
         return directory, package, binary
+
+    def linux(self, **fault):
+        """Both archives of a Linux release; a requested fault goes into the x86-64 one."""
+        self.package(LINUX_ARM)
+        return self.package(LINUX_X86, **fault)
+
+    def fresh_inputs(self, name):
+        self.inputs = self.root / ("inputs-" + name)
+        self.inputs.mkdir()
 
     def signing_report(self, ctx, package):
         executable = package["binary_sha256"]
@@ -219,7 +241,7 @@ class Fixture(unittest.TestCase):
 
 class Packages(Fixture):
     def test_linux_archive_assembly_verifies_actual_bytes_without_executing_them(self):
-        directory, package, binary = self.package()
+        directory, package, binary = self.linux()
         with patch.object(release.package_id, "probe", side_effect=AssertionError("cross-platform assembly executed a binary")):
             output = self.assemble()
         value = json.loads((output / "release-manifest.json").read_bytes())
@@ -229,9 +251,65 @@ class Packages(Fixture):
         for item in value["assets"]:
             self.assertEqual(github.file_record(output / item["name"]), item)
 
+    def test_one_linux_archive_without_the_other_fails_assembly(self):
+        self.ctx = context(release.PLATFORMS["linux"])
+        for present in LINUX_TARGETS:
+            with self.subTest(present=present):
+                self.fresh_inputs(present)
+                self.package(present)
+                with self.assertRaises(FileNotFoundError):
+                    self.assemble(name="assembled-" + present)
+                self.assertFalse((self.root / ("assembled-" + present) / "release-manifest.json").exists())
+
+    def test_archive_that_no_selection_promised_fails_assembly(self):
+        for selection, extra in (("linux", MAC), ("macos", LINUX_ARM), ("macos", LINUX_X86)):
+            with self.subTest(selection=selection, extra=extra):
+                self.ctx = context(release.PLATFORMS[selection])
+                self.fresh_inputs(selection + "-" + extra)
+                for target in (*release.PLATFORMS[selection], extra):
+                    self.package(target)
+                output = "assembled-" + selection + "-" + extra
+                with self.assertRaisesRegex(github.Error, "Unexpected platform artifacts"):
+                    self.assemble(name=output)
+                self.assertFalse((self.root / output / "release-manifest.json").exists())
+
+    def test_linux_package_under_another_or_no_targets_name_is_refused(self):
+        # One archive must never stand in for the other: its name is all that
+        # tells the two Linux downloads apart.
+        arm, x86 = (f"GitTurtle-0.1.0-{SHA[:12]}-linux-{machine}-release.tar.gz" for machine in ("aarch64", "x86_64"))
+        undeclared = f"GitTurtle-0.1.0-{SHA[:12]}-linux-riscv64-release.tar.gz"
+        for case, names in (("x86-64 under the AArch64 name", {LINUX_ARM: arm, LINUX_X86: arm}),
+                            ("both names swapped", {LINUX_ARM: x86, LINUX_X86: arm}),
+                            ("an undeclared label", {LINUX_ARM: arm, LINUX_X86: undeclared})):
+            with self.subTest(case=case):
+                self.fresh_inputs(case.replace(" ", "-"))
+                for target, name in names.items():
+                    self.package(target, name=name)
+                output = "assembled-" + case.replace(" ", "-")
+                with self.assertRaisesRegex(github.Error, "not named for its target"):
+                    self.assemble(name=output)
+                self.assertFalse((self.root / output / "release-manifest.json").exists())
+
+    def test_two_packages_with_one_asset_name_are_refused_not_overwritten(self):
+        # Reachable only if two targets ever derive one name: here, one shared label.
+        with patch.dict(release.packages.TARGETS, {LINUX_ARM: release.packages.TARGETS[LINUX_X86]}):
+            self.linux()
+            with self.assertRaisesRegex(github.Error, "same release asset name"):
+                self.assemble()
+        self.assertFalse((self.root / "assembled" / "release-manifest.json").exists())
+
+    def test_notarized_archive_keeps_the_signing_name_but_never_another_targets(self):
+        self.ctx = context((MAC,), signed=True)
+        self.package(MAC, signing="developer-id-notarized", name=f"GitTurtle-0.1.0-{MAC}-{SHA[:12]}-notarized.zip")
+        self.assertTrue((self.assemble() / f"GitTurtle-0.1.0-{MAC}-{SHA[:12]}-notarized.zip").is_file())
+        self.fresh_inputs("linux-name")
+        self.package(MAC, signing="developer-id-notarized", name=f"GitTurtle-0.1.0-{SHA[:12]}-linux-aarch64-release.tar.gz")
+        with self.assertRaisesRegex(github.Error, "not named for its target"):
+            self.assemble(name="assembled-linux-name")
+
     def test_missing_promised_macos_is_a_failure(self):
-        self.ctx = context((LINUX, MAC))
-        self.package(ctx=self.ctx)
+        self.ctx = context((*LINUX_TARGETS, MAC))
+        self.linux()
         with self.assertRaises((OSError, github.Error)):
             self.assemble()
 
@@ -252,55 +330,55 @@ class Packages(Fixture):
                          "developer-id-notarized")
 
     def test_incomplete_licenses_block_assembly(self):
-        self.package(gaps=True)
+        self.linux(gaps=True)
         with self.assertRaises(release.package_id.PackageError):
             self.assemble()
 
     def test_changed_archive_fails_even_if_the_outer_manifest_still_exists(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         archive = next(directory.glob("*.tar.gz"))
         archive.write_bytes(archive.read_bytes() + b"changed")
         with self.assertRaises(release.package_id.PackageError):
             self.assemble()
 
     def test_mixed_source_receipt_is_refused(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         self.mutate_receipt(directory, lambda value: value["expected"].update(revision="d" * 40))
         with self.assertRaises(github.Error):
             self.assemble()
 
     def test_wrong_run_receipt_is_refused(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         self.mutate_receipt(directory, lambda value: value["context"].update(run_id=456))
         with self.assertRaises(github.Error):
             self.assemble()
 
     def test_pr_artifact_cannot_masquerade_as_release_producer(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         self.mutate_receipt(directory, lambda value: value.update(producer="pull_request"))
         with self.assertRaises(github.Error):
             self.assemble()
 
     def test_unexpected_extra_asset_is_refused(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         (directory / "unexpected.txt").write_text("No wildcard publication")
         with self.assertRaises(github.Error):
             self.assemble()
 
     def test_archive_name_cannot_escape_download_directory(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         self.mutate_receipt(directory, lambda value: value["expected"].update(archive="../another.tar.gz"))
         with self.assertRaises(github.Error):
             self.assemble()
 
     def test_missing_platform_check_or_unsigned_fallback_is_refused(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         self.mutate_receipt(directory, lambda value: value.update(platform_checks="skipped"))
         with self.assertRaises(github.Error):
             self.assemble()
 
     def test_unsafe_archive_entry_is_refused_before_publication(self):
-        directory, _, _ = self.package()
+        directory, _, _ = self.linux()
         archive = next(directory.glob("*.tar.gz"))
         with tarfile.open(archive, "w:gz") as output:
             item = tarfile.TarInfo("../escape")
@@ -392,6 +470,67 @@ class Packages(Fixture):
         self.assertEqual(json.loads((helper / "signing-result.json").read_bytes()), report)
 
 
+class Preparation(Fixture):
+    def prepare(self, target):
+        """The real prepare step around a fabricated compiled executable and packager."""
+        source = self.root / ("source-" + target)
+        compiled = source / "target" / target / "release/gitturtle"
+        compiled.parent.mkdir(parents=True)
+        compiled.write_bytes(self.executable(target))
+        directory = self.root / ("job-" + target)
+        calls, built = [], []
+
+        def packager(command, **_):
+            # Each real packager builds for its own platform only; the Linux one
+            # builds for the machine it runs on, which is this leg's runner.
+            command = [str(item) for item in command]
+            calls.append(command)
+            executable = Path(command[command.index("--binary") + 1]).read_bytes()
+            if Path(command[0]).name == "package-linux.sh":
+                bundle = Path(command[-1])
+                built.append(self.archive(bundle.parent, target, name=bundle.name + ".tar.gz", executable=executable)[1])
+            else:
+                archives = Path(command[command.index("--archive-dir") + 1])
+                built.append(self.archive(archives, MAC, executable=executable)[1])
+            return 0, ""
+
+        with patch.object(release, "ROOT", source), patch.object(release, "local_identity"), \
+                patch.object(release.packages, "run", side_effect=packager), \
+                patch.object(release.packages, "platform_checks") as checks, \
+                patch.object(release.package_id, "probe", side_effect=lambda binary: built[-1]["compiled_identity"]):
+            release.prepare(types.SimpleNamespace(target=target, directory=directory), self.ctx)
+        return directory / "upload", calls, checks
+
+    def test_linux_release_is_two_archives_that_differ_only_by_target(self):
+        self.ctx = context(release.PLATFORMS["linux"])
+        archives = {LINUX_ARM: f"GitTurtle-0.1.0-{SHA[:12]}-linux-aarch64-release.tar.gz",
+                    LINUX_X86: f"GitTurtle-0.1.0-{SHA[:12]}-linux-x86_64-release.tar.gz"}
+        for target, archive in archives.items():
+            upload, calls, checks = self.prepare(target)
+            self.assertEqual([Path(call[0]).name for call in calls], ["package-linux.sh"])
+            self.assertEqual(sorted(p.name for p in upload.iterdir()),
+                             sorted([archive, archive + ".manifest.json", archive + ".sha256", "receipt.json"]))
+            self.assertEqual(checks.call_args.args[2]["target"], target)
+            shutil.copytree(upload, self.inputs / f"release-package-{target}-123-1")
+        output = self.assemble()
+        self.assertEqual(sorted(p.name for p in output.iterdir()), sorted(
+            [name + suffix for name in archives.values() for suffix in ("", ".manifest.json", ".sha256")]
+            + ["RELEASE_NOTES.md", "SHA256SUMS", "release-manifest.json"]))
+        value = json.loads((output / "release-manifest.json").read_bytes())
+        self.assertEqual([(item["target"], item["expected"]["archive"], item["signing"]) for item in value["platforms"]],
+                         [(target, archive, "unsigned") for target, archive in archives.items()])
+        notes, sums = (output / "RELEASE_NOTES.md").read_text(), (output / "SHA256SUMS").read_text()
+        for target, archive in archives.items():
+            self.assertIn(f"- `{archive}` — `{target}`, unsigned.\n", notes)
+            self.assertIn(f"{release.package_id.digest(output / archive)}  {archive}\n", sums)
+
+    def test_macos_keeps_its_own_packager(self):
+        self.ctx = context((MAC,))
+        upload, calls, checks = self.prepare(MAC)
+        self.assertEqual([Path(call[0]).name for call in calls], ["package-macos.sh"])
+        self.assertEqual(calls[0][calls[0].index("--archive-dir") + 1], str(upload))
+        self.assertEqual(checks.call_args.args[2]["target"], MAC)
+
 
 class XcodeSelection(unittest.TestCase):
     def test_selects_verified_build_even_when_newer_or_default_tools_exist(self):
@@ -448,7 +587,7 @@ class XcodeSelection(unittest.TestCase):
             self.assertEqual(output.read_text(), "DEVELOPER_DIR=" + str(applications / "Xcode_26.3.app/Contents/Developer") + "\n")
 
     def test_other_cli_operations_still_refuse_absent_or_bad_release_context(self):
-        operations = [("prepare", ["--target", MAC, "--directory", "unused"]),
+        operations = [*(("prepare", ["--target", target, "--directory", "unused"]) for target in (MAC, *LINUX_TARGETS)),
                       ("signing-input", ["--directory", "unused"]),
                       ("finish-signing", ["--directory", "unused", "--signing", "unused", "--output", "unused"]),
                       ("assemble", ["--directory", "unused", "--output", "unused"]),
@@ -469,24 +608,80 @@ class XcodeSelection(unittest.TestCase):
 
 
 class Trust(unittest.TestCase):
+    def preflight(self, selection, output, api=None):
+        """The real preflight against the in-memory remote; the local source check
+        is replaced by one that keeps exactly the platforms preflight asked for.
+        """
+        env = {**environment(context()), "GITHUB_OUTPUT": str(output),
+               "RELEASE_PLATFORMS": selection, "RELEASE_MACOS_SIGNING": "ad-hoc",
+               "RELEASE_QUALITY_RUN": "45", "RELEASE_PUBLISH": "false",
+               "RELEASE_TAG": "v0.1.0", "RELEASE_VERSION": "0.1.0",
+               "RELEASE_COMMIT": SHA, "RELEASE_TAG_OBJECT": TAG}
+
+        def selected(_root, *, platforms, **_):
+            return release.identity.ReleaseIdentity("v0.1.0", TAG, SHA, "0.1.0", tuple(sorted(platforms)), LOCK)
+
+        with patch.dict(os.environ, env, clear=True), patch.object(release, "api", return_value=api or FakeGitHub()), \
+                patch.object(release.identity, "verify_release_identity", side_effect=selected), \
+                contextlib.redirect_stdout(io.StringIO()):
+            release.preflight(None)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
     def test_preflight_emits_macos26_build_matrix_and_keeps_linux_independent(self):
-        for selection, targets in (("linux,macos", (LINUX, MAC)), ("linux", (LINUX,))):
+        x86, arm, mac = ("x86_64-unknown-linux-gnu", "ubuntu-24.04"), ("aarch64-unknown-linux-gnu", "ubuntu-24.04-arm"), \
+            ("aarch64-apple-darwin", "macos-26")
+        for selection, legs in (("linux", [x86, arm]), ("macos", [mac]), ("linux,macos", [x86, arm, mac])):
             with self.subTest(selection=selection), tempfile.TemporaryDirectory() as directory:
-                ctx = context(platforms=targets)
+                outputs = self.preflight(selection, Path(directory) / "job-output")
+                self.assertEqual(json.loads(outputs["matrix"]),
+                                 {"include": [{"target": target, "os": runner} for target, runner in legs]})
+                self.assertEqual(outputs["linux"], str("linux" in selection).lower())
+                self.assertEqual(outputs["macos"], str("macos" in selection).lower())
+                ctx = json.loads(outputs["context"])
+                self.assertEqual(ctx["identity"]["platforms"], sorted(target for target, _ in legs))
+                self.assertEqual(release.context_from_env(environment(ctx)), ctx)
+
+    def test_no_selection_names_one_linux_target(self):
+        options = re.search(r"^      platforms:\n(?:        .*\n)*?        options: \[(.*)\]$",
+                            (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"), re.M)
+        self.assertEqual(["".join(option) for option in re.findall(r"'([^']*)'|([^,'\s]+)", options.group(1))],
+                         ["linux", "macos", "linux,macos"])
+        self.assertEqual(list(release.PLATFORMS), ["linux", "macos", "linux,macos"])
+        for selection in (LINUX_X86, LINUX_ARM, "linux-x86_64", "linux-aarch64", "linux,linux", "macos,linux", ""):
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "job-output"
-                env = {**environment(ctx), "GITHUB_OUTPUT": str(output),
-                       "RELEASE_PLATFORMS": selection, "RELEASE_MACOS_SIGNING": "ad-hoc",
-                       "RELEASE_QUALITY_RUN": "45", "RELEASE_PUBLISH": "false",
-                       "RELEASE_TAG": "v0.1.0", "RELEASE_VERSION": "0.1.0",
-                       "RELEASE_COMMIT": SHA, "RELEASE_TAG_OBJECT": TAG}
-                selected = release.identity.ReleaseIdentity(**ctx["identity"])
-                with patch.dict(os.environ, env, clear=True), patch.object(release, "api", return_value=FakeGitHub()), \
-                        patch.object(release.identity, "verify_release_identity", return_value=selected):
-                    release.preflight(None)
-                outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
-                self.assertEqual(json.loads(outputs["matrix"]), {"include": [
-                    {"target": target, "os": "macos-26" if target == MAC else "ubuntu-24.04"} for target in targets]})
-                self.assertEqual(outputs["macos"], str(MAC in targets).lower())
+                with self.assertRaisesRegex(github.Error, "explicit supported platform set"):
+                    self.preflight(selection, output)
+                self.assertFalse(output.exists())
+
+    def test_context_promises_only_a_set_a_dispatch_can_select(self):
+        for platforms in ((LINUX_X86,), (LINUX_ARM,), (LINUX_X86, MAC), (LINUX_ARM, MAC)):
+            with self.subTest(platforms=platforms), self.assertRaisesRegex(github.Error, "no selection offers"):
+                release.context_from_env(environment(context(platforms)))
+        for platforms in release.PLATFORMS.values():
+            with self.subTest(platforms=platforms):
+                ctx = context(platforms)
+                self.assertEqual(release.context_from_env(environment(ctx)), ctx)
+
+    def test_preflight_refuses_quality_without_a_successful_arm_linux_release_job(self):
+        # "missing" is every Quality run from before Quality built this target.
+        for selection in release.PLATFORMS:
+            for variant in ("missing", "skipped", "failure", "cancelled", "duplicate", "other-source"):
+                with self.subTest(selection=selection, variant=variant), tempfile.TemporaryDirectory() as directory:
+                    api = FakeGitHub()
+                    job = next(item for item in api.jobs if item["name"] == ARM_RELEASE_JOB)
+                    if variant == "missing":
+                        api.jobs.remove(job)
+                    elif variant == "duplicate":
+                        api.jobs.append(copy.deepcopy(job))
+                    elif variant == "other-source":
+                        job["head_sha"] = "d" * 40
+                    else:
+                        job["conclusion"] = variant
+                    output = Path(directory) / "job-output"
+                    with self.assertRaisesRegex(github.Error, ARM_RELEASE_JOB):
+                        self.preflight(selection, output, api)
+                    self.assertFalse(output.exists())
 
     def test_only_exact_main_dispatch_and_workflow_revision_are_accepted(self):
         ctx = context()
@@ -535,6 +730,26 @@ class Trust(unittest.TestCase):
                 mutate(api)
                 github.quality_evidence(api, SHA, 45)
 
+    def test_required_jobs_are_names_the_quality_workflow_produces(self):
+        # A renamed Quality job would otherwise leave every release preflight
+        # requiring a job that no longer runs.
+        body = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+        produced = set()
+        for block in re.split(r"^  [a-z][a-z0-9-]*:\n", body, flags=re.M)[1:]:
+            name = re.search(r"^    name: (.+)$", block, re.M)
+            if not name:
+                continue
+            listed = re.search(r"^        os: \[(.*)\]$", block, re.M)
+            runners = ([runner.strip() for runner in listed.group(1).split(",")] if listed
+                       else re.findall(r"^          - os: (\S+)$", block, re.M))
+            if "${{ matrix.os }}" in name.group(1):
+                self.assertTrue(runners, name.group(1))
+                produced.update(name.group(1).replace("${{ matrix.os }}", runner) for runner in runners)
+            else:
+                produced.add(name.group(1))
+        required = set(github.quality_evidence(FakeGitHub(), SHA, 45)["required_jobs"])
+        self.assertLessEqual(required, produced)
+
     def test_macos26_package_job_cannot_be_replaced_by_old_or_unsuccessful_checks(self):
         for variant in ("old-runner", "missing", "duplicate", "skipped", "failure", "cancelled"):
             with self.subTest(variant=variant):
@@ -561,7 +776,7 @@ class Trust(unittest.TestCase):
 class Publication(Fixture):
     # Reuse real archive assembly as publication input.
     def assembled(self):
-        self.package()
+        self.linux()
         return self.assemble()
 
     def publish(self, api, output, name="result.json"):
@@ -576,6 +791,15 @@ class Publication(Fixture):
         self.assertEqual(sum(call[0] == "POST" for call in api.calls), 1)
         self.assertEqual(sum(call[0] == "PATCH" for call in api.calls), 1)
         self.assertTrue(all(op["state"] == "verified" for op in result["operations"]))
+
+    def test_linux_publication_uploads_both_archives_with_their_checksums_and_manifests(self):
+        output = self.assembled()
+        api = FakeGitHub()
+        self.publish(api, output)
+        archives = [f"GitTurtle-0.1.0-{SHA[:12]}-linux-{machine}-release.tar.gz" for machine in ("aarch64", "x86_64")]
+        self.assertEqual(sorted(item["name"] for item in api.assets), sorted(
+            [name + suffix for name in archives for suffix in ("", ".manifest.json", ".sha256")]
+            + ["RELEASE_NOTES.md", "SHA256SUMS", "release-manifest.json"]))
 
     def test_identical_retry_reads_all_assets_without_any_remote_write(self):
         output = self.assembled()

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib.util
+import io
 import lzma
 import os
 import random
@@ -9,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -129,8 +132,101 @@ class TrackedPathTest(unittest.TestCase):
             privacy.refuse_tracked(Path(scratch) / "tpl", "template directory")  # outside any work tree
 
 
+class PipeStandIn(io.StringIO):
+    """`flushed` is what a reader at the other end of a pipe would have received."""
+
+    flushed = ""
+
+    def flush(self) -> None:
+        self.flushed = self.getvalue()
+
+
+class ProgressTest(unittest.TestCase):
+    """`privacy scan` prints a frame's lines when its scan ends, not when the whole scan does."""
+
+    def scan_cli(self, results: list[tuple[str, dict]], *flags: str) -> tuple[int, str, list[str]]:
+        """(exit status, everything printed, what a pipe's reader had each time the next frame was awaited)."""
+        from native_qa import qa
+
+        stream, received = PipeStandIn(), []
+
+        def scan_each(frames, templates, threshold, engine, jobs):
+            for frame, result in results:
+                yield frame, result
+                received.append(stream.flushed)
+
+        with tempfile.TemporaryDirectory() as scratch:
+            packed = Path(scratch) / "set.b64"
+            packed.write_text(privacy.pack_templates({"t": (bytes(12), 4, 3)}))
+            with mock.patch.object(privacy, "scan_each", scan_each), contextlib.redirect_stdout(stream):
+                status = qa.main(["privacy", "scan", "--packed", str(packed), *flags,
+                                  *(frame for frame, _ in results)])
+        return status, stream.getvalue(), received
+
+    def test_each_redacted_verdict_is_out_before_the_next_frame_ends(self) -> None:
+        status, printed, received = self.scan_cli([("a.png", {"hits": 0}), ("b.png", {"hits": 2}),
+                                                   ("c.png", {"hits": 0})], "--redacted")
+        self.assertEqual(received, ["a.png: clean\n", "a.png: clean\nb.png: MATCH\n",
+                                    "a.png: clean\nb.png: MATCH\nc.png: clean\n"])
+        self.assertEqual((status, printed), (1, received[-1] + "privacy scan: 3 image(s), 1 matched a template\n"))
+
+    def test_each_named_result_is_out_before_the_next_frame_ends(self) -> None:
+        def result(hits: int) -> dict:
+            found = {"best": 1.0 if hits else 0.2, "at": [30, 12], "hit_list": [[30, 12, 1.0]] * hits}
+            return {"hits": hits, "frames": 1, "engine": "python", "templates": {"name": found}}
+
+        status, printed, received = self.scan_cli([("shots/a.png", result(1)), ("shots/b.png", result(0))])
+        first = "a.png: 1 hit(s) >= 0.8; best name 1.00 at [30, 12] (python)\n    HIT name at (30,12) ncc +1.000\n"
+        self.assertEqual(received, [first, first + "b.png: 0 hit(s) >= 0.8; best name 0.20 at [30, 12] (python)\n"])
+        self.assertEqual((status, printed), (1, received[-1]))
+
+    def test_a_frame_given_twice_keeps_its_one_line_and_one_count(self) -> None:
+        status, printed, _ = self.scan_cli([("a.png", {"hits": 0}), ("a.png", {"hits": 0})], "--redacted")
+        self.assertEqual((status, printed), (0, "a.png: clean\nprivacy scan: 1 image(s), 0 matched a template\n"))
+
+
 @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
 class ScanTest(unittest.TestCase):
+    def test_scan_each_yields_an_image_when_its_scan_ends_in_the_order_given(self) -> None:
+        from PIL import Image
+
+        _, _, _, template = synthetic()
+        with tempfile.TemporaryDirectory() as scratch:
+            paths = [Path(scratch) / "first.png", Path(scratch) / "second.png"]
+            for path, width in zip(paths, (90, 100)):  # told apart by width in `held`
+                Image.frombytes("L", (width, 40), synthetic(width)[0]).save(path)
+            real, names = privacy.match, [str(path) for path in paths]
+
+            # One at a time: the first image is out while the second's scan is held.
+            released, waits = threading.Event(), []
+
+            def held(data, width, *rest):
+                if width == 100:
+                    waits.append(released.wait(20))
+                return real(data, width, *rest)
+
+            with mock.patch.object(privacy, "match", held):
+                results = privacy.scan_each(paths, {"t1": template}, engine="python")
+                self.assertEqual(next(results)[0], names[0])
+                released.set()
+                self.assertEqual([name for name, _ in results], names[1:])
+            self.assertEqual(waits, [True])
+
+            # Two at a time: the second ends first and is still yielded second.
+            second_ended, waits = threading.Event(), []
+
+            def reordered(data, width, *rest):
+                if width == 90:
+                    waits.append(second_ended.wait(20))
+                result = real(data, width, *rest)
+                if width == 100:
+                    second_ended.set()
+                return result
+
+            with mock.patch.object(privacy, "match", reordered):
+                report = privacy.scan(paths, {"t1": template}, engine="python", jobs=2)
+            self.assertEqual((list(report), waits, [found["hits"] for found in report.values()]), (names, [True], [1, 1]))
+
     def test_scan_and_cli_on_synthetic_frames(self) -> None:
         from PIL import Image
 

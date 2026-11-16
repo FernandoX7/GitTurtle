@@ -124,8 +124,9 @@ pub struct Theme {
     /// which costs no space and cannot be clipped.
     #[serde(default = "default_true")]
     pub focus_ring: bool,
-    /// The ring a focused [`crate::button::Button`] draws, default the ring
-    /// every other control draws.
+    /// The ring a focused [`crate::button::Button`] draws, and with it a
+    /// focused Switch, bordered Input and Checkbox; default the ring every
+    /// other control draws.
     ///
     /// Set in code, not read from theme files. A Button often has no border of
     /// its own, so an application can give it a wider or more opaque ring, or
@@ -133,6 +134,137 @@ pub struct Theme {
     /// and [`Self::focus_ring`] still turns it off.
     #[serde(skip)]
     pub button_focus_ring: FocusRing,
+    /// The track of an enabled, unchecked Switch under the pointer, or `None`
+    /// to keep its resting `switch` fill, as upstream does.
+    ///
+    /// Set in code, not read from theme files, so an application can lift the
+    /// track by the same step its other controls take on hover.
+    #[serde(skip)]
+    pub switch_hover: Option<Hsla>,
+    /// A ghost Button's fill under the pointer, or `None` for the `secondary`
+    /// color lightened (dark) or darkened (light) by 10% at 80% opacity, as
+    /// upstream does.
+    ///
+    /// Set in code, not read from theme files. Upstream's lightening scales the
+    /// lightness, so on a dark `secondary` it moves the fill by a step or two
+    /// and the hover cannot be seen; an application can give ghost Buttons the
+    /// hover its other controls take.
+    #[serde(skip)]
+    pub ghost_hover: Option<Hsla>,
+    /// A pressed ghost Button's fill, which a selected (toggled) one keeps, or
+    /// `None` for `secondary` lightened (dark) or darkened (light) by 20% at 80%
+    /// opacity, as upstream does.
+    ///
+    /// Set in code, not read from theme files, for the reason
+    /// [`Self::ghost_hover`] gives: on a dark `secondary` upstream's fill sits
+    /// under the hover it replaces.
+    #[serde(skip)]
+    pub ghost_active: Option<Hsla>,
+    /// The hairline edge of a popup surface (menus, popovers, selects), or
+    /// `None` for 10% of the foreground, as shadcn/ui draws it.
+    ///
+    /// Set in code, not read from theme files, so an application that fits
+    /// its surfaces can fit the edge against them too.
+    #[serde(skip)]
+    pub popover_edge: Option<Hsla>,
+    /// GitTurtle patch: the 1 px border of a dialog's panel, or `None` for
+    /// the shared `border`, as upstream draws it.
+    ///
+    /// Set in code, not read from theme files, so an application that fits
+    /// its dialog surface and the backdrop beneath it can fit the edge
+    /// against both: the page's `border` is fitted against the page.
+    #[serde(skip)]
+    pub dialog_edge: Option<Hsla>,
+    /// GitTurtle patch: the room a dialog that sets no width of its own
+    /// keeps from either side of a window too narrow for the default width,
+    /// or `None` for upstream's 448 px at every width.
+    ///
+    /// Set in code, not read from theme files, so an application can give
+    /// such a dialog the margin its own dialogs keep.
+    #[serde(skip)]
+    pub dialog_margin: Option<Pixels>,
+    /// GitTurtle patch: the 1 px edge a bordered secondary Button draws at
+    /// rest, hovered, pressed and selected, or `None` for the shared
+    /// `border`, as upstream draws it. Disabled, an outline secondary Button
+    /// draws it at half strength, as upstream drew `border`; a bordered one
+    /// that is not an outline draws [`Self::disabled_edge`] instead, where
+    /// that is set.
+    ///
+    /// Set in code, not read from theme files, so an application can fit the
+    /// edge to the surface such a Button lies on: the Button's hover and
+    /// pressed styles set its border from the theme, over any colour its
+    /// caller gives it, and the page's `border` is fitted against the page.
+    #[serde(skip)]
+    pub secondary_edge: Option<Hsla>,
+    /// GitTurtle patch: the 1 px edge a disabled Button that keeps a fill
+    /// draws (a primary or secondary Button, or a custom variant that sets
+    /// its own disabled fill), or `None` for none, as upstream draws none.
+    /// Where [`Self::input_fill_base`] is set too, a disabled Input draws it
+    /// as its outline in place of `input` (`input::input_outline`).
+    ///
+    /// Set in code, not read from theme files, so an application can fit the
+    /// edge against the surfaces such a Button lies on: the disabled fill
+    /// can nearly equal them, and the Button then drew only its dim label.
+    #[serde(skip)]
+    pub disabled_edge: Option<Hsla>,
+    /// GitTurtle patch: the 1 px edge an enabled control that rests on a fill
+    /// of its own draws over its bounds, or `None` for none, as upstream
+    /// draws none: a Button that keeps a resting fill and has no border of
+    /// its own (a secondary one, or a custom variant whose resting fill, or
+    /// selected fill while selected, is not transparent) at rest, hovered,
+    /// pressed and selected, and the track of an enabled, unchecked Switch.
+    ///
+    /// Set in code, not read from theme files, so an application can give
+    /// such a control an edge against the surfaces it lies on, as a
+    /// higher-contrast appearance asks, without changing its layout: the
+    /// edge is a layer over the control's bounds and moves nothing.
+    #[serde(skip)]
+    pub resting_edge: Option<Hsla>,
+    /// GitTurtle patch: the colour a field's fills derive from, or `None` for
+    /// `input`, the field's outline, as upstream derives them: a dark field's
+    /// fill is this base at 30% ([`Self::input_background`]; a light field
+    /// rests on `background`) and a disabled field's fill this base at 80% in
+    /// either mode ([`Self::disabled_input_background`]). Every outline stays
+    /// `input`, except a disabled Input's, which takes
+    /// [`Self::disabled_edge`] where that is set too (`input::input_outline`).
+    ///
+    /// Set in code, not read from theme files, so an application can give a
+    /// field's outline a stronger colour, as a higher-contrast appearance
+    /// asks, without lifting the fills inside it. Everything that rests on
+    /// [`Self::input_background`] takes it: a field, a disabled default
+    /// Button (at half strength), an unchecked Checkbox or Radio, and an
+    /// editor whose highlight theme sets no background of its own.
+    #[serde(skip)]
+    pub input_fill_base: Option<Hsla>,
+    /// The label of a control that cannot be used, which
+    /// [`Self::disabled_foreground`] resolves, or `None` for
+    /// `muted_foreground` at half strength.
+    ///
+    /// Set in code, not read from theme files, so an application that fits
+    /// its surfaces can fit the dim to them: half of a dark secondary text
+    /// reads about 2:1 on a light surface.
+    #[serde(skip)]
+    pub disabled_label: Option<Hsla>,
+    /// GitTurtle patch: the text size of a menu label, the text that titles
+    /// or explains the items around it, or `None` for the items' own size. A
+    /// label draws at medium weight either way ([`crate::MENU_LABEL_WEIGHT`]).
+    ///
+    /// Set in code, not read from theme files, so an application can draw its
+    /// menu headings at the size of its other section labels: colour alone
+    /// cannot tell a heading from an item where a theme's secondary text is
+    /// nearly as strong as its text.
+    #[serde(skip)]
+    pub menu_label_size: Option<Pixels>,
+    /// GitTurtle patch: the page a popup leaves between its drawn edge, the
+    /// ring outside its fill ([`crate::POPOVER_EDGE_WIDTH`]), and the
+    /// trigger it opened from, or `None` for upstream's quarter rem between
+    /// the trigger and its fill ([`crate::popup_offset`]).
+    ///
+    /// Set in code, not read from theme files, so an application can keep
+    /// one gap, scaled with its text, between every menu and the button or
+    /// row it opened from, its own row menus among them.
+    #[serde(skip)]
+    pub popup_gap: Option<Pixels>,
     pub transparent: Hsla,
     /// Show the scrollbar mode, default: Scrolling
     #[serde(alias = "scrollbar_show")]
@@ -338,13 +470,31 @@ impl Theme {
     ///
     /// For dark, use a transparent color mixed with the input border: `cx.theme().input`,
     /// otherwise use the `cx.theme().background` color.
+    ///
+    /// GitTurtle patch: for dark, mixed with [`Self::input_fill_base`] where the application
+    /// sets one.
     #[inline]
     pub fn input_background(&self) -> Hsla {
         if self.is_dark() {
-            self.input.mix_oklab(self.transparent, 0.3)
+            self.input_fills_from().mix_oklab(self.transparent, 0.3)
         } else {
             self.background
         }
+    }
+
+    /// GitTurtle patch: the fill of a disabled field, light or dark: a transparent color mixed
+    /// with [`Self::input_fill_base`] where the application sets one, else with the input
+    /// border, `cx.theme().input`, as upstream draws it.
+    #[inline]
+    pub fn disabled_input_background(&self) -> Hsla {
+        self.input_fills_from().mix_oklab(self.transparent, 0.8)
+    }
+
+    /// GitTurtle patch: the colour a field's fills derive from, [`Self::input_fill_base`] where
+    /// the application sets one, else `input`.
+    #[inline]
+    fn input_fills_from(&self) -> Hsla {
+        self.input_fill_base.unwrap_or(self.input)
     }
 
     /// Get the editor background color, if not set, use the input background color.
@@ -411,6 +561,17 @@ impl Theme {
         } else {
             RADIUS_FULL
         }
+    }
+
+    /// The label of a control that cannot be used: [`Self::disabled_label`]
+    /// where the application sets it, otherwise `muted_foreground` at half
+    /// strength. Disabled Buttons, Switch labels, menu items with their
+    /// shortcuts, and callers that draw their own disabled rows share it, so
+    /// one dim marks every unavailable action; `muted_foreground` alone can be
+    /// as strong as `foreground`.
+    pub fn disabled_foreground(&self) -> Hsla {
+        self.disabled_label
+            .unwrap_or_else(|| self.muted_foreground.opacity(0.5))
     }
 
     /// Returns the next surface radius above the existing `xl` theme tier.
@@ -607,6 +768,61 @@ mod semantic_token_tests {
         assert!(theme.base_theme().tokens.radius.md.is_zero());
     }
 
+    /// GitTurtle patch: a field's fills derive from `input`, the field's
+    /// outline, as upstream derives them, until an application sets
+    /// `input_fill_base`; set, they derive from that base and `input` is
+    /// untouched. A dark field's fill is its base at 30%, a light one rests
+    /// on `background`, and a disabled field's fill is its base at 80% in
+    /// either mode.
+    #[test]
+    fn input_fill_base_sets_the_field_fills_and_leaves_the_outline() {
+        use super::{Colorize as _, ThemeMode};
+        use gpui::hsla;
+
+        let mut theme = Theme::default();
+        let outline = hsla(0.6, 0.25, 0.45, 1.);
+        let base = hsla(0.6, 0.3, 0.2, 1.);
+        let (background, transparent) = (hsla(0.6, 0.1, 0.96, 1.), theme.transparent);
+        theme.input = outline;
+        theme.background = background;
+        assert_eq!(theme.input_fill_base, None, "unset by default");
+        assert_ne!(
+            base.mix_oklab(transparent, 0.3),
+            outline.mix_oklab(transparent, 0.3)
+        );
+        assert_ne!(
+            base.mix_oklab(transparent, 0.8),
+            outline.mix_oklab(transparent, 0.8)
+        );
+
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let fill = |from: Hsla| {
+                if mode.is_dark() {
+                    from.mix_oklab(transparent, 0.3)
+                } else {
+                    background
+                }
+            };
+            theme.mode = mode;
+            theme.input_fill_base = None;
+            assert_eq!(theme.input_background(), fill(outline), "{mode:?}");
+            assert_eq!(
+                theme.disabled_input_background(),
+                outline.mix_oklab(transparent, 0.8),
+                "{mode:?}"
+            );
+            theme.input_fill_base = Some(base);
+            assert_eq!(theme.input_background(), fill(base), "{mode:?}");
+            assert_eq!(
+                theme.disabled_input_background(),
+                base.mix_oklab(transparent, 0.8),
+                "{mode:?}"
+            );
+            assert_eq!(theme.input, outline, "{mode:?}");
+            assert_eq!(theme.color_tokens().input, outline, "{mode:?}");
+        }
+    }
+
     #[test]
     fn disabled_legacy_shadows_project_to_empty_elevations() {
         let mut theme = Theme::default();
@@ -640,6 +856,19 @@ impl From<&ThemeColor> for Theme {
             shadow: true,
             focus_ring: true,
             button_focus_ring: FocusRing::default(),
+            switch_hover: None,
+            ghost_hover: None,
+            ghost_active: None,
+            popover_edge: None,
+            dialog_edge: None,
+            dialog_margin: None,
+            secondary_edge: None,
+            disabled_edge: None,
+            resting_edge: None,
+            input_fill_base: None,
+            disabled_label: None,
+            menu_label_size: None,
+            popup_gap: None,
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),
             tile_grid_size: px(8.),

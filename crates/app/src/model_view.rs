@@ -1,10 +1,11 @@
 //! Native retained-geometry comparison. A single active render and one replaceable
 //! pending pair bound CPU preparation; idle/hidden viewers request no frames.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use futures::channel::oneshot;
 use gitturtle_preview::model3d::{self, ModelBounds, ModelCamera, ModelScene, ModelStandardView};
 use gpui_kit::base::ElementExt;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::prelude::FluentBuilder;
 use std::sync::{
     Condvar, Mutex, OnceLock, Weak,
@@ -15,6 +16,8 @@ use playback::{Playback, Pose};
 
 const FRAME_BYTES: usize = 720 * 720 * 4;
 const CANCELLED: &str = "3D render request superseded";
+/// The gestures the viewport takes, in the " · "-separated phrases a line draws by phrase.
+const GESTURE_HINT: &str = "Drag to orbit · Shift-drag to pan · Scroll to zoom";
 
 type RenderWork = Box<dyn FnOnce() + Send>;
 
@@ -104,6 +107,10 @@ struct State {
     timeline_focus: Option<FocusHandle>,
     timeline_bounds: Bounds<Pixels>,
     scrubbing: bool,
+    /// The clip menu's widest reading, "Default pose" or one of the scene's
+    /// clip names, laid out in whole pixels, by what it was laid out with
+    /// (`playback::clip_control`).
+    clip_menu: Option<(crate::views::LineKey, Pixels)>,
 }
 impl State {
     fn edge(&self) -> u32 {
@@ -161,6 +168,7 @@ impl Document {
                 timeline_focus: None,
                 timeline_bounds: Bounds::default(),
                 scrubbing: false,
+                clip_menu: None,
             }),
             scene,
             generation: Arc::new(AtomicU64::new(0)),
@@ -512,12 +520,18 @@ pub(super) fn pause(content: Option<&Content>) {
     }
 }
 
+/// The comparison's sides; `width` is the comparison's in the frame it is
+/// drawn (`rich_preview::render_comparison`), which each side header's
+/// controls, its open control among them, take their forms from.
 pub(super) fn render_comparison<T: 'static>(
     preview: &rich_preview::Comparison,
     quick: bool,
-    owner: WeakEntity<GitTurtle>,
+    opener: crate::system_preview::Opener,
+    width: Pixels,
+    window: &Window,
     cx: &mut Context<T>,
 ) -> AnyElement {
+    let side_width = width / if quick { 1. } else { 2. };
     let colors = palette(cx);
     let documents: Vec<_> = [&preview.old, &preview.new]
         .into_iter()
@@ -548,16 +562,20 @@ pub(super) fn render_comparison<T: 'static>(
                     .py_1()
                     .text_size(appearance::ui_text(10.))
                     .text_color(rgb(colors.muted))
-                    .child("Drag to orbit · Shift-drag to pan · Scroll to zoom"),
+                    .child(crate::PhraseLine::new("model-gesture-hint", GESTURE_HINT)),
             )
         })
-        .children(playback::controls(&documents, cx))
+        .children(playback::controls(&documents, opener.ring(), cx))
         .child(
             div().flex_1().min_h_0().min_w_0().flex().children(
                 [
                     ("Before", &preview.old, &preview.new),
                     (
-                        if quick { "Source" } else { "After" },
+                        if quick {
+                            crate::system_preview::ONE_SIDE
+                        } else {
+                            "After"
+                        },
                         &preview.new,
                         &preview.old,
                     ),
@@ -571,7 +589,9 @@ pub(super) fn render_comparison<T: 'static>(
                         label,
                         side,
                         if quick { None } else { other.model.clone() },
-                        owner.clone(),
+                        opener.clone(),
+                        side_width,
+                        window,
                         cx,
                     )
                 }),
@@ -610,23 +630,100 @@ fn selected_standard_view(camera: ModelCamera) -> Option<ModelStandardView> {
     })
 }
 
+thread_local! {
+    /// Each side's source label, laid out.
+    static BEFORE_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The Copy source control's label, laid out.
+    static COPY_SOURCE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The views menu's widest reading laid out in whole pixels, by what it
+    /// was laid out with ([`views_menu_width`]).
+    static VIEWS_MENU: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
+    /// The camera's Reset, laid out; Edges and the link are toggles, laid
+    /// out at both their readings (`system_preview::HeaderControl::toggle`).
+    static RESET: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a clip menu's readings were built
+    /// (`playback::clip_control`), for a test.
+    pub(crate) static CLIP_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times the views menu's readings were built
+    /// ([`views_menu_width`]), for a test.
+    pub(crate) static VIEW_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The views menu labelled at its widest reading, a standard view's name or
+/// "Custom view", whatever the view, as layout places it on this display's
+/// device pixels (`crate::placed_menu_width`). Its readings never change,
+/// so its label is laid out once per font and size and kept by what it was
+/// laid out with, as the clip menu's is (`playback::clip_control`): the
+/// seven views' names were once gathered and joined on every frame, a
+/// drag's orbit and a clip's playback among them, to look the width up.
+fn views_menu_width(window: &Window) -> Pixels {
+    let text =
+        crate::views::cached_width(&VIEWS_MENU, &crate::views::LineKey::current(window), || {
+            #[cfg(test)]
+            VIEW_READINGS_BUILT.with(|built| built.set(built.get() + 1));
+            let names: Vec<&str> = ModelStandardView::ALL
+                .iter()
+                .map(|view| view.label())
+                .chain(["Custom view"])
+                .collect();
+            crate::widest_label_now(&names, window)
+        });
+    crate::placed_menu_width(text, window)
+}
+
+/// The room side `index`'s source row leaves its open control in a side
+/// `side` wide: the side less its right edge, the header's `px_2` either
+/// side, and the row's semibold `label` and, where the side has source to
+/// copy, its copy control `copy` wide as drawn, each followed by `gap_2`.
+fn source_room(
+    index: usize,
+    side: Pixels,
+    label: &str,
+    copy: Option<Pixels>,
+    window: &Window,
+) -> Pixels {
+    let cache = if index == 0 {
+        &BEFORE_LABEL
+    } else {
+        &AFTER_LABEL
+    };
+    let rem = window.rem_size();
+    let text = crate::views::cached_text_width(cache, label, window, || {
+        let size = window.text_style().font_size.to_pixels(rem);
+        crate::views::shaped_width(label, size, FontWeight::SEMIBOLD, window).ceil()
+    });
+    let copy = copy.map_or(px(0.), |copy| copy + rem * 0.5);
+    side - px(1.) - rem * (0.5 * 2. + 0.5) - text - copy
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_side<T: 'static>(
     index: usize,
     label: &'static str,
     side: &Arc<rich_preview::Side>,
     partner: Option<Arc<Document>>,
-    owner: WeakEntity<GitTurtle>,
+    opener: crate::system_preview::Opener,
+    side_width: Pixels,
+    window: &Window,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
+    // The header's padding above and below, which its floor in
+    // `system_preview::header_ends` counts.
+    let padding = rems(0.25);
     let mut header = div()
+        .debug_selector(move || format!("model-side-header-{index}"))
         .flex()
         .flex_col()
         .gap_1()
         .px_2()
-        .py_1()
-        .border_b_1()
-        .border_color(rgb(colors.border));
+        .py(padding);
     let format = if side.model.is_some() {
         side.metadata.format.clone()
     } else {
@@ -651,55 +748,105 @@ fn render_side<T: 'static>(
     } else {
         label.into()
     };
+    // A line of the header to itself: a labelled control wider than this
+    // draws its icon rather than be cut at the side's edge, its whole label
+    // in its tooltip and its accessible name the one it has labelled.
+    let line_room = crate::system_preview::header_line_room(side_width, window.rem_size() * 0.5);
+    let copy_label = if lfs_pointer {
+        "Copy pointer"
+    } else {
+        "Copy source"
+    };
+    let copy_width = labelled_button_width(copy_label, &COPY_SOURCE, window);
+    let copy_labelled = crate::system_preview::Form::fitting(copy_width, line_room)
+        == crate::system_preview::Form::Labelled;
+    let room = source_room(
+        index,
+        side_width,
+        &source_label,
+        side.metadata.source.is_some().then_some(if copy_labelled {
+            copy_width
+        } else {
+            appearance::ui_size(28.)
+        }),
+        window,
+    );
+    let name = if index == 0 {
+        "model-side-0"
+    } else {
+        "model-side-1"
+    };
+    // The header scrolls where a narrow side cannot hold its controls,
+    // revealing the one Tab moves onto (`system_preview::header_ends`), as
+    // the Stashes detail around it does each of them, the camera's, the
+    // views' and the clip's among them.
+    let held = crate::system_preview::SideHeader::new(
+        name,
+        if index == 0 {
+            "model-side-0/scrollbar"
+        } else {
+            "model-side-1/scrollbar"
+        },
+        opener.showing(),
+        window,
+        cx,
+    )
+    .within(&opener);
     let mut source_actions = div().flex().flex_wrap().items_center().gap_2().child(
         div()
             .id(("model-source-label", index))
             .role(Role::Label)
-            .aria_label(source_label.clone())
+            .aria_value(source_label.clone())
             .font_weight(FontWeight::SEMIBOLD)
             .child(source_label),
     );
     if let Some(source) = side.metadata.source.clone() {
-        source_actions = source_actions.child(
-            button(
-                ("model-source", index),
-                if lfs_pointer {
-                    "Copy pointer"
-                } else {
-                    "Copy source"
-                },
-                "copy",
-                false,
-            )
-            .accessibility_label(format!(
-                "Copy exact {label} {}",
-                if lfs_pointer {
-                    "LFS pointer"
-                } else {
-                    "model source"
-                }
-            ))
-            .on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(source.to_string()))
-            }),
-        );
-    }
-    if side.captured.is_some() && !lfs_pointer {
-        let side = side.clone();
-        source_actions = source_actions.child(
-            button(
-                ("model-external", index),
-                "System preview",
-                "external-link",
-                false,
-            )
-            .accessibility_label(format!("Open captured {label} model in system preview"))
-            .on_click(move |_, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    this.open_captured_preview(side.clone(), window, cx)
+        let content = if lfs_pointer {
+            "LFS pointer"
+        } else {
+            "model source"
+        };
+        // The control's id names the side; the mark adds its path.
+        let mark = copy_feedback::Mark::new(("model-source", index), &side.name);
+        let copy_mark = mark.clone();
+        let copy =
+            crate::system_preview::copy_source_button(mark, label, copy_label, copy_labelled, cx)
+                .on_click(move |_, window, cx| {
+                    copy_feedback::copy(
+                        window,
+                        cx,
+                        Some(copy_mark.clone()),
+                        &format!("{label} {content}"),
+                        source.to_string(),
+                    )
                 });
-            }),
+        source_actions = source_actions.child(held.track(("model-source", index), copy, cx));
+    }
+    // Why the last open opened nothing, as the header's last line, beneath
+    // all of its controls, the camera's, the views' and the clip's among
+    // them: laid out with the header and the model beneath for the side's
+    // room, after the header's padding and rule (`system_preview::header_ends`),
+    // where controls taller than the room above the line scroll. Inside the
+    // actions it once pushed those controls down past the preview's clip.
+    let mut answer = None;
+    let end = crate::system_preview::HeaderEnd {
+        inset: window.rem_size() * 0.5,
+        bottom: window.rem_size() * 0.25,
+        right_rule: false,
+        border: colors.border,
+    };
+    if let (Some(offer), Some(bytes), false) = (side.system_preview, &side.captured, lfs_pointer) {
+        let target = opener.target(
+            ("model-external", index),
+            label,
+            bytes,
+            &side.name,
+            "model",
+            offer,
         );
+        source_actions =
+            source_actions.child(target.held_control(offer.form(room, window), &held, cx));
+        answer = target.answered(cx);
     }
     header = header.child(source_actions);
     let Some(document) = side.model.clone() else {
@@ -717,21 +864,32 @@ fn render_side<T: 'static>(
             .h_full()
             .flex()
             .flex_col()
-            .child(header)
-            .child(
+            .child(crate::system_preview::header_ends(
+                name,
+                Some(crate::system_preview::OwnHeader {
+                    header: header.into_any_element(),
+                    foot: None,
+                    padding,
+                    held,
+                }),
+                vec![answer],
+                end,
                 div()
                     .id(("model-unavailable", index))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .role(if side.error.is_some() {
-                        Role::Alert
-                    } else {
-                        Role::Label
-                    })
-                    .aria_label(bounded_accessible_text(format!("{label}: {message}")))
-                    .when(side.error.is_some(), |element| {
-                        element.a11y_synthetic_children(native_accessibility::assertive)
+                    // An alert is named and valued by its text, a label
+                    // read by its value.
+                    .map(|element| {
+                        let read = native_accessibility::bounded_accessible_text(format!(
+                            "{label}: {message}"
+                        ));
+                        if side.error.is_some() {
+                            element.alert(read)
+                        } else {
+                            element.role(Role::Label).aria_value(read)
+                        }
                     })
                     .p_3()
                     .when(side.error.is_some(), |element| {
@@ -747,8 +905,9 @@ fn render_side<T: 'static>(
                             .text_size(appearance::ui_text(12.))
                             .text_color(rgb(colors.muted))
                             .child(message),
-                    ),
-            )
+                    )
+                    .into_any_element(),
+            ))
             .into_any_element();
     };
     let (camera, wireframe, linked, pending, error, frame, display_camera, focus) = {
@@ -779,99 +938,137 @@ fn render_side<T: 'static>(
     ] {
         let target = document.clone();
         let partner = partner.clone();
-        controls = controls.child(
-            button(
-                ("model-camera", index * 5 + id),
-                text,
-                "",
-                id == 4 && wireframe,
-            )
-            .when(id == 4, |button| button.toggled(wireframe))
-            .accessibility_label(format!(
-                "{label}: {}",
-                match id {
-                    2 => "Zoom out",
-                    3 => "Zoom in",
-                    4 => "Toggle all triangle edges",
-                    _ => text,
-                }
-            ))
-            .on_click(cx.listener(move |_, _, window, cx| {
-                target.change(partner.as_deref(), action);
-                window.refresh();
-                cx.notify();
-            })),
+        let camera = index * 5 + id;
+        let name = format!(
+            "{label}: {}",
+            match id {
+                2 => "Zoom out",
+                3 => "Zoom in",
+                // Named for the state it shows, as the link is.
+                4 if wireframe => "Triangle edges shown. Switch to solid shading",
+                4 => "Solid shading. Show all triangle edges",
+                _ => text,
+            }
         );
+        // Reset and Edges, whose labels a line of the header may not hold,
+        // draw their icons there, each label in its tooltip; Edges takes one
+        // form whether it reads Edges or Solid.
+        let control = match id {
+            1 => crate::system_preview::HeaderControl::new(
+                ("model-camera", camera),
+                format!("model-camera-{camera}"),
+                text,
+                name,
+                "reset",
+                text_button_width(&["Reset"], &RESET, window),
+            )
+            .button(line_room),
+            4 => crate::system_preview::HeaderControl::toggle(
+                ("model-camera", camera),
+                format!("model-camera-{camera}"),
+                ["Edges", "Solid"],
+                name,
+                "edges",
+                wireframe,
+                window,
+            )
+            .button(line_room),
+            _ => button(("model-camera", camera), text, "", false)
+                .debug_selector(move || format!("model-camera-{camera}"))
+                .accessibility_label(name),
+        };
+        let control = control.on_click(cx.listener(move |_, _, window, cx| {
+            target.change(partner.as_deref(), action);
+            window.refresh();
+            cx.notify();
+        }));
+        controls = controls.child(held.track(("model-camera", camera), control, cx));
     }
     let selected_view = selected_standard_view(camera);
     let target = document.clone();
     let view_partner = partner.clone();
     let view_owner = cx.entity().downgrade();
-    let mut views = div().flex().flex_wrap().items_center().gap_1().child(
-        button(
-            ("model-views", index),
-            selected_view.map_or("Custom view", |view| view.label()),
-            "",
-            false,
-        )
-        .dropdown_caret(true)
-        .accessibility_label(format!(
+    // Labelled with a caret where its widest reading fits a line of the
+    // header, whatever the view; narrower, the "more" icon, its reading
+    // leading its tooltip, and named for its reading either way.
+    let reading = selected_view.map_or("Custom view", |view| view.label());
+    let views_menu = crate::system_preview::HeaderControl::new(
+        ("model-views", index),
+        format!("model-views-{index}"),
+        reading,
+        format!(
             "{label}: Standard views, {}",
             selected_view.map_or("Custom", |view| view.label())
-        ))
-        .tooltip("Choose Isometric, Front, Back, Left, Right, Top or Bottom")
-        .dropdown_menu(move |mut menu, _, _| {
-            menu = menu.label(format!("{label} standard view"));
-            for view in ModelStandardView::ALL {
-                let target = target.clone();
-                let partner = view_partner.clone();
-                let owner = view_owner.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(view.label())
-                        .checked(selected_view == Some(view))
-                        .on_click(move |_, window, cx| {
-                            target.change(partner.as_deref(), Action::View(view));
-                            window.refresh();
-                            let _ = owner.update(cx, |_, cx| cx.notify());
-                        }),
-                );
-            }
-            menu
-        }),
-    );
+        ),
+        "more",
+        views_menu_width(window),
+    )
+    .menu("Choose Isometric, Front, Back, Left, Right, Top or Bottom")
+    .button(line_room);
+    let choose =
+        held.track(("model-views", index), views_menu, cx)
+            .app_menu(move |mut menu, _, _| {
+                menu = menu.label(format!("{label} standard view"));
+                for view in ModelStandardView::ALL {
+                    let target = target.clone();
+                    let partner = view_partner.clone();
+                    let owner = view_owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(view.label())
+                            .checked(selected_view == Some(view))
+                            .on_click(move |_, window, cx| {
+                                target.change(partner.as_deref(), Action::View(view));
+                                window.refresh();
+                                let _ = owner.update(cx, |_, cx| cx.notify());
+                            }),
+                    );
+                }
+                menu
+            });
+    let mut views = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_1()
+        .child(choose);
     if let Some(partner) = partner.clone() {
         let target = document.clone();
-        views = views.child(
-            button(
-                ("model-link", index),
-                if linked { "Linked" } else { "Independent" },
-                "",
-                linked,
-            )
-            .toggled(linked)
-            .accessibility_label(format!(
+        // One form whether it reads Linked or Independent: labelled where
+        // the wider fits a line of the header, otherwise the link icon, its
+        // reading its tooltip.
+        let link = crate::system_preview::HeaderControl::toggle(
+            ("model-link", index),
+            format!("model-link-{index}"),
+            ["Independent", "Linked"],
+            format!(
                 "{label}: {}",
                 if linked {
                     "Cameras linked. Switch to independent cameras"
                 } else {
                     "Cameras independent. Link cameras to this view"
                 }
-            ))
-            .on_click(cx.listener(move |_, _, window, cx| {
-                target.set_linked(&partner, !linked);
-                window.refresh();
-                cx.notify();
-            })),
-        );
+            ),
+            "link",
+            linked,
+            window,
+        )
+        .button(line_room)
+        .on_click(cx.listener(move |_, _, window, cx| {
+            target.set_linked(&partner, !linked);
+            window.refresh();
+            cx.notify();
+        }));
+        views = views.child(held.track(("model-link", index), link, cx));
     }
     let summary = format!(
-        "{} triangles · view span {:.4} {}",
-        document.scene.triangle_count(),
+        "{} · view span {:.4} {}",
+        crate::counted(document.scene.triangle_count(), "triangle", "triangles"),
         camera.span,
         document.scene.units.label()
     );
     header = header.child(
         div()
+            .debug_selector(move || format!("model-camera-controls-{index}"))
             .flex()
             .flex_wrap()
             .items_center()
@@ -885,6 +1082,8 @@ fn render_side<T: 'static>(
         label,
         &document,
         partner.clone(),
+        (&held, line_room),
+        window,
         cx,
     ));
     let first_frame = frame.is_none();
@@ -894,6 +1093,7 @@ fn render_side<T: 'static>(
         document.clone(),
         partner,
         focus,
+        opener.ring(),
         frame,
         display_camera,
         error.is_some(),
@@ -908,9 +1108,7 @@ fn render_side<T: 'static>(
             .child(
                 div()
                     .id(("model-render-error", index))
-                    .role(Role::Alert)
-                    .a11y_synthetic_children(native_accessibility::assertive)
-                    .aria_label(format!(
+                    .alert(format!(
                         "{label}: {error}. {} Fit or Reset to try another view.",
                         if first_frame {
                             "No completed view is available."
@@ -956,12 +1154,7 @@ fn render_side<T: 'static>(
                             "3D view ready"
                         }
                     ))
-                    .a11y_synthetic_children(move |builder| {
-                        builder.parent_node().set_live(gpui::accesskit::Live::Off);
-                        if pending {
-                            builder.parent_node().set_busy();
-                        }
-                    })
+                    .live_region(gpui::accesskit::Live::Off, pending)
                     .absolute()
                     .top_1()
                     .left_2()
@@ -994,51 +1187,79 @@ fn render_side<T: 'static>(
         .flex_col()
         .border_r_1()
         .border_color(rgb(colors.border))
-        .child(header)
-        .child(canvas)
-        .child(
-            div()
-                .id(("model-details", index))
-                .role(Role::Label)
-                .aria_label(bounded_accessible_text(format!(
-                    "{label} model details: {details}"
-                )))
-                .max_h(px(48.))
-                .overflow_y_scroll()
-                .p_2()
-                .text_size(appearance::ui_text(10.))
-                .text_color(rgb(colors.muted))
-                .child(
-                    div()
-                        .id(("model-summary", index))
-                        .role(Role::Label)
-                        .aria_label(format!(
-                            "{label}: {} · {summary}",
-                            document.scene.appearance_label()
-                        ))
-                        .child(format!(
-                            "{} · {} triangles · {}",
-                            document.scene.appearance_label(),
-                            document.scene.triangle_count(),
-                            document.scene.units.label()
-                        )),
-                )
-                .child(details),
-        )
+        .child(crate::system_preview::header_ends(
+            name,
+            Some(crate::system_preview::OwnHeader {
+                header: header.into_any_element(),
+                padding,
+                // The details, a label, give way before the header's
+                // controls do, their own scroll area shrinking with them
+                // to nothing, a scrollbar cueing their lines while they
+                // overflow: its padding scrolls with its lines, since a box
+                // never shrinks below its own padding.
+                foot: Some(
+                    held.foot(
+                        div()
+                            .id(("model-details", index))
+                            .debug_selector(move || format!("model-details-{index}"))
+                            .role(Role::Label)
+                            .aria_value(native_accessibility::bounded_accessible_text(format!(
+                                "{label} model details: {details}"
+                            )))
+                            .max_h(details_room(window))
+                            .text_size(appearance::ui_text(10.))
+                            .text_color(rgb(colors.muted))
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("model-details-lines-{index}"))
+                                    .p_2()
+                                    .child(
+                                        div()
+                                            .id(("model-summary", index))
+                                            .role(Role::Label)
+                                            .aria_value(format!(
+                                                "{label}: {} · {summary}",
+                                                document.scene.appearance_label()
+                                            ))
+                                            .child(format!(
+                                                "{} · {} · {}",
+                                                document.scene.appearance_label(),
+                                                crate::counted(
+                                                    document.scene.triangle_count(),
+                                                    "triangle",
+                                                    "triangles"
+                                                ),
+                                                document.scene.units.label()
+                                            )),
+                                    )
+                                    .child(details),
+                            ),
+                        if index == 0 {
+                            "model-details-0/scrollbar"
+                        } else {
+                            "model-details-1/scrollbar"
+                        },
+                    )
+                    .into_any_element(),
+                ),
+                held,
+            }),
+            vec![answer],
+            end,
+            canvas,
+        ))
         .into_any_element()
 }
 
-fn bounded_accessible_text(mut text: String) -> String {
-    const MAX_BYTES: usize = 16 * 1024;
-    if text.len() > MAX_BYTES {
-        let mut end = MAX_BYTES - '…'.len_utf8();
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-        text.push('…');
-    }
-    text
+/// The most room a model's details take: their padding and four of their
+/// lines, so a wide side shows the usual details whole, with no scrollbar,
+/// and where they overflow, the scrollbar's thumb, at least the kit's 48 px,
+/// is shorter than its track and moves as they scroll. Capped at an unscaled
+/// 48 px, they drew a thumb that filled its track and never moved, and a
+/// drag on it divided by the track's length less the thumb's, at most zero.
+fn details_room(window: &Window) -> Pixels {
+    window.pixel_snap(window.rem_size() * 0.5) * 2.
+        + crate::image_compare::text_line(appearance::ui_text(10.), window) * 4.
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1048,12 +1269,17 @@ fn model_canvas<T: 'static>(
     document: Arc<Document>,
     partner: Option<Arc<Document>>,
     focus: FocusHandle,
+    ring: &crate::focus_ring::FocusRing,
     frame: Option<Arc<RenderImage>>,
     camera: ModelCamera,
     failed: bool,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
+    // Keyboard focus draws the canvas's edge in the accent, kept while the
+    // pointer moves ([`crate::focus_ring`]): GPUI's `focus_visible` dropped
+    // it at the first pointer move over the model.
+    let ringed = ring.shows(&focus);
     let down = document.clone();
     let click_focus = focus.clone();
     let moved = document.clone();
@@ -1066,9 +1292,9 @@ fn model_canvas<T: 'static>(
     let key_partner = partner;
     let measured = document.clone();
     let has_frame = frame.is_some();
-    div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(colors.border))
-        .focus_visible(|style|style.border_color(rgb(colors.accent))).tab_stop(true).track_focus(&focus).role(Role::Image)
-        .aria_label(format!("{label} interactive 3D model, {} triangles",document.scene.triangle_count()))
+    div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(if ringed { colors.accent } else { colors.border }))
+        .debug_selector(move || format!("model-canvas-{index}")).tab_stop(true).track_focus(&focus).role(Role::Image)
+        .aria_label(format!("{label} interactive 3D model, {}",crate::counted(document.scene.triangle_count(), "triangle", "triangles")))
         .aria_description(format!(
             "{} Orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. The captured original is available above.",
             if has_frame { "Completed view." } else { "No completed view yet." }, camera.yaw.to_degrees(), camera.pitch.to_degrees(), camera.target[0], camera.target[1], camera.target[2], camera.span, document.scene.units.label()
@@ -1167,7 +1393,7 @@ fn orientation(camera: ModelCamera) -> Div {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
     fn document() -> Document {
@@ -1369,6 +1595,425 @@ mod tests {
         assert_eq!(
             selected_standard_view(camera),
             Some(ModelStandardView::Right)
+        );
+    }
+
+    /// Keyboard focus on a model's canvas draws the canvas's edge in the
+    /// accent and keeps it while the pointer moves, as every focus ring in
+    /// the app does ([`crate::focus_ring`]): the canvas drew it with GPUI's
+    /// `focus_visible`, which dropped it at the first pointer move after a
+    /// key, though the canvas kept focus.
+    #[gpui::test]
+    async fn a_focused_models_canvas_keeps_its_ring_while_the_pointer_moves(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let input = b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nmodel\nM 100644 inline shape.obj\ndata 32\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n\ndone\n";
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, input).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::width_walk::frame(cx);
+        assert_the_canvas_keeps_its_ring(cx, "model-canvas-1", "Compare");
+    }
+
+    /// A model's gestures are a line of phrases, as every "·"-separated hint is: the real
+    /// Compare draws them by phrase ([`crate::PhraseLine`]) and reads as the hint does.
+    #[gpui::test]
+    async fn the_gesture_hint_is_drawn_by_phrase(cx: &mut gpui_kit::TestAppContext) {
+        let input = b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nmodel\nM 100644 inline shape.obj\ndata 32\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n\ndone\n";
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::width_walk::frame(cx);
+        let read: Vec<String> =
+            crate::phrase_tests::drawn_lines(cx, "model-gesture-hint", GESTURE_HINT)
+                .into_iter()
+                .map(|line| line.text)
+                .collect();
+        assert_eq!(read.join(" "), GESTURE_HINT);
+    }
+
+    /// The animation timeline of a model in Compare, an animated GLB with a
+    /// clip chosen, focused from the keyboard keeps its accent ring while the
+    /// pointer moves over it and away, as the canvas does: Compare's opener
+    /// carries the window's focus ring (`Opener::ringed_by`), which the
+    /// timeline asks.
+    #[gpui::test]
+    async fn a_focused_models_timeline_keeps_its_ring_while_the_pointer_moves(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let glb =
+            include_bytes!("../../preview/tests/fixtures/models/glb/workflow/morph-animation.glb");
+        let mut input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nmodel\nM 100644 inline morph.glb\ndata {}\n",
+            glb.len()
+        )
+        .into_bytes();
+        input.extend_from_slice(glb);
+        input.extend_from_slice(b"\ndone\n");
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, &input).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let documents = app.read_with(cx, |app, _| match app.content.as_deref() {
+            Some(Content::Rich(comparison)) => [&comparison.old, &comparison.new]
+                .into_iter()
+                .filter_map(|side| side.model.clone())
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        });
+        let (model, partner) = documents.split_first().expect("Compare holds the model");
+        playback::choose_clip(model, partner.first(), Some(0));
+        app.update(cx, |_, cx| cx.notify());
+        crate::width_walk::frame(cx);
+        assert_the_canvas_keeps_its_ring(cx, "model-timeline", "Compare's timeline");
+    }
+
+    /// The model canvas `selector` names, which `at` draws, focused by a
+    /// click draws its plain edge, marked by a key the accent ring, and
+    /// keeps the ring while the pointer moves over it and away
+    /// ([`crate::focus_ring`]).
+    pub(crate) fn assert_the_canvas_keeps_its_ring(
+        cx: &mut gpui_kit::VisualTestContext,
+        selector: &'static str,
+        at: &str,
+    ) {
+        use gpui_kit::{Modifiers, VisualTestContext};
+        let canvas = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{at} draws the model {selector}"));
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        // The colour of the edge the frame paints around the canvas.
+        let edge = |cx: &mut VisualTestContext| -> Option<Hsla> {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let at = |drawn: f32, laid: Pixels| (drawn / scale - f32::from(laid)).abs() < 0.5;
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        at(quad.bounds.origin.x.0, canvas.origin.x)
+                            && at(quad.bounds.origin.y.0, canvas.origin.y)
+                            && at(quad.bounds.size.width.0, canvas.size.width)
+                            && at(quad.bounds.size.height.0, canvas.size.height)
+                            && quad.border_widths.left.0 > 0.
+                    })
+                    .map(|quad| quad.border_color)
+                    .next_back()
+            })
+        };
+        let ringed = |cx: &mut VisualTestContext| {
+            edge(cx).is_some_and(|color| {
+                [
+                    (color.h, accent.h),
+                    (color.s, accent.s),
+                    (color.l, accent.l),
+                ]
+                .iter()
+                .all(|(a, b)| (a - b).abs() < 0.01)
+            })
+        };
+        assert!(
+            !ringed(cx),
+            "{at}: an unfocused canvas draws its plain edge"
+        );
+        // A click focuses the canvas without marking it; a key marks it.
+        cx.simulate_click(canvas.center(), Modifiers::none());
+        crate::width_walk::frame(cx);
+        assert!(
+            !ringed(cx),
+            "{at}: a click focuses the canvas without its ring"
+        );
+        cx.simulate_keystrokes("f");
+        crate::width_walk::frame(cx);
+        assert!(
+            ringed(cx),
+            "{at}: a key on the focused canvas draws its ring"
+        );
+        cx.simulate_mouse_move(
+            canvas.center() + point(px(9.), px(7.)),
+            None,
+            Modifiers::none(),
+        );
+        crate::width_walk::frame(cx);
+        cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::none());
+        crate::width_walk::frame(cx);
+        assert!(
+            ringed(cx),
+            "{at}: moving the pointer over the canvas and away keeps its ring: {:?}",
+            edge(cx)
+        );
+    }
+
+    /// A comparison drawn as Compare draws it, `width` wide, with a mark
+    /// behind every text run a test finds among the painted quads, as wide
+    /// as the run drawn, its ellipsis included (`width_walk::text_mark`).
+    #[cfg(target_os = "linux")]
+    struct Marked {
+        content: crate::worker::Content,
+        width: f32,
+        showing: crate::system_preview::Showing,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for Marked {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let crate::worker::Content::Rich(comparison) = &self.content else {
+                panic!("a document comparison");
+            };
+            let opener =
+                crate::system_preview::Opener::new(WeakEntity::new_invalid(), self.showing);
+            div()
+                .w(px(self.width))
+                .h(px(600.))
+                .flex()
+                .flex_col()
+                .text_bg(crate::width_walk::text_mark())
+                .child(crate::rich_preview::render_comparison(
+                    comparison,
+                    false,
+                    opener,
+                    px(self.width),
+                    window,
+                    cx,
+                ))
+        }
+    }
+
+    /// No label in a 3D model's side headers is cut at a fractional scale:
+    /// at scales 1.2 and 1.25, at 13 and 18 pt, as the comparison narrows
+    /// from 1,000 px 4 px at a time, and a device pixel at a time wherever
+    /// a control changes its form between steps, each control drawn at a
+    /// set width (Reset, Edges or Solid, the views menu, Linked or
+    /// Independent and the clip menu) and Copy source, wherever labelled and
+    /// shown in its header's region, paints its whole label and is at least
+    /// as wide as layout places that
+    /// label in its frame (`crate::placed_button_width`), its caret after
+    /// it in a menu's. Drawn at the unrounded sums of their insets and
+    /// labels, at scale 1.2 Reset and Edges were a device pixel narrower
+    /// than that at 13 pt, where their labels were cut, and two at 18 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn no_model_header_label_is_cut_at_fractional_scales(cx: &mut gpui_kit::TestAppContext) {
+        use crate::system_preview::DRAWN_CONTROLS;
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let [model, _] = crate::system_preview::tests::document_sides(1, 0);
+        let (view, cx) = cx.add_window_view(|_, _| Marked {
+            content: model,
+            width: 1000.,
+            showing: crate::system_preview::Showing::next(),
+        });
+        cx.simulate_resize(size(px(1500.), px(700.)));
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let mut failures = Vec::new();
+        let mut reached = std::collections::BTreeSet::new();
+        let mut drawn_count = 0usize;
+        for scale in [1.2f32, 1.25] {
+            for text in [13u8, 18] {
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    appearance::apply_text_sizes(text, 12, window, cx)
+                });
+                crate::tags::tests::draw(cx);
+                // The comparison `device` device pixels wide: what each
+                // labelled control reads, checked, and every control's form.
+                let mut at = |cx: &mut gpui_kit::VisualTestContext, device: i32| {
+                    drawn_count += 1;
+                    view.update(cx, |view, cx| {
+                        view.width = device as f32 / scale;
+                        cx.notify();
+                    });
+                    DRAWN_CONTROLS.with_borrow_mut(|drawn| drawn.clear());
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    let drawn = DRAWN_CONTROLS.with_borrow(Clone::clone);
+                    // Each labelled control: its selector, what it reads,
+                    // whether it draws its icon, and whether it is a menu.
+                    let mut labelled: Vec<(String, String, bool, bool)> = drawn
+                        .iter()
+                        .filter(|(selector, control)| {
+                            selector.starts_with("model-") && control.form == "labelled"
+                        })
+                        .map(|(selector, control)| {
+                            let menu = selector.starts_with("model-views-")
+                                || selector.starts_with("model-clip-");
+                            (selector.clone(), control.shows.clone(), false, menu)
+                        })
+                        .collect();
+                    for index in 0..2 {
+                        let copy = format!("model-source-{index}");
+                        if cx
+                            .debug_bounds(format!("{copy}/rest/text").leak())
+                            .is_some()
+                        {
+                            labelled.push((copy, "Copy source".to_owned(), true, false));
+                        }
+                    }
+                    let mut forms: Vec<(String, String)> = drawn
+                        .iter()
+                        .filter(|(selector, _)| selector.starts_with("model-"))
+                        .map(|(selector, control)| (selector.clone(), control.form.to_owned()))
+                        .collect();
+                    let place = format!(
+                        "scale {scale}, {text} pt, comparison {:.2} px",
+                        device as f32 / scale
+                    );
+                    for (selector, shows, icon, menu) in labelled {
+                        forms.push((selector.clone(), "labelled".to_owned()));
+                        let bounds = cx
+                            .debug_bounds(selector.clone().leak())
+                            .expect("a drawn control");
+                        // Only a control its header's region shows: one it
+                        // scrolls past paints nothing.
+                        let (_, index) = selector.rsplit_once('-').expect("an indexed control");
+                        let index: usize = index.parse().expect("an indexed control");
+                        let side = if selector.starts_with("model-camera-") {
+                            index / 5
+                        } else {
+                            index
+                        };
+                        let region = cx
+                            .debug_bounds(["model-side-0/header", "model-side-1/header"][side])
+                            .expect("the side's header region");
+                        if bounds.top() < region.top() - px(0.01)
+                            || bounds.bottom() > region.bottom() + px(0.01)
+                        {
+                            continue;
+                        }
+                        reached.insert((text, selector.clone()));
+                        let (painted, whole, placed) = cx.update(|window, _| {
+                            let scale = window.scale_factor();
+                            let painted = window
+                                .painted_quads()
+                                .iter()
+                                .filter(|quad| quad.background == mark)
+                                .filter(|quad| {
+                                    let middle = point(
+                                        px((quad.bounds.left() + quad.bounds.size.width / 2.).0
+                                            / scale),
+                                        px((quad.bounds.top() + quad.bounds.size.height / 2.).0
+                                            / scale),
+                                    );
+                                    bounds.contains(&middle)
+                                })
+                                .map(|quad| px(quad.bounds.size.width.0 / scale))
+                                .fold(Pixels::ZERO, |sum, width| sum + width);
+                            let size = appearance::ui_text(12.);
+                            let weight = window.text_style().font_weight;
+                            let whole = crate::views::shaped_width(&shows, size, weight, window);
+                            let label = crate::views::line_widths(&[(&shows, size)], window);
+                            let placed = if menu {
+                                crate::placed_menu_width(label, window)
+                            } else {
+                                crate::placed_button_width(label, icon, window)
+                            };
+                            (painted, whole, placed)
+                        });
+                        // The painted label proves the fix: a control drawn
+                        // narrower than its label paints it cut.
+                        if painted < whole - px(0.5) {
+                            failures.push(format!(
+                                "{place}: {selector} reads {shows:?} cut, {painted:?} of {whole:?}"
+                            ));
+                        }
+                        // Measured with the helpers the controls are sized
+                        // with, this only guards the wiring: that each is
+                        // drawn at the width those helpers place it at.
+                        if bounds.size.width < placed - px(0.01) {
+                            failures.push(format!(
+                                "{place}: {selector} reading {shows:?} is {:?} wide, short of the {placed:?} layout places it at",
+                                bounds.size.width
+                            ));
+                        }
+                    }
+                    forms.sort();
+                    forms
+                };
+                let device = |width: f32| (width * scale).round() as i32;
+                let mut last: Option<(i32, Vec<(String, String)>)> = None;
+                let mut width = 1000f32;
+                while width >= 160. {
+                    let here = device(width);
+                    let forms = at(cx, here);
+                    if let Some((there, was)) = &last
+                        && *was != forms
+                    {
+                        for between in here + 1..*there {
+                            at(cx, between);
+                        }
+                    }
+                    last = Some((here, forms));
+                    width -= 4.;
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        eprintln!("{drawn_count} widths drawn");
+        for text in [13u8, 18] {
+            for selector in [
+                "model-camera-1",
+                "model-camera-4",
+                "model-views-0",
+                "model-link-0",
+                "model-clip-0",
+                "model-source-1",
+            ] {
+                assert!(
+                    reached.contains(&(text, selector.to_owned())),
+                    "at {text} pt {selector} is drawn labelled: {reached:?}"
+                );
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} labels cut or short:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// The views menu's readings are built and laid out once for each font
+    /// and size, as the clip menu's are, not on every frame: walking a model
+    /// comparison's widths at 13 and 18 pt, each side drawing its views menu
+    /// on every frame, builds them only for a size's first frame. Looked up
+    /// by their joined text, the seven views' names and "Custom view" were
+    /// gathered and joined on every frame.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn the_views_menu_s_readings_are_built_once_per_size(cx: &mut gpui_kit::TestAppContext) {
+        let built = || VIEW_READINGS_BUILT.with(std::cell::Cell::get);
+        let [model, _] = crate::system_preview::tests::document_sides(1, 0);
+        let (mut frames, mut first) = (0, std::collections::BTreeMap::new());
+        crate::system_preview::tests::walk_side_widths(
+            cx,
+            model,
+            40,
+            |_, _, (text, width), drawn| {
+                let now = built();
+                let at_first = *first.entry(text).or_insert(now);
+                assert!(
+                    drawn.contains_key("model-views-0") && drawn.contains_key("model-views-1"),
+                    "at {text} pt, {width} px both sides draw their views menu: {:?}",
+                    drawn.keys()
+                );
+                assert_eq!(
+                    now, at_first,
+                    "at {text} pt, {width} px: built only for the size's first frame"
+                );
+                frames += 1;
+            },
+        );
+        assert!(frames > 30, "the walk drew {frames} frames");
+        assert!(
+            first.len() == 2 && built() >= 2,
+            "built for each of the two sizes: {first:?}, {} in all",
+            built()
         );
     }
 }

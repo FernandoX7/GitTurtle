@@ -382,6 +382,7 @@ fn discard_refuses_git_directory_redirection_after_review() {
     let repo = f.repo();
     f.write("tracked", "reviewed bytes\n");
     let plan = f.plan("tracked");
+    let reviewed = f.plan("tracked");
     let old_git = f.root.parent().unwrap().join("original.git");
     fs::rename(f.root.join(".git"), &old_git).unwrap();
     fs::write(
@@ -390,7 +391,18 @@ fn discard_refuses_git_directory_redirection_after_review() {
     )
     .unwrap();
     assert_eq!(f.entry("tracked"), plan.entry);
+    // The repository's Git directory is not the one it was opened with, so
+    // the write refuses before Git starts, ahead of Discard's own check.
     let error = repo.execute(&discard(plan)).unwrap_err();
+    assert!(
+        error.to_string().contains("The repository changed")
+            && error.to_string().contains("Git was not started"),
+        "{error:#}"
+    );
+    // A handle opened after the redirect has it as its own Git directory;
+    // Discard's own check still refuses the plan reviewed before it.
+    let reopened = f.repo();
+    let error = reopened.execute(&discard(reviewed)).unwrap_err();
     assert!(
         error.to_string().contains("changed after review"),
         "{error:#}"
@@ -405,6 +417,7 @@ fn discard_refuses_git_directory_replacement_at_the_same_path() {
     let repo = f.repo();
     f.write("tracked", "reviewed bytes\n");
     let plan = f.plan("tracked");
+    let reviewed = f.plan("tracked");
     let parent = f.root.parent().unwrap();
     let replacement = parent.join("replacement");
     git_at(
@@ -419,7 +432,19 @@ fn discard_refuses_git_directory_replacement_at_the_same_path() {
     fs::rename(f.root.join(".git"), parent.join("original.git")).unwrap();
     fs::rename(replacement.join(".git"), f.root.join(".git")).unwrap();
     assert_eq!(f.entry("tracked"), plan.entry);
+    // The handle's Git directory is another directory now, by its inode,
+    // though its path is the same, so the write refuses before Git starts,
+    // ahead of Discard's own check.
     let error = repo.execute(&discard(plan)).unwrap_err();
+    assert!(
+        error.to_string().contains("The repository changed")
+            && error.to_string().contains("Git was not started"),
+        "{error:#}"
+    );
+    // A handle opened after the replacement has it as its own Git
+    // directory; Discard's own check still refuses the plan reviewed in the
+    // replaced repository.
+    let error = f.repo().execute(&discard(reviewed)).unwrap_err();
     assert!(
         error.to_string().contains("changed after review"),
         "{error:#}"

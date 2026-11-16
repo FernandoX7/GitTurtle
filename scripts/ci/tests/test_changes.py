@@ -97,7 +97,7 @@ class GateTests(unittest.TestCase):
                 needs = {"changes": needs_for(plan)["changes"], **privacy(),
                          **{job: {"result": result} for job, result in case["results"].items()}}
                 if case["accept"]:
-                    self.assertEqual(len(changes.gate(needs)), 7)
+                    self.assertEqual(len(changes.gate(needs)), 8)
                 else:
                     with self.assertRaises(changes.PolicyError):
                         changes.gate(needs)
@@ -106,7 +106,7 @@ class GateTests(unittest.TestCase):
         for paths in [[b"docs/user-guide.md"], [b"website/check.py"], [b"scripts/ci/metrics.py"],
                       [b"crates/app/src/main.rs"]]:
             with self.subTest(paths=paths):
-                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 7)
+                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 8)
 
     def test_required_failure_cancellation_and_skip_each_fail(self):
         baseline = needs_for(changes.full_plan("full"))
@@ -120,7 +120,7 @@ class GateTests(unittest.TestCase):
 
     def test_unneeded_failure_is_not_silently_ignored(self):
         baseline = needs_for(changes.classify_paths([b"README.md"]))
-        for job in ["rust-release", "rust-arch"]:
+        for job in ["rust-clippy", "rust-release", "rust-arch"]:
             for result in ["failure", "cancelled"]:
                 with self.subTest(job=job, result=result):
                     needs = copy.deepcopy(baseline)
@@ -144,7 +144,7 @@ class GateTests(unittest.TestCase):
         needs = needs_for(changes.classify_paths([b"README.md"]))
         for job in changes.JOBS:
             needs[job]["result"] = "success"
-        self.assertEqual(len(changes.gate(needs)), 7)
+        self.assertEqual(len(changes.gate(needs)), 8)
 
     def test_absent_and_unknown_jobs_fail(self):
         baseline = needs_for(changes.full_plan("full"))

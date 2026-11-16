@@ -5,10 +5,129 @@ use futures::channel::oneshot;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, Mutex, PoisonError, mpsc},
 };
 
-type Operation = Box<dyn FnOnce(bool) + Send>;
+type Operation = Box<dyn FnOnce(Admission) + Send>;
+
+/// What a [`SerialExecutor`] did with a job.
+#[derive(Clone, Copy)]
+enum Admission {
+    Accepted,
+    /// The bounded queue had no room: the thread is alive and behind.
+    Busy,
+    /// The thread has stopped, so no later attempt can be accepted either.
+    Stopped,
+}
+
+const REFUSED: &str =
+    "Background executor is busy or unavailable. Try again after the current operation finishes.";
+
+/// The error of a job refused because the bounded queue had no room. A save
+/// the person did not ask for tells it apart with `error.is::<Busy>()` and
+/// asks again ([`crate::workspace::REFUSED_SAVE_RETRY`]) rather than report
+/// a writer that is merely behind.
+#[derive(Debug)]
+pub(crate) struct Busy;
+
+impl std::fmt::Display for Busy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(REFUSED)
+    }
+}
+
+impl std::error::Error for Busy {}
+
+/// Reads waiting in a [`SerialExecutor`]'s queue, at most one for each key,
+/// which a newer request for the same key takes over while they still wait
+/// ([`SerialExecutor::submit_read_once`]).
+pub(crate) struct WaitingReads<K, T> {
+    waiting: Vec<(K, Arc<Mutex<Reply<T>>>)>,
+}
+
+impl<K, T> Default for WaitingReads<K, T> {
+    fn default() -> Self {
+        Self {
+            waiting: Vec::new(),
+        }
+    }
+}
+
+/// A read of [`WaitingReads`].
+type Read<T> = Box<dyn FnOnce() -> Result<T> + Send>;
+
+/// Where a read of [`WaitingReads`] answers, and what it runs: the latest
+/// request's reply and read while it waits in the queue, and nothing more
+/// once it has started.
+enum Reply<T> {
+    Waiting(oneshot::Sender<Result<T>>, Read<T>),
+    Started,
+}
+
+fn lock<T>(reply: &Mutex<Reply<T>>) -> std::sync::MutexGuard<'_, Reply<T>> {
+    reply.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The name of the one thread that drops what [`drop_aside`] is handed.
+const DROPPER: &str = "gitturtle-dropper";
+
+/// What [`drop_aside`] drops.
+type Unwanted = Box<dyn Send>;
+
+/// Drops `unwanted` on one process-wide thread that does nothing else, in
+/// the order it is handed, each inside `catch_unwind` so that a panicking
+/// `Drop` cannot end it; the caller hands it over and goes on, waiting for
+/// nothing. A read a take-over replaced can hold the last clone of a
+/// repository's handle, whose drop stops that handle's `cat-file` process,
+/// waits for it and joins its threads ([`SerialExecutor::submit_read_once`]):
+/// that must run neither on the UI thread nor under a slot's lock, nor wait
+/// for the read it was replaced in, which a read that never ends ahead of
+/// it may keep from ever running. Where no thread could be started for it,
+/// `unwanted` drops here.
+fn drop_aside(unwanted: Unwanted) {
+    static DROPPER_QUEUE: std::sync::LazyLock<Option<mpsc::Sender<Unwanted>>> =
+        std::sync::LazyLock::new(|| {
+            let (sender, received) = mpsc::channel::<Unwanted>();
+            std::thread::Builder::new()
+                .name(DROPPER.into())
+                .spawn(move || {
+                    for unwanted in received {
+                        let _ = catch_unwind(AssertUnwindSafe(move || drop(unwanted)));
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        });
+    if let Some(queue) = &*DROPPER_QUEUE {
+        let _ = queue.send(unwanted);
+    }
+}
+
+/// How long a test waits on a thread of the app's own, an executor answering
+/// ([`SerialExecutor::drain`]) or the repository reader going idle
+/// (`Worker::wait_idle`), before it fails rather than hangs: a job that never
+/// answers, or one the test itself holds, once stopped the test for good.
+/// [`TEST_WAIT_FLOOR`], or longer where `GITTURTLE_TEST_WAIT_SECS` asks for
+/// more, as a slow or heavily loaded host may; never shorter.
+#[cfg(test)]
+pub(crate) fn test_wait() -> std::time::Duration {
+    test_wait_from(std::env::var("GITTURTLE_TEST_WAIT_SECS").ok().as_deref())
+}
+
+/// The shortest [`test_wait`]: the variable can only raise it, so a run
+/// cannot turn a slow answer into a failure.
+#[cfg(test)]
+const TEST_WAIT_FLOOR: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// [`test_wait`] for the variable's value, if set: whole seconds above the
+/// floor raise it; anything else leaves the floor.
+#[cfg(test)]
+fn test_wait_from(seconds: Option<&str>) -> std::time::Duration {
+    seconds
+        .and_then(|seconds| seconds.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .map_or(TEST_WAIT_FLOOR, |asked| asked.max(TEST_WAIT_FLOOR))
+}
 
 /// Keep outcome ownership tied to the last successfully resolved worktree,
 /// rather than the requested path (which may be an alias or fail to open).
@@ -19,14 +138,14 @@ pub(super) struct RepositoryOutcomes {
 
 pub(super) struct OpeningOutcomes {
     repository: Option<PathBuf>,
-    error: Option<String>,
+    error: Option<crate::views::OperationFailure>,
     notice: Option<String>,
 }
 
 impl RepositoryOutcomes {
     pub(super) fn begin_open(
         &self,
-        error: &Option<String>,
+        error: &Option<crate::views::OperationFailure>,
         notice: &Option<String>,
     ) -> OpeningOutcomes {
         OpeningOutcomes {
@@ -43,7 +162,7 @@ impl RepositoryOutcomes {
         &mut self,
         repository: &Path,
         opening: OpeningOutcomes,
-        error: &mut Option<String>,
+        error: &mut Option<crate::views::OperationFailure>,
         notice: &mut Option<String>,
     ) {
         if opening.repository.as_deref() != Some(repository) {
@@ -60,6 +179,16 @@ impl RepositoryOutcomes {
 
 pub struct SerialExecutor {
     sender: mpsc::SyncSender<Operation>,
+    /// The thread's name, which a test's failed wait reports.
+    #[cfg(test)]
+    name: String,
+}
+
+/// Keeps a [`SerialExecutor`] held until it drops ([`SerialExecutor::hold`]).
+#[cfg(test)]
+#[must_use = "the executor is released as soon as the guard drops"]
+pub struct Held {
+    _release: mpsc::Sender<()>,
 }
 
 impl SerialExecutor {
@@ -75,10 +204,24 @@ impl SerialExecutor {
                 #[cfg(test)]
                 crate::preferences::inherit_test_settings_directory(test_settings);
                 for operation in receiver {
-                    operation(true);
+                    operation(Admission::Accepted);
                 }
             });
-        Self { sender }
+        Self {
+            sender,
+            #[cfg(test)]
+            name: name.into(),
+        }
+    }
+
+    /// An executor whose thread has stopped, which refuses every job.
+    #[cfg(test)]
+    pub fn stopped(name: &str) -> Self {
+        let (sender, _receiver) = mpsc::sync_channel::<Operation>(8);
+        Self {
+            sender,
+            name: name.into(),
+        }
     }
 
     pub fn submit<T: Send + 'static>(
@@ -109,16 +252,196 @@ impl SerialExecutor {
     /// Block until every job submitted before this call has answered. The
     /// queue is FIFO, so a marker queued now runs after all of them.
     /// `run_until_parked` cannot wait for this thread, so a GPUI test drains
-    /// first and then settles to handle the replies on its own thread.
+    /// first and then settles to handle the replies on its own thread. A job
+    /// that has not answered within [`test_wait`], such as one the test
+    /// itself holds, fails the test at the caller's line.
     #[cfg(test)]
+    #[track_caller]
     pub fn drain(&self) {
+        self.drain_within(test_wait());
+    }
+
+    /// [`drain`](Self::drain), failing after `limit` rather than
+    /// [`test_wait`]. The queue is bounded, so a queue that a held job keeps
+    /// full takes no marker either: the wait for room counts too.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn drain_within(&self, limit: std::time::Duration) {
+        let deadline = std::time::Instant::now() + limit;
         let (done, drained) = mpsc::channel();
-        self.sender
-            .send(Box::new(move |_| {
+        self.queue_within(
+            Box::new(move |_| {
                 let _ = done.send(());
-            }))
-            .expect("the executor accepts the marker");
-        drained.recv().expect("the executor ran the marker");
+            }),
+            limit,
+            deadline,
+            "drain",
+        );
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match drained.recv_timeout(left) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "the {} executor did not reach the drain within {limit:?}: a job ahead of it never answered or is still held",
+                self.name
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the {} executor stopped before the drain", self.name)
+            }
+        }
+    }
+
+    /// Holds this executor's thread until the returned guard drops, as a
+    /// slow job would: whatever is submitted meanwhile waits behind it. A
+    /// GPUI test holds a dialog's read this way to act on its loading row
+    /// before the reply lands. Where the queue has no room for the hold
+    /// within [`test_wait`], as behind a job the test itself still holds,
+    /// it fails the test at the caller's line.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn hold(&self) -> Held {
+        self.hold_within(test_wait())
+    }
+
+    /// [`hold`](Self::hold), failing after `limit` rather than
+    /// [`test_wait`].
+    #[cfg(test)]
+    #[track_caller]
+    pub fn hold_within(&self, limit: std::time::Duration) -> Held {
+        let (release, released) = mpsc::channel::<()>();
+        self.queue_within(
+            Box::new(move |_| {
+                // Dropping the guard closes the channel, which ends the wait.
+                let _ = released.recv();
+            }),
+            limit,
+            std::time::Instant::now() + limit,
+            "hold",
+        );
+        Held { _release: release }
+    }
+
+    /// [`hold`](Self::hold), returning only once the thread has reached the
+    /// hold, so that exactly the queue's bound of jobs fits behind it.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn hold_reached(&self) -> Held {
+        let limit = test_wait();
+        let (release, released) = mpsc::channel::<()>();
+        let (reached, at_hold) = mpsc::channel::<()>();
+        self.queue_within(
+            Box::new(move |_| {
+                let _ = reached.send(());
+                let _ = released.recv();
+            }),
+            limit,
+            std::time::Instant::now() + limit,
+            "hold",
+        );
+        if at_hold.recv_timeout(limit).is_err() {
+            panic!(
+                "the {} executor did not reach the hold within {limit:?}: a job ahead of it never answered or is still held",
+                self.name
+            );
+        }
+        Held { _release: release }
+    }
+
+    /// Queues a test's `job`, named `what`, waiting for room in the bounded
+    /// queue until `deadline`. A blocking send waited for good behind a job
+    /// the waiting thread itself held, an earlier hold's guard among them.
+    #[cfg(test)]
+    #[track_caller]
+    fn queue_within(
+        &self,
+        mut job: Operation,
+        limit: std::time::Duration,
+        deadline: std::time::Instant,
+        what: &str,
+    ) {
+        loop {
+            match self.sender.try_send(job) {
+                Ok(()) => return,
+                Err(mpsc::TrySendError::Full(refused)) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the {} executor's queue stayed full for {limit:?}: a job ahead of the {what} never answered or is still held",
+                        self.name
+                    );
+                    job = refused;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    panic!("the {} executor stopped before the {what}", self.name)
+                }
+            }
+        }
+    }
+
+    /// [`Self::submit_read`] for a read of `key` that reads what is there
+    /// as it runs, so a request made while one for the same key still
+    /// waits in the queue takes over that read's slot instead of queuing
+    /// behind it: the read that runs there is the request's own
+    /// `operation`, and the earlier request's reply is dropped, as replacing
+    /// its task drops it. The earlier operation kept what it was built with,
+    /// the shown status read the handle of a repository replaced since,
+    /// whose label the newer request's reply then carried. It comes out of
+    /// the slot under its lock and, the lock let go, goes unrun to
+    /// [`drop_aside`]. Holding the last clone of a repository's handle, its
+    /// drop stops that handle's `cat-file` process, waits for it and joins
+    /// its threads: dropped in place, on the UI thread under the lock, it
+    /// held the executor reaching the read too, and kept beside the read
+    /// until that ran, which a read that never ends ahead of it may never
+    /// let happen, each take-over kept one more such process alive. A job
+    /// of its own on the executor to drop each would take the slots the
+    /// take-over keeps free, and wait behind that read too. However often
+    /// it is asked for meanwhile, `key` keeps at most one slot of the
+    /// bounded queue. A read that has started, which may have read before
+    /// the request, is not taken over: the request queues a read of its
+    /// own. Changes' status read is one
+    /// (`GitTurtle::refresh_worktree`): each Refresh behind a read that
+    /// never ends once queued another, each keeping its slot though the next
+    /// dropped its reply, until one was refused as busy and Changes lost its
+    /// rows.
+    pub fn submit_read_once<K: PartialEq, T: Send + 'static>(
+        &self,
+        waiting: &mut WaitingReads<K, T>,
+        key: K,
+        operation: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> oneshot::Receiver<Result<T>> {
+        let (mut reply, response) = oneshot::channel();
+        let mut operation: Read<T> = Box::new(operation);
+        waiting
+            .waiting
+            .retain(|(_, read)| matches!(*lock(read), Reply::Waiting(..)));
+        if let Some((_, read)) = waiting.waiting.iter().find(|(read, _)| *read == key) {
+            let mut slot = lock(read);
+            if let Reply::Waiting(earlier, earlier_operation) = &mut *slot {
+                // The newer request's reply and read take the slot, and the
+                // earlier ones come out, to drop only once the lock is let go.
+                std::mem::swap(earlier, &mut reply);
+                std::mem::swap(earlier_operation, &mut operation);
+                drop(slot);
+                // The earlier request's reply ends at once, its read on the
+                // dropper.
+                drop(reply);
+                drop_aside(Box::new(operation));
+                return response;
+            }
+        }
+        let read = Arc::new(Mutex::new(Reply::Waiting(reply, operation)));
+        let answers = Arc::clone(&read);
+        waiting.waiting.retain(|(read, _)| *read != key);
+        waiting.waiting.push((key, read));
+        self.send(Box::new(move |admission| {
+            // Its own statement, so the lock is let go before the read runs:
+            // held through the read, a request for the key while it ran
+            // waited for it on the UI thread.
+            let reply = std::mem::replace(&mut *lock(&answers), Reply::Started);
+            if let Reply::Waiting(reply, operation) = reply {
+                answer(reply, admission, true, operation);
+            }
+        }));
+        response
     }
 
     fn submit_impl<T: Send + 'static>(
@@ -127,28 +450,48 @@ impl SerialExecutor {
         skip_cancelled: bool,
     ) -> oneshot::Receiver<Result<T>> {
         let (reply, response) = oneshot::channel();
-        let job: Operation = Box::new(move |accepted| {
-            if skip_cancelled && reply.is_canceled() {
-                return;
-            }
-            let result = if accepted {
-                catch_unwind(AssertUnwindSafe(operation)).unwrap_or_else(|_| {
-                    Err(anyhow!("Operation interrupted unexpectedly. Refresh the repository before retrying; it may have changed."))
-                })
-            } else {
-                Err(anyhow!(
-                    "Background executor is busy or unavailable. Try again after the current operation finishes."
-                ))
-            };
-            let _ = reply.send(result);
-        });
-        if let Err(error) = self.sender.try_send(job) {
-            match error {
-                mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job(false),
-            }
-        }
+        self.send(Box::new(move |admission| {
+            answer(reply, admission, skip_cancelled, operation);
+        }));
         response
     }
+
+    /// Queues `job`, or runs it refused at once where the bounded queue has
+    /// no room or the thread has stopped.
+    fn send(&self, job: Operation) {
+        if let Err(error) = self.sender.try_send(job) {
+            match error {
+                mpsc::TrySendError::Full(job) => job(Admission::Busy),
+                mpsc::TrySendError::Disconnected(job) => job(Admission::Stopped),
+            }
+        }
+    }
+}
+
+/// Runs `operation` for `reply` once the executor reaches it, or answers
+/// that the executor refused it; a read (`skip_cancelled`) whose reply has
+/// been dropped is skipped.
+fn answer<T>(
+    reply: oneshot::Sender<Result<T>>,
+    admission: Admission,
+    skip_cancelled: bool,
+    operation: impl FnOnce() -> Result<T>,
+) {
+    if skip_cancelled && reply.is_canceled() {
+        // What it captured is the caller's, and drops here unrun: a `Drop`
+        // that panics is caught as a panicking operation is, so that it
+        // cannot end the executor's thread.
+        let _ = catch_unwind(AssertUnwindSafe(move || drop(operation)));
+        return;
+    }
+    let result = match admission {
+        Admission::Accepted => catch_unwind(AssertUnwindSafe(operation)).unwrap_or_else(|_| {
+            Err(anyhow!("Operation interrupted unexpectedly. Refresh the repository before retrying; it may have changed."))
+        }),
+        Admission::Busy => Err(anyhow::Error::new(Busy)),
+        Admission::Stopped => Err(anyhow!(REFUSED)),
+    };
+    let _ = reply.send(result);
 }
 
 #[cfg(test)]
@@ -373,6 +716,235 @@ mod tests {
         assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    /// Requests for one key behind a read that never ends keep one slot of
+    /// the bounded queue, answered by the read that waits, the latest
+    /// request's reply only; another key queues its own, and a read that has
+    /// started is not taken over. Each request once queued a read of its
+    /// own, so the ninth behind a held job was refused as busy.
+    #[test]
+    fn reads_of_one_key_waiting_in_the_queue_keep_one_slot() {
+        let executor = SerialExecutor::new("operation-once-test");
+        let mut waiting = WaitingReads::default();
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let read = |key: &'static str, runs: &Arc<Mutex<Vec<&'static str>>>| {
+            let runs = Arc::clone(runs);
+            move || {
+                runs.lock().unwrap().push(key);
+                Ok(key)
+            }
+        };
+        let held = executor.hold();
+        let mut replies: Vec<_> = (0..12)
+            .map(|_| executor.submit_read_once(&mut waiting, "shown", read("shown", &runs)))
+            .collect();
+        let other = executor.submit_read_once(&mut waiting, "other", read("other", &runs));
+        let latest = replies.pop().unwrap();
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(latest).unwrap().unwrap(),
+            "shown"
+        );
+        assert_eq!(
+            futures::executor::block_on(other).unwrap().unwrap(),
+            "other"
+        );
+        for earlier in replies {
+            assert!(
+                futures::executor::block_on(earlier).is_err(),
+                "an earlier request's reply is dropped"
+            );
+        }
+        assert_eq!(*runs.lock().unwrap(), ["shown", "other"]);
+
+        // A read that has started may have read before the request, which
+        // then queues its own.
+        let (started, running) = mpsc::channel();
+        let (release, gate) = mpsc::channel::<()>();
+        let first = executor.submit_read_once(&mut waiting, "shown", move || {
+            started.send(()).unwrap();
+            gate.recv()?;
+            Ok("first")
+        });
+        running.recv().unwrap();
+        let second = executor.submit_read_once(&mut waiting, "shown", read("shown", &runs));
+        release.send(()).unwrap();
+        assert_eq!(
+            futures::executor::block_on(first).unwrap().unwrap(),
+            "first"
+        );
+        assert_eq!(
+            futures::executor::block_on(second).unwrap().unwrap(),
+            "shown"
+        );
+    }
+
+    /// A request that takes over a waiting read runs its own operation
+    /// there, never the earlier request's: Changes' status read built with
+    /// the handle of a repository replaced since once answered the newer
+    /// request, which labelled that status with the replaced repository.
+    #[test]
+    fn a_read_taken_over_runs_the_newer_request_s_operation() {
+        let executor = SerialExecutor::new("operation-take-over-test");
+        let mut waiting = WaitingReads::default();
+        let held = executor.hold();
+        let earlier = executor.submit_read_once(&mut waiting, "shown", || Ok("replaced"));
+        let newer = executor.submit_read_once(&mut waiting, "shown", || Ok("found"));
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(newer).unwrap().unwrap(),
+            "found"
+        );
+        assert!(
+            futures::executor::block_on(earlier).is_err(),
+            "the earlier request's reply is dropped"
+        );
+    }
+
+    /// Owned by a request's operation, it records as that operation drops
+    /// which request it was, the dropping thread's name and whether the
+    /// lock of the read's slot, once named, was held then (`None` where the
+    /// slot was gone).
+    struct DropProbe {
+        request: usize,
+        slot: Arc<std::sync::OnceLock<std::sync::Weak<Mutex<Reply<&'static str>>>>>,
+        dropped: mpsc::Sender<(usize, Option<String>, Option<bool>)>,
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            let locked = (self.slot.get())
+                .and_then(std::sync::Weak::upgrade)
+                .map(|slot| slot.try_lock().is_err());
+            let thread = std::thread::current().name().map(str::to_owned);
+            let _ = self.dropped.send((self.request, thread, locked));
+        }
+    }
+
+    /// Each request that takes over a read waiting behind a held executor
+    /// hands the earlier request's operation, unrun, to the dropper thread,
+    /// which drops it while that read still waits, off the thread that
+    /// asked and the executor's, with the slot's lock let go: the operation
+    /// can hold the last clone of a repository's handle, whose drop stops
+    /// its `cat-file` process, waits for it and joins its threads. Kept
+    /// beside the read until the executor reached it, which a read that
+    /// never ends ahead of it may never let happen, each History Refresh
+    /// meanwhile kept one more of those processes alive.
+    #[test]
+    fn a_take_over_hands_the_earlier_operation_to_the_dropper_while_the_read_waits() {
+        let executor = SerialExecutor::new("operation-take-over-drop-test");
+        let mut waiting = WaitingReads::default();
+        let held = executor.hold();
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let (dropped, drops) = mpsc::channel();
+        let request = |request: usize| {
+            let probe = DropProbe {
+                request,
+                slot: Arc::clone(&slot),
+                dropped: dropped.clone(),
+            };
+            move || {
+                let _probe = &probe;
+                Ok("read")
+            }
+        };
+        let mut replies = vec![executor.submit_read_once(&mut waiting, "shown", request(0))];
+        assert!(
+            slot.set(Arc::downgrade(&waiting.waiting[0].1)).is_ok(),
+            "the read's slot named once"
+        );
+        for newer in 1..=3 {
+            replies.push(executor.submit_read_once(&mut waiting, "shown", request(newer)));
+            let record = drops
+                .recv_timeout(test_wait())
+                .expect("the earlier request's operation is dropped while the read waits");
+            assert_eq!(
+                record,
+                (newer - 1, Some(DROPPER.into()), Some(false)),
+                "dropped on the dropper, neither the thread that asked nor the executor, with the slot's lock let go"
+            );
+        }
+        let mut latest = replies.pop().unwrap();
+        assert!(
+            matches!(latest.try_recv(), Ok(None)),
+            "the read still waits behind the held executor"
+        );
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(latest).unwrap().unwrap(),
+            "read"
+        );
+        for earlier in replies {
+            assert!(
+                futures::executor::block_on(earlier).is_err(),
+                "an earlier request's reply is dropped"
+            );
+        }
+        assert_eq!(
+            drops.recv_timeout(test_wait()).unwrap(),
+            (3, Some("operation-take-over-drop-test".into()), Some(false)),
+            "the latest request's operation runs, and ends, on the executor"
+        );
+    }
+
+    /// Owned by what is dropped, it panics as it drops.
+    struct PanicsOnDrop;
+
+    impl Drop for PanicsOnDrop {
+        fn drop(&mut self) {
+            panic!("fixture drop failure");
+        }
+    }
+
+    /// Owned by what is dropped, it records as it drops the dropping
+    /// thread's name and whether that thread was unwinding then.
+    struct ThreadProbe(mpsc::Sender<(Option<String>, bool)>);
+
+    impl Drop for ThreadProbe {
+        fn drop(&mut self) {
+            let thread = std::thread::current().name().map(str::to_owned);
+            let _ = self.0.send((thread, std::thread::panicking()));
+        }
+    }
+
+    /// A `Drop` that panics on the dropper is caught, and the dropper goes
+    /// on dropping what it is handed later, on its own thread: uncaught,
+    /// the panic ended it, and what came after dropped as it unwound, or
+    /// on the thread that handed it over.
+    #[test]
+    fn a_drop_that_panics_leaves_the_dropper_dropping() {
+        let (dropped, drops) = mpsc::channel();
+        drop_aside(Box::new(PanicsOnDrop));
+        drop_aside(Box::new(ThreadProbe(dropped)));
+        assert_eq!(
+            drops.recv_timeout(test_wait()).unwrap(),
+            (Some(DROPPER.into()), false),
+            "dropped on the dropper, which is not unwinding"
+        );
+    }
+
+    /// A read skipped because its reply was dropped is dropped unrun on
+    /// the executor, with what the caller gave it: a `Drop` there that
+    /// panics is caught, as a panicking read is, and the executor goes on
+    /// answering. Uncaught, it ended the executor's thread, and the jobs
+    /// behind it went unanswered.
+    #[test]
+    fn a_skipped_read_whose_drop_panics_leaves_the_executor_answering() {
+        let executor = SerialExecutor::new("operation-skip-drop-panic-test");
+        let held = executor.hold();
+        let panics = PanicsOnDrop;
+        drop(executor.submit_read(move || {
+            let _panics = &panics;
+            Ok(())
+        }));
+        let later = executor.submit(|| Ok(42));
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(later).unwrap().unwrap(),
+            42,
+            "the job behind the skipped read is answered"
+        );
+    }
+
     #[test]
     fn a_panicking_operation_reports_uncertainty_and_executor_recovers() {
         let executor = SerialExecutor::new("operation-panic-test");
@@ -390,5 +962,79 @@ mod tests {
                 .unwrap(),
             42
         );
+    }
+
+    /// A drain behind a job that never answers fails, naming the executor,
+    /// rather than waiting for good: a theme editor test once drained the
+    /// preference writer while a job of its own still held it.
+    #[test]
+    #[should_panic(expected = "the drain-held-test executor did not reach the drain")]
+    fn a_drain_behind_a_held_job_fails_rather_than_hangs() {
+        let executor = SerialExecutor::new("drain-held-test");
+        let _held = executor.hold();
+        executor.drain_within(std::time::Duration::from_millis(50));
+    }
+
+    /// The queue is bounded, so a drain behind a held job and a full queue
+    /// finds no room for its marker; that wait fails too, as it did when the
+    /// theme editor's full-executor import stayed pending.
+    #[test]
+    #[should_panic(expected = "the drain-full-test executor's queue stayed full")]
+    fn a_drain_behind_a_full_held_queue_fails_rather_than_hangs() {
+        let executor = SerialExecutor::new("drain-full-test");
+        // The held job is running, off the queue, before its eight slots
+        // are taken.
+        let (started, running) = mpsc::channel();
+        let (_release, held) = mpsc::channel::<()>();
+        let _running = executor.submit(move || {
+            started.send(()).unwrap();
+            let _ = held.recv();
+            Ok(())
+        });
+        running.recv().unwrap();
+        let _queued: Vec<_> = (0..8).map(|_| executor.submit(|| Ok(()))).collect();
+        executor.drain_within(std::time::Duration::from_millis(50));
+    }
+
+    /// A hold behind a held job and a full queue finds no room either, and
+    /// fails, naming the executor: its blocking send waited for good, as it
+    /// would behind an earlier hold whose guard the same test still keeps.
+    #[test]
+    #[should_panic(expected = "the hold-full-test executor's queue stayed full")]
+    fn a_hold_behind_a_full_held_queue_fails_rather_than_hangs() {
+        let executor = SerialExecutor::new("hold-full-test");
+        // The held job is running, off the queue, before its eight slots
+        // are taken.
+        let (started, running) = mpsc::channel();
+        let (_release, held) = mpsc::channel::<()>();
+        let _running = executor.submit(move || {
+            started.send(()).unwrap();
+            let _ = held.recv();
+            Ok(())
+        });
+        running.recv().unwrap();
+        let _queued: Vec<_> = (0..8).map(|_| executor.submit(|| Ok(()))).collect();
+        let _hold = executor.hold_within(std::time::Duration::from_millis(50));
+    }
+
+    /// `GITTURTLE_TEST_WAIT_SECS` raises the waits' bound on a slow host
+    /// and never lowers it; a value that is not whole seconds leaves it.
+    #[test]
+    fn the_test_wait_variable_only_raises_the_bound() {
+        let floor = std::time::Duration::from_secs(30);
+        assert_eq!(test_wait_from(None), floor);
+        assert_eq!(
+            test_wait_from(Some("120")),
+            std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            test_wait_from(Some(" 45 ")),
+            std::time::Duration::from_secs(45)
+        );
+        assert_eq!(test_wait_from(Some("5")), floor, "never lower");
+        assert_eq!(test_wait_from(Some("0")), floor);
+        assert_eq!(test_wait_from(Some("1.5")), floor);
+        assert_eq!(test_wait_from(Some("-1")), floor);
+        assert_eq!(test_wait_from(Some("")), floor);
     }
 }

@@ -2,7 +2,7 @@
 //! snapshots, so navigation or a dropped UI reply cannot discard a draft save.
 
 use crate::{
-    operations::SerialExecutor,
+    operations::{Busy, SerialExecutor},
     preferences::{CommitDraft, Preferences},
 };
 use anyhow::Result;
@@ -11,6 +11,7 @@ use futures::{
     FutureExt,
     future::{BoxFuture, Shared},
 };
+use gpui_kit::Task;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -40,15 +41,29 @@ impl<K, V> Default for CoalescingSaver<K, V> {
     }
 }
 
-type SaveCompletion = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
+/// Why a draft save did not finish: a full queue refused it, which only asks
+/// again, or it really failed, which the composer reports.
+#[derive(Clone, Debug)]
+pub enum DraftSaveFailure {
+    Busy,
+    Failed(String),
+}
+
+type SaveCompletion = Shared<BoxFuture<'static, std::result::Result<(), DraftSaveFailure>>>;
 
 #[derive(Default)]
 pub struct DraftSaver {
     saver: CoalescingSaver<PathBuf, CommitDraft>,
     completion: Rc<RefCell<Option<SaveCompletion>>>,
+    /// The wait before asking again after a full queue refused the save.
+    pub(super) retry: Option<Task<()>>,
 }
 
 impl DraftSaver {
+    pub(super) fn is_pending(&self) -> bool {
+        self.saver.is_pending()
+    }
+
     /// The app owns this observer even after its last window and composer have
     /// disappeared. Await the accepted save itself; an unrelated earlier session
     /// save or an extra barrier in a full executor cannot cover this completion.
@@ -85,8 +100,11 @@ impl DraftSaver {
         let completion = response
             .map(|result| match result {
                 Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(format!("{error:#}")),
-                Err(_) => Err("Draft save ended without a result".into()),
+                Ok(Err(error)) if error.is::<Busy>() => Err(DraftSaveFailure::Busy),
+                Ok(Err(error)) => Err(DraftSaveFailure::Failed(format!("{error:#}"))),
+                Err(_) => Err(DraftSaveFailure::Failed(
+                    "Draft save ended without a result".into(),
+                )),
             })
             .boxed()
             .shared();

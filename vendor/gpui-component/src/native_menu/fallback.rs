@@ -3,10 +3,25 @@
 //! It renders gpui-component's drawn [`PopupMenu`] through an overlay held by
 //! [`Root`]. Unlike a real native menu it is clipped to the window, but it keeps
 //! the [`super::NativeMenu`] API working on every platform.
+//!
+//! GitTurtle patch: its actions go to the focus the window held as it
+//! opened, which for an input's right-click is that input, and focus it
+//! holds returns there when it closes, by Escape, an item or a resized
+//! window.
+//!
+//! GitTurtle patch: placed at the pointer by the base `Positioner`, its
+//! drawn edge inside the window less 8 px and above the room an application keeps at its foot
+//! (`gpui_base::popup_bottom_inset`), and never over the point it was opened
+//! at: below the pointer where it fits, otherwise above it, its drawn edge
+//! next to the pixel row the pointer lies in either way, never on it, its
+//! items capped at the room on the side with more and scrolled past it.
+//! GPUI's `anchored` snap kept it only inside the window, so an input's
+//! right-click menu near the window's foot ended over a status bar, and kept
+//! above the bar by sliding up, it covered the line clicked.
 
 use gpui::{
     App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
-    Point, Render, Subscription, Window, anchored, deferred, div, px,
+    Point, Render, Subscription, Window, deferred, div,
 };
 
 use crate::menu::{PopupMenu, PopupMenuItem};
@@ -22,7 +37,36 @@ pub(crate) struct FallbackMenuOverlay {
 struct ActiveMenu {
     menu: Entity<PopupMenu>,
     position: Point<Pixels>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
+}
+
+/// GitTurtle patch: how the menu opened at `position` is placed: wholly
+/// below the point or wholly above it ([`gpui_base::Positioner::point`]),
+/// its drawn edge, the ring painted in the band outside its fill
+/// ([`crate::POPOVER_EDGE_WIDTH`]), clear of the pixel row the point lies
+/// in, inside the window and above the room the application keeps at its
+/// foot. With its fill at the point the ring lay on the row clicked, and on
+/// a whole-pixel pointer, as X11 reports, the fill's top held the point.
+///
+/// Its margin is kept from the drawn edge, not the fill, on all four sides,
+/// as every popup host keeps it: the fill stays
+/// [`crate::popup_fill_margin`], 9 px, inside the window, so the ring stays
+/// [`crate::POPUP_WINDOW_MARGIN`], 8 px, in. A menu capped at the room the
+/// point leaves ([`gpui_base::Positioner::point_room`]), measured to the
+/// fill, filled it whole where that room held less than its first row, and
+/// drew its ring 7 px from the window's top.
+fn placement(position: Point<Pixels>, window: &Window, cx: &App) -> gpui_base::Positioner {
+    gpui_base::Positioner::point(position)
+        .offset(crate::POPOVER_EDGE_WIDTH)
+        .margin(crate::popup_fill_margin())
+        .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
+}
+
+/// GitTurtle patch: the device pixel row the menu opened at `position` was
+/// opened from, which nothing it draws reaches ([`crate::Opener::Row`]).
+fn pointer_row(position: Point<Pixels>, window: &Window) -> crate::Opener {
+    let (top, bottom) = gpui_base::point_device_row(position.y, window.scale_factor());
+    crate::Opener::Row { top, bottom }
 }
 
 impl FallbackMenuOverlay {
@@ -34,6 +78,9 @@ impl FallbackMenuOverlay {
     ///
     /// `action_context` is the focus handle the selected action is dispatched
     /// to, matching the native backends (which dispatch to the window's focus).
+    ///
+    /// GitTurtle patch: it is also where focus the menu holds returns when
+    /// the menu closes, by Escape, an item or a resized window.
     #[allow(dead_code)] // Only used where the native menu falls back (e.g. Linux).
     fn show(
         &mut self,
@@ -43,34 +90,84 @@ impl FallbackMenuOverlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let menu = build_popup(items, action_context, window, cx);
+        // GitTurtle patch: its items are no taller than the room the point
+        // leaves on its roomier side, and scroll past that, so in a window
+        // too short to hold them below or above the point it still lies
+        // wholly on one side of it rather than clamped over it.
+        let room = placement(position, window, cx).point_room(window);
+        let menu = build_popup(items, action_context.clone(), room, window, cx);
 
-        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+        let dismissed = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
             this.active = None;
             cx.notify();
+        });
+        // GitTurtle patch: a resized window, as a tiling compositor re-tiles
+        // it, closes the menu, as it closes the application's other menus:
+        // its side and its cap were chosen for the size it opened in, and
+        // the field it was opened on may have moved. Focus the menu holds
+        // returns to `action_context`, the focus the window held as the menu
+        // opened: for an input's right-click, the input itself, which the
+        // press focused before the release opened the menu (`show` below).
+        // Escape and an item return focus there too (`PopupMenu::dismiss`,
+        // `PopupMenu::dispatch_confirm_action`).
+        let viewport = window.viewport_size();
+        let resized = cx.observe_window_bounds(window, move |this, window, cx| {
+            if window.viewport_size() == viewport {
+                return;
+            }
+            if let Some(active) = this.active.take() {
+                if active.menu.focus_handle(cx).contains_focused(window, cx) {
+                    if let Some(handle) = action_context.as_ref() {
+                        window.focus(handle, cx);
+                    }
+                }
+                cx.notify();
+            }
         });
         menu.focus_handle(cx).focus(window, cx);
 
         self.active = Some(ActiveMenu {
             menu,
             position,
-            _subscription: subscription,
+            _subscriptions: [dismissed, resized],
         });
         cx.notify();
     }
 }
 
 /// Recursively build a [`PopupMenu`] entity from native menu items.
+///
+/// GitTurtle patch: a menu given a `cap` scrolls its items past it, with the
+/// kit's capped-menu fold and scrollbar, unless it holds a submenu, which a
+/// scrolling menu cannot show; a submenu is never capped.
+///
+/// GitTurtle patch: an item is a check item only where it is ticked. A
+/// native item says only whether it is ticked, as a macOS or Windows menu
+/// item's state does, and every item of the plain builders (`menu`,
+/// `menu_with_disabled`, the icon builders) is unticked, so each was built
+/// as an unticked check item and announced to a Linux screen reader as an
+/// unchecked check box: Cut, Copy, Paste and Select All among them. A
+/// ticked item stays a check item, announced checked, as the kit's
+/// `with_menu_items` makes only a ticked platform action checkable.
 #[allow(dead_code)] // Only used where the native menu falls back (e.g. Linux).
 fn build_popup(
     items: Vec<NativeMenuItem>,
     action_context: Option<FocusHandle>,
+    cap: Option<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<PopupMenu> {
+    let cap = cap.filter(|_| {
+        !items
+            .iter()
+            .any(|item| matches!(item, NativeMenuItem::Submenu { .. }))
+    });
     PopupMenu::build(window, cx, move |mut menu, window, cx| {
         if let Some(handle) = action_context.clone() {
             menu = menu.action_context(handle);
+        }
+        if let Some(cap) = cap {
+            menu = menu.max_h(cap).scrollable(true);
         }
         for item in items {
             menu = match item {
@@ -81,27 +178,34 @@ fn build_popup(
                     checked,
                     icon: Some(icon),
                     action: Some(action),
-                } => menu.item(
-                    PopupMenuItem::new(label)
+                } => {
+                    let item = PopupMenuItem::new(label)
                         .icon(*icon)
                         .action(action)
-                        .disabled(disabled)
-                        .checked(checked),
-                ),
+                        .disabled(disabled);
+                    menu.item(if checked { item.checked(true) } else { item })
+                }
                 NativeMenuItem::Item {
                     label,
                     disabled,
-                    checked,
+                    checked: true,
                     icon: None,
                     action: Some(action),
-                } => menu.menu_with_check_and_disabled(label, checked, action, disabled),
+                } => menu.menu_with_check_and_disabled(label, true, action, disabled),
+                NativeMenuItem::Item {
+                    label,
+                    disabled,
+                    checked: false,
+                    icon: None,
+                    action: Some(action),
+                } => menu.menu_with_disabled(label, action, disabled),
                 NativeMenuItem::Item { action: None, .. } => menu,
                 NativeMenuItem::Submenu {
                     label,
                     disabled,
                     items,
                 } => {
-                    let submenu = build_popup(items, action_context.clone(), window, cx);
+                    let submenu = build_popup(items, action_context.clone(), None, window, cx);
                     menu.item(PopupMenuItem::submenu(label, submenu).disabled(disabled))
                 }
             };
@@ -111,15 +215,33 @@ fn build_popup(
 }
 
 impl Render for FallbackMenuOverlay {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div();
         if let Some(active) = self.active.as_ref() {
             root = root.child(
                 deferred(
-                    anchored()
-                        .position(active.position)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(active.menu.clone()),
+                    // GitTurtle patch: placed wholly below or above the
+                    // pointer, inside the window less its margin and above
+                    // the room the application keeps at its foot. GPUI's
+                    // `anchored` snap kept it only inside the window, so it
+                    // could end over a status bar, and a clamp that moved it
+                    // up covered the point it was opened at.
+                    //
+                    // GitTurtle patch: and drawn only on its side of the pixel
+                    // row the pointer lies in, so its shadow never darkens
+                    // the row clicked ([`crate::ClearOfOpener`]): the ring
+                    // keeps that row clear by its own width, and a menu
+                    // above the pointer cast 4 px of blurred shadow over it.
+                    // The shadow ends where that device row begins, as a
+                    // dropdown's ends where its button begins: cut at the
+                    // ring, it stopped up to two device pixels short of the
+                    // row where the menu moved up to a whole pixel, as at
+                    // scale 2, while below the pointer GPUI's outward
+                    // rounding of the mask carried it to the row at 1.5.
+                    placement(active.position, window, cx).child(crate::ClearOfOpener::new(
+                        active.menu.clone(),
+                        pointer_row(active.position, window),
+                    )),
                 )
                 .with_priority(gpui_base::POPUP_PRIORITY),
             );
@@ -136,6 +258,12 @@ pub(super) fn show(
     window: &mut Window,
     cx: &mut App,
 ) {
+    // GitTurtle patch: the focus the window holds as the menu opens, where
+    // its actions go and its focus returns. For an input's right-click it
+    // is the input: GPUI focuses a focusable element under any mouse-down,
+    // the right button's included, and the input opens its menu on the
+    // release that follows, so Cut, Copy and Paste act on the field
+    // clicked, whatever held focus before, as on macOS.
     let action_context = window.focused(cx);
     let Some(overlay) = Root::native_menu_overlay(window, cx) else {
         return;
@@ -143,4 +271,66 @@ pub(super) fn show(
     overlay.update(cx, |overlay, cx| {
         overlay.show(items, position, action_context, window, cx);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Icon, IconName};
+    use gpui::{Action, TestAppContext};
+    use serde::Deserialize;
+
+    #[derive(Action, Clone, PartialEq, Deserialize)]
+    #[action(namespace = fallback_menu_tests, no_json)]
+    struct TestAction;
+
+    fn item(label: &'static str, checked: bool, icon: Option<IconName>) -> NativeMenuItem {
+        NativeMenuItem::Item {
+            label: label.into(),
+            disabled: false,
+            checked,
+            icon: icon.map(|icon| Box::new(Icon::new(icon))),
+            action: Some(Box::new(TestAction)),
+        }
+    }
+
+    /// GitTurtle patch: a ticked native item stays a check item, ticked,
+    /// with an icon or without, and an unticked one is a plain item, not an
+    /// unchecked check item.
+    #[gpui::test]
+    fn only_a_ticked_item_is_a_check_item(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let cx = cx.add_empty_window();
+        let menu = cx.update(|window, cx| {
+            build_popup(
+                vec![
+                    item("Ticked", true, None),
+                    item("Ticked, with an icon", true, Some(IconName::Inbox)),
+                    item("Plain", false, None),
+                    item("Plain, with an icon", false, Some(IconName::Inbox)),
+                ],
+                None,
+                None,
+                window,
+                cx,
+            )
+        });
+        let states = cx.update(|_, cx| {
+            menu.read(cx)
+                .menu_items
+                .iter()
+                .map(|item| match item {
+                    PopupMenuItem::Item {
+                        checkable, checked, ..
+                    } => (*checkable, *checked),
+                    _ => panic!("an action item"),
+                })
+                .collect::<Vec<_>>()
+        });
+        // (checkable, checked) for each, in order.
+        assert_eq!(
+            states,
+            [(true, true), (true, true), (false, false), (false, false)]
+        );
+    }
 }

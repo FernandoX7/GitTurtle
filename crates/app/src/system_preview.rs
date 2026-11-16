@@ -1,0 +1,3734 @@
+//! The explicit action that opens a read-only copy of captured revision bytes
+//! in another application: Quick Look's System preview on macOS, and Open in
+//! default app on Linux.
+//!
+//! Repository content controls both the bytes and the stored file name. Only a
+//! click opens anything: selection, refresh, tab restore and reopening never
+//! do. Whether a side offers the action is decided on the worker when the
+//! side is prepared ([`offer`]), never while rendering. On Linux that decision
+//! is made from content alone and also fixes the type the copy is handed over
+//! as ([`passive`]); the repository's file name is never used. The copy lives
+//! in a private per-user cache ([`store`]) and goes to the desktop through
+//! the OpenURI portal, or `xdg-open` where no portal answers, only after the
+//! desktop's own type sniffers (GIO, and `xdg-mime` for `xdg-open`) agree
+//! with that type ([`launch`]).
+//!
+//! A click answers on its own control, as a copy does ([`copy_feedback`]):
+//! once something opened, the control reads Opened for
+//! [`copy_feedback::RESTORE_AFTER`] and "Opened a read-only copy of the
+//! captured bytes." is announced. When nothing opened, a line beneath the
+//! control's row says why ([`header_ends`]): a failure in the warning color,
+//! announced at once, or, when the portal reports the request cancelled (a
+//! closed application chooser, whether or not it offered an application), a
+//! muted "Nothing opened.". Beneath an image side's caption, as in a
+//! document's header, the line is short and leads with the reason
+//! ([`Answer::short_line`]), the whole answer in its tooltip, name and
+//! announcement; the short line is written from the failure's typed
+//! [`Category`], never from its sentence. The line stays while that
+//! comparison is shown and goes when another is ([`Showing`]); nothing
+//! reaches the window-wide notice.
+
+use crate::copy_feedback::{self, Action, Mark};
+use crate::native_accessibility::LiveRegion as _;
+use crate::*;
+use anyhow::Result;
+use gpui_kit::prelude::FluentBuilder;
+use std::{
+    collections::VecDeque,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+#[cfg(target_os = "linux")]
+mod launch;
+#[cfg(target_os = "linux")]
+pub(crate) mod passive;
+#[cfg(target_os = "linux")]
+mod store;
+
+/// The open action one captured side offers. Sides that offer none hold
+/// `None`, so no surface shows the control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Offer {
+    #[cfg(target_os = "linux")]
+    kind: passive::Kind,
+}
+
+/// Quick Look previews any captured bytes and never launches an application.
+#[cfg(target_os = "macos")]
+pub(crate) fn offer(_bytes: &[u8], _check: &impl Fn() -> Result<()>) -> Result<Option<Offer>> {
+    Ok(Some(Offer {}))
+}
+
+/// The desktop's default application receives only a passive type that the
+/// content itself establishes.
+#[cfg(target_os = "linux")]
+pub(crate) fn offer(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<Option<Offer>> {
+    Ok(passive::Kind::of(bytes, check)?.map(|kind| Offer { kind }))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn offer(_bytes: &[u8], _check: &impl Fn() -> Result<()>) -> Result<Option<Offer>> {
+    Ok(None)
+}
+
+/// The open control's label on macOS, where Quick Look shows the copy.
+pub(crate) const QUICK_LOOK: &str = "System preview";
+
+impl Offer {
+    /// The control's label, naming what happens on this platform.
+    pub(crate) fn label(self) -> &'static str {
+        if cfg!(target_os = "macos") {
+            QUICK_LOOK
+        } else {
+            "Open in default app"
+        }
+    }
+}
+
+/// The accessible name of an open control labelled `label`, in one form on
+/// every platform and surface: the visible label first, so speech input finds
+/// the control by what it shows (WCAG 2.5.3), then the `side`, which the label
+/// leaves to the heading or caption beside it, and then the read-only `copy`
+/// the click hands over. On Linux that names the type the default application
+/// receives (`Offer::copy`): "Open in default app: After, a read-only copy
+/// as a PDF document" in a document's header, "Open in default app: Before, a
+/// read-only copy as a PNG image" in an image side's caption. On macOS it
+/// names what the surface shows (`quick_look_copy`): "System preview:
+/// Source, a read-only copy of the captured image".
+pub(crate) fn accessible_name(label: &str, side: Option<&str>, copy: &str) -> String {
+    match side {
+        Some(side) => format!("{label}: {side}, {copy}"),
+        None => format!("{label}: {copy}"),
+    }
+}
+
+/// The heading of a document's or model's one side where it is shown alone,
+/// as a comparison's sides are headed Before and After.
+pub(crate) const ONE_SIDE: &str = "Source";
+
+/// The accessible name of a control a comparison draws once on each side,
+/// labelled `label`: led by the side's `heading`, "Before: Copy source" and
+/// "After: Copy source", as the side's own heading leads what it shows, so
+/// the two are told apart where a screen reader lists them together or
+/// speech input names one. A side shown alone ([`ONE_SIDE`]) has nothing to
+/// tell it from: its control is named `label`.
+pub(crate) fn side_control_name(heading: &str, label: &str) -> String {
+    if heading == ONE_SIDE {
+        label.to_owned()
+    } else {
+        format!("{heading}: {label}")
+    }
+}
+
+/// A side's Copy source, labelled `label` ("Copy source", or "Copy
+/// pointer" for an LFS pointer's text), in the `labelled` form or as its
+/// icon with `label` as its tooltip, and named by its side's `heading`
+/// ([`side_control_name`]): the model's header and a document's body each
+/// draw one per side.
+pub(crate) fn copy_source_button(
+    mark: Mark,
+    heading: &str,
+    label: &'static str,
+    labelled: bool,
+    cx: &App,
+) -> Button {
+    copy_feedback::copy_button(
+        mark,
+        if labelled { label } else { "" },
+        if labelled { "" } else { label },
+        cx,
+    )
+    .accessibility_label(side_control_name(heading, label))
+}
+
+/// What a click hands Quick Look, for a control on a surface that shows
+/// `what` ("image", "PDF", "model", or "file" for any other document):
+/// "a read-only copy of the captured image". Linux builds it only for the
+/// tests that pin macOS's names.
+#[cfg(any(not(target_os = "linux"), test))]
+pub(crate) fn quick_look_copy(what: &str) -> String {
+    format!("a read-only copy of the captured {what}")
+}
+
+#[cfg(target_os = "linux")]
+impl Offer {
+    /// What the click hands over, so the tooltip names the type the
+    /// application receives rather than the repository's file name.
+    pub(crate) fn tooltip(self) -> String {
+        format!(
+            "Open a read-only copy of these captured bytes as {} in the desktop's default app",
+            self.kind.description()
+        )
+    }
+
+    /// What a click hands the default application, as an open control's
+    /// [`accessible_name`] ends: "a read-only copy as a PDF document".
+    fn copy(self) -> String {
+        format!("a read-only copy as {}", self.kind.description())
+    }
+
+    /// The icon form's tooltip, which leads with the label it does not show
+    /// and names what the application receives: "Open in default app: a
+    /// read-only copy as a PDF document".
+    fn icon_tooltip(self) -> String {
+        accessible_name(self.label(), None, &self.copy())
+    }
+
+    /// The sentence that tells a reader where the complete animation is.
+    pub(crate) fn complete_animation(self) -> &'static str {
+        "Open captured bytes in the default app for the complete animation."
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Offer {
+    pub(crate) fn tooltip(self) -> String {
+        "Open an isolated read-only copy of these captured bytes in system Quick Look".into()
+    }
+
+    fn icon_tooltip(self) -> String {
+        format!("{} · {}", self.label(), self.tooltip())
+    }
+
+    pub(crate) fn complete_animation(self) -> &'static str {
+        "Open captured bytes in system preview for the complete animation."
+    }
+}
+
+/// The open control's action: its external-link icon at rest, and Opened
+/// after the check once a click opened something.
+pub(crate) const OPEN: Action = Action {
+    icon: "external-link",
+    done: "Opened",
+    state: "opened",
+};
+
+/// What assistive technology hears once a click opened something. The portal
+/// can let the person choose the application, so it names none.
+pub(crate) const OPENED: &str = "Opened a read-only copy of the captured bytes.";
+
+/// What a muted line beneath the control says when the portal reports the
+/// request cancelled, which is not a failure. The portal answers the same
+/// whether the person closed an application chooser or closed one that
+/// offered no application ("No Apps available"), so the line names no
+/// cause: "the application chooser was closed" once hid the second.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) const DISMISSED: &str = "Nothing opened.";
+
+/// Why a click opened nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NotOpened {
+    /// The portal reports the request cancelled: the person closed its
+    /// application chooser, with or without an application to offer. Only
+    /// the Linux launcher has a portal to cancel, so other builds leave it
+    /// out outside tests, as they do the failure categories only Linux
+    /// constructs ([`Category`]).
+    #[cfg(any(target_os = "linux", test))]
+    Dismissed,
+    /// Nothing could be opened, for this reason.
+    Failed(Failure),
+}
+
+impl From<Failure> for NotOpened {
+    fn from(failure: Failure) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl From<String> for NotOpened {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason.into())
+    }
+}
+
+impl From<&str> for NotOpened {
+    fn from(reason: &str) -> Self {
+        Self::Failed(reason.into())
+    }
+}
+
+/// What kind of failure stopped a click, as the code that refused it
+/// classifies it. The short line beneath the control is written from this
+/// alone ([`Category::short_line`]), never from the failure's sentence.
+///
+/// Only Linux's launcher and copy store refuse with a category of their own,
+/// so other builds, tests aside, have `Other` alone rather than variants
+/// nothing constructs: macOS's Quick Look reports every failure as `Other`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Category {
+    /// A desktop type sniffer (GIO for the portal, `xdg-mime` for
+    /// `xdg-open`) types the copy as something other than the kind it was
+    /// offered as. Holds the type as the launcher names it: "an SVG document"
+    /// or "an unknown type", or a media type cleaned to at most 96 of its own
+    /// characters ("application/x-php").
+    #[cfg(any(target_os = "linux", test))]
+    SeenAs(String),
+    /// The copy's media type, one its kind may be, has no default
+    /// application.
+    #[cfg(any(target_os = "linux", test))]
+    NoDefaultApplication(String),
+    /// The captured bytes exceed the private copy's size limit
+    /// ([`gitturtle_preview::MAX_INPUT_BYTES`]), so no copy was written.
+    #[cfg(any(target_os = "linux", test))]
+    TooLarge,
+    /// Anything else, such as a missing program, the portal's answer or the
+    /// private copy's store.
+    Other,
+}
+
+/// Why a click opened nothing: its [`Category`] and the sentence that says
+/// so, which the line's tooltip, accessible name and announcement carry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Failure {
+    pub(crate) category: Category,
+    sentence: String,
+}
+
+impl Failure {
+    pub(crate) fn new(category: Category, sentence: impl Into<String>) -> Self {
+        Self {
+            category,
+            sentence: sentence.into(),
+        }
+    }
+
+    pub(crate) fn sentence(&self) -> &str {
+        &self.sentence
+    }
+}
+
+/// A failure of no category of its own.
+impl From<String> for Failure {
+    fn from(sentence: String) -> Self {
+        Self::new(Category::Other, sentence)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(sentence: &str) -> Self {
+        Self::new(Category::Other, sentence)
+    }
+}
+
+/// The short line for a failure whose category has no line of its own.
+pub(crate) const NOT_OPENED: &str = "Could not open this copy";
+
+impl Category {
+    /// What a short line shows: the reason first, in a few words that a
+    /// side's half of a narrow column holds in two lines ("Seen as an SVG
+    /// document, so not opened"). The side is the heading or caption above
+    /// the line. A category without a line of its own fails closed to
+    /// [`NOT_OPENED`], leaving its words to the whole sentence.
+    fn short_line(&self) -> String {
+        #[cfg(any(target_os = "linux", test))]
+        match self {
+            Self::SeenAs(seen) => return format!("Seen as {seen}, so not opened"),
+            Self::NoDefaultApplication(media_type) => {
+                return format!("No default app for {media_type}");
+            }
+            Self::TooLarge => {
+                return format!(
+                    "Over {} MiB, so not opened",
+                    gitturtle_preview::MAX_INPUT_BYTES >> 20
+                );
+            }
+            // `Other`, and any category added without a line here.
+            _ => {}
+        }
+        NOT_OPENED.into()
+    }
+}
+
+/// One showing of a comparison. Its owner takes a new one whenever the
+/// preview it shows is replaced or restored (`GitTurtle::clear_preview`, a
+/// restored inspection, the rewrite review's next file), so a line beneath an
+/// open control stays with the showing it was made in and is gone when the
+/// same file, kept by the worker's cache, is shown again. Showings are
+/// unique across windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Showing(u64);
+
+impl Showing {
+    pub(crate) fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Who opens a comparison's captured bytes, and the showing its controls'
+/// lines belong to.
+#[derive(Clone)]
+pub(crate) struct Opener {
+    owner: WeakEntity<GitTurtle>,
+    showing: Showing,
+    /// The scrolling container the comparison is drawn in, if it reveals
+    /// its controls, and the margin it reveals them with
+    /// ([`Self::revealed_by`]).
+    reveal: Option<(crate::focus_reveal::FocusReveal, Pixels)>,
+    /// The window's keyboard focus ring, which a comparison that draws its
+    /// own focus asks ([`Self::ringed_by`]).
+    ring: crate::focus_ring::FocusRing,
+    /// Told where each line beneath one of its controls is drawn
+    /// ([`Self::on_line`]).
+    line: Option<LineDrawn>,
+}
+
+/// What an opener's owner is told as each frame prepaints a line beneath
+/// one of its controls: the line's answer, the same in every frame that
+/// draws one click's answer and another for the next click's, and where
+/// the line lies in the window.
+type LineDrawn = std::rc::Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
+
+impl Opener {
+    pub(crate) fn new(owner: WeakEntity<GitTurtle>, showing: Showing) -> Self {
+        Self {
+            owner,
+            showing,
+            reveal: None,
+            ring: Default::default(),
+            line: None,
+        }
+    }
+
+    /// The opener of a comparison whose owner learns where each line
+    /// beneath one of its controls is drawn, as each frame prepaints it:
+    /// `drawn` is given the line's answer, the same for every frame that
+    /// draws one click's answer, and the line's bounds in the window. The
+    /// rewrite review records every line that lands and scrolls its body,
+    /// once for each click's answer, to one that lands outside its view;
+    /// where the bounds reached only tests, a click whose control lay at
+    /// the view's foot answered out of sight.
+    pub(crate) fn on_line(
+        mut self,
+        drawn: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.line = Some(std::rc::Rc::new(drawn));
+        self
+    }
+
+    /// The opener of a comparison drawn in the window whose keyboard focus
+    /// ring is `ring`, so what it draws its own focus on, a model's canvas
+    /// and animation timeline, keeps its ring while the pointer moves
+    /// ([`crate::focus_ring`]). Without one, nothing it draws shows a ring.
+    /// The ring is passed in rather than read from `owner`, which a frame of
+    /// the `GitTurtle` itself, as Compare's, cannot read.
+    pub(crate) fn ringed_by(mut self, ring: crate::focus_ring::FocusRing) -> Self {
+        self.ring = ring;
+        self
+    }
+
+    /// The window's keyboard focus ring ([`Self::ringed_by`]).
+    pub(crate) fn ring(&self) -> &crate::focus_ring::FocusRing {
+        &self.ring
+    }
+
+    /// The opener of a comparison drawn inside `reveal`'s scrolling
+    /// container, whose open controls are among the container's controls
+    /// ([`Target::control`]): the keyboard reveals each with its ring,
+    /// `margin`, and one holding focus counts as the container's
+    /// ([`crate::focus_reveal::FocusReveal::holds_focus`]). Unknown to the
+    /// Stashes detail, a focused open control was not revealed, and the note
+    /// that a pause had ended scrolled it out of view.
+    pub(crate) fn revealed_by(
+        mut self,
+        reveal: crate::focus_reveal::FocusReveal,
+        margin: Pixels,
+    ) -> Self {
+        self.reveal = Some((reveal, margin));
+        self
+    }
+
+    /// The showing its controls belong to.
+    pub(crate) fn showing(&self) -> Showing {
+        self.showing
+    }
+
+    /// The open control `control` for the captured `bytes` of the `side`
+    /// ("Before", "After", "Source") stored as `name`, which `offer` offers,
+    /// on a surface that shows `what` (`quick_look_copy`). Linux never uses
+    /// `name` or `what`: its name says the type the bytes are handed over as.
+    pub(crate) fn target(
+        &self,
+        control: impl Into<ElementId>,
+        side: &'static str,
+        bytes: &Arc<[u8]>,
+        name: &std::path::Path,
+        what: &'static str,
+        offer: Offer,
+    ) -> Target {
+        // The bytes' allocation and length name what was opened, so another
+        // file's control in the same place is at rest.
+        let subject = (Arc::as_ptr(bytes) as *const u8 as usize, bytes.len());
+        #[cfg(target_os = "linux")]
+        let _ = (name, what);
+        let control = control.into();
+        Target {
+            opener: self.clone(),
+            mark: Mark::new(control.clone(), subject),
+            control,
+            side,
+            bytes: Arc::clone(bytes),
+            offer,
+            focus: None,
+            #[cfg(not(target_os = "linux"))]
+            name: name.to_path_buf(),
+            #[cfg(not(target_os = "linux"))]
+            what,
+        }
+    }
+}
+
+/// How an open control is drawn on its line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Form {
+    /// Its icon and its label, where the line has room for both.
+    Labelled,
+    /// Its icon alone in the compact frame's 28 px square, scaled, where the
+    /// label does not fit: the content beside it keeps its place and the
+    /// action becomes an icon rather than being cut at its column's edge.
+    /// Its tooltip and accessible name lead with the label.
+    Icon,
+}
+
+thread_local! {
+    /// The labelled control's label, laid out.
+    static LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+impl Form {
+    /// The form of a control whose labelled form is `labelled` wide on a
+    /// line that leaves it `room`: labelled where that fits, and otherwise
+    /// its icon. Every control of a side's own header and every open control
+    /// takes its form by this rule ([`HeaderControl`]).
+    pub(crate) fn fitting(labelled: Pixels, room: Pixels) -> Self {
+        if labelled <= room {
+            Self::Labelled
+        } else {
+            Self::Icon
+        }
+    }
+}
+
+impl Offer {
+    /// The form of a control on a line that leaves it `room`: labelled where
+    /// its frame, icon and label fit as layout places them
+    /// ([`Self::placed_width`]), and otherwise its icon. Chosen from their
+    /// unrounded sum, at 18 pt it was drawn labelled in a room two device
+    /// pixels narrower than itself at scale 1.2, and as its icon in a room
+    /// that held it labelled at 1.25.
+    pub(crate) fn form(self, room: Pixels, window: &Window) -> Form {
+        Form::fitting(self.placed_width(window), room)
+    }
+
+    /// The control's width labelled, its frame, icon and label, as layout
+    /// places it on this display's device pixels
+    /// (`crate::labelled_button_width`): its form is chosen from it, and a
+    /// header that lays its controls out in lines by their drawn widths
+    /// measures it, as the PDF page view's does (`pdf_view::full_fits`).
+    pub(crate) fn placed_width(self, window: &Window) -> Pixels {
+        labelled_button_width(self.label(), &LABEL, window)
+    }
+}
+
+/// One open control, with what its click opens: the type the copy is handed
+/// over as on Linux, and elsewhere the stored name Quick Look's copy is
+/// suffixed from.
+#[derive(Clone)]
+pub(crate) struct Target {
+    opener: Opener,
+    mark: Mark,
+    /// The control's id, which its button and its mark carry.
+    control: ElementId,
+    side: &'static str,
+    bytes: Arc<[u8]>,
+    offer: Offer,
+    /// The focus handle its button tracks where the comparison owns one
+    /// ([`Self::tracking`]), so focus stays on it wherever it is placed.
+    focus: Option<FocusHandle>,
+    #[cfg(not(target_os = "linux"))]
+    name: std::path::PathBuf,
+    /// What the surface shows, which macOS's name says Quick Look receives.
+    #[cfg(not(target_os = "linux"))]
+    what: &'static str,
+}
+
+/// The lines beneath open controls whose click opened nothing, newest last.
+/// Each belongs to its control, bytes and showing; the oldest go once there
+/// are more than one showing's two sides and a spare need.
+#[derive(Default)]
+struct Notes {
+    /// Counts notes; each is a fresh node, announced when it appears.
+    count: usize,
+    notes: VecDeque<Note>,
+}
+impl Global for Notes {}
+
+const NOTES_KEPT: usize = 4;
+
+struct Note {
+    id: usize,
+    mark: Mark,
+    showing: Showing,
+    failed: bool,
+    /// The whole answer, which the line's tooltip, accessible name and
+    /// announcement carry: "Could not open After. …" or "Nothing opened.".
+    text: SharedString,
+    /// What a short line shows: the reason first
+    /// ([`Category::short_line`]).
+    brief: SharedString,
+}
+
+/// Why the last click on an open control in its showing opened nothing, as
+/// its line beneath the control says it.
+pub(crate) struct Answer {
+    id: usize,
+    key: String,
+    failed: bool,
+    text: SharedString,
+    brief: SharedString,
+    /// Its opener's owner, told where the line is drawn ([`Opener::on_line`]).
+    drawn: Option<LineDrawn>,
+}
+
+impl Answer {
+    /// What the short line shows ([`Category::short_line`]), or "Nothing
+    /// opened.".
+    pub(crate) fn brief(&self) -> &str {
+        &self.brief
+    }
+
+    /// The line's frame: a failure in the warning color fitted to the
+    /// page's surfaces, announced at once, or a closed chooser in muted text,
+    /// announced politely, both by their whole answer. Tests find it as
+    /// `<control id>/note`.
+    fn frame(&self, cx: &App) -> Stateful<Div> {
+        let key = self.key.clone();
+        let probe = key.clone();
+        let path = key.clone();
+        let color = if self.failed {
+            appearance::labels(cx).warning
+        } else {
+            palette(cx).muted
+        };
+        let id = self.id;
+        div()
+            .id(("open-note", id))
+            .debug_selector(move || key.clone())
+            .when_some(self.drawn.clone(), |line, drawn| {
+                use gpui_kit::base::ElementExt as _;
+                line.on_prepaint(move |bounds, window, cx| drawn(id, bounds, window, cx))
+            })
+            .map(|line| {
+                if self.failed {
+                    line.alert(self.text.clone())
+                } else {
+                    line.role(Role::Status)
+                        .polite()
+                        .aria_label(self.text.clone())
+                }
+            })
+            .w_full()
+            .min_w_0()
+            .text_size(appearance::ui_text(11.))
+            .text_color(rgb(color))
+            .children(appearance::text_probe(move || probe))
+            .children(native_accessibility::node_path_probe(move || path))
+    }
+
+    /// The short line: the reason first ([`Answer::brief`]), whole, or on
+    /// `clamp` lines ending in an ellipsis where it needs more, so it ends at
+    /// a whole line. Its whole answer is in its tooltip, as in its name,
+    /// wherever the line shows less of it.
+    pub(crate) fn short_line(self, clamp: Option<usize>, cx: &App) -> Stateful<Div> {
+        let whole = self.text.clone();
+        let tooltip = (clamp.is_some() || self.text != self.brief).then_some(whole);
+        let brief = self.brief.clone();
+        self.frame(cx)
+            .when_some(tooltip, |line, whole| {
+                line.tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(whole.clone()).build(window, cx)
+                })
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .when_some(clamp, |line, lines| line.line_clamp(lines).text_ellipsis())
+                    .child(brief),
+            )
+    }
+}
+
+impl Target {
+    /// The control in `form`, with the shared button frame and the action's
+    /// icon, reading Opened in its own bounds while a click's confirmation
+    /// lasts (in its tooltip as an icon). Labelled, it shows the action alone
+    /// ("Open in default app"), under the heading or caption that names its
+    /// side. In either form it is named in one form on every platform
+    /// ([`accessible_name`]): that label, the side, and what the click hands
+    /// over, the type the application receives on Linux, as the tooltip
+    /// names it, and on macOS what the surface shows. A comparison places it
+    /// with [`Self::control`] or [`Self::held_control`], so wherever the
+    /// comparison lies in a container that reveals its controls, it is one
+    /// of them.
+    fn button(&self, form: Form, cx: &App) -> Button {
+        let (shown, tooltip) = match form {
+            Form::Labelled => (self.offer.label(), self.offer.tooltip()),
+            Form::Icon => ("", self.offer.icon_tooltip()),
+        };
+        self.button_with(shown, tooltip.into(), self.name(), cx)
+    }
+
+    /// Its accessible name ([`accessible_name`]).
+    fn name(&self) -> SharedString {
+        accessible_name(self.offer.label(), Some(self.side), &self.copy()).into()
+    }
+
+    /// Its button showing `shown`, its label or nothing beside its icon,
+    /// with `tooltip`, named `name`.
+    fn button_with(
+        &self,
+        shown: &'static str,
+        tooltip: SharedString,
+        name: SharedString,
+        cx: &App,
+    ) -> Button {
+        let target = self.clone();
+        let button = copy_feedback::feedback_button(self.mark.clone(), OPEN, shown, tooltip, cx)
+            .on_click(move |_, window, cx| {
+                let opener = target.opener.owner.clone();
+                let _ = opener.update(cx, |this, cx| {
+                    this.open_captured_bytes(target.clone(), window, cx)
+                });
+            });
+        // Tests read each frame's form where the control is drawn
+        // (`in_frame::probe`).
+        crate::in_frame::probed(button, "open-control").accessibility_label(name)
+    }
+
+    /// [`Self::button`] as a comparison places it. Where the opener's
+    /// comparison lies in a scrolling container that reveals its controls
+    /// ([`Opener::revealed_by`]), the control is one of them: it tracks the
+    /// container's handle for its id and reports where it lies as each frame
+    /// prepaints it, so the keyboard reveals it with its ring and the
+    /// container knows it holds focus. Its wrapper keeps the button's own
+    /// size and does not shrink, as the button does not.
+    pub(crate) fn control(&self, form: Form, cx: &App) -> AnyElement {
+        self.placed(self.button(form, cx), cx)
+    }
+
+    /// Its icon in the toolbar of a comparison too narrow to hold it beside
+    /// its side's name, where both sides' controls stand together away from
+    /// the names, placed as [`Self::control`] places it. On Linux its tooltip
+    /// is its accessible name, so it says which side it opens ("Open in
+    /// default app: Before, a read-only copy as a PNG image"); on macOS it
+    /// keeps the icon's own "Quick Look · …" tooltip, as in its caption.
+    pub(crate) fn toolbar_control(&self, cx: &App) -> AnyElement {
+        let name = self.name();
+        #[cfg(target_os = "linux")]
+        let tooltip = name.clone();
+        #[cfg(not(target_os = "linux"))]
+        let tooltip: SharedString = self.offer.icon_tooltip().into();
+        #[cfg(test)]
+        crate::views::note_control_tooltip(
+            &ElementId::Name(self.control.to_string().into()),
+            &tooltip,
+        );
+        self.placed(self.button_with("", tooltip, name, cx), cx)
+    }
+
+    /// The comparison owning the focus handle its button tracks, so focus
+    /// stays on it when the comparison moves it between a caption and the
+    /// toolbar: a button's own handle is kept for its place in the element
+    /// tree, which the move changes.
+    pub(crate) fn tracking(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
+    }
+
+    /// `button` as [`Self::control`] places it.
+    fn placed(&self, button: Button, cx: &App) -> AnyElement {
+        let Some((reveal, margin)) = &self.opener.reveal else {
+            return match &self.focus {
+                Some(focus) => button.track_focus(focus).into_any_element(),
+                None => button.into_any_element(),
+            };
+        };
+        let focus = reveal.focus(self.control.clone(), cx);
+        div()
+            .flex_shrink_0()
+            .on_children_prepainted(reveal.control(focus.clone(), *margin))
+            .child(button.track_focus(&focus))
+            .into_any_element()
+    }
+
+    /// [`Self::control`] in a side's own header, whose region also reveals
+    /// it, as it does each of the header's controls ([`SideHeader::track`]):
+    /// where the opener's container reveals its controls too (a narrow
+    /// model or PDF page side in Stashes), focus on the button lies in both
+    /// and each reveals it in its own scroll, the container where the
+    /// header's region has scrolled it in the same frame
+    /// ([`SideHeader::within`]).
+    pub(crate) fn held_control(&self, form: Form, held: &SideHeader, cx: &mut App) -> AnyElement {
+        held.clone()
+            .within(&self.opener)
+            .track(self.control.clone(), self.button(form, cx), cx)
+            .into_any_element()
+    }
+
+    /// The control as an item of a menu it folds into, the PDF page view's
+    /// "more" menu: reading its label ([`Offer::label`]), named as the
+    /// control is ([`accessible_name`]), and opening as its click does,
+    /// answered beneath the header as the control's click is.
+    pub(crate) fn menu_item(&self) -> gpui_kit::component::menu::PopupMenuItem {
+        let target = self.clone();
+        gpui_kit::component::menu::PopupMenuItem::new(self.offer.label())
+            .accessibility_label(self.name())
+            .on_click(move |_, window, cx| {
+                let opener = target.opener.owner.clone();
+                let _ = opener.update(cx, |this, cx| {
+                    this.open_captured_bytes(target.clone(), window, cx)
+                });
+            })
+    }
+
+    /// What its click hands over, as its accessible name ends.
+    fn copy(&self) -> String {
+        #[cfg(target_os = "linux")]
+        {
+            self.offer.copy()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            quick_look_copy(self.what)
+        }
+    }
+
+    /// Why its last click in this showing opened nothing, for a caller that
+    /// draws the short line itself ([`Answer::short_line`]), as an image
+    /// side's band does beneath its caption and a document's header does
+    /// through [`header_ends`].
+    pub(crate) fn answered(&self, cx: &App) -> Option<Answer> {
+        let note = cx
+            .try_global::<Notes>()?
+            .notes
+            .iter()
+            .rev()
+            .find(|note| note.mark == self.mark && note.showing == self.opener.showing)?;
+        Some(Answer {
+            id: note.id,
+            key: format!("{}/note", self.mark.control()),
+            failed: note.failed,
+            text: note.text.clone(),
+            brief: note.brief.clone(),
+            drawn: self.opener.line.clone(),
+        })
+    }
+
+    /// The control's answer to one click: Opened on the control and one
+    /// polite announcement, or the line saying why nothing opened.
+    fn answer(self, outcome: Result<(), NotOpened>, window: &mut Window, cx: &mut App) {
+        let (failed, text, brief) = match outcome {
+            Ok(()) => {
+                copy_feedback::confirm(window, cx, Some(self.mark), OPENED);
+                return;
+            }
+            #[cfg(any(target_os = "linux", test))]
+            Err(NotOpened::Dismissed) => (false, DISMISSED.into(), DISMISSED.into()),
+            Err(NotOpened::Failed(failure)) => (
+                true,
+                format!(
+                    "Could not open {}. {}.",
+                    self.side,
+                    failure.sentence().trim_end_matches('.')
+                ),
+                failure.category.short_line(),
+            ),
+        };
+        let notes = cx.default_global::<Notes>();
+        notes.count = notes.count.wrapping_add(1);
+        let id = notes.count;
+        notes.notes.push_back(Note {
+            id,
+            mark: self.mark,
+            showing: self.opener.showing,
+            failed,
+            text: text.into(),
+            brief: brief.into(),
+        });
+        while notes.notes.len() > NOTES_KEPT {
+            notes.notes.pop_front();
+        }
+        window.refresh();
+    }
+
+    /// Drops this control's line before another click on it.
+    fn forget(&self, cx: &mut App) {
+        if let Some(notes) = cx.try_global::<Notes>()
+            && notes
+                .notes
+                .iter()
+                .any(|note| note.mark == self.mark && note.showing == self.opener.showing)
+        {
+            cx.global_mut::<Notes>()
+                .notes
+                .retain(|note| note.mark != self.mark || note.showing != self.opener.showing);
+        }
+    }
+}
+
+/// How a document's side header ends beneath its controls, which
+/// [`header_ends`] draws beneath the header's own padding, which is the gap
+/// above a line of its own: the header's inset either side, its padding beneath
+/// a drawn line and its rule beneath, with a rule on its right where it has one.
+#[derive(Clone, Copy)]
+pub(crate) struct HeaderEnd {
+    pub(crate) inset: Pixels,
+    pub(crate) bottom: Pixels,
+    pub(crate) right_rule: bool,
+    pub(crate) border: u32,
+}
+
+/// The ends of a document's side headers, side by side, each with the line
+/// saying why its last click in this showing opened nothing (`answers`, one
+/// per header) as its header's last line, beneath all of its controls, and
+/// the sides' `body` beneath them: the short line an image side's band shows
+/// ([`Answer::short_line`]), with its whole answer in its tooltip, its
+/// accessible name and its announcement. Content stays whole before labels
+/// do: the page, diagram or model in `body` keeps its usable minimum
+/// ([`crate::image_compare::STAGE_MIN`]) first, and the line shows every line
+/// it wraps to where the room beneath the headers' controls holds them above
+/// that minimum, otherwise the whole lines that room holds above it, the last
+/// ending in an ellipsis, so it always ends at a whole line. It keeps one
+/// whole line even where that room holds none, so a click always answers on
+/// screen: the content then gives way below its minimum, as an image does
+/// beneath its band ([`crate::image_compare`]), and where the side is
+/// shorter than that line with its padding and rule, the padding goes first.
+/// The ends and `body` are laid out for the room the side leaves them in the
+/// frame they are drawn ([`crate::in_frame`]), so neither the first frame
+/// after an answer nor one after a resize draws the line for another room.
+/// The line once showed the whole answer, scrolling inside a scaled 100 px
+/// that cut a line at 13 pt in a 640 × 680 window, and then took every line
+/// the clip left it, which left a PDF page no height at 18 pt in a 461 × 490
+/// window; then it drew none where the room held none above the minimum, so
+/// a failed open in the rewrite review's 100 px box, the Stashes dialog's
+/// 120 px floor or Compare at 18 pt in a 461 × 490 window changed nothing on
+/// screen. Tests find the line as `<control id>/note`, the body as
+/// `<name>/body` and the region's frames under `name`.
+///
+/// A side whose header is its own, a 3D model's or the PDF page view's,
+/// passes it as `side` ([`OwnHeader`]), and it is laid out above its line in
+/// the room the side has in the frame drawn, in one order, content first.
+/// The rule beneath the header always keeps its pixel, and the line its one
+/// whole line with its padding where a click answered; the content keeps its
+/// usable minimum ([`crate::image_compare::STAGE_MIN`]) wherever that leaves
+/// the header its floor, room for one control whole with its focus ring's
+/// room or the header's own padding above and below, whichever is larger,
+/// and otherwise what is left beyond that floor; the header takes the rest,
+/// whole where that holds its controls and otherwise in a region that tall
+/// which scrolls, revealing the control Tab moves onto, so its controls stay
+/// inside the preview and the line whole beneath them. The region is cued
+/// as every scrolling list is ([`crate::tags::ScrollCue`]): by a scrollbar
+/// where its thumb moves along the region, and at the region's 36–44 px
+/// floor, where the kit's 48 px thumb filled its track, by a fade at each
+/// edge its controls continue past, which stops short of the ring of the
+/// control holding focus ([`crate::tags::ScrollCue::revealing`]): there a
+/// control revealed with its ring's room lies within the fade's height of
+/// an edge, and the fade once covered its ring. A side's `foot`, the model's
+/// details, gives way before the header does. In a narrow side, at 13 and
+/// 18 pt in a 461 × 490 window and at 18 pt in 640 × 680, the controls once
+/// wrapped past the preview's foot and took the line out of view; then the
+/// floor was a control's height alone, which cut the ring of the control
+/// Tab moved onto in a side as short as the rewrite review's scaled 100 px
+/// file box or the Stashes dialog's 120 px floor. Tests find that region as
+/// `<name>/header`.
+pub(crate) fn header_ends(
+    name: &'static str,
+    side: Option<OwnHeader>,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    let Some(OwnHeader {
+        header,
+        foot,
+        padding,
+        held,
+    }) = side
+    else {
+        return ends(name, answers, end, body);
+    };
+    own_header_ends(
+        name,
+        Box::new(move |_, _, _| header),
+        foot,
+        padding,
+        held,
+        answers,
+        end,
+        body,
+    )
+}
+
+/// The room a side's own header is laid out in, in the frame it is drawn
+/// ([`header_ends_for_room`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HeaderRoom {
+    /// The most height its region holds the header in without scrolling.
+    pub(crate) most: Pixels,
+    /// The side's height, and the header's padding, from which the room of
+    /// a partner side beside it is found ([`Self::beside`]).
+    height: Pixels,
+    padding: Rems,
+    /// The padding beneath the line saying why a click opened nothing.
+    bottom: Pixels,
+}
+
+impl HeaderRoom {
+    /// The room of a side `height` tall whose header's padding is `padding`,
+    /// where a click on its open control `answered`, its line `bottom` above
+    /// the rule ([`HeaderEnd::bottom`]), with the height the
+    /// rule and that line keep beneath the header: the content keeps its
+    /// minimum, and the header the rest, where that is at least its floor;
+    /// otherwise the header keeps its floor, so each control Tab moves onto
+    /// shows whole with its ring, and the content the rest. The floor holds
+    /// the scaled 28 px control and the larger of what lies above and below
+    /// it: in a header that scrolls, its ring's room, which the reveal keeps
+    /// clear of the region's edges, and in a header of one row, the header's
+    /// own padding, so that header shows whole there, unscrolled. Both are
+    /// counted as GPUI lays them out, snapped to device pixels, a half
+    /// rounding toward zero: the model's `py_1` at 18 pt on a 1× display is
+    /// 4.5 px, drawn as 4, so unsnapped it would make the floor a pixel
+    /// taller than a header of one row, a pixel the model needs. Counting
+    /// both, the floor once took a PDF page about 6 px more than it needed at
+    /// 18 pt in a 461 × 490 window.
+    fn new(
+        height: Pixels,
+        answered: bool,
+        (padding, bottom): (Rems, Pixels),
+        window: &Window,
+        cx: &App,
+    ) -> (Self, Pixels) {
+        // The rule's pixel, and the line's one whole line with its padding
+        // where a click answered.
+        let line = crate::image_compare::text_line(appearance::ui_text(11.), window);
+        let reserve = (px(1.) + if answered { line + bottom } else { px(0.) }).min(height);
+        let around = (window.pixel_snap(padding.to_pixels(window.rem_size())) * 2.)
+            .max(appearance::button_ring_room(cx) * 2.);
+        let row = (window.pixel_snap(appearance::ui_size(28.)) + around).min(height - reserve);
+        let most =
+            (height - reserve - appearance::ui_size(crate::image_compare::STAGE_MIN)).max(row);
+        (
+            Self {
+                most,
+                height,
+                padding,
+                bottom,
+            },
+            reserve,
+        )
+    }
+
+    /// The room of a partner side beside this one, as tall, whose own open
+    /// control `answered`, so a side can lay out its header in step with its
+    /// partner's: both PDF sides of a comparison take one form, the narrower,
+    /// and a side without pages takes its partner's rhythm (`pdf_view::Pair`).
+    pub(crate) fn beside(self, answered: bool, window: &Window, cx: &App) -> Pixels {
+        Self::new(
+            self.height,
+            answered,
+            (self.padding, self.bottom),
+            window,
+            cx,
+        )
+        .0
+        .most
+    }
+}
+
+/// What a side's header is built from in the frame it is drawn: the room
+/// its region holds the header in without scrolling.
+type HeaderForRoom = Box<dyn FnOnce(HeaderRoom, &mut Window, &mut App) -> AnyElement>;
+
+/// [`header_ends`] for a side whose header is laid out for the room the side
+/// leaves it in the frame drawn: `header` is built with the most height its
+/// region holds without scrolling, so it can choose its form, and whether its
+/// lines leave the scrollbar's gutter, from that room, as the PDF page view
+/// does (`pdf_view::header_layout`). Its padding and scrolling state are
+/// `padding` and `held`, as an [`OwnHeader`]'s are.
+pub(crate) fn header_ends_for_room(
+    name: &'static str,
+    header: impl FnOnce(HeaderRoom, &mut Window, &mut App) -> AnyElement + 'static,
+    padding: Rems,
+    held: SideHeader,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    own_header_ends(
+        name,
+        Box::new(header),
+        None,
+        padding,
+        held,
+        answers,
+        end,
+        body,
+    )
+}
+
+/// [`header_ends`] for a side with a header of its own, which `header`
+/// builds for the most room its region holds it in.
+#[allow(clippy::too_many_arguments)]
+fn own_header_ends(
+    name: &'static str,
+    header: HeaderForRoom,
+    foot: Option<AnyElement>,
+    padding: Rems,
+    held: SideHeader,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    let answered = answers.iter().any(Option::is_some);
+    crate::in_frame::in_frame(move |bounds, window, cx| {
+        let height = bounds.size.height;
+        // The rule and the line beneath the header, and the most the header
+        // holds above the content's minimum ([`HeaderRoom::new`]).
+        let (room, reserve) = HeaderRoom::new(height, answered, (padding, end.bottom), window, cx);
+        let most = room.most;
+        let content = height - reserve - most;
+        let header = header(room, window, cx);
+        let cue = crate::tags::ScrollCue::revealing(&held.reveal, px(0.));
+        let region = div()
+            .on_children_prepainted(cue.observe(held.reveal.observe()))
+            .id(SharedString::from(format!("{name}/header")))
+            .debug_selector(move || format!("{name}/header"))
+            .max_h(most)
+            .overflow_y_scroll()
+            .track_scroll(held.reveal.scroll())
+            .child(header);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            // A region that scrolls and clips what it holds for assistive
+            // technology, cued while it overflows. It never
+            // shrinks, since `most` bounds it and the foot always takes the
+            // shortfall: shrinking, it took about a millionth of the foot's
+            // share, which GPUI's snapping to device pixels and its scroll
+            // range's rounding absorb, so no test reproduces a range from
+            // it, but a header that fits must never get one.
+            .child(cue.list(region, held.scrollbar).flex_shrink_0())
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(reserve + content)
+                    .flex()
+                    .flex_col()
+                    .child(ends(name, answers, end, body)),
+            )
+            // The foot gives way first, and what it holds gives way with it
+            // as a column's child: a scroll area of its own with no minimum
+            // height (`OwnHeader`) shrinks with it, so its lines stay
+            // within its reach. Clipped by the foot instead, the model's
+            // details were cut mid-line where they partly gave way.
+            .children(foot.map(|foot| {
+                div()
+                    .debug_selector(move || format!("{name}/foot"))
+                    .flex_shrink(1_000_000.)
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(foot)
+            }))
+            .into_any_element()
+    })
+}
+
+/// The width a control in a side's own header has on a line to itself, in a
+/// side `side` wide whose header keeps `inset` either side: the side less its
+/// right rule, those insets and the gutter the header's region keeps for its
+/// scrollbar while it scrolls ([`crate::tags::ScrollCue`]), counted whether
+/// or not it scrolls, so a control's form never changes with the scroll it
+/// causes. Its focus ring lies in the insets. A labelled control wider than
+/// this draws a shorter form, its icon or a shorter reading, its whole label
+/// in its tooltip and its accessible name the one it has labelled
+/// ([`HeaderControl`]): in an 88 px side at 13 pt in a 461 × 490 window the
+/// model's Copy source, views menu and Linked, and the page view's Read page
+/// text, Retry page, page number and Linked pages were cut at the side's
+/// edge, and the model's clip menu was cut on a narrow side after them.
+pub(crate) fn header_line_room(side: Pixels, inset: Pixels) -> Pixels {
+    side_line_room(side, inset, true)
+}
+
+/// [`header_line_room`] for a header that keeps the scrollbar's gutter only
+/// where it `scrolls`, as the PDF page view's does
+/// (`pdf_view::header_layout`): it decides that from the room it is laid out
+/// in before it lays out its lines, so the gutter never changes with the
+/// scroll it causes, and a header that fits its room keeps none.
+pub(crate) fn side_line_room(side: Pixels, inset: Pixels, scrolls: bool) -> Pixels {
+    let gutter = if scrolls {
+        crate::tags::ScrollCue::gutter()
+    } else {
+        Pixels::ZERO
+    };
+    side - px(1.) - inset * 2. - gutter
+}
+
+/// A control of a side's own header in the form a line of the header to
+/// itself holds ([`header_line_room`]): labelled where its widest reading
+/// fits ([`Form::fitting`]), then its short reading where it has one that
+/// fits (the page number's "1/3"), and otherwise its icon alone in the
+/// scaled 28 px square, so it is never cut at the side's edge. A form that
+/// shows less than its reading leads its tooltip with the reading, and every
+/// form has the one accessible name, the one it has labelled. The form is
+/// chosen from the widest reading, so a toggle, a view, a clip or a page
+/// turn never changes it, and drawn as wide as that form's widest reading
+/// whatever it reads now ([`HeaderControl::button`]), so they move nothing
+/// after it either.
+pub(crate) struct HeaderControl {
+    id: ElementId,
+    selector: String,
+    reading: SharedString,
+    name: SharedString,
+    icon: &'static str,
+    widest: Pixels,
+    short: Option<(SharedString, Pixels)>,
+    labelled_icon: bool,
+    menu: Option<SharedString>,
+    /// A toggle's state ([`HeaderControl::toggle`]).
+    on: Option<bool>,
+    /// The labels a toggle's form was measured at, for a test.
+    #[cfg(test)]
+    measured: Vec<String>,
+}
+
+thread_local! {
+    /// Each toggle's wider reading laid out in whole pixels, by its
+    /// readings.
+    static TOGGLE_WIDTHS: std::cell::RefCell<
+        std::collections::BTreeMap<[&'static str; 2], (crate::views::LineKey, Pixels)>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The labels each toggle's width in [`TOGGLE_WIDTHS`] was laid out
+    /// from, as the measure itself recorded them, by its readings.
+    static TOGGLE_MEASURED: std::cell::RefCell<
+        std::collections::BTreeMap<[&'static str; 2], Vec<String>>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// How a [`HeaderControl`] was last drawn, for a test to read back by its
+/// debug selector.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DrawnControl {
+    /// "labelled", "short" or "icon".
+    pub(crate) form: &'static str,
+    /// What it reads, empty where it draws its icon alone.
+    pub(crate) shows: String,
+    /// The icon it draws, if any.
+    pub(crate) icon: Option<&'static str>,
+    pub(crate) tooltip: Option<String>,
+    pub(crate) name: String,
+    /// The labels a toggle's form was measured at, as its measure laid
+    /// them out; none for a control that is not a toggle.
+    pub(crate) measured: Vec<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Each [`HeaderControl`] as it was last drawn, by debug selector.
+    pub(crate) static DRAWN_CONTROLS: std::cell::RefCell<std::collections::BTreeMap<String, DrawnControl>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+impl HeaderControl {
+    /// The control `id`, found by tests as `selector`, reading `reading`
+    /// labelled and named `name` in every form, whose labelled form is
+    /// `widest` wide at its widest reading, as layout places it on this
+    /// display's device pixels (`crate::placed_button_width`), and whose
+    /// icon is `icon`.
+    pub(crate) fn new(
+        id: impl Into<ElementId>,
+        selector: String,
+        reading: impl Into<SharedString>,
+        name: impl Into<SharedString>,
+        icon: &'static str,
+        widest: Pixels,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            selector,
+            reading: reading.into(),
+            name: name.into(),
+            icon,
+            widest,
+            short: None,
+            labelled_icon: false,
+            menu: None,
+            on: None,
+            #[cfg(test)]
+            measured: Vec::new(),
+        }
+    }
+
+    /// The toggle `id`, found by tests as `selector` and named `name` in
+    /// every form, that reads `readings[1]` while `on` and `readings[0]`
+    /// otherwise, drawn selected and announced toggled while on, whose icon
+    /// is `icon`. Its form is measured at both readings, so a click never
+    /// changes it: Edges and Solid, the model's Linked and Independent, the
+    /// page view's Linked pages and Independent pages.
+    pub(crate) fn toggle(
+        id: impl Into<ElementId>,
+        selector: String,
+        readings: [&'static str; 2],
+        name: impl Into<SharedString>,
+        icon: &'static str,
+        on: bool,
+        window: &Window,
+    ) -> Self {
+        let key = crate::views::LineKey::current(window);
+        let text = TOGGLE_WIDTHS.with(|widths| {
+            let mut widths = widths.borrow_mut();
+            match widths.get(&readings) {
+                Some((laid_out, text)) if *laid_out == key => *text,
+                _ => {
+                    let text = crate::widest_label_now(&readings, window);
+                    // What the measure laid out, which a test reads back.
+                    #[cfg(test)]
+                    TOGGLE_MEASURED.with_borrow_mut(|measured| {
+                        measured.insert(readings, crate::laid_out_labels())
+                    });
+                    widths.insert(readings, (key, text));
+                    text
+                }
+            }
+        });
+        // Placed on this display's device pixels as it is drawn, so its
+        // label is never cut ([`Self::button`]).
+        let widest = crate::placed_button_width(text, false, window);
+        Self {
+            on: Some(on),
+            #[cfg(test)]
+            measured: TOGGLE_MEASURED
+                .with_borrow(|measured| measured.get(&readings).cloned().unwrap_or_default()),
+            ..Self::new(id, selector, readings[usize::from(on)], name, icon, widest)
+        }
+    }
+
+    /// Its labelled form `widest` wide, its readings' widest as layout
+    /// places it on this display's device pixels
+    /// (`crate::placed_button_width`), for a header that lays its controls
+    /// out in lines by those widths, as the PDF page view's does with its
+    /// link (`pdf_view::HeaderTexts`): its form, and its width labelled, are
+    /// then the width that header measured.
+    pub(crate) fn placed(mut self, widest: Pixels) -> Self {
+        self.widest = widest;
+        self
+    }
+
+    /// Labelled, it draws its icon before its label, as Read page text does.
+    pub(crate) fn labelled_with_icon(mut self) -> Self {
+        self.labelled_icon = true;
+        self
+    }
+
+    /// Where its labelled form does not fit, it reads `reading`, `widest`
+    /// wide at its widest, if that fits, before it becomes its icon.
+    pub(crate) fn short(mut self, reading: impl Into<SharedString>, widest: Pixels) -> Self {
+        self.short = Some((reading.into(), widest));
+        self
+    }
+
+    /// A menu's trigger: labelled with a caret and `choices` in its tooltip,
+    /// which follow its reading there in its other forms.
+    pub(crate) fn menu(mut self, choices: impl Into<SharedString>) -> Self {
+        self.menu = Some(choices.into());
+        self
+    }
+
+    /// The control in the form a line `room` wide holds, as wide as that
+    /// form's widest reading whatever it reads now; its icon keeps its
+    /// square. A page turn, a toggle, a view or a page that fails then
+    /// changes what it reads and moves nothing after it. Drawn at its own
+    /// reading's width, the page number grew with "Page 10 / 10" and moved
+    /// the link and the zooms after it, "Linked pages" was narrower than
+    /// "Independent pages", so each click on the link moved the zooms, and
+    /// the model's "Linked" was narrower than "Independent", so each click
+    /// on it moved what follows; the page view once widened its own
+    /// controls after this drew them, from a second measure of the link's
+    /// readings. That width is the one layout places the reading at, so its
+    /// label is never cut: drawn at the unrounded sum of its insets and
+    /// label, at scale 1.2 the 3D model's Reset and Edges were a device
+    /// pixel short of their labels at 13 pt, which cut them, and two at
+    /// 18 pt.
+    pub(crate) fn button(self, room: Pixels) -> Button {
+        let labelled = Form::fitting(self.widest, room) == Form::Labelled;
+        let short = self
+            .short
+            .filter(|(_, widest)| !labelled && *widest <= room);
+        let width = match &short {
+            _ if labelled => Some(self.widest),
+            Some((_, widest)) => Some(*widest),
+            None => None,
+        };
+        let (shows, icon) = match short {
+            _ if labelled => (
+                self.reading.clone(),
+                self.labelled_icon.then_some(self.icon),
+            ),
+            Some((short, _)) => (short, None),
+            None => (SharedString::default(), Some(self.icon)),
+        };
+        let tooltip = match &self.menu {
+            choices if labelled => choices.clone(),
+            Some(choices) => Some(format!("{} · {choices}", self.reading).into()),
+            None => Some(self.reading.clone()),
+        };
+        // Tests read each frame's form where the control is drawn
+        // (`in_frame::probe`).
+        let part = match (labelled, icon) {
+            (true, _) => "header-control/labelled",
+            (false, None) => "header-control/short",
+            (false, Some(_)) => "header-control/icon",
+        };
+        #[cfg(test)]
+        DRAWN_CONTROLS.with(|drawn| {
+            drawn.borrow_mut().insert(
+                self.selector.clone(),
+                DrawnControl {
+                    form: part.strip_prefix("header-control/").unwrap_or(part),
+                    shows: shows.to_string(),
+                    icon,
+                    tooltip: tooltip.as_ref().map(ToString::to_string),
+                    name: self.name.to_string(),
+                    measured: self.measured.clone(),
+                },
+            )
+        });
+        let selector = self.selector;
+        let button = crate::button(
+            self.id,
+            shows,
+            icon.unwrap_or_default(),
+            self.on == Some(true),
+        )
+        .when(labelled && self.menu.is_some(), |button| {
+            button.dropdown_caret(true)
+        })
+        .when_some(self.on, |button, on| button.toggled(on))
+        .when_some(width, |button, width| button.w(width))
+        .when_some(tooltip, |button, tooltip| button.tooltip(tooltip))
+        .debug_selector(move || selector)
+        .accessibility_label(self.name);
+        crate::in_frame::probed(button, part)
+    }
+}
+
+/// A side's own header for [`header_ends`]: the header, what lies beneath
+/// the side's content (the model's details), the header's own padding at its
+/// top and at its bottom, each, as the header sets it (the page view's
+/// `p_2`, the model's `py_1`), which its floor counts as GPUI snaps it, and
+/// the header's scrolling state. The foot gives way before the header,
+/// shrinking as a column's child, so a foot that can hold more than it
+/// shows is a scroll area of its own ([`SideHeader::foot`]), which keeps its
+/// lines within its reach as it shrinks to nothing.
+pub(crate) struct OwnHeader {
+    pub(crate) header: AnyElement,
+    pub(crate) foot: Option<AnyElement>,
+    pub(crate) padding: Rems,
+    pub(crate) held: SideHeader,
+}
+
+/// The scrolling state of a side's own header, and of its foot: the header
+/// reveals the control Tab moves onto ([`crate::focus_reveal`]), and both
+/// are made again for each showing, so the next file's header and foot
+/// start at their top.
+#[derive(Clone)]
+pub(crate) struct SideHeader {
+    reveal: crate::focus_reveal::FocusReveal,
+    foot: ScrollHandle,
+    scrollbar: &'static str,
+    /// The scrolling container the side lies in, where it reveals the
+    /// comparison's controls, and its margin ([`Self::within`]).
+    container: Option<(crate::focus_reveal::FocusReveal, Pixels)>,
+}
+
+/// One side header's state, with the showing it was made for.
+struct HeldSide {
+    showing: Showing,
+    reveal: crate::focus_reveal::FocusReveal,
+    foot: ScrollHandle,
+}
+
+/// Each side header's state, by the view drawing it and the side's region.
+/// A view's entries go when the view does ([`SideHeader::new`]): they once
+/// stayed for the application's life, each closed Stashes dialog or rewrite
+/// review leaving its sides' scroll and focus handles behind.
+#[derive(Default)]
+struct SideHeaders(std::collections::HashMap<(EntityId, &'static str), HeldSide>);
+impl Global for SideHeaders {}
+
+impl SideHeader {
+    /// The header of side `name` that the view rendering with `cx` draws in
+    /// `showing`, revealing in this frame the control focus has moved onto;
+    /// its scrollbar is `scrollbar`. The view's headers go when it is
+    /// released, as a dialog's view is when the dialog closes.
+    pub(crate) fn new<T: 'static>(
+        name: &'static str,
+        scrollbar: &'static str,
+        showing: Showing,
+        window: &Window,
+        cx: &mut Context<T>,
+    ) -> Self {
+        let view = cx.entity_id();
+        let fresh = || HeldSide {
+            showing,
+            reveal: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            foot: ScrollHandle::new(),
+        };
+        let headers = &mut cx.default_global::<SideHeaders>().0;
+        let first = !headers.keys().any(|(held, _)| *held == view);
+        let held = headers.entry((view, name)).or_insert_with(fresh);
+        if held.showing != showing {
+            *held = fresh();
+        }
+        let (reveal, foot) = (held.reveal.clone(), held.foot.clone());
+        if first {
+            cx.on_release(move |_, cx| {
+                if cx.has_global::<SideHeaders>() {
+                    cx.global_mut::<SideHeaders>()
+                        .0
+                        .retain(|(held, _), _| *held != view);
+                }
+            })
+            .detach();
+        }
+        reveal.reveal(window, cx);
+        Self {
+            reveal,
+            foot,
+            scrollbar,
+            container: None,
+        }
+    }
+
+    /// The header of a side of the comparison `opener` places. Where the
+    /// comparison lies in a scrolling container that reveals its controls
+    /// ([`Opener::revealed_by`]), as the Stashes detail does, every control
+    /// the header tracks ([`Self::track`]) is one of the container's too:
+    /// focus on it lies in both, and each reveals it in its own scroll, the
+    /// container where the header's region has scrolled it in the same
+    /// frame ([`crate::focus_reveal::FocusReveal::control_within`]). Only
+    /// the open control was the detail's, so Tab onto a PDF's page arrows
+    /// or page number, or a model's camera, views or clip controls, left
+    /// the detail where it was, the control below its fold.
+    pub(crate) fn within(mut self, opener: &Opener) -> Self {
+        self.container = opener.reveal.clone();
+        self
+    }
+
+    /// `area`, what lies beneath the side's content and gives way before
+    /// its header (the model's details), as the scroll area of its own that
+    /// [`OwnHeader`]'s foot is: with no minimum height, so it shrinks with
+    /// the foot to nothing and its lines, with the padding `area` keeps
+    /// inside it, stay within its reach, and cued while they overflow as
+    /// every scrolling list is ([`crate::tags::ScrollCue`]): by the
+    /// always-visible scrollbar `scrollbar` where it is tall enough for a
+    /// thumb that moves ([`crate::tags::SHORTEST_SCROLL_TRACK`]), and
+    /// otherwise by a fade at each edge its lines continue past. Shrunk to
+    /// a sliver, the model's details once showed a part of their lines with
+    /// no sign that the rest scrolled, and a little taller, a thumb that ran
+    /// out of its track against the scroll.
+    pub(crate) fn foot(
+        &self,
+        area: Stateful<Div>,
+        scrollbar: &'static str,
+    ) -> crate::tags::CuedList {
+        let cue = crate::tags::ScrollCue::new(&self.foot, px(0.));
+        let observe = cue.observe(|_, _, _| {});
+        let area = area.min_h_0().overflow_y_scroll().track_scroll(&self.foot);
+        cue.list(area, scrollbar)
+            .on_children_prepainted(observe)
+            .min_h_0()
+    }
+
+    /// `button`, tracked as [`Self::track`] tracks it, as `own`, or where
+    /// one of `counterparts` holds focus, as that one: a control a header's
+    /// other form folds into a menu, or the menu it folds into, so focus
+    /// stays where the person put it as the form changes, on the control
+    /// that now stands for the one they focused, in the frame that draws
+    /// the change. The handle keeps focus; only the control drawing it
+    /// changes.
+    pub(crate) fn track_for(
+        &self,
+        own: impl Into<ElementId>,
+        counterparts: &[ElementId],
+        button: Button,
+        window: &Window,
+        cx: &mut App,
+    ) -> Button {
+        let id = counterparts
+            .iter()
+            .find(|id| self.reveal.focus((*id).clone(), cx).is_focused(window))
+            .cloned()
+            .unwrap_or_else(|| own.into());
+        self.track(id, button, cx)
+    }
+
+    /// `button`, which Tab reveals in the header's region, and in the
+    /// container the side lies in where that reveals its controls
+    /// ([`Self::within`]), its focus tracked as `id`.
+    pub(crate) fn track(&self, id: impl Into<ElementId>, button: Button, cx: &mut App) -> Button {
+        let focus = self.reveal.focus(id, cx);
+        let report = self
+            .reveal
+            .control(focus.clone(), appearance::button_ring_room(cx));
+        let container = self.container.as_ref().map(|(container, margin)| {
+            container.control_within(focus.clone(), *margin, &self.reveal)
+        });
+        gpui_kit::base::ElementExt::on_prepaint(
+            button.track_focus(&focus),
+            move |bounds, window, cx| {
+                report(vec![bounds], window, cx);
+                if let Some(container) = &container {
+                    container(vec![bounds], window, cx);
+                }
+            },
+        )
+    }
+}
+
+/// The state of the side header `name` that `view` draws, for a test.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn side_header(
+    view: EntityId,
+    name: &'static str,
+    cx: &App,
+) -> Option<crate::focus_reveal::FocusReveal> {
+    cx.try_global::<SideHeaders>()
+        .and_then(|headers| headers.0.get(&(view, name)))
+        .map(|held| held.reveal.clone())
+}
+
+/// The ends [`header_ends`] draws beneath the headers' controls, with the
+/// sides' `body`, laid out for the room beneath those controls.
+fn ends(
+    name: &'static str,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    crate::in_frame::in_frame(move |bounds, window, cx| {
+        let size = appearance::ui_text(11.);
+        let line = crate::image_compare::text_line(size, window);
+        let sides = answers.len().max(1) as f32;
+        let right = if end.right_rule { px(1.) } else { px(0.) };
+        let width = bounds.size.width / sides - end.inset * 2. - right;
+        // The lines the room beneath the controls holds above the content's
+        // minimum, above the padding beneath a drawn line and the rule.
+        let room = bounds.size.height
+            - appearance::ui_size(crate::image_compare::STAGE_MIN)
+            - end.bottom
+            - px(1.);
+        let fit = (room / line).floor().max(0.) as usize;
+        let ends = answers.into_iter().map(|answer| {
+            let header = div()
+                .flex_1()
+                .min_w_0()
+                .px(end.inset)
+                .border_b_1()
+                .when(end.right_rule, |header| header.border_r_1())
+                .border_color(rgb(end.border));
+            let Some(answer) = answer else {
+                return header;
+            };
+            let natural = crate::image_compare::wrapped_lines(&answer.brief, size, width, window);
+            // Always one whole line: the click answers on screen, and the
+            // content gives way below its minimum for it, as an image does
+            // beneath its band.
+            let shown = natural.min(fit).max(1);
+            let clamp = (natural > shown).then_some(shown);
+            // Where the side is shorter than the line with its padding and
+            // rule, the padding goes first.
+            let padded = bounds.size.height >= line * shown as f32 + end.bottom + px(1.);
+            header
+                .when(padded, |header| header.pb(end.bottom))
+                .child(crate::in_frame::probed(
+                    answer.short_line(clamp, cx),
+                    "header-note",
+                ))
+        });
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(div().flex().min_w_0().children(ends))
+            .child(crate::in_frame::probed(
+                div()
+                    .debug_selector(move || format!("{name}/body"))
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(body),
+                "body",
+            ))
+            .into_any_element()
+    })
+    .named(name)
+}
+
+impl GitTurtle {
+    /// Opens `target`'s captured bytes off the UI thread and answers on its
+    /// control. Nothing here retries or opens anything else.
+    fn open_captured_bytes(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        target.forget(cx);
+        window.refresh();
+        let opening = match queued_outcome() {
+            Some(outcome) => Task::ready(outcome),
+            None => self.launch(&target, cx),
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = opening.await;
+            let _ = this.update_in(cx, |_, window, cx| target.answer(outcome, window, cx));
+        })
+        .detach();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn launch(&mut self, target: &Target, cx: &mut Context<Self>) -> Task<Result<(), NotOpened>> {
+        self.open_in_default_app(Arc::clone(&target.bytes), target.offer, cx)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn launch(&mut self, target: &Target, cx: &mut Context<Self>) -> Task<Result<(), NotOpened>> {
+        self.quick_look(Arc::clone(&target.bytes), target.name.clone(), cx)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The outcomes tests queued for their next clicks, oldest first.
+    static QUEUED: std::cell::RefCell<VecDeque<Result<(), NotOpened>>> = Default::default();
+}
+
+/// In tests, the outcome a test queued for this click ([`tests::queue`]), so
+/// no test launches anything and one that clicks without queueing fails; in
+/// other builds, none.
+fn queued_outcome() -> Option<Result<(), NotOpened>> {
+    #[cfg(test)]
+    {
+        Some(
+            QUEUED
+                .with(|queued| queued.borrow_mut().pop_front())
+                .expect("a test that clicks an open control queues its outcome"),
+        )
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
+/// Removes copies that sessions which have ended left behind, off the UI
+/// thread, and this session's own copies when the app quits.
+#[cfg(target_os = "linux")]
+pub(crate) fn init(cx: &mut gpui_kit::App) {
+    cx.background_executor()
+        .spawn(async {
+            if let Some(store) = store::shared() {
+                let _ = store.remove_stale();
+            }
+        })
+        .detach();
+    cx.on_app_quit(|cx| {
+        cx.background_executor().spawn(async {
+            if let Some(store) = store::shared() {
+                store.close();
+            }
+        })
+    })
+    .detach();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn init(_cx: &mut gpui_kit::App) {}
+
+#[cfg(target_os = "linux")]
+impl crate::GitTurtle {
+    /// Writes the private copy on the serialized background writer and hands
+    /// it to the desktop off the UI thread; the task ends with what opened or
+    /// why nothing did.
+    fn open_in_default_app(
+        &mut self,
+        bytes: std::sync::Arc<[u8]>,
+        offer: Offer,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> Task<Result<(), NotOpened>> {
+        let kind = offer.kind;
+        let slot = match crate::rich_preview::ExternalPreviewSlot::reserve() {
+            Ok(slot) => slot,
+            Err(error) => return Task::ready(Err(format!("{error:#}").into())),
+        };
+        let copy = self.preferences_writer.submit_read(move || {
+            store::shared()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "The user cache folder is unavailable: neither XDG_CACHE_HOME nor HOME names an absolute path."
+                    )
+                })?
+                .write(&bytes, kind)
+        });
+        cx.spawn(async move |_, cx| match copy.await {
+            Ok(Ok(copy)) => {
+                let executor = cx.background_executor().clone();
+                executor
+                    .clone()
+                    .spawn(launch::open(copy, kind, slot, executor))
+                    .await
+            }
+            Ok(Err(error)) => Err(copy_refused(&error).into()),
+            Err(_) => Err("The copy stopped before it was written.".into()),
+        })
+    }
+}
+
+/// Why the private copy was not written, in its category: the store's size
+/// limit is `TooLarge` and anything else `Other`. The sentence is the
+/// store's own.
+#[cfg(target_os = "linux")]
+fn copy_refused(error: &anyhow::Error) -> Failure {
+    let category = if error.is::<store::TooLarge>() {
+        Category::TooLarge
+    } else {
+        Category::Other
+    };
+    Failure::new(category, format!("{error:#}"))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    /// A narrow side, 88 px wide and a scaled `height` tall, whose own header
+    /// holds `controls` icon controls padded `padding` rems above and below
+    /// (the PDF page view's `p_2` or the model's `py_1`), above a failed
+    /// open's line and content that keeps no room of its own.
+    #[cfg(target_os = "linux")]
+    struct FloorSide {
+        height: f32,
+        padding: f32,
+        controls: usize,
+        showing: Showing,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for FloorSide {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let held = SideHeader::new(
+                "floor-side",
+                "floor-side/scrollbar",
+                self.showing,
+                window,
+                cx,
+            );
+            let mut header = div()
+                .debug_selector(|| "floor-side-header".into())
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py(rems(self.padding));
+            for index in 0..self.controls {
+                let control = crate::button(("floor-control", index), "", "plus", false)
+                    .debug_selector(move || format!("floor-control-{index}"));
+                header = header.child(held.track(("floor-control", index), control, cx));
+            }
+            let answer = Answer {
+                id: 0,
+                key: "floor-control-0/note".into(),
+                failed: true,
+                text: "Could not open After.".into(),
+                brief: NOT_OPENED.into(),
+                drawn: None,
+            };
+            let end = HeaderEnd {
+                inset: window.rem_size() * 0.5,
+                bottom: window.rem_size() * 0.5,
+                right_rule: false,
+                border: palette(cx).border,
+            };
+            div()
+                .w(px(88.))
+                .h(appearance::ui_size(self.height))
+                .flex()
+                .flex_col()
+                .child(header_ends(
+                    "floor-side",
+                    Some(OwnHeader {
+                        header: header.into_any_element(),
+                        foot: None,
+                        padding: rems(self.padding),
+                        held,
+                    }),
+                    vec![Some(answer)],
+                    end,
+                    div().size_full().into_any_element(),
+                ))
+        }
+    }
+
+    /// The probe side with `controls` controls in each side its header keeps
+    /// only its floor in, at 13 and 18 pt: the rewrite review's scaled
+    /// 100 px file box and the Stashes dialog's scaled 120 px floor, padded
+    /// as the model's header (`py_1`) and the PDF page view's (`p_2`). Each
+    /// is passed to `check` with its name and the side's header's state.
+    #[cfg(target_os = "linux")]
+    fn walk_floor_sides(
+        cx: &mut gpui_kit::TestAppContext,
+        controls: usize,
+        check: impl Fn(&mut gpui_kit::VisualTestContext, &str, &crate::focus_reveal::FocusReveal),
+    ) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (side, cx) = cx.add_window_view(|_, _| FloorSide {
+            height: 100.,
+            padding: 0.25,
+            controls,
+            showing: Showing::next(),
+        });
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (height, padding) in [(100., 0.25), (120., 0.25), (100., 0.5), (120., 0.5)] {
+                side.update(cx, |side, cx| {
+                    side.height = height;
+                    side.padding = padding;
+                    side.showing = Showing::next();
+                    cx.notify();
+                });
+                crate::tags::tests::draw(cx);
+                let at = format!("{text} pt in a scaled {height} px box, padded {padding} rem");
+                let list = cx
+                    .update(|_, cx| side_header(side.entity_id(), "floor-side", cx))
+                    .expect("the side's header");
+                check(cx, &at, &list);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A narrow side's own header at the floor [`header_ends`] keeps it, in
+    /// the rewrite review's scaled 100 px file box and at the Stashes
+    /// dialog's scaled 120 px floor, at 13 and 18 pt beneath a failed open's
+    /// line, shows each control focus moves onto whole with its focus ring,
+    /// under the PDF page view's padding and the 3D model's, where its
+    /// controls wrap and it scrolls. The floor was once a control's height
+    /// alone, which held no control's ring.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_floor_shows_a_whole_control(cx: &mut gpui_kit::TestAppContext) {
+        let ring = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+        walk_floor_sides(cx, 4, |cx, at, list| {
+            for index in 0..4usize {
+                list.reveal_next_focus();
+                cx.update(|window, cx| list.focus(("floor-control", index), cx).focus(window, cx));
+                crate::tags::tests::draw(cx);
+                let selector = format!("floor-control-{index}").leak();
+                let shown = cx.debug_bounds(selector).expect("the control").dilate(ring);
+                let held = cx.debug_bounds("floor-side/header").expect("the region");
+                assert!(
+                    shown.top() >= held.top() - px(0.01)
+                        && shown.bottom() <= held.bottom() + px(0.01),
+                    "{at}: {selector} and its ring {shown:?} lie whole in the header's region {held:?}"
+                );
+            }
+        });
+    }
+
+    /// A header of one row, at the floor [`header_ends`] keeps it in the
+    /// same sides, draws whole and unscrolled in a region its own height,
+    /// with no scroll range: the floor counts the header's own padding where
+    /// that is larger than the focus ring's room, as the page view's `p_2`
+    /// is at 13 and 18 pt and the model's `py_1` at 18 pt. The ring's room
+    /// alone would leave such a header a range of the padding's excess over
+    /// it, 7 px under the page view's padding at 13 pt and 12 px at 18 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_one_row_header_shows_whole_at_its_floor(cx: &mut gpui_kit::TestAppContext) {
+        walk_floor_sides(cx, 1, |cx, at, list| {
+            let held = cx.debug_bounds("floor-side/header").expect("the region");
+            let header = cx.debug_bounds("floor-side-header").expect("the header");
+            let control = cx.debug_bounds("floor-control-0").expect("the control");
+            let range = list.scroll().max_offset().y;
+            assert!(
+                range == Pixels::ZERO && (header.top() - held.top()).abs() < px(0.01),
+                "{at}: the header {header:?} draws unscrolled in its region {held:?}, with no range ({range:?})"
+            );
+            assert!(
+                (header.size.height - held.size.height).abs() < px(0.01),
+                "{at}: the region {held:?} is the one row's height {header:?}"
+            );
+            assert!(
+                control.top() >= held.top() && control.bottom() <= held.bottom(),
+                "{at}: the control {control:?} lies whole in the region {held:?}"
+            );
+        });
+    }
+
+    /// A side 240 px wide and 400 px tall whose own header holds one
+    /// control, above content that keeps no room of its own and a foot of
+    /// `lines` lines in a scroll area at most 80 px tall, as a model's
+    /// details are at most their room, which holds four of their lines at
+    /// the interface size (`model_view::details_room`).
+    #[cfg(target_os = "linux")]
+    struct FootSide {
+        lines: usize,
+        showing: Showing,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for FootSide {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let held =
+                SideHeader::new("foot-side", "foot-side/scrollbar", self.showing, window, cx);
+            let control = crate::button("foot-control", "", "plus", false);
+            let header = div()
+                .px_2()
+                .py(rems(0.25))
+                .child(held.track("foot-control", control, cx));
+            let area = div()
+                .id("foot-area")
+                .debug_selector(|| "foot-area".into())
+                .max_h(px(80.))
+                .child(
+                    div()
+                        .debug_selector(|| "foot-lines".into())
+                        .p_2()
+                        .children((0..self.lines).map(|line| div().child(format!("Line {line}")))),
+                );
+            let end = HeaderEnd {
+                inset: window.rem_size() * 0.5,
+                bottom: window.rem_size() * 0.5,
+                right_rule: false,
+                border: palette(cx).border,
+            };
+            div()
+                .w(px(240.))
+                .h(px(400.))
+                .flex()
+                .flex_col()
+                .child(header_ends(
+                    "foot-side",
+                    Some(OwnHeader {
+                        header: header.into_any_element(),
+                        foot: Some(
+                            held.foot(area, "foot-side/foot-scrollbar")
+                                .into_any_element(),
+                        ),
+                        padding: rems(0.25),
+                        held,
+                    }),
+                    vec![None],
+                    end,
+                    div().size_full().into_any_element(),
+                ))
+        }
+    }
+
+    /// A side's foot, the model's details, draws an always-visible
+    /// scrollbar at its edge only while its lines overflow its room, and
+    /// none where they fit, as they come and go: a foot that showed a part
+    /// of its lines once gave no sign that the rest scrolled.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_s_foot_cues_its_scroll_only_while_it_overflows(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (side, cx) = cx.add_window_view(|_, _| FootSide {
+            lines: 1,
+            showing: Showing::next(),
+        });
+        let bar = gpui_kit::component::scroll::Scrollbar::width();
+        for (lines, overflows) in [(1, false), (12, true), (1, false)] {
+            side.update(cx, |side, cx| {
+                side.lines = lines;
+                cx.notify();
+            });
+            crate::tags::tests::draw(cx);
+            let area = cx.debug_bounds("foot-area").expect("the foot's area");
+            let shown = cx.debug_bounds("foot-lines").expect("its lines");
+            assert_eq!(
+                shown.size.height > area.size.height + px(0.005),
+                overflows,
+                "{lines} lines, {shown:?}, in the foot {area:?}"
+            );
+            let track = Bounds::new(
+                point(area.right() - bar - px(4.), area.top()),
+                size(bar + px(4.), area.size.height),
+            );
+            let thumb = crate::tags::tests::painted_thumb(cx, track);
+            assert_eq!(
+                thumb.is_some(),
+                overflows,
+                "{lines} lines in the foot {area:?}: a scrollbar ({thumb:?}) only while they overflow"
+            );
+        }
+    }
+
+    /// A comparison of captured documents as Compare draws it, `width` wide
+    /// and 600 px tall: a model's or a PDF page view's two sides.
+    #[cfg(target_os = "linux")]
+    pub(crate) struct Sides {
+        pub(crate) content: crate::worker::Content,
+        pub(crate) width: f32,
+        pub(crate) showing: Showing,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for Sides {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let crate::worker::Content::Rich(comparison) = &self.content else {
+                panic!("a document comparison");
+            };
+            let opener = Opener::new(WeakEntity::new_invalid(), self.showing);
+            div().w(px(self.width)).h(px(600.)).flex().flex_col().child(
+                crate::rich_preview::render_comparison(
+                    comparison,
+                    false,
+                    opener,
+                    px(self.width),
+                    window,
+                    cx,
+                ),
+            )
+        }
+    }
+
+    /// An open control in a room `room` device pixels wide, in the form its
+    /// offer takes there, which a frame records in `form`; beneath it the
+    /// same control labelled, at its own width.
+    #[cfg(target_os = "linux")]
+    struct OpenRoom {
+        room: f32,
+        bytes: Arc<[u8]>,
+        offer: Offer,
+        showing: Showing,
+        form: Option<Form>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for OpenRoom {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let room = px(self.room / window.scale_factor());
+            let opener = Opener::new(WeakEntity::new_invalid(), self.showing);
+            let target = |index: usize| {
+                opener.target(
+                    ("open-room", index),
+                    "After",
+                    &self.bytes,
+                    std::path::Path::new("report.pdf"),
+                    "PDF",
+                    self.offer,
+                )
+            };
+            let form = self.offer.form(room, window);
+            self.form = Some(form);
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(div().w(room).flex().child(target(0).control(form, cx)))
+                .child(div().flex().child(target(1).control(Form::Labelled, cx)))
+        }
+    }
+
+    /// An open control is labelled exactly where its labelled form fits as
+    /// drawn ([`Offer::form`]): at scales 1.2 and 1.25, at 13 and 18 pt, in
+    /// rooms from three device pixels narrower than the control labelled at
+    /// its own width to three wider, it is labelled where that control fits
+    /// the room, lying within it, and its icon where it does not. Chosen
+    /// from the unrounded sum of its frame, icon and label, at 18 pt it was
+    /// drawn labelled in rooms one and two device pixels narrower than
+    /// itself at scale 1.2, and at 1.25 as its icon in a room that held it
+    /// labelled, at 13 and 18 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn an_open_control_is_labelled_where_it_fits_as_drawn(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let bytes: Arc<[u8]> =
+            Arc::from(&b"%PDF-1.4\n% open\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"[..]);
+        let offer = super::offer(&bytes, &|| Ok(()))
+            .expect("the bytes are read")
+            .expect("a PDF is offered");
+        let (view, cx) = cx.add_window_view(|_, _| OpenRoom {
+            room: 400.,
+            bytes,
+            offer,
+            showing: Showing::next(),
+            form: None,
+        });
+        let mut failures = Vec::new();
+        let mut reached = std::collections::BTreeSet::new();
+        for scale in [1.2f32, 1.25] {
+            for text in [13u8, 18] {
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    appearance::apply_text_sizes(text, 12, window, cx)
+                });
+                crate::tags::tests::draw(cx);
+                let labelled = cx
+                    .debug_bounds("open-room-1")
+                    .expect("the labelled control")
+                    .size
+                    .width;
+                let device = (f32::from(labelled) * scale).round() as i32;
+                for room in device - 3..=device + 3 {
+                    view.update(cx, |view, cx| {
+                        view.room = room as f32;
+                        cx.notify();
+                    });
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    let form = view.read_with(cx, |view, _| view.form).expect("a form");
+                    let drawn = cx
+                        .debug_bounds("open-room-0")
+                        .expect("the control")
+                        .size
+                        .width;
+                    let width = px(room as f32 / scale);
+                    let fits = labelled <= width + px(0.01);
+                    reached.insert(form == Form::Labelled);
+                    if (form == Form::Labelled) != fits || drawn > width + px(0.01) {
+                        failures.push(format!(
+                            "scale {scale}, {text} pt, a room of {room} device pixels: {form:?}, drawn {drawn:?} wide, labelled {labelled:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        assert_eq!(reached.len(), 2, "both forms are drawn");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A model comparison whose Before, a GLB, has animation clips and whose
+    /// After, an OBJ, has source to copy; and a PDF's whose sides have
+    /// `pages` pages each, showing page `shown` (counted from 0).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn document_sides(pages: usize, shown: usize) -> [crate::worker::Content; 2] {
+        use crate::rich_preview::{Comparison, Side};
+        let side = |bytes: &[u8], name: &str| {
+            Arc::new(Side::prepare(bytes.to_vec(), std::path::Path::new(name), || Ok(())).unwrap())
+        };
+        let glb =
+            include_bytes!("../../preview/tests/fixtures/models/glb/workflow/morph-animation.glb");
+        let model = Comparison {
+            old: side(glb, "shape.glb"),
+            new: side(b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", "shape.obj"),
+        };
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = Comparison {
+            old: side(pdf("first").as_bytes(), "document.pdf"),
+            new: side(pdf("second").as_bytes(), "document.pdf"),
+        };
+        [
+            crate::worker::Content::Rich(model),
+            crate::pdf_view::tests::paged_at(&document, pages, shown),
+        ]
+    }
+
+    /// `content` drawn `width` wide at each comparison width from 1,480 px
+    /// down to the narrowest whose sides' header lines still hold the
+    /// scaled 28 px icon, `step` px at a time, at 13 and 18 pt: `check` is
+    /// passed each frame's text size, width and the side header controls it
+    /// drew ([`DRAWN_CONTROLS`]), each width drawn as [`draw_answered`]
+    /// draws it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn walk_side_widths(
+        cx: &mut gpui_kit::TestAppContext,
+        content: crate::worker::Content,
+        step: usize,
+        mut check: impl FnMut(
+            &mut gpui_kit::VisualTestContext,
+            &Entity<Sides>,
+            (u8, f32),
+            &std::collections::BTreeMap<String, DrawnControl>,
+        ),
+    ) {
+        // The PDF's pages are prepared on the app's page render thread, and a
+        // page that answers after the view's task has begun to await it wakes
+        // that task from there, which the test scheduler fails the test for
+        // unless parking is allowed, as the app's test windows allow it. Each
+        // width's frames wait for the pages before they draw their answers.
+        // (The model asks for no frames: a test window is never active.)
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let paged = has_page_view(&content);
+        let (sides, cx) = cx.add_window_view(|_, _| Sides {
+            content,
+            width: 1480.,
+            showing: Showing::next(),
+        });
+        cx.simulate_resize(size(px(1500.), px(700.)));
+        for text in [13u8, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // The side whose line holds the icon exactly, and its partner.
+            let narrowest = cx.update(|window, _| {
+                let line = header_line_room(px(100.), window.rem_size() * 0.5);
+                (px(100.) - line + appearance::ui_size(28.)).ceil() * 2.
+            });
+            let mut width = 1480usize;
+            while width as f32 >= f32::from(narrowest) {
+                sides.update(cx, |sides, cx| {
+                    sides.width = width as f32;
+                    cx.notify();
+                });
+                DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
+                draw_answered(cx, paged);
+                let drawn = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
+                check(cx, &sides, (text, width as f32), &drawn);
+                width -= step;
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Whether either side of `content` shows a page view, the only view
+    /// that asks the page lane for anything ([`draw_answered`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_page_view(content: &crate::worker::Content) -> bool {
+        matches!(
+            content,
+            crate::worker::Content::Rich(comparison)
+                if comparison.old.pdf.is_some() || comparison.new.pdf.is_some()
+        )
+    }
+
+    /// Draws the window and, where a side shows a page view (`paged`), lets
+    /// the page lane answer what that frame asked of it and draws again, so
+    /// the frame read draws the pages' answers. Without a page view nothing
+    /// asks the page lane for anything, so the second frame drew the first
+    /// again: at every width the side header walks drew, 2 px apart at 13
+    /// and 18 pt, a model comparison drew the same controls in the same
+    /// bounds in both, and drawn twice, its walks took twice as long.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn draw_answered(cx: &mut gpui_kit::VisualTestContext, paged: bool) {
+        crate::tags::tests::draw(cx);
+        if paged {
+            crate::pdf_view::tests::drain_pages();
+            crate::tags::tests::draw(cx);
+        }
+    }
+
+    /// Whether the control `selector` lies across its side's header whole
+    /// with its focus ring, cut by neither the side's edge nor, where the
+    /// header scrolls, its scrollbar's gutter.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lies_on_its_line(cx: &mut gpui_kit::VisualTestContext, selector: &str) -> bool {
+        let (_, index) = selector.rsplit_once('-').expect("an indexed control");
+        let index: usize = index.parse().expect("an indexed control");
+        // A model side's camera controls are numbered five to a side.
+        let side = if selector.starts_with("model-camera-") {
+            index / 5
+        } else {
+            index
+        };
+        let header = if selector.starts_with("pdf-") {
+            ["pdf-side-header-0", "pdf-side-header-1"][side.min(1)]
+        } else {
+            ["model-side-header-0", "model-side-header-1"][side.min(1)]
+        };
+        let header = cx.debug_bounds(header).expect("the side's header");
+        let ring = appearance::BUTTON_FOCUS_RING;
+        let control = cx
+            .debug_bounds(selector.to_owned().leak())
+            .expect("the control")
+            .dilate(ring.gap + ring.width);
+        control.left() >= header.left() - px(0.01) && control.right() <= header.right() + px(0.01)
+    }
+
+    /// What a walk of the side headers' controls drew
+    /// ([`walk_controls_on_their_line`]): After's page number's forms in the
+    /// order it drew them at each size, each with the form of the header it
+    /// lay in, and each form it drew each control in at each size.
+    #[cfg(target_os = "linux")]
+    type ControlsDrawn = (
+        Vec<(u8, Option<crate::pdf_view::HeaderForm>, &'static str)>,
+        std::collections::BTreeSet<(u8, String, &'static str)>,
+    );
+
+    /// Each control of a side's own header that the side header helper
+    /// draws ([`HeaderControl`]; not the open control, Copy source, the page
+    /// arrows or the zooms, which it does not draw) lies across the side
+    /// whole with its ring at every width down to the narrowest side whose
+    /// line holds an icon, at 13 and 18 pt, labelled where its widest
+    /// reading fits and otherwise its icon: the model's clip menu, once
+    /// always labelled with the clip's name, was cut at a narrow side's
+    /// edge. The page number
+    /// gives way through three forms, "Page 108 / 111", "108/111" and its
+    /// page icon, the whole reading its tooltip where it shows less, each
+    /// named the same (that each is measured at its widest page is
+    /// `pdf_view::tests::a_page_number_is_measured_at_its_widest_page`).
+    /// Retry page names its side and page, and Edges the state it shows,
+    /// where it once read "Toggle all triangle edges" while it showed Solid.
+    /// `content`'s walk returns what it drew ([`ControlsDrawn`]).
+    #[cfg(target_os = "linux")]
+    fn walk_controls_on_their_line(
+        cx: &mut gpui_kit::TestAppContext,
+        content: crate::worker::Content,
+    ) -> ControlsDrawn {
+        let mut forms = Vec::new();
+        let mut reached = std::collections::BTreeSet::new();
+        walk_side_widths(cx, content, 2, |cx, _, (text, width), drawn| {
+            if width == 1480. && drawn.contains_key("model-camera-4") {
+                // Edges shows Solid once the triangle edges are shown.
+                let name = |cx: &mut gpui_kit::VisualTestContext| {
+                    let edges = cx.debug_bounds("model-camera-4").expect("Edges");
+                    cx.simulate_click(edges.center(), Modifiers::none());
+                    crate::tags::tests::draw(cx);
+                    DRAWN_CONTROLS.with(|drawn| drawn.borrow()["model-camera-4"].clone())
+                };
+                let shown = name(cx);
+                assert_eq!(
+                    (shown.shows.as_str(), shown.name.as_str()),
+                    (
+                        "Solid",
+                        "Before: Triangle edges shown. Switch to solid shading"
+                    )
+                );
+                let solid = name(cx);
+                assert_eq!(
+                    (solid.shows.as_str(), solid.name.as_str()),
+                    ("Edges", "Before: Solid shading. Show all triangle edges")
+                );
+            }
+            for (selector, control) in drawn {
+                let at = format!("{text} pt, {width} px: {selector} {control:?}");
+                assert!(lies_on_its_line(cx, selector), "{at} lies on its line");
+                reached.insert((text, selector.clone(), control.form));
+            }
+            if let Some(number) = drawn.get("pdf-page-number-1") {
+                let header =
+                    crate::pdf_view::DRAWN_FORMS.with_borrow(|forms| forms.get(&1).copied());
+                if forms.last() != Some(&(text, header, number.form)) {
+                    forms.push((text, header, number.form));
+                }
+                assert_eq!(number.name, "After: page 108 of 111. Enter page number");
+                assert_eq!(
+                    number.tooltip.as_deref(),
+                    (number.form != "labelled").then_some("Page 108 / 111")
+                );
+            }
+            if let Some(retry) = drawn.get("pdf-retry-0") {
+                assert_eq!(retry.name, "Before: retry page 108");
+            }
+            if let Some(edges) = drawn.get("model-camera-4") {
+                assert_eq!(edges.name, "Before: Solid shading. Show all triangle edges");
+            }
+        });
+        (forms, reached)
+    }
+
+    /// A model comparison's side headers' controls lie whole on their line
+    /// ([`walk_controls_on_their_line`]), its clip menu reached labelled and
+    /// as its icon at each size.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_model_side_header_s_controls_lie_whole_on_their_line(cx: &mut gpui_kit::TestAppContext) {
+        let [model, _] = document_sides(111, 107);
+        let (_, reached) = walk_controls_on_their_line(cx, model);
+        for text in [13, 18] {
+            for form in ["labelled", "icon"] {
+                assert!(
+                    reached.contains(&(text, "model-clip-0".to_owned(), form)),
+                    "at {text} pt model-clip-0 is drawn {form}"
+                );
+            }
+        }
+    }
+
+    /// A page view's side headers' controls lie whole on their line
+    /// ([`walk_controls_on_their_line`]) as the sides narrow 2 px at a time:
+    /// After's header takes its full, compact and narrowest forms in that
+    /// order, never back to a wider one, and in each the page number gives
+    /// way in one order, labelled, short, then its icon, reaching all three
+    /// at each size (a compact form's number takes the widest reading that
+    /// keeps its run on one line, so the narrowest form, which folds the zoom
+    /// menu away, may start it labelled again); the number is reached
+    /// labelled and as its icon on Before too, and Retry page labelled (a
+    /// side too narrow for it takes a compact form, whose "more" menu holds
+    /// it).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_page_view_side_header_s_controls_lie_whole_on_their_line(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::pdf_view::HeaderForm;
+        let [_, document] = document_sides(111, 107);
+        let (forms, reached) = walk_controls_on_their_line(cx, document);
+        let order = |form: &str| {
+            ["labelled", "short", "icon"]
+                .iter()
+                .position(|at| *at == form)
+        };
+        for text in [13, 18] {
+            let drawn: Vec<_> = forms.iter().filter(|(at, ..)| *at == text).collect();
+            let headers: Vec<_> = drawn.iter().map(|(_, header, _)| *header).collect();
+            assert!(
+                headers.windows(2).all(|pair| pair[0] <= pair[1])
+                    && [HeaderForm::Full, HeaderForm::Compact, HeaderForm::Narrowest]
+                        .iter()
+                        .all(|form| headers.contains(&Some(*form))),
+                "at {text} pt After's header takes its three forms in order: {drawn:?}"
+            );
+            assert!(
+                drawn
+                    .windows(2)
+                    .all(|pair| pair[0].1 != pair[1].1 || order(pair[0].2) < order(pair[1].2)),
+                "at {text} pt the page number gives way in one order in each form: {drawn:?}"
+            );
+            for form in ["labelled", "short", "icon"] {
+                assert!(
+                    drawn.iter().any(|(.., number)| *number == form),
+                    "at {text} pt the page number is drawn {form}: {drawn:?}"
+                );
+            }
+        }
+        for text in [13, 18] {
+            for (selector, forms) in [
+                ("pdf-page-number-0", &["labelled", "icon"][..]),
+                ("pdf-retry-1", &["labelled"][..]),
+            ] {
+                for &form in forms {
+                    assert!(
+                        reached.contains(&(text, selector.to_owned(), form)),
+                        "at {text} pt {selector} is drawn {form}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Each control of a side's own header in each of its forms, at 13 and
+    /// 18 pt, down to the narrowest side whose line holds an icon: what it
+    /// shows, its icon, its tooltip and its accessible name, which is the
+    /// same in every form, and a drawn width that agrees with the form, the
+    /// icon alone in the scaled 28 px square; the page view's zoom and
+    /// "more" menus in the compact form a narrow side takes. Reset and
+    /// Edges, the views
+    /// menu, the links, the clip menu, Read page text, Retry page and the
+    /// page number, whose short reading comes between, once had no test of
+    /// their icon forms, tooltips or names: Compare's narrowest side, 88 px
+    /// at 13 pt, never reached Reset's or Edges' icon.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_controls_keep_their_names_in_every_form(cx: &mut gpui_kit::TestAppContext) {
+        const CHOICES: &str = "Choose Isometric, Front, Back, Left, Right, Top or Bottom";
+        const CLIPS: &str = "Choose an animation clip or the default pose";
+        // Each control: its form, what it shows, its icon and its tooltip
+        // there, and its name in every form.
+        type Forms = &'static [(
+            &'static str,
+            &'static str,
+            Option<&'static str>,
+            Option<&'static str>,
+        )];
+        let model: &[(&str, Forms, &str)] = &[
+            (
+                "model-camera-1",
+                &[
+                    ("labelled", "Reset", None, None),
+                    ("icon", "", Some("reset"), Some("Reset")),
+                ],
+                "Before: Reset",
+            ),
+            (
+                "model-camera-4",
+                &[
+                    ("labelled", "Edges", None, None),
+                    ("icon", "", Some("edges"), Some("Edges")),
+                ],
+                "Before: Solid shading. Show all triangle edges",
+            ),
+            (
+                "model-camera-6",
+                &[
+                    ("labelled", "Reset", None, None),
+                    ("icon", "", Some("reset"), Some("Reset")),
+                ],
+                "After: Reset",
+            ),
+            (
+                "model-camera-9",
+                &[
+                    ("labelled", "Edges", None, None),
+                    ("icon", "", Some("edges"), Some("Edges")),
+                ],
+                "After: Solid shading. Show all triangle edges",
+            ),
+            (
+                "model-views-0",
+                &[
+                    ("labelled", "Isometric", None, Some(CHOICES)),
+                    (
+                        "icon",
+                        "",
+                        Some("more"),
+                        Some(
+                            "Isometric · Choose Isometric, Front, Back, Left, Right, Top or Bottom",
+                        ),
+                    ),
+                ],
+                "Before: Standard views, Isometric",
+            ),
+            (
+                "model-views-1",
+                &[
+                    ("labelled", "Isometric", None, Some(CHOICES)),
+                    (
+                        "icon",
+                        "",
+                        Some("more"),
+                        Some(
+                            "Isometric · Choose Isometric, Front, Back, Left, Right, Top or Bottom",
+                        ),
+                    ),
+                ],
+                "After: Standard views, Isometric",
+            ),
+            (
+                "model-link-0",
+                &[
+                    ("labelled", "Linked", None, None),
+                    ("icon", "", Some("link"), Some("Linked")),
+                ],
+                "Before: Cameras linked. Switch to independent cameras",
+            ),
+            (
+                "model-link-1",
+                &[
+                    ("labelled", "Linked", None, None),
+                    ("icon", "", Some("link"), Some("Linked")),
+                ],
+                "After: Cameras linked. Switch to independent cameras",
+            ),
+            (
+                "model-clip-0",
+                &[
+                    ("labelled", "Default pose", None, Some(CLIPS)),
+                    (
+                        "icon",
+                        "",
+                        Some("clip"),
+                        Some("Default pose · Choose an animation clip or the default pose"),
+                    ),
+                ],
+                "Before: Animation clip, Default pose",
+            ),
+        ];
+        let document: &[(&str, Forms, &str)] = &[
+            (
+                "pdf-read-text-0",
+                &[("labelled", "Read page text", Some("file-text"), None)],
+                "Before: read extracted text from page 1",
+            ),
+            (
+                "pdf-retry-1",
+                &[("labelled", "Retry page", Some("refresh"), None)],
+                "After: retry page 1",
+            ),
+            (
+                "pdf-page-number-0",
+                &[
+                    ("labelled", "Page 1 / 3", None, None),
+                    ("short", "1/3", None, Some("Page 1 / 3")),
+                    ("icon", "", Some("page"), Some("Page 1 / 3")),
+                ],
+                "Before: page 1 of 3. Enter page number",
+            ),
+            (
+                "pdf-page-number-1",
+                &[
+                    ("labelled", "Page 1 / 3", None, None),
+                    ("short", "1/3", None, Some("Page 1 / 3")),
+                    ("icon", "", Some("page"), Some("Page 1 / 3")),
+                ],
+                "After: page 1 of 3. Enter page number",
+            ),
+            (
+                "pdf-link-0",
+                &[("labelled", "Independent pages", None, None)],
+                "Before: Pages independent. Link pages to this page",
+            ),
+            (
+                "pdf-link-1",
+                &[("labelled", "Independent pages", None, None)],
+                "After: Pages independent. Link pages to this page",
+            ),
+            // The compact form's menus: the zoom menu reading the zoom,
+            // labelled wherever the form is drawn, since the form is chosen
+            // only where its whole run fits a line, and the "more" menu its
+            // icon alone, each listing in its tooltip what it holds.
+            (
+                "pdf-zoom-menu-0",
+                &[(
+                    "labelled",
+                    "100%",
+                    None,
+                    Some("Fit page width, Zoom out or Zoom in"),
+                )],
+                "Before: Zoom, 100%",
+            ),
+            (
+                "pdf-more-0",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some("More · Read page text, Linked pages, Open in default app"),
+                )],
+                "Before: More page actions",
+            ),
+            (
+                "pdf-more-1",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some("More · Retry page, Linked pages, Open in default app"),
+                )],
+                "After: More page actions",
+            ),
+            // The narrowest form's "more" menu, which holds the zooms first
+            // and reads the zoom.
+            (
+                "pdf-more-0",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some(
+                        "More · 100% · Fit page width, Zoom out, Zoom in, Read page text, Linked pages, Open in default app",
+                    ),
+                )],
+                "Before: More page actions, zoom 100%",
+            ),
+            (
+                "pdf-more-1",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some(
+                        "More · 100% · Fit page width, Zoom out, Zoom in, Retry page, Linked pages, Open in default app",
+                    ),
+                )],
+                "After: More page actions, zoom 100%",
+            ),
+        ];
+        let [model_sides, document_sides] = document_sides(3, 0);
+        for (content, controls) in [(model_sides, model), (document_sides, document)] {
+            let mut seen = std::collections::BTreeMap::new();
+            walk_side_widths(cx, content, 8, |cx, _, (text, width), drawn| {
+                let square = appearance::ui_size(28.);
+                for (selector, control) in drawn {
+                    let bounds = cx
+                        .debug_bounds(selector.clone().leak())
+                        .expect("the control is drawn");
+                    let at = format!("{text} pt, {width} px: {selector} {control:?} {bounds:?}");
+                    if control.form == "icon" {
+                        assert!(
+                            control.shows.is_empty()
+                                && (bounds.size.width - square).abs() < px(0.5),
+                            "{at} is its icon in the scaled 28 px square"
+                        );
+                    } else {
+                        assert!(
+                            !control.shows.is_empty() && bounds.size.width > square + px(0.5),
+                            "{at} is wider than its icon"
+                        );
+                    }
+                    // Each way a control is drawn in a form: the "more"
+                    // menu is drawn one way in the compact form and another
+                    // in the narrowest.
+                    let drawn: &mut Vec<DrawnControl> = seen
+                        .entry((text, selector.clone(), control.form))
+                        .or_default();
+                    if !drawn.contains(control) {
+                        drawn.push(control.clone());
+                    }
+                }
+            });
+            // What a control is expected to be in a form, with what it
+            // measured ([`walk_toggles_in_both_states`] checks that).
+            let expected = |(form, shows, icon, tooltip): &(
+                &'static str,
+                &'static str,
+                Option<&'static str>,
+                Option<&'static str>,
+            ),
+                            name: &str,
+                            drawn: &DrawnControl| DrawnControl {
+                form,
+                shows: shows.to_string(),
+                icon: *icon,
+                tooltip: tooltip.map(str::to_owned),
+                name: name.to_string(),
+                measured: drawn.measured.clone(),
+            };
+            for text in [13u8, 18] {
+                for (selector, forms, name) in controls {
+                    for form in *forms {
+                        let drawn = seen
+                            .get(&(text, selector.to_string(), form.0))
+                            .unwrap_or_else(|| {
+                                panic!("at {text} pt {selector} is drawn {}", form.0)
+                            });
+                        assert!(
+                            drawn
+                                .iter()
+                                .any(|drawn| *drawn == expected(form, name, drawn)),
+                            "at {text} pt {selector} drawn {} as {form:?}, named {name:?}: {drawn:?}",
+                            form.0
+                        );
+                    }
+                }
+                // And each way a control expected is drawn is one expected.
+                for ((at, selector, form), drawn) in &seen {
+                    let listed: Vec<_> = controls
+                        .iter()
+                        .filter(|(listed, ..)| *at == text && *listed == selector.as_str())
+                        .collect();
+                    for drawn in drawn.iter().filter(|_| !listed.is_empty()) {
+                        assert!(
+                            listed.iter().any(|(_, forms, name)| {
+                                forms.iter().any(|expect| {
+                                    expect.0 == *form && *drawn == expected(expect, name, drawn)
+                                })
+                            }),
+                            "at {text} pt {selector} drawn {form} is one expected: {drawn:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Flips every toggle of `sides`' headers: each model side's Edges and
+    /// link, and each page view side's link, on both sides as a click does.
+    #[cfg(target_os = "linux")]
+    fn flip_toggles(sides: &Entity<Sides>, cx: &mut gpui_kit::VisualTestContext) {
+        sides.update(cx, |sides, cx| {
+            let crate::worker::Content::Rich(comparison) = &sides.content else {
+                panic!("a document comparison");
+            };
+            for side in [&comparison.old, &comparison.new] {
+                if let Some(model) = &side.model {
+                    let mut bookmark = model.bookmark();
+                    bookmark.linked = !bookmark.linked;
+                    bookmark.wireframe = !bookmark.wireframe;
+                    model.restore(bookmark);
+                }
+                if let Some(document) = &side.pdf {
+                    crate::pdf_view::tests::flip_link(document);
+                }
+            }
+            cx.notify();
+        });
+    }
+
+    /// Each toggle of a side's own header, the model's Edges and link and
+    /// the page view's link, takes one form in both its states at every
+    /// width down to the narrowest side whose line holds an icon, at 13 and
+    /// 18 pt, labelled or its icon, each reading lying whole with its ring
+    /// on its line, and its form is measured at both its readings. Each
+    /// keeps its bounds in both states, so a click moves nothing after it:
+    /// the model's link was drawn at its current reading's width, and
+    /// "Linked" moved what follows it from where "Independent" left it. Measured
+    /// at "Linked" alone, an unlinked model's "Independent" could be cut
+    /// where "Linked" fits, and measured at "Edges" alone, "Solid" where it
+    /// is the wider: the tests' font gives every character one width, so
+    /// the labels each form's measure laid out are checked as well, as the
+    /// measure recorded them. The check once read back the readings the
+    /// toggle was given, so a measure of one of them passed it. `content`
+    /// is walked for its `toggles`, each with its two readings.
+    #[cfg(target_os = "linux")]
+    fn walk_toggles_in_both_states(
+        cx: &mut gpui_kit::TestAppContext,
+        content: crate::worker::Content,
+        toggles: &[(&'static str, [&'static str; 2])],
+    ) {
+        // What a control reads: its label, or where it draws its icon, the
+        // reading leading its tooltip.
+        let reading = |control: &DrawnControl| match control.form {
+            "icon" => control.tooltip.clone().unwrap_or_default(),
+            _ => control.shows.clone(),
+        };
+        let mut reached = std::collections::BTreeSet::new();
+        let mut measured = std::collections::BTreeMap::<_, Vec<_>>::new();
+        let paged = has_page_view(&content);
+        walk_side_widths(cx, content, 4, |cx, sides, (text, width), drawn| {
+            let at = |selector: &str| format!("{text} pt, {width} px: {selector}");
+            for &(selector, _) in toggles {
+                if drawn.contains_key(selector) {
+                    assert!(
+                        lies_on_its_line(cx, selector),
+                        "{} lies on its line",
+                        at(selector)
+                    );
+                }
+            }
+            let placed = |cx: &mut gpui_kit::VisualTestContext| {
+                toggles
+                    .iter()
+                    .map(|&(selector, _)| cx.debug_bounds(selector))
+                    .collect::<Vec<_>>()
+            };
+            let before = placed(cx);
+            flip_toggles(sides, cx);
+            DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
+            draw_answered(cx, paged);
+            let flipped = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
+            // Each toggle keeps its place and its width in both states, so
+            // a click moves nothing after it (`HeaderControl::button`).
+            assert_eq!(
+                placed(cx),
+                before,
+                "{text} pt, {width} px: the toggles keep their bounds when flipped"
+            );
+            for &(selector, readings) in toggles {
+                let (Some(one), Some(other)) = (drawn.get(selector), flipped.get(selector)) else {
+                    continue;
+                };
+                let at = format!("{}, {one:?} and flipped {other:?}", at(selector));
+                assert_eq!(one.form, other.form, "{at}: one form in both states");
+                let mut read = [reading(one), reading(other)];
+                read.sort();
+                assert_eq!(read, readings, "{at}: each state reads its own reading");
+                assert!(
+                    lies_on_its_line(cx, selector),
+                    "{at}: flipped, it lies on its line"
+                );
+                for state in [one, other] {
+                    reached.insert((text, selector, state.form, reading(state)));
+                    measured
+                        .entry(selector)
+                        .or_default()
+                        .push(state.measured.clone());
+                }
+            }
+        });
+        for &(selector, readings) in toggles {
+            // The page view's link is drawn labelled only: a side too
+            // narrow for it takes a compact form, whose "more" menu holds it
+            // (`pdf_view::header_layout`).
+            let forms: &[&str] = if selector.starts_with("pdf-link") {
+                &["labelled"]
+            } else {
+                &["labelled", "icon"]
+            };
+            for text in [13, 18] {
+                for &form in forms {
+                    for read in readings {
+                        assert!(
+                            reached.contains(&(text, selector, form, read.to_owned())),
+                            "at {text} pt {selector} is drawn {form} reading {read}"
+                        );
+                    }
+                }
+            }
+            let at_both = measured[selector]
+                .iter()
+                .all(|measured| measured.as_slice() == readings);
+            assert!(
+                at_both,
+                "{selector}'s form is measured at both {readings:?}: {:?}",
+                measured[selector]
+            );
+        }
+    }
+
+    /// A model comparison's toggles, each side's Edges and link, take one
+    /// form in both their states ([`walk_toggles_in_both_states`]).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_model_side_header_s_toggles_take_one_form_in_both_states(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let [model, _] = document_sides(3, 0);
+        walk_toggles_in_both_states(
+            cx,
+            model,
+            &[
+                ("model-camera-4", ["Edges", "Solid"]),
+                ("model-camera-9", ["Edges", "Solid"]),
+                ("model-link-0", ["Independent", "Linked"]),
+                ("model-link-1", ["Independent", "Linked"]),
+            ],
+        );
+    }
+
+    /// A page view's toggles, each side's link, take one form in both their
+    /// states ([`walk_toggles_in_both_states`]).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_page_view_side_header_s_toggles_take_one_form_in_both_states(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let [_, document] = document_sides(3, 0);
+        walk_toggles_in_both_states(
+            cx,
+            document,
+            &[
+                ("pdf-link-0", ["Independent pages", "Linked pages"]),
+                ("pdf-link-1", ["Independent pages", "Linked pages"]),
+            ],
+        );
+    }
+
+    /// The clip menu's readings and the page number's twenty are built and
+    /// laid out once for each font and size, not on every frame: walking a
+    /// model comparison, whose Before has clips, and a 111-page PDF's page
+    /// view, at 13 and 18 pt, builds them only for a size's first frame.
+    /// Built on every frame, the clip menu's names were gathered and joined
+    /// on each frame of a clip's playback. That a page number's are built
+    /// again for a count of more digits is
+    /// `pdf_view::tests::a_page_number_is_measured_again_for_a_count_of_more_digits`.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_widest_readings_are_built_once_per_size(cx: &mut gpui_kit::TestAppContext) {
+        let built = || {
+            (
+                crate::model_view::CLIP_READINGS_BUILT.with(std::cell::Cell::get),
+                crate::pdf_view::PAGE_NUMBER_READINGS_BUILT.with(std::cell::Cell::get),
+            )
+        };
+        let mut frames = 0;
+        for content in document_sides(111, 107) {
+            let mut first = std::collections::BTreeMap::new();
+            walk_side_widths(cx, content, 40, |_, _, (text, width), _| {
+                let now = built();
+                let at_first = *first.entry(text).or_insert(now);
+                assert_eq!(
+                    now, at_first,
+                    "at {text} pt, {width} px: built only for the size's first frame"
+                );
+                frames += 1;
+            });
+        }
+        let (clips, page_numbers) = built();
+        assert!(frames > 30, "the walks drew {frames} frames");
+        assert!(
+            clips >= 2 && page_numbers >= 4,
+            "the clip menu's readings were built {clips} times and the page numbers' {page_numbers}"
+        );
+    }
+
+    /// How a side's own header shows in a box its content gives way in
+    /// ([`assert_a_header_keeps_its_floor`]).
+    #[cfg(target_os = "linux")]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Shown {
+        /// At its floor, the controls after the first on lines below it,
+        /// which Tab scrolls into view.
+        Floor,
+        /// At its floor, the controls after the first on its line, which the
+        /// first's reveal scrolls into view, as the PDF narrowest form's run
+        /// of Previous, the page number, Next and the "more" menu lies
+        /// beneath its heading.
+        FloorOneLine,
+        /// Whole and unscrolled beneath its floor, as the PDF narrowest form
+        /// of one line is (34 px at 13 pt in the Stashes dialog).
+        Whole,
+    }
+
+    /// Side `name`'s own header, which `view` draws in a box its content
+    /// gives way in, keeps its `floor` exactly: the scaled 28 px control and
+    /// the larger of its ring's room and the header's padding above and
+    /// below, as GPUI snaps them to the test window's 2× device pixels: at
+    /// 13 pt 34 px under the model's `py_1` (3.25 px drawn as 3, so 34.5
+    /// unsnapped) and 41 px under the page view's `p_2`, at 18 pt 48 and
+    /// 57 px (on a 1× display, where GPUI rounds a half toward zero, so the
+    /// model's 4.5 px `py_1` at 18 pt is 4, 34 and 40, 47 and 57); or, as
+    /// `shown` says ([`Shown`]), holds a header shorter than that whole and
+    /// unscrolled. From `first`, revealed as a page that opens on it does,
+    /// Tab moves through `controls` and Shift+Tab back, each revealed whole
+    /// with its ring in every frame painted after the key. `at` names the
+    /// case.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn assert_a_header_keeps_its_floor(
+        cx: &mut gpui_kit::VisualTestContext,
+        at: &str,
+        (view, name): (EntityId, &'static str),
+        (floor, shown): (Pixels, Shown),
+        first: &crate::focus_reveal::tests::Control,
+        controls: &[crate::focus_reveal::tests::Control],
+    ) {
+        use crate::tags::tests::{draw, rendered};
+        let slack = px(0.5);
+        let region: &'static str = format!("{name}/header").leak();
+        let body = rendered(cx, format!("{name}/body").leak());
+        let minimum = appearance::ui_size(crate::image_compare::STAGE_MIN);
+        assert!(
+            body.size.height < minimum - slack,
+            "{at}: the content {body:?} gives way below its minimum {minimum:?}"
+        );
+        let held = rendered(cx, region);
+        let list = cx
+            .update(|_, cx| side_header(view, name, cx))
+            .expect("the side's header");
+        list.reveal_next_focus();
+        cx.update(|window, cx| list.focus(first.0.clone(), cx).focus(window, cx));
+        draw(cx);
+        let scroll = list.scroll().clone();
+        match shown {
+            Shown::Whole => assert!(
+                held.size.height < floor - px(0.01) && scroll.max_offset().y == px(0.),
+                "{at}: the header's region {held:?} holds the whole header beneath its floor, \
+                 {floor:?}, unscrolled ({:?})",
+                scroll.max_offset()
+            ),
+            Shown::Floor | Shown::FloorOneLine => assert!(
+                (held.size.height - floor).abs() < px(0.01),
+                "{at}: the header's region {held:?} keeps its floor, {floor:?}"
+            ),
+        }
+        if shown == Shown::Floor {
+            crate::focus_reveal::tests::assert_every_frame_reveals(cx, &list, region, controls);
+            return;
+        }
+        if shown == Shown::FloorOneLine {
+            assert!(
+                scroll.offset().y < px(0.),
+                "{at}: revealing {} scrolled the region to its line",
+                first.1
+            );
+        }
+        // Tab through `controls` and Shift+Tab back to `first`: each focused
+        // control lies whole with its ring in the region in every frame
+        // painted after the key.
+        let room = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+        let steps = controls.iter().map(|control| ("tab", control)).chain(
+            controls
+                .iter()
+                .rev()
+                .skip(1)
+                .chain(std::iter::once(first))
+                .map(|control| ("shift-tab", control)),
+        );
+        for (key, (id, selector)) in steps {
+            list.take_painted();
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| list.focused(window)).as_ref(),
+                Some(id),
+                "{at}: {key} reaches {selector}"
+            );
+            let frames = list.take_painted();
+            assert!(
+                !frames.is_empty(),
+                "{at}: {key} onto {selector} paints the region"
+            );
+            for (index, frame) in frames.iter().enumerate() {
+                let ring = frame
+                    .control
+                    .unwrap_or_else(|| panic!("{at}: frame {index} after {key} draws {selector}"))
+                    .dilate(room);
+                assert!(
+                    ring.top() >= frame.viewport.top() - px(0.01)
+                        && ring.bottom() <= frame.viewport.bottom() + px(0.01),
+                    "{at}: frame {index} after {key} paints {selector} with its ring {ring:?} \
+                     outside the region {:?}",
+                    frame.viewport
+                );
+            }
+        }
+    }
+
+    /// Queues what the next click on an open control reports, in place of
+    /// launching anything.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn queue(outcome: Result<(), NotOpened>) {
+        QUEUED.with(|queued| queued.borrow_mut().push_back(outcome));
+    }
+
+    /// The text of the newest line beneath an open control, and whether it
+    /// is a failure.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn latest_note(cx: &App) -> Option<(String, bool)> {
+        let note = cx.try_global::<Notes>()?.notes.back()?;
+        Some((note.text.to_string(), note.failed))
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+            }
+        }
+        !crc
+    }
+
+    /// A 1 × 1 PNG, with `text` in a tEXt chunk when given.
+    pub(crate) fn png(text: Option<&[u8]>) -> Vec<u8> {
+        let chunk = |kind: &[u8], data: &[u8]| {
+            let body = [kind, data].concat();
+            [
+                &(data.len() as u32).to_be_bytes()[..],
+                &body,
+                &crc32(&body).to_be_bytes(),
+            ]
+            .concat()
+        };
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend(chunk(b"IHDR", b"\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0"));
+        if let Some(text) = text {
+            png.extend(chunk(b"tEXt", &[b"Comment\0".as_slice(), text].concat()));
+        }
+        let pixels = b"\x78\x01\x01\x05\0\xfa\xff\0\0\0\0\0\0\x05\0\x01";
+        png.extend(chunk(b"IDAT", pixels));
+        png.extend(chunk(b"IEND", b""));
+        png
+    }
+
+    /// The refusal the launcher reports when GIO types a copy offered as
+    /// `kind` ("a PNG image") as an SVG document, with its category.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn seen_as_svg(kind: &str) -> NotOpened {
+        NotOpened::Failed(Failure::new(
+            Category::SeenAs("an SVG document".into()),
+            format!(
+                "The desktop would open this copy as an SVG document (image/svg+xml) rather than as {kind}, so nothing was opened."
+            ),
+        ))
+    }
+
+    /// Walks a window showing a document's comparison in the `in_frame`
+    /// region `region` from 1,481 to 461 px wide and back, in 60 px steps,
+    /// 980 px tall, at 13 and 18 pt, and checks, `at` naming the surface,
+    /// that every frame drawn after each resize draws the open controls
+    /// (`open-control`) in the form of the frame it settles in. Returns the
+    /// forms of After's control the walk met, "labelled" or "icon". Chosen
+    /// from the region's width as last laid out, the first frame after a
+    /// resize drew the form of the width before.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn open_controls_take_their_form_in_the_frame(
+        cx: &mut gpui_kit::VisualTestContext,
+        at: &str,
+        region: &'static str,
+    ) -> std::collections::BTreeSet<&'static str> {
+        use crate::in_frame::probe;
+        use crate::views::tests::draw;
+        let icon = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.))) + px(1.)
+        };
+        let forms = |frame: &probe::Frame, icon: Pixels| -> Vec<&'static str> {
+            frame
+                .parts
+                .iter()
+                .filter(|(part, _)| *part == "open-control")
+                .map(|(_, bounds)| {
+                    if bounds.size.width > icon {
+                        "labelled"
+                    } else {
+                        "icon"
+                    }
+                })
+                .collect()
+        };
+        probe::watch();
+        let mut met = std::collections::BTreeSet::new();
+        for interface in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(1481.), px(980.)));
+            draw(cx);
+            let icon = icon(cx);
+            let widths = (461..=1481)
+                .rev()
+                .step_by(60)
+                .chain((461..=1481).step_by(60));
+            for width in widths {
+                let case = format!("{at} at {interface} pt, resized to {width} × 980");
+                probe::take();
+                cx.simulate_resize(size(px(width as f32), px(980.)));
+                draw(cx);
+                let frames: Vec<_> = probe::take()
+                    .into_iter()
+                    .filter(|frame| frame.region == region)
+                    .collect();
+                draw(cx);
+                let settled = probe::take()
+                    .into_iter()
+                    .rfind(|frame| frame.region == region)
+                    .unwrap_or_else(|| panic!("{case}: {region} is drawn"));
+                let settled = forms(&settled, icon);
+                assert!(
+                    !frames.is_empty(),
+                    "{case}: {region} was drawn after the resize"
+                );
+                for (index, frame) in frames.iter().enumerate() {
+                    assert_eq!(
+                        forms(frame, icon),
+                        settled,
+                        "{case}: frame {index} of {} draws the open controls as they settle, in {:?}",
+                        frames.len(),
+                        frame.bounds
+                    );
+                }
+                met.insert(
+                    *settled
+                        .last()
+                        .unwrap_or_else(|| panic!("{case}: After's open control is drawn")),
+                );
+            }
+        }
+        probe::stop();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        met
+    }
+
+    /// Clicks After's open control `control` in a document's header, whose
+    /// open fails, and checks the answer on screen, `at` naming the case: the
+    /// line `note` beneath the header's controls shows one whole line inside
+    /// each of `clips`, the box the comparison is drawn in and what scrolls
+    /// it, its whole answer in its tooltip, though the room beneath the
+    /// controls holds no line above the content `body`'s minimum, which gives
+    /// way for it. Where the room held none, the line once drew none and the
+    /// click changed nothing there.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn a_failed_open_answers_on_one_line(
+        cx: &mut gpui_kit::VisualTestContext,
+        at: &str,
+        [control, note, body]: [&'static str; 3],
+        clips: &[&'static str],
+    ) {
+        use crate::tags::tests::{draw, hovered_tooltips, rendered};
+        let slack = px(0.5);
+        queue(Err(seen_as_svg("a PDF document")));
+        let center = rendered(cx, control).center();
+        cx.simulate_click(center, gpui::Modifiers::none());
+        cx.run_until_parked();
+        draw(cx);
+        let (whole, failed) = cx.read(latest_note).expect("a line says why");
+        assert!(
+            failed && whole.starts_with("Could not open After. The desktop would open"),
+            "{at}: the answer {whole:?}"
+        );
+        let (line, body) = (rendered(cx, note), rendered(cx, body));
+        let (line_height, minimum) = cx.update(|window, _| {
+            (
+                crate::image_compare::text_line(appearance::ui_text(11.), window),
+                appearance::ui_size(crate::image_compare::STAGE_MIN),
+            )
+        });
+        assert!(
+            (line.size.height - line_height).abs() <= slack,
+            "{at}: the line {line:?} shows one whole line of {line_height:?}"
+        );
+        assert!(
+            body.size.height < minimum - slack,
+            "{at}: the content {body:?} keeps its minimum {minimum:?}, so the room held a line"
+        );
+        for &selector in clips {
+            let clip = rendered(cx, selector);
+            assert!(
+                line.top() >= clip.top() - slack
+                    && line.bottom() <= clip.bottom() + slack
+                    && line.left() >= clip.left() - slack
+                    && line.right() <= clip.right() + slack,
+                "{at}: the line {line:?} lies whole in {selector} {clip:?}"
+            );
+        }
+        assert_eq!(
+            hovered_tooltips(cx, note),
+            1,
+            "{at}: the line's tooltip holds the whole answer"
+        );
+    }
+
+    /// After's open control, whose clicks a test answers itself.
+    fn after_control() -> Target {
+        Target {
+            opener: Opener::new(WeakEntity::new_invalid(), Showing::next()),
+            mark: Mark::new(("image-system-preview", 1usize), "captured"),
+            control: ("image-system-preview", 1usize).into(),
+            side: "After",
+            bytes: Arc::from(&b"captured"[..]),
+            offer: Offer {
+                #[cfg(target_os = "linux")]
+                kind: passive::Kind::Png,
+            },
+            focus: None,
+            #[cfg(not(target_os = "linux"))]
+            name: "captured".into(),
+            #[cfg(not(target_os = "linux"))]
+            what: "image",
+        }
+    }
+
+    /// The short line `outcome` draws beneath `target`, and its whole answer.
+    fn answered_lines(
+        target: &Target,
+        outcome: Result<(), NotOpened>,
+        cx: &mut gpui_kit::VisualTestContext,
+    ) -> (String, String) {
+        cx.update(|window, cx| target.clone().answer(outcome, window, cx));
+        cx.update(|_, cx| {
+            let answer = target.answered(cx).expect("the click's answer");
+            (answer.brief.to_string(), answer.text.to_string())
+        })
+    }
+
+    /// A failure's short line is written from its category and leads with
+    /// its reason, never from words found in its sentence: the line once
+    /// found "Seen as …" after "would open this copy as" in the launcher's
+    /// sentence, which a band in a 461 px window's half never reached
+    /// ("Could not / open After." at 18 pt). A copy the desktop would type
+    /// as something else reads "Seen as …, so not opened" whatever its
+    /// sentence says, a type without a default application names that type,
+    /// and any other failure, the launcher's refusal sentence without its
+    /// category among them, fails closed to the generic line. The whole
+    /// answer keeps the sentence, after the side.
+    #[gpui::test]
+    fn a_failure_line_is_written_from_its_category(cx: &mut gpui_kit::TestAppContext) {
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let target = after_control();
+        let refusal = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
+        let cases = [
+            (
+                Failure::new(Category::SeenAs("an SVG document".into()), "Refused."),
+                "Seen as an SVG document, so not opened",
+            ),
+            (
+                Failure::new(Category::SeenAs("application/x-php".into()), refusal),
+                "Seen as application/x-php, so not opened",
+            ),
+            (
+                Failure::new(
+                    Category::NoDefaultApplication("image/png".into()),
+                    "No default application is set for image/png, so nothing was opened.",
+                ),
+                "No default app for image/png",
+            ),
+            (
+                Failure::new(
+                    Category::TooLarge,
+                    "The captured file exceeds the 32 MiB limit for opening it in another app.",
+                ),
+                "Over 32 MiB, so not opened",
+            ),
+            (Failure::from(refusal), NOT_OPENED),
+            (
+                Failure::from("The desktop portal refused it: denied."),
+                NOT_OPENED,
+            ),
+        ];
+        for (failure, short) in cases {
+            let sentence = failure.sentence().trim_end_matches('.').to_owned();
+            let (brief, whole) = answered_lines(&target, Err(NotOpened::Failed(failure)), cx);
+            assert_eq!(brief, short);
+            assert_eq!(whole, format!("Could not open After. {sentence}."));
+        }
+        let (brief, whole) = answered_lines(&target, Err(NotOpened::Dismissed), cx);
+        assert_eq!((brief.as_str(), whole.as_str()), (DISMISSED, DISMISSED));
+    }
+
+    /// The private copy's size limit is the one refusal before the launcher
+    /// with a category of its own; every other way the copy can fail stays
+    /// `Other`. Each keeps the store's sentence for the whole answer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_copy_size_limit_has_its_own_category() {
+        let folder = tempfile::tempdir().unwrap();
+        let store = store::Store::new(folder.path().join("captured-copies"));
+        let large = vec![b'a'; gitturtle_preview::MAX_INPUT_BYTES + 1];
+        let Err(error) = store.write(&large, passive::Kind::Text) else {
+            panic!("a copy over the limit is refused");
+        };
+        let refused = copy_refused(&error);
+        assert_eq!(refused.category, Category::TooLarge);
+        assert_eq!(
+            refused.sentence(),
+            "The captured file exceeds the 32 MiB limit for opening it in another app."
+        );
+        let other = copy_refused(&anyhow::anyhow!("The user cache folder is unavailable."));
+        assert_eq!(other.category, Category::Other);
+        assert_eq!(other.sentence(), "The user cache folder is unavailable.");
+        store.close();
+    }
+
+    /// The short line beneath an image side's caption, and the line in a
+    /// document's header ([`header_ends`]) in each form it takes there
+    /// (every line, the lines that fit, one), shows its reason first and is
+    /// named, as it is announced, by the whole answer, with the side it
+    /// could not open: "Could not open After. The desktop would open …".
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_short_line_is_named_by_the_whole_answer(cx: &mut gpui_kit::TestAppContext) {
+        use gpui::Element as _;
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let opener = Opener::new(WeakEntity::new_invalid(), Showing::next());
+        let png: Arc<[u8]> = Arc::from(png(None));
+        let target = cx.update(|_, _| {
+            let offer = offer(&png, &|| Ok(())).unwrap().expect("offered");
+            opener.target(
+                ("image-system-preview", 1usize),
+                "After",
+                &png,
+                std::path::Path::new("captured"),
+                "image",
+                offer,
+            )
+        });
+        let reason = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
+        cx.update(|window, cx| {
+            target
+                .clone()
+                .answer(Err(seen_as_svg("a PNG image")), window, cx)
+        });
+        let mut written = Vec::new();
+        let viewport = cx.update(|window, _| window.viewport_size());
+        cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, cx| {
+            let answer = target.answered(cx).expect("the click's answer");
+            assert_eq!(answer.brief(), "Seen as an SVG document, so not opened");
+            let lines = [
+                target.answered(cx).unwrap().short_line(None, cx),
+                target.answered(cx).unwrap().short_line(Some(2), cx),
+                answer.short_line(Some(1), cx),
+            ];
+            for line in lines {
+                let element = line.into_element();
+                let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+                element.write_a11y_info(&mut node);
+                // Read as it is built: the window's next draw starts its live
+                // regions afresh, and these lines are drawn outside it.
+                let id = gpui::Element::id(&element).expect("the line's ID");
+                let announced = crate::native_accessibility::written::announced(&id.to_string());
+                written.push((announced, node));
+            }
+            div()
+        });
+        assert_eq!(written.len(), 3, "every form was built");
+        for (announced, node) in written {
+            assert_eq!(node.role(), gpui::accesskit::Role::Alert);
+            assert_eq!(
+                node.label(),
+                Some(format!("Could not open After. {reason}").as_str())
+            );
+            // A failure interrupts: it is announced at once, as a whole.
+            assert_eq!(
+                announced,
+                Some(crate::native_accessibility::written::Announced::ASSERTIVE)
+            );
+        }
+    }
+
+    /// macOS names every open control in the form Linux does, label first
+    /// ([`accessible_name`]), its copy named for what the surface shows:
+    /// it once led with the side on an image's caption ("Source: open
+    /// captured image in System preview") and a PDF's header ("After: open
+    /// captured PDF in System preview"), and a model's header read "Open
+    /// captured After model in system preview", none starting with the label
+    /// the control shows; a document's header named the label alone. Linux
+    /// builds never draw these names, so this pins them; macOS's own build
+    /// draws them through [`Target::button`].
+    #[test]
+    fn macos_names_an_open_control_label_first() {
+        let name = |side, what| accessible_name(QUICK_LOOK, Some(side), &quick_look_copy(what));
+        for (side, what, expected) in [
+            (
+                "Source",
+                "image",
+                "System preview: Source, a read-only copy of the captured image",
+            ),
+            (
+                "Before",
+                "image",
+                "System preview: Before, a read-only copy of the captured image",
+            ),
+            (
+                "After",
+                "PDF",
+                "System preview: After, a read-only copy of the captured PDF",
+            ),
+            (
+                "After",
+                "model",
+                "System preview: After, a read-only copy of the captured model",
+            ),
+            (
+                "Before",
+                "file",
+                "System preview: Before, a read-only copy of the captured file",
+            ),
+        ] {
+            assert_eq!(name(side, what), expected);
+        }
+    }
+
+    /// Every open control is named in one form that starts with what it
+    /// shows (WCAG 2.5.3, label in name) and then names the side its label
+    /// leaves to the heading beside it and what the application receives:
+    /// an image side's control, which once read "Open Before in default app"
+    /// in a row of its own, as much as a document's, and the icon a narrow
+    /// column draws in its place, whose label is in its name and tooltip.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn every_open_control_is_named_by_its_label_then_what_it_hands_over(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let opener = Opener::new(WeakEntity::new_invalid(), Showing::next());
+        let png: Arc<[u8]> = Arc::from(&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..]);
+        let pdf: Arc<[u8]> = Arc::from(&b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"[..]);
+        let cases = [
+            (
+                ("image-system-preview", 0usize),
+                &png,
+                "Before",
+                Form::Labelled,
+                "Open in default app: Before, a read-only copy as a PNG image",
+            ),
+            (
+                ("system-preview", 1usize),
+                &pdf,
+                "After",
+                Form::Labelled,
+                "Open in default app: After, a read-only copy as a PDF document",
+            ),
+            (
+                ("model-external", 1usize),
+                &pdf,
+                "After",
+                Form::Icon,
+                "Open in default app: After, a read-only copy as a PDF document",
+            ),
+        ];
+        let buttons = cx.update(|_, cx| {
+            cases
+                .iter()
+                .map(|(control, bytes, side, form, _)| {
+                    let offer = offer(bytes, &|| Ok(())).unwrap().expect("offered");
+                    let name = std::path::Path::new("captured");
+                    opener
+                        .target(*control, side, bytes, name, "file", offer)
+                        .button(*form, cx)
+                })
+                .collect::<Vec<_>>()
+        });
+        let names = crate::worktrees::ring_room_tests::row_nodes(cx, buttons)
+            .into_iter()
+            .map(|node| node.label().map(str::to_owned));
+        for ((.., expected), name) in cases.iter().zip(names) {
+            let name = name.expect("the control is named");
+            assert!(
+                name.starts_with("Open in default app"),
+                "{name:?} starts with what it shows"
+            );
+            assert_eq!(name, *expected);
+        }
+    }
+
+    /// Each side's Copy source, the model header's and a document's, is
+    /// named by its side first, "Before: Copy source" beside "After: Copy
+    /// source", labelled or drawn as its icon, and an LFS pointer's Copy
+    /// pointer too; a side shown alone keeps its label as its name. The
+    /// document's two were both named "Copy source", and the model's "Copy
+    /// exact After model source", which neither led with the side nor held
+    /// the label shown.
+    #[gpui::test]
+    fn each_sides_copy_source_is_named_by_its_side_first(cx: &mut gpui_kit::TestAppContext) {
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let cases = [
+            ("Before", "Copy source", true, "Before: Copy source"),
+            ("After", "Copy source", true, "After: Copy source"),
+            ("Before", "Copy source", false, "Before: Copy source"),
+            ("After", "Copy pointer", false, "After: Copy pointer"),
+            (ONE_SIDE, "Copy source", true, "Copy source"),
+            (ONE_SIDE, "Copy source", false, "Copy source"),
+        ];
+        let buttons = cx.update(|_, cx| {
+            cases
+                .iter()
+                .enumerate()
+                .map(|(index, (heading, label, labelled, _))| {
+                    let mark = Mark::new(("copy-source-name", index), "captured");
+                    copy_source_button(mark, heading, label, *labelled, cx)
+                })
+                .collect::<Vec<_>>()
+        });
+        let names = crate::worktrees::ring_room_tests::row_nodes(cx, buttons)
+            .into_iter()
+            .map(|node| node.label().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            cases
+                .iter()
+                .map(|(.., expected)| Some((*expected).to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// An SVG's copies of literal source, which share the comparison's row
+    /// of captured actions, are drawn and named by their sides through
+    /// [`side_control_name`], as every side's Copy source is: "Before: Copy
+    /// source" and "After: Copy source", and "Copy source" for a side shown
+    /// alone. They once read "Copy Before source", the side's prefix spelt apart.
+    #[gpui::test]
+    fn an_svgs_copies_are_named_by_their_sides_first(cx: &mut gpui_kit::TestAppContext) {
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let cases = [
+            ("Before", "Before: Copy source"),
+            ("After", "After: Copy source"),
+            (ONE_SIDE, "Copy source"),
+        ];
+        let buttons = cx.update(|_, cx| {
+            cases
+                .iter()
+                .enumerate()
+                .map(|(index, (heading, _))| {
+                    let mark = Mark::new(("copy-image-source", index), "image.svg");
+                    crate::image_compare::literal_source_copy(
+                        mark,
+                        heading,
+                        "Copy source",
+                        "Copy the literal source bytes",
+                        cx,
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        let names = crate::worktrees::ring_room_tests::row_nodes(cx, buttons)
+            .into_iter()
+            .map(|node| node.label().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            cases
+                .iter()
+                .map(|(_, expected)| Some((*expected).to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+}

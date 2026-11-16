@@ -48,7 +48,10 @@ fn diagnostic_highlight_style(
 
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
-pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
+/// The space between the line numbers and a line's text. A code editor keeps it
+/// before its text without line numbers too, inside its padding, so a caller
+/// that draws its own gutter beside one can start text where the editor does.
+pub const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
@@ -81,26 +84,333 @@ fn compose_decorations(
     Some(gpui::combine_highlights(styles, visible_decorations).collect())
 }
 
+/// Compose the collections' styles, and (a GitTurtle patch) put their row
+/// backgrounds that reach the visible lines in `rows` ([`read_row_background`])
+/// in the same pass, so a frame walks each decoration once.
 fn compose_decoration_collections<'a>(
     mut styles: Vec<(Range<usize>, HighlightStyle)>,
     collections: impl IntoIterator<Item = &'a [TextDecoration]>,
     visible_byte_range: Range<usize>,
+    rows: &mut RowBackgrounds,
 ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
     // Apply collections in reverse creation order so the first collection is
     // composed last and retains its documented precedence.
     let collections = collections.into_iter().collect::<Vec<_>>();
-    for decorations in collections.into_iter().rev() {
+    for (index, decorations) in collections.into_iter().enumerate().rev() {
         styles = compose_decorations(
             styles,
-            decorations
-                .iter()
-                .map(|decoration| (decoration.range.clone(), decoration.style)),
+            decorations.iter().map(|decoration| {
+                read_row_background(decoration, index, &visible_byte_range, rows);
+                (decoration.range.clone(), decoration.style)
+            }),
             visible_byte_range.clone(),
         )
         .unwrap_or_default();
     }
 
     (!styles.is_empty()).then_some(styles)
+}
+
+/// A decoration's row background ([`TextDecoration::row_background`]) that
+/// reaches the visible lines: its absolute byte range, its colour and its
+/// collection's index, the first collection's fill taking a line where
+/// several reach it.
+type RowBackground = (Range<usize>, Hsla, usize);
+
+/// The row backgrounds a frame reads, inline for the few blocks a view
+/// shows, so a frame that reads them allocates nothing for them.
+type RowBackgrounds = SmallVec<[RowBackground; 8]>;
+
+/// Put `decoration`'s row background in `rows` where its range reaches the
+/// visible lines, whose bytes `visible` holds to the last one's end: a range
+/// reaches a line where it covers some of its text or its line break, so a
+/// range over only the last visible line's break, as over a blank line, is
+/// read too, though the styles' visible range leaves that byte out.
+fn read_row_background(
+    decoration: &TextDecoration,
+    index: usize,
+    visible: &Range<usize>,
+    rows: &mut RowBackgrounds,
+) {
+    if let Some(color) = decoration.row_background
+        && decoration.range.start <= visible.end
+        && decoration.range.end > visible.start
+    {
+        rows.push((decoration.range.clone(), color, index));
+    }
+}
+
+/// The row background to paint on the buffer line whose text spans
+/// `line_start..line_end`, its line break at `line_end`: the first
+/// collection's among the `rows` reaching it, and within one collection the
+/// one starting first. `rows` ascend by start, the first ending past
+/// `line_start`.
+fn row_background_at(rows: &[RowBackground], line_start: usize, line_end: usize) -> Option<Hsla> {
+    rows.iter()
+        .take_while(|(range, ..)| range.start <= line_end)
+        .filter(|(range, ..)| range.end > line_start)
+        .min_by_key(|(_, _, index)| *index)
+        .map(|(_, color, _)| *color)
+}
+
+/// Compose the decoration layers: upstream's composition where no decoration
+/// carries a bottom rule (`ruled`, kept as the decorations are set, so such a
+/// frame does no rule work and leaves `rules` empty), and
+/// [`compose_ruled_decoration_collections`] where one does. Either puts the
+/// row backgrounds reaching the visible lines in `rows`, ascending by start.
+fn compose_decoration_layers(
+    styles: Vec<(Range<usize>, HighlightStyle)>,
+    collections: Vec<&[TextDecoration]>,
+    ruled: bool,
+    visible_byte_range: Range<usize>,
+    rules: &mut Vec<(Range<usize>, Hsla)>,
+    rows: &mut RowBackgrounds,
+) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    rows.clear();
+    let styles = if ruled {
+        compose_ruled_decoration_collections(styles, collections, visible_byte_range, rules, rows)
+    } else {
+        compose_decoration_collections(styles, collections, visible_byte_range, rows)
+    };
+    rows.sort_unstable_by_key(|(range, _, index)| (range.start, *index));
+    styles
+}
+
+/// Compose the collections' styles as [`compose_decoration_collections`]
+/// does, and put their visible bottom rules ([`TextDecoration::bottom_rule`])
+/// in `rules`, ascending by start. A rule is left out where an earlier
+/// collection draws an underline, as GitTurtle's Find marks its current
+/// match, so two strokes never run one above the other; under an earlier
+/// collection's background alone it is kept. The rules are read in the pass
+/// that composes the styles, so a frame walks each decoration once, and each
+/// rule is checked only against the underlines that can reach it.
+fn compose_ruled_decoration_collections<'a>(
+    mut styles: Vec<(Range<usize>, HighlightStyle)>,
+    collections: impl IntoIterator<Item = &'a [TextDecoration]>,
+    visible_byte_range: Range<usize>,
+    rules: &mut Vec<(Range<usize>, Hsla)>,
+    rows: &mut RowBackgrounds,
+) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    let visible = |range: &Range<usize>| {
+        let range =
+            range.start.max(visible_byte_range.start)..range.end.min(visible_byte_range.end);
+        (!range.is_empty()).then_some(range)
+    };
+    // Each visible rule with its collection's index, and the visible
+    // underlines of the collections before a ruled one, with theirs.
+    let mut ruled: Vec<(usize, Range<usize>, Hsla)> = Vec::new();
+    let mut underlines: Vec<(usize, Range<usize>)> = Vec::new();
+    // Apply collections in reverse creation order so the first collection is
+    // composed last and retains its documented precedence.
+    let collections = collections.into_iter().collect::<Vec<_>>();
+    for (index, decorations) in collections.into_iter().enumerate().rev() {
+        // Only a later collection's rule can be hidden by this one's underlines.
+        let hides = !ruled.is_empty();
+        styles = compose_decorations(
+            styles,
+            decorations.iter().map(|decoration| {
+                read_row_background(decoration, index, &visible_byte_range, rows);
+                if let Some(color) = decoration.bottom_rule
+                    && let Some(range) = visible(&decoration.range)
+                {
+                    ruled.push((index, range, color));
+                }
+                if hides
+                    && decoration.style.underline.is_some()
+                    && let Some(range) = visible(&decoration.range)
+                {
+                    underlines.push((index, range));
+                }
+                (decoration.range.clone(), decoration.style)
+            }),
+            visible_byte_range.clone(),
+        )
+        .unwrap_or_default();
+    }
+
+    rules.clear();
+    underlines.sort_unstable_by_key(|(_, underline)| underline.start);
+    // The furthest any of the first underlines reaches, so a rule passes over
+    // every underline that ends before it with one search.
+    let reach = underlines
+        .iter()
+        .scan(0, |reach, (_, underline)| {
+            *reach = underline.end.max(*reach);
+            Some(*reach)
+        })
+        .collect::<Vec<_>>();
+    for (index, range, color) in ruled {
+        let first = reach.partition_point(|&end| end <= range.start);
+        let mut start = range.start;
+        for (earlier, underline) in underlines[first..]
+            .iter()
+            .take_while(|(_, underline)| underline.start < range.end)
+        {
+            if *earlier >= index || underline.end <= start {
+                continue;
+            }
+            if start < underline.start {
+                rules.push((start..underline.start, color));
+            }
+            start = underline.end;
+        }
+        if start < range.end {
+            rules.push((start..range.end, color));
+        }
+    }
+    rules.sort_by_key(|(range, _)| range.start);
+
+    (!styles.is_empty()).then_some(styles)
+}
+
+/// For each of `indices`, the x of the first of `glyphs`, in the order the
+/// background pass walks them, whose byte index is at least that index: the
+/// glyph at which that pass starts or ends a run's box. One walk answers them
+/// all, whatever the glyphs' order (a right-to-left run's indices fall): the
+/// indices are answered in ascending order, each by the first glyph that
+/// reaches it, so a glyph whose index falls below one walked before reaches
+/// only indices that glyph already answered. `None` where no glyph does.
+fn first_glyphs_at(
+    glyphs: impl IntoIterator<Item = (usize, Pixels)>,
+    indices: &[usize],
+) -> SmallVec<[Option<Pixels>; 8]> {
+    let mut order = (0..indices.len()).collect::<SmallVec<[usize; 8]>>();
+    order.sort_unstable_by_key(|&slot| indices[slot]);
+    let mut found = SmallVec::from_elem(None, indices.len());
+    let mut next = 0;
+    for (index, x) in glyphs {
+        if next == order.len() {
+            break;
+        }
+        while next < order.len() && indices[order[next]] <= index {
+            found[order[next]] = Some(x);
+            next += 1;
+        }
+    }
+    found
+}
+
+/// Paint the bottom rules ([`TextDecoration::bottom_rule`]) on one buffer
+/// line, whose first byte is `line_start`, laid out at `origin` as the
+/// background pass lays it out. `rules` hold absolute byte ranges ascending by
+/// start, the first ending past `line_start`.
+///
+/// Each rule spans the box `paint_background` fills for its range on each
+/// visual line, from the range's first glyph to the glyph after it, or the
+/// line's end: the glyphs are walked as that pass walks them, so the rule's
+/// edges and the box's are the same floats and land on the same device
+/// pixels. Adjacent rules of one colour join, as adjacent backgrounds of one
+/// colour fill one box. The rule takes the box's bottom edge on its device
+/// pixel and a 1 px stroke's device pixels above it, so it stands inside the
+/// box on whole device pixels at every scale. A range without width paints
+/// nothing, as its box has none.
+#[allow(clippy::too_many_arguments)]
+fn paint_bottom_rules(
+    line: &LineLayout,
+    line_start: usize,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    text_align: TextAlign,
+    align_width: Option<Pixels>,
+    rules: &[(Range<usize>, Hsla)],
+    window: &mut Window,
+) {
+    let line_end = line_start
+        + line
+            .wrapped_lines
+            .iter()
+            .map(|line| line.len)
+            .sum::<usize>();
+    if rules
+        .first()
+        .is_none_or(|(range, _)| range.start >= line_end)
+    {
+        return;
+    }
+    let scale = window.scale_factor();
+    let stroke = round_half_toward_zero(scale).max(1.);
+    let mut start = line_start;
+    for (ix, shaped) in line.wrapped_lines.iter().enumerate() {
+        let end = start + shaped.len;
+        let indent = if ix == 0 { px(0.) } else { line.wrap_indent };
+        let pos = origin + point(indent, ix * line_height);
+        // This visual line's ranges, local to it, joined where they touch in one colour.
+        let mut local: SmallVec<[(Range<usize>, Hsla); 4]> = SmallVec::new();
+        for (range, color) in rules
+            .iter()
+            .take_while(|(range, _)| range.start < end)
+            .filter(|(range, _)| range.end > start)
+        {
+            let range = range.start.max(start) - start..range.end.min(end) - start;
+            match local.last_mut() {
+                Some((last, last_color)) if last.end == range.start && last_color == color => {
+                    last.end = range.end
+                }
+                _ => local.push((range, *color)),
+            }
+        }
+        start = end;
+        if local.is_empty() {
+            continue;
+        }
+        // The glyph walk of the background pass: each glyph's x, accumulated.
+        let layout: &gpui::LineLayout = shaped;
+        let align_width = align_width.unwrap_or(layout.width);
+        let mut x = match text_align {
+            TextAlign::Left => pos.x,
+            TextAlign::Center => (pos.x * 2.0 + align_width - layout.width) / 2.0,
+            TextAlign::Right => pos.x + align_width - layout.width,
+        };
+        let mut previous = px(0.);
+        let glyphs = layout
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter())
+            .map(|glyph| {
+                x += glyph.position.x - previous;
+                previous = glyph.position.x;
+                (glyph.index, x)
+            });
+        let edges = local
+            .iter()
+            .flat_map(|(range, _)| [range.start, range.end])
+            .collect::<SmallVec<[usize; 8]>>();
+        let edges = first_glyphs_at(glyphs, &edges);
+        let bottom = round_half_toward_zero((pos.y + line_height).as_f32() * scale);
+        let (top, bottom) = (px((bottom - stroke) / scale), px(bottom / scale));
+        let quads = local
+            .into_iter()
+            .enumerate()
+            .filter_map(|(rule, (_, color))| {
+                let left = edges[2 * rule]?;
+                let right = edges[2 * rule + 1].unwrap_or(pos.x + layout.width);
+                (right > left).then(|| (left, right, color))
+            })
+            .collect::<SmallVec<[(Pixels, Pixels, Hsla); 4]>>();
+        let Some(&(left, right, _)) = quads.first() else {
+            continue;
+        };
+        let (left, right) = quads.iter().fold((left, right), |(left, right), quad| {
+            (left.min(quad.0), right.max(quad.1))
+        });
+        // One layer a visual line, as the background pass paints its boxes,
+        // so the scene orders the line's rules together, over its boxes and
+        // under the guides, selections and text painted after.
+        let layer = Bounds::from_corners(point(left, top), point(right, bottom));
+        window.paint_layer(layer, |window| {
+            for (left, right, color) in quads {
+                window.paint_quad(fill(
+                    Bounds::from_corners(point(left, top), point(right, bottom)),
+                    color,
+                ));
+            }
+        });
+    }
+}
+
+/// GPUI's device-pixel rounding, half toward zero, as `paint_quad` snaps edges.
+fn round_half_toward_zero(value: f32) -> f32 {
+    (value.abs() - 0.5).ceil().copysign(value)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1410,12 +1720,17 @@ impl<M: InputModeKind> TextElement<M> {
         lines
     }
 
-    /// First usize is the offset of skipped.
+    /// First usize is the offset of skipped. The decorations' visible bottom
+    /// rules go in `rules` ([`compose_decoration_collections`]) and the row
+    /// backgrounds reaching the visible lines in `rows`, none while the input
+    /// is masked.
     fn highlight_lines(
         &mut self,
         visible_buffer_lines: &[usize],
         _visible_top: Pixels,
         visible_byte_range: Range<usize>,
+        rules: &mut Vec<(Range<usize>, Hsla)>,
+        rows: &mut RowBackgrounds,
         cx: &mut App,
     ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
         let state = self.state.read(cx);
@@ -1431,10 +1746,13 @@ impl<M: InputModeKind> TextElement<M> {
             _ => {
                 return (!state.masked)
                     .then(|| {
-                        compose_decoration_collections(
+                        compose_decoration_layers(
                             Vec::new(),
-                            state.extras.decoration_layers().into_iter(),
+                            state.extras.decoration_layers(),
+                            state.extras.has_bottom_rules(),
                             visible_byte_range,
+                            rules,
+                            rows,
                         )
                     })
                     .flatten();
@@ -1443,10 +1761,13 @@ impl<M: InputModeKind> TextElement<M> {
         let Some(highlighter) = highlighter.as_mut() else {
             return (!state.masked)
                 .then(|| {
-                    compose_decoration_collections(
+                    compose_decoration_layers(
                         Vec::new(),
-                        state.extras.decoration_layers().into_iter(),
+                        state.extras.decoration_layers(),
+                        state.extras.has_bottom_rules(),
                         visible_byte_range,
+                        rules,
+                        rows,
                     )
                 })
                 .flatten();
@@ -1543,10 +1864,13 @@ impl<M: InputModeKind> TextElement<M> {
         // Compose tree-sitter, semantic, application, then diagnostic styles.
         styles = gpui::combine_highlights(custom_styles, styles).collect();
         if !state.masked {
-            styles = compose_decoration_collections(
+            styles = compose_decoration_layers(
                 styles,
-                state.extras.decoration_layers().into_iter(),
+                state.extras.decoration_layers(),
+                state.extras.has_bottom_rules(),
                 visible_byte_range.clone(),
+                rules,
+                rows,
             )
             .unwrap_or_default();
         }
@@ -1591,6 +1915,12 @@ pub(super) struct PrepaintState {
     /// First line of inline completion (painted after cursor on same line)
     ghost_first_line: Option<ShapedLine>,
     ghost_lines_height: Pixels,
+    /// The decorations' visible bottom rules, absolute byte ranges ascending
+    /// ([`compose_decoration_collections`]), painted with the backgrounds.
+    bottom_rules: Vec<(Range<usize>, Hsla)>,
+    /// The row backgrounds reaching the visible lines, ascending by start
+    /// ([`read_row_background`]), painted first in the background pass.
+    row_backgrounds: RowBackgrounds,
 }
 
 impl PrepaintState {
@@ -1706,11 +2036,26 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state.display_map.ensure_text_prepared(&state.text, cx);
         });
 
+        // GitTurtle patch: a placeholder fitted to the width the text is laid
+        // out at in this frame, kept as the field's own
+        // (`InputBaseState::set_placeholder_fit`).
+        let placeholder = match self.state.read(cx).placeholder_fit.clone() {
+            Some(fit) => {
+                let fitted = (fit.fit)(bounds.size.width, window);
+                self.state.update(cx, |state, _| {
+                    if state.placeholder != fitted {
+                        state.placeholder = fitted.clone();
+                    }
+                });
+                fitted
+            }
+            None => self.placeholder.clone(),
+        };
+
         let state = self.state.read(cx);
         let multi_line = state.is_multi_line();
         let text = state.text.clone();
         let is_empty = text.len() == 0;
-        let placeholder = self.placeholder.clone();
 
         let text_style = window.text_style();
         let disabled = state.disabled;
@@ -1771,10 +2116,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
             .text
             .line_end_offset(visible_range.end.saturating_sub(1));
 
+        let mut bottom_rules = Vec::new();
+        let mut row_backgrounds = RowBackgrounds::new();
         let highlight_styles = self.highlight_lines(
             &visible_buffer_lines,
             visible_top,
             visible_start_offset..visible_end_offset,
+            &mut bottom_rules,
+            &mut row_backgrounds,
             cx,
         );
 
@@ -2085,6 +2434,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
+            bottom_rules,
+            row_backgrounds,
         }
     }
 
@@ -2174,19 +2525,106 @@ impl<M: InputModeKind> Element for TextElement<M> {
         //
         // gpui's `paint` only draws glyphs, underlines, and strikethroughs, so decoration
         // backgrounds need their own pass. It runs ahead of the indent guides, selections,
-        // and text so a highlighted range sits under them instead of covering them.
+        // and text so a highlighted range sits under them instead of covering them. The
+        // decorations' bottom rules are painted in it, over their line's backgrounds, and
+        // their row backgrounds first, under them.
         let mut offset_y = invisible_top_padding;
-        for (line, &buffer_line) in prepaint
-            .last_layout
+        // The first rule that may reach the line: the lines ascend, and the
+        // rules ascend by start. A frame without rules paints as upstream.
+        let rules = &prepaint.bottom_rules;
+        let mut rules_from = 0;
+        // The first row background that may reach the line, likewise; a
+        // frame without one paints as upstream.
+        let row_backgrounds = &prepaint.row_backgrounds;
+        let mut rows_from = 0;
+        // The visible lines before this index lie in the run of filled lines
+        // already painted, whose first line began it.
+        let mut run_until = 0;
+        let layout = &prepaint.last_layout;
+        // A visible line's fill, the first row background that may reach it
+        // found from `from` on: its colour, and its right edge, the visible
+        // right edge or the line's end where that is further.
+        let fill_at = |index: usize, from: &mut usize, x: Pixels| {
+            let (line, line_start) = (&layout.lines[index], layout.visible_line_byte_offsets[index]);
+            while row_backgrounds
+                .get(*from)
+                .is_some_and(|(range, ..)| range.end <= line_start)
+            {
+                *from += 1;
+            }
+            let line_end = line_start
+                + line
+                    .wrapped_lines
+                    .iter()
+                    .map(|line| line.len)
+                    .sum::<usize>();
+            row_background_at(&row_backgrounds[*from..], line_start, line_end).map(|color| {
+                (
+                    color,
+                    input_bounds
+                        .right()
+                        .max(x + line.size(line_height).width),
+                )
+            })
+        };
+        // Ghost lines after the cursor's row open a gap no fill crosses.
+        let gap_after = |buffer_line: usize| {
+            Some(buffer_line) == prepaint.current_row && prepaint.ghost_lines_height > px(0.)
+        };
+        for (index, ((line, &buffer_line), &line_start)) in layout
             .lines
             .iter()
-            .zip(prepaint.last_layout.visible_buffer_lines.iter())
+            .zip(layout.visible_buffer_lines.iter())
+            .zip(layout.visible_line_byte_offsets.iter())
+            .enumerate()
         {
             let p = point(
-                origin.x + prepaint.last_layout.line_number_width + scroll_offset,
+                origin.x + layout.line_number_width + scroll_offset,
                 origin.y + offset_y,
             );
 
+            if !row_backgrounds.is_empty() {
+                if index >= run_until
+                    && let Some((color, right)) = fill_at(index, &mut rows_from, p.x)
+                {
+                    // The run of adjacent lines filled in this colour to this
+                    // right edge, as one quad from the text area's left edge,
+                    // over each of their visual rows: the pixels the lines'
+                    // own fills would paint, painted before any of the run's
+                    // backgrounds.
+                    let mut bottom = p.y + line.size(line_height).height;
+                    let (mut end, mut from) = (index + 1, rows_from);
+                    let mut gap = gap_after(buffer_line);
+                    while !gap
+                        && end < layout.lines.len()
+                        && fill_at(end, &mut from, p.x) == Some((color, right))
+                    {
+                        bottom += layout.lines[end].size(line_height).height;
+                        gap = gap_after(layout.visible_buffer_lines[end]);
+                        end += 1;
+                    }
+                    run_until = end;
+                    window.paint_quad(fill(
+                        Bounds::from_corners(p, point(right, bottom)),
+                        color,
+                    ));
+                }
+                // The active line, painted before this pass, again over the
+                // fill, as it shows past the text on a row without one.
+                if index < run_until
+                    && prepaint.line_numbers.is_some()
+                    && prepaint.current_row == Some(buffer_line)
+                    && let Some(active) = active_line_color
+                {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(input_bounds.origin.x, p.y),
+                            size(bounds.size.width, line.size(line_height).height),
+                        ),
+                        active,
+                    ));
+                }
+            }
             line.paint_background(
                 p,
                 line_height,
@@ -2195,6 +2633,26 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 window,
                 cx,
             );
+            if !rules.is_empty() {
+                while rules
+                    .get(rules_from)
+                    .is_some_and(|(range, _)| range.end <= line_start)
+                {
+                    rules_from += 1;
+                }
+                if rules_from < rules.len() {
+                    paint_bottom_rules(
+                        line,
+                        line_start,
+                        p,
+                        line_height,
+                        text_align,
+                        Some(prepaint.last_layout.content_width),
+                        &rules[rules_from..],
+                        window,
+                    );
+                }
+            }
 
             offset_y += line.size(line_height).height;
 
@@ -2692,10 +3150,904 @@ mod tests {
         )];
 
         let styles =
-            compose_decoration_collections(Vec::new(), [&first[..], &second[..]], 0..4).unwrap();
+            compose_decoration_collections(Vec::new(), [&first[..], &second[..]], 0..4, &mut RowBackgrounds::new())
+                .unwrap();
 
         assert_eq!(styles.len(), 1);
         assert_eq!(styles[0].1.background_color, Some(gpui::red()));
+    }
+
+    /// A bottom rule is read where it is visible, and an earlier collection's
+    /// underline hides it, as Find's current match does; an earlier
+    /// collection's background alone, as Find's other matches, and an
+    /// underline in its own collection or a later one do not. Underlines
+    /// reaching across several rules, and one ending inside another, hide
+    /// each rule only where they lie over it. The styles are composed as
+    /// without the rules.
+    #[test]
+    fn bottom_rules_are_hidden_only_by_an_earlier_collections_underline() {
+        let tint = |color| HighlightStyle {
+            background_color: Some(color),
+            ..Default::default()
+        };
+        let underlined = |color| HighlightStyle {
+            underline: Some(UnderlineStyle {
+                color: Some(color),
+                thickness: px(1.),
+                wavy: false,
+            }),
+            ..tint(color)
+        };
+        let (rule, other, third) = (gpui::green(), gpui::yellow(), gpui::white());
+        let find = [
+            TextDecoration::new(0..3, underlined(gpui::red())),
+            TextDecoration::new(4..6, underlined(gpui::red())),
+            TextDecoration::new(7..8, tint(gpui::red())),
+            TextDecoration::new(25..40, underlined(gpui::red())),
+        ];
+        let patch = [
+            TextDecoration::new(2..9, tint(gpui::blue())),
+            TextDecoration::new(2..9, HighlightStyle::default()).with_bottom_rule(rule),
+            TextDecoration::new(12..20, tint(gpui::blue())).with_bottom_rule(other),
+            TextDecoration::new(22..30, tint(gpui::blue())).with_bottom_rule(third),
+            TextDecoration::new(32..36, tint(gpui::blue())).with_bottom_rule(third),
+        ];
+        let later = [TextDecoration::new(13..15, underlined(gpui::red()))];
+        let plain = patch.clone().map(|decoration| TextDecoration {
+            bottom_rule: None,
+            ..decoration
+        });
+
+        let mut rules = vec![(0..1, gpui::black())];
+        let styles = compose_ruled_decoration_collections(
+            Vec::new(),
+            [&find[..], &patch[..], &later[..]],
+            0..34,
+            &mut rules,
+            &mut RowBackgrounds::new(),
+        );
+        assert_eq!(
+            rules,
+            [(3..4, rule), (6..9, rule), (12..20, other), (22..25, third)],
+            "hidden under the earlier underlines, kept under the earlier background alone and \
+             the later underline, and clipped to the visible bytes"
+        );
+        assert_eq!(
+            styles,
+            compose_decoration_collections(
+                Vec::new(),
+                [&find[..], &plain[..], &later[..]],
+                0..34,
+                &mut RowBackgrounds::new()
+            ),
+            "rules leave the styles upstream's composition gives"
+        );
+        let mut none = vec![(0..1, gpui::black())];
+        compose_decoration_layers(
+            Vec::new(),
+            vec![&find[..], &plain[..], &later[..]],
+            false,
+            0..34,
+            &mut none,
+            &mut RowBackgrounds::new(),
+        );
+        assert_eq!(
+            none,
+            [(0..1, gpui::black())],
+            "a frame without rules does no rule work"
+        );
+    }
+
+    /// The single walk that finds where each rule's box starts and ends
+    /// answers as the first-match search over the glyphs in walk order does,
+    /// for glyphs ascending, shuffled and descending (as a right-to-left run
+    /// lays them out), at indices before, between, on and past every glyph.
+    #[test]
+    fn first_glyphs_at_answers_as_a_search_in_walk_order() {
+        let ascending = (0..40).map(|index| index * 3).collect::<Vec<usize>>();
+        let mut shuffled = ascending.clone();
+        // A fixed permutation: a stride coprime with the length.
+        for (slot, index) in shuffled.iter_mut().enumerate() {
+            *index = ascending[(slot * 17) % ascending.len()];
+        }
+        let descending = ascending.iter().rev().copied().collect::<Vec<_>>();
+        let queries = (0..125).rev().chain([0, 60, 60, 200]).collect::<Vec<_>>();
+        for (order, indices) in [
+            ("ascending", ascending),
+            ("shuffled", shuffled),
+            ("descending", descending),
+        ] {
+            let glyphs = indices
+                .iter()
+                .enumerate()
+                .map(|(slot, &index)| (index, px(slot as f32 * 7.5)))
+                .collect::<Vec<_>>();
+            let found = first_glyphs_at(glyphs.iter().copied(), &queries);
+            for (query, found) in queries.iter().zip(found) {
+                let searched = glyphs
+                    .iter()
+                    .find(|(index, _)| index >= query)
+                    .map(|(_, x)| *x);
+                assert_eq!(found, searched, "{order} glyphs at byte {query}");
+            }
+        }
+    }
+
+    /// A decoration's bottom rule is painted inside its box's bottom edge,
+    /// as wide as the box and a 1 px stroke tall on whole device pixels,
+    /// whether it rides on the decoration that sets the background or on a
+    /// decoration of its own over the same range; a decoration without one
+    /// paints exactly what it painted before the field existed.
+    #[gpui::test]
+    fn a_bottom_rule_is_painted_inside_its_boxs_bottom_edge(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx).default_value("first line\nsecond line\nthird\n")
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+
+        let (tint, own, shared) = (gpui::blue(), gpui::green(), gpui::red());
+        let background = HighlightStyle {
+            background_color: Some(tint),
+            ..Default::default()
+        };
+        // "first" without a rule, "second" with a rule of its own over the
+        // same range, and "line" on the second line with the rule on its
+        // background decoration.
+        let ruled = vec![
+            TextDecoration::new(0..5, background),
+            TextDecoration::new(11..17, background),
+            TextDecoration::new(11..17, HighlightStyle::default()).with_bottom_rule(own),
+            TextDecoration::new(18..22, background).with_bottom_rule(shared),
+        ];
+        let plain = ruled
+            .iter()
+            .cloned()
+            .map(|decoration| TextDecoration {
+                bottom_rule: None,
+                ..decoration
+            })
+            .collect::<Vec<_>>();
+        let collection = cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(ruled.clone(), cx)
+            })
+        });
+        let painted = |decorations: &[TextDecoration], cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| collection.set(decorations.to_vec(), cx));
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .map(|quad| (quad.bounds, quad.background))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        for scale in [2., 1., 1.2, 1.25, 1.5] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            let with_rules = painted(&ruled, cx);
+            let without = painted(&plain, cx);
+            let boxes = without
+                .iter()
+                .filter(|(_, fill)| *fill == Background::from(tint))
+                .map(|(bounds, _)| *bounds)
+                .collect::<Vec<_>>();
+            assert_eq!(boxes.len(), 3, "scale {scale}: one box a decorated word");
+            // 1 px on its device pixels, halves toward zero, as GPUI snaps a stroke.
+            let stroke: f32 = if scale < 2. { 1. } else { 2. };
+            for (word, color) in [(1, own), (2, shared)] {
+                let tinted = boxes[word];
+                let rules = with_rules
+                    .iter()
+                    .filter(|(_, fill)| *fill == Background::from(color))
+                    .map(|(bounds, _)| *bounds)
+                    .collect::<Vec<_>>();
+                assert_eq!(rules.len(), 1, "scale {scale}: word {word} has one rule");
+                let rule = rules[0];
+                assert_eq!(
+                    (rule.left(), rule.right(), rule.bottom()),
+                    (tinted.left(), tinted.right(), tinted.bottom()),
+                    "scale {scale}: word {word}'s rule spans its box {tinted:?} along its bottom edge"
+                );
+                assert_eq!(
+                    rule.size.height.0, stroke,
+                    "scale {scale}: word {word}'s rule is a 1 px stroke on whole device pixels"
+                );
+                assert_eq!(rule.top().0.fract(), 0., "scale {scale}: on a device pixel");
+                // The scene draws in this order: the rule over its box.
+                let drawn = |bounds: Bounds<gpui::ScaledPixels>, fill: Background| {
+                    with_rules
+                        .iter()
+                        .position(|quad| *quad == (bounds, fill))
+                        .expect("painted")
+                };
+                assert!(
+                    drawn(rule, Background::from(color)) > drawn(tinted, Background::from(tint)),
+                    "scale {scale}: word {word}'s rule is drawn over its box"
+                );
+            }
+            let mut rest = with_rules
+                .into_iter()
+                .filter(|(_, fill)| ![own, shared].map(Background::from).contains(fill))
+                .collect::<Vec<_>>();
+            let mut without = without;
+            let order = |quads: &mut Vec<(Bounds<gpui::ScaledPixels>, Background)>| {
+                quads.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")))
+            };
+            order(&mut rest);
+            order(&mut without);
+            assert_eq!(
+                rest, without,
+                "scale {scale}: the rules add their quads and nothing else"
+            );
+        }
+    }
+
+    /// A range that soft wrapping lays over several visual lines draws its
+    /// bottom rule under each of its boxes, one a visual line.
+    #[gpui::test]
+    fn a_wrapped_range_draws_its_bottom_rule_under_each_visual_line(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(160.)).h(px(400.)).child(self.0.clone())
+            }
+        }
+
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(true)
+                        .default_value(text)
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let (tint, rule) = (gpui::blue(), gpui::green());
+        let background = HighlightStyle {
+            background_color: Some(tint),
+            ..Default::default()
+        };
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![TextDecoration::new(0..text.len(), background).with_bottom_rule(rule)],
+                    cx,
+                )
+            })
+        });
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        let painted = |color| {
+            quads
+                .iter()
+                .filter(|quad| quad.background == Background::from(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>()
+        };
+        let (boxes, rules) = (painted(tint), painted(rule));
+        assert!(boxes.len() > 1, "the range wraps: {boxes:?}");
+        assert_eq!(rules.len(), boxes.len(), "a rule a visual line");
+        for (tinted, rule) in boxes.iter().zip(&rules) {
+            assert_eq!(
+                (rule.left(), rule.right(), rule.bottom()),
+                (tinted.left(), tinted.right(), tinted.bottom()),
+                "the rule spans its visual line's box {tinted:?} along its bottom edge"
+            );
+            assert_eq!(rule.size.height.0, 2., "a 1 px stroke at scale 2");
+        }
+    }
+
+    /// Row backgrounds are read where their range reaches the visible lines,
+    /// one over only the last visible line's break included, in either
+    /// composition, ascending by start, and leave the styles as composed
+    /// without them; a line takes the first collection's fill, and within a
+    /// collection the one starting first.
+    #[test]
+    fn row_backgrounds_are_read_where_they_reach_the_visible_lines() {
+        let tint = HighlightStyle {
+            background_color: Some(gpui::red()),
+            ..Default::default()
+        };
+        let (first, second, third) = (gpui::green(), gpui::blue(), gpui::yellow());
+        // Visible bytes 10..30: before them, across their start, inside,
+        // over only the last line's break at 30, and after it.
+        let earlier = [TextDecoration::new(20..24, tint).with_row_background(first)];
+        let later = [
+            TextDecoration::new(0..10, tint).with_row_background(second),
+            TextDecoration::new(30..31, HighlightStyle::default()).with_row_background(second),
+            TextDecoration::new(5..12, tint).with_row_background(third),
+            TextDecoration::new(14..26, HighlightStyle::default()).with_row_background(second),
+            TextDecoration::new(31..40, tint).with_row_background(second),
+            TextDecoration::new(16..18, tint).with_bottom_rule(gpui::white()),
+        ];
+        let plain = |decorations: &[TextDecoration]| {
+            decorations
+                .iter()
+                .cloned()
+                .map(|decoration| TextDecoration {
+                    row_background: None,
+                    ..decoration
+                })
+                .collect::<Vec<_>>()
+        };
+        let (earlier_plain, later_plain) = (plain(&earlier), plain(&later));
+        for ruled in [false, true] {
+            let mut rows = RowBackgrounds::from_vec(vec![(0..1, gpui::black(), 9)]);
+            let styles = compose_decoration_layers(
+                Vec::new(),
+                vec![&earlier[..], &later[..]],
+                ruled,
+                10..30,
+                &mut Vec::new(),
+                &mut rows,
+            );
+            assert_eq!(
+                rows.as_slice(),
+                [
+                    (5..12, third, 1),
+                    (14..26, second, 1),
+                    (20..24, first, 0),
+                    (30..31, second, 1)
+                ],
+                "ruled {ruled}: the fills reaching bytes 10 to 30 or the break at 30, by start"
+            );
+            let mut none = RowBackgrounds::new();
+            assert_eq!(
+                styles,
+                compose_decoration_layers(
+                    Vec::new(),
+                    vec![&earlier_plain[..], &later_plain[..]],
+                    ruled,
+                    10..30,
+                    &mut Vec::new(),
+                    &mut none,
+                ),
+                "ruled {ruled}: the fills leave the styles as composed without them"
+            );
+            assert!(none.is_empty(), "ruled {ruled}: no fill without the field");
+            // A line's text and its break, and the fill painted on it.
+            let at = |start, end| row_background_at(&rows, start, end);
+            assert_eq!(at(10, 11), Some(third), "a fill over the line's text");
+            assert_eq!(at(12, 14), Some(second), "a fill over the line's break alone");
+            assert_eq!(at(11, 15), Some(third), "the collection's fill starting first");
+            assert_eq!(at(19, 25), Some(first), "the first collection's fill");
+            assert_eq!(at(30, 30), Some(second), "a blank line's break");
+            assert_eq!(at(26, 29), None, "no fill reaching the line");
+        }
+    }
+
+    /// A row background fills the whole row of each line its range reaches,
+    /// from the text area's left edge, where a background on the line's first
+    /// byte starts, to the editor's visible right edge, a blank line's row
+    /// included, in one quad with the adjacent line that ends at the same
+    /// edge, a line wider than the view to its end, and the row ends at the
+    /// visible right edge scrolled sideways too; it is painted under the
+    /// line's decoration backgrounds, and a decoration without one paints
+    /// exactly what it painted before the field existed.
+    #[gpui::test]
+    fn a_row_background_fills_its_lines_rows_to_the_visible_right_edge(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(400.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        let long = "wide ".repeat(40);
+        let text = format!("short\n\n{long}\nplain\n");
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(false)
+                        .default_value(text.clone())
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+
+        let (tint, row) = (gpui::blue(), gpui::green());
+        let background = HighlightStyle {
+            background_color: Some(tint),
+            ..Default::default()
+        };
+        // "short" tinted, and the first three lines filled, the long line's
+        // break included; "plain" neither.
+        let filled = vec![
+            TextDecoration::new(0..5, background),
+            TextDecoration::new(0..8 + long.len(), HighlightStyle::default())
+                .with_row_background(row),
+        ];
+        let plain = filled
+            .iter()
+            .cloned()
+            .map(|decoration| TextDecoration {
+                row_background: None,
+                ..decoration
+            })
+            .collect::<Vec<_>>();
+        let collection = cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(filled.clone(), cx)
+            })
+        });
+        let painted = |decorations: &[TextDecoration], cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| collection.set(decorations.to_vec(), cx));
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .map(|quad| (quad.bounds, quad.background))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        for (scale, x) in [(2., 0.), (1.25, 0.), (2., -60.)] {
+            cx.update(|window, cx| {
+                window.set_scale_factor(scale);
+                editor.update(cx, |state, cx| {
+                    state.set_scroll_offset(point(px(x), px(0.)), cx)
+                });
+                window.draw(cx).clear(cx);
+            });
+            let at = format!("scale {scale}, scrolled {x} px");
+            let with_rows = painted(&filled, cx);
+            let without = painted(&plain, cx);
+            let visible_right =
+                cx.update(|_, cx| editor.read(cx).input_bounds().right().as_f32() * scale);
+            let boxes = without
+                .iter()
+                .filter(|(_, fill)| *fill == Background::from(tint))
+                .map(|(bounds, _)| *bounds)
+                .collect::<Vec<_>>();
+            assert_eq!(boxes.len(), 1, "{at}: one box under \"short\"");
+            let mut rows = with_rows
+                .iter()
+                .filter(|(_, fill)| *fill == Background::from(row))
+                .map(|(bounds, _)| *bounds)
+                .collect::<Vec<_>>();
+            rows.sort_by(|a, b| a.top().0.total_cmp(&b.top().0));
+            // The short and blank lines end at the same edge and share one
+            // quad; the long line's reaches its own end.
+            assert_eq!(rows.len(), 2, "{at}: a quad a run of rows: {rows:?}");
+            let height = boxes[0].size.height.0;
+            for (run, (filled, lines)) in rows.iter().zip([2., 1.]).enumerate() {
+                assert_eq!(
+                    filled.left(),
+                    boxes[0].left(),
+                    "{at}: run {run}'s rows start where \"short\"'s box does"
+                );
+                // As tall as its lines within the device pixel each edge is
+                // rounded to, the first starting with "short"'s box.
+                assert!(
+                    filled.top() == if run == 0 { boxes[0].top() } else { rows[0].bottom() }
+                        && (filled.size.height.0 - height * lines).abs() <= 1.,
+                    "{at}: run {run}'s quad {filled:?} covers its {lines} lines' rows: {rows:?}"
+                );
+            }
+            assert!(
+                (rows[0].right().0 - visible_right).abs() <= 0.5,
+                "{at}: the short and blank lines' rows {:?} end at the visible right edge {visible_right}",
+                rows[0]
+            );
+            assert!(
+                rows[1].right().0 > visible_right + 0.5,
+                "{at}: the long line's row {:?} reaches its end past the edge {visible_right}",
+                rows[1]
+            );
+            let drawn = |quad: (Bounds<gpui::ScaledPixels>, Background)| {
+                with_rows.iter().position(|painted| *painted == quad).unwrap()
+            };
+            assert!(
+                drawn((rows[0], Background::from(row))) < drawn((boxes[0], Background::from(tint))),
+                "{at}: the row is painted under the line's background"
+            );
+            let mut rest = with_rows
+                .into_iter()
+                .filter(|(_, fill)| *fill != Background::from(row))
+                .collect::<Vec<_>>();
+            let mut without = without;
+            let order = |quads: &mut Vec<(Bounds<gpui::ScaledPixels>, Background)>| {
+                quads.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")))
+            };
+            order(&mut rest);
+            order(&mut without);
+            assert_eq!(rest, without, "{at}: the rows add their quads and nothing else");
+        }
+    }
+
+    /// A soft-wrapped line's row background covers each of its visual rows
+    /// to the visible right edge, in one fill.
+    #[gpui::test]
+    fn a_wrapped_line_s_row_background_covers_each_visual_row(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(160.)).h(px(400.)).child(self.0.clone())
+            }
+        }
+
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(true)
+                        .default_value(text)
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let (tint, row) = (gpui::blue(), gpui::green());
+        let background = HighlightStyle {
+            background_color: Some(tint),
+            ..Default::default()
+        };
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![TextDecoration::new(0..text.len(), background).with_row_background(row)],
+                    cx,
+                )
+            })
+        });
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        let painted = |color| {
+            quads
+                .iter()
+                .filter(|quad| quad.background == Background::from(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>()
+        };
+        let (boxes, rows) = (painted(tint), painted(row));
+        let right = cx.update(|_, cx| editor.read(cx).input_bounds().right().as_f32() * 2.);
+        assert!(boxes.len() > 1, "the line wraps: {boxes:?}");
+        assert_eq!(rows.len(), 1, "one fill for the line: {rows:?}");
+        let (first, last) = (boxes[0], boxes[boxes.len() - 1]);
+        assert_eq!(
+            (rows[0].left(), rows[0].top(), rows[0].bottom()),
+            (first.left(), first.top(), last.bottom()),
+            "the fill covers every visual row from the text's left edge"
+        );
+        assert!(
+            (rows[0].right().0 - right).abs() <= 0.5,
+            "the fill {rows:?} reaches the visible right edge {right}"
+        );
+    }
+
+    /// With line numbers on, the active line is painted again over a row
+    /// background on its row, so its colour shows past the text there as on
+    /// a row without one, whether the caret is on the run's first line or a
+    /// later one; the other filled row, in the same quad, keeps the fill.
+    #[gpui::test]
+    fn the_active_line_shows_over_a_row_background(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState, InputEditorStyle};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(400.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        let (active, row) = (gpui::yellow(), gpui::green());
+        let text = "short\nnext\n";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    let mut state = EditorState::new(window, cx)
+                        .line_number(true)
+                        .soft_wrap(false)
+                        .default_value(text);
+                    state.set_editor_style(InputEditorStyle {
+                        editor_active_line: Some(active),
+                        ..Default::default()
+                    });
+                    state
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        // Both lines filled, in one run.
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![
+                        TextDecoration::new(0..text.len(), HighlightStyle::default())
+                            .with_row_background(row),
+                    ],
+                    cx,
+                )
+            })
+        });
+        // The caret on the run's first line, then on its second.
+        for caret in [0, 1] {
+            let quads = cx.update(|window, cx| {
+                editor.update(cx, |state, cx| {
+                    state.set_cursor_position(lsp_types::Position::new(caret, 0), window, cx)
+                });
+                window.draw(cx).clear(cx);
+                window.painted_quads()
+            });
+            let painted = |color| {
+                quads
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, quad)| quad.background == Background::from(color))
+                    .map(|(order, quad)| (order, quad.bounds))
+                    .collect::<Vec<_>>()
+            };
+            let (fills, lines) = (painted(row), painted(active));
+            assert_eq!(fills.len(), 1, "caret on line {caret}: one fill for both lines: {fills:?}");
+            let (order, fill) = fills[0];
+            // Across the fill: the active line, not the gutter's line number.
+            let across = |line: &Bounds<gpui::ScaledPixels>| {
+                line.left() <= fill.left() && line.right() >= fill.right()
+            };
+            // The active row, as the active line painted before the pass marks it.
+            let active_row = lines
+                .iter()
+                .find(|(drawn, line)| *drawn < order && across(line))
+                .map(|(_, line)| *line)
+                .expect("the active line is painted before the background pass");
+            assert!(
+                (active_row.top() == fill.top()) == (caret == 0)
+                    && (active_row.bottom() == fill.bottom()) == (caret == 1),
+                "the active row {active_row:?} is the fill's {fill:?} row {caret}"
+            );
+            assert!(
+                lines.iter().any(|(drawn, line)| *drawn > order
+                    && across(line)
+                    && (line.top(), line.bottom()) == (active_row.top(), active_row.bottom())),
+                "caret on line {caret}: the active line {lines:?} is painted over the fill \
+                 {fill:?} on its row"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .filter(|(drawn, _)| *drawn > order)
+                    .all(|(_, line)| (line.top(), line.bottom())
+                        == (active_row.top(), active_row.bottom())),
+                "caret on line {caret}: no active line over the other line's row: {lines:?}"
+            );
+        }
+    }
+
+    /// Adjacent lines filled in one colour to one edge are painted as one
+    /// quad over all their rows: three such lines one quad, and an unfilled
+    /// line between two runs two; a line filled in another colour right
+    /// after a run takes a quad of its own.
+    #[gpui::test]
+    fn adjacent_filled_lines_paint_one_quad_a_run(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(400.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        let text = "a1\na2\na3\nplain\nb1\nb2\nc1\n";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(false)
+                        .default_value(text)
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let (row, other) = (gpui::green(), gpui::blue());
+        // "a1" to "a3" and "b1" to "b2" in one colour, "c1" in another.
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![
+                        TextDecoration::new(0..9, HighlightStyle::default())
+                            .with_row_background(row),
+                        TextDecoration::new(15..21, HighlightStyle::default())
+                            .with_row_background(row),
+                        TextDecoration::new(21..24, HighlightStyle::default())
+                            .with_row_background(other),
+                    ],
+                    cx,
+                )
+            })
+        });
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        let line_height = cx.update(|_, cx| editor.read(cx).line_height().unwrap().as_f32() * 2.);
+        let painted = |color| {
+            let mut painted = quads
+                .iter()
+                .filter(|quad| quad.background == Background::from(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>();
+            painted.sort_by(|a, b| a.top().0.total_cmp(&b.top().0));
+            painted
+        };
+        let (runs, others) = (painted(row), painted(other));
+        assert_eq!(runs.len(), 2, "a quad a run of filled lines: {runs:?}");
+        assert_eq!(others.len(), 1, "another colour's line its own quad: {others:?}");
+        let rows = |quad: &Bounds<gpui::ScaledPixels>| quad.size.height.0 / line_height;
+        assert!(
+            (rows(&runs[0]) - 3.).abs() < 0.05 && (rows(&runs[1]) - 2.).abs() < 0.05,
+            "the runs cover three rows and two: {runs:?} at {line_height} a row"
+        );
+        assert!(
+            (runs[1].top().0 - runs[0].bottom().0 - line_height).abs() < 0.05,
+            "the unfilled line lies between the runs: {runs:?}"
+        );
+        assert!(
+            others[0].top() == runs[1].bottom() && (rows(&others[0]) - 1.).abs() < 0.05,
+            "\"c1\" is filled on its own row under the second run: {others:?}, {runs:?}"
+        );
+    }
+
+    /// The ghost lines an inline completion opens below the cursor's row, a
+    /// filled line between lines filled in the same colour to the same edge,
+    /// divide their run: the lines down to the cursor's take one quad and the
+    /// lines after the ghost lines another, which do not touch, the gap
+    /// between them the ghost lines' height.
+    #[gpui::test]
+    fn ghost_lines_divide_a_run_of_filled_lines(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(400.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        let text = "a1\na2\na3\na4\n";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(false)
+                        .default_value(text)
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let row = gpui::green();
+        // Every line filled in one colour; the caret, focused, on "a2", and
+        // a completion there of three lines, two of them ghost lines below.
+        let ghost_lines = 2.;
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![
+                        TextDecoration::new(0..text.len(), HighlightStyle::default())
+                            .with_row_background(row),
+                    ],
+                    cx,
+                );
+                state.set_cursor_position(lsp_types::Position::new(1, 2), window, cx);
+                state.extras.inline_completion.item = Some(lsp_types::InlineCompletionItem {
+                    insert_text: "x\ny\nz".into(),
+                    filter_text: None,
+                    range: None,
+                    command: None,
+                    insert_text_format: None,
+                });
+            })
+        });
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        let line_height = cx.update(|_, cx| editor.read(cx).line_height().unwrap().as_f32() * 2.);
+        let mut runs = quads
+            .iter()
+            .filter(|quad| quad.background == Background::from(row))
+            .map(|quad| quad.bounds)
+            .collect::<Vec<_>>();
+        runs.sort_by(|a, b| a.top().0.total_cmp(&b.top().0));
+        assert_eq!(runs.len(), 2, "a quad each side of the ghost lines: {runs:?}");
+        let rows = |quad: &Bounds<gpui::ScaledPixels>| quad.size.height.0 / line_height;
+        assert!(
+            (rows(&runs[0]) - 2.).abs() < 0.05 && (rows(&runs[1]) - 2.).abs() < 0.05,
+            "\"a1\" and the cursor's \"a2\" one quad, \"a3\" and \"a4\" the other: {runs:?} at \
+             {line_height} a row"
+        );
+        assert!(
+            runs[0].bottom() < runs[1].top()
+                && (runs[1].top().0 - runs[0].bottom().0 - ghost_lines * line_height).abs() < 0.05,
+            "the quads lie the ghost lines' height, {ghost_lines} rows, apart: {runs:?}"
+        );
     }
 
     #[test]

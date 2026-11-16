@@ -111,7 +111,7 @@ impl Render for RingProbe {
                             .child(div().debug_selector(|| label.into()).child("Save"))
                     }),
             )
-            // The ring every other control draws, through `focus_ring_style`.
+            // The ring `focus_ring_style` draws, which the setting leaves alone.
             .child(
                 div()
                     .debug_selector(|| "ring-kit".into())
@@ -275,9 +275,11 @@ fn assert_ring(
 
 /// A focused Button, borderless, primary or disabled, draws the ring
 /// `Theme::button_focus_ring` describes through the child outside its edge,
-/// which moves nothing. At its default that is the ring every other control
-/// draws, and the setting leaves theirs alone. `Theme::focus_ring` and
-/// `Button::focus_ring(false)` still turn the ring off.
+/// which moves nothing. At its default that is the ring `focus_ring_style`
+/// draws, and the setting leaves that alone; a focused field and checkbox
+/// draw the setting too (`focused_fields_and_checkboxes_draw_the_theme_button_focus_ring`).
+/// `Theme::focus_ring` and `Button::focus_ring(false)` still turn the ring
+/// off.
 #[gpui::test]
 fn focused_buttons_draw_the_theme_button_focus_ring(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
@@ -380,6 +382,153 @@ fn focused_buttons_draw_the_theme_button_focus_ring(cx: &mut TestAppContext) {
     assert!(
         rings_around(&quads, ghost, device).is_empty(),
         "Button::focus_ring(false)"
+    );
+}
+
+/// A focused, bordered kit Input and a focused kit Checkbox draw the ring
+/// `Theme::button_focus_ring` describes, as a Button does, at the kit's
+/// default and at 2 px, 1 px outside and full opacity: one ring outside the
+/// control, its corners concentric with the control's, while the Input's own
+/// 1 px edge takes `ring` and neither control moves. They drew the kit's
+/// half-opacity ring whatever the setting. `Theme::focus_ring` off still
+/// draws no ring and leaves the Input its tinted edge.
+#[gpui::test]
+fn focused_fields_and_checkboxes_draw_the_theme_button_focus_ring(cx: &mut TestAppContext) {
+    use gpui_kit::component::checkbox::Checkbox;
+    use gpui_kit::component::input::{Input, InputState};
+
+    struct FieldProbe {
+        field: Entity<InputState>,
+        checkbox: FocusHandle,
+    }
+    impl Render for FieldProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .p_8()
+                .flex()
+                .items_start()
+                .gap_8()
+                .child(
+                    div()
+                        .debug_selector(|| "ring-field".into())
+                        .w(px(160.))
+                        .child(Input::new(&self.field)),
+                )
+                .child(
+                    div().debug_selector(|| "ring-checkbox".into()).child(
+                        Checkbox::new("ring-checkbox")
+                            .track_focus(&self.checkbox)
+                            .label("Include"),
+                    ),
+                )
+        }
+    }
+
+    cx.update(gpui_kit::init);
+    let (probe, cx) = cx.add_window_view(|window, cx| FieldProbe {
+        field: cx.new(|cx| InputState::new(window, cx)),
+        checkbox: cx.focus_handle(),
+    });
+    let draw = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+    };
+    let device = cx.update(|window, _| px(1. / window.scale_factor()));
+    let (ring, radius) = cx.read(|cx| (Theme::global(cx).ring, Theme::global(cx).radius));
+    let handles = cx.update(|_, cx| {
+        let probe = probe.read(cx);
+        [
+            ("ring-field", probe.field.read(cx).focus_handle(cx)),
+            ("ring-checkbox", probe.checkbox.clone()),
+        ]
+    });
+    // The field rounds its frame by the theme radius, the checkbox its root
+    // by half of it.
+    let corner = |id: &str| {
+        if id == "ring-field" {
+            radius
+        } else {
+            radius * 0.5
+        }
+    };
+    let tinted_edge = |quads: &[PaintedQuad], field: Bounds<Pixels>| {
+        quads.iter().any(|quad| {
+            near(quad.outer, field, device) && quad.inner != quad.outer && quad.border == ring
+        })
+    };
+    let adopted = FocusRing {
+        width: px(2.),
+        gap: px(1.),
+        opacity: 1.,
+    };
+
+    for setting in [FocusRing::default(), adopted] {
+        cx.update(|window, cx| {
+            Theme::global_mut(cx).button_focus_ring = setting;
+            window.blur(cx);
+        });
+        draw(cx);
+        let quads = painted_quads(cx);
+        let resting = handles.clone().map(|(id, _)| {
+            let bounds = cx.debug_bounds(id).expect("rendered control");
+            assert!(
+                rings_around(&quads, bounds, device).is_empty(),
+                "unfocused {id} draws no ring under {setting:?}"
+            );
+            bounds
+        });
+        assert!(
+            !tinted_edge(&quads, resting[0]),
+            "the unfocused field's edge rests in its outline"
+        );
+        let expected = (
+            f32::from(setting.width),
+            f32::from(setting.gap),
+            setting.opacity,
+        );
+        for ((id, handle), bounds) in handles.iter().zip(resting) {
+            cx.update(|window, cx| window.focus(handle, cx));
+            draw(cx);
+            assert!(cx.update(|window, _| handle.is_focused(window)), "{id}");
+            let quads = painted_quads(cx);
+            let name = format!("focused {id} under {setting:?}");
+            assert_eq!(cx.debug_bounds(id), Some(bounds), "{name}");
+            assert_ring(&name, &quads, (bounds, corner(id)), expected, ring, device);
+            if *id == "ring-field" {
+                assert!(
+                    tinted_edge(&quads, bounds),
+                    "{name}: the field's edge takes ring"
+                );
+            }
+        }
+    }
+
+    // The theme's switch still turns the ring off and leaves the tinted edge.
+    cx.update(|window, cx| {
+        Theme::global_mut(cx).focus_ring = false;
+        window.focus(&handles[0].1, cx);
+    });
+    draw(cx);
+    let quads = painted_quads(cx);
+    let field = cx.debug_bounds("ring-field").expect("rendered field");
+    assert!(
+        rings_around(&quads, field, device).is_empty(),
+        "Theme::focus_ring off"
+    );
+    assert!(
+        tinted_edge(&quads, field),
+        "Theme::focus_ring off: the field's edge"
+    );
+    cx.update(|window, cx| window.focus(&handles[1].1, cx));
+    draw(cx);
+    let quads = painted_quads(cx);
+    let checkbox = cx.debug_bounds("ring-checkbox").expect("rendered checkbox");
+    assert!(
+        rings_around(&quads, checkbox, device).is_empty(),
+        "Theme::focus_ring off: the checkbox"
     );
 }
 

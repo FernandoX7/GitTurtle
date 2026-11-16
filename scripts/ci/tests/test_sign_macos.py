@@ -96,7 +96,7 @@ class SimulatedAppleCommands:
             executable = Path(argv[-1]) / "Contents/MacOS/gitturtle"
             executable.write_bytes(executable.read_bytes() + b"SIMULATED-SIGNATURE")
         elif label == "inspect-signature":
-            fields = {"Identifier": "com.gitturtle.desktop", "TeamIdentifier": TEAM,
+            fields = {"Identifier": "com.gitturtle.GitTurtle", "TeamIdentifier": TEAM,
                       "Authority": f"Developer ID Application: Fixture ({TEAM})",
                       "Timestamp": "Sep 15, 2026 at 12:00:00 PM",
                       "CodeDirectory": "v=20500 size=500 flags=0x10000(runtime) hashes=10+2 location=embedded"}
@@ -151,7 +151,7 @@ class SigningSimulationTests(unittest.TestCase):
         executable.chmod(0o755)
         for resource in ("AppIcon.icns", "Assets.car"):
             (resources / resource).write_bytes(b"SIMULATED-RESOURCE")
-        plist = {"CFBundleIdentifier": "com.gitturtle.desktop", "CFBundleExecutable": "gitturtle",
+        plist = {"CFBundleIdentifier": "com.gitturtle.GitTurtle", "CFBundleExecutable": "gitturtle",
                  "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.0",
                  "CFBundleVersion": "0.1.0"}
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))

@@ -1,8 +1,8 @@
 use crate::ThemeStyled as _;
 use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
-use crate::actions::{SelectLeft, SelectRight};
-use crate::menu::menu_item::MenuItemElement;
-use crate::scroll::ScrollableElement;
+use crate::actions::{SelectFirst, SelectLast, SelectLeft, SelectRight};
+use crate::menu::menu_item::{Entry, MenuItemElement};
+use crate::scroll::{Scrollbar, ScrollbarMode};
 use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
 use crate::{Side, Size, kbd::Kbd};
 use gpui::{
@@ -11,20 +11,143 @@ use gpui::{
     ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
-use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
+use gpui::{
+    ClickEvent, Half, KeyBindingContextPredicate, KeyDownEvent, KeybindingKeystroke, Keystroke,
+    MouseDownEvent, MouseMoveEvent, NoAction, OwnedMenuItem, Point, ScrollWheelEvent, Subscription,
+};
 
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 const CONTEXT: &str = "PopupMenu";
 
+/// GitTurtle patch: a row's text, kept on one line. Upstream let a row's
+/// text wrap wherever the menu was narrower than it, which an item's fixed
+/// height then cut; a row now ends with an ellipsis instead, its whole text
+/// staying its accessible name. The text and its row shrink below their
+/// content (`min_w_0`), so a menu capped at its window's width
+/// ([`PopupMenu::max_width`]) truncates its long rows rather than
+/// overflowing. A test build names the text in a debug selector,
+/// `menu-row-text: <text>`, since GPUI's test scene does not expose glyphs.
+fn menu_row_text(text: SharedString) -> gpui::Div {
+    let shown = text.clone();
+    div()
+        .min_w_0()
+        .truncate()
+        .debug_selector(move || format!("menu-row-text: {shown}"))
+        .child(text)
+}
+
+/// GitTurtle patch: how a scrollable menu's rows meet its cap
+/// ([`PopupMenu::max_h`]).
+///
+/// Upstream capped the items column but let its rows shrink, as flex items
+/// do, so a capped menu squeezed every row, its gaps with them, until its
+/// rows fit or reached their text's height, and cut its last row with no
+/// scrollbar. Each row now keeps its height (`flex_shrink_0`), and a menu
+/// whose rows run past its cap ends after the last whole row above it, with
+/// the padding an uncapped menu keeps below its last row, and scrolls the
+/// rest with an always-visible scrollbar in a gutter beside its rows, as a
+/// scrolling list cues its overflow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fold {
+    /// Every row fits under the cap: the menu is as tall as its rows and
+    /// draws no scrollbar.
+    Fits,
+    /// The rows run past the cap: the items column is this tall and scrolls.
+    At(Pixels),
+}
+
+/// GitTurtle patch: the [`Fold`] of a menu whose rows lie at `rows`, each
+/// row's top and bottom below the top of the items column and whether the
+/// menu may end after it ([`PopupMenuItem::ends_fold`]), in a column that
+/// keeps `padding` below its last row and is no taller than `cap`. The fold
+/// lies that padding below the last row that may end it, or at the next
+/// row's top where the gap between rows is narrower, so no sliver of that
+/// row shows; where no row that may end it fits, the column takes the whole
+/// cap.
+fn fold_rows(
+    rows: impl IntoIterator<Item = (Pixels, Pixels, bool)>,
+    padding: Pixels,
+    cap: Pixels,
+) -> Fold {
+    // The last row the menu may end after: its end with the padding, and
+    // the top of the row that follows it.
+    let mut fold: Option<(Pixels, Option<Pixels>)> = None;
+    for (top, bottom, ends_fold) in rows {
+        if let Some((_, next @ None)) = &mut fold {
+            *next = Some(top);
+        }
+        if bottom + padding > cap {
+            return Fold::At(
+                fold.map_or(cap, |(end, next)| next.map_or(end, |next| end.min(next))),
+            );
+        }
+        if ends_fold {
+            fold = Some((bottom + padding, None));
+        }
+    }
+    Fold::Fits
+}
+
+/// GitTurtle patch: the item the keyboard's cursor was on as its menu was
+/// built again ([`PopupMenu::rebuild`]): its name ([`PopupMenuItem::name`]),
+/// where it has one, its order among the items of that name, and its place
+/// among the menu's entries, which follows the item while a rebuild finds
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+struct KeptCursor {
+    name: Option<SharedString>,
+    ordinal: usize,
+    index: usize,
+}
+
+/// GitTurtle patch: the keys that confirm a menu's selected item, each with
+/// the context it confirms in and whether it is the secondary confirm: Enter
+/// in every menu, as upstream bound it here; Space in a menu inside a
+/// popover, as a dropdown's is, whose own binding reached the menu's
+/// [`Confirm`]; and the secondary Enter in a menu inside a list, whose own
+/// binding did. Each is bound to [`NoAction`] where it confirms, so no
+/// binding takes its key-down, which reaches [`PopupMenu::confirm_key`]
+/// with its repeat flag instead.
+const CONFIRM_KEYS: [(&str, &str, bool); 3] = [
+    ("enter", CONTEXT, false),
+    ("space", "Popover > PopupMenu", false),
+    ("secondary-enter", "List > PopupMenu", true),
+];
+
+/// GitTurtle patch: [`CONFIRM_KEYS`] parsed once, each key and context as
+/// [`KeyBinding::new`] parses them, for [`PopupMenu::confirm_key`] to match
+/// every key-down in a menu against as their bindings match it. Parsed on
+/// each key-down, the three bindings were built again for every key typed
+/// in a menu.
+static CONFIRM_KEYSTROKES: LazyLock<[(KeybindingKeystroke, KeyBindingContextPredicate, bool); 3]> =
+    LazyLock::new(|| {
+        CONFIRM_KEYS.map(|(keys, context, secondary)| {
+            (
+                KeybindingKeystroke::from_keystroke(
+                    Keystroke::parse(keys).expect("a menu's confirm key"),
+                ),
+                KeyBindingContextPredicate::parse(context).expect("a confirm key's context"),
+                secondary,
+            )
+        })
+    });
+
 pub fn init(cx: &mut App) {
+    cx.bind_keys(
+        CONFIRM_KEYS.map(|(keys, context, _)| KeyBinding::new(keys, NoAction, Some(context))),
+    );
     cx.bind_keys([
-        KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
         KeyBinding::new("up", SelectUp, Some(CONTEXT)),
         KeyBinding::new("down", SelectDown, Some(CONTEXT)),
         KeyBinding::new("left", SelectLeft, Some(CONTEXT)),
         KeyBinding::new("right", SelectRight, Some(CONTEXT)),
+        // GitTurtle patch: Home and End move the keyboard's cursor to the
+        // first and last item it stops on, as a native menu's do.
+        KeyBinding::new("home", SelectFirst, Some(CONTEXT)),
+        KeyBinding::new("end", SelectLast, Some(CONTEXT)),
     ]);
 }
 
@@ -40,6 +163,16 @@ pub enum PopupMenuItem {
         label: SharedString,
         disabled: bool,
         checked: bool,
+        /// GitTurtle patch: whether the item toggles a state, so it is
+        /// announced as a check menu item, ticked or not.
+        checkable: bool,
+        /// GitTurtle patch: the name assistive technology reads, when it
+        /// should say more than the label shows.
+        accessibility_label: Option<SharedString>,
+        /// GitTurtle patch: disabled for a reason the item states
+        /// ([`PopupMenuItem::reason_stated`]), so the keyboard's cursor
+        /// stops on it.
+        reason_stated: bool,
         is_link: bool,
         action: Option<Box<dyn Action>>,
         // For link item
@@ -50,6 +183,17 @@ pub enum PopupMenuItem {
         icon: Option<Icon>,
         disabled: bool,
         checked: bool,
+        /// GitTurtle patch: as for [`PopupMenuItem::Item`].
+        checkable: bool,
+        /// GitTurtle patch: the name assistive technology reads; an element
+        /// item has no label of its own.
+        accessibility_label: Option<SharedString>,
+        /// GitTurtle patch: as for [`PopupMenuItem::Item`].
+        reason_stated: bool,
+        /// GitTurtle patch: the name a menu built again finds the item by,
+        /// where its accessible name says more than the command it is
+        /// ([`PopupMenuItem::named`]).
+        name: Option<SharedString>,
         action: Option<Box<dyn Action>>,
         render: Box<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>,
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -61,6 +205,8 @@ pub enum PopupMenuItem {
         icon: Option<Icon>,
         label: SharedString,
         disabled: bool,
+        /// GitTurtle patch: as for [`PopupMenuItem::Item`].
+        accessibility_label: Option<SharedString>,
         menu: Entity<PopupMenu>,
     },
 }
@@ -75,6 +221,9 @@ impl PopupMenuItem {
             label: label.into(),
             disabled: false,
             checked: false,
+            checkable: false,
+            accessibility_label: None,
+            reason_stated: false,
             action: None,
             is_link: false,
             handler: None,
@@ -92,6 +241,10 @@ impl PopupMenuItem {
             icon: None,
             disabled: false,
             checked: false,
+            checkable: false,
+            accessibility_label: None,
+            reason_stated: false,
+            name: None,
             action: None,
             render: Box::new(move |window, cx| builder(window, cx).into_any_element()),
             handler: None,
@@ -105,6 +258,7 @@ impl PopupMenuItem {
             icon: None,
             label: label.into(),
             disabled: false,
+            accessibility_label: None,
             menu,
         }
     }
@@ -178,14 +332,87 @@ impl PopupMenuItem {
     /// Set checked state for the menu item.
     ///
     /// NOTE: If `check_side` is [`Side::Left`], the icon will replace with a check icon.
+    ///
+    /// GitTurtle patch: this also makes the item checkable, so it is announced
+    /// as a check menu item whether it is ticked or not.
     pub fn checked(mut self, checked: bool) -> Self {
         match &mut self {
-            PopupMenuItem::Item { checked: c, .. } => {
-                *c = checked;
+            PopupMenuItem::Item {
+                checked: c,
+                checkable,
+                ..
             }
-            PopupMenuItem::ElementItem { checked: c, .. } => {
+            | PopupMenuItem::ElementItem {
+                checked: c,
+                checkable,
+                ..
+            } => {
                 *c = checked;
+                *checkable = true;
             }
+            _ => {}
+        }
+        self
+    }
+
+    /// GitTurtle patch: set the name assistive technology reads for the item
+    /// when it should say more than the label shows, as an icon button's
+    /// accessible name does: "More context, 3 lines shown" for an item that
+    /// shows "More context (3 lines)". The label stays what is drawn.
+    ///
+    /// Only works for [`PopupMenuItem::Item`], [`PopupMenuItem::ElementItem`] and [`PopupMenuItem::Submenu`].
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        match &mut self {
+            PopupMenuItem::Item {
+                accessibility_label,
+                ..
+            }
+            | PopupMenuItem::ElementItem {
+                accessibility_label,
+                ..
+            }
+            | PopupMenuItem::Submenu {
+                accessibility_label,
+                ..
+            } => *accessibility_label = Some(label.into()),
+            _ => {}
+        }
+        self
+    }
+
+    /// GitTurtle patch: the name a menu built again finds an element item
+    /// by ([`PopupMenu::rebuild`]), its command, where its accessible name
+    /// says more, as an item that states the condition it waits for does:
+    /// found by that name, the refused item is the one the keyboard's
+    /// cursor was on, and the cursor rests while it waits
+    /// ([`CursorRests`]). Other entries are found by their label.
+    pub fn named(mut self, name: impl Into<SharedString>) -> Self {
+        if let PopupMenuItem::ElementItem { name: own, .. } = &mut self {
+            *own = Some(name.into());
+        }
+        self
+    }
+
+    /// GitTurtle patch: marks a disabled item as unavailable for a reason it
+    /// states, as an item that waits for a write says in its accessible name
+    /// what it waits for ("Browse stashes…, available when fetching
+    /// finishes"). The keyboard's cursor stops on such an item while it is
+    /// disabled: Up, Down, Home and End rest the cursor on it, drawn and
+    /// announced as the selected item with its name and reason, Enter and a
+    /// click do nothing, and the next key moves on; a menu built again keeps
+    /// the cursor on it ([`PopupMenu::rebuild`]). A disabled item without
+    /// this mark is passed over, as one that states nothing would only be
+    /// heard as unavailable. A menu the keyboard opens still starts on its
+    /// first item that can act ([`PopupMenu::select_first_item`]), and the
+    /// pointer's hover is unchanged.
+    ///
+    /// Only works for [`PopupMenuItem::Item`] and
+    /// [`PopupMenuItem::ElementItem`]: a submenu opens where it is selected,
+    /// so a disabled one is passed over.
+    pub fn reason_stated(mut self, stated: bool) -> Self {
+        match &mut self {
+            PopupMenuItem::Item { reason_stated, .. }
+            | PopupMenuItem::ElementItem { reason_stated, .. } => *reason_stated = stated,
             _ => {}
         }
         self
@@ -219,6 +446,9 @@ impl PopupMenuItem {
             label: label.into(),
             disabled: false,
             checked: false,
+            checkable: false,
+            accessibility_label: None,
+            reason_stated: false,
             action: None,
             is_link: true,
             handler: Some(Rc::new(move |_, _, cx| cx.open_url(&href))),
@@ -243,9 +473,36 @@ impl PopupMenuItem {
             )
     }
 
+    /// GitTurtle patch: whether the keyboard's cursor stops on this entry: an
+    /// item that can act, or a disabled one that states why it cannot
+    /// ([`Self::reason_stated`]), so the person hears the reason. A label, a
+    /// separator and a disabled item that states nothing are passed over.
+    fn is_keyboard_stop(&self) -> bool {
+        self.is_clickable()
+            || matches!(
+                self,
+                PopupMenuItem::Item {
+                    disabled: true,
+                    reason_stated: true,
+                    ..
+                } | PopupMenuItem::ElementItem {
+                    disabled: true,
+                    reason_stated: true,
+                    ..
+                }
+            )
+    }
+
     #[inline]
     fn is_separator(&self) -> bool {
         matches!(self, PopupMenuItem::Separator)
+    }
+
+    /// GitTurtle patch: whether a scrolling menu may end after this entry
+    /// ([`Fold`]): after a row that offers something, not after a separator
+    /// or a heading whose rows lie below the fold.
+    fn ends_fold(&self) -> bool {
+        !matches!(self, PopupMenuItem::Separator | PopupMenuItem::Label(_))
     }
 
     fn has_left_icon(&self, check_side: Side) -> bool {
@@ -262,6 +519,19 @@ impl PopupMenuItem {
     }
 
     #[inline]
+    /// GitTurtle patch: `Some(checked)` for a checkable item, `None` otherwise.
+    fn check_state(&self) -> Option<bool> {
+        match self {
+            PopupMenuItem::Item {
+                checked, checkable, ..
+            }
+            | PopupMenuItem::ElementItem {
+                checked, checkable, ..
+            } => checkable.then_some(*checked),
+            _ => None,
+        }
+    }
+
     fn is_checked(&self) -> bool {
         match self {
             PopupMenuItem::Item { checked, .. } => *checked,
@@ -272,12 +542,64 @@ impl PopupMenuItem {
 
     fn a11y_label(&self) -> Option<SharedString> {
         match self {
-            PopupMenuItem::Item { label, .. }
-            | PopupMenuItem::Label(label)
-            | PopupMenuItem::Submenu { label, .. } => Some(label.clone()),
-            PopupMenuItem::Separator | PopupMenuItem::ElementItem { .. } => None,
+            PopupMenuItem::Item {
+                label,
+                accessibility_label,
+                ..
+            }
+            | PopupMenuItem::Submenu {
+                label,
+                accessibility_label,
+                ..
+            } => Some(accessibility_label.as_ref().unwrap_or(label).clone()),
+            PopupMenuItem::ElementItem {
+                accessibility_label,
+                ..
+            } => accessibility_label.clone(),
+            PopupMenuItem::Label(label) => Some(label.clone()),
+            PopupMenuItem::Separator => None,
         }
     }
+
+    /// GitTurtle patch: the name a menu built again finds this item by, so
+    /// the keyboard's cursor stays on it ([`PopupMenu::rebuild`]): an item's
+    /// or a submenu's label, or an element item's accessible name, which is
+    /// all it has to tell it apart. A label or a separator has none: the
+    /// cursor never rests on one.
+    fn name(&self) -> Option<&SharedString> {
+        match self {
+            PopupMenuItem::Item { label, .. } | PopupMenuItem::Submenu { label, .. } => Some(label),
+            PopupMenuItem::ElementItem {
+                accessibility_label,
+                name,
+                ..
+            } => name.as_ref().or(accessibility_label.as_ref()),
+            PopupMenuItem::Label(_) | PopupMenuItem::Separator => None,
+        }
+    }
+}
+
+/// GitTurtle patch: a menu built again left the keyboard's cursor resting
+/// because the item it was on, which could act, is still offered but can no
+/// longer act, as while a write refuses it ([`PopupMenu::rebuild`]): on
+/// nothing, or on the item itself where it states why it is unavailable or
+/// waits ([`PopupMenuItem::reason_stated`]). Emitted once, as the rest
+/// begins, not again for each rebuild while it lasts nor for a cursor the
+/// menu keys put on such an item, which they report selected with its
+/// reason in its name, and never for a menu whose selection the pointer
+/// owns, which keeps no cursor to rest. An application can say why the item
+/// can no longer act, as the item's accessible name does where it states
+/// the reason: that name gains the reason as the item starts to wait, but
+/// nothing establishes that a screen reader speaks the selected item's name
+/// changing, so the application announces it to have the reason said either
+/// way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorRests {
+    /// The item's name, by which the menu finds it ([`PopupMenuItem::named`]).
+    pub name: SharedString,
+    /// The item's accessible name, which says why it is unavailable or waits
+    /// where the item states it.
+    pub label: SharedString,
 }
 
 pub struct PopupMenu {
@@ -289,7 +611,59 @@ pub struct PopupMenu {
     /// change where actions are dispatched: they still bubble from the menu's
     /// own focus path (through the trigger element's ancestors).
     pub(crate) previous_focus_handle: Option<FocusHandle>,
+    /// GitTurtle patch: the control that opened this menu, where neither
+    /// handle above names it: a dropdown's trigger, or the place an
+    /// application's right-click menu returns focus to. A dialog one of the
+    /// menu's items opens gives focus back to it as it closes
+    /// ([`Self::return_dialogs_to_opener`]). Setting it changes nothing about
+    /// how the menu closes or which shortcuts it shows.
+    dialog_return_focus: Option<FocusHandle>,
     selected_index: Option<usize>,
+    /// GitTurtle patch: the keyboard placed the selection (Up, Down, or Right
+    /// into a submenu), so the item draws as the keyboard's cursor rather than
+    /// the pointer's hover; the pointer entering an item clears it.
+    keyboard_selection: bool,
+    /// GitTurtle patch: the item the keyboard's cursor was on when a rebuild
+    /// found it gone or unable to act, as while a write refuses it, so the
+    /// cursor rests on nothing: a later rebuild that offers it able to act
+    /// places the cursor there again ([`PopupMenu::rebuild`]), and Up and
+    /// Down start from its place. A menu key or the pointer that moves the
+    /// selection forgets it. While it is held nothing is selected.
+    kept_cursor: Option<KeptCursor>,
+    /// GitTurtle patch: the pointer took the selection, or took the
+    /// keyboard's cursor off its row, since a menu key last placed it, so a
+    /// rebuild selects nothing, whatever its builder selects
+    /// ([`PopupMenu::rebuild`]). A menu key or a dismissal clears it.
+    pointer_selection: bool,
+    /// GitTurtle patch: where the pointer rested when a wheel scrolled the
+    /// rows under it, the menu was laid out at another place or size around
+    /// it, or the menu was built again under it, until it moves from there.
+    /// Meanwhile no row draws the pointer's hover or takes its selection:
+    /// the person never moved to the row that arrived under it.
+    still_pointer: Option<Point<Pixels>>,
+    /// GitTurtle patch: the item GPUI last reported under the pointer, which
+    /// takes the selection once a still pointer moves onto it
+    /// ([`PopupMenu::pointer_moved`]).
+    hovered_index: Option<usize>,
+    /// GitTurtle patch: the item a press of the primary button went down on,
+    /// by its index; only a release on that item acts
+    /// ([`PopupMenu::on_click`]). A rebuild forgets it.
+    pressed: Option<usize>,
+    /// GitTurtle patch: how many times the menu has been built again
+    /// ([`PopupMenu::rebuild`]); a row drawn before the latest rebuild
+    /// records no press ([`PopupMenu::pressed_on`]).
+    builds: usize,
+    /// GitTurtle patch: where the last frame drew each drawn row, by its
+    /// item's index, scrolled and clipped as drawn; none after a rebuild
+    /// until the next layout ([`PopupMenu::rows_laid_out`]).
+    rows: Vec<Bounds<Pixels>>,
+    /// GitTurtle patch: the surface's bounds as the last frame laid it out,
+    /// or `None` before its first layout ([`PopupMenu::surface_laid_out`]).
+    surface: Option<Bounds<Pixels>>,
+    /// GitTurtle patch: where the pointer was as the last frame laid the
+    /// surface out. A hover report with the pointer still there came from
+    /// rows that moved, not from the pointer.
+    pointer_at_layout: Option<Point<Pixels>>,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
@@ -300,6 +674,9 @@ pub struct PopupMenu {
     /// The parent menu of this menu, if this is a submenu
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
+    /// GitTurtle patch: where a scrollable menu's items met its cap when it
+    /// was last laid out, or `None` before its first layout.
+    fold: Option<Fold>,
     external_link_icon: bool,
     scroll_handle: ScrollHandle,
     // This will update on render
@@ -327,15 +704,27 @@ impl PopupMenu {
             focus_handle: cx.focus_handle(),
             action_context: None,
             previous_focus_handle: None,
+            dialog_return_focus: None,
             parent_menu: None,
             menu_items: Vec::new(),
             selected_index: None,
+            keyboard_selection: false,
+            kept_cursor: None,
+            pointer_selection: false,
+            still_pointer: None,
+            hovered_index: None,
+            pressed: None,
+            builds: 0,
+            rows: Vec::new(),
+            surface: None,
+            pointer_at_layout: None,
             min_width: None,
             max_width: None,
             max_height: None,
             check_side: Side::Left,
             bounds: Bounds::default(),
             scrollable: false,
+            fold: None,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
             size: Size::default(),
@@ -397,6 +786,13 @@ impl PopupMenu {
         }
     }
 
+    /// GitTurtle patch: the control that opened this menu, which a dialog one
+    /// of its items opens gives focus back to as it closes. Where it is
+    /// unset, that is the focus the menu restores as it closes, or none.
+    pub fn set_dialog_return_focus(&mut self, handle: Option<FocusHandle>) {
+        self.dialog_return_focus = handle;
+    }
+
     /// Set min width of the popup menu, default is 120px
     pub fn min_w(mut self, width: impl Into<Pixels>) -> Self {
         self.min_width = Some(width.into());
@@ -447,7 +843,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         enable: bool,
     ) -> Self {
-        self.add_menu_item(label, None, action, !enable, false);
+        self.add_menu_item(label, None, action, !enable, None);
         self
     }
 
@@ -458,7 +854,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         disabled: bool,
     ) -> Self {
-        self.add_menu_item(label, None, action, disabled, false);
+        self.add_menu_item(label, None, action, disabled, None);
         self
     }
 
@@ -531,7 +927,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         disabled: bool,
     ) -> Self {
-        self.add_menu_item(label, Some(icon.into()), action, disabled, false);
+        self.add_menu_item(label, Some(icon.into()), action, disabled, None);
         self
     }
 
@@ -553,7 +949,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         disabled: bool,
     ) -> Self {
-        self.add_menu_item(label, None, action, disabled, checked);
+        self.add_menu_item(label, None, action, disabled, Some(checked));
         self
     }
 
@@ -724,17 +1120,207 @@ impl PopupMenu {
     /// })
     /// .detach();
     /// ```
+    ///
+    /// GitTurtle patch: the keyboard's cursor stays on the item it was on,
+    /// found again by its name ([`PopupMenuItem::name`]) and its order among
+    /// the items of that name wherever the builder now places it, as an item
+    /// added above it moves it, or, for an item without a name, at its place
+    /// where the item there has none either. It never moves to another
+    /// item. Where its item is unavailable or waits for a reason it states
+    /// ([`PopupMenuItem::reason_stated`]), as an item a write refuses says
+    /// what it waits for, the cursor stays on it, as the menu keys rest it
+    /// there, and Enter does nothing until the item can act. Where its item
+    /// is gone, or can no longer act and states no reason, the cursor rests
+    /// on nothing and the menu remembers the item (`kept_cursor`), however
+    /// often it is built again, until a rebuild offers the item able to act
+    /// or stating why it is unavailable or waits and places the cursor there
+    /// again, or a menu key or the pointer moves the selection. From rest,
+    /// Up and Down start from the item's place. A cursor whose item could act and, still
+    /// offered, no longer can is reported once ([`CursorRests`]). A
+    /// remembered item takes the place of any selection the builder makes
+    /// ([`Self::select_first_item`]); with none, the builder's selection
+    /// stands, unless the pointer owns the selection. Upstream cleared the
+    /// selection, so an open menu built again, as its content arrived or the
+    /// state its items read changed, lost its cursor, and a caller that put
+    /// one back could only put it on the first item; moved to the nearest
+    /// item that could act, the cursor once rested on an action the person
+    /// had not chosen, which Enter then ran. A selection the pointer made is
+    /// cleared, as upstream: the pointer's own place decides what it lights.
+    /// Once the pointer has taken the selection, or taken the keyboard's
+    /// cursor off its row, since a menu key last placed it
+    /// (`pointer_selection`), the rebuild selects nothing, though its builder
+    /// selects an item, as a menu opened from the keyboard is built on its
+    /// first item, until a menu key places the cursor again: the builder's
+    /// first item once took the cursor of a keyboard-opened menu the pointer
+    /// had moved over, and Enter ran that item. A capped menu scrolls to the
+    /// cursor only where the rebuild moves it to another row, as its item
+    /// moved or it returns from rest, and the builder's selection, which a
+    /// kept cursor or the pointer's ownership replaces, scrolls nothing: a
+    /// menu the wheel scrolled stays where it was.
+    ///
+    /// Built again under a pointer resting over the menu as last laid out,
+    /// while the keyboard does not own the cursor, the pointer is still from
+    /// there, as after a wheel ([`Self::rows_scrolled`]): no row takes the
+    /// selection or draws the pointer's hover until the pointer moves, which
+    /// selects the row under it ([`Self::pointer_moved`]). The rows can move
+    /// under the pointer though the menu keeps its place and size, which the
+    /// layout's comparison of the surface misses
+    /// ([`Self::surface_laid_out`]): a capped menu scrolled to its end, built
+    /// again shorter, keeps its height while GPUI clamps its offset to the
+    /// shorter content, moving every row down; and GPUI then reported the row
+    /// that arrived hovered, which took the selection, so Enter ran it, as a
+    /// branch switcher's row checks its branch out. Nothing tells such a row
+    /// from one that stayed, and the rebuild has cleared the pointer's
+    /// selection, so a row it lit would be one Enter does not run. A
+    /// keyboard's cursor needs none of this: the hover's own rule keeps it
+    /// from rows that arrive under a pointer that has not moved, and the
+    /// pointer taking it as it leaves the cursor's row must stand.
     pub fn rebuild(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
         f: impl FnOnce(Self, &mut Window, &mut Context<Self>) -> Self,
     ) {
+        let cursor = self.keyboard_cursor();
+        let row = self.selected_index;
+        // Whether the keyboard's cursor is on an item that can act, not at
+        // rest nor on an item that waits: only such an item's refusal begins
+        // a rest ([`CursorRests`]).
+        let acting = self.kept_cursor.is_none()
+            && cursor
+                .as_ref()
+                .and_then(|cursor| self.menu_items.get(cursor.index))
+                .is_some_and(PopupMenuItem::is_clickable);
+        let pointer = cursor.is_none() && self.pointer_selection;
         let mut menu = std::mem::replace(self, Self::new(cx));
         menu.menu_items.clear();
         menu.selected_index = None;
+        menu.kept_cursor = None;
+        // A press before the rebuild went down on the item that stood at its
+        // index then, which an item of the same label may now replace, as
+        // Undo last local commit… acts on another commit once HEAD moves:
+        // its release acts on nothing.
+        menu.pressed = None;
+        menu.builds = menu.builds.wrapping_add(1);
+        // The builder's selection, which a kept cursor or the pointer's
+        // ownership replaces, scrolls a handle nothing draws.
+        let scroll = (cursor.is_some() || pointer).then(|| std::mem::take(&mut menu.scroll_handle));
         *self = f(menu, window, cx);
+        if let Some(scroll) = scroll {
+            self.scroll_handle = scroll;
+        }
+        if let Some(cursor) = cursor {
+            // A rest that begins here, its item, which could act, still
+            // offered but refused or waiting, is reported once; a rest that
+            // goes on, or a cursor the keys put on a waiting item, is not
+            // reported again.
+            if let Some(waiting) = self.place_kept_cursor(cursor, row).filter(|_| acting)
+                && let Some(item) = self.menu_items.get(waiting)
+                && let (Some(name), Some(label)) = (item.name().cloned(), item.a11y_label())
+            {
+                cx.emit(CursorRests { name, label });
+            }
+        } else if pointer {
+            // The builder's selection cleared the flag; the pointer still
+            // owns the selection, for the next rebuild as well.
+            self.selected_index = None;
+            self.keyboard_selection = false;
+            self.pointer_selection = true;
+        }
+        // Rows built again under a pointer resting over the menu can move
+        // under it though the menu keeps its place and size, so no row the
+        // pointer has not moved to takes the selection or draws its hover.
+        let at = window.mouse_position();
+        if !self.keyboard_selection && self.surface.is_some_and(|surface| surface.contains(&at)) {
+            self.still_pointer = Some(at);
+        }
+        // The rows laid out were the old items', and GPUI reports nothing
+        // for a row no longer drawn, so the hover of one is forgotten.
+        self.rows.clear();
+        let drawn = self.drawn_items().count();
+        self.hovered_index = self.hovered_index.filter(|ix| *ix < drawn);
         cx.notify();
+    }
+
+    /// GitTurtle patch: the item the keyboard's cursor is on, or the item a
+    /// rebuild found it could not place it on and remembers, for a rebuild
+    /// to keep ([`Self::rebuild`]); `None` where the pointer made the
+    /// selection or nothing holds it.
+    fn keyboard_cursor(&self) -> Option<KeptCursor> {
+        if let Some(kept) = &self.kept_cursor {
+            return Some(kept.clone());
+        }
+        let index = self.selected_index.filter(|_| self.keyboard_selection)?;
+        let name = self
+            .menu_items
+            .get(index)
+            .and_then(PopupMenuItem::name)
+            .cloned();
+        let ordinal = name.as_ref().map_or(0, |name| {
+            self.menu_items[..index]
+                .iter()
+                .filter(|item| item.name() == Some(name))
+                .count()
+        });
+        Some(KeptCursor {
+            name,
+            ordinal,
+            index,
+        })
+    }
+
+    /// GitTurtle patch: where `cursor`'s item stands among the items, if
+    /// anywhere: the item of its name in its order among the items of that
+    /// name, so items added above it, one of its name among them, leave it
+    /// on its own; or, for an item without a name, the entry at its place
+    /// where that has none either. Taken nearest its old place, a repeated
+    /// name once moved the cursor to the other item of that name.
+    fn find_kept(&self, cursor: &KeptCursor) -> Option<usize> {
+        match &cursor.name {
+            Some(name) => self
+                .menu_items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.name() == Some(name))
+                .nth(cursor.ordinal)
+                .map(|(ix, _)| ix),
+            None => self
+                .menu_items
+                .get(cursor.index)
+                .filter(|item| item.name().is_none())
+                .map(|_| cursor.index),
+        }
+    }
+
+    /// GitTurtle patch: places the keyboard's `cursor`, kept across a
+    /// rebuild, on its item where the cursor stops on that item, as it does
+    /// on one that can act or one that states why it is unavailable or waits
+    /// ([`PopupMenuItem::is_keyboard_stop`]), scrolling a capped menu to it
+    /// only where that is not `row`, the cursor's row before the rebuild;
+    /// otherwise nothing is selected and the menu remembers the item, at
+    /// the place it now stands where it is still offered, for the next
+    /// rebuild and the menu keys. Returns the item's index where it is
+    /// offered but cannot act, the cursor resting or waiting with it.
+    fn place_kept_cursor(&mut self, cursor: KeptCursor, row: Option<usize>) -> Option<usize> {
+        let found = self.find_kept(&cursor);
+        let refused = found.filter(|ix| !self.menu_items[*ix].is_clickable());
+        match found.filter(|ix| self.menu_items[*ix].is_keyboard_stop()) {
+            Some(ix) => {
+                self.selected_index = Some(ix);
+                self.keyboard_selection = true;
+                if row != Some(ix) {
+                    self.scroll_handle.scroll_to_item(ix);
+                }
+            }
+            None => {
+                self.selected_index = None;
+                self.kept_cursor = Some(KeptCursor {
+                    index: found.unwrap_or(cursor.index),
+                    ..cursor
+                });
+            }
+        }
+        refused
     }
 
     fn add_menu_item(
@@ -743,13 +1329,15 @@ impl PopupMenu {
         icon: Option<Icon>,
         action: Box<dyn Action>,
         disabled: bool,
-        checked: bool,
+        // GitTurtle patch: `Some` for the check builders, which make the item
+        // checkable; `None` for a plain item.
+        checked: Option<bool>,
     ) -> &mut Self {
         self.menu_items.push(
             PopupMenuItem::new(label)
                 .when_some(icon, |item, icon| item.icon(icon))
                 .disabled(disabled)
-                .checked(checked)
+                .when_some(checked, |item, checked| item.checked(checked))
                 .action(action),
         );
         self
@@ -773,12 +1361,18 @@ impl PopupMenu {
                     disabled,
                     ..
                 } => {
-                    self = self.menu_with_check_and_disabled(
-                        name,
-                        checked,
-                        action.boxed_clone(),
-                        disabled,
-                    )
+                    // GitTurtle patch: a platform menu action says only whether
+                    // it is ticked, so only a ticked one is announced as checkable.
+                    self = if checked {
+                        self.menu_with_check_and_disabled(
+                            name,
+                            checked,
+                            action.boxed_clone(),
+                            disabled,
+                        )
+                    } else {
+                        self.menu_with_disabled(name, action.boxed_clone(), disabled)
+                    }
                 }
                 OwnedMenuItem::Separator => {
                     self = self.separator();
@@ -823,17 +1417,102 @@ impl PopupMenu {
             .filter(|(_, item)| item.is_clickable())
     }
 
+    /// GitTurtle patch: the indices of the entries the menu keys move the
+    /// keyboard's cursor between, in order: the items that can act and those
+    /// that state why they are unavailable or wait
+    /// ([`PopupMenuItem::is_keyboard_stop`]).
+    fn keyboard_stops(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.menu_items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.is_keyboard_stop())
+            .map(|(ix, _)| ix)
+    }
+
+    /// GitTurtle patch: a press went down on the row drawn for the item at
+    /// `ix` as the menu stood after `builds` rebuilds. GPUI delivers a press
+    /// to the rows of the last frame drawn, which can come before the menu
+    /// is drawn again after a rebuild: such a press records nothing, so its
+    /// release runs nothing.
+    fn pressed_on(&mut self, ix: usize, builds: usize) {
+        self.pressed = (self.builds == builds).then_some(ix);
+    }
+
+    /// GitTurtle patch: a click acts only where its press went down on the
+    /// item at `ix` as the menu was last built ([`Self::rebuild`],
+    /// [`Self::pressed_on`]). Rows are wired, and GPUI keeps a pending press,
+    /// by the item's index, so a press and release that straddled a rebuild
+    /// ran whatever item the rebuild put at the pressed index, which the
+    /// person never pressed. A label is not an item's identity: kept for an
+    /// item of the same label, a press on Undo last local commit… ran the
+    /// Undo of the commit HEAD had moved to, and one on a project group's
+    /// "Archive" the other group of that name, so a press across a rebuild
+    /// runs nothing and the person clicks again.
     fn on_click(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         window.prevent_default();
+        if self.pressed.take() != Some(ix) {
+            return;
+        }
         self.selected_index = Some(ix);
+        self.kept_cursor = None;
         self.confirm(&Confirm { secondary: false }, window, cx);
+    }
+
+    /// GitTurtle patch: a key that confirms the menu ([`CONFIRM_KEYS`])
+    /// confirms it only as a fresh press. Its key-down dispatches the
+    /// [`Confirm`] its binding did, on the focused menu, so whatever an
+    /// application captures of it still runs, while an auto-repeat, whose
+    /// `is_held` is set, confirms nothing; either way the key goes no
+    /// further, as the binding took it. GPUI hands an action no key event,
+    /// so the binding confirmed on every repeat too: Enter held on an item
+    /// that waited ran it on the first repeat after a rebuild made it able
+    /// to act, and Enter held on a button acted on the first item of the
+    /// menu it opened. A write now waits for a new press wherever the
+    /// platform marks a repeat held, as macOS and Wayland do (Wayland with an
+    /// input method too, through the `gpui-pre-linux` patch), and for Enter
+    /// under X11 too, whose held key arrives as fresh presses: a key-down
+    /// that repeats the Enter press the base kit recorded
+    /// ([`gpui_base::enter_press_is_repeat`], false for Space and for a
+    /// Command-Enter, which record none) confirms nothing either, so an
+    /// X11 Enter held on an item that waited, or on a button that opened
+    /// the menu, runs nothing (`GITTURTLE-PATCH.md`).
+    fn confirm_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
+        let mut contexts = None;
+        let confirm = CONFIRM_KEYSTROKES
+            .iter()
+            .find_map(|(keystroke, predicate, secondary)| {
+                let bound = event.keystroke.should_match(keystroke)
+                    && predicate
+                        .depth_of(contexts.get_or_insert_with(|| window.context_stack()))
+                        .is_some();
+                bound.then_some(Confirm {
+                    secondary: *secondary,
+                })
+            });
+        let Some(confirm) = confirm else {
+            return;
+        };
+        if !event.is_held
+            && !gpui_base::enter_press_is_repeat(window, cx)
+            && let Some(focused) = window.focused(cx)
+        {
+            focused.dispatch_action(&confirm, window, cx);
+        }
+        cx.stop_propagation();
     }
 
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         match self.selected_index {
             Some(index) => {
-                let item = self.menu_items.get(index);
+                // GitTurtle patch: only an entry that can act acts. The
+                // pointer's hover selects any row, a disabled item or a
+                // label among them, and Enter then ran a disabled item's
+                // handler.
+                let item = self
+                    .menu_items
+                    .get(index)
+                    .filter(|item| item.is_clickable());
                 match item {
                     Some(PopupMenuItem::Item {
                         handler, action, ..
@@ -844,6 +1523,7 @@ impl PopupMenu {
                             self.dispatch_confirm_action(action, window, cx);
                         }
 
+                        self.return_dialogs_to_opener(window, cx);
                         self.dismiss(&Cancel, window, cx)
                     }
                     Some(PopupMenuItem::ElementItem {
@@ -854,6 +1534,7 @@ impl PopupMenu {
                         } else if let Some(action) = action.as_ref() {
                             self.dispatch_confirm_action(action, window, cx);
                         }
+                        self.return_dialogs_to_opener(window, cx);
                         self.dismiss(&Cancel, window, cx)
                     }
                     _ => {}
@@ -861,6 +1542,47 @@ impl PopupMenu {
             }
             _ => {}
         }
+    }
+
+    /// GitTurtle patch: a dialog the chosen item opened gives focus back, as
+    /// it closes, to the control that opened this menu. The item runs on the
+    /// menu's focus, its handler or dispatched action as upstream has it, so
+    /// the dialog records the menu as its opener, and the menu goes as the
+    /// item finishes: closing the dialog then focused nothing. A dialog that
+    /// recorded anything else, as one whose handler moved focus first, keeps
+    /// it, and a menu that knows no opener leaves the dialog as it was.
+    ///
+    /// Run behind the item: a dispatched action reaches its handler in a
+    /// deferred effect queued just before this one, and either way the dialog
+    /// has been recorded by the time it runs. Focus may rest on any menu of a
+    /// submenu's chain as its item acts, so each of them counts as the menu.
+    fn return_dialogs_to_opener(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut menus = vec![self.focus_handle.clone()];
+        let mut opener = self.dialog_opener();
+        let mut parent = self.parent_menu.as_ref().and_then(WeakEntity::upgrade);
+        while let Some(entity) = parent {
+            let menu = entity.read(cx);
+            menus.push(menu.focus_handle.clone());
+            opener = opener.or_else(|| menu.dialog_opener());
+            parent = menu.parent_menu.as_ref().and_then(WeakEntity::upgrade);
+        }
+        let Some(opener) = opener else {
+            return;
+        };
+        window.defer(cx, move |window, cx| {
+            crate::Root::try_update(window, cx, |root, _, _| {
+                root.return_dialogs_to(&menus, &opener);
+            });
+        });
+    }
+
+    /// The control this menu returns a dialog's focus to, or `None` where it
+    /// knows none and a submenu's parent may.
+    fn dialog_opener(&self) -> Option<FocusHandle> {
+        self.dialog_return_focus
+            .clone()
+            .or_else(|| self.previous_focus_handle.clone())
+            .or_else(|| self.action_context.clone())
     }
 
     fn dispatch_confirm_action(
@@ -876,51 +1598,106 @@ impl PopupMenu {
         window.dispatch_action(action.boxed_clone(), cx);
     }
 
+    /// Select `ix` for the keyboard, this method's only caller (Up, Down,
+    /// Home, End, a submenu's first item and a keyboard-opened menu's).
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if self.selected_index != Some(ix) {
+        // GitTurtle patch: a key that moves the cursor ends a rebuild's
+        // remembering of the item it was on, and the pointer's ownership of
+        // the selection ([`Self::rebuild`]).
+        self.kept_cursor = None;
+        self.pointer_selection = false;
+        if self.selected_index != Some(ix) || !self.keyboard_selection {
             self.selected_index = Some(ix);
+            self.keyboard_selection = true;
             self.scroll_handle.scroll_to_item(ix);
             cx.notify();
         }
     }
 
+    // GitTurtle patch: Up, Down, Home and End move only between the items the
+    // keyboard's cursor stops on: those that can act and those that state why
+    // they are unavailable or wait ([`PopupMenuItem::reason_stated`]).
+    // Upstream's first Down, and Down past the last item, selected the first
+    // entry whatever it was, so a menu that opens with a label (the project
+    // pane's row name, the profile menu's heading) highlighted nothing that
+    // could act, and Enter did
+    // nothing. A label, separator or disabled item that states no reason is
+    // passed over, and a menu with no stop selects nothing. Passing over every
+    // disabled item, the keys never reached Browse stashes… while it waited
+    // for a write, so a screen reader never spoke why it waited.
+
+    /// The first item that can act, if any.
+    fn first_clickable_index(&self) -> Option<usize> {
+        self.clickable_menu_items().next().map(|(ix, _)| ix)
+    }
+
+    /// GitTurtle patch: places the keyboard's cursor on the first item that
+    /// can act, as a menu the keyboard opened shows it, so Enter acts on
+    /// that item and Down moves on from it; a menu with none selects
+    /// nothing. Upstream highlighted nothing until the first Down. The
+    /// caller decides when a menu was opened from the keyboard.
+    pub fn select_first_item(&mut self, cx: &mut Context<Self>) {
+        if let Some(ix) = self.first_clickable_index() {
+            self.set_selected_index(ix, cx);
+        }
+    }
+
+    /// GitTurtle patch: where Up and Down start from: the cursor's item, and
+    /// `true`, or, while a rebuild rests the cursor, the place of the item it
+    /// remembers ([`Self::rebuild`]), and `false`: Up moves to the last stop
+    /// before that place, and Down to the first at or after it, since the
+    /// remembered item, refused there or gone, cannot take it.
+    fn cursor_place(&self) -> Option<(usize, bool)> {
+        match (self.selected_index, &self.kept_cursor) {
+            (Some(ix), _) => Some((ix, true)),
+            (None, Some(kept)) => Some((kept.index, false)),
+            (None, None) => None,
+        }
+    }
+
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        let ix = self.selected_index.unwrap_or(0);
-
-        if let Some((prev_ix, _)) = self
-            .menu_items
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(i, item)| *i < ix && item.is_clickable())
-        {
-            self.set_selected_index(prev_ix, cx);
-            return;
+        let previous = self
+            .cursor_place()
+            .and_then(|(ix, _)| self.keyboard_stops().filter(|i| *i < ix).last())
+            .or_else(|| self.keyboard_stops().next_back());
+        if let Some(ix) = previous {
+            self.set_selected_index(ix, cx);
         }
-
-        let last_clickable_ix = self.clickable_menu_items().last().map(|(ix, _)| ix);
-        self.set_selected_index(last_clickable_ix.unwrap_or(0), cx);
     }
 
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        let Some(ix) = self.selected_index else {
-            self.set_selected_index(0, cx);
-            return;
-        };
-
-        if let Some((next_ix, _)) = self
-            .menu_items
-            .iter()
-            .enumerate()
-            .find(|(i, item)| *i > ix && item.is_clickable())
-        {
-            self.set_selected_index(next_ix, cx);
-            return;
+        let next = self
+            .cursor_place()
+            .and_then(|(ix, on_it)| {
+                self.keyboard_stops()
+                    .find(|i| *i > ix || (!on_it && *i == ix))
+            })
+            .or_else(|| self.keyboard_stops().next());
+        if let Some(ix) = next {
+            self.set_selected_index(ix, cx);
         }
+    }
 
-        self.set_selected_index(0, cx);
+    /// GitTurtle patch: Home moves the keyboard's cursor to the menu's first
+    /// stop, as a native menu's does; upstream bound nothing to it.
+    fn select_first(&mut self, _: &SelectFirst, _: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let first = self.keyboard_stops().next();
+        if let Some(ix) = first {
+            self.set_selected_index(ix, cx);
+        }
+    }
+
+    /// GitTurtle patch: End moves the keyboard's cursor to the menu's last
+    /// stop.
+    fn select_last(&mut self, _: &SelectLast, _: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let last = self.keyboard_stops().next_back();
+        if let Some(ix) = last {
+            self.set_selected_index(ix, cx);
+        }
     }
 
     fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
@@ -969,7 +1746,10 @@ impl PopupMenu {
         if let Some(active_submenu) = self.active_submenu() {
             // Focus the submenu, so that can be handle the action.
             active_submenu.update(cx, |view, cx| {
-                view.set_selected_index(0, cx);
+                // GitTurtle patch: the submenu's first item that can act.
+                if let Some(ix) = view.first_clickable_index() {
+                    view.set_selected_index(ix, cx);
+                }
                 view.focus_handle.focus(window, cx);
             });
             cx.notify();
@@ -1028,7 +1808,12 @@ impl PopupMenu {
     /// The submenu is closed together with its parent, same as macOS menus.
     fn dismiss(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_index = None;
+        self.kept_cursor = None;
+        self.pointer_selection = false;
         cx.emit(DismissEvent);
+        // GitTurtle patch: a press right after the key that closed the menu
+        // acts on what the window draws without it, never on the gone menu.
+        crate::root::draw_after_popup_close(window, cx);
 
         // Focus back to the previous focused handle, unless the item's click
         // handler has already moved focus elsewhere (e.g. opened a dialog and
@@ -1138,15 +1923,225 @@ impl PopupMenu {
         Some(icon.xsmall())
     }
 
-    #[inline]
-    fn max_width(&self) -> Pixels {
-        self.max_width.unwrap_or(px(500.))
+    /// GitTurtle patch: the widest the menu draws, its own maximum (500 px by
+    /// default) but never wider than its window less the room every popup
+    /// host keeps its fill from the window's sides
+    /// ([`crate::popup_fill_margin`]), so that its drawn edge too stays 8 px
+    /// in. Upstream capped a menu only at its maximum, so in a window
+    /// narrower than that a menu with a long row, such as a long Git
+    /// identity, ran off the window's edge; it now keeps inside the window
+    /// and its rows end with an ellipsis ([`menu_row_text`]).
+    fn max_width(&self, window: &Window) -> Pixels {
+        let room = window.viewport_size().width - crate::popup_fill_margin() * 2.;
+        self.max_width.unwrap_or(px(500.)).min(room)
+    }
+
+    /// The height of an item's row at the menu's size.
+    fn item_height(&self) -> Pixels {
+        match self.size {
+            Size::Small => px(20.),
+            _ => px(26.),
+        }
+    }
+
+    /// The entries the items column draws: every entry but a closing
+    /// separator.
+    fn drawn_items(&self) -> impl Iterator<Item = &PopupMenuItem> {
+        let count = self.menu_items.len();
+        self.menu_items
+            .iter()
+            .enumerate()
+            .filter(move |(ix, item)| !(*ix + 1 == count && item.is_separator()))
+            .map(|(_, item)| item)
+    }
+
+    /// GitTurtle patch: the [`Fold`] under `cap` before the menu has been
+    /// laid out, from the heights its entries are drawn at: an item's fixed
+    /// row, a separator's rule and margins, and a label or element counted
+    /// as an item's row. The first layout corrects it where a row differs
+    /// ([`PopupMenu::measured_fold`]), so the first frame of a capped menu
+    /// usually draws as every later one does.
+    fn estimated_fold(&self, cap: Pixels, window: &Window) -> Fold {
+        // The items column's `p_1` and `gap_y_0p5`, and the `my_0p5` around
+        // a separator's 2 px rule, each snapped to device pixels as GPUI's
+        // layout snaps them.
+        let rem = window.rem_size();
+        let (padding, gap) = (
+            window.pixel_snap(rem * 0.25),
+            window.pixel_snap(rem * 0.125),
+        );
+        let margin = gap;
+        let item = self.item_height();
+        let mut next = padding;
+        let rows = self.drawn_items().map(|entry| {
+            let (margin, height) = if entry.is_separator() {
+                (margin, px(2.))
+            } else {
+                (Pixels::ZERO, item)
+            };
+            let top = next + margin;
+            next = top + height + margin + gap;
+            (top, top + height, entry.ends_fold())
+        });
+        fold_rows(rows, padding, cap)
+    }
+
+    /// GitTurtle patch: the [`Fold`] under `cap` as this frame laid the
+    /// items column out, read from its scroll handle, which records each
+    /// row's bounds before scrolling them; its `rows` first children are the
+    /// drawn entries.
+    fn measured_fold(&self, rows: usize, cap: Pixels, window: &Window) -> Fold {
+        let top = self.scroll_handle.bounds().top();
+        let padding = window.pixel_snap(window.rem_size() * 0.25);
+        let rows = self
+            .drawn_items()
+            .take(rows)
+            .enumerate()
+            .filter_map(|(ix, entry)| {
+                let row = self.scroll_handle.bounds_for_item(ix)?;
+                Some((row.top() - top, row.bottom() - top, entry.ends_fold()))
+            });
+        fold_rows(rows, padding, cap)
+    }
+
+    /// GitTurtle patch: a wheel over the items column moved its rows under a
+    /// pointer that stays where it was. The column's own scroll listener has
+    /// already added the notch to its offset, which its next layout clamps;
+    /// where that moves the rows, the row the pointer had selected gives the
+    /// selection up and none lights until the pointer moves. A keyboard's
+    /// selection stays where it is. Upstream lit two rows at once: the row
+    /// that arrived took the selection, and the row that left kept its own
+    /// hover, which GPUI refreshes only on a pointer move.
+    fn rows_scrolled(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let max = self.scroll_handle.max_offset().y;
+        let now = self.scroll_handle.offset().y;
+        let before = now - event.delta.pixel_delta(window.line_height()).y;
+        let clamp = |y: Pixels| y.clamp(-max, Pixels::ZERO);
+        if clamp(now) == clamp(before) {
+            return;
+        }
+        self.still_pointer = Some(event.position);
+        if !self.keyboard_selection {
+            self.selected_index = None;
+        }
+        cx.notify();
+    }
+
+    /// GitTurtle patch: the pointer moved over the menu. Once it leaves the
+    /// place a wheel left it, the row under it takes the selection, as one
+    /// the pointer enters does; a frame's synthetic move at the same place
+    /// does not count. The row GPUI last reported under the pointer takes it
+    /// only where the last frame drew that row under the pointer
+    /// (`rows`): GPUI reports nothing for a row a rebuild stopped drawing,
+    /// so its index once outlived it, and the pointer's first move onto no
+    /// row, as onto the menu's padding, gave the selection to whichever item
+    /// a later rebuild put at that index, far from the pointer, a keyboard's
+    /// cursor among it, and Enter ran it.
+    ///
+    /// A move that finds no reported row drawn under it, as one in the frame
+    /// after a rebuild, before the layout has recorded the new rows, or one
+    /// that lands between a recorded row and the hit area GPUI snapped for
+    /// it, leaves the pointer still at its new place, so the next move
+    /// decides: cleared there, the row under the pointer stayed unlit until
+    /// the pointer crossed into another row, since GPUI reports no hover for
+    /// a row the pointer stays on and every later move found the pointer no
+    /// longer still.
+    fn pointer_moved(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.still_pointer.is_none_or(|at| at == event.position) {
+            return;
+        }
+        let under = |ix: &usize| {
+            self.rows
+                .get(*ix)
+                .is_some_and(|row| row.contains(&event.position))
+        };
+        match self.hovered_index.filter(under) {
+            Some(ix) => {
+                self.still_pointer = None;
+                self.selected_index = Some(ix);
+                self.keyboard_selection = false;
+                self.kept_cursor = None;
+                self.pointer_selection = true;
+            }
+            None => self.still_pointer = Some(event.position),
+        }
+        cx.notify();
+    }
+
+    /// GitTurtle patch: the surface was laid out at `bounds`. Where the last
+    /// frame laid it out at another place or size, with the pointer over it
+    /// then or now, its rows moved under a pointer that stayed where it was,
+    /// as a row's menu follows its row when rows arrive above it, a menu
+    /// opened above its button changes height, or a menu built again in
+    /// place grows wider or taller, as History's commit menu gains its Amend
+    /// and Undo items when its commit becomes HEAD. Once the frame is drawn
+    /// GPUI reports the row that arrived under the pointer hovered, and
+    /// upstream gave it the selection, so Enter ran an item the person never
+    /// pointed at. As after a wheel ([`PopupMenu::rows_scrolled`]), no row
+    /// takes the selection until the pointer moves, and a keyboard's stays
+    /// where it is. A pointer's selection stays while its row stays under the
+    /// pointer, as after a move sideways or by less than a row, where GPUI
+    /// reports no change of hover: the person put it there and it is still
+    /// there. Its row leaving the pointer gives it up as that report runs
+    /// (the hover listener), and one on a row the pointer had already left,
+    /// as a submenu's row keeps it, is given up here. The first layout moves
+    /// nothing. Compared by its origin alone, a menu that grew in place let
+    /// the row that arrived take the selection, a keyboard's cursor among
+    /// it.
+    ///
+    /// A notify in prepaint only marks the view: the frame being drawn has
+    /// rendered it already, and the draw clears the mark without asking for
+    /// another, so a row cleared here, or lit only by a hover a still pointer
+    /// no longer draws, stayed drawn lit while Enter did nothing. The next
+    /// frame is asked for from outside the draw.
+    fn surface_laid_out(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pointer = window.mouse_position();
+        self.pointer_at_layout = Some(pointer);
+        let Some(was) = self.surface.replace(bounds) else {
+            return;
+        };
+        if was == bounds || !(was.contains(&pointer) || bounds.contains(&pointer)) {
+            return;
+        }
+        self.still_pointer = Some(pointer);
+        if !self.keyboard_selection && self.selected_index != self.hovered_index {
+            self.selected_index = None;
+        }
+        cx.defer_in(window, |_, _, cx| cx.notify());
+    }
+
+    /// GitTurtle patch: the items column laid its rows out, `laid_out` being
+    /// their bounds as GPUI hands them to a column that does not scroll. A
+    /// scrollable column's scroll handle records them instead, before its
+    /// offset, which the column's layout has clamped by now, moves them; the
+    /// rows are recorded as drawn, moved by that offset and clipped to the
+    /// column ([`PopupMenu::pointer_moved`]).
+    fn rows_laid_out(&mut self, laid_out: Vec<Bounds<Pixels>>) {
+        self.rows = if self.scrollable {
+            let (offset, column) = (self.scroll_handle.offset(), self.scroll_handle.bounds());
+            (0..self.scroll_handle.children_count())
+                .filter_map(|ix| self.scroll_handle.bounds_for_item(ix))
+                .map(|row| Bounds::new(row.origin + offset, row.size).intersect(&column))
+                .collect()
+        } else {
+            laid_out
+        };
     }
 
     /// Calculate the anchor corner and left offset for child submenu
     fn update_submenu_menu_anchor(&mut self, window: &Window) {
         let bounds = self.bounds;
-        let max_width = self.max_width();
+        let max_width = self.max_width(window);
         let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
             (Anchor::TopRight, -px(16.))
         } else {
@@ -1184,25 +2179,71 @@ impl PopupMenu {
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
         let group_name = format!("{}:item-{}", cx.entity().entity_id(), ix);
 
-        let (item_height, radius) = match self.size {
-            Size::Small => (px(20.), options.radius.half()),
-            _ => (px(26.), options.radius),
+        let item_height = self.item_height();
+        let radius = match self.size {
+            Size::Small => options.radius.half(),
+            _ => options.radius,
         };
 
         let this = MenuItemElement::new(ix, &group_name)
             .relative()
+            // GitTurtle patch: a row keeps its height in a menu capped
+            // shorter than its rows, which scrolls them instead ([`Fold`]).
+            .flex_shrink_0()
             .text_sm()
             .py_0()
             .px(INNER_PADDING)
             .rounded(radius)
             .items_center()
             .selected(selected)
-            .on_hover(cx.listener(move |this, hovered, _, cx| {
+            .keyboard(self.keyboard_selection)
+            .checked(item.check_state())
+            .still(self.still_pointer.is_some())
+            .on_hover(cx.listener(move |this, hovered, window, cx| {
+                // GitTurtle patch: a row a wheel or the menu's layout moved
+                // under a still pointer, or out from under it, keeps the
+                // selection where it was until the pointer moves
+                // ([`PopupMenu::pointer_moved`]). Where rows moved under a
+                // pointer that has not moved since the menu was laid out
+                // while the keyboard owns the cursor, however they moved,
+                // the pointer is still from there: the hover never moves the
+                // keyboard's cursor, so the row that arrived only records
+                // its hover.
+                let pointer = window.mouse_position();
+                if this.keyboard_selection
+                    && this.still_pointer.is_none()
+                    && this.pointer_at_layout == Some(pointer)
+                {
+                    this.still_pointer = Some(pointer);
+                }
+                let still = this.still_pointer.is_some();
                 if *hovered {
-                    this.selected_index = Some(ix);
-                } else if !is_submenu && this.selected_index == Some(ix) {
-                    // TODO: Better handle the submenu unselection when hover out
-                    this.selected_index = None;
+                    this.hovered_index = Some(ix);
+                    if !still {
+                        this.selected_index = Some(ix);
+                        this.keyboard_selection = false;
+                        // The pointer's selection ends a rebuild's
+                        // remembering, and is its own until a menu key
+                        // moves it ([`PopupMenu::rebuild`]).
+                        this.kept_cursor = None;
+                        this.pointer_selection = true;
+                    }
+                } else {
+                    if this.hovered_index == Some(ix) {
+                        this.hovered_index = None;
+                    }
+                    if !still && !is_submenu && this.selected_index == Some(ix) {
+                        // TODO: Better handle the submenu unselection when hover out
+                        this.selected_index = None;
+                        // The pointer took the selection, a keyboard's
+                        // cursor among it, off this row.
+                        this.pointer_selection = true;
+                    } else if still && !this.keyboard_selection && this.selected_index == Some(ix) {
+                        // The row the pointer selected moved out from under
+                        // the still pointer, which selects nothing until it
+                        // moves ([`PopupMenu::surface_laid_out`]).
+                        this.selected_index = None;
+                    }
                 }
 
                 cx.notify();
@@ -1211,21 +2252,55 @@ impl PopupMenu {
 
         match item {
             PopupMenuItem::Separator => this
+                .entry(Entry::Separator)
                 .h_auto()
                 .p_0()
                 .my_0p5()
                 .mx_neg_1()
                 .border_b(px(2.))
-                .border_color(cx.theme().border)
-                .disabled(true),
-            PopupMenuItem::Label(label) => this.disabled(true).cursor_default().child(
-                h_flex()
-                    .cursor_default()
-                    .items_center()
-                    .gap_x_1()
-                    .children(Self::render_icon(has_left_icon, false, None, window, cx))
-                    .child(div().flex_1().child(label.clone())),
-            ),
+                .border_color(crate::menu_separator(cx)),
+            PopupMenuItem::Label(label) => {
+                // GitTurtle patch: a label is a heading in secondary text, not
+                // an unavailable item, and it differs from an item by weight as
+                // well as colour, at its own size. Its row sets the size and
+                // weight and its text the colour, and a test build names each,
+                // because GPUI's test scene does not expose glyphs. Its text
+                // keeps one line, as an item's does ([`menu_row_text`]).
+                let color = crate::menu_label_color(cx);
+                let size = crate::menu_label_size(window, cx);
+                let weight = crate::MENU_LABEL_WEIGHT;
+                let text = label.clone();
+                let style_text = label.clone();
+                this.entry(Entry::Label).cursor_default().child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .cursor_default()
+                        .items_center()
+                        .gap_x_1()
+                        .text_size(size)
+                        .font_weight(weight)
+                        .debug_selector(move || {
+                            format!(
+                                "menu-label-style: {style_text} · {:.2} px · weight {}",
+                                f32::from(size),
+                                weight.0
+                            )
+                        })
+                        .children(Self::render_icon(has_left_icon, false, None, window, cx))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(color)
+                                .debug_selector(move || {
+                                    format!("menu-label: {text} · {:?}", gpui::Rgba::from(color))
+                                })
+                                .child(label.clone()),
+                        ),
+                )
+            }
             PopupMenuItem::ElementItem {
                 render,
                 icon,
@@ -1233,9 +2308,11 @@ impl PopupMenu {
                 ..
             } => this
                 .when(!disabled, |this| {
-                    this.on_click(
-                        cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
-                    )
+                    let builds = self.builds;
+                    this.on_press(cx.listener(move |this, _, _, _| this.pressed_on(ix, builds)))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
+                        )
                 })
                 .disabled(*disabled)
                 .child(
@@ -1264,12 +2341,19 @@ impl PopupMenu {
             } => {
                 let show_link_icon = *is_link && self.external_link_icon;
                 let action = action.as_ref().map(|action| action.boxed_clone());
-                let key = self.render_key_binding(action, window, cx);
+                // A disabled item dims its shortcut with its label.
+                let key = self.render_key_binding(action, window, cx).map(|key| {
+                    key.when(*disabled, |key| {
+                        key.text_color(cx.theme().disabled_foreground())
+                    })
+                });
 
                 this.when(!disabled, |this| {
-                    this.on_click(
-                        cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
-                    )
+                    let builds = self.builds;
+                    this.on_press(cx.listener(move |this, _, _, _| this.pressed_on(ix, builds)))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
+                        )
                 })
                 .disabled(*disabled)
                 .h(item_height)
@@ -1284,18 +2368,22 @@ impl PopupMenu {
                 .child(
                     h_flex()
                         .w_full()
+                        .min_w_0()
                         .gap_3()
                         .items_center()
                         .justify_between()
-                        .when(!show_link_icon, |this| this.child(label.clone()))
+                        .when(!show_link_icon, |this| {
+                            this.child(menu_row_text(label.clone()))
+                        })
                         .children(right_check_icon)
                         .when(show_link_icon, |this| {
                             this.child(
                                 h_flex()
                                     .w_full()
+                                    .min_w_0()
                                     .justify_between()
                                     .gap_1p5()
-                                    .child(label.clone())
+                                    .child(menu_row_text(label.clone()))
                                     .child(
                                         Icon::new(IconName::ExternalLink)
                                             .xsmall()
@@ -1311,6 +2399,7 @@ impl PopupMenu {
                 label,
                 menu,
                 disabled,
+                ..
             } => this
                 .selected(selected)
                 .disabled(*disabled)
@@ -1319,6 +2408,7 @@ impl PopupMenu {
                     h_flex()
                         .min_h(item_height)
                         .size_full()
+                        .min_w_0()
                         .items_center()
                         .gap_x_1()
                         .children(Self::render_icon(
@@ -1331,10 +2421,11 @@ impl PopupMenu {
                         .child(
                             h_flex()
                                 .flex_1()
+                                .min_w_0()
                                 .gap_2()
                                 .items_center()
                                 .justify_between()
-                                .child(label.clone())
+                                .child(menu_row_text(label.clone()))
                                 .child(
                                     Icon::new(IconName::ChevronRight)
                                         .xsmall()
@@ -1347,18 +2438,27 @@ impl PopupMenu {
                         let (anchor, left) = self.submenu_anchor;
                         let is_bottom_pos =
                             matches!(anchor, Anchor::BottomLeft | Anchor::BottomRight);
+                        // GitTurtle patch: the submenu's drawn edge, the
+                        // ring outside its fill, stays the popup margin
+                        // inside the window, as every menu's does
+                        // ([`InsideWindow`]). GPUI's anchor moved it only
+                        // once the corner it anchors ran past the window,
+                        // 4 px in, not counting the submenu's offset from
+                        // that corner, so a submenu could run up to the
+                        // window's side or past it.
                         deferred(
                             anchored()
                                 .anchor(anchor)
-                                .child(
+                                .child(InsideWindow(
                                     div()
                                         .id("submenu")
                                         .occlude()
                                         .when(is_bottom_pos, |this| this.bottom_0())
                                         .when(!is_bottom_pos, |this| this.top_neg_1())
                                         .left(left)
-                                        .child(menu.clone()),
-                                )
+                                        .child(menu.clone())
+                                        .into_any_element(),
+                                ))
                                 .snap_to_window_with_margin(Edges::all(EDGE_PADDING)),
                         )
                         .with_priority(self.priority + 1)
@@ -1370,6 +2470,7 @@ impl PopupMenu {
 
 impl FluentBuilder for PopupMenu {}
 impl EventEmitter<DismissEvent> for PopupMenu {}
+impl EventEmitter<CursorRests> for PopupMenu {}
 impl Focusable for PopupMenu {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1406,19 +2507,31 @@ impl Render for PopupMenu {
         }
 
         let view = cx.entity().clone();
+        let rows_view = view.clone();
         let items_count = self.menu_items.len();
 
         let max_height = self.max_height.unwrap_or_else(|| {
             let window_half_height = window.window_bounds().get_bounds().size.height * 0.5;
             window_half_height.min(px(450.))
         });
+        // GitTurtle patch: where a scrollable menu's rows meet its cap, as
+        // its last layout measured it, or estimated before the first.
+        let fold = self.scrollable.then(|| {
+            self.fold
+                .unwrap_or_else(|| self.estimated_fold(max_height, window))
+        });
+        let column = match fold {
+            Some(Fold::At(height)) => Some(height),
+            _ => None,
+        };
+        let rows = self.drawn_items().count();
 
         let has_left_icon = self
             .menu_items
             .iter()
             .any(|item| item.has_left_icon(self.check_side));
 
-        let max_width = self.max_width();
+        let max_width = self.max_width(window);
         let options = RenderOptions {
             has_left_icon,
             check_side: self.check_side,
@@ -1432,17 +2545,26 @@ impl Render for PopupMenu {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
+            .on_action(cx.listener(Self::select_first))
+            .on_action(cx.listener(Self::select_last))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::confirm))
+            .on_key_down(Self::confirm_key)
             .on_action(cx.listener(Self::dismiss))
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
+            .on_mouse_move(cx.listener(Self::pointer_moved))
             .popover_style(cx)
             .text_color(cx.theme().popover_foreground)
             .relative()
             .occlude()
             .child(
                 v_flex()
+                    // GitTurtle patch: where each row was drawn, for the
+                    // pointer's move ([`PopupMenu::rows_laid_out`]).
+                    .on_children_prepainted(move |laid_out, _, cx| {
+                        rows_view.update(cx, |menu, _| menu.rows_laid_out(laid_out));
+                    })
                     .id("items")
                     .p_1()
                     .gap_y_0p5()
@@ -1450,10 +2572,15 @@ impl Render for PopupMenu {
                     .when_some(self.min_width, |this, min_width| this.min_w(min_width))
                     .max_w(max_width)
                     .when(self.scrollable, |this| {
-                        this.max_h(max_height)
+                        this.max_h(column.unwrap_or(max_height))
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
+                            .on_scroll_wheel(cx.listener(Self::rows_scrolled))
                     })
+                    // GitTurtle patch: while the rows overflow, they keep a
+                    // gutter at their right where the scrollbar's track
+                    // runs, so its thumb covers no row.
+                    .when(column.is_some(), |this| this.pr(Scrollbar::width()))
                     .children(
                         self.menu_items
                             .iter()
@@ -1461,19 +2588,2320 @@ impl Render for PopupMenu {
                             // Ignore last separator
                             .filter(|(ix, item)| !(*ix + 1 == items_count && item.is_separator()))
                             .map(|(ix, item)| self.render_item(ix, item, options, window, cx)),
-                    )
-                    .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds)),
+                    ),
             )
-            .when(self.scrollable, |this| {
-                // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
-                this.vertical_scrollbar(&self.scroll_handle)
+            // GitTurtle patch: the menu's bounds are taken from the surface,
+            // the items column's own bounds before scrolling. Upstream took
+            // them from a child of the scrolling column, which moved with
+            // its offset and, being as tall as the column, made a menu whose
+            // rows fit scroll by the column's padding. Each layout also
+            // measures the fold, and a menu whose rows met its cap otherwise
+            // than this frame drew asks for the next frame, from outside the
+            // draw: a notify here only marks the view, and the draw clears
+            // the mark, so the menu kept the fold it was first drawn with
+            // until something else drew it. A surface laid out at another
+            // place or size than the last frame's moved its rows under the
+            // pointer.
+            .on_prepaint(move |bounds, window, cx| {
+                view.update(cx, |menu, cx| {
+                    menu.surface_laid_out(bounds, window, cx);
+                    menu.bounds = bounds;
+                    if menu.scrollable {
+                        let measured = menu.measured_fold(rows, max_height, window);
+                        menu.fold = Some(measured);
+                        if Some(measured) != fold {
+                            cx.defer_in(window, |_, _, cx| cx.notify());
+                        }
+                    }
+                })
             })
+            .when(column.is_some(), |this| {
+                // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
+                // GitTurtle patch: the scrollbar of a menu whose rows
+                // overflow stays visible, as a scrolling list's does, rather
+                // than showing only while it scrolls; a menu whose rows fit
+                // draws none.
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .debug_selector(|| "popup-menu-scrollbar".to_string())
+                        .child(
+                            Scrollbar::vertical(&self.scroll_handle)
+                                .id("popup-menu-scrollbar")
+                                .mode(ScrollbarMode::Always)
+                                .viewport_from_layout(),
+                        ),
+                )
+            })
+    }
+}
+
+/// GitTurtle patch: a submenu, moved by whole device pixels only as far as keeps
+/// its fill [`crate::popup_fill_margin`] inside the window, so its drawn
+/// edge stands [`crate::POPUP_WINDOW_MARGIN`] in, as every menu's does;
+/// where it lies that far in already, it does not move. It adds no layout
+/// node, as GPUI's `deferred` adds none: it moves its child where its
+/// anchor, offsets included, put it. Upstream's anchor moved a submenu
+/// only once the corner it anchors ran past the window, so a submenu could
+/// end on the window's side or past it.
+struct InsideWindow(AnyElement);
+
+impl InsideWindow {
+    /// How far a popup's fill laid at `bounds` in a `viewport` moves to lie
+    /// `margin` inside it, by whole device pixels at `scale_factor`: along
+    /// each axis toward the window, from the side it runs past, and from the
+    /// top or the leading side where it is too large for both. Laid out on
+    /// device pixels, a fill moved so lies on the device pixel at or inside
+    /// the margin. Moved by whole logical pixels, a submenu that ran half a
+    /// pixel into one at scale 2 lay half a pixel further in, and drew its
+    /// edge 8.5 px from the side.
+    fn shift(
+        bounds: Bounds<Pixels>,
+        viewport: gpui::Size<Pixels>,
+        margin: Pixels,
+        scale_factor: f32,
+    ) -> Point<Pixels> {
+        let axis = |start: Pixels, end: Pixels, room: Pixels| {
+            let past = end - (room - margin);
+            let shift = if past > px(0.) { -past } else { px(0.) };
+            let short = margin - (start + shift);
+            if short > px(0.) {
+                gpui_base::device_pixel_at_or_after(shift + short, scale_factor)
+            } else {
+                gpui_base::device_pixel_at_or_before(shift, scale_factor)
+            }
+        };
+        gpui::point(
+            axis(bounds.left(), bounds.right(), viewport.width),
+            axis(bounds.top(), bounds.bottom(), viewport.height),
+        )
+    }
+}
+
+impl IntoElement for InsideWindow {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for InsideWindow {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // The margin outside the client inset, as the popup hosts keep it.
+        let inset = window.client_inset().unwrap_or(px(0.));
+        let shift = Self::shift(
+            bounds,
+            window.viewport_size(),
+            crate::popup_fill_margin() + inset,
+            window.scale_factor(),
+        );
+        window.with_element_offset(shift, |window| self.0.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.paint(window, cx);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, point};
+
+    /// GitTurtle patch: a submenu that runs past either side of a 460 px
+    /// window, or past its foot, from a device pixel that is not a whole
+    /// pixel, moves in until the edge GPUI paints outside its fill, over
+    /// every device pixel the band touches (`paint_drop_shadows`), stands
+    /// 8 px from that side, at scale 1, 1.5 and 2: 8, 12 and 16 device
+    /// pixels. Moved by whole pixels, one device pixel past a whole pixel at
+    /// scale 2 its fill lay half a pixel further in and its edge 17 device
+    /// pixels from the side, and two past one at 1.5 its fill lay between
+    /// device pixels, 9 2/3 px in.
+    #[test]
+    fn a_submenu_moved_in_from_a_side_draws_its_edge_8_px_from_it() {
+        let viewport = gpui::size(px(460.), px(300.));
+        let margin = crate::popup_fill_margin();
+        let edge = crate::POPOVER_EDGE_WIDTH;
+        for scale in [1., 1.5, 2.] {
+            let expected = f32::from(crate::POPUP_WINDOW_MARGIN) * scale;
+            let device = |value: Pixels| f32::from(value) * scale;
+            let size = gpui::size(px(120.), px(80.));
+            // One and two device pixels past a whole pixel, 4 px past either
+            // side and past the foot.
+            for (origin, side) in [1., 2.].into_iter().flat_map(|pixels| {
+                let into = pixels / scale;
+                [
+                    (point(px(-4. - into), px(40.)), "left"),
+                    (point(px(460. + 4. + into - 120.), px(40.)), "right"),
+                    (point(px(40.), px(300. + 4. + into - 80.)), "foot"),
+                ]
+            }) {
+                let at = format!("scale {scale}, past the {side} from {origin:?}");
+                let laid = Bounds::new(origin, size);
+                let fill = laid + InsideWindow::shift(laid, viewport, margin, scale);
+                let ring = fill.dilate(edge);
+                let from_side = match side {
+                    "left" => device(ring.left()).floor(),
+                    "right" => device(viewport.width) - device(ring.right()).ceil(),
+                    _ => device(viewport.height) - device(ring.bottom()).ceil(),
+                };
+                assert_eq!(
+                    from_side, expected,
+                    "{at}: the submenu laid at {laid:?} moves to {fill:?} and draws its edge \
+                     {from_side} device pixels from the side, not {expected}"
+                );
+                for value in [fill.left(), fill.right(), fill.top(), fill.bottom()] {
+                    assert!(
+                        (device(value) - device(value).round()).abs() < 1e-3,
+                        "{at}: the submenu moves to {fill:?}, between device pixels"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A menu under a heading, as a row's menu opens with its name, of
+    /// `items`, each a name and whether it can act.
+    fn entries(menu: PopupMenu, items: &[(&'static str, bool)]) -> PopupMenu {
+        items
+            .iter()
+            .fold(menu.label("Heading"), |menu, (name, enabled)| {
+                menu.item(PopupMenuItem::new(*name).disabled(!enabled))
+            })
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+    }
+
+    /// A window whose root view is a focused menu of `items`, with the menu
+    /// keys bound.
+    fn open<'a>(
+        cx: &'a mut TestAppContext,
+        items: &'static [(&'static str, bool)],
+    ) -> (Entity<PopupMenu>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+        });
+        let (menu, cx) = cx.add_window_view(|window, cx| {
+            let menu = entries(PopupMenu::new(cx), items);
+            menu.focus_handle.focus(window, cx);
+            menu
+        });
+        draw(cx);
+        (menu, cx)
+    }
+
+    /// The item the keyboard's cursor is on, by name.
+    fn cursor(menu: &Entity<PopupMenu>, cx: &mut VisualTestContext) -> Option<String> {
+        menu.read_with(cx, |menu, _| {
+            let ix = menu.selected_index.filter(|_| menu.keyboard_selection)?;
+            Some(menu.menu_items.get(ix)?.name()?.to_string())
+        })
+    }
+
+    /// Builds the open menu again with `items`, as a caller does when what
+    /// its items read changes.
+    fn rebuilt(
+        menu: &Entity<PopupMenu>,
+        cx: &mut VisualTestContext,
+        items: &'static [(&'static str, bool)],
+    ) {
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| entries(menu, items))
+            })
+        });
+        draw(cx);
+    }
+
+    const FOUR: &[(&str, bool)] = &[
+        ("One", true),
+        ("Two", true),
+        ("Three", true),
+        ("Four", true),
+    ];
+
+    /// A menu built again keeps the keyboard's cursor on the item it was on,
+    /// found by its name wherever the item now stands, and the menu keys
+    /// move on from there; it takes the place of the first item a builder
+    /// that opens from the keyboard selects. Upstream's rebuild cleared the
+    /// selection, so the cursor was lost, or put back on the first item.
+    #[gpui::test]
+    fn a_rebuilt_menu_keeps_the_keyboard_cursor_on_its_item(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, FOUR);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "built again as it was"
+        );
+
+        const ZERO_FIRST: &[(&str, bool)] = &[
+            ("Zero", true),
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+        ];
+        rebuilt(&menu, cx, ZERO_FIRST);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "built again with an item above it, by its name rather than its place"
+        );
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "Down moves on from it"
+        );
+
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, cx| {
+                    let mut menu = entries(menu, ZERO_FIRST);
+                    menu.select_first_item(cx);
+                    menu
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "the kept cursor wins over the builder's first item"
+        );
+    }
+
+    /// Builds the open menu again with `items` as a menu opened from the
+    /// keyboard is built, its first item that can act selected
+    /// ([`PopupMenu::select_first_item`]).
+    fn rebuilt_from_keyboard(
+        menu: &Entity<PopupMenu>,
+        cx: &mut VisualTestContext,
+        items: &'static [(&'static str, bool)],
+    ) {
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, cx| {
+                    let mut menu = entries(menu, items);
+                    menu.select_first_item(cx);
+                    menu
+                })
+            })
+        });
+        draw(cx);
+    }
+
+    const OPEN_RENAME: &[(&str, bool)] = &[("Open", true), ("Rename", true)];
+    const OPEN_REFUSED: &[(&str, bool)] = &[("Open", false), ("Rename", true)];
+
+    /// Where the cursor's item can no longer act, a rebuild rests the
+    /// cursor on nothing, though another item can act, and the builder's
+    /// first item does not take it; built so again, it still rests; once its
+    /// item can act again, the cursor is back on it. Moved to the nearest
+    /// item that could act, the cursor of a project's menu rested on Rename
+    /// as a write refused Open, stayed there once the write ended, and Enter
+    /// renamed where the person had chosen to open.
+    #[gpui::test]
+    fn a_rebuilt_menu_rests_the_cursor_until_its_item_can_act(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, OPEN_RENAME);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Open"), "Down");
+
+        rebuilt_from_keyboard(&menu, cx, OPEN_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "Open refused");
+        rebuilt_from_keyboard(&menu, cx, OPEN_REFUSED);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            None,
+            "built again, Open still refused"
+        );
+        rebuilt_from_keyboard(&menu, cx, OPEN_RENAME);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Open"),
+            "back on Open once it can act"
+        );
+
+        rebuilt(&menu, cx, &[("Rename", true)]);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "Open gone");
+        rebuilt(
+            &menu,
+            cx,
+            &[("New", true), ("Open", true), ("Rename", true)],
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Open"),
+            "back on Open once it is offered again, where it now stands"
+        );
+    }
+
+    /// From a cursor a rebuild rests, Up and Down start from the place of
+    /// the item it remembers: Up moves to the item that can act before it
+    /// and Down to the one after it, or, where the item is gone, to the item
+    /// that took its place.
+    #[gpui::test]
+    fn the_menu_keys_start_from_a_resting_cursors_item(cx: &mut TestAppContext) {
+        const TWO_REFUSED: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", false),
+            ("Three", true),
+            ("Four", true),
+        ];
+        const TWO_GONE: &[(&str, bool)] = &[("One", true), ("Three", true), ("Four", true)];
+        for (items, key, after) in [
+            (TWO_REFUSED, "down", "Three"),
+            (TWO_REFUSED, "up", "One"),
+            (TWO_GONE, "down", "Three"),
+            (TWO_GONE, "up", "One"),
+        ] {
+            let (menu, cx) = open(cx, FOUR);
+            cx.simulate_keystrokes("down down");
+            draw(cx);
+            assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+            rebuilt(&menu, cx, items);
+            assert_eq!(cursor(&menu, cx).as_deref(), None, "{items:?}: at rest");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(
+                cursor(&menu, cx).as_deref(),
+                Some(after),
+                "{items:?}: {key} from rest"
+            );
+        }
+    }
+
+    /// A menu key or the pointer that moves the selection from a cursor a
+    /// rebuild rests ends the remembering: once the remembered item can act
+    /// again, the cursor stays where the key moved it, and after the
+    /// pointer's selection nothing is selected.
+    #[gpui::test]
+    fn a_key_or_the_pointer_ends_a_resting_cursors_remembering(cx: &mut TestAppContext) {
+        const TWO_REFUSED: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", false),
+            ("Three", true),
+            ("Four", true),
+        ];
+        let (menu, cx) = open(cx, FOUR);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        rebuilt(&menu, cx, TWO_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "at rest");
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "where Down moved it, not back on Two"
+        );
+
+        cx.simulate_keystrokes("up");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Up");
+        rebuilt(&menu, cx, TWO_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "at rest again");
+        let four = cx
+            .debug_bounds("menu-item: Four · MenuItem")
+            .expect("Four drawn");
+        cx.simulate_mouse_move(four.center(), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection)),
+            (Some(4), false),
+            "the pointer on Four"
+        );
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.selected_index),
+            None,
+            "nothing selected, not Two"
+        );
+    }
+
+    /// A rebuild finds the cursor's item by its order among the items of
+    /// its name: the second of two Copy items stays the cursor's as items
+    /// are added above both. Taken nearest its old place, the first Copy,
+    /// which the added items moved there, took the cursor.
+    #[gpui::test]
+    fn a_rebuilt_menu_finds_a_repeated_name_by_its_order(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, &[("Copy", true), ("Other", true), ("Copy", true)]);
+        cx.simulate_keystrokes("down down down");
+        draw(cx);
+        let selected =
+            |cx: &mut VisualTestContext| menu.read_with(cx, |menu, _| menu.selected_index);
+        assert_eq!(
+            selected(cx),
+            Some(3),
+            "Down three times, on the second Copy"
+        );
+        rebuilt(
+            &menu,
+            cx,
+            &[
+                ("New", true),
+                ("Paste", true),
+                ("Copy", true),
+                ("Other", true),
+                ("Copy", true),
+            ],
+        );
+        assert_eq!(selected(cx), Some(5), "still on the second Copy");
+    }
+
+    /// Twelve items under a heading.
+    const TWELVE: &[(&str, bool)] = &[
+        ("Item 0", true),
+        ("Item 1", true),
+        ("Item 2", true),
+        ("Item 3", true),
+        ("Item 4", true),
+        ("Item 5", true),
+        ("Item 6", true),
+        ("Item 7", true),
+        ("Item 8", true),
+        ("Item 9", true),
+        ("Item 10", true),
+        ("Item 11", true),
+    ];
+
+    /// [`TWELVE`] with Item 5 refused.
+    const ITEM_5_REFUSED: &[(&str, bool)] = &[
+        ("Item 0", true),
+        ("Item 1", true),
+        ("Item 2", true),
+        ("Item 3", true),
+        ("Item 4", true),
+        ("Item 5", false),
+        ("Item 6", true),
+        ("Item 7", true),
+        ("Item 8", true),
+        ("Item 9", true),
+        ("Item 10", true),
+        ("Item 11", true),
+    ];
+
+    /// Builds the open menu again with `items`, capped at a few rows, as a
+    /// menu opened from the keyboard is built, its first item that can act
+    /// selected.
+    fn rebuilt_capped(
+        menu: &Entity<PopupMenu>,
+        cx: &mut VisualTestContext,
+        items: &'static [(&'static str, bool)],
+    ) {
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, cx| {
+                    let mut menu = entries(menu, items).max_h(px(120.)).scrollable(true);
+                    menu.select_first_item(cx);
+                    menu
+                })
+            })
+        });
+        draw(cx);
+    }
+
+    /// A rebuild that leaves the cursor on its row scrolls a capped menu
+    /// nowhere, however the wheel left it, and neither does the builder's
+    /// selection of its first item; one that moves the cursor to another
+    /// row, as it returns from rest, scrolls its row into view. The rebuild
+    /// once scrolled back to the cursor every time.
+    #[gpui::test]
+    fn a_rebuild_scrolls_a_capped_menu_only_as_the_cursor_changes_row(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, TWELVE);
+        rebuilt_capped(&menu, cx, TWELVE);
+        cx.simulate_keystrokes("down down down down down");
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Item 5"),
+            "Down five times"
+        );
+        let offset = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| menu.scroll_handle.offset().y)
+        };
+        let max = menu.read_with(cx, |menu, _| menu.scroll_handle.max_offset().y);
+        assert!(max > px(0.), "the capped menu scrolls");
+        menu.update(cx, |menu, _| {
+            menu.scroll_handle.set_offset(gpui::point(px(0.), -max))
+        });
+        draw(cx);
+        assert_eq!(offset(cx), -max, "scrolled to the end, past Item 5");
+
+        rebuilt_capped(&menu, cx, TWELVE);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Item 5"), "built again");
+        assert_eq!(offset(cx), -max, "the cursor on its row, the menu stays");
+        rebuilt_capped(&menu, cx, ITEM_5_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "Item 5 refused");
+        assert_eq!(offset(cx), -max, "at rest, the menu stays");
+
+        rebuilt_capped(&menu, cx, TWELVE);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Item 5"),
+            "back on Item 5"
+        );
+        let (viewport, item) = (
+            menu.read_with(cx, |menu, _| menu.scroll_handle.bounds()),
+            cx.debug_bounds("menu-item: Item 5 · MenuItem")
+                .expect("Item 5"),
+        );
+        assert!(
+            item.top() >= viewport.top() && item.bottom() <= viewport.bottom(),
+            "Item 5 {item:?} scrolled into the menu's view {viewport:?}"
+        );
+    }
+
+    /// The pointer on a row selects it, and a rebuild whose builder selects
+    /// its first item, as a menu opened from the keyboard is built, then
+    /// selects nothing: the pointer owns the selection. The pointer leaving
+    /// the row that holds the keyboard's cursor takes the cursor away, and a
+    /// rebuild then remembers no item and selects none, though the menu had
+    /// remembered that item while it was refused and put the cursor back on
+    /// it. A key press stops GPUI reporting the pointer's row hovered until
+    /// the pointer moves, so the cursor the menu opening from the keyboard
+    /// puts on the row under the still pointer is one it can leave. The
+    /// builder's first item once took the cursor each time, so Enter ran an
+    /// item neither the keys nor the pointer had chosen.
+    #[gpui::test]
+    fn a_rebuild_after_the_pointer_leaves_the_cursors_row_keeps_no_cursor(cx: &mut TestAppContext) {
+        const TWO_FIRST: &[(&str, bool)] = &[("Two", true), ("Three", true)];
+        const TWO_REFUSED: &[(&str, bool)] = &[("Two", false), ("Three", true)];
+        let (menu, cx) = open(cx, TWO_FIRST);
+        let two = cx
+            .debug_bounds("menu-item: Two · MenuItem")
+            .expect("Two drawn");
+        let three = cx
+            .debug_bounds("menu-item: Three · MenuItem")
+            .expect("Three drawn");
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        cx.simulate_mouse_move(three.center(), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(2), false), "the pointer on Three");
+        rebuilt_from_keyboard(&menu, cx, TWO_FIRST);
+        assert_eq!(
+            selection(cx).0,
+            None,
+            "the pointer's selection: the builder's first item, Two, does not take it"
+        );
+
+        cx.simulate_mouse_move(two.center(), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(1), false), "the pointer on Two");
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "opened from the keyboard, the cursor on Two, under the pointer"
+        );
+        rebuilt(&menu, cx, TWO_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "Two refused");
+        rebuilt(&menu, cx, TWO_FIRST);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "back on Two");
+
+        cx.simulate_mouse_move(
+            gpui::point(two.center().x, three.bottom() + px(120.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "the pointer left Two's row");
+        rebuilt_from_keyboard(&menu, cx, TWO_FIRST);
+        assert_eq!(
+            selection(cx).0,
+            None,
+            "built again from the keyboard, nothing selected"
+        );
+    }
+
+    /// A selection the pointer made is cleared by a rebuild, as upstream:
+    /// the pointer's place decides what it lights. It stays cleared where
+    /// the builder selects its first item, as a menu opened from the
+    /// keyboard is built, however often the menu is built again, until a
+    /// menu key moves the cursor, which a rebuild then keeps.
+    #[gpui::test]
+    fn a_rebuilt_menu_clears_the_pointers_selection(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, FOUR);
+        let three = cx
+            .debug_bounds("menu-item: Three · MenuItem")
+            .expect("Three drawn");
+        cx.simulate_mouse_move(three.center(), None, Modifiers::default());
+        draw(cx);
+        let selected =
+            |cx: &mut VisualTestContext| menu.read_with(cx, |menu, _| menu.selected_index);
+        assert_eq!(selected(cx), Some(3), "the pointer on Three");
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(selected(cx), None, "nothing selected");
+        rebuilt_from_keyboard(&menu, cx, FOUR);
+        assert_eq!(
+            selected(cx),
+            None,
+            "nothing selected by a keyboard's builder"
+        );
+        rebuilt_from_keyboard(&menu, cx, FOUR);
+        assert_eq!(selected(cx), None, "nor built so again");
+
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        rebuilt_from_keyboard(&menu, cx, FOUR);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "the keys' cursor kept"
+        );
+    }
+
+    /// A view that draws a menu `top` below the window's top and `left` in
+    /// from its left, as a row's menu is drawn beside its row, at the size
+    /// its rows give it.
+    struct Placed {
+        menu: Entity<PopupMenu>,
+        top: Pixels,
+        left: Pixels,
+    }
+
+    impl Render for Placed {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // An Enter key-up ends the press the base kit records, as the
+            // component `Root` notes it.
+            div()
+                .capture_key_up(|event, window, cx| gpui_base::note_key_up(event, window, cx))
+                .flex()
+                .items_start()
+                .pt(self.top)
+                .pl(self.left)
+                .child(self.menu.clone())
+        }
+    }
+
+    /// The names of the items that ran, in order.
+    type Ran = Rc<std::cell::RefCell<Vec<&'static str>>>;
+
+    /// [`entries`] whose items, when they act, add their name to `ran`.
+    fn acting(menu: PopupMenu, items: &[(&'static str, bool)], ran: &Ran) -> PopupMenu {
+        items
+            .iter()
+            .fold(menu.label("Heading"), |menu, (name, enabled)| {
+                let (ran, name) = (ran.clone(), *name);
+                menu.item(
+                    PopupMenuItem::new(name)
+                        .disabled(!enabled)
+                        .on_click(move |_, _, _| ran.borrow_mut().push(name)),
+                )
+            })
+    }
+
+    /// A focused menu of `items` that run into `ran`, drawn at the window's
+    /// top left at the size its rows give it, with the menu keys bound, its
+    /// fills painted and the base kit's record of Enter's press kept.
+    fn placed<'a>(
+        cx: &'a mut TestAppContext,
+        items: &'static [(&'static str, bool)],
+        ran: &Ran,
+    ) -> (Entity<Placed>, Entity<PopupMenu>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            // The kit's default colors are transparent; the pointer's fill
+            // and the keyboard cursor's are set so the frame paints them.
+            let mut colors = crate::theme::ThemeColor::default();
+            colors.accent = gpui::red();
+            colors.list_active = gpui::blue();
+            cx.set_global(Theme::from(&colors));
+            init(cx);
+            gpui_base::init(cx);
+        });
+        let ran = ran.clone();
+        let (placed, cx) = cx.add_window_view(move |window, cx| {
+            let menu = cx.new(|cx| acting(PopupMenu::new(cx), items, &ran));
+            let focus = menu.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+            Placed {
+                menu,
+                top: px(0.),
+                left: px(0.),
+            }
+        });
+        draw(cx);
+        let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
+        (placed, menu, cx)
+    }
+
+    /// The items of [`FOUR`] drawn with a fill of their own, read from the
+    /// frame on screen: the pointer's selection or hover, or the keyboard's
+    /// cursor.
+    fn lit(cx: &mut VisualTestContext) -> Vec<&'static str> {
+        let four: Vec<_> = FOUR.iter().map(|(name, _)| *name).collect();
+        lit_among(cx, &four)
+    }
+
+    /// The items of `names` drawn with a fill of their own, as [`lit`].
+    fn lit_among(cx: &mut VisualTestContext, names: &[&'static str]) -> Vec<&'static str> {
+        names
+            .iter()
+            .copied()
+            .filter(|name| {
+                let row = drawn_item(cx, name);
+                cx.update(|window, _| {
+                    let scale = window.scale_factor();
+                    let near = |device: gpui::ScaledPixels, logical: Pixels| {
+                        (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
+                    };
+                    window.painted_quads().iter().any(|quad| {
+                        !quad.background.is_transparent()
+                            && near(quad.bounds.left(), row.left())
+                            && near(quad.bounds.top(), row.top())
+                            && near(quad.bounds.right(), row.right())
+                            && near(quad.bounds.bottom(), row.bottom())
+                    })
+                })
+            })
+            .collect()
+    }
+
+    /// Builds the open menu again with `items` that run into `ran`.
+    fn rebuilt_acting(
+        menu: &Entity<PopupMenu>,
+        cx: &mut VisualTestContext,
+        items: &'static [(&'static str, bool)],
+        ran: &Ran,
+    ) {
+        let ran = ran.clone();
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| acting(menu, items, &ran))
+            })
+        });
+        draw(cx);
+    }
+
+    /// The item named `name`, as drawn.
+    fn drawn_item(cx: &mut VisualTestContext, name: &str) -> Bounds<Pixels> {
+        cx.debug_bounds(format!("menu-item: {name} · MenuItem").leak())
+            .unwrap_or_else(|| panic!("{name} drawn"))
+    }
+
+    /// A menu drawn elsewhere under a pointer that stays put, as a row's
+    /// menu follows its row when rows arrive above it, lets none of the rows
+    /// that arrive under the pointer take the selection until it moves: the
+    /// row the pointer had selected gives the selection up, and a keyboard's
+    /// cursor stays on its item. GPUI reports the row that arrives under a
+    /// still pointer hovered once the frame is drawn, and upstream gave it
+    /// the selection, so Enter ran an item the person never pointed at.
+    #[gpui::test]
+    fn a_menu_that_moves_under_the_still_pointer_selects_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+        });
+        let (placed, cx) = cx.add_window_view(|_, cx| Placed {
+            menu: cx.new(|cx| entries(PopupMenu::new(cx), FOUR)),
+            top: px(0.),
+            left: px(0.),
+        });
+        draw(cx);
+        let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
+        let item = |cx: &mut VisualTestContext, name: &str| {
+            cx.debug_bounds(format!("menu-item: {name} · MenuItem").leak())
+                .unwrap_or_else(|| panic!("{name} drawn"))
+        };
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let place = |cx: &mut VisualTestContext, top: Pixels| {
+            placed.update(cx, |placed, cx| {
+                placed.top = top;
+                cx.notify();
+            });
+            draw(cx);
+        };
+        let three = item(cx, "Three");
+        let pitch = three.top() - item(cx, "Two").top();
+        let pointer = three.center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(3), false), "the pointer on Three");
+
+        place(cx, pitch);
+        assert!(
+            item(cx, "Two").contains(&pointer),
+            "the menu moved down a row, Two under the pointer"
+        );
+        assert_eq!(
+            selection(cx).0,
+            None,
+            "nothing selected: Two arrived under the still pointer"
+        );
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(selection(cx), (Some(2), false), "the moved pointer on Two");
+
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("One"),
+            "the cursor on One"
+        );
+        place(cx, px(0.));
+        assert!(
+            item(cx, "Three").contains(&pointer),
+            "the menu moved up a row, Three under the pointer"
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("One"),
+            "the keyboard's cursor stays on One"
+        );
+    }
+
+    /// A menu built again wider at its place, as History's commit menu gains
+    /// its Amend and Undo items when its commit becomes HEAD, under a pointer
+    /// resting just beside it, brings Two under the pointer: the keyboard's
+    /// cursor stays on Three and Enter runs Three. Compared by its origin
+    /// alone, the menu that grew had not moved, so Two took the selection
+    /// from the keyboard, and Enter ran Two.
+    #[gpui::test]
+    fn a_menu_that_grows_wider_under_the_still_pointer_keeps_the_cursor(cx: &mut TestAppContext) {
+        const WIDER: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+            ("Undo the last local commit on this branch…", true),
+        ];
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        cx.simulate_keystrokes("down down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Three"), "Down thrice");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let pointer = gpui::point(surface.right() + px(12.), drawn_item(cx, "Two").center().y);
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "the pointer resting beside the menu"
+        );
+
+        rebuilt_acting(&menu, cx, WIDER, &ran);
+        assert!(
+            drawn_item(cx, "Two").contains(&pointer),
+            "the menu grew wider, Two under the pointer"
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "the keyboard's cursor stays on Three"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Three"], "Enter runs Three");
+    }
+
+    /// A menu built again taller at its place under a pointer resting just
+    /// below it brings the item it adds, Five, under the pointer: nothing is
+    /// selected and Enter runs nothing until the pointer moves, which
+    /// selects Five. Compared by its origin alone, the menu had not moved,
+    /// so Five took the selection and Enter ran it.
+    #[gpui::test]
+    fn a_menu_that_grows_taller_under_the_still_pointer_selects_nothing(cx: &mut TestAppContext) {
+        const FIVE: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+            ("Five", true),
+        ];
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let pointer = gpui::point(drawn_item(cx, "Four").center().x, surface.bottom() + px(6.));
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "the pointer resting below the menu");
+
+        rebuilt_acting(&menu, cx, FIVE, &ran);
+        assert!(
+            drawn_item(cx, "Five").contains(&pointer),
+            "the menu grew taller, Five under the pointer"
+        );
+        assert_eq!(selection(cx).0, None, "nothing selected");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(selection(cx), (Some(5), false), "the moved pointer on Five");
+    }
+
+    /// A menu moved sideways, or down by less than a row, under the pointer
+    /// on Three keeps Three selected, drawn lit, and Enter runs it, in the
+    /// frames the move itself asks for: the item under the pointer is the
+    /// one the person put it on. A keyboard's cursor on One with the pointer
+    /// on Three, which draws its hover, keeps only the cursor drawn once a
+    /// move makes the pointer still. The prepaint once gave the pointer's
+    /// selection up with a notify that asked for no frame, so Three stayed
+    /// drawn lit while Enter did nothing, until something else drew the
+    /// menu; and the still pointer's hover stayed drawn.
+    #[gpui::test]
+    fn a_menu_moved_under_the_pointer_keeps_the_item_still_under_it(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (placed, menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        // Moves the menu with no draw of its own: the frames are those the
+        // move asks for, as the app's are.
+        let moved = |cx: &mut VisualTestContext, left: Pixels, top: Pixels| {
+            placed.update(cx, |placed, cx| {
+                placed.left = left;
+                placed.top = top;
+                cx.notify();
+            });
+        };
+        let three = drawn_item(cx, "Three");
+        let pitch = three.top() - drawn_item(cx, "Two").top();
+        let pointer = three.center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(3), false), "the pointer on Three");
+        assert_eq!(lit(cx), ["Three"], "Three lit");
+
+        for (left, top, at) in [
+            (px(8.), px(0.), "moved 8 px sideways"),
+            (px(8.), pitch / 3., "moved down a third of a row"),
+        ] {
+            moved(cx, left, top);
+            assert!(
+                drawn_item(cx, "Three").contains(&pointer),
+                "{at}: Three still under the pointer"
+            );
+            assert_eq!(selection(cx), (Some(3), false), "{at}: Three selected");
+            assert_eq!(lit(cx), ["Three"], "{at}: Three drawn lit");
+        }
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Three"], "Enter runs Three");
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(3), false),
+            "the moved pointer on Three"
+        );
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("One"),
+            "the cursor on One"
+        );
+        assert_eq!(
+            lit(cx),
+            ["One", "Three"],
+            "the cursor on One, the pointer's hover on Three"
+        );
+        moved(cx, px(0.), pitch / 3.);
+        assert!(
+            drawn_item(cx, "Three").contains(&(pointer + gpui::point(px(1.), px(0.)))),
+            "moved 8 px back, Three still under the pointer"
+        );
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "the cursor kept");
+        assert_eq!(
+            lit(cx),
+            ["One"],
+            "only the cursor drawn under the still pointer"
+        );
+    }
+
+    /// A capped menu whose rows are not the heights it estimates before its
+    /// first layout, as a tall element row is not, draws the fold that
+    /// layout measures in the frame the measure asks for, without another
+    /// draw. The measure's notify once ran in prepaint, which asks for no
+    /// frame, so the menu kept the estimated fold it was first drawn with,
+    /// cutting a row or leaving a sliver of one, until something else drew
+    /// it.
+    #[gpui::test]
+    fn a_capped_menu_draws_its_measured_fold_without_another_draw(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, TWELVE);
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| {
+                    let tall = PopupMenuItem::element(|_, _| div().h(px(90.)).child("Tall"));
+                    entries(menu.item(tall), TWELVE)
+                        .max_h(px(160.))
+                        .scrollable(true)
+                })
+            })
+        });
+        let (fold, drawn) = menu.read_with(cx, |menu, _| {
+            (menu.fold, menu.scroll_handle.bounds().size.height)
+        });
+        assert_eq!(
+            fold,
+            Some(Fold::At(drawn)),
+            "the items column drawn as tall as the measured fold"
+        );
+        assert!(
+            cx.debug_bounds("popup-menu-scrollbar").is_some(),
+            "the fold drawn with its scrollbar"
+        );
+    }
+
+    /// Rows that move under a pointer that has not moved, while the
+    /// keyboard owns the cursor, leave the cursor where it is, though the
+    /// menu itself stays where it was: a capped menu scrolled a row, as a
+    /// rebuild scrolls the cursor's row into view, brings Item 2 under the
+    /// pointer resting on Item 1, and the cursor stays on Item 0 until the
+    /// pointer moves, which selects Item 2. The hover once took the
+    /// keyboard's cursor for the row that arrived.
+    #[gpui::test]
+    fn rows_scrolled_under_the_still_pointer_keep_the_keyboards_cursor(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, TWELVE);
+        rebuilt_capped(&menu, cx, TWELVE);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let (one, two) = (drawn_item(cx, "Item 1"), drawn_item(cx, "Item 2"));
+        let pointer = one.center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(2), false), "the pointer on Item 1");
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Item 0"),
+            "the keyboard's cursor on Item 0"
+        );
+
+        let pitch = two.top() - one.top();
+        menu.update(cx, |menu, _| {
+            menu.scroll_handle.set_offset(gpui::point(px(0.), -pitch))
+        });
+        draw(cx);
+        assert!(
+            drawn_item(cx, "Item 2").contains(&pointer),
+            "scrolled a row, Item 2 under the pointer"
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Item 0"),
+            "the keyboard's cursor stays on Item 0"
+        );
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(3), false),
+            "the moved pointer on Item 2"
+        );
+    }
+
+    /// A capped menu scrolled to the end of its rows, built again with an
+    /// item fewer under the pointer resting on Item 10, keeps its place and
+    /// size, but GPUI clamps the rows' offset to the shorter content, so the
+    /// rows move down a row and Item 9 comes under the pointer: no item is
+    /// selected or drawn lit and Enter runs nothing until the pointer moves,
+    /// which selects Item 9. The surface had not moved, so Item 9 took the
+    /// selection and Enter ran it, as a branch switcher's row checks its
+    /// branch out at once.
+    #[gpui::test]
+    fn a_capped_menu_built_again_shorter_under_the_still_pointer_selects_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        const ELEVEN: &[(&str, bool)] = TWELVE.split_at(11).0;
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, TWELVE, &ran);
+        let capped = |cx: &mut VisualTestContext, items: &'static [(&'static str, bool)]| {
+            let ran = ran.clone();
+            cx.update(|window, cx| {
+                menu.update(cx, |menu, cx| {
+                    menu.rebuild(window, cx, |menu, _, _| {
+                        acting(menu, items, &ran).max_h(px(120.)).scrollable(true)
+                    })
+                })
+            });
+            draw(cx);
+        };
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        capped(cx, TWELVE);
+        let max = menu.read_with(cx, |menu, _| menu.scroll_handle.max_offset().y);
+        assert!(max > px(0.), "the capped menu scrolls");
+        menu.update(cx, |menu, _| {
+            menu.scroll_handle.set_offset(gpui::point(px(0.), -max))
+        });
+        draw(cx);
+        let pointer = drawn_item(cx, "Item 10").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(11), false), "the pointer on Item 10");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+
+        capped(cx, ELEVEN);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.bounds),
+            surface,
+            "the menu keeps its place and size"
+        );
+        assert!(
+            drawn_item(cx, "Item 9").contains(&pointer),
+            "the rows moved down a row, Item 9 under the pointer"
+        );
+        assert_eq!(selection(cx).0, None, "nothing selected");
+        let rows = ["Item 8", "Item 9", "Item 10"];
+        assert!(lit_among(cx, &rows).is_empty(), "nothing drawn lit");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(10), false),
+            "the moved pointer on Item 9"
+        );
+        assert_eq!(lit_among(cx, &rows), ["Item 9"], "Item 9 drawn lit");
+    }
+
+    /// The item GPUI last reported under the pointer is known by its index,
+    /// and GPUI reports nothing for a row no longer drawn: with the pointer
+    /// on Five, a rebuild without Five, then one with a separator that puts
+    /// Four at Five's index away from the pointer, a move onto the menu's
+    /// padding, where no row lies, selects nothing and Enter runs nothing.
+    /// That move once gave the selection to the row at the index GPUI had
+    /// last reported, Four, though the pointer never went near it, and Enter
+    /// ran Four.
+    #[gpui::test]
+    fn a_move_onto_no_row_selects_no_row_the_pointer_left_by_a_rebuild(cx: &mut TestAppContext) {
+        const FIVE: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+            ("Five", true),
+        ];
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FIVE, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let pointer = drawn_item(cx, "Five").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(5), false), "the pointer on Five");
+
+        rebuilt_acting(&menu, cx, FOUR, &ran);
+        let r = ran.clone();
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| {
+                    let menu = acting(menu, &FOUR[..1], &r).separator();
+                    FOUR[1..].iter().fold(menu, |menu, (name, _)| {
+                        let (r, name) = (r.clone(), *name);
+                        menu.item(
+                            PopupMenuItem::new(name)
+                                .on_click(move |_, _, _| r.borrow_mut().push(name)),
+                        )
+                    })
+                })
+            })
+        });
+        draw(cx);
+        let four = drawn_item(cx, "Four");
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.menu_items[5].name().cloned()),
+            Some("Four".into()),
+            "Four at Five's index"
+        );
+        assert!(!four.contains(&pointer), "Four away from the pointer");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let padding = gpui::point(four.center().x, surface.top() + px(2.));
+        let heading = cx
+            .debug_bounds("menu-item: Heading · Label")
+            .expect("Heading drawn");
+        assert!(
+            ["One", "Two", "Three", "Four"]
+                .into_iter()
+                .map(|name| drawn_item(cx, name))
+                .chain([heading])
+                .all(|row| !row.contains(&padding)),
+            "no row at {padding:?}"
+        );
+
+        cx.simulate_mouse_move(padding, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "on no row, nothing selected");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
+    }
+
+    /// The row GPUI last reported under the pointer takes the selection on
+    /// a move only where the last frame drew it under the pointer: with
+    /// that report on Four, an index still in range but a row away from the
+    /// pointer, as a rebuild can leave it, a still pointer's move onto the
+    /// menu's padding selects nothing and Enter runs nothing. Without the
+    /// check that move gave Four the selection.
+    #[gpui::test]
+    fn a_move_onto_padding_selects_no_reported_row_away_from_it(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let pointer = drawn_item(cx, "One").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(1), false), "the pointer on One");
+        // Built again under the resting pointer, which is still from there.
+        rebuilt_acting(&menu, cx, FOUR, &ran);
+        assert!(
+            menu.read_with(cx, |menu, _| menu.still_pointer.is_some()),
+            "still after the rebuild"
+        );
+        // GPUI's last report, by index, on Four, away from the pointer.
+        let four = drawn_item(cx, "Four");
+        menu.update(cx, |menu, _| menu.hovered_index = Some(4));
+        assert!(!four.contains(&pointer), "Four away from the pointer");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let padding = gpui::point(four.center().x, surface.top() + px(2.));
+        let heading = cx
+            .debug_bounds("menu-item: Heading · Label")
+            .expect("Heading drawn");
+        assert!(
+            ["One", "Two", "Three", "Four"]
+                .into_iter()
+                .map(|name| drawn_item(cx, name))
+                .chain([heading])
+                .all(|row| !row.contains(&padding)),
+            "no row at {padding:?}"
+        );
+
+        cx.simulate_mouse_move(padding, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "on no row, nothing selected");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
+    }
+
+    /// A pointer move in the frame after a rebuild, before the layout has
+    /// recorded the new rows, finds no row drawn under it and selects
+    /// nothing, but leaves the pointer still at its new place, so the next
+    /// move, after the layout, selects the row under it. Cleared there, the
+    /// pointer was no longer still, so each later move within the row
+    /// returned at once, and GPUI reports no hover for a row the pointer
+    /// stays on: the row stayed unselected, and Enter ran nothing, until the
+    /// pointer crossed into another row.
+    #[gpui::test]
+    fn a_move_before_rebuilt_rows_are_laid_out_lets_the_next_move_decide(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let two = drawn_item(cx, "Two");
+        let pointer = gpui::point(two.left() + px(8.), two.center().y);
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(2), false), "the pointer on Two");
+
+        // Built again, and the pointer moves within Two before a frame lays
+        // the new rows out.
+        let r = ran.clone();
+        let moved = pointer + gpui::point(px(2.), px(0.));
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| acting(menu, FOUR, &r))
+            });
+            assert!(
+                menu.read(cx).rows.is_empty(),
+                "no rows laid out since the rebuild"
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: moved,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        });
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "the move found no row laid out");
+
+        // The next move within Two, after the layout, selects it.
+        cx.simulate_mouse_move(
+            moved + gpui::point(px(2.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(2), false),
+            "the next move within Two selects it"
+        );
+        assert_eq!(lit(cx), ["Two"], "and only Two is lit");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Two"], "Enter runs Two");
+    }
+
+    /// A press and its release that straddle a rebuild run nothing: rows
+    /// are wired, and GPUI keeps a pending press, by the item's index, so
+    /// with the press on Three and a rebuild without One, which puts Four
+    /// at Three's index and place, the release ran Four, which the person
+    /// never pressed. A fresh click then runs the row drawn under the
+    /// pointer.
+    #[gpui::test]
+    fn a_press_and_release_across_a_rebuild_run_nothing(cx: &mut TestAppContext) {
+        const WITHOUT_ONE: &[(&str, bool)] = &[("Two", true), ("Three", true), ("Four", true)];
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let pointer = drawn_item(cx, "Three").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_down(pointer, gpui::MouseButton::Left, Modifiers::default());
+        draw(cx);
+        rebuilt_acting(&menu, cx, WITHOUT_ONE, &ran);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.menu_items[3].name().cloned()),
+            Some("Four".into()),
+            "Four at Three's index"
+        );
+        assert!(
+            drawn_item(cx, "Four").contains(&pointer),
+            "Four drawn under the pointer"
+        );
+        cx.simulate_mouse_up(pointer, gpui::MouseButton::Left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "the release runs nothing: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_click(pointer, Modifiers::default());
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Four"], "a fresh click runs Four");
+    }
+
+    /// The primary button going down at `at`, delivered as GPUI delivers
+    /// it, to the rows of the last frame drawn.
+    fn press_at(at: Point<Pixels>, window: &mut Window, cx: &mut App) {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    }
+
+    /// A press that goes down after a rebuild but before the menu is drawn
+    /// again reaches the rows of the last frame drawn: on Three's row, with
+    /// One gone and Four at Three's index, it records nothing, and its
+    /// release runs nothing. It recorded Three's index, and the release ran
+    /// Four. A fresh click then runs Four, the row drawn under the pointer.
+    #[gpui::test]
+    fn a_press_on_rows_drawn_before_a_rebuild_runs_nothing(cx: &mut TestAppContext) {
+        const WITHOUT_ONE: &[(&str, bool)] = &[("Two", true), ("Three", true), ("Four", true)];
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let pointer = drawn_item(cx, "Three").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        let r = ran.clone();
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| acting(menu, WITHOUT_ONE, &r))
+            });
+            press_at(pointer, window, cx);
+        });
+        draw(cx);
+        assert!(
+            drawn_item(cx, "Four").contains(&pointer),
+            "Four drawn under the pointer, at Three's index"
+        );
+        cx.simulate_mouse_up(pointer, gpui::MouseButton::Left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "the release runs nothing: {:?}",
+            ran.borrow()
+        );
+        cx.simulate_click(pointer, Modifiers::default());
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Four"], "a fresh click runs Four");
+    }
+
+    /// A menu of `items`, each running into `ran` as `name@target`, as an
+    /// item of one label acts on whatever its menu was built for.
+    fn targeted(
+        menu: PopupMenu,
+        items: &[&'static str],
+        target: &'static str,
+        ran: &Rc<std::cell::RefCell<Vec<String>>>,
+    ) -> PopupMenu {
+        items.iter().fold(menu.label("Heading"), |menu, name| {
+            let (ran, name) = (ran.clone(), *name);
+            menu.item(
+                PopupMenuItem::new(name)
+                    .on_click(move |_, _, _| ran.borrow_mut().push(format!("{name}@{target}"))),
+            )
+        })
+    }
+
+    /// A press across a rebuild runs nothing, whatever stands at its index
+    /// with whatever label: a label is not an item's identity. Pressed on
+    /// Two, built for A, and released after a rebuild for B with the same
+    /// labels, as Undo last local commit… is built for the commit HEAD moves
+    /// to, it ran Two for B; pressed on Two's row drawn for A after that
+    /// rebuild, before a draw, the same; and with two items named Archive,
+    /// the first pressed and a rebuild without One putting the second
+    /// Archive at its index, it ran the other Archive. A fresh click then
+    /// runs the item drawn under the pointer.
+    #[gpui::test]
+    fn a_press_across_a_rebuild_runs_nothing_whatever_its_label(cx: &mut TestAppContext) {
+        const SAME: &[&str] = &["One", "Two", "Three"];
+        const ARCHIVES: &[&str] = &["One", "Archive", "Archive"];
+        const SHIFTED: &[&str] = &["Archive", "Archive"];
+        let ran = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+        });
+        let r = ran.clone();
+        let (placed, cx) = cx.add_window_view(move |window, cx| {
+            let menu = cx.new(|cx| targeted(PopupMenu::new(cx), SAME, "A", &r));
+            menu.read(cx).focus_handle.clone().focus(window, cx);
+            Placed {
+                menu,
+                top: px(0.),
+                left: px(0.),
+            }
+        });
+        draw(cx);
+        let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
+        let rebuilt_for = |cx: &mut VisualTestContext, items: &'static [&'static str], target| {
+            let r = ran.clone();
+            cx.update(|window, cx| {
+                menu.update(cx, |menu, cx| {
+                    menu.rebuild(window, cx, move |menu, _, _| {
+                        targeted(menu, items, target, &r)
+                    })
+                })
+            });
+        };
+        let left = gpui::MouseButton::Left;
+
+        // Pressed for A, released after a rebuild for B.
+        let two = drawn_item(cx, "Two").center();
+        cx.simulate_mouse_move(two, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_down(two, left, Modifiers::default());
+        rebuilt_for(cx, SAME, "B");
+        draw(cx);
+        cx.simulate_mouse_up(two, left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "same label, new target: {:?}",
+            ran.borrow()
+        );
+
+        // Pressed on Two's row drawn for B, after a rebuild for C, before a
+        // draw.
+        let r = ran.clone();
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| targeted(menu, SAME, "C", &r))
+            });
+            press_at(two, window, cx);
+        });
+        draw(cx);
+        cx.simulate_mouse_up(two, left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "a stale frame's press: {:?}",
+            ran.borrow()
+        );
+
+        // Two items named Archive: the second shifts into the first's index.
+        rebuilt_for(cx, ARCHIVES, "D");
+        draw(cx);
+        // Both items named Archive share a selector; the first lies a row
+        // below One.
+        let one = drawn_item(cx, "One");
+        let first = gpui::point(one.center().x, one.center().y + one.size.height);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.menu_items[2].name().cloned()),
+            Some("Archive".into()),
+            "the first Archive at index 2"
+        );
+        cx.simulate_mouse_move(first, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_down(first, left, Modifiers::default());
+        rebuilt_for(cx, SHIFTED, "E");
+        draw(cx);
+        cx.simulate_mouse_up(first, left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "a duplicate label shifted into the pressed index: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_click(first, Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            *ran.borrow(),
+            ["Archive@E"],
+            "a fresh click runs the Archive drawn under it"
+        );
+    }
+
+    /// A rebuild that rests the keyboard's cursor because its item is still
+    /// offered but refused reports that item once, as the rest begins: its
+    /// name and its accessible name, which an element item that states why
+    /// it waits carries apart from the name it is found by. A rebuild while
+    /// the rest goes on reports nothing more, a rest after the item could
+    /// act again is reported again, an item that is gone reports nothing,
+    /// and a menu whose selection the pointer owns reports nothing.
+    #[gpui::test]
+    fn a_rebuild_that_rests_the_cursor_reports_the_waiting_item_once(cx: &mut TestAppContext) {
+        const ONE_REFUSED: &[(&str, bool)] = &[
+            ("One", false),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+        ];
+        const WITHOUT_ONE: &[(&str, bool)] = &[("Two", true), ("Three", true), ("Four", true)];
+        let (menu, cx) = open(cx, FOUR);
+        let reports = Rc::new(std::cell::RefCell::new(Vec::<CursorRests>::new()));
+        cx.update(|_, cx| {
+            let reports = reports.clone();
+            cx.subscribe(&menu, move |_, rest: &CursorRests, _| {
+                reports.borrow_mut().push(rest.clone())
+            })
+            .detach();
+        });
+        let taken = |reports: &Rc<std::cell::RefCell<Vec<CursorRests>>>| {
+            std::mem::take(&mut *reports.borrow_mut())
+                .into_iter()
+                .map(|rest| (rest.name.to_string(), rest.label.to_string()))
+                .collect::<Vec<_>>()
+        };
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "Down");
+
+        rebuilt(&menu, cx, ONE_REFUSED);
+        assert_eq!(cursor(&menu, cx), None, "at rest");
+        assert_eq!(
+            taken(&reports),
+            [("One".to_string(), "One".to_string())],
+            "the rest begins"
+        );
+        rebuilt(&menu, cx, ONE_REFUSED);
+        assert!(taken(&reports).is_empty(), "the rest goes on");
+
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "back on One");
+        assert!(taken(&reports).is_empty(), "no rest");
+        // An element item stating why it waits, found by its command.
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| {
+                    FOUR[1..].iter().fold(
+                        menu.label("Heading").item(
+                            PopupMenuItem::element(|_, _| div().child("One"))
+                                .named("One")
+                                .accessibility_label("One, available when the write finishes")
+                                .disabled(true),
+                        ),
+                        |menu, (name, _)| menu.item(PopupMenuItem::new(*name)),
+                    )
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            taken(&reports),
+            [(
+                "One".to_string(),
+                "One, available when the write finishes".to_string()
+            )],
+            "a new rest, on the item that says why"
+        );
+
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "back on One");
+        rebuilt(&menu, cx, WITHOUT_ONE);
+        assert!(taken(&reports).is_empty(), "One gone, nothing waits");
+
+        // The pointer takes the selection: nothing rests.
+        rebuilt(&menu, cx, FOUR);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        let two = cx
+            .debug_bounds("menu-item: Two · MenuItem")
+            .expect("Two drawn");
+        cx.simulate_mouse_move(two.center(), None, Modifiers::default());
+        draw(cx);
+        rebuilt(
+            &menu,
+            cx,
+            &[
+                ("One", true),
+                ("Two", false),
+                ("Three", true),
+                ("Four", true),
+            ],
+        );
+        assert!(
+            taken(&reports).is_empty(),
+            "the pointer's selection reports nothing"
+        );
+    }
+
+    /// The names Two and Five, which wait, are announced with.
+    const TWO_WAITS: &str = "Two, available when the write finishes";
+    const FIVE_WAITS: &str = "Five, available when the write finishes";
+
+    /// A menu under a heading of One, which acts, Two, disabled for a reason
+    /// it states, Three, disabled with none, Four, which acts, and Five, an
+    /// element item disabled for a reason it states, as an application's
+    /// waiting rows are built; each adds its name to `ran` when it acts, and
+    /// `waits` gives Two and Five their mark.
+    fn waiting(menu: PopupMenu, ran: &Ran, waits: bool) -> PopupMenu {
+        let item = |name: &'static str| {
+            let ran = ran.clone();
+            PopupMenuItem::new(name).on_click(move |_, _, _| ran.borrow_mut().push(name))
+        };
+        let five = ran.clone();
+        menu.label("Heading")
+            .item(item("One"))
+            .item(
+                item("Two")
+                    .accessibility_label(TWO_WAITS)
+                    .disabled(true)
+                    .reason_stated(waits),
+            )
+            .item(item("Three").disabled(true))
+            .item(item("Four"))
+            .item(
+                PopupMenuItem::element(|_, _| div().child("Five"))
+                    .named("Five")
+                    .accessibility_label(FIVE_WAITS)
+                    .disabled(true)
+                    .reason_stated(waits)
+                    .on_click(move |_, _, _| five.borrow_mut().push("Five")),
+            )
+    }
+
+    /// A focused [`waiting`] menu drawn at the window's top left with its
+    /// fills painted, the menu keys bound, the base kit's record of Enter's
+    /// press kept, and how often it was dismissed.
+    fn open_waiting<'a>(
+        cx: &'a mut TestAppContext,
+        ran: &Ran,
+    ) -> (
+        Entity<PopupMenu>,
+        Rc<std::cell::Cell<usize>>,
+        &'a mut VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            let mut colors = crate::theme::ThemeColor::default();
+            colors.accent = gpui::red();
+            colors.list_active = gpui::blue();
+            cx.set_global(Theme::from(&colors));
+            init(cx);
+            gpui_base::init(cx);
+        });
+        let ran = ran.clone();
+        let (placed, cx) = cx.add_window_view(move |window, cx| {
+            let menu = cx.new(|cx| waiting(PopupMenu::new(cx), &ran, true));
+            let focus = menu.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+            Placed {
+                menu,
+                top: px(0.),
+                left: px(0.),
+            }
+        });
+        draw(cx);
+        let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
+        let dismissed = Rc::new(std::cell::Cell::new(0));
+        cx.update(|_, cx| {
+            let dismissed = dismissed.clone();
+            cx.subscribe(&menu, move |_, _: &DismissEvent, _| {
+                dismissed.set(dismissed.get() + 1)
+            })
+            .detach();
+        });
+        (menu, dismissed, cx)
+    }
+
+    /// The selected item's accessible name, which AT-SPI reports for the
+    /// menu's selected item, where the keyboard's cursor is on it.
+    fn announced(menu: &Entity<PopupMenu>, cx: &mut VisualTestContext) -> Option<String> {
+        menu.read_with(cx, |menu, _| {
+            let ix = menu.selected_index.filter(|_| menu.keyboard_selection)?;
+            Some(menu.menu_items.get(ix)?.a11y_label()?.to_string())
+        })
+    }
+
+    /// Whether the row the debug selector `item` names is drawn with the
+    /// keyboard cursor's fill, `list_active`, set to blue by
+    /// [`open_waiting`].
+    fn drawn_as_cursor(cx: &mut VisualTestContext, item: &str) -> bool {
+        let row = cx
+            .debug_bounds(item.to_owned().leak())
+            .unwrap_or_else(|| panic!("{item} drawn"));
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let near = |device: gpui::ScaledPixels, logical: Pixels| {
+                (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
+            };
+            window.painted_quads().iter().any(|quad| {
+                quad.background == gpui::Background::from(gpui::blue())
+                    && near(quad.bounds.left(), row.left())
+                    && near(quad.bounds.top(), row.top())
+                    && near(quad.bounds.right(), row.right())
+                    && near(quad.bounds.bottom(), row.bottom())
+            })
+        })
+    }
+
+    /// A disabled item that states why it waits stays in the keyboard's
+    /// order: Down rests the cursor on Two, drawn as the keyboard's cursor
+    /// and announced by its name with its reason, Enter and a click run
+    /// nothing and leave the menu open, and the next Down moves on, past
+    /// Three, which states no reason, to Four, then to Five, an element
+    /// item that waits, and round to One; Up comes back the same way, and
+    /// Home and End rest it on the first and last stop. Passed over as every
+    /// disabled item was, Down went from One to Four, so a screen reader
+    /// never spoke why Two waited.
+    #[gpui::test]
+    fn the_menu_keys_rest_on_an_item_that_states_why_it_waits(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, dismissed, cx) = open_waiting(cx, &ran);
+        let two = format!("menu-item: {TWO_WAITS} · MenuItem disabled");
+        let walk = |cx: &mut VisualTestContext, key: &str, on: &str| {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(cursor(&menu, cx).as_deref(), Some(on), "{key} to {on}");
+        };
+        walk(cx, "down", "One");
+        walk(cx, "down", "Two");
+        assert_eq!(
+            announced(&menu, cx).as_deref(),
+            Some(TWO_WAITS),
+            "Two is announced with why it waits"
+        );
+        assert!(
+            drawn_as_cursor(cx, &two),
+            "Two is drawn as the keyboard's cursor"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let row = cx.debug_bounds(two.clone().leak()).expect("Two drawn");
+        cx.simulate_click(row.center(), Modifiers::default());
+        draw(cx);
+        assert!(ran.borrow().is_empty(), "Enter and a click run nothing");
+        assert_eq!(dismissed.get(), 0, "the menu stays open");
+        walk(cx, "home", "One");
+        walk(cx, "down", "Two");
+        walk(cx, "down", "Four");
+        walk(cx, "down", "Five");
+        assert_eq!(
+            announced(&menu, cx).as_deref(),
+            Some(FIVE_WAITS),
+            "Five is announced with why it waits"
+        );
+        assert!(
+            drawn_as_cursor(cx, &format!("menu-item: {FIVE_WAITS} · MenuItem disabled")),
+            "Five is drawn as the keyboard's cursor"
+        );
+        walk(cx, "down", "One");
+        walk(cx, "up", "Five");
+        walk(cx, "up", "Four");
+        walk(cx, "up", "Two");
+        walk(cx, "up", "One");
+        walk(cx, "end", "Five");
+        walk(cx, "home", "One");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["One"], "Enter on One runs it");
+    }
+
+    /// Without the mark, the disabled Two and Five are passed over as any
+    /// disabled item is: Down goes from One to Four and round, and Home and
+    /// End rest on One and Four.
+    #[gpui::test]
+    fn the_menu_keys_pass_over_a_disabled_item_that_states_no_reason(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, _, cx) = open_waiting(cx, &ran);
+        cx.update(|window, cx| {
+            let ran = ran.clone();
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| waiting(menu, &ran, false))
+            })
+        });
+        draw(cx);
+        for (key, on) in [
+            ("down", "One"),
+            ("down", "Four"),
+            ("down", "One"),
+            ("up", "Four"),
+            ("home", "One"),
+            ("end", "Four"),
+        ] {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(cursor(&menu, cx).as_deref(), Some(on), "{key} to {on}");
+        }
+    }
+
+    /// A menu built again keeps the keyboard's cursor on an item that
+    /// states why it waits: on Two, where the keys rested it, through a
+    /// rebuild that reports nothing; and on One as One, which could act,
+    /// starts to wait, reported once as the rest begins so the application
+    /// can say why, and back on One, able to act, once the wait ends.
+    #[gpui::test]
+    fn a_rebuilt_menu_keeps_the_cursor_on_an_item_that_states_why_it_waits(
+        cx: &mut TestAppContext,
+    ) {
+        let ran = Ran::default();
+        let (menu, _, cx) = open_waiting(cx, &ran);
+        let reports = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        cx.update(|_, cx| {
+            let reports = reports.clone();
+            cx.subscribe(&menu, move |_, rest: &CursorRests, _| {
+                reports.borrow_mut().push(rest.label.to_string())
+            })
+            .detach();
+        });
+        let rebuilt = |cx: &mut VisualTestContext, one_waits: bool| {
+            let ran = ran.clone();
+            cx.update(|window, cx| {
+                menu.update(cx, |menu, cx| {
+                    menu.rebuild(window, cx, move |menu, _, _| {
+                        let menu = waiting(menu, &ran, true);
+                        if one_waits {
+                            let mut menu = menu;
+                            menu.menu_items[1] = PopupMenuItem::new("One")
+                                .accessibility_label("One, available when the write finishes")
+                                .disabled(true)
+                                .reason_stated(true);
+                            menu
+                        } else {
+                            menu
+                        }
+                    })
+                })
+            });
+            draw(cx);
+        };
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        rebuilt(cx, false);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "kept on Two");
+        assert!(reports.borrow().is_empty(), "nothing begins to wait");
+
+        cx.simulate_keystrokes("up");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "Up");
+        rebuilt(cx, true);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "kept on One");
+        assert!(
+            drawn_as_cursor(
+                cx,
+                "menu-item: One, available when the write finishes · MenuItem disabled"
+            ),
+            "drawn on One as it waits"
+        );
+        rebuilt(cx, true);
+        assert_eq!(
+            std::mem::take(&mut *reports.borrow_mut()),
+            ["One, available when the write finishes"],
+            "reported once, as One starts to wait"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter on the waiting One runs nothing"
+        );
+        rebuilt(cx, false);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "One acts again");
+        key_up(cx, "enter", true);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["One"], "Enter runs One");
+    }
+
+    /// The key-down the platform repeats while `keys` is held, marked
+    /// `is_held` as Wayland's repeat timer and macOS's `isARepeat` mark it;
+    /// on Wayland with an input method such as fcitx5 too, since the
+    /// `gpui-pre-linux` patch keeps text input off outside a text field.
+    /// Under X11 a held key arrives as fresh presses instead, which no menu
+    /// can tell from new ones, so the rule the tests below pin does not hold
+    /// there.
+    fn repeat(cx: &mut VisualTestContext, keys: &str) {
+        cx.simulate_event(KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(keys).unwrap().with_simulated_ime(),
+            is_held: true,
+            prefer_character_input: false,
+        });
+        draw(cx);
+    }
+
+    /// `keys` going down as X11 sends both a press and each repeat of it
+    /// while it is held: not marked held, with no key-up before a repeat.
+    /// Drawn after it unless `then_draw` is false, as for a press that comes
+    /// right after its release.
+    fn x11_down(cx: &mut VisualTestContext, keys: &str, then_draw: bool) {
+        // Dispatched with no idle pass after it, as `simulate_event` runs.
+        let down = gpui::PlatformInput::KeyDown(KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(keys).unwrap().with_simulated_ime(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.update(|window, cx| window.dispatch_event(down, cx));
+        if then_draw {
+            draw(cx);
+        }
+    }
+
+    /// `keys` coming up, drawn after it unless `then_draw` is false: drawn,
+    /// the event loop's next idle pass ends the Enter press the base kit
+    /// records (`gpui_base::note_key_up`).
+    fn key_up(cx: &mut VisualTestContext, keys: &str, then_draw: bool) {
+        let up = gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(keys).unwrap(),
+        });
+        cx.update(|window, cx| window.dispatch_event(up, cx));
+        if then_draw {
+            draw(cx);
+        }
+    }
+
+    /// A held Enter's repeats as X11 sends them, two fresh presses and a
+    /// release with its press together, the menu drawn after each.
+    fn x11_repeats(cx: &mut VisualTestContext) {
+        x11_down(cx, "enter", true);
+        x11_down(cx, "enter", true);
+        key_up(cx, "enter", false);
+        x11_down(cx, "enter", true);
+    }
+
+    /// Enter held on Two, which waits, runs nothing as it goes down or
+    /// repeats, nor as it repeats once a rebuild has made Two able to act
+    /// with the cursor still on it: only a fresh press runs Two. Bound to
+    /// Enter, the menu's confirm ran Two on the first repeat after the
+    /// rebuild, so a held Enter ran a write the person had not pressed for.
+    #[gpui::test]
+    fn a_held_enter_runs_no_item_a_rebuild_makes_able_to_act(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, dismissed, cx) = open_waiting(cx, &ran);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        repeat(cx, "enter");
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter on the waiting Two runs nothing"
+        );
+        cx.update(|window, cx| {
+            let ran = ran.clone();
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| {
+                    let mut menu = waiting(menu, &ran, true);
+                    let two = ran.clone();
+                    menu.menu_items[2] = PopupMenuItem::new("Two")
+                        .on_click(move |_, _, _| two.borrow_mut().push("Two"));
+                    menu
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "kept on Two, which can act"
+        );
+        repeat(cx, "enter");
+        repeat(cx, "enter");
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        assert_eq!(dismissed.get(), 0, "the menu stays open");
+        key_up(cx, "enter", true);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Two"], "a fresh press runs Two");
+        assert_eq!(dismissed.get(), 1, "and closes the menu");
+    }
+
+    /// The same under X11, whose repeats are fresh presses no flag marks:
+    /// Enter goes down on the waiting Two and runs nothing, a rebuild makes
+    /// Two able to act, and the key's repeats, two presses and a release
+    /// with its press, run nothing, as they repeat the press the base kit
+    /// recorded (`gpui_base::enter_press_is_repeat`); after the key-up a
+    /// fresh press runs Two. Read by its `is_held` alone, the first repeat
+    /// after the rebuild ran Two.
+    #[gpui::test]
+    fn an_x11_enter_held_runs_no_item_a_rebuild_makes_able_to_act(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, dismissed, cx) = open_waiting(cx, &ran);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        x11_down(cx, "enter", true);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter on the waiting Two runs nothing"
+        );
+        cx.update(|window, cx| {
+            let ran = ran.clone();
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| {
+                    let mut menu = waiting(menu, &ran, true);
+                    let two = ran.clone();
+                    menu.menu_items[2] = PopupMenuItem::new("Two")
+                        .on_click(move |_, _, _| two.borrow_mut().push("Two"));
+                    menu
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "kept on Two");
+        x11_repeats(cx);
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        assert_eq!(dismissed.get(), 0, "the menu stays open");
+        key_up(cx, "enter", true);
+        x11_down(cx, "enter", true);
+        assert_eq!(*ran.borrow(), ["Two"], "a fresh press runs Two");
+        assert_eq!(dismissed.get(), 1, "and closes the menu");
+    }
+
+    /// A menu an Enter on its button opened, its cursor on its first item
+    /// that can act as a menu the keyboard opens starts, runs nothing as
+    /// that Enter, still held, repeats into it; a fresh press runs the item.
+    /// Bound to Enter, the menu's confirm ran One on the first repeat.
+    #[gpui::test]
+    fn a_held_enter_that_opened_the_menu_runs_nothing(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "opened on One");
+        repeat(cx, "enter");
+        repeat(cx, "enter");
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        key_up(cx, "enter", true);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["One"], "a fresh press runs One");
+    }
+
+    /// The same under X11: Enter goes down with focus outside the menu, as
+    /// on the button that opens it, the menu opens focused on its first
+    /// item, and the key's repeats, fresh presses no flag marks, run
+    /// nothing; after the key-up a fresh press runs One. Read by its
+    /// `is_held` alone, the first repeat ran One.
+    #[gpui::test]
+    fn an_x11_enter_that_opened_the_menu_runs_nothing(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        cx.update(|window, cx| window.blur(cx));
+        x11_down(cx, "enter", true);
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.focus_handle.clone().focus(window, cx);
+                menu.select_first_item(cx);
+            })
+        });
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "opened on One");
+        x11_repeats(cx);
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        key_up(cx, "enter", true);
+        x11_down(cx, "enter", true);
+        assert_eq!(*ran.borrow(), ["One"], "a fresh press runs One");
+    }
+
+    /// A focused menu inside an element of the key context `context`, as a
+    /// dropdown's lies inside its popover's content.
+    struct Hosted {
+        menu: Entity<PopupMenu>,
+        context: &'static str,
+    }
+
+    impl Render for Hosted {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().key_context(self.context).child(self.menu.clone())
+        }
+    }
+
+    /// Space in a menu inside a popover, and the secondary Enter in one
+    /// inside a list, whose own bindings confirm the menu, run its item for
+    /// a fresh press and not for a repeat; in a menu inside neither, neither
+    /// key runs anything, as before. Confirmed through those bindings, a
+    /// held Space on a dropdown's button ran the first item of the menu it
+    /// opened, as a held Enter did.
+    #[gpui::test]
+    fn a_held_space_or_secondary_enter_runs_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+            // As the base crate's popover and this crate's list bind them.
+            cx.bind_keys([
+                KeyBinding::new("space", Confirm { secondary: false }, Some("Popover")),
+                KeyBinding::new("secondary-enter", Confirm { secondary: true }, Some("List")),
+            ]);
+        });
+        for (context, keys, confirms) in [
+            ("Popover", "space", true),
+            ("List", "secondary-enter", true),
+            ("Pane", "space", false),
+            ("Pane", "secondary-enter", false),
+        ] {
+            let at = format!("{keys} in a menu inside {context}");
+            let ran = Ran::default();
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let menu = cx.new(|cx| {
+                    let mut menu = acting(PopupMenu::new(cx), FOUR, &ran);
+                    menu.select_first_item(cx);
+                    menu
+                });
+                let focus = menu.read(cx).focus_handle.clone();
+                focus.focus(window, cx);
+                Hosted { menu, context }
+            });
+            draw(cx);
+            repeat(cx, keys);
+            repeat(cx, keys);
+            assert!(ran.borrow().is_empty(), "{at}: the held key runs nothing");
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            let expected: &[&str] = if confirms { &["One"] } else { &[] };
+            assert_eq!(*ran.borrow(), expected, "{at}: a fresh press");
+        }
+    }
 
     #[gpui::test]
     fn popup_menu_item_a11y_label_uses_visible_label(cx: &mut gpui::TestAppContext) {
@@ -1494,5 +4922,11 @@ mod tests {
         );
         assert_eq!(PopupMenuItem::separator().a11y_label(), None);
         assert_eq!(PopupMenuItem::element(|_, _| div()).a11y_label(), None);
+        assert_eq!(
+            PopupMenuItem::new("More context (3 lines)")
+                .accessibility_label("More context, 3 lines shown")
+                .a11y_label(),
+            Some("More context, 3 lines shown".into())
+        );
     }
 }

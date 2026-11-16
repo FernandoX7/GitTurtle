@@ -23,6 +23,33 @@ API is invoked. See Apple's [data initializer](https://developer.apple.com/docum
 [page lookup](https://developer.apple.com/documentation/pdfkit/pdfdocument/page(at:))
 and [page text API](https://developer.apple.com/documentation/pdfkit/pdfpage/string).
 
+On Linux (x86-64 and AArch64), [hayro](https://github.com/LaurenzV/hayro)
+renders the page and extracts its text inside GitTurtle's own helper process,
+never in the app: [`pdf_view::prepare_page`](../crates/app/src/pdf_view.rs)
+starts one helper per page through the client in
+[`pdf_helper.rs`](../crates/app/src/pdf_helper.rs), writes the captured bytes
+to its standard input and reads one bounded reply of pixels, page count and
+text. The helper confines itself before it reads a byte (resource limits,
+`no_new_privs` and a seccomp allow-list with no file, network or process
+calls). The client kills it at a 10-second deadline, and within 25 ms once
+the page is no longer wanted. A first page is prepared by the repository
+worker's read, which a newer read (another file or commit), a tab switch or
+close, or closing the window cancels. Back from Compare cancels the
+comparison's preview read, its own (“Loading preview…”, `PREVIEW_LABEL` in
+[`main.rs`](../crates/app/src/main.rs)) and that of a captured comparison
+restored with its tab (“Restoring captured comparison…”,
+`RESTORED_PREVIEW_LABEL`) alike, so its helper is killed then rather than
+at its 10-second deadline; the file is read again when it is chosen. A later
+page
+is prepared on the render lane, whose request a page change, Retry page, Back,
+another file, a tab switch or leaving the repository page for Settings or
+Projects supersedes; leaving the page keeps a first page's read, whose
+comparison waits for the return. The parent-death signal ends a helper when
+the app exits. At most two helpers run at once. The
+[architecture review](development/2026-11-02-linux-pdf-pages-architecture.md)
+records the design and its security review. Other Linux targets and other
+platforms keep metadata and an explicit unsupported result.
+
 | Behavior | Bound or limitation |
 | --- | --- |
 | Captured input | At most 32 MiB with a PDF header. Locked, corrupt and unsupported documents retain an explicit unavailable result. |
@@ -30,14 +57,64 @@ and [page text API](https://developer.apple.com/documentation/pdfkit/pdfpage/str
 | Page pixels | At most a 1,000-pixel output edge, preserving aspect ratio and page rotation. Source geometry must also pass the shared edge/pixel bounds. Fit and 25–400% display zoom reuse the bounded raster; zoom does not request a higher-resolution decode. |
 | Retention | [The native page cache](../crates/app/src/pdf_view.rs) retains up to four pages and 16 MiB per side, whichever limit is reached first. Render pixels, extracted text and text notices share that budget. The enclosing immutable preview cache reserves the full per-side allowance before demand-loaded pages arrive. |
 | Text alternative | “Read page text” opens a read-only, selectable native text editor for the selected captured page. Returned UTF-8 is capped at 256 KiB; truncation is explicit and never splits a Unicode character. Text absence is explicit. No OCR is requested, and text-layer reading order can differ from visual layout. Extracted text is never a Git patch. |
-| Scheduling | Initial preparation uses the cancellable repository worker. Subsequent pages use one serialized render lane with a bounded queue. Generation/page checks reject stale results; cancellation is checked between parsing, drawing, extraction and conversion phases. |
-| Platform | PDF page rendering and text extraction currently require macOS frameworks. Other platforms retain metadata and an explicit unsupported result. |
+| Scheduling | Both call sites prepare a page through `prepare_page`: the first page on the cancellable repository worker, later pages on one serialized render lane with a bounded queue. Generation/page checks reject stale results; cancellation is checked between parsing, drawing, extraction and conversion phases, and on Linux at least every 25 ms while the helper runs, killing it once the request is superseded. |
+| Platform | macOS renders with CoreGraphics and reads text with PDFKit; Linux on x86-64 and AArch64 renders and reads text with hayro in the confined helper, which needs a kernel with seccomp filters (without them the page says “The PDF renderer could not start.”). Other platforms retain metadata and an explicit unsupported result. |
 
-Native framework calls cannot be interrupted mid-call. Input, returned text,
-retained pixels and queue limits are independent; they do not form a hard
-wall-clock deadline or process-memory sandbox. A page can still be displayed
-when its text layer cannot be extracted. System preview is an explicit user
-action on an isolated copy of captured bytes.
+macOS framework calls cannot be interrupted mid-call: on macOS, input,
+returned text, retained pixels and queue limits are independent and do not
+form a hard wall-clock deadline or process-memory sandbox. The Linux helper
+is both, within its limits. A page can still be displayed when its text layer
+cannot be extracted.
+
+A page that fails says why where the page would be drawn, worded by the app,
+never with text from the helper: the document's own errors use the macOS
+sentences, and the helper's are “The PDF renderer could not start.”, “The PDF
+page took longer than 10 seconds and was stopped.”, “The PDF renderer stopped
+on this page.” and “The PDF renderer returned an unreadable result.” A later
+page offers Retry page, which asks for that page again; a failed first page
+leaves the side without pages and offers none, as on macOS. Nothing retries
+by itself, since a hostile page would only burn the CPU again. Read page text
+acts only for a page whose pixels and text result arrived; a page whose text
+alone failed shows its pixels, and its text dialog says why. Until the result
+arrives, the page's room says “Preparing the page…”, and Read page text keeps
+its place in the side's header, disabled, its tooltip and accessible name
+saying the same sentence, and a failed page's
+Retry page takes the same place at the same width, so the page arrows, the
+page number, the link and the zooms never move while a page is prepared. A
+side too narrow for that whole header takes a compact one rather than a
+whole header that scrolls ([design](../DESIGN.md#documents-media-and-exact-source)):
+where they fit one line, Previous, the page number, Next, a zoom menu reading
+the zoom (Fit page width, Zoom out, Zoom in) and a “more” menu holding Read
+page text or Retry page, Linked pages (checked while linked) and the open
+control; narrower, Previous, the page number, Next and a “more” menu that
+holds the zooms first, then the same, each item named as the button it
+stands for. Both sides of a comparison take one form, the narrower of the
+two sides' own, so their headings lie level and they show the same controls,
+the page number in one reading (labelled, short or its icon) and both
+headings with their format or neither, every control measured on the
+display's device pixels, so their pages lie level at a fractional scale such
+as Hyprland's 1.2 as at a whole one.
+Only a side whose room above its page is shorter than even the narrowest form
+scrolls its header. In either form Read page text, while its
+page is prepared, is an unavailable item with “Preparing the page…” stated
+beside it.
+The message where a page would be shows the whole lines its room holds, the
+last ending in an ellipsis where it must be cut, and its accessible name is
+the whole sentence. A reply that
+puts a requested page outside the document is called unreadable rather than
+shown with its own page count, which would contradict the count the view
+already shows (every page the view asks for lies within the count of the
+first page's validated reply). A side without pages, an absent side or a
+document whose first page failed (a password-protected PDF), says why as
+static text, as a page's message is: where the other side has pages, in its
+own room beneath its header in the page view, and on the generic document
+surface only where neither side has pages. Each side is headed by what it
+holds, never by its partner: “Before · PDF” for a side that holds a PDF, and
+for one that holds none, an absent side above all, its name with its own
+format as a caption (“Before” and “Absent”), as the generic surface heads
+every side, so an absent side reads the same beside an added PDF as beside a
+locked one. System preview is an explicit user action on an isolated copy of
+captured bytes.
 
 ## Native Markdown and local resources
 
@@ -47,7 +124,13 @@ include headings, prose/emphasis, block quotes, ordered/unordered/task lists,
 code fences, tables, rules, links, local images and up to four static Mermaid
 diagrams. HTML is shown literally; it never becomes executable markup. Unsupported
 constructs and rendering limits stay visible, with the source view available
-within the existing text-preview limits.
+within the existing text-preview limits. A side stored as a Git LFS pointer stays
+literal, and only that side: above its exact stored text, never parsed as Markdown,
+it says why (its object is not in the local store, is over the 32 MiB preview
+limit or damaged, or the store could not be read), and the regular side renders. A file stored as a
+pointer on both sides has no Rendered view while either side is still a
+pointer, and neither has one with no regular side to render; with both objects
+local it renders as any Markdown file does.
 
 Rendered input is capped at 256 KiB, 16,384 syntax nodes, 64 nesting levels and
 2,048 displayed blocks. Individual text blocks are capped at 16 KiB; tables show
@@ -69,10 +152,20 @@ The Markdown path is the base directory, and the scope is explicit:
 
 The app requests at most 32 images per side, at most 4 MiB per image and 16 MiB
 of aggregate captured asset bytes. A separate 16 MiB rendered-pixel budget and
-1,000-pixel image edge cap apply after decoding. Source dimensions remain subject
-to the decoder's independent bounds. Missing or rejected images show their alt
-text/destination and an error; comparisons with image errors skip immutable
-caching so unavailable resources can be retried.
+1,000-pixel image edge cap apply to the decoded images. Before an image is
+decoded, the size its header says it decodes to
+(`gitturtle_preview::declared_dimensions`: the raster formats' own header read
+and, on Linux, the size the confined helper decodes a JPEG 2000 image to, from
+the bounded box and SIZ reader) is scaled to that edge, never more than the
+decode, and an image that would not fit what is left of the
+budget is refused without being decoded; a document of many large JPEG 2000
+images once spent seconds decoding the ones it then refused. A header can lie,
+so the decoded pixels are checked again, and an image whose header is not read
+there (SVG, AVIF, HEIF, and JPEG 2000 on macOS, whose ImageIO may draw any
+size up to the image's grid) is decoded and checked as before. Source dimensions
+remain subject to the decoder's independent bounds. Missing or rejected images
+show their alt text/destination and an error; comparisons with image errors skip
+immutable caching so unavailable resources can be retried.
 
 Resource paths are literal repository paths, not Git pathspec patterns.
 Percent-encoded filename bytes are preserved. Relative `.`/`..` components may

@@ -1,11 +1,11 @@
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use gpui::{
     A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId, FocusHandle,
-    GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId,
-    MouseButton, ParentElement, Pixels, Refineable as _, RenderOnce, Role, SharedString, Stateful,
-    StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
-    relative,
+    GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement,
+    KeyContext, KeyboardButton, KeyboardClickEvent, LayoutId, MouseButton, ParentElement, Pixels,
+    Refineable as _, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, relative,
 };
 use smallvec::SmallVec;
 
@@ -25,6 +25,7 @@ pub struct Button {
     semantic_styles: ButtonStyles,
     selected: bool,
     disabled: bool,
+    accessibility_disabled: bool,
     children: SmallVec<[AnyElement; 2]>,
     on_click: Option<ClickHandler>,
     accessibility_label: Option<SharedString>,
@@ -39,12 +40,20 @@ impl Button {
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id = id.into();
         Self {
-            base: div().id(id.clone()),
+            // GitTurtle patch: the Button's key context
+            // (`crate::dialog::BUTTON_CONTEXT`), in which a dialog leaves
+            // Enter to the Button. A caller's own `key_context` replaces it,
+            // and that Button opts out of the dialog's Enter press: Enter on
+            // it is the dialog's `Confirm` again, unless the caller binds the
+            // key in its own context. Built from the static name, never
+            // parsed ([`button_context`]).
+            base: div().id(id.clone()).key_context(button_context()),
             id,
             style: StyleRefinement::default(),
             semantic_styles: ButtonStyles::default(),
             selected: false,
             disabled: false,
+            accessibility_disabled: false,
             children: SmallVec::new(),
             on_click: None,
             accessibility_label: None,
@@ -59,6 +68,15 @@ impl Button {
     /// Sets whether the button ignores pointer and keyboard activation.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// GitTurtle patch: reports the button disabled to assistive technology
+    /// while it keeps its enabled look and input, for a control its
+    /// application refuses in its own handler before it dims it. A disabled
+    /// button is reported disabled either way.
+    pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
+        self.accessibility_disabled = disabled;
         self
     }
 
@@ -152,6 +170,17 @@ impl Button {
     }
 }
 
+/// GitTurtle patch: the Button's key context, [`crate::dialog::BUTTON_CONTEXT`],
+/// built from the static name rather than parsed from it. Given a `&str`,
+/// `key_context` parses it on every call, collecting the name into a new
+/// string, and a Button is built again in every frame that draws it; built
+/// here, the context shares the static name and makes only its one entry.
+fn button_context() -> KeyContext {
+    let mut context = KeyContext::default();
+    context.add(SharedString::new_static(crate::dialog::BUTTON_CONTEXT));
+    context
+}
+
 impl Selectable for Button {
     fn selected(self, selected: bool) -> Self {
         Button::selected(self, selected)
@@ -208,10 +237,19 @@ impl StatefulInteractiveElement for Button {}
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus_handle = self.focus_handle(window, cx);
+        // GitTurtle patch: the Button's own focus, which an Enter press must
+        // begin on to press it (`crate::dialog::enter_press_began_on`).
+        let enter_focus = focus_handle.clone();
         let disabled = self.disabled;
         let selected = self.selected;
         let style = self.resolved_style();
         let on_click = self.on_click;
+        // GitTurtle patch: where the Button was laid out, for the keyboard
+        // click Enter makes in a dialog.
+        let bounds = Rc::new(Cell::new(Bounds::default()));
+        let enter = (!disabled && self.focusable)
+            .then(|| on_click.clone())
+            .flatten();
 
         let content = self
             .base
@@ -255,24 +293,59 @@ impl RenderOnce for Button {
                     })
                 },
             )
+            // GitTurtle patch: Enter on the focused Button in a dialog
+            // presses it as the key goes down, once per press
+            // (`crate::dialog::enter_presses_button`). Taken in the capture
+            // phase, it never reaches GPUI's key-up activation, which would
+            // press it a second time.
+            .when_some(enter, |this, on_click| {
+                let bounds = bounds.clone();
+                let focus = enter_focus;
+                this.capture_key_down(move |event, window, cx| {
+                    if !crate::dialog::enter_presses_button(event, window) {
+                        return;
+                    }
+                    // Never on a held key's repeats, nor on an Enter whose
+                    // press began on another control, as a press that moved
+                    // focus here does under X11, where repeats are not
+                    // marked held: a repeat there is a key-down that repeats
+                    // the recorded press, which a held Enter on a Button
+                    // that keeps focus sends on every repeat.
+                    if !event.is_held
+                        && !crate::dialog::enter_press_is_repeat(window, cx)
+                        && crate::dialog::enter_press_began_on(&focus, window, cx)
+                    {
+                        let click = ClickEvent::Keyboard(KeyboardClickEvent {
+                            button: KeyboardButton::Enter,
+                            bounds: bounds.get(),
+                        });
+                        on_click(&click, window, cx);
+                    }
+                    cx.stop_propagation();
+                })
+            })
             .children(self.children)
             .refine_style(&style);
         AccessibleButton {
             content,
-            disabled,
+            disabled: disabled || self.accessibility_disabled,
             selected,
+            bounds,
         }
     }
 }
 // GitTurtle patch: GPUI's Div lacks an aria-disabled setter. Preserve the
 // existing element and caller-provided synthetic subtree, adding only the
-// disabled property when the toolkit writes this rendered button's node.
+// disabled property when the toolkit writes this rendered button's node: for
+// a disabled button, or one `accessibility_disabled` reports disabled alone.
 // A Tab role also reports its existing selected state; ordinary Button
 // presentation selection remains separate from toggle accessibility.
 struct AccessibleButton {
     content: Stateful<Div>,
     disabled: bool,
     selected: bool,
+    /// Where the Button was laid out, for the keyboard click Enter makes.
+    bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 impl IntoElement for AccessibleButton {
     type Element = Self;
@@ -307,6 +380,7 @@ impl Element for AccessibleButton {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        self.bounds.set(bounds);
         self.content
             .prepaint(id, inspector, bounds, layout, window, cx)
     }
@@ -355,7 +429,7 @@ mod tests {
     };
 
     use gpui::{
-        ClickEvent, Context, Element as _, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render,
+        ClickEvent, Context, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render,
         TestAppContext, VisualTestContext, accesskit, canvas, point, px,
     };
 
@@ -452,6 +526,39 @@ mod tests {
 
         assert_eq!(button_clicks.get(), 2);
         assert_eq!(keyboard_events.get(), 2);
+    }
+
+    /// GitTurtle patch: a Button's key context is built from the static
+    /// name `Button`, never parsed (`button_context`), so a frame that builds
+    /// the Button again copies nothing of the name: the focused Button's
+    /// context, read from two frames and both kept, names the one static
+    /// string in each, and is the context parsing the name makes. Parsed on
+    /// every construction, each frame's context held a copy of its own.
+    #[gpui::test]
+    fn the_key_context_shares_the_static_name_across_frames(cx: &mut TestAppContext) {
+        let (cx, ..) = harness(cx, false);
+        cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+        let focused_context = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                window
+                    .context_stack()
+                    .into_iter()
+                    .find(|context| context.contains(crate::dialog::BUTTON_CONTEXT))
+                    .expect("the focused Button's key context")
+            })
+        };
+        let first = focused_context(cx);
+        let second = focused_context(cx);
+        assert!(first == KeyContext::parse(crate::dialog::BUTTON_CONTEXT).unwrap());
+        assert!(second == first);
+        let name = |context: &KeyContext| context.primary().map(|entry| entry.key.as_ptr());
+        assert_eq!(
+            name(&first),
+            name(&second),
+            "both frames' contexts share the static name"
+        );
     }
 
     #[gpui::test]

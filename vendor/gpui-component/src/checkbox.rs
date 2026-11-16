@@ -4,11 +4,12 @@ use crate::{
     ActiveTheme, Disableable, IconName, RoleOverride, Selectable, Sizable, Size, icon::IconNamed,
     text::Text, tooltip::ComponentTooltip, v_flex,
 };
-use crate::{StyledExt as _, ThemeStyled as _};
+use crate::StyledExt as _;
+use crate::styled::apply_focus_ring;
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, px, relative, rems, svg,
+    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
+    Window, div, prelude::FluentBuilder as _, px, relative, rems, svg,
 };
 use gpui_base::{CheckboxIndicator, spring};
 
@@ -25,6 +26,9 @@ pub struct Checkbox {
     children: Vec<AnyElement>,
     checked: bool,
     disabled: bool,
+    /// GitTurtle patch: reported disabled to assistive technology alone
+    /// ([`Checkbox::accessibility_disabled`]).
+    accessibility_disabled: bool,
     size: Size,
     tab_stop: bool,
     tab_index: isize,
@@ -32,6 +36,9 @@ pub struct Checkbox {
     tooltip: ComponentTooltip,
     role: RoleOverride,
     focus_ring_enabled: bool,
+    /// GitTurtle patch: a caller-owned focus handle, used instead of keyed
+    /// state.
+    focus_handle: Option<FocusHandle>,
 }
 
 impl Checkbox {
@@ -47,6 +54,7 @@ impl Checkbox {
             children: Vec::new(),
             checked: false,
             disabled: false,
+            accessibility_disabled: false,
             size: Size::default(),
             on_click: None,
             tab_stop: true,
@@ -54,7 +62,16 @@ impl Checkbox {
             tooltip: ComponentTooltip::default(),
             role: RoleOverride::default(),
             focus_ring_enabled: true,
+            focus_handle: None,
         }
+    }
+
+    /// Uses a caller-owned focus handle instead of creating keyed state, as
+    /// `Button::track_focus` does, so the caller can tell whether the
+    /// Checkbox holds focus.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle.clone());
+        self
     }
 
     pub fn role(mut self, role: impl Into<RoleOverride>) -> Self {
@@ -93,6 +110,18 @@ impl Checkbox {
     /// The `&bool` parameter indicates the new checked state after the click.
     pub fn on_click(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    /// GitTurtle patch: reports the checkbox disabled to assistive
+    /// technology while it keeps its enabled look and still takes input,
+    /// for a control its application refuses in its own handler before it
+    /// dims it, as a write that has only just started does, as
+    /// `Button::accessibility_disabled` does. Its handler must refuse, since
+    /// the checkbox stays clickable. A disabled checkbox is reported
+    /// disabled either way.
+    pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
+        self.accessibility_disabled = disabled;
         self
     }
 
@@ -214,10 +243,12 @@ impl RenderOnce for Checkbox {
             .accessibility_label
             .or_else(|| self.label.as_ref().map(|label| label.get_text(cx)));
         let on_click = self.on_click.clone();
-        let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let focus_handle = self.focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
         let is_focused = focus_handle.is_focused(window);
 
         let unchecked_border = cx.theme().input;
@@ -233,6 +264,7 @@ impl RenderOnce for Checkbox {
         base.role(self.role)
             .checked(checked)
             .disabled(self.disabled)
+            .accessibility_disabled(self.accessibility_disabled)
             .styles(|styles| {
                 styles.disabled(|style| {
                     style
@@ -265,8 +297,10 @@ impl RenderOnce for Checkbox {
                 _ => this,
             })
             .rounded(cx.theme().radius * 0.5)
+            // GitTurtle patch: the Button's ring, which the application sets
+            // (`Theme::button_focus_ring`), in place of `focus_ring_style`'s.
             .when(is_focused && self.focus_ring_enabled, |this| {
-                this.focus_ring_style(window, cx)
+                apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
             })
             .refine_style(&self.style)
             .child(
@@ -451,6 +485,35 @@ mod tests {
         activate_key(cx, "space");
 
         assert_eq!(clicks.get(), 2);
+    }
+
+    /// GitTurtle patch: a checkbox reported disabled to assistive
+    /// technology alone still takes a click, for its handler to refuse.
+    #[gpui::test]
+    fn facade_accessibility_disabled_keeps_its_input(cx: &mut TestAppContext) {
+        struct Announced {
+            clicks: Rc<Cell<usize>>,
+        }
+
+        impl Render for Announced {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                Checkbox::new("announced")
+                    .accessibility_disabled(true)
+                    .size(px(100.))
+                    .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+            }
+        }
+
+        cx.update(crate::init);
+        let clicks = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_, _| Announced { clicks }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+        assert_eq!(clicks.get(), 1);
     }
 
     #[gpui::test]

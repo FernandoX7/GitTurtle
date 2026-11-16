@@ -1,4 +1,5 @@
 use crate::appearance::CodeFont;
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{
     ConflictBlockChoice, ConflictContent, ConflictPreview, ConflictResolution, IntegrationCommand,
@@ -7,9 +8,27 @@ use gitturtle_core::{
 };
 use gpui_kit::component::input::Paste;
 use gpui_kit::prelude::FluentBuilder;
-use std::ops::Range;
+use std::{cell::Cell, ops::Range, rc::Rc};
 
 const MAX_RETAINED_DRAFT_BYTES: usize = 64 * 1024 * 1024;
+/// The viewer's block steps, in `shortcuts.rs` notation: the tooltips name
+/// these keys and `block_step` matches them.
+const PREVIOUS_BLOCK: &str = "primary-alt-up";
+const NEXT_BLOCK: &str = "primary-alt-down";
+
+/// Whether `keystroke` steps to the previous block (`Some(true)`), the next
+/// (`Some(false)`) or neither.
+fn block_step(keystroke: &Keystroke) -> Option<bool> {
+    let modifiers = &keystroke.modifiers;
+    if !(modifiers.secondary() && modifiers.alt && !modifiers.shift) {
+        return None;
+    }
+    match keystroke.key.as_str() {
+        "up" => Some(true),
+        "down" => Some(false),
+        _ => None,
+    }
+}
 
 #[derive(Clone)]
 struct ConflictIdentity {
@@ -309,6 +328,53 @@ pub struct ConflictView {
     block_generation: u64,
     block_task: Option<Task<()>>,
     block_executor: SerialExecutor,
+    /// The review's body, which scrolls as one where the window is too
+    /// short for it, and reveals the control the keyboard moves onto.
+    body: crate::focus_reveal::FocusReveal,
+    /// The frames left before the body reveals the result draft once more
+    /// after the person's action focused it ([`Self::focus_resolution`]).
+    redraw_reveal: u8,
+    /// Whether the next frame reveals the result draft from where that
+    /// frame lays it out, as the person's action that focused it asked
+    /// ([`Self::focus_resolution`], [`reveal_laid_out`]).
+    reveal_draft: bool,
+    /// The review's column as last measured before layout
+    /// ([`Self::render_review`]).
+    measured: Option<Measured>,
+    /// How many times the review's column has been measured before layout.
+    #[cfg(test)]
+    measures: usize,
+    /// The height its last measure found.
+    #[cfg(test)]
+    measured_column: Pixels,
+}
+
+/// What sets the height of the review's column, in a frame laid out for a
+/// room `size`: the room, the scale and text sizes it is drawn at, its
+/// focus rings' room, and what each of its sections holds, the versions
+/// shown, the result draft and its error, the saved draft's row, the
+/// storage status and the block review. A block review under way is left
+/// out: its status keeps the height of the one it replaces
+/// ([`ConflictView::block_status`]), so its frames lay the column out as the
+/// frames before it did.
+#[derive(Clone, PartialEq)]
+struct ColumnKey {
+    size: Size<Pixels>,
+    scale: f32,
+    text: (Pixels, Pixels),
+    room: Pixels,
+    sides: (bool, bool, [bool; 3]),
+    draft: (bool, Option<DraftIssue>),
+    saved: Option<bool>,
+    storage: String,
+    blocks: (usize, usize, Option<usize>, Option<String>),
+}
+
+/// The review's column measured before layout, by what set its height
+/// then, and whether it was taller than the review.
+struct Measured {
+    key: ColumnKey,
+    taller: bool,
 }
 
 impl EventEmitter<ConflictEvent> for ConflictView {}
@@ -335,6 +401,14 @@ impl ConflictView {
             block_generation: 0,
             block_task: None,
             block_executor: SerialExecutor::new("conflict-block-review"),
+            body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            redraw_reveal: 0,
+            reveal_draft: false,
+            measured: None,
+            #[cfg(test)]
+            measures: 0,
+            #[cfg(test)]
+            measured_column: Pixels::ZERO,
             presentation,
             readers: [None, None, None],
             resolution: None,
@@ -347,8 +421,14 @@ impl ConflictView {
             draft_error: None,
         };
         this.prepare_readers(window, cx);
+        // The result draft opens with the view but takes no focus: the view
+        // is built wherever a conflicted preview lands, a quiet refresh's
+        // among them, and a passive read never moves focus. Opened, it took
+        // focus out of the file list, closing a row's keyboard menu open
+        // there. Whoever builds the view for the person's choice of the file
+        // focuses the draft ([`GitTurtle::ensure_conflict_view`]).
         if this.initial_draft.is_some() || this.block_mode {
-            this.open_resolution_editor(window, cx);
+            this.build_resolution_editor(window, cx);
             if this.initial_draft.is_some() {
                 this.schedule_blocks(window, cx);
             }
@@ -356,7 +436,38 @@ impl ConflictView {
         this
     }
 
+    /// Whether the resolution draft holds the window's focus.
+    pub(crate) fn resolution_focused(&self, window: &Window, cx: &App) -> bool {
+        self.resolution
+            .as_ref()
+            .is_some_and(|editor| editor.focus_handle(cx).is_focused(window))
+    }
+
+    /// Opens the result draft, if it is not open, and focuses it: Edit
+    /// result, a block step and Restore saved draft, each asked for.
     fn open_resolution_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.build_resolution_editor(window, cx);
+        self.focus_resolution(window, cx);
+    }
+
+    /// Focuses the result draft, if it is open, and has the review's body
+    /// show it whole in the next frame, as the person's action that moved
+    /// focus there asked: Next or Previous, Edit result, Restore saved draft
+    /// and opening the file by its row, by a click or a key alike. Revealed
+    /// only for the keyboard, a click on Next in a 461 × 490 window left the
+    /// draft focused below the body's fold, about 15 px of it in view.
+    fn focus_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.resolution {
+            self.body.reveal_next_focus();
+            self.reveal_draft = true;
+            self.redraw_reveal = 2;
+            window.focus(&editor.focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
+    /// Opens the result draft, if it is not open, leaving focus where it is.
+    fn build_resolution_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.resolution.is_none()
             && let Some(value) = &self.presentation.result
         {
@@ -414,9 +525,6 @@ impl ConflictView {
                     }),
                 );
             self.resolution = Some(editor);
-        }
-        if let Some(editor) = &self.resolution {
-            window.focus(&editor.focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -507,6 +615,7 @@ impl ConflictView {
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.block_generation != generation { return; }
                 this.block_pending = false;
+                let shown = (this.blocks.is_empty(), this.block_issue.is_some());
                 match result {
                     Ok(Ok((source, blocks))) => {
                         this.block_source = source;
@@ -514,6 +623,17 @@ impl ConflictView {
                         this.block_selected = this.block_selected.min(this.blocks.len().saturating_sub(1));
                     }
                     _ => { this.blocks.clear(); this.block_issue = Some("Block review was interrupted. Edit the result to retry, or save the draft and refresh.".into()); }
+                }
+                // Blocks or an issue going or coming change the status's and
+                // the issue's lines and swap the sides' text for their
+                // messages, moving what lies below: the draft holding focus
+                // is drawn whole where it stays in the frame the review lands
+                // in.
+                if (this.blocks.is_empty(), this.block_issue.is_some()) != shown
+                    && this.resolution_focused(window, cx)
+                {
+                    this.body.reveal_next_focus();
+                    this.reveal_draft = true;
                 }
                 if this.block_mode {
                     this.readers = [None, None, None];
@@ -598,14 +718,28 @@ impl ConflictView {
         }
     }
 
-    fn render_side(&self, side: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// One version's side: its header, its text where it has a reader, and
+    /// otherwise a message saying why. `drawn` is false where the column is
+    /// only measured, which needs the header and the message but no editor.
+    fn render_side(
+        &self,
+        side: usize,
+        room: Pixels,
+        drawn: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let versions = [
             &self.presentation.snapshot.base,
             &self.presentation.snapshot.current,
             &self.presentation.snapshot.incoming,
         ];
-        let description = if self.block_mode {
+        // A choice of block hides the text while its review runs, and says
+        // so on the header's own line, whose height never changes: said in
+        // the pane, at 18 pt it took more than the versions' 100 px leave.
+        let description = if self.block_mode && self.block_pending {
+            "Updating conflict blocks…".to_string()
+        } else if self.block_mode {
             self.blocks.get(self.block_selected).map_or_else(
                 || "No unresolved blocks".into(),
                 |block| {
@@ -633,15 +767,219 @@ impl ConflictView {
             .child(div().px_3().py_2().flex().flex_col().gap_1().bg(rgb(p.panel))
                 .child(div().truncate().text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM).child(self.presentation.label(side)))
                 .child(div().truncate().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(description)))
-            .child(div().flex_1().min_h_0().children(self.readers[side].as_ref().filter(|_| !self.block_mode || !self.block_pending).map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(crate::appearance::code_text()).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
-            .when(self.block_mode && self.block_pending, |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).child("Updating conflict blocks…")))
-            .when(self.readers[side].is_none(), |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.block_mode && self.blocks.is_empty() { "No unresolved blocks remain. Review the result, then explicitly save or stage it." } else if self.block_mode && side == 0 { "This marker style does not include a base block. Choose Whole file to inspect the full common ancestor." } else if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
+            // Its height is the room the header and any message leave, so its
+            // text never counts towards the versions' least height.
+            .child(div().flex_grow(1.).h_0().when_some(self.readers[side].as_ref().filter(|_| drawn).map(|reader| reader.focus_handle(cx)), |pane, focus| pane.on_children_prepainted(self.body.control(focus, room))).children(self.readers[side].as_ref().filter(|_| drawn && (!self.block_mode || !self.block_pending)).map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(crate::appearance::code_text()).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
+            .when(self.readers[side].is_none(), |el| el.child(div().debug_selector(move || format!("conflict-side-message-{side}")).p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.block_mode && self.blocks.is_empty() { "No unresolved blocks remain. Review the result, then explicitly save or stage it." } else if self.block_mode && side == 0 { "This marker style does not include a base block. Choose Whole file to inspect the full common ancestor." } else if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
             .into_any_element()
     }
 }
 
 impl Render for ConflictView {
+    /// The review, laid out for the room it has in the frame it is drawn
+    /// ([`crate::in_frame`]), so its result draft takes the whole lines that
+    /// room shows it with its ring ([`draft_lines`]) in that same frame,
+    /// never one frame late after a resize or as the file opens.
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(crate::in_frame::in_frame(move |bounds, window, cx| {
+                view.update(cx, |view, cx| view.render_review(bounds, window, cx))
+                    .unwrap_or_else(|_| div().into_any_element())
+            }))
+    }
+}
+
+impl ConflictView {
+    /// The review in `bounds`: its body, which scrolls as one where it is
+    /// taller, with the result draft as many whole lines tall as the
+    /// review shows whole with its ring ([`draft_lines`]).
+    fn render_review(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // Where the window is too short for the review, its body scrolls as
+        // one, and a control the keyboard moves onto, a Button, a version's
+        // text or the result draft, scrolls into view whole with its ring's
+        // room in the frame that first draws the focus. Each control reports
+        // where it lies to the body.
+        let room = crate::appearance::button_ring_room(cx);
+        let lines = draft_lines(bounds.size.height, room, window);
+        // A guard: the frame after the one that first draws the draft
+        // focused, which shows it whole where it stays (`reveal_draft`),
+        // reveals the draft holding focus again from where it lies there,
+        // should that frame lay the body out otherwise.
+        if self.redraw_reveal > 0 {
+            self.redraw_reveal -= 1;
+            if self.redraw_reveal > 0 {
+                window.defer(cx, |window, _| window.refresh());
+            } else if let Some(editor) = &self.resolution
+                && editor.focus_handle(cx).is_focused(window)
+            {
+                self.body.reveal_next_focus();
+            }
+        }
+        self.body.reveal(window, cx);
+        // Its scrollbar, while it overflows, runs in a gutter at the body's
+        // right, clear of the controls and their rings; along a track too
+        // short for a thumb, the body's edges fade instead (`ScrollCue`).
+        let cue = crate::tags::ScrollCue::revealing(&self.body, Pixels::ZERO);
+        // The cue keeps the gutter where the body overflowed when last laid
+        // out. Where it did not, as in the frame that opens the file or
+        // first draws the draft Edit result opens, the review's column is
+        // laid out first at the review's width, with the versions at their
+        // least height, the larger of 100 px and the sides' header and
+        // message, and keeps the gutter in this frame where it is taller than
+        // the review: laid out without it, the frame that first drew the
+        // draft focused drew the controls above it wrapped into the wider
+        // column, and the next, keeping the gutter, moved the draft 70 px
+        // down past the body's foot, in a 461 × 490 half tile.
+        let reserve = !cue.kept() && self.taller_than(bounds.size, room, lines, window, cx);
+        let laid = Rc::new(Cell::new(None));
+        // The body is the column itself, so where everything fits the
+        // versions take the room the rest leaves, as they did before it
+        // scrolled, and where it does not they keep their least height and
+        // the rest its own, and the column scrolls.
+        let body = self
+            .review_column(lines, room, Some((&cue, laid.clone())), cx)
+            .when(reserve, |body| body.pr(crate::tags::ScrollCue::gutter()))
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(self.body.scroll());
+        // Focus the person's action moved into the draft is revealed from
+        // where this frame lays the draft out, before the body is
+        // prepainted, so the frame that first draws it focused draws it
+        // whole with its ring where it stays, whether or not an earlier
+        // frame drew it: from where the last frame drew it, the draft the
+        // file opened with, which no frame had drawn, was painted at the
+        // body's top offset, below its foot, and revealed a frame later.
+        let reveal = std::mem::take(&mut self.reveal_draft)
+            && self
+                .resolution
+                .as_ref()
+                .is_some_and(|editor| editor.focus_handle(cx).is_focused(window));
+        let scroll = self.body.scroll().clone();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .when(reveal, |review| {
+                review.child(div().on_children_prepainted(move |_, window, _| {
+                    if let Some(draft) = laid.get() {
+                        reveal_laid_out(&scroll, window.layout_bounds(draft), room, bounds);
+                    }
+                }))
+            })
+            .child(cue.list(body, "conflict-review-scrollbar").size_full())
+            .into_any_element()
+    }
+
+    /// Whether the review's column, laid out `size.width` wide, is taller
+    /// than `size.height`: measured again only where what sets its height
+    /// has changed since it was last measured ([`ColumnKey`]), where a
+    /// reveal of the draft from this frame's layout is pending, and before
+    /// the body is first laid out, and otherwise as last measured. Measured
+    /// in every frame where the review fits, it was laid out once more for
+    /// each caret blink and keystroke in the draft at 1,480 × 800.
+    fn taller_than(
+        &mut self,
+        size: Size<Pixels>,
+        room: Pixels,
+        lines: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let key = ColumnKey {
+            size,
+            scale: window.scale_factor(),
+            text: (
+                crate::appearance::ui_text(12.),
+                crate::appearance::code_text(),
+            ),
+            room,
+            sides: (
+                self.base,
+                self.block_mode,
+                self.readers.each_ref().map(Option::is_some),
+            ),
+            draft: (self.resolution.is_some(), self.draft_error),
+            saved: self.durable_saved.as_ref().map(|(valid, _)| *valid),
+            storage: self.durable_status.clone(),
+            blocks: (
+                self.blocks.len(),
+                self.block_selected,
+                self.blocks
+                    .get(self.block_selected)
+                    .map(|block| block.first_line),
+                self.block_issue.clone(),
+            ),
+        };
+        if let Some(measured) = &self.measured
+            && measured.key == key
+            && !self.reveal_draft
+        {
+            return measured.taller;
+        }
+        #[cfg(test)]
+        {
+            self.measures += 1;
+        }
+        let column = self.review_column(lines, room, None, cx);
+        let height = crate::in_frame::measured_height(column, size.width, window, cx);
+        #[cfg(test)]
+        {
+            self.measured_column = height;
+        }
+        let taller = height > size.height + px(0.01);
+        self.measured = Some(Measured { key, taller });
+        taller
+    }
+
+    /// What the block status says of the blocks last reviewed. While a
+    /// review runs its "Updating conflict blocks…" stands over these words
+    /// unseen, in one cell, so the status keeps its height through the
+    /// review: at 18 pt in a 461 px half tile its one line replaced the
+    /// blocks' two, and the result draft below moved 27 px as the review
+    /// began and again as it landed.
+    fn block_status(&self) -> String {
+        if self.block_issue.is_some() {
+            "Block decisions unavailable · edit the result or use a whole-file resolution".into()
+        } else if self.blocks.is_empty() {
+            "No unresolved blocks in the result".into()
+        } else {
+            format!(
+                "{} · selected {} · result line {}",
+                crate::counted(self.blocks.len(), "unresolved block", "unresolved blocks"),
+                self.block_selected + 1,
+                self.blocks[self.block_selected].first_line
+            )
+        }
+    }
+
+    /// The review's column: its header, the block controls, the versions,
+    /// and the footer with the saved draft, the whole-file actions, the
+    /// result draft `lines` whole lines tall and the save actions, whose
+    /// controls report where they lie to the body, a ring's `room` clear of
+    /// its edges. Drawn, it is `cue`'s list, and the draft records the
+    /// layout it is laid out under in `laid`; without them it is only
+    /// measured, its versions their headers and messages with no editor and
+    /// the draft its height alone.
+    fn review_column(
+        &mut self,
+        lines: f32,
+        room: Pixels,
+        drawn: Option<(&crate::tags::ScrollCue, Rc<Cell<Option<LayoutId>>>)>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let (observe, laid) = drawn.map_or((None, None), |(cue, laid)| {
+            (Some(cue.observe(self.body.observe())), Some(laid))
+        });
         let p = palette(cx);
         let current = self.presentation.label(1);
         let incoming = self.presentation.label(2);
@@ -650,93 +988,357 @@ impl Render for ConflictView {
             self.block_pending || self.block_issue.is_some() || !self.blocks.is_empty();
         let cannot_stage_working =
             !self.presentation.blocks.is_empty() || self.presentation.block_issue.is_some();
+        let landed = self.block_status();
         let status = if self.block_pending {
-            "Updating conflict blocks…".into()
-        } else if self.block_issue.is_some() {
-            "Block decisions unavailable · edit the result or use a whole-file resolution".into()
-        } else if self.blocks.is_empty() {
-            "No unresolved blocks in the result".into()
+            "Updating conflict blocks…".to_string()
         } else {
-            format!(
-                "{} unresolved blocks · selected {} · result line {}",
-                self.blocks.len(),
-                self.block_selected + 1,
-                self.blocks[self.block_selected].first_line
-            )
+            landed.clone()
         };
-        div().id("conflict-review").size_full().flex().flex_col()
+        let [drafts, branches, base, block_mode, whole_mode, external] = [
+            "saved-conflict-drafts",
+            "conflict-branches",
+            "conflict-base",
+            "conflict-block-mode",
+            "conflict-whole-mode",
+            "external-conflict-editor",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let [previous, next, accept_current, accept_incoming, accept_both] = [
+            "previous-conflict-block",
+            "next-conflict-block",
+            "accept-current-block",
+            "accept-incoming-block",
+            "accept-both-block",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let [
+            copy_saved,
+            restore_saved,
+            use_current,
+            use_incoming,
+            edit_result,
+        ] = [
+            "copy-saved-conflict",
+            "restore-saved-conflict",
+            "resolve-current",
+            "resolve-incoming",
+            "manual-resolution",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let [stage_working, save_draft, save_result] = [
+            "mark-conflict-resolved",
+            "save-conflict-draft",
+            "save-conflict-resolution",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let draft_focus = self
+            .resolution
+            .as_ref()
+            .map(|editor| editor.focus_handle(cx));
+        let drawn = laid.is_some();
+        let sides = if self.base {
+            vec![self.render_side(0, room, drawn, cx)]
+        } else {
+            vec![
+                self.render_side(1, room, drawn, cx),
+                self.render_side(2, room, drawn, cx),
+            ]
+        };
+        div().when_some(observe, |column, observe| column.on_children_prepainted(observe)).id("conflict-review").debug_selector(|| "conflict-review".into()).flex().flex_col()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.modifiers.platform && event.keystroke.modifiers.alt && matches!(event.keystroke.key.as_str(), "up" | "down") {
-                    this.select_block(event.keystroke.key == "up", window, cx); cx.stop_propagation();
+                if let Some(previous) = block_step(&event.keystroke) {
+                    this.select_block(previous, window, cx); cx.stop_propagation();
                 }
             }))
             .child(div().px_3().py_2().flex().flex_wrap().items_center().gap_2().border_b_1().border_color(rgb(p.border))
-                .child(button("saved-conflict-drafts", "Saved drafts…", "", false).on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::RecoveryDrafts))))
-                .child(button("conflict-branches", "Both sides", "", !self.base).toggled(!self.base).on_click(cx.listener(|this, _, window, cx| { this.base = false; this.prepare_readers(window, cx); cx.notify(); })))
-                .child(button("conflict-base", "Base", "", self.base).toggled(self.base).on_click(cx.listener(|this, _, window, cx| { this.base = true; this.prepare_readers(window, cx); cx.notify(); })))
-                .child(button("conflict-block-mode", "Selected block", "", self.block_mode).toggled(self.block_mode).disabled(self.blocks.is_empty()).on_click(cx.listener(|this, _, window, cx| { this.block_mode = true; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
-                .child(button("conflict-whole-mode", "Whole file", "", !self.block_mode).toggled(!self.block_mode).on_click(cx.listener(|this, _, window, cx| { this.block_mode = false; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
+                .on_children_prepainted(self.body.controls(vec![Some(drafts.clone()), Some(branches.clone()), Some(base.clone()), Some(block_mode.clone()), Some(whole_mode.clone()), None, Some(external.clone())], room))
+                .child(button("saved-conflict-drafts", "Saved drafts…", "", false).track_focus(&drafts).debug_selector(|| "saved-conflict-drafts".into()).on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::RecoveryDrafts))))
+                .child(button("conflict-branches", "Both sides", "", !self.base).track_focus(&branches).debug_selector(|| "conflict-branches".into()).toggled(!self.base).on_click(cx.listener(|this, _, window, cx| { this.base = false; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-base", "Base", "", self.base).track_focus(&base).debug_selector(|| "conflict-base".into()).toggled(self.base).on_click(cx.listener(|this, _, window, cx| { this.base = true; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-block-mode", "Selected block", "", self.block_mode).track_focus(&block_mode).debug_selector(|| "conflict-block-mode".into()).toggled(self.block_mode).disabled(self.blocks.is_empty()).on_click(cx.listener(|this, _, window, cx| { this.block_mode = true; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-whole-mode", "Whole file", "", !self.block_mode).track_focus(&whole_mode).debug_selector(|| "conflict-whole-mode".into()).toggled(!self.block_mode).on_click(cx.listener(|this, _, window, cx| { this.block_mode = false; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
                 .child(div().flex_1())
-                .child(button("external-conflict-editor", "Open in editor", "", false).tooltip("Open the working file with its default application. Refresh after saving, then stage the resolved file.")
+                .child(button("external-conflict-editor", "Open in editor", "", false).track_focus(&external).debug_selector(|| "external-conflict-editor".into()).tooltip("Open the working file with its default application. Refresh after saving, then stage the resolved file.")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::OpenEditor)))))
             .when(self.presentation.result.is_some(), |element| element.child(div().px_3().py_2().flex().flex_col().gap_2().border_b_1().border_color(rgb(p.border))
-                .child(div().id("conflict-block-status").role(Role::Status).a11y_synthetic_children(native_accessibility::polite).aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).child(status))
+                .child(div().id("conflict-block-status").debug_selector(|| "conflict-block-status".into()).role(Role::Status).polite().aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).grid().grid_cols(1)
+                    .when(self.block_pending, |cell| cell.child(div().row_start(1).col_start(1).invisible().child(landed)))
+                    .child(div().row_start(1).col_start(1).child(status)))
                 .child(div().flex().flex_wrap().gap_2().items_center()
-                    .child(button("previous-conflict-block", "Previous", "", false).accessibility_label("Previous conflict block").tooltip("Previous conflict · Command-Option-Up").disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
-                    .child(button("next-conflict-block", "Next", "", false).accessibility_label("Next conflict block").tooltip("Next conflict · Command-Option-Down").disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
-                    .child(button("accept-current-block", "Accept current", "", false).accessibility_label(format!("Accept current block from {current} into the result draft")).tooltip(format!("Use only this block from {current} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Current, window, cx))))
-                    .child(button("accept-incoming-block", "Accept incoming", "", false).accessibility_label(format!("Accept incoming block from {incoming} into the result draft")).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
-                    .child(button("accept-both-block", "Accept both", "", false).accessibility_label("Accept both versions of this block, current then incoming, into the result draft").tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
-                .children(self.block_issue.as_ref().map(|issue| div().id("conflict-block-issue").role(Role::Alert).aria_label(issue.clone()).a11y_synthetic_children(native_accessibility::assertive).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
-            .child(div().flex_1().min_h(px(100.)).flex().children(if self.base { vec![self.render_side(0, cx)] } else { vec![self.render_side(1, cx), self.render_side(2, cx)] }))
+                    .on_children_prepainted(self.body.controls(vec![Some(previous.clone()), Some(next.clone()), Some(accept_current.clone()), Some(accept_incoming.clone()), Some(accept_both.clone())], room))
+                    .child(button("previous-conflict-block", "Previous", "", false).track_focus(&previous).debug_selector(|| "previous-conflict-block".into()).accessibility_label("Previous conflict block").tooltip(format!("Previous conflict · {}", shortcuts::key_label(PREVIOUS_BLOCK))).disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
+                    .child(button("next-conflict-block", "Next", "", false).track_focus(&next).debug_selector(|| "next-conflict-block".into()).accessibility_label("Next conflict block").tooltip(format!("Next conflict · {}", shortcuts::key_label(NEXT_BLOCK))).disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
+                    .child(button("accept-current-block", "Accept current", "", false).track_focus(&accept_current).debug_selector(|| "accept-current-block".into()).accessibility_label(format!("Accept current block from {current} into the result draft")).tooltip(format!("Use only this block from {current} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Current, window, cx))))
+                    .child(button("accept-incoming-block", "Accept incoming", "", false).track_focus(&accept_incoming).debug_selector(|| "accept-incoming-block".into()).accessibility_label(format!("Accept incoming block from {incoming} into the result draft")).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
+                    .child(button("accept-both-block", "Accept both", "", false).track_focus(&accept_both).debug_selector(|| "accept-both-block".into()).accessibility_label("Accept both versions of this block, current then incoming, into the result draft").tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
+                .children(self.block_issue.as_ref().map(|issue| div().id("conflict-block-issue").alert(issue.clone()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
+            // The versions keep their least height however short the window,
+            // and the body scrolls instead: the larger of 100 px, held by the
+            // empty strut, and the sides' header and message, which a row
+            // with no minimum of its own is at least as tall as. A fixed
+            // 100 px left a side's message wrapped below the versions in a
+            // 461 px window, under the footer.
+            .child(div().flex_1().flex().debug_selector(|| "conflict-versions".into()).child(div().h(px(100.))).children(sides))
             .child(div().px_3().py_2().flex().flex_col().gap_2().bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
-                .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).a11y_synthetic_children(native_accessibility::polite).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
+                .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).polite().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
                 .when_some(self.durable_saved.clone(), |element, (valid, text)| {
                     let copy = text.clone();
+                    // Keyed by this file's draft.
+                    let mark = copy_feedback::Mark::new("copy-saved-conflict", &self.durable_key);
+                    let copy_mark = mark.clone();
+                    let state = if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." };
+                    // Beside its actions where the line holds it, else on a
+                    // line of its own, ending in an ellipsis where even that
+                    // cannot hold it, its whole text its tooltip and, as a
+                    // label's value, its name: at 18 pt in a 461 × 490 half
+                    // tile it was cut at the review's side as "Saved draft
+                    // matches this operat". Named by `aria_label` on a
+                    // `div` with no role, it wrote no node at all.
+                    let status = noted_text_tooltip(
+                        crate::native_accessibility::text("conflict-saved-draft-state", state),
+                        "conflict-saved-draft-state",
+                        state,
+                    );
                     element.child(div().flex().flex_wrap().items_center().gap_2()
-                        .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })).child(if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." }))
-                        .child(button("copy-saved-conflict", "Copy saved text", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
-                        .child(button("restore-saved-conflict", "Restore saved draft", "", false).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
+                        .on_children_prepainted(self.body.controls(vec![None, Some(copy_saved.clone()), Some(restore_saved.clone())], room))
+                        .child(status.min_w_0().truncate().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })))
+                        .child(copy_feedback::copy_button(mark, "Copy saved text", "", cx).track_focus(&copy_saved).debug_selector(|| "copy-saved-conflict".into()).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved text", copy.clone())))
+                        .child(button("restore-saved-conflict", "Restore saved draft", "", false).track_focus(&restore_saved).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
                             this.restore_saved_draft(window, cx);
                         }))))
                 })
                 .child(div().flex().flex_wrap().items_center().gap_2()
+                    .on_children_prepainted(self.body.controls(vec![None, Some(use_current.clone()), Some(use_incoming.clone()), None, Some(edit_result.clone())], room))
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Whole-file actions:"))
-                    .child(button("resolve-current", "Use current file…", "", false).accessibility_label(format!("Use current whole file from {current}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {current}"))
+                    .child(button("resolve-current", "Use current file…", "", false).track_focus(&use_current).debug_selector(|| "resolve-current".into()).accessibility_label(format!("Use current whole file from {current}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {current}"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::Current)))))
-                    .child(button("resolve-incoming", "Use incoming file…", "", false).accessibility_label(format!("Use incoming whole file from {incoming}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {incoming}"))
+                    .child(button("resolve-incoming", "Use incoming file…", "", false).track_focus(&use_incoming).debug_selector(|| "resolve-incoming".into()).accessibility_label(format!("Use incoming whole file from {incoming}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {incoming}"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::Incoming)))))
                     .child(div().flex_1())
-                    .child(button("manual-resolution", "Edit result", "", self.resolution.is_some()).disabled(self.presentation.result.is_none())
+                    .child(button("manual-resolution", "Edit result", "", self.resolution.is_some()).track_focus(&edit_result).debug_selector(|| "manual-resolution".into()).disabled(self.presentation.result.is_none())
                         .on_click(cx.listener(|this, _, window, cx| this.open_resolution_editor(window, cx)))))
-                .children(self.resolution.as_ref().map(|editor| div().capture_action(cx.listener(Self::check_paste))
-                    .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
-                    .child(resolution_textarea(editor, cx))))
-                .children(self.draft_error.map(|issue| div().id("conflict-draft-error").role(Role::Alert).aria_label(issue.explanation()).a11y_synthetic_children(native_accessibility::assertive).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
+                .children(self.resolution.as_ref().zip(draft_focus).map(|(editor, focus)| {
+                    let draft = div().debug_selector(|| "conflict-result-draft".into()).on_children_prepainted(self.body.control(focus, room));
+                    let draft = match &laid {
+                        Some(laid) => LaidOut { child: draft.child(resolution_textarea(editor, lines, cx)).into_any_element(), laid: laid.clone() }.into_any_element(),
+                        None => draft.h(draft_height(lines)).into_any_element(),
+                    };
+                    div().capture_action(cx.listener(Self::check_paste))
+                        .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
+                        .child(draft)
+                }))
+                .children(self.draft_error.map(|issue| div().id("conflict-draft-error").alert(issue.explanation()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
                 .child(div().flex().flex_wrap().items_center().gap_2()
-                    .child(button("mark-conflict-resolved", "Stage edited file…", "", false).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
-                    .children(self.resolution.as_ref().map(|_| button("save-conflict-draft", "Save draft…", "", false).on_click(cx.listener(|this, _, _, cx| {
+                    .on_children_prepainted(self.body.controls(vec![Some(stage_working.clone()), self.resolution.as_ref().map(|_| save_draft.clone()), self.resolution.as_ref().map(|_| save_result.clone())], room))
+                    .child(button("mark-conflict-resolved", "Stage edited file…", "", false).track_focus(&stage_working).debug_selector(|| "mark-conflict-resolved".into()).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
+                    .children(self.resolution.as_ref().map(|_| button("save-conflict-draft", "Save draft…", "", false).track_focus(&save_draft).debug_selector(|| "save-conflict-draft".into()).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Save { bytes: this.accepted_draft.as_bytes().to_vec() }));
                     }))))
-                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).debug_selector(|| "save-conflict-resolution".to_string()).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
+                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).track_focus(&save_result).debug_selector(|| "save-conflict-resolution".to_string()).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Manual { bytes: this.accepted_draft.as_bytes().to_vec() }));
                     }))))))
     }
 }
 
-/// The manual result draft's editable text, drawn in the code font.
-fn resolution_textarea(editor: &Entity<TextareaState>, cx: &App) -> Textarea {
+/// `element` with `tooltip` as its tooltip, noted under its element ID `id`
+/// as the tooltip it is drawn with, as `views::noted_tooltip` notes a
+/// Button's: the value noted is the one the element takes.
+fn noted_text_tooltip<E: StatefulInteractiveElement>(
+    element: E,
+    id: &'static str,
+    tooltip: &'static str,
+) -> E {
+    crate::views::note_control_tooltip(&id.into(), tooltip);
+    element.tooltip(move |window, cx| {
+        gpui_kit::component::tooltip::Tooltip::new(tooltip).build(window, cx)
+    })
+}
+
+/// The whole lines the manual result draft prefers at every code size, and
+/// shows wherever the review has the room: as many as its fixed 160 px box
+/// held whole at the default code size, where the field's 16 px pitch,
+/// taken from the interface size, left a ninth line cut at its foot.
+const DRAFT_LINES: f32 = 8.;
+
+/// The fewest whole lines the result draft gives way to in a review too
+/// short for [`DRAFT_LINES`]: a block's three lines, a marker, a line and
+/// the next marker, still read together. Below that the review's body
+/// scrolls instead and shows the draft by its top.
+const LEAST_DRAFT_LINES: f32 = 3.;
+
+/// The whole lines the result draft takes in a review `height` tall, whose
+/// body reveals a focused control `ring` clear of its edges: its preferred
+/// [`DRAFT_LINES`] where the body shows them whole with the ring, otherwise
+/// the most that it does, never fewer than [`LEAST_DRAFT_LINES`]. Kept at
+/// eight lines whatever the room, the draft was taller than the review's
+/// body in a 461 × 490 half tile, whose header, Git actions, merge banner
+/// and status bar leave the body about 145 px: 162 px at 13 pt with 12 pt
+/// code and 234 px at 18 pt with 18 pt code, so wherever it took focus,
+/// opening the file, Edit result or Shift+Tab, it showed from its top with
+/// its foot and its focus ring cut.
+fn draft_lines(height: Pixels, ring: Pixels, window: &Window) -> f32 {
+    let (line, inset) = draft_metrics();
+    let scale = window.scale_factor();
+    // As layout places the draft's set height: on a whole device pixel,
+    // counted here at the next one up so a fit is never a pixel over.
+    let placed = |lines: f32| {
+        let length = f32::from(line * lines + inset * 2.);
+        px((length * scale).ceil() / scale)
+    };
+    let fits = |lines: f32| placed(lines) + ring * 2. <= height + px(0.01);
+    let mut lines = DRAFT_LINES;
+    while lines > LEAST_DRAFT_LINES && !fits(lines) {
+        lines -= 1.;
+    }
+    lines
+}
+
+/// The result draft's height `lines` whole lines tall, inside the field's
+/// padding and border ([`draft_metrics`]).
+fn draft_height(lines: f32) -> Pixels {
+    let (line, inset) = draft_metrics();
+    line * lines + inset * 2.
+}
+
+/// Scrolls the review's body, through `scroll`, by the least that shows
+/// the result draft, laid out at `draft` with the body at offset zero,
+/// whole with its focus ring's `ring` inside the body's `viewport`, or by
+/// its top where the draft with its ring is taller than the body, as
+/// `focus_reveal::FocusReveal` reveals a control. Called as the frame
+/// prepaints, before the body, so that frame lays the draft out revealed.
+fn reveal_laid_out(
+    scroll: &ScrollHandle,
+    draft: Bounds<Pixels>,
+    ring: Pixels,
+    viewport: Bounds<Pixels>,
+) {
+    let offset = scroll.offset();
+    let (top, bottom) = (draft.top() - ring, draft.bottom() + ring);
+    let y = if bottom - top > viewport.size.height || top + offset.y < viewport.top() {
+        viewport.top() - top
+    } else if bottom + offset.y > viewport.bottom() {
+        viewport.bottom() - bottom
+    } else {
+        return;
+    };
+    // The body holds its offset to its reach as it prepaints.
+    scroll.set_offset(point(offset.x, y.min(Pixels::ZERO)));
+}
+
+/// An element that holds `child` and records the layout ID it is laid out
+/// under in `laid`, so an element prepainted before it reads where this
+/// frame's layout puts it ([`reveal_laid_out`]), as the GitHub panel's top
+/// line is read (`github_view::LaidOut`).
+struct LaidOut {
+    child: AnyElement,
+    laid: Rc<Cell<Option<LayoutId>>>,
+}
+
+impl IntoElement for LaidOut {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for LaidOut {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let id = self.child.request_layout(window, cx);
+        self.laid.set(Some(id));
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+/// The result draft's line pitch, the code editor's
+/// [`CODE_LINE_HEIGHT`] of the code size on a whole pixel, and the room
+/// around its lines on each side: the multi-line field's padding above and
+/// below them, the kit's medium `input_py` at every size, and its 1 px
+/// border.
+fn draft_metrics() -> (Pixels, Pixels) {
+    let line = (crate::appearance::code_text() * CODE_LINE_HEIGHT).round();
+    let inset = gpui_kit::component::Size::default().input_py() + px(1.);
+    (line, inset)
+}
+
+/// The code editor's line height, a multiple of the code text (the kit's
+/// `EDITOR_LINE_HEIGHT`): the pitch the read-only versions above the draft
+/// draw their lines at.
+const CODE_LINE_HEIGHT: f32 = 1.5;
+
+/// The manual result draft's editable text, drawn in the code font at the
+/// code size's own line height, `lines` whole lines tall inside the
+/// field's padding and border ([`draft_lines`]), so it grows with the code
+/// size and its lines neither crowd nor overlap: a fixed 160 px box with the
+/// interface size's pitch drew 18 pt code at a 16 px pitch. A longer draft
+/// scrolls inside it.
+fn resolution_textarea(editor: &Entity<TextareaState>, lines: f32, cx: &App) -> Textarea {
+    let (line, _) = draft_metrics();
     Textarea::new(editor)
-        .h(px(160.))
+        .h(draft_height(lines))
         .text_size(crate::appearance::code_text())
+        .line_height(line)
         .code_font(cx)
         .aria_label("Manual conflict resolution result")
 }
 
 impl GitTurtle {
+    /// Builds the conflict view for `presentation` unless one is open.
+    /// `activated` says the preview answers the person's explicit choice of
+    /// the file, a click on its row or Enter on it
+    /// ([`GitTurtle::activate_working_preview`]): the view's result draft,
+    /// where it opens, takes focus. Any other preview shows the view and
+    /// leaves focus where it is: one a passive read lands, as a quiet
+    /// refresh or a write's status read does finding the selected file
+    /// conflicted, and one an arrow key's selection lands, which selects
+    /// rather than activates, so the next arrow moves on through the list
+    /// rather than the draft's caret.
     pub(super) fn ensure_conflict_view(
         &mut self,
         presentation: Arc<Presentation>,
+        activated: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -778,10 +1380,13 @@ impl GitTurtle {
                 cx,
             )
         });
-        view.update(cx, |view, _| {
+        view.update(cx, |view, cx| {
             view.durable_status = self.recovery_drafts.status_for(&persistent_key);
             if let Some(recovered) = recovered {
                 view.durable_saved = Some((recovered.key == persistent_key, recovered.text));
+            }
+            if activated {
+                view.focus_resolution(window, cx);
             }
         });
         let snapshot = Arc::clone(&presentation.snapshot);
@@ -821,7 +1426,7 @@ impl GitTurtle {
                         let _ = this.update_in(cx, |this, _, cx| {
                             match result {
                                 Ok(path) => { cx.open_with_system(&path); this.operation_notice = Some("Edit and save the file, then refresh to review and stage the resolution.".into()); }
-                                Err(error) => this.operation_error = Some(format!("{error:#}")),
+                                Err(error) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                             }
                             cx.notify();
                         });
@@ -831,13 +1436,30 @@ impl GitTurtle {
         }));
         self.conflict_view = Some(view);
     }
+
+    /// Activates the open conflict view, as the person's choice of its file
+    /// does: its result draft, where it is open, takes focus. Returns
+    /// whether a view was open.
+    pub(super) fn activate_conflict_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(view) = self.conflict_view.clone() else {
+            return false;
+        };
+        view.update(cx, |view, cx| view.focus_resolution(window, cx));
+        true
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tags::tests::{draw as settle, painted_fades, painted_thumb, rendered};
     use core::prelude::v1::test;
     use gitturtle_core::ConflictSide;
+    use gpui_kit::component::scroll::Scrollbar;
     use std::{cell::RefCell, rc::Rc};
 
     /// The manual result draft is code: it draws in the code family with its
@@ -851,12 +1473,1915 @@ mod tests {
         let cx = cx.add_empty_window();
         let text = cx.update(|window, cx| {
             let editor = cx.new(|cx| TextareaState::new(window, cx));
-            resolution_textarea(&editor, cx).style().text.clone()
+            resolution_textarea(&editor, DRAFT_LINES, cx)
+                .style()
+                .text
+                .clone()
         });
         assert_eq!(text.font_family.as_deref(), Some("Desktop Mono"));
         let features = text.font_features.expect("code features");
         assert_eq!(features.is_calt_enabled(), Some(false));
         assert!(features.tag_value_list().contains(&("liga".into(), 0)));
+    }
+
+    /// A conflict view over the working file `text`, alone in its window,
+    /// with its result draft open.
+    fn conflict_window(
+        cx: &mut TestAppContext,
+        text: String,
+    ) -> (Entity<ConflictView>, &mut VisualTestContext) {
+        cx.update(gpui_kit::init);
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let mut snapshot = snapshot();
+            snapshot.working.as_mut().unwrap().bytes = text.into_bytes();
+            let presentation = Arc::new(Presentation::prepare(snapshot));
+            let key = recovery_drafts::Key::conflict(
+                std::path::Path::new("isolated-conflict-fixture"),
+                &presentation.snapshot.path,
+                presentation.identity.durable.clone(),
+            );
+            let view =
+                cx.new(|cx| ConflictView::new(presentation, key, None, MAX_DIFF_BYTES, window, cx));
+            *captured.borrow_mut() = Some(view.clone());
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let view = observed.borrow_mut().take().unwrap();
+        (view, cx)
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+    }
+
+    /// A review of a two-block conflict with its result draft open and a
+    /// matching saved draft offered, so every one of its controls is drawn.
+    fn review_window(cx: &mut TestAppContext) -> (Entity<ConflictView>, &mut VisualTestContext) {
+        let mut text = String::new();
+        for _ in 0..2 {
+            text.push_str("<<<<<<< current\ncurrent\n=======\nincoming\n>>>>>>> incoming\n");
+            for line in 0..20 {
+                text.push_str(&format!("line {line}\n"));
+            }
+        }
+        let (view, cx) = conflict_window(cx, text);
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            view.update(cx, |view, cx| {
+                view.durable_saved = Some((true, "saved\n".into()));
+                cx.notify();
+            })
+        });
+        (view, cx)
+    }
+
+    /// The review's controls, by the debug selector each is drawn under,
+    /// which is also the id its Button tracks focus under.
+    const REVIEW_CONTROLS: [&str; 19] = [
+        "saved-conflict-drafts",
+        "conflict-branches",
+        "conflict-base",
+        "conflict-block-mode",
+        "conflict-whole-mode",
+        "external-conflict-editor",
+        "previous-conflict-block",
+        "next-conflict-block",
+        "accept-current-block",
+        "accept-incoming-block",
+        "accept-both-block",
+        "copy-saved-conflict",
+        "restore-saved-conflict",
+        "resolve-current",
+        "resolve-incoming",
+        "manual-resolution",
+        "mark-conflict-resolved",
+        "save-conflict-draft",
+        "save-conflict-resolution",
+    ];
+
+    /// The control of the review holding focus: a Button by its selector,
+    /// the result draft as `conflict-result-draft`, a version's text as
+    /// `base-version`, `current-version` or `incoming-version`.
+    fn focused_control(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+    ) -> Option<&'static str> {
+        cx.update(|window, cx| {
+            let view = view.read(cx);
+            if let Some(id) = view.body.focused(window) {
+                return REVIEW_CONTROLS
+                    .into_iter()
+                    .find(|control| ElementId::from(*control) == id);
+            }
+            if view.resolution_focused(window, cx) {
+                return Some("conflict-result-draft");
+            }
+            view.readers.iter().enumerate().find_map(|(side, reader)| {
+                reader
+                    .as_ref()
+                    .filter(|reader| reader.focus_handle(cx).contains_focused(window, cx))
+                    .map(|_| ["base-version", "current-version", "incoming-version"][side])
+            })
+        })
+    }
+
+    /// With the body at its top and focus on its first control, presses
+    /// `key` until focus reaches the result draft, which keeps Tab and
+    /// Shift+Tab for indenting, or comes back to a control it has visited,
+    /// and returns the controls focus lay on in order, the first control
+    /// among them for Tab. After each press the focused control, grown by its
+    /// ring's room, lies inside the review's body as drawn, and so it does in
+    /// every frame painted after the press, the first that draws the focus
+    /// included.
+    fn walk(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        key: &str,
+        at: &str,
+    ) -> Vec<&'static str> {
+        const FIRST: &str = "saved-conflict-drafts";
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let room = cx.read(crate::appearance::button_ring_room);
+        let slack = px(0.01);
+        cx.update(|window, cx| {
+            body.scroll().set_offset(Point::default());
+            body.focus(FIRST, cx).focus(window, cx);
+        });
+        settle(cx);
+        assert_eq!(focused_control(cx, view), Some(FIRST), "{at}");
+        let mut visited = Vec::new();
+        if key == "tab" {
+            visited.push(FIRST);
+        }
+        for _ in 0..REVIEW_CONTROLS.len() + 4 {
+            body.take_painted();
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            let control = focused_control(cx, view)
+                .unwrap_or_else(|| panic!("{at}: {key} focuses a control of the review"));
+            if visited.contains(&control) {
+                break;
+            }
+            let review = cx.debug_bounds("conflict-review").expect("the review");
+            let drawn = match control {
+                "conflict-result-draft" => cx.debug_bounds(control),
+                control if control.ends_with("-version") => None,
+                control => cx.debug_bounds(control),
+            };
+            if let Some(drawn) = drawn {
+                let ring = drawn.dilate(room);
+                assert!(
+                    ring.top() + slack >= review.top() && ring.bottom() <= review.bottom() + slack,
+                    "{at}: after {key}, {control} with its ring, {ring:?}, lies outside the \
+                     review's body, {review:?}"
+                );
+            }
+            let frames = body.take_painted();
+            assert!(
+                !frames.is_empty(),
+                "{at}: {key} onto {control} paints the body"
+            );
+            for (index, frame) in frames.iter().enumerate() {
+                let ring = frame
+                    .control
+                    .unwrap_or_else(|| panic!("{at}: frame {index} after {key} draws {control}"))
+                    .dilate(room);
+                assert!(
+                    ring.top() + slack >= frame.viewport.top()
+                        && ring.bottom() <= frame.viewport.bottom() + slack,
+                    "{at}: frame {index} after {key} paints {control} with its ring, {ring:?}, \
+                     outside the body, {:?}",
+                    frame.viewport
+                );
+            }
+            visited.push(control);
+            if control == "conflict-result-draft" {
+                break;
+            }
+        }
+        visited
+    }
+
+    /// Every control Tab or Shift+Tab reaches in a short window is drawn
+    /// whole with its ring inside the review's body, which scrolls, in every
+    /// frame after the key. In a 461 × 490 half tile, at 13 pt with 12 pt
+    /// code and at 18 pt with 18 pt code, the review is taller than the
+    /// window: laid out at the window's height, it left Save draft… at
+    /// y 643.5 and 1,008.5 and every action below the result draft under the
+    /// window's foot, out of reach, and the result draft cut by it. The body
+    /// scrolls as one, the versions keeping their 100 px and the draft its
+    /// eight whole lines, and its scrollbar runs in a gutter at its right,
+    /// clear of every control and ring. Once the draft has no unresolved
+    /// block, Shift+Tab reaches Save and stage result… whole too.
+    #[gpui::test]
+    async fn a_short_window_scrolls_the_review_and_tab_reveals_each_control(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let room = cx.read(crate::appearance::button_ring_room);
+        for (interface, code, pitch) in [(13, 12, px(18.)), (18, 18, px(27.))] {
+            let at = format!("{interface} pt, code {code} pt, two blocks unresolved");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                body.scroll().set_offset(Point::default());
+            });
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > px(0.),
+                "{at}: the review is taller than its body"
+            );
+            assert_eq!(
+                rendered(cx, "conflict-versions").size.height,
+                px(100.),
+                "{at}: the versions keep their 100 px"
+            );
+            assert_eq!(
+                rendered(cx, "conflict-result-draft").size.height,
+                pitch * 8. + px(18.),
+                "{at}: the draft keeps its eight whole lines"
+            );
+
+            // The scrollbar runs the body's height in its gutter, at its
+            // right, and the controls and their rings end before it.
+            let review = rendered(cx, "conflict-review");
+            assert!(
+                cx.debug_bounds("conflict-review-scrollbar").is_some(),
+                "{at}: the body draws its scrollbar"
+            );
+            let track = Bounds::from_corners(
+                point(review.right() - Scrollbar::width(), review.top()),
+                review.bottom_right(),
+            );
+            assert!(
+                painted_thumb(cx, track).is_some(),
+                "{at}: the scrollbar paints its thumb at the body's right, in {track:?}"
+            );
+            for control in REVIEW_CONTROLS
+                .into_iter()
+                .chain(["conflict-result-draft", "conflict-versions"])
+            {
+                let ring = rendered(cx, control).dilate(room);
+                assert!(
+                    ring.right() <= track.left() + px(0.01),
+                    "{at}: {control} with its ring, {ring:?}, reaches the scrollbar, {track:?}"
+                );
+            }
+
+            let forward = walk(cx, &view, "tab", &at);
+            assert_eq!(
+                forward,
+                [
+                    "saved-conflict-drafts",
+                    "conflict-branches",
+                    "conflict-base",
+                    "conflict-block-mode",
+                    "conflict-whole-mode",
+                    "external-conflict-editor",
+                    "next-conflict-block",
+                    "accept-current-block",
+                    "accept-incoming-block",
+                    "accept-both-block",
+                    "current-version",
+                    "incoming-version",
+                    "copy-saved-conflict",
+                    "restore-saved-conflict",
+                    "resolve-current",
+                    "resolve-incoming",
+                    "manual-resolution",
+                    "conflict-result-draft",
+                ],
+                "{at}: Tab's stops"
+            );
+            assert!(
+                body.scroll().offset().y < px(0.),
+                "{at}: Tab scrolled the body"
+            );
+            let backward = walk(cx, &view, "shift-tab", &at);
+            assert_eq!(
+                backward,
+                ["save-conflict-draft", "conflict-result-draft"],
+                "{at}: Shift+Tab's stops"
+            );
+        }
+
+        // The saved draft, which holds no conflict, restored as Restore
+        // saved draft does: once it is parsed, Save and stage result… acts.
+        cx.update(|window, cx| view.update(cx, |view, cx| view.restore_saved_draft(window, cx)));
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("restoring parses the draft").await;
+        for (interface, code) in [(13, 12), (18, 18)] {
+            let at = format!("{interface} pt, code {code} pt, resolved");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > px(0.),
+                "{at}: the review is taller than its body"
+            );
+            assert_eq!(
+                walk(cx, &view, "tab", &at),
+                [
+                    "saved-conflict-drafts",
+                    "conflict-branches",
+                    "conflict-base",
+                    "conflict-whole-mode",
+                    "external-conflict-editor",
+                    "resolve-current",
+                    "resolve-incoming",
+                    "manual-resolution",
+                    "conflict-result-draft",
+                ],
+                "{at}: Tab's stops"
+            );
+            assert_eq!(
+                walk(cx, &view, "shift-tab", &at),
+                [
+                    "save-conflict-resolution",
+                    "save-conflict-draft",
+                    "conflict-result-draft"
+                ],
+                "{at}: Shift+Tab's stops"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A click that moves focus into the result draft, on Next or Previous or
+    /// on Edit result, has the body show the draft whole with its ring's
+    /// room in a 461 × 490 window, at 13 pt with 12 pt code and at 18 pt with
+    /// 18 pt code: the draft, 162 and 234 px tall, is shorter than the
+    /// 490 px body at both, so neither shows only its top. Revealed only for
+    /// the keyboard, a click on Next at 13 pt focused the draft at y 475–637
+    /// with the body still at its top, about 15 px of it in view.
+    #[gpui::test]
+    fn a_click_that_focuses_the_draft_shows_it_whole(cx: &mut TestAppContext) {
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let room = cx.read(crate::appearance::button_ring_room);
+        let slack = px(0.01);
+        let assert_draft_shown = |cx: &mut VisualTestContext, after: &str| {
+            assert_eq!(
+                focused_control(cx, &view),
+                Some("conflict-result-draft"),
+                "{after} focuses the draft"
+            );
+            let review = rendered(cx, "conflict-review");
+            let ring = rendered(cx, "conflict-result-draft").dilate(room);
+            assert!(
+                ring.top() + slack >= review.top() && ring.bottom() <= review.bottom() + slack,
+                "after {after}, the draft with its ring, {ring:?}, lies outside the body, \
+                 {review:?}, at offset {:?}",
+                body.scroll().offset().y
+            );
+        };
+        for (interface, code, step) in [
+            (13, 12, "next-conflict-block"),
+            (18, 18, "previous-conflict-block"),
+        ] {
+            let at = format!("{interface} pt, code {code} pt");
+            // Focus elsewhere and the body at its top, where the draft lies
+            // past its foot.
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                window.blur(cx);
+                body.scroll().set_offset(Point::default());
+            });
+            settle(cx);
+            let review = rendered(cx, "conflict-review");
+            assert!(
+                rendered(cx, "conflict-result-draft").bottom() > review.bottom(),
+                "{at}: the draft lies past the body's foot"
+            );
+            let center = rendered(cx, step).center();
+            cx.simulate_click(center, Modifiers::default());
+            settle(cx);
+            assert_draft_shown(cx, &format!("{at}: a click on {step}"));
+
+            // Edit result scrolled to the body's foot, the draft below it.
+            cx.update(|window, cx| window.blur(cx));
+            settle(cx);
+            let edit = rendered(cx, "manual-resolution");
+            let offset = body.scroll().offset().y - (edit.bottom() + px(4.) - review.bottom());
+            cx.update(|window, _| {
+                body.scroll().set_offset(point(px(0.), offset.min(px(0.))));
+                window.refresh();
+            });
+            settle(cx);
+            assert!(
+                rendered(cx, "conflict-result-draft").bottom() > review.bottom(),
+                "{at}: below Edit result, the draft lies past the body's foot"
+            );
+            let center = rendered(cx, "manual-resolution").center();
+            cx.simulate_click(center, Modifiers::default());
+            settle(cx);
+            assert_draft_shown(cx, &format!("{at}: a click on Edit result"));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the review fits, as in a 1,480 × 800 window at 13 pt with 12 pt
+    /// code and at 18 pt with 18 pt code, nothing scrolls, the body keeps no
+    /// gutter and draws no scrollbar, and the review and every control lie
+    /// where they did before the body scrolled, the versions taking the
+    /// room the rest leaves.
+    #[gpui::test]
+    fn a_review_that_fits_scrolls_nothing_and_moves_nothing(cx: &mut TestAppContext) {
+        /// An element's debug selector and where it was drawn: x, y, width
+        /// and height.
+        type Drawn = (&'static str, (f32, f32, f32, f32));
+        /// Where each was drawn before the body scrolled (`82f71ae1`), at
+        /// 13 pt with 12 pt code.
+        const AT_13: [Drawn; 22] = [
+            ("conflict-review", (0., 0., 1480., 800.)),
+            ("conflict-versions", (0., 110., 1480., 368.)),
+            ("saved-conflict-drafts", (9.5, 6.5, 114., 28.)),
+            ("conflict-branches", (130., 6.5, 92., 28.)),
+            ("conflict-base", (228.5, 6.5, 49., 28.)),
+            ("conflict-block-mode", (284., 6.5, 121., 28.)),
+            ("conflict-whole-mode", (411.5, 6.5, 92., 28.)),
+            ("external-conflict-editor", (1349.5, 6.5, 121., 28.)),
+            ("previous-conflict-block", (9.5, 74.5, 78., 28.)),
+            ("next-conflict-block", (94., 74.5, 49., 28.)),
+            ("accept-current-block", (149.5, 74.5, 121., 28.)),
+            ("accept-incoming-block", (277., 74.5, 128., 28.)),
+            ("accept-both-block", (411.5, 74.5, 100., 28.)),
+            ("copy-saved-conflict", (452., 510., 150., 28.)),
+            ("restore-saved-conflict", (608.5, 510., 157., 28.)),
+            ("resolve-current", (142., 544.5, 143., 28.)),
+            ("resolve-incoming", (291.5, 544.5, 150., 28.)),
+            ("manual-resolution", (1370.5, 544.5, 100., 28.)),
+            ("conflict-result-draft", (9.5, 597., 1461., 162.)),
+            ("mark-conflict-resolved", (9.5, 765.5, 150., 28.)),
+            ("save-conflict-draft", (166., 765.5, 100., 28.)),
+            ("save-conflict-resolution", (272.5, 765.5, 179., 28.)),
+        ];
+        /// The same at 18 pt with 18 pt code.
+        const AT_18: [Drawn; 22] = [
+            ("conflict-review", (0., 0., 1480., 800.)),
+            ("conflict-versions", (0., 152., 1480., 193.)),
+            ("saved-conflict-drafts", (13.5, 9., 158., 39.)),
+            ("conflict-branches", (180.5, 9., 128., 39.)),
+            ("conflict-base", (317.5, 9., 68., 39.)),
+            ("conflict-block-mode", (394.5, 9., 168., 39.)),
+            ("conflict-whole-mode", (571.5, 9., 128., 39.)),
+            ("external-conflict-editor", (1298.5, 9., 168., 39.)),
+            ("previous-conflict-block", (13.5, 103., 108., 39.)),
+            ("next-conflict-block", (130.5, 103., 68., 39.)),
+            ("accept-current-block", (207.5, 103., 168., 39.)),
+            ("accept-incoming-block", (384.5, 103., 178., 39.)),
+            ("accept-both-block", (571.5, 103., 138., 39.)),
+            ("copy-saved-conflict", (626.5, 388.5, 208.5, 39.)),
+            ("restore-saved-conflict", (844., 388.5, 218., 39.)),
+            ("resolve-current", (196.5, 436.5, 198., 39.)),
+            ("resolve-incoming", (403.5, 436.5, 208., 39.)),
+            ("manual-resolution", (1328.5, 436.5, 138., 39.)),
+            ("conflict-result-draft", (13.5, 509., 1453., 234.)),
+            ("mark-conflict-resolved", (13.5, 752., 208., 39.)),
+            ("save-conflict-draft", (230.5, 752., 138., 39.)),
+            ("save-conflict-resolution", (377.5, 752., 248., 39.)),
+        ];
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        for (interface, code, laid_out) in [(13, 12, AT_13), (18, 18, AT_18)] {
+            let at = format!("{interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            settle(cx);
+            assert_eq!(
+                body.scroll().max_offset().y,
+                px(0.),
+                "{at}: the review fits its body"
+            );
+            assert_eq!(body.scroll().offset().y, px(0.), "{at}");
+            assert!(
+                cx.debug_bounds("conflict-review-scrollbar").is_none(),
+                "{at}: a body that fits draws no scrollbar"
+            );
+            let moved: Vec<_> = laid_out
+                .into_iter()
+                .filter_map(|(selector, (x, y, width, height))| {
+                    let before = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
+                    let drawn = cx.debug_bounds(selector);
+                    (drawn != Some(before))
+                        .then(|| format!("{selector}: {drawn:?}, was {before:?}"))
+                })
+                .collect();
+            assert!(moved.is_empty(), "{at}: moved\n{}", moved.join("\n"));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 1,480 × 800, where the review fits, its column is measured before
+    /// layout only where what sets its height changes: a frame drawn again
+    /// at rest, a caret blink and a keystroke in the result draft measure
+    /// nothing; a resize, a section opening and Edit result measure it once.
+    /// It was measured in every frame drawn while the review fit.
+    #[gpui::test]
+    async fn the_review_measures_its_column_only_as_its_height_can_change(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(cx);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        assert_eq!(body.scroll().max_offset().y, px(0.), "the review fits");
+        // The measures since the last call.
+        let mut last = cx.read(|cx| view.read(cx).measures);
+        let mut since = |cx: &mut VisualTestContext| {
+            let now = cx.read(|cx| view.read(cx).measures);
+            now - std::mem::replace(&mut last, now)
+        };
+        let editor = cx.read(|cx| view.read(cx).resolution.clone().expect("the draft"));
+
+        cx.update(|window, _| window.refresh());
+        settle(cx);
+        assert_eq!(since(cx), 0, "a frame drawn again");
+
+        // The caret at the draft's end, where a keystroke changes no block.
+        cx.update(|window, cx| {
+            let end = editor.read(cx).text().len();
+            editor.update(cx, |editor, cx| editor.set_selected_range(end..end, cx));
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        settle(cx);
+        since(cx);
+        // A blink redraws the draft, as its caret's timer does.
+        editor.update(cx, |_, cx| cx.notify());
+        settle(cx);
+        assert_eq!(since(cx), 0, "a caret blink");
+        cx.simulate_input("x");
+        // The block review the edit starts runs on its own thread.
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        if let Some(parse) = parse {
+            parse.await;
+        }
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).accepted_draft.ends_with('x')),
+            "the keystroke edits the draft"
+        );
+        assert_eq!(since(cx), 0, "a keystroke in the draft");
+
+        cx.simulate_resize(size(px(1480.), px(780.)));
+        settle(cx);
+        assert_eq!(since(cx), 1, "a resize");
+
+        let base = rendered(cx, "conflict-base");
+        cx.simulate_click(base.center(), Modifiers::default());
+        settle(cx);
+        assert!(cx.read(|cx| view.read(cx).base), "Base opens");
+        assert_eq!(since(cx), 1, "opening the base");
+
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.resolution = None;
+                cx.notify();
+            })
+        });
+        settle(cx);
+        since(cx);
+        let edit = rendered(cx, "manual-resolution");
+        cx.simulate_click(edit.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).resolution.is_some()),
+            "Edit result opens the draft"
+        );
+        assert_eq!(since(cx), 1, "Edit result");
+    }
+
+    /// `text` as the result draft, its block review scheduled, as Restore
+    /// saved draft sets it.
+    fn set_draft(cx: &mut VisualTestContext, view: &Entity<ConflictView>, text: &str) {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let editor = view.resolution.clone().expect("the draft");
+                editor.update(cx, |editor, cx| {
+                    editor.set_value(text.to_string(), window, cx)
+                });
+                view.accepted_draft = text.into();
+                view.schedule_blocks(window, cx);
+            })
+        });
+    }
+
+    /// Holds `view`'s block review worker until the returned sender sends,
+    /// and the job that holds it, so a review started now stays under way.
+    async fn hold_block_review(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+    ) -> (
+        std::sync::mpsc::Sender<()>,
+        futures::channel::oneshot::Receiver<anyhow::Result<()>>,
+    ) {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, ready) = futures::channel::oneshot::channel();
+        let held = cx.update(|_, cx| {
+            view.read(cx).block_executor.submit_read(move || {
+                let _ = started.send(());
+                wait.recv().map_err(|error| anyhow::anyhow!(error))?;
+                Ok(())
+            })
+        });
+        ready.await.unwrap();
+        (release, held)
+    }
+
+    /// Releases `held` and waits for the block review behind it to land.
+    async fn land_block_review(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        release: std::sync::mpsc::Sender<()>,
+        held: futures::channel::oneshot::Receiver<anyhow::Result<()>>,
+    ) {
+        release.send(()).unwrap();
+        held.await.unwrap().unwrap();
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("the block review is scheduled").await;
+        assert!(
+            !cx.read(|cx| view.read(cx).block_pending),
+            "the block review lands"
+        );
+    }
+
+    /// Restore saved draft at 18 pt in a 461 × 490 half tile, where the
+    /// blocks' status takes two lines: "Updating conflict blocks…" stands in
+    /// the status's own height from the frame that starts the review to the
+    /// frame it lands in, and the result draft below it stays where that
+    /// frame drew it. Its one line replaced the blocks' two, and the draft
+    /// moved 27 px as the review began and again as it landed.
+    #[gpui::test]
+    async fn the_block_status_keeps_its_height_through_the_review(cx: &mut TestAppContext) {
+        const AT: &str = "461 × 490, 18 pt, code 18 pt";
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        let (body, saved) = cx.read(|cx| {
+            let view = view.read(cx);
+            (view.body.clone(), format!("{}kept\n", view.accepted_draft))
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.durable_saved = Some((true, saved));
+                cx.notify();
+            })
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        settle(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+        let two_lines = cx.read(|cx| view.read(cx).block_status());
+        let before = rendered(cx, "conflict-block-status").size.height;
+        assert!(
+            before > crate::appearance::ui_text(12.) * 2.,
+            "{AT}: {two_lines:?} takes two lines, {before:?}"
+        );
+
+        let (release, held) = hold_block_review(cx, &view).await;
+        cx.update(|window, cx| {
+            body.reveal_next_focus();
+            body.focus("restore-saved-conflict", cx).focus(window, cx);
+        });
+        settle(cx);
+        let restore = rendered(cx, "restore-saved-conflict");
+        cx.simulate_click(restore.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).block_pending),
+            "{AT}: Restore saved draft starts a block review"
+        );
+        assert_eq!(
+            rendered(cx, "conflict-block-status").size.height,
+            before,
+            "{AT}: the status keeps its height as the review runs"
+        );
+        assert!(
+            crate::native_accessibility::written::announced("conflict-block-status").is_some(),
+            "{AT}: the status stays a live region"
+        );
+        let draft = rendered(cx, "conflict-result-draft");
+
+        body.take_painted();
+        land_block_review(cx, &view, release, held).await;
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| view.read(cx).block_status()),
+            two_lines,
+            "{AT}: the review lands the blocks' status"
+        );
+        assert_eq!(
+            rendered(cx, "conflict-block-status").size.height,
+            before,
+            "{AT}: the landed status is as tall as the review's"
+        );
+        assert_eq!(
+            rendered(cx, "conflict-result-draft"),
+            draft,
+            "{AT}: the draft stays as the review lands"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: the review lands"));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Every side of `view` with no reader draws its message whole inside
+    /// the versions, above the footer, the versions no shorter than their
+    /// 100 px and the body scrolling for it.
+    fn assert_messages_stay_inside_the_versions(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        at: &str,
+    ) {
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let versions = rendered(cx, "conflict-versions");
+        assert!(
+            versions.size.height >= px(100.),
+            "{at}: the versions keep their 100 px, {versions:?}"
+        );
+        let mut shown = 0;
+        for (side, selector) in [
+            "conflict-side-message-0",
+            "conflict-side-message-1",
+            "conflict-side-message-2",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let Some(message) = cx.debug_bounds(selector) else {
+                continue;
+            };
+            shown += 1;
+            assert!(
+                message.top() >= versions.top() - px(0.01)
+                    && message.bottom() <= versions.bottom() + px(0.01),
+                "{at}: side {side}'s message, {message:?}, lies inside the versions, \
+                 {versions:?}"
+            );
+        }
+        assert!(shown > 0, "{at}: a side draws its message");
+        assert!(
+            body.scroll().max_offset().y > Pixels::ZERO,
+            "{at}: the body scrolls rather than cut the message"
+        );
+    }
+
+    /// Each side's message where it has no reader, no unresolved blocks
+    /// left, a binary file or a side missing, stays whole inside the versions
+    /// at 18 pt in a 461 × 490 half tile. It wraps to several lines beside
+    /// the other side, and past a fixed 100 px, the footer drawn over its
+    /// foot. The column's measure counts the message, so the first frame
+    /// that overflows keeps the scrollbar's gutter. Where the review fits,
+    /// at 1,480 × 800, the versions still take the room the rest leaves them.
+    #[gpui::test]
+    async fn each_sides_message_stays_inside_the_versions_in_a_half_tile(cx: &mut TestAppContext) {
+        const BLOCK: &str = "<<<<<<< current\ncurrent\n=======\nincoming\n>>>>>>> incoming\n";
+        // A line of the message at 18 pt, by which the gutter can rewrap it.
+        const ONE_LINE: Pixels = px(30.);
+
+        // No unresolved block left in the result, in block mode, reached
+        // where the review fits, so the frame that first overflows measures
+        // the column.
+        let (view, cx) = conflict_window(cx, BLOCK.to_string());
+        cx.executor().allow_parking();
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(cx);
+        set_draft(cx, &view, "resolved\n");
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("the draft schedules a block review").await;
+        settle(cx);
+        assert!(cx.read(|cx| view.read(cx).blocks.is_empty()));
+        assert_eq!(
+            body.scroll().max_offset().y,
+            Pixels::ZERO,
+            "the review fits at 1,480 × 800"
+        );
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(cx);
+        assert_messages_stay_inside_the_versions(cx, &view, "no unresolved block left");
+        let measured = cx.read(|cx| view.read(cx).measured_column);
+        let laid = body.scroll().bounds().size.height + body.scroll().max_offset().y;
+        assert!(
+            measured + ONE_LINE >= laid,
+            "the column's measure, {measured:?}, counts the message the layout gives {laid:?}"
+        );
+
+        // A binary version and an absent one, in the whole file's versions.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let mut snapshot = (*view.presentation.snapshot).clone();
+                snapshot.current.as_mut().unwrap().content.bytes = vec![0, 159, 146, 150];
+                snapshot.incoming = None;
+                view.presentation = Arc::new(Presentation::prepare(snapshot));
+                view.block_mode = false;
+                view.readers = [None, None, None];
+                view.prepare_readers(window, cx);
+                cx.notify();
+            })
+        });
+        settle(cx);
+        assert_messages_stay_inside_the_versions(cx, &view, "a binary side and an absent one");
+
+        // Where the review fits, the versions take the room the rest leaves.
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(cx);
+        let versions = rendered(cx, "conflict-versions");
+        assert!(
+            versions.size.height > px(200.),
+            "at 1,480 × 800 the versions take the room the rest leaves, {versions:?}"
+        );
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Restore saved draft with a draft that has no markers, at 18 pt in a
+    /// 461 × 490 half tile: as the review lands no blocks, the sides' text
+    /// gives way to their taller messages, and every frame draws the focused
+    /// draft whole with its ring where it stays, and so do the frames of a
+    /// review that lands an unclosed marker's issue with still no blocks,
+    /// takes it away, or brings the blocks back. Left where it lay, the
+    /// draft was pushed down past the body's foot as the review landed.
+    #[gpui::test]
+    async fn a_review_that_lands_no_blocks_draws_the_draft_where_it_stays(cx: &mut TestAppContext) {
+        const AT: &str = "461 × 490, 18 pt, code 18 pt";
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        let (body, blocks) = cx.read(|cx| {
+            let view = view.read(cx);
+            (view.body.clone(), view.accepted_draft.clone())
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.durable_saved = Some((true, "resolved\n".into()));
+                cx.notify();
+            })
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        settle(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+
+        let (release, held) = hold_block_review(cx, &view).await;
+        cx.update(|window, cx| {
+            body.reveal_next_focus();
+            body.focus("restore-saved-conflict", cx).focus(window, cx);
+        });
+        settle(cx);
+        let restore = rendered(cx, "restore-saved-conflict");
+        cx.simulate_click(restore.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).block_pending),
+            "{AT}: Restore saved draft starts a block review"
+        );
+        body.take_painted();
+        land_block_review(cx, &view, release, held).await;
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).blocks.is_empty()),
+            "{AT}: the review lands no blocks"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: no blocks land"));
+
+        // An unclosed marker: still no blocks, but the status and the issue
+        // line change, and again as it is taken away.
+        for (draft, issue, at) in [
+            ("<<<<<<< current\nresolved\n", true, "an unclosed marker"),
+            ("resolved\n", false, "the unclosed marker removed"),
+        ] {
+            let (release, held) = hold_block_review(cx, &view).await;
+            set_draft(cx, &view, draft);
+            settle(cx);
+            body.take_painted();
+            land_block_review(cx, &view, release, held).await;
+            settle(cx);
+            cx.read(|cx| {
+                let view = view.read(cx);
+                assert!(view.blocks.is_empty(), "{AT}: {at}: no blocks");
+                assert_eq!(view.block_issue.is_some(), issue, "{AT}: {at}: the issue");
+            });
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: {at}"));
+        }
+
+        let (release, held) = hold_block_review(cx, &view).await;
+        set_draft(cx, &view, &blocks);
+        settle(cx);
+        body.take_painted();
+        land_block_review(cx, &view, release, held).await;
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| view.read(cx).blocks.len()),
+            2,
+            "{AT}: the review brings the blocks back"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: the blocks come back"));
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A block review that lands a status taller than the one it began from,
+    /// blocks where none remained, measures the review's column again, once:
+    /// in a 461 px wide half tile at 18 pt with 18 pt code, where the blocks'
+    /// status takes a line more than "No unresolved blocks in the result",
+    /// and at a height between the two, the first frame after it lands lays
+    /// the body out with the gutter, and every frame draws the focused draft
+    /// where it stays. Kept from while the review ran, the measure left the
+    /// gutter out of that frame, which drew the draft 434 px wide, and the
+    /// next drew it 415 px wide beside the gutter. The whole file's versions
+    /// are shown, so the versions keep their height whatever the review
+    /// lands.
+    #[gpui::test]
+    async fn the_column_is_measured_again_once_a_block_review_lands(cx: &mut TestAppContext) {
+        const AT: &str = "461 px wide, 18 pt, code 18 pt";
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let (editor, blocks) = cx.read(|cx| {
+            let view = view.read(cx);
+            (
+                view.resolution.clone().expect("the draft"),
+                view.accepted_draft.clone(),
+            )
+        });
+        let reach = |cx: &mut VisualTestContext| {
+            settle(cx);
+            body.scroll().bounds().size.height + body.scroll().max_offset().y
+        };
+        cx.update(|window, cx| {
+            crate::appearance::apply_text_sizes(18, 18, window, cx);
+            view.update(cx, |view, cx| {
+                view.block_mode = false;
+                view.readers = [None, None, None];
+                view.prepare_readers(window, cx);
+                cx.notify();
+            });
+        });
+        // The review's height with the blocks' status, read where it
+        // overflows and the draft keeps its eight lines, the draft focused.
+        // At this width the gutter rewraps no row, so it is the height the
+        // column measures.
+        cx.simulate_resize(size(px(461.), px(400.)));
+        cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
+        let landed = reach(cx);
+
+        // And with no block left, the status a line shorter, and a review
+        // that brings the blocks back held on its worker while the window
+        // is resized.
+        set_draft(cx, &view, "resolved\n");
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("the draft schedules a block review").await;
+        let (release, held) = hold_block_review(cx, &view).await;
+        set_draft(cx, &view, &blocks);
+        let running = reach(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).block_pending),
+            "{AT}: the draft's block review runs"
+        );
+        assert!(
+            landed > running + px(8.),
+            "{AT}: the blocks' status takes a line more than the status the review began \
+             from, {landed:?} against {running:?}"
+        );
+
+        // The measures since the last call.
+        let mut last = cx.read(|cx| view.read(cx).measures);
+        let mut since = |cx: &mut VisualTestContext| {
+            let now = cx.read(|cx| view.read(cx).measures);
+            now - std::mem::replace(&mut last, now)
+        };
+        cx.simulate_resize(size(px(461.), (landed + running) / 2.));
+        settle(cx);
+        assert_eq!(
+            body.scroll().max_offset().y,
+            Pixels::ZERO,
+            "{AT}: the review fits while its block review runs"
+        );
+        assert_eq!(since(cx), 1, "{AT}: a resize while the block review runs");
+
+        // Every frame from here on is drawn after the review lands.
+        body.take_painted();
+        land_block_review(cx, &view, release, held).await;
+        settle(cx);
+        assert_eq!(
+            cx.read(|cx| view.read(cx).blocks.len()),
+            2,
+            "{AT}: the review lands the draft's blocks"
+        );
+        assert!(
+            body.scroll().max_offset().y > Pixels::ZERO,
+            "{AT}: the review overflows with the blocks' status"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: the review lands"));
+        assert_eq!(since(cx), 1, "{AT}: the block review lands");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Along a track shorter than a scrollbar's thumb moves on, 56 px, as in
+    /// a window 50 px tall, the body draws no scrollbar and fades the edges
+    /// it continues past instead: the bottom's at its top, and the top's
+    /// alone at its end.
+    #[gpui::test]
+    fn a_body_too_short_for_a_thumb_fades_the_edges_it_continues_past(cx: &mut TestAppContext) {
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(461.), px(50.)));
+        settle(cx);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let review = rendered(cx, "conflict-review");
+        assert!(
+            body.scroll().max_offset().y > px(0.),
+            "the review overflows"
+        );
+        assert!(
+            cx.debug_bounds("conflict-review-scrollbar").is_none(),
+            "no scrollbar along a 50 px track"
+        );
+        assert_eq!(
+            painted_fades(cx, review),
+            (None, Some(px(8.))),
+            "at its top, the bottom edge fades"
+        );
+        cx.update(|window, _| {
+            body.scroll()
+                .set_offset(point(px(0.), -body.scroll().max_offset().y));
+            window.refresh();
+        });
+        settle(cx);
+        assert_eq!(
+            painted_fades(cx, review),
+            (Some(px(8.)), None),
+            "at its end, the top edge alone fades"
+        );
+    }
+
+    /// The manual result draft shows eight whole lines of code at every
+    /// code size, at the code size's own line height, the pitch of the
+    /// versions above it: 18 px at the default 12 px, 20 px at 13 and 27 px
+    /// at 18, whatever the interface size. Its fixed 160 px box drew them
+    /// at the interface size's 16 px pitch (23 px at 18 pt), so 18 pt code
+    /// crowded its lines into each other, and held eight whole lines and a
+    /// cut ninth. The box grows with its lines, and a draft longer than
+    /// eight lines scrolls inside it.
+    #[gpui::test]
+    fn the_result_draft_shows_whole_code_lines_at_the_code_size(cx: &mut TestAppContext) {
+        let mut text =
+            String::from("<<<<<<< current\ncurrent\n=======\nincoming\n>>>>>>> incoming\n");
+        for line in 0..40 {
+            text.push_str(&format!("line {line}\n"));
+        }
+        let second_line = text.find('\n').unwrap() + 1;
+        let (view, cx) = conflict_window(cx, text);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let editor = cx.read(|cx| view.read(cx).resolution.clone().expect("the draft opens"));
+        let caret_at = |offset: usize, cx: &mut VisualTestContext| {
+            editor.update(cx, |editor, cx| {
+                editor.set_selected_range(offset..offset, cx)
+            });
+            draw(cx);
+            cx.read(|cx| editor.read(cx).cursor_layout().expect("a caret").0)
+        };
+        for (interface, code, pitch) in [
+            (13, 12, px(18.)),
+            (13, 13, px(20.)),
+            (13, 18, px(27.)),
+            (18, 12, px(18.)),
+            (18, 18, px(27.)),
+        ] {
+            let at = format!("{interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                editor.update(cx, |editor, cx| {
+                    editor.set_scroll_offset(Point::default(), cx)
+                });
+            });
+            draw(cx);
+            let first = caret_at(0, cx);
+            let second = caret_at(second_line, cx);
+            assert_eq!(
+                second.top() - first.top(),
+                pitch,
+                "{at}: the drawn rows' pitch"
+            );
+            assert_eq!(
+                cx.read(|cx| editor.read(cx).line_height()),
+                Some(pitch),
+                "{at}"
+            );
+            let lines = cx.read(|cx| editor.read(cx).input_bounds());
+            assert_eq!(
+                lines.size.height,
+                pitch * 8.,
+                "{at}: eight whole lines, none cut"
+            );
+            let draft = cx.debug_bounds("conflict-result-draft").unwrap();
+            assert_eq!(
+                draft.size.height,
+                pitch * 8. + px(18.),
+                "{at}: the lines inside the field's padding and border"
+            );
+
+            cx.update(|_, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.set_scroll_offset(point(px(0.), px(-100_000.)), cx)
+                })
+            });
+            draw(cx);
+            let scrolled = cx.read(|cx| editor.read(cx).scroll_offset().y);
+            assert!(
+                scrolled < -pitch * 30. && scrolled > px(-100_000.),
+                "{at}: the 45-line draft scrolls inside its box, to {scrolled:?}"
+            );
+            assert_eq!(
+                cx.debug_bounds("conflict-result-draft"),
+                Some(draft),
+                "{at}"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The whole window, built as the app opens its own
+    /// ([`crate::views::tests::history_window_from`]): its tab strip,
+    /// header, Git actions and status bar around the page, in Midnight. It
+    /// shows Working Changes, its rows read, on a merge stopped by a conflict
+    /// in notes.txt, so the merge banner stands above the page too. Every
+    /// text run is marked as the width walk marks it
+    /// ([`crate::width_walk::text_mark`]), so a test finds a run its clip
+    /// cuts among the painted quads. Keep the returned directory until the
+    /// test ends.
+    async fn merge_window(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        use crate::views::tests::{
+            fixture_git, fixture_git_output, history_script, styled_history_window,
+        };
+        let script = history_script(3, 3);
+        let (fixture, app, cx) = styled_history_window(cx, script.as_bytes(), |root| {
+            root.text_bg(crate::width_walk::text_mark())
+        })
+        .await;
+        let repository = fixture.path().join("narrow");
+        let committing = |arguments: &[&str]| {
+            let identity = [
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ];
+            fixture_git_output(&repository, &[&identity[..], arguments].concat())
+        };
+        fixture_git(&repository, &["reset", "--hard", "--quiet"]);
+        fixture_git(&repository, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("notes.txt"), "side\n").unwrap();
+        assert!(
+            committing(&["commit", "-q", "-am", "side"])
+                .status
+                .success()
+        );
+        fixture_git(&repository, &["checkout", "-q", "main"]);
+        std::fs::write(repository.join("notes.txt"), "main\n").unwrap();
+        assert!(
+            committing(&["commit", "-q", "-am", "main"])
+                .status
+                .success()
+        );
+        assert!(
+            !committing(&["merge", "-q", "side"]).status.success(),
+            "the merge stops on notes.txt"
+        );
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            app.update(cx, |app, cx| app.show_working(window, cx));
+        });
+        for _ in 0..8 {
+            cx.executor().run_until_parked();
+            let tasks = app.update(cx, |app, _| {
+                [app.task.take(), app.status_task.take()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            });
+            for task in tasks {
+                task.await;
+            }
+            // The rows are built on the path filter's own thread, which
+            // `run_until_parked` cannot wait for.
+            app.update(cx, |app, _| app.file_paths.executor().drain());
+            cx.executor().run_until_parked();
+            if !app.read_with(cx, |app, _| app.working_paths.pending) {
+                break;
+            }
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.integration_state.is_some()),
+            "the merge banner stands above the page"
+        );
+        (fixture, app, cx)
+    }
+
+    /// Clicks notes.txt's row in [`merge_window`], choosing the file, and
+    /// waits for its conflict view, which the preview's read builds on the
+    /// worker's thread, or focuses again once it is open.
+    fn choose_notes(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Entity<ConflictView> {
+        let position = app.read_with(cx, |app, _| {
+            let status = app.work_status.as_ref().expect("a status");
+            app.actionable_working_rows()
+                .iter()
+                .position(|row| {
+                    matches!(row, crate::workspace::WorkingRow::File(index, _)
+                        if status.entries[*index].path == std::path::Path::new("notes.txt"))
+                })
+                .expect("notes.txt's row")
+        });
+        let selector: &'static str = format!("working-row-{position}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        for _ in 0..8 {
+            let chosen = cx.update(|window, cx| {
+                app.read(cx)
+                    .conflict_view
+                    .as_ref()
+                    .is_some_and(|view| view.read(cx).resolution_focused(window, cx))
+            });
+            if chosen {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        crate::views::tests::draw(cx);
+        app.read_with(cx, |app, _| app.conflict_view.clone())
+            .expect("the file's conflict view")
+    }
+
+    /// Whether the focused result draft is drawn whole with its ring's
+    /// `room` inside the review's body, and if so how many whole lines of
+    /// `pitch` it is tall.
+    fn draft_shown(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        room: Pixels,
+        pitch: Pixels,
+        after: &str,
+    ) -> f32 {
+        assert_eq!(
+            focused_control(cx, view),
+            Some("conflict-result-draft"),
+            "{after}: the draft holds focus"
+        );
+        let review = rendered(cx, "conflict-review");
+        let draft = rendered(cx, "conflict-result-draft");
+        let ring = draft.dilate(room);
+        let slack = px(0.01);
+        assert!(
+            ring.top() + slack >= review.top() && ring.bottom() <= review.bottom() + slack,
+            "{after}: the draft with its ring, {ring:?}, lies outside the review's body, \
+             {review:?}"
+        );
+        let lines = (draft.size.height - px(18.)) / pitch;
+        assert_eq!(
+            lines,
+            lines.round(),
+            "{after}: the draft is whole lines tall"
+        );
+        lines
+    }
+
+    /// In the window the app opens, a 461 × 490 half tile leaves the conflict
+    /// review's body about 145 px beneath the tab strip, the header, the Git
+    /// actions, the merge banner and the review's own header, and above its
+    /// footer and the status bar. The result draft takes the whole lines that
+    /// body shows with its ring, so wherever it takes focus, opening the file
+    /// from its row, Edit result, Tab or Shift+Tab, it is drawn whole with
+    /// its ring, at 13 pt with 12 pt code and at 18 pt with 18 pt code. Kept
+    /// at its eight lines, 162 and 234 px, it was taller than that body and
+    /// showed from its top with its foot and its ring cut. In a 1,480 × 800
+    /// window it keeps its eight lines.
+    #[gpui::test]
+    async fn the_focused_draft_is_whole_in_a_half_tile_window(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = merge_window(cx).await;
+        let room = cx.read(crate::appearance::button_ring_room);
+        for (interface, code, pitch) in [(13, 12, px(18.)), (18, 18, px(27.))] {
+            let at = format!("461 × 490, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                window.blur(cx);
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            crate::views::tests::draw(cx);
+            let view = choose_notes(&app, cx);
+            let body = cx.read(|cx| view.read(cx).body.clone());
+            let opened = draft_shown(cx, &view, room, pitch, &format!("{at}: opened"));
+            assert!(
+                (LEAST_DRAFT_LINES..DRAFT_LINES).contains(&opened),
+                "{at}: the draft gives way to the body's room, to {opened} lines"
+            );
+
+            // Tab from the review's first control reaches every control and
+            // then the draft, each drawn whole with its ring in every frame.
+            let stops = walk(cx, &view, "tab", &at);
+            assert_eq!(
+                stops.last(),
+                Some(&"conflict-result-draft"),
+                "{at}: {stops:?}"
+            );
+            draft_shown(cx, &view, room, pitch, &format!("{at}: Tab"));
+
+            // Shift+Tab from Save draft…, the stop after the draft.
+            cx.update(|window, cx| {
+                body.focus("save-conflict-draft", cx).focus(window, cx);
+            });
+            settle(cx);
+            assert_eq!(
+                focused_control(cx, &view),
+                Some("save-conflict-draft"),
+                "{at}"
+            );
+            body.take_painted();
+            cx.simulate_keystrokes("shift-tab");
+            settle(cx);
+            draft_shown(cx, &view, room, pitch, &format!("{at}: Shift+Tab"));
+            for (index, frame) in body.take_painted().into_iter().enumerate() {
+                let ring = frame
+                    .control
+                    .expect("the frame draws the draft")
+                    .dilate(room);
+                assert!(
+                    ring.top() + px(0.01) >= frame.viewport.top()
+                        && ring.bottom() <= frame.viewport.bottom() + px(0.01),
+                    "{at}: frame {index} after Shift+Tab paints the draft with its ring, \
+                     {ring:?}, outside the body, {:?}",
+                    frame.viewport
+                );
+            }
+
+            // Edit result, revealed by the keyboard and clicked.
+            cx.update(|window, cx| {
+                body.focus("manual-resolution", cx).focus(window, cx);
+            });
+            settle(cx);
+            let edit = rendered(cx, "manual-resolution");
+            cx.simulate_click(edit.center(), Modifiers::default());
+            settle(cx);
+            draft_shown(cx, &view, room, pitch, &format!("{at}: Edit result"));
+        }
+
+        // Where the review has the room, the draft keeps its eight lines.
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        for (interface, code, pitch) in [(13, 12, px(18.)), (18, 18, px(27.))] {
+            let at = format!("1,480 × 800, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            crate::views::tests::draw(cx);
+            let view = choose_notes(&app, cx);
+            assert_eq!(
+                draft_shown(cx, &view, room, pitch, &at),
+                DRAFT_LINES,
+                "{at}: the draft keeps its eight lines"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Every frame the review's body painted with focus on the result
+    /// draft of `view` since `body` was last read draws the draft whole with
+    /// its ring's `room` inside the body, where the last of them draws it.
+    /// Frames before the draft took focus, as the one a click's press
+    /// paints with focus on Edit result, are left out.
+    fn assert_drawn_where_it_stays(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        room: Pixels,
+        after: &str,
+    ) {
+        let (body, draft) = cx.read(|cx| {
+            let view = view.read(cx);
+            let draft = view
+                .resolution
+                .as_ref()
+                .map(|editor| editor.focus_handle(cx));
+            (view.body.clone(), draft)
+        });
+        let draft = draft.unwrap_or_else(|| panic!("{after}: the draft is open"));
+        let frames: Vec<_> = body
+            .take_painted()
+            .into_iter()
+            .filter(|frame| frame.focus.as_ref().is_some_and(|focus| *focus == draft))
+            .collect();
+        let last = frames
+            .last()
+            .and_then(|frame| frame.control)
+            .unwrap_or_else(|| panic!("{after}: a frame draws the draft"));
+        for (index, frame) in frames.iter().enumerate() {
+            let draft = frame
+                .control
+                .unwrap_or_else(|| panic!("{after}: frame {index} draws the draft"));
+            let ring = draft.dilate(room);
+            assert!(
+                ring.top() + px(0.01) >= frame.viewport.top()
+                    && ring.bottom() <= frame.viewport.bottom() + px(0.01),
+                "{after}: frame {index} of {} paints the draft with its ring, {ring:?}, outside \
+                 the body, {:?}",
+                frames.len(),
+                frame.viewport
+            );
+            let moved = (draft.origin - last.origin).map(f32::from);
+            assert!(
+                moved.x.abs() < 0.01
+                    && moved.y.abs() < 0.01
+                    && (draft.size.width - last.size.width).abs() < px(0.01),
+                "{after}: frame {index} of {} paints the draft at {draft:?}, not where it stays, \
+                 {last:?}",
+                frames.len()
+            );
+        }
+    }
+
+    /// In a 461 × 490 half tile, at 13 pt with 12 pt code and at 18 pt with
+    /// 18 pt code, the review overflows, and the first frame that draws the
+    /// result draft focused, opening the file or after Edit result opens the
+    /// draft, lays the body out with its scrollbar's gutter and scrolled to
+    /// the draft, so every frame draws the draft whole with its ring where
+    /// it stays. Laid out without the gutter, from the overflow the last
+    /// frame kept, and scrolled only after painting, from the draft's bounds
+    /// in that frame, the first frame drew the draft at the body's top
+    /// offset, below its foot, and the next rewrapped the controls above it
+    /// into the narrower column and moved it down past the foot again.
+    #[gpui::test]
+    async fn the_first_frame_draws_the_draft_where_it_stays(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = merge_window(cx).await;
+        let room = cx.read(crate::appearance::button_ring_room);
+        for (interface, code) in [(13, 12), (18, 18)] {
+            let at = format!("461 × 490, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                window.blur(cx);
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            crate::views::tests::draw(cx);
+            // Opened from its row the first time, and as the preview that
+            // answers that choice opens it again for the second.
+            let view = if app.read_with(cx, |app, _| app.conflict_view.is_none()) {
+                choose_notes(&app, cx)
+            } else {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.conflict_view = None;
+                        app.conflict_subscription = None;
+                        app.prepare_editor(true, window, cx);
+                    })
+                });
+                crate::views::tests::draw(cx);
+                app.read_with(cx, |app, _| app.conflict_view.clone())
+                    .expect("the file's conflict view")
+            };
+            let body = cx.read(|cx| view.read(cx).body.clone());
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: opened"));
+            assert!(
+                body.scroll().max_offset().y > Pixels::ZERO,
+                "{at}: the review overflows"
+            );
+
+            // Edit result in a review whose draft is not open, as a file
+            // without blocks opens.
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.resolution = None;
+                    cx.notify();
+                });
+                body.reveal_next_focus();
+                body.focus("manual-resolution", cx).focus(window, cx);
+            });
+            settle(cx);
+            let edit = rendered(cx, "manual-resolution");
+            body.take_painted();
+            cx.simulate_click(edit.center(), Modifiers::default());
+            settle(cx);
+            assert_eq!(
+                focused_control(cx, &view),
+                Some("conflict-result-draft"),
+                "{at}: Edit result focuses the draft"
+            );
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: Edit result"));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 13 pt with 12 pt code and at 18 pt with 18 pt code, each action
+    /// that moves focus into the result draft from the body's top draws the
+    /// draft whole with its ring where it stays in every frame it paints:
+    /// in a 461 × 490 window, where the review overflows, Next and Previous,
+    /// clicked and by their keys; and at a height
+    /// where the review fits without the draft and overflows with it, Edit
+    /// result, whose draft is what makes the body overflow in the frame
+    /// that first draws it, so that frame lays the body out with the gutter.
+    #[gpui::test]
+    fn each_action_into_the_draft_draws_it_where_it_stays(cx: &mut TestAppContext) {
+        let (view, cx) = review_window(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let from_top = |cx: &mut VisualTestContext, control: &'static str| {
+            cx.update(|window, cx| {
+                body.scroll().set_offset(Point::default());
+                body.reveal_next_focus();
+                body.focus(control, cx).focus(window, cx);
+            });
+            settle(cx);
+            body.take_painted();
+        };
+        let step = |cx: &mut VisualTestContext, previous: bool| {
+            let keystroke = Keystroke {
+                modifiers: Modifiers {
+                    alt: true,
+                    ..Modifiers::secondary_key()
+                },
+                key: if previous { "up" } else { "down" }.into(),
+                key_char: None,
+            };
+            cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx));
+            settle(cx);
+        };
+        for (interface, code) in [(13, 12), (18, 18)] {
+            let at = format!("{interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > Pixels::ZERO,
+                "{at}: the review overflows"
+            );
+
+            for (control, label) in [
+                ("next-conflict-block", "Next"),
+                ("previous-conflict-block", "Previous"),
+            ] {
+                from_top(cx, "saved-conflict-drafts");
+                let drawn = rendered(cx, control);
+                cx.simulate_click(drawn.center(), Modifiers::default());
+                settle(cx);
+                assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: {label} clicked"));
+            }
+            for (previous, label) in [(false, "Next"), (true, "Previous")] {
+                from_top(cx, "saved-conflict-drafts");
+                step(cx, previous);
+                assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: {label}'s key"));
+            }
+            assert_eq!(cx.read(|cx| view.read(cx).block_selected), 0, "{at}");
+
+            // The review's height with and without the draft, read where
+            // it overflows, and a height between them.
+            cx.simulate_resize(size(px(461.), px(200.)));
+            settle(cx);
+            let reach = |cx: &mut VisualTestContext| {
+                settle(cx);
+                body.scroll().bounds().size.height + body.scroll().max_offset().y
+            };
+            let with = reach(cx);
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.resolution = None;
+                    cx.notify();
+                })
+            });
+            let without = reach(cx);
+            assert!(
+                with > without + px(40.),
+                "{at}: {with:?} with the draft, {without:?} without"
+            );
+            cx.simulate_resize(size(px(461.), (with + without) / 2.));
+            settle(cx);
+            assert_eq!(
+                body.scroll().max_offset().y,
+                Pixels::ZERO,
+                "{at}: the review fits without the draft"
+            );
+            from_top(cx, "manual-resolution");
+            let edit = rendered(cx, "manual-resolution");
+            cx.simulate_click(edit.center(), Modifiers::default());
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > Pixels::ZERO,
+                "{at}: the review overflows with the draft"
+            );
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: Edit result"));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The draft's lines follow the review's room: its eight where they fit
+    /// whole with the ring's room, each line fewer as the room shrinks past
+    /// a line, never fewer than three.
+    #[gpui::test]
+    fn the_draft_takes_the_whole_lines_its_room_shows(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            crate::appearance::apply_text_sizes(13, 12, window, cx);
+            let ring = px(3.);
+            // 18 px lines inside 9 px above and below, and the ring's 3 px.
+            let room = |lines: f32| px(18.) * lines + px(18.) + ring * 2.;
+            assert_eq!(draft_lines(px(800.), ring, window), DRAFT_LINES);
+            assert_eq!(draft_lines(room(8.), ring, window), 8.);
+            assert_eq!(draft_lines(room(8.) - px(0.5), ring, window), 7.);
+            assert_eq!(draft_lines(room(6.) + px(17.), ring, window), 6.);
+            assert_eq!(draft_lines(room(3.), ring, window), 3.);
+            assert_eq!(draft_lines(px(40.), ring, window), LEAST_DRAFT_LINES);
+        });
+    }
+
+    /// The text runs painted in `region` that cross the left or right side
+    /// of their clip, marked as [`merge_window`] marks them: text cut
+    /// mid-glyph, where a run that ends in an ellipsis ends inside it. Code,
+    /// which scrolls sideways in its editor, lies in `code` and is left out.
+    fn cut_runs(
+        cx: &mut VisualTestContext,
+        region: Bounds<Pixels>,
+        code: &[Bounds<Pixels>],
+    ) -> Vec<String> {
+        let text = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let (scale, quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+        let logical = |value: gpui_kit::ScaledPixels| px(value.0 / scale);
+        let slack = gpui_kit::ScaledPixels(0.5);
+        quads
+            .into_iter()
+            .filter(|quad| quad.background == text)
+            .filter_map(|quad| {
+                let (drawn, clip) = (quad.bounds, quad.content_mask.bounds);
+                if drawn.left() >= clip.left() - slack && drawn.right() <= clip.right() + slack {
+                    return None;
+                }
+                let shown = drawn.intersect(&clip);
+                let middle = point(
+                    logical(shown.left() + shown.size.width / 2.),
+                    logical(shown.top() + shown.size.height / 2.),
+                );
+                (region.contains(&middle) && !code.iter().any(|code| code.contains(&middle))).then(
+                    || {
+                        format!(
+                            "{:.1}..{:.1} beside a clip of {:.1}..{:.1}, {:.1} px down",
+                            f32::from(logical(drawn.left())),
+                            f32::from(logical(drawn.right())),
+                            f32::from(logical(clip.left())),
+                            f32::from(logical(clip.right())),
+                            f32::from(logical(drawn.top())),
+                        )
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// At 18 pt in a 461 × 490 half tile, nothing in the merge banner or the
+    /// conflict review is cut without an ellipsis: the banner's actions
+    /// become their icons, each named by its label with it as its tooltip,
+    /// inside the banner and the window, and the review's saved draft
+    /// status ends in an ellipsis, with its whole text as its tooltip and
+    /// its name. Labelled, the banner's actions ran past the window's edge,
+    /// Keep files… drawn as "Ke", and the status was cut at the review's
+    /// side as "Saved draft matches this operat". At 13 pt there the
+    /// actions are icons too, so the title and its detail are whole beside
+    /// them; in a 1,480 px window they keep their labels.
+    #[gpui::test]
+    async fn nothing_in_the_merge_banner_or_the_review_is_cut_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        const ACTIONS: [(&str, &str, &str); 4] = [
+            ("review-conflicts", "Review files", "changes"),
+            ("continue-operation", "Complete merge", "check"),
+            ("abort-operation", "Abort…", "reset"),
+            ("stop-operation", "Keep files…", "leave"),
+        ];
+        const SAVED: &str = "Saved draft matches this operation, index stages and working file.";
+        let (_fixture, app, cx) = merge_window(cx).await;
+        for (interface, code) in [(18, 18), (13, 12)] {
+            // Each pass reads only what its own frames drew: cleared once
+            // before the first, the 13 pt pass read the names, tooltips and
+            // icons the 18 pt pass had drawn.
+            crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+            crate::views::CONTROL_TOOLTIPS.with(|tips| tips.borrow_mut().clear());
+            crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+            let at = format!("461 × 490, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            crate::views::tests::draw(cx);
+            let view = choose_notes(&app, cx);
+            // A matching saved draft offered, as after a restart, its row
+            // shown in the review's body.
+            let body = cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.durable_saved = Some((true, "saved\n".into()));
+                    cx.notify();
+                    view.body.clone()
+                })
+            });
+            crate::views::tests::draw(cx);
+            cx.update(|window, cx| {
+                body.reveal_next_focus();
+                body.focus("copy-saved-conflict", cx).focus(window, cx);
+            });
+            crate::views::tests::draw(cx);
+
+            let banner = rendered(cx, "operation-banner");
+            let window = cx.update(|window, _| window.viewport_size());
+            for (selector, label, symbol) in ACTIONS {
+                let control = rendered(cx, selector);
+                assert!(
+                    control.left() >= banner.left()
+                        && control.right() <= banner.right().min(window.width)
+                        && control.bottom() <= banner.bottom(),
+                    "{at}: {selector}, {control:?}, lies inside the banner, {banner:?}"
+                );
+                // Its icon alone, no wider than an icon's square.
+                let drawn =
+                    crate::views::CONTROL_ICONS.with(|icons| icons.borrow().get(selector).cloned());
+                assert_eq!(
+                    drawn,
+                    Some(crate::icon_path(symbol)),
+                    "{at}: {selector} draws its icon"
+                );
+                assert!(
+                    control.size.width <= crate::appearance::ui_size(28.) + px(0.5),
+                    "{at}: {selector}, {control:?}, draws no label beside its icon"
+                );
+                let name =
+                    crate::views::COMPACT_NAMES.with(|names| names.borrow().get(selector).copied());
+                assert_eq!(name, Some(label), "{at}: {selector}'s accessible name");
+                let tooltip = crate::views::CONTROL_TOOLTIPS
+                    .with(|tips| tips.borrow().get(selector).cloned());
+                assert_eq!(
+                    tooltip.as_deref(),
+                    Some(label),
+                    "{at}: {selector}'s tooltip"
+                );
+            }
+            let cut = cut_runs(cx, banner, &[]);
+            assert!(
+                cut.is_empty(),
+                "{at}: the banner cuts text\n{}",
+                cut.join("\n")
+            );
+            // One row: the title and the actions on one line, the banner
+            // as tall as the taller of them inside its padding and border.
+            let (title, first) = (
+                rendered(cx, "operation-banner-title"),
+                rendered(cx, "review-conflicts"),
+            );
+            let padding = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.5));
+            let row = title.size.height.max(first.size.height) + padding * 2. + px(1.);
+            assert!(
+                first.top() < title.bottom() && (banner.size.height - row).abs() < px(0.01),
+                "{at}: the banner, {banner:?}, is one row, {row:?}, its title {title:?} beside \
+                 its actions from {first:?}"
+            );
+
+            // The body scrolled to the status's line.
+            let review = rendered(cx, "conflict-review");
+            let state = rendered(cx, "conflict-saved-draft-state");
+            cx.update(|window, _| {
+                let offset = body.scroll().offset().y + (review.top() - state.top());
+                body.scroll().set_offset(point(px(0.), offset.min(px(0.))));
+                window.refresh();
+            });
+            crate::views::tests::draw(cx);
+            let code = [rendered(cx, "conflict-result-draft")];
+            let state = rendered(cx, "conflict-saved-draft-state");
+            assert!(
+                state.top() >= review.top() && state.bottom() <= review.bottom(),
+                "{at}: the saved draft's status, {state:?}, is shown in the body, {review:?}"
+            );
+            let cut = cut_runs(cx, review, &code);
+            assert!(
+                cut.is_empty(),
+                "{at}: the review cuts text\n{}",
+                cut.join("\n")
+            );
+            let tooltip = crate::views::CONTROL_TOOLTIPS
+                .with(|tips| tips.borrow().get("conflict-saved-draft-state").cloned());
+            assert_eq!(
+                tooltip.as_deref(),
+                Some(SAVED),
+                "{at}: the status's tooltip"
+            );
+            // Its name, the whole sentence however it ends on screen: a
+            // label's value, which adapters read as its name.
+            let written = crate::native_accessibility::written::get("conflict-saved-draft-state")
+                .unwrap_or_else(|| panic!("{at}: the status writes its node"));
+            assert_eq!(
+                (written.node.role(), written.node.value()),
+                (Role::Label, Some(SAVED)),
+                "{at}: the status's accessible name"
+            );
+            // At 18 pt it ends in an ellipsis.
+            let whole = cx.update(|window, _| {
+                crate::views::shaped_width(
+                    SAVED,
+                    crate::appearance::ui_text(11.),
+                    window.text_style().font_weight,
+                    window,
+                )
+            });
+            if interface == 18 {
+                assert!(
+                    state.size.width < whole,
+                    "{at}: the status, {state:?}, ends in an ellipsis short of its {whole:?}"
+                );
+            }
+        }
+
+        // Where the title, its detail and the labelled actions fit, the
+        // actions keep their labels.
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        for (interface, code) in [(13, 12), (18, 18)] {
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            crate::views::tests::draw(cx);
+            for (selector, ..) in ACTIONS {
+                let name =
+                    crate::views::COMPACT_NAMES.with(|names| names.borrow().get(selector).copied());
+                assert_eq!(name, None, "{interface} pt: {selector} keeps its label");
+                assert!(
+                    rendered(cx, selector).size.width > crate::appearance::ui_size(28.),
+                    "{interface} pt: {selector} is wider than its icon"
+                );
+            }
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the merge banner's actions, as icons, have no room beside the
+    /// title's least, at 18 pt in a window 420 or 400 px wide, they stand on
+    /// a line of their own below the title whose first icon stands on the
+    /// title's edge, its ghost frame its icon inset before it, each action
+    /// whole inside the banner. They wrapped at the banner's padding, under
+    /// the warning icon, a left edge of their own. At 440 px they stand
+    /// beside the title.
+    #[gpui::test]
+    async fn the_banners_wrapped_actions_start_on_the_titles_edge(cx: &mut TestAppContext) {
+        const ACTIONS: [&str; 4] = [
+            "review-conflicts",
+            "continue-operation",
+            "abort-operation",
+            "stop-operation",
+        ];
+        let (_fixture, _app, cx) = merge_window(cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        for width in [440., 420., 400.] {
+            let at = format!("{width} × 490, 18 pt");
+            cx.simulate_resize(size(px(width), px(490.)));
+            crate::views::tests::draw(cx);
+            let banner = rendered(cx, "operation-banner");
+            let title = rendered(cx, "operation-banner-title");
+            let first = rendered(cx, ACTIONS[0]);
+            for selector in ACTIONS {
+                let control = rendered(cx, selector);
+                assert!(
+                    control.left() >= banner.left()
+                        && control.right() <= banner.right()
+                        && control.top() >= banner.top()
+                        && control.bottom() <= banner.bottom(),
+                    "{at}: {selector}, {control:?}, lies inside the banner, {banner:?}"
+                );
+                assert_eq!(
+                    control.top(),
+                    first.top(),
+                    "{at}: {selector} shares the first action's line"
+                );
+            }
+            if width > 430. {
+                assert!(
+                    first.top() < title.bottom(),
+                    "{at}: the actions, {first:?}, stand beside the title, {title:?}"
+                );
+                continue;
+            }
+            assert!(
+                first.top() >= title.bottom(),
+                "{at}: the actions, {first:?}, wrap below the title, {title:?}"
+            );
+            let inset = cx.update(|window, _| {
+                window.pixel_snap(crate::appearance::ui_size(crate::ICON_INSET))
+            });
+            assert!(
+                (first.left() - (title.left() - inset)).abs() < px(0.01),
+                "{at}: Review files' frame, {first:?}, stands its icon inset, {inset:?}, before \
+                 the title's edge, {title:?}, so its icon stands on it"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     fn snapshot() -> ConflictPreview {
@@ -979,6 +3504,31 @@ mod tests {
         });
         click(cx, "save-conflict-resolution");
         assert_eq!(resolutions.borrow().as_slice(), &[RESTORED.as_bytes()]);
+    }
+
+    #[test]
+    fn the_advertised_block_keys_step_between_blocks() {
+        let parse = |key: &str| {
+            Keystroke::parse(&key.replace(
+                "primary",
+                if cfg!(target_os = "macos") {
+                    "cmd"
+                } else {
+                    "ctrl"
+                },
+            ))
+            .unwrap()
+        };
+        assert_eq!(block_step(&parse(PREVIOUS_BLOCK)), Some(true));
+        assert_eq!(block_step(&parse(NEXT_BLOCK)), Some(false));
+        assert_eq!(block_step(&parse("alt-down")), None);
+        assert_eq!(block_step(&parse("primary-alt-left")), None);
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Super belongs to the desktop on Linux; the tooltip names Ctrl.
+            assert_eq!(block_step(&parse("cmd-alt-down")), None);
+            assert_eq!(shortcuts::key_label(NEXT_BLOCK), "Ctrl+Alt+Down");
+        }
     }
 
     #[test]

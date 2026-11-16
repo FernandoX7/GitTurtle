@@ -127,8 +127,8 @@ pub fn decode_geometry(
     }
     let scene = Arc::new(scene);
     details.push(format!(
-        "{} triangles · extent {:.4} × {:.4} × {:.4}",
-        scene.triangle_count(),
+        "{} · extent {:.4} × {:.4} × {:.4}",
+        crate::metadata::counted(scene.triangle_count(), "triangle", "triangles"),
         maximum[0] - minimum[0],
         maximum[1] - minimum[1],
         maximum[2] - minimum[2]

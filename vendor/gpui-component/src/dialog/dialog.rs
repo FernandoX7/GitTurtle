@@ -1,10 +1,10 @@
 use std::{rc::Rc, sync::LazyLock, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Edges, FocusHandle, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString,
-    StyleRefinement, Styled, Window, WindowControlArea, anchored, div, hsla, point,
-    prelude::FluentBuilder, px,
+    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, DefiniteLength, Edges,
+    FocusHandle, Global, Hsla, InteractiveElement, IntoElement, Length, ParentElement, Pixels,
+    RenderOnce, SharedString, StyleRefinement, Styled, Window, WindowControlArea, anchored, div,
+    hsla, point, prelude::FluentBuilder, px,
 };
 use gpui_base::{ElementExt as _, TextSelectionScopeId};
 use rust_i18n::t;
@@ -19,6 +19,7 @@ use crate::{
 };
 
 pub static ANIMATION_DURATION: LazyLock<Duration> = LazyLock::new(|| Duration::from_secs_f64(0.25));
+pub use gpui_base::DialogKind;
 pub use gpui_base::actions::{Cancel, Confirm};
 
 /// Dialog button props.
@@ -135,9 +136,45 @@ impl DialogButtonProps {
 
 type ContentBuilderFn = Rc<dyn Fn(DialogContent, &mut Window, &mut App) -> DialogContent + 'static>;
 
+/// A dialog's width where its caller sets none.
+const DEFAULT_WIDTH: Pixels = px(448.);
+
+/// How much lower each dialog opens than the one beneath it.
+const LAYER_OFFSET: Pixels = px(16.);
+
+/// Upstream's padding on every side of a dialog's panel.
+const PADDING: Pixels = px(16.);
+
+/// GitTurtle patch: the room [`set_dialog_side_room`] keeps beside a dialog's
+/// text, or none where no application set it.
+struct DialogSideRoom(Rc<dyn Fn(&Window, &App) -> Pixels>);
+
+impl Global for DialogSideRoom {}
+
+/// GitTurtle patch: pads a dialog's sides, where its caller sets no padding of
+/// its own, by the larger of upstream's 16 px and the room `room` gives for
+/// that window: what an application's Button standing at the dialog's text
+/// edge, its frame before that edge, takes before it, so its focus ring is
+/// drawn whole inside the dialog. It is asked as each dialog is drawn, so it
+/// follows the window's scale and the application's text size. Unset, a
+/// dialog keeps upstream's 16 px.
+pub fn set_dialog_side_room(cx: &mut App, room: impl Fn(&Window, &App) -> Pixels + 'static) {
+    cx.set_global(DialogSideRoom(Rc::new(room)));
+}
+
+/// GitTurtle patch: the padding a dialog with none of its own takes at either
+/// side in `window`: upstream's 16 px, or the room [`set_dialog_side_room`]
+/// gives where that is larger.
+pub fn dialog_side_padding(window: &Window, cx: &App) -> Pixels {
+    cx.try_global::<DialogSideRoom>()
+        .map_or(PADDING, |room| PADDING.max((room.0)(window, cx)))
+}
+
 #[derive(Clone)]
 pub(crate) struct DialogProps {
-    width: Pixels,
+    // GitTurtle patch: `None` until the caller sets a width, for
+    // [`DEFAULT_WIDTH`] narrowed by the theme's `dialog_margin`.
+    width: Option<Pixels>,
     max_width: Option<Pixels>,
     margin_top: Option<Pixels>,
     close_button: bool,
@@ -146,19 +183,26 @@ pub(crate) struct DialogProps {
     overlay_closable: bool,
     pub(crate) overlay_visible: bool,
     keyboard: bool,
+    // GitTurtle patch: the modal's kind, its accessible role.
+    kind: DialogKind,
+    // GitTurtle patch: drawn at the end of its slide and fade from its first
+    // frame ([`Dialog::at_rest`]).
+    at_rest: bool,
 }
 
 impl Default for DialogProps {
     fn default() -> Self {
         Self {
             margin_top: None,
-            width: px(448.),
+            width: None,
             max_width: None,
             overlay: true,
             keyboard: true,
             overlay_visible: false,
             close_button: true,
             overlay_closable: true,
+            kind: DialogKind::Dialog,
+            at_rest: false,
         }
     }
 }
@@ -188,6 +232,9 @@ impl BaseDialogRoot {
     }
     fn close_on_escape(self, value: bool) -> Self {
         map_base_root!(self, close_on_escape(value))
+    }
+    fn kind(self, kind: DialogKind) -> Self {
+        map_base_root!(self, kind(kind))
     }
     fn close_on_backdrop_press(self, value: bool) -> Self {
         match self {
@@ -379,13 +426,13 @@ impl Dialog {
     ///
     /// See also [`Self::width`]
     pub fn w(mut self, width: impl Into<Pixels>) -> Self {
-        self.props.width = width.into();
+        self.props.width = Some(width.into());
         self
     }
 
     /// Sets the width of the dialog, defaults to 448px.
     pub fn width(mut self, width: impl Into<Pixels>) -> Self {
-        self.props.width = width.into();
+        self.props.width = Some(width.into());
         self
     }
 
@@ -415,6 +462,22 @@ impl Dialog {
         self
     }
 
+    /// GitTurtle patch: sets the kind of modal, which decides the role
+    /// assistive technology announces, defaults to [`DialogKind::Dialog`].
+    pub fn kind(mut self, kind: DialogKind) -> Self {
+        self.props.kind = kind;
+        self
+    }
+
+    /// GitTurtle patch: draws the dialog where its slide and fade end from
+    /// its first frame, as reduce motion does, for a dialog that comes back
+    /// rather than opens, as one reopened when the dialog over it is
+    /// cancelled. Defaults to `false`, the 250 ms entrance.
+    pub fn at_rest(mut self, at_rest: bool) -> Self {
+        self.props.at_rest = at_rest;
+        self
+    }
+
     pub(crate) fn has_overlay(&self) -> bool {
         self.props.overlay
     }
@@ -422,12 +485,6 @@ impl Dialog {
     pub(crate) fn with_props(mut self, props: DialogProps) -> Self {
         self.props = props;
         self
-    }
-
-    fn defer_close_dialog(window: &mut Window, cx: &mut App) {
-        Root::update(window, cx, |root, window, cx| {
-            root.defer_close_dialog(window, cx);
-        });
     }
 }
 
@@ -495,13 +552,41 @@ impl RenderOnce for Dialog {
                 window_paddings.left + window_paddings.right,
                 window_paddings.top + window_paddings.bottom,
             );
-        let y = self.props.margin_top.unwrap_or(view_size.height / 10.) + px(layer_ix as f32 * 16.);
-        let x = view_size.width / 2. - self.props.width / 2.;
+        let offset = LAYER_OFFSET * layer_ix as f32;
+        let y = self.props.margin_top.unwrap_or(view_size.height / 10.) + offset;
+        // GitTurtle patch: a dialog that sets no width of its own keeps the
+        // theme's `dialog_margin` from the window's sides, as a 461 px half
+        // tile is narrower than the default width and its margins.
+        let width = self.props.width.unwrap_or_else(|| {
+            cx.theme().dialog_margin.map_or(DEFAULT_WIDTH, |margin| {
+                DEFAULT_WIDTH
+                    .min(view_size.width - margin * 2.)
+                    .max(Pixels::ZERO)
+            })
+        });
+        let x = view_size.width / 2. - width / 2.;
 
         let base_size = window.text_style().font_size;
         let rem_size = window.rem_size();
+        // GitTurtle patch: a nested dialog opens `offset` lower than the
+        // first; its caller's height cap gives that offset up, so its foot
+        // stays where the cap puts the first dialog's.
+        let max_height = match self.style.max_size.height {
+            Some(Length::Definite(DefiniteLength::Absolute(cap))) if layer_ix > 0 => {
+                Some((cap.to_pixels(rem_size) - offset).max(Pixels::ZERO))
+            }
+            _ => None,
+        };
 
-        let mut paddings = Edges::all(px(16.));
+        // GitTurtle patch: the sides take the room an application keeps
+        // there for a Button's ring (`set_dialog_side_room`).
+        let side = dialog_side_padding(window, cx);
+        let mut paddings = Edges {
+            top: PADDING,
+            right: side,
+            bottom: PADDING,
+            left: side,
+        };
         if let Some(pl) = self.style.padding.left {
             paddings.left = pl.to_pixels(base_size, rem_size);
         }
@@ -525,6 +610,32 @@ impl RenderOnce for Dialog {
             2. / 3.,
             1.,
         ));
+        // GitTurtle patch: a dialog at rest runs neither animation and draws
+        // where they end ([`Dialog::at_rest`]), asking for no frame, as
+        // reduce motion asks none. Held at their end, the animations still
+        // asked for a frame each frame for their 250 ms.
+        let at_rest = self.props.at_rest;
+        // The slide's frame at `delta`, its end at 1.
+        let slide = move |this: gpui::Stateful<gpui::Div>, delta: f32| {
+            // This is equivalent to `shadow_xl` with an extra opacity.
+            let shadow = vec![
+                BoxShadow {
+                    color: hsla(0., 0., 0., 0.1 * delta),
+                    offset: point(px(0.), px(20.)),
+                    blur_radius: px(25.),
+                    spread_radius: px(-5.),
+                    inset: false,
+                },
+                BoxShadow {
+                    color: hsla(0., 0., 0., 0.1 * delta),
+                    offset: point(px(0.), px(8.)),
+                    blur_radius: px(10.),
+                    spread_radius: px(-6.),
+                    inset: false,
+                },
+            ];
+            this.top(y * delta).shadow(shadow)
+        };
 
         anchored()
             .position(point(window_paddings.left, window_paddings.top))
@@ -545,6 +656,7 @@ impl RenderOnce for Dialog {
                             )
                             .focus_handle(self.focus_handle.clone())
                             .close_on_escape(self.props.keyboard)
+                            .kind(self.props.kind)
                             .close_on_backdrop_press(self.props.overlay_closable)
                             .dismiss_below_y(TITLE_BAR_HEIGHT)
                             .when(self.props.overlay, |this| {
@@ -561,19 +673,24 @@ impl RenderOnce for Dialog {
                             .on_ok(move |event, window, cx| on_ok(event, window, cx))
                             .on_cancel(move |event, window, cx| on_cancel(event, window, cx))
                             .on_close(move |event, window, cx| on_close(event, window, cx))
-                            .request_close(move |deferred, window, cx| {
-                                if deferred {
-                                    Self::defer_close_dialog(window, cx);
-                                } else {
-                                    window.close_dialog(cx);
-                                }
-                            })
+                            // GitTurtle patch: a confirmed dialog gives
+                            // focus back as it closes, as a cancelled one
+                            // does. Upstream deferred a confirm's return to
+                            // the end of a 250 ms timer, which took focus
+                            // from wherever it had gone meanwhile: a control
+                            // clicked after the close, or the place the
+                            // application had returned it to.
+                            .request_close(move |_, window, cx| window.close_dialog(cx))
                             .popup(
                                 v_flex()
                                     .id(layer_ix)
                                     .bg(cx.theme().tokens.background)
                                     .border_1()
-                                    .border_color(cx.theme().border)
+                                    // GitTurtle patch: the theme's dialog
+                                    // edge where it sets one.
+                                    .border_color(
+                                        cx.theme().dialog_edge.unwrap_or(cx.theme().border),
+                                    )
                                     .rounded(cx.theme().radius_lg)
                                     .min_h_24()
                                     .pt(paddings.top)
@@ -587,8 +704,9 @@ impl RenderOnce for Dialog {
                                     .relative()
                                     .left(x)
                                     .top(y)
-                                    .w(self.props.width)
+                                    .w(width)
                                     .when_some(self.props.max_width, |this, w| this.max_w(w))
+                                    .when_some(max_height, |this, cap| this.max_h(cap))
                                     .child(
                                         v_flex()
                                             .flex_1()
@@ -657,35 +775,283 @@ impl RenderOnce for Dialog {
                                                     .icon(IconName::Close),
                                             )
                                     }))
-                                    .with_animation(
-                                        "slide-down",
-                                        animation.clone(),
-                                        move |this, delta| {
-                                            // This is equivalent to `shadow_xl` with an extra opacity.
-                                            let shadow = vec![
-                                                BoxShadow {
-                                                    color: hsla(0., 0., 0., 0.1 * delta),
-                                                    offset: point(px(0.), px(20.)),
-                                                    blur_radius: px(25.),
-                                                    spread_radius: px(-5.),
-                                                    inset: false,
-                                                },
-                                                BoxShadow {
-                                                    color: hsla(0., 0., 0., 0.1 * delta),
-                                                    offset: point(px(0.), px(8.)),
-                                                    blur_radius: px(10.),
-                                                    spread_radius: px(-6.),
-                                                    inset: false,
-                                                },
-                                            ];
-                                            this.top(y * delta).shadow(shadow)
-                                        },
-                                    )
-                                    .text_selection_scope(selection_scope),
+                                    .map(|popup| {
+                                        if at_rest {
+                                            slide(popup, 1.)
+                                                .text_selection_scope(selection_scope)
+                                                .into_any_element()
+                                        } else {
+                                            popup
+                                                .with_animation(
+                                                    "slide-down",
+                                                    animation.clone(),
+                                                    slide,
+                                                )
+                                                .text_selection_scope(selection_scope)
+                                                .into_any_element()
+                                        }
+                                    }),
                             ),
                     )
-                    .with_animation("fade-in", animation, move |this, delta| this.opacity(delta)),
+                    .map(|dialog| {
+                        if at_rest {
+                            dialog.into_any_element()
+                        } else {
+                            dialog
+                                .with_animation("fade-in", animation, move |this, delta| {
+                                    this.opacity(delta)
+                                })
+                                .into_any_element()
+                        }
+                    }),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext as _, Context, Render, VisualTestContext, size};
+
+    /// A view that draws the window's dialog layer.
+    struct Layer;
+
+    impl Render for Layer {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    /// A 461 × 490 window, as a half tile, with dialogs drawn at rest.
+    fn half_tile(cx: &mut gpui::TestAppContext) -> &mut VisualTestContext {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Layer);
+            Root::new(view, window, cx).bordered(false)
+        });
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> gpui::Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"))
+    }
+
+    /// GitTurtle patch: a dialog that sets no width of its own keeps the
+    /// theme's `dialog_margin` from a window too narrow for 448 px, and 448 px
+    /// without it; a width its caller sets is its own. Its content starts
+    /// inside the panel's 1 px edge and 16 px padding.
+    #[gpui::test]
+    fn the_default_width_keeps_the_dialog_margin(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let open = |cx: &mut VisualTestContext, width: Option<Pixels>| {
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    let dialog = match width {
+                        Some(width) => dialog.width(width),
+                        None => dialog,
+                    };
+                    dialog.child(
+                        div()
+                            .w_full()
+                            .h(px(10.))
+                            .debug_selector(|| "content".into()),
+                    )
+                })
+            });
+            draw(cx);
+            let content = bounds(cx, "content");
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            draw(cx);
+            content.left() - px(17.)
+        };
+        assert_eq!(open(cx, None), px(6.5), "unset, upstream's 448 px");
+        cx.update(|_, cx| crate::Theme::global_mut(cx).dialog_margin = Some(px(24.)));
+        assert_eq!(open(cx, None), px(24.), "set, the margin");
+        assert_eq!(open(cx, Some(px(440.))), px(10.5), "a caller's width is its own");
+    }
+
+    /// GitTurtle patch: a dialog's sides take the room an application sets
+    /// for them where it is larger than upstream's 16 px, and 16 px where it
+    /// is smaller or unset, on the left and the right alike; a padding the
+    /// dialog's caller sets is its own.
+    #[gpui::test]
+    fn the_sides_keep_the_room_an_application_sets(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let open = |cx: &mut VisualTestContext, padding: Option<Pixels>| {
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    let dialog = match padding {
+                        Some(padding) => dialog.px(padding),
+                        None => dialog,
+                    };
+                    dialog.width(px(400.)).child(
+                        div()
+                            .w_full()
+                            .h(px(10.))
+                            .debug_selector(|| "content".into()),
+                    )
+                })
+            });
+            draw(cx);
+            let content = bounds(cx, "content");
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            draw(cx);
+            // Inside the 400 px panel, centred in the window, and its 1 px
+            // edge: the left side's padding, and the right side's.
+            let panel = px(461.) / 2. - px(200.);
+            (
+                content.left() - panel - px(1.),
+                panel + px(399.) - content.right(),
+            )
+        };
+        assert_eq!(open(cx, None), (px(16.), px(16.)), "unset, upstream's 16 px");
+        cx.update(|_, cx| set_dialog_side_room(cx, |_, _| px(17.)));
+        assert_eq!(open(cx, None), (px(17.), px(17.)), "a larger room");
+        assert_eq!(open(cx, Some(px(12.))), (px(12.), px(12.)), "a caller's own");
+        cx.update(|_, cx| set_dialog_side_room(cx, |_, _| px(13.)));
+        assert_eq!(open(cx, None), (px(16.), px(16.)), "a smaller room");
+    }
+
+    /// GitTurtle patch: a dialog opened over another opens 16 px lower, and
+    /// its caller's height cap gives that offset up, so its foot ends where
+    /// the cap puts the first dialog's: a tenth of the window down, plus the
+    /// cap. With the cap as given, its foot ran 16 px further down.
+    #[gpui::test]
+    fn a_nested_dialog_gives_its_offset_up_from_its_cap(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        cx.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| dialog.child(div().h(px(40.))));
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog
+                    .max_h(px(300.))
+                    .child(div().h(px(1000.)))
+                    .footer(div().h(px(20.)).debug_selector(|| "nested-foot".into()))
+            });
+        });
+        draw(cx);
+        // The panel's foot lies its 16 px padding and 1 px edge below the
+        // footer's.
+        let foot = bounds(cx, "nested-foot").bottom() + px(17.);
+        assert_eq!(foot, px(49.) + px(300.), "the first dialog's top plus the cap");
+    }
+
+    /// GitTurtle patch: a dialog at rest draws its title where its slide
+    /// ends in its first frame, as reduce motion draws it, with no clock
+    /// advanced; without it the first frame draws the title where the slide
+    /// starts, higher in the window.
+    #[gpui::test]
+    fn a_dialog_at_rest_draws_its_end_in_its_first_frame(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let title_top = |cx: &mut VisualTestContext, at_rest: bool, reduce_motion: bool| {
+            cx.update(|_, cx| cx.set_reduce_motion(reduce_motion));
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog
+                        .at_rest(at_rest)
+                        .title(
+                            div()
+                                .debug_selector(|| "at-rest-title".into())
+                                .child("Title"),
+                        )
+                        .child(div().h(px(40.)))
+                })
+            });
+            // The first frame alone.
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let top = bounds(cx, "at-rest-title").top();
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            draw(cx);
+            top
+        };
+        let rest = title_top(cx, false, true);
+        assert_eq!(title_top(cx, true, false), rest, "at rest from its first frame");
+        assert!(
+            title_top(cx, false, false) < rest,
+            "the entrance's first frame draws it higher"
+        );
+    }
+
+    /// GitTurtle patch: a dialog at rest asks for no frame after its first,
+    /// as reduce motion asks none, where a dialog's entrance asks for one
+    /// each frame; counted as the frames the window was asked for after the
+    /// dialog's first and second, against the same dialog under reduce
+    /// motion. Held at their end, its animations still ran, and asked for a
+    /// frame each frame for their 250 ms.
+    #[gpui::test]
+    fn a_dialog_at_rest_asks_for_no_frame(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let asked = |cx: &mut VisualTestContext, at_rest: bool, reduce_motion: bool| {
+            cx.update(|_, cx| cx.set_reduce_motion(reduce_motion));
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog.at_rest(at_rest).child(div().h(px(40.)))
+                })
+            });
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                asked.push(cx.update(|window, cx| window.simulate_next_frame(cx)));
+            }
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            cx.update(|_, cx| cx.set_reduce_motion(true));
+            draw(cx);
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            asked
+        };
+        let still = asked(cx, false, true);
+        assert_eq!(asked(cx, true, false), still, "at rest, as reduce motion");
+        let entrance = asked(cx, false, false);
+        assert!(
+            entrance
+                .iter()
+                .zip(&still)
+                .all(|(entrance, still)| entrance > still),
+            "an entrance asks for its next frames: {entrance:?} against {still:?}"
+        );
+    }
+
+    /// GitTurtle patch: a dialog its Confirm closes, as Enter or its OK
+    /// does, gives focus back to the control it was opened from as it
+    /// closes, as Escape and Cancel do, and a control focused after the
+    /// close keeps focus once twice its opening animation's 250 ms have
+    /// passed. Upstream gave focus back only as a timer of that length ended
+    /// after the close, taking it from a control focused meanwhile; the
+    /// dialog animates only its opening.
+    #[gpui::test]
+    fn a_confirmed_dialog_gives_focus_back_as_it_closes(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let (opener, later) = cx.update(|_, cx| (cx.focus_handle(), cx.focus_handle()));
+        let focused = |cx: &mut VisualTestContext, handle: &FocusHandle| {
+            cx.update(|window, _| handle.is_focused(window))
+        };
+        cx.update(|window, cx| {
+            window.focus(&opener, cx);
+            window.open_dialog(cx, |dialog, _, _| dialog.on_ok(|_, _, _| true));
+        });
+        draw(cx);
+        assert!(!focused(cx, &opener), "the dialog takes focus");
+        cx.update(|window, cx| window.dispatch_action(Box::new(Confirm { secondary: false }), cx));
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| !window.has_active_dialog(cx)),
+            "Confirm closes the dialog"
+        );
+        assert!(focused(cx, &opener), "focus is back on the opener at once");
+        cx.update(|window, cx| window.focus(&later, cx));
+        cx.executor().advance_clock(*ANIMATION_DURATION * 2);
+        cx.run_until_parked();
+        draw(cx);
+        assert!(focused(cx, &later), "the later focus keeps");
     }
 }

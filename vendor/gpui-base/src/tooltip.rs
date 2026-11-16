@@ -1,4 +1,4 @@
-use std::{rc::Rc, time::Duration};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, Context, Div, ElementId, InteractiveElement, IntoElement,
@@ -57,6 +57,9 @@ pub struct TooltipRequest {
     build: TooltipBuilder,
     trigger_bounds: Bounds<Pixels>,
     preferred_placement: Option<Placement>,
+    /// GitTurtle patch: the side read as the tooltip is placed in each frame
+    /// ([`TooltipRequest::placement_following`]).
+    placement_following: Option<Rc<Cell<Option<Placement>>>>,
 }
 
 impl TooltipRequest {
@@ -68,11 +71,22 @@ impl TooltipRequest {
             build: Rc::new(build),
             trigger_bounds,
             preferred_placement: None,
+            placement_following: None,
         }
     }
 
     pub fn placement(mut self, placement: Placement) -> Self {
         self.preferred_placement = Some(placement);
+        self
+    }
+
+    /// GitTurtle patch: prefers the side `placement` holds in each frame the
+    /// tooltip is placed in, where it holds one, and otherwise
+    /// [`TooltipRequest::placement`]'s ([`Positioner::placement_following`]),
+    /// so a tooltip shown before its trigger's side changed takes the new side
+    /// in the frame that changes it.
+    pub fn placement_following(mut self, placement: Rc<Cell<Option<Placement>>>) -> Self {
+        self.placement_following = Some(placement);
         self
     }
 }
@@ -101,6 +115,10 @@ pub struct TooltipOverlay {
     show_task: Option<Task<()>>,
     hide_task: Option<Task<()>>,
     renderer: TooltipRenderer,
+    /// GitTurtle patch: whether the view last built for the request held is
+    /// an empty view, which shows nothing, so it counts as no tooltip shown
+    /// ([`TooltipOverlay::request_show`]).
+    shown_empty: bool,
 }
 
 impl TooltipOverlay {
@@ -115,6 +133,7 @@ impl TooltipOverlay {
             show_task: None,
             hide_task: None,
             renderer: Rc::new(|view, _, _, _| div().child(view).into_any_element()),
+            shown_empty: false,
         }
     }
 
@@ -138,10 +157,21 @@ impl TooltipOverlay {
         cx: &mut Context<Self>,
     ) {
         self.hide_task = None;
+        // GitTurtle patch: a request whose view was built empty showed nothing,
+        // so it goes as the next comes, which waits out its delay rather than
+        // switching from it at once.
+        if self.content.is_some() && self.shown_empty {
+            self.content = None;
+            self.previous_bounds = None;
+            self.had_recent_tooltip = false;
+            self.is_switching = false;
+            self.shown_empty = false;
+        }
         let was_visible = self.content.is_some();
         if was_visible || self.had_recent_tooltip {
             self.previous_bounds = self.content.as_ref().map(|content| content.trigger_bounds);
             self.content = Some(content);
+            self.shown_empty = false;
             self.show_task = None;
             self.is_switching = was_visible;
             self.animation_epoch += 1;
@@ -155,6 +185,7 @@ impl TooltipOverlay {
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.epoch == epoch {
                     this.content = Some(content);
+                    this.shown_empty = false;
                     this.previous_bounds = None;
                     this.is_switching = false;
                     this.animation_epoch += 1;
@@ -191,6 +222,7 @@ impl TooltipOverlay {
             || self.show_task.is_some()
             || self.hide_task.is_some();
         self.content = None;
+        self.shown_empty = false;
         self.previous_bounds = None;
         self.had_recent_tooltip = false;
         self.is_switching = false;
@@ -211,9 +243,11 @@ impl Default for TooltipOverlay {
 impl Render for TooltipOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(content) = self.content.as_ref() else {
+            self.shown_empty = false;
             return div().into_any_element();
         };
         let view = (content.build)(window, cx);
+        self.shown_empty = view.entity_type() == std::any::TypeId::of::<gpui::EmptyView>();
         let transition = match (self.is_switching, self.previous_bounds) {
             (true, Some(previous)) => TooltipTransition::Switch {
                 epoch: self.animation_epoch,
@@ -229,6 +263,9 @@ impl Render for TooltipOverlay {
             TooltipPositioner::new(content.trigger_bounds)
                 .when_some(content.preferred_placement, |this, placement| {
                     this.placement(placement)
+                })
+                .when_some(content.placement_following.clone(), |this, placement| {
+                    this.placement_following(placement)
                 })
                 .child(rendered),
         )
@@ -250,6 +287,12 @@ impl TooltipPositioner {
 
     pub fn placement(mut self, placement: Placement) -> Self {
         self.0 = self.0.placement(placement);
+        self
+    }
+
+    /// GitTurtle patch: [`Positioner::placement_following`].
+    pub fn placement_following(mut self, placement: Rc<Cell<Option<Placement>>>) -> Self {
+        self.0 = self.0.placement_following(placement);
         self
     }
 }
@@ -299,6 +342,93 @@ mod tests {
             state.update(cx, |tooltip, cx| tooltip.hide(cx));
         });
         cx.update(|_, cx| assert!(state.read(cx).content.is_none()));
+    }
+
+    /// A window drawing the overlay it holds.
+    struct OverlayHost(gpui::Entity<TooltipOverlay>);
+
+    impl Render for OverlayHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    /// A tooltip's content, drawn as `tip` for the test to find.
+    struct Tip;
+
+    impl Render for Tip {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .debug_selector(|| "tip".into())
+                .size(px(40.))
+                .child("tip")
+        }
+    }
+
+    /// GitTurtle patch: a request whose view was built empty counts as no tooltip shown, so the
+    /// next request waits out its show delay: a request built as `gpui::EmptyView` and drawn,
+    /// then another trigger's, draws nothing until 500 ms have passed, and draws its tooltip
+    /// then. Counted as shown, the empty view let the next request switch to its tooltip at
+    /// once.
+    #[gpui::test]
+    fn a_tooltip_built_empty_counts_as_none_shown(cx: &mut gpui::TestAppContext) {
+        let overlay = cx.update(|cx| cx.new(|_| TooltipOverlay::new()));
+        let (_, cx) = cx.add_window_view({
+            let overlay = overlay.clone();
+            move |_, _| OverlayHost(overlay)
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        cx.update(|window, cx| {
+            overlay.update(cx, |tooltip, cx| {
+                tooltip.request_show(
+                    TooltipRequest::new(bounds(0., 0., 20., 20.), |_, cx| {
+                        cx.new(|_| gpui::EmptyView).into()
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        cx.update(|_, cx| {
+            let tooltip = overlay.read(cx);
+            assert!(
+                tooltip.content.is_some() && tooltip.shown_empty,
+                "the overlay holds the request it built empty"
+            );
+        });
+
+        cx.update(|window, cx| {
+            overlay.update(cx, |tooltip, cx| {
+                tooltip.request_show(
+                    TooltipRequest::new(bounds(100., 0., 20., 20.), |_, cx| cx.new(|_| Tip).into()),
+                    window,
+                    cx,
+                );
+            });
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tip").is_none(),
+            "the next tooltip waits out its show delay"
+        );
+        cx.executor()
+            .advance_clock(SHOW_DELAY - Duration::from_millis(50));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tip").is_none(),
+            "still waiting 50 ms before the delay ends"
+        );
+        cx.executor().advance_clock(Duration::from_millis(100));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tip").is_some(),
+            "the next tooltip shows once its delay has passed"
+        );
     }
 
     #[test]

@@ -3,7 +3,6 @@
 use super::*;
 use gitturtle_core::StatusEntry;
 use gpui_kit::component::{
-    button::ButtonVariant,
     dialog::{Cancel, Confirm},
     scroll::{Scrollbar, ScrollbarMode},
 };
@@ -53,7 +52,7 @@ fn effect_group(
     let heading = if count == 0 {
         format!("No {plural}")
     } else {
-        format!("{count} {}", if count == 1 { singular } else { plural })
+        crate::counted(count, singular, plural)
     };
     div()
         .id(id)
@@ -64,10 +63,7 @@ fn effect_group(
         .child(div().font_weight(FontWeight::MEDIUM).child(heading))
         .children(rows.take(EFFECT_ROWS).enumerate().map(|(index, row)| {
             let tooltip = row.clone();
-            div()
-                .id((id, index))
-                .role(Role::Label)
-                .aria_label(row.clone())
+            native_accessibility::static_text(div().id((id, index)), row.clone())
                 .min_w_0()
                 .truncate()
                 .text_color(rgb(colors.muted))
@@ -76,16 +72,20 @@ fn effect_group(
         }))
         .when(count > EFFECT_ROWS, |element| {
             element.child(
-                div()
-                    .id((id, EFFECT_ROWS))
-                    .debug_selector(move || format!("{id}-overflow"))
-                    .role(Role::Label)
-                    .aria_label(format!(
-                        "{} additional files will also be deleted",
-                        count - EFFECT_ROWS
-                    ))
-                    .text_color(rgb(colors.muted))
-                    .child(format!("… and {} more files", count - EFFECT_ROWS)),
+                native_accessibility::static_text(
+                    div()
+                        .id((id, EFFECT_ROWS))
+                        .debug_selector(move || format!("{id}-overflow")),
+                    format!(
+                        "{} will also be deleted",
+                        crate::counted(count - EFFECT_ROWS, "additional file", "additional files")
+                    ),
+                )
+                .text_color(rgb(colors.muted))
+                .child(format!(
+                    "… and {}",
+                    crate::counted(count - EFFECT_ROWS, "more file", "more files")
+                )),
             )
         })
 }
@@ -144,7 +144,7 @@ fn effects(details: &WorktreeDetails, colors: appearance::Palette) -> Div {
 }
 
 impl GitTurtle {
-    pub(super) fn confirm_force_worktree_removal(
+    pub(crate) fn confirm_force_worktree_removal(
         &mut self,
         details: WorktreeDetails,
         window: &mut Window,
@@ -157,7 +157,10 @@ impl GitTurtle {
         )));
         let details = Arc::new(details);
         let scroll = ScrollHandle::new();
-        let focus = cx.focus_handle();
+        // The effects scroll by key, so Tab reaches them, and they draw the
+        // window's keyboard ring on their own edge.
+        let focus = cx.focus_handle().tab_stop(true);
+        let ring = self.focus_ring.clone();
         let submitted = Rc::new(Cell::new(false));
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let colors = palette(cx);
@@ -167,6 +170,8 @@ impl GitTurtle {
             let revision = format!("{branch} · {}", short_oid(&details.tree.oid));
             let revision_tooltip = format!("{branch} · {}", details.tree.oid);
             let copy_target = target.clone();
+            let target_mark = copy_feedback::Mark::new("copy-worktree-removal-path", &details.tree.path);
+            let target_copy = target_mark.clone();
             let key_scroll = scroll.clone();
             let click_focus = focus.clone();
             let command = Arc::clone(&command);
@@ -177,8 +182,9 @@ impl GitTurtle {
             // another 10% below, plus scaled title/footer/padding geometry.
             let body_height = (window.viewport_size().height * 0.8 - appearance::ui_size(118.)).max(px(160.));
             dialog
-                .title(label("worktree-force-title", "Force remove worktree?"))
-                .width(px(720.).min(window.viewport_size().width - px(48.)))
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title("worktree-force-title", "Force remove worktree?"))
+                .width(appearance::dialog_width(px(720.), window)).max_h(appearance::dialog_max_height(window))
                 .child(
                     div()
                         .id("operation-consequences")
@@ -218,10 +224,9 @@ impl GitTurtle {
                                         .child(label("worktree-force-branch", revision).truncate().font_weight(FontWeight::MEDIUM).tooltip(move |window, cx| Tooltip::new(revision_tooltip.clone()).build(window, cx)))
                                         .child(label("worktree-force-path", target).truncate().text_color(rgb(colors.muted)).tooltip(move |window, cx| Tooltip::new(target_tooltip.clone()).build(window, cx))),
                                 )
-                                .child(button("copy-worktree-removal-path", "Copy path", "copy", false)
-                                    .debug_selector(|| "copy-worktree-removal-path".into())
+                                .child(copy_feedback::copy_button(target_mark, "Copy path", "", cx)
                                     .accessibility_label("Copy full path of worktree to remove")
-                                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy_target.clone())))),
+                                    .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(target_copy.clone()), "worktree path", copy_target.clone()))),
                         )
                         .child(
                             div()
@@ -229,17 +234,15 @@ impl GitTurtle {
                                 .flex_1()
                                 .min_h_0()
                                 .relative()
-                                .child(div()
+                                .child(crate::native_accessibility::clips_children(div()
                                     .id("worktree-force-effects")
                                     .debug_selector(|| "worktree-force-effects".into())
                                     .role(Role::Document)
                                     .aria_label("What force removal deletes and keeps. Use arrow keys, Page Up, Page Down, Home or End to scroll.")
-                                    .tab_stop(true)
                                     .track_focus(&focus)
                                     .border_1()
-                                    .border_color(gpui_kit::transparent_black())
+                                    .border_color(if ring.shows(&focus) { rgb(colors.accent).into() } else { gpui_kit::transparent_black() })
                                     .rounded_lg()
-                                    .focus_visible(|style| style.border_color(rgb(colors.accent)))
                                     .on_mouse_down(MouseButton::Left, move |_, window, cx| click_focus.focus(window, cx))
                                     .on_key_down(move |event, window, cx| {
                                         let modifiers = event.keystroke.modifiers;
@@ -263,24 +266,21 @@ impl GitTurtle {
                                     .size_full()
                                     .overflow_y_scroll()
                                     .track_scroll(&scroll)
-                                    .child(effects(&details, colors)))
+                                    .child(effects(&details, colors))))
                                 .child(Scrollbar::vertical(&scroll).id("worktree-force-scrollbar").mode(ScrollbarMode::Always)),
                         ),
                 )
-                .button_props(DialogButtonProps::default().ok_text("Force remove worktree").ok_variant(ButtonVariant::Danger).show_cancel(true))
                 .footer(
                     div()
                         .flex()
                         .justify_end()
                         .gap_2()
-                        .child(Button::new("cancel-force-worktree-removal")
+                        .child(crate::tags::dialog_cancel("cancel-force-worktree-removal", "Cancel")
                             .debug_selector(|| "cancel-force-worktree-removal".into())
-                            .label("Cancel")
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)))
-                        .child(Button::new("confirm-force-worktree-removal")
+                        .child(button("confirm-force-worktree-removal", "Force remove worktree", "", false)
                             .debug_selector(|| "confirm-force-worktree-removal".into())
                             .danger()
-                            .label("Force remove worktree")
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(Confirm { secondary: false }), cx))),
                 )
                 .on_ok(move |_, window, cx| {

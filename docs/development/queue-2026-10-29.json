@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "native-qa-hyprland-display-and-capture",
+      "title": "Let the native-QA tooling check and capture a Hyprland session",
+      "description": "Found by the native reviews of 2026-10-29 (`.local` write-ups findings-q8-2026-10-29.md and the plan's item 9 Tools bullet): on the Asahi Omarchy host GitTurtle runs on native Wayland under Hyprland, but `scripts/native_qa/qa.py display-check` stops with \"launch needs python-xlib (import Xlib failed)\" and its capture and window lookups assume XWayland/X11 (python-xlib grabs) or Mutter, so every native review there used ad hoc drivers. Add a Hyprland backend for the read side: detect a Hyprland session (`HYPRLAND_INSTANCE_SIGNATURE`, `hyprctl`), find the launched process's window and its logical geometry with `hyprctl -j clients`, capture frames with `grim -g` at the output scale, and run the display/lock/other-window checks without python-xlib. Keep the X11 and Mutter backends unchanged and selected as today. Outside the Omarchy plan's product items; queued at the owner's request.",
+      "depends_on": [],
+      "scope": [
+        "scripts/native_qa/**",
+        ".agents/skills/gitturtle-native-qa/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "detect",
+          "description": "`qa.py display-check` on a Hyprland session selects the Hyprland backend without importing python-xlib, reports the same lock, screensaver and foreign-window results the X11 path reports, and names the backend it used; on an X11 or Mutter session the existing backend is selected as before (unit tests with recorded `hyprctl -j` output cover both selections)."
+        },
+        {
+          "id": "geometry",
+          "description": "The backend resolves the launched process's window by PID from `hyprctl -j clients` and returns its logical and physical geometry at the output's scale; unit tests over recorded `hyprctl -j clients` and `hyprctl -j monitors` output cover scale 1 and 2, a floating and a tiled window, and a missing window."
+        },
+        {
+          "id": "capture",
+          "description": "Frame capture on Hyprland uses `grim` with the window's region from fixed argument arrays (no shell), writes the frame where the X11 capture writes it with the same evidence metadata, and refuses when the window is not on a visible workspace; `python3 -m unittest discover -s scripts/native_qa -p 'test_*.py'` passes."
+        },
+        {
+          "id": "native",
+          "description": "On the Hyprland host, `qa.py launch` of a release build against a disposable fixture followed by `display-check` and one capture produces a frame of the GitTurtle window only, recorded with the command output in the task's evidence."
+        }
+      ],
+      "profiles": [
+        "tooling",
+        "native"
+      ],
+      "commit": "feat(native-qa): check and capture a Hyprland session"
+    },
+    {
+      "id": "native-qa-hyprland-input-and-scenarios",
+      "title": "Drive native-QA scenarios on Hyprland",
+      "description": "Second half of the Hyprland backend (see native-qa-hyprland-display-and-capture, whose window lookup and capture it uses): `qa.py scenario run` sends pointer and keyboard input through python-xlib/XTest or Mutter, which a native Wayland client under Hyprland never receives. Add Hyprland input: pointer moves, clicks, drags and wheel notches through a wlroots virtual pointer (for example `wlrctl` or a small `zwlr_virtual_pointer_v1` client), keys and text through `wtype` (`zwp_virtual_keyboard_v1`), focus through `hyprctl dispatch focuswindow pid:<pid>`, with window-relative logical coordinates converted at the output's scale. Every helper runs from fixed argument arrays and is reported missing with its package name rather than falling back silently. Outside the Omarchy plan's product items; queued at the owner's request.",
+      "depends_on": [
+        "native-qa-hyprland-display-and-capture"
+      ],
+      "scope": [
+        "scripts/native_qa/**",
+        ".agents/skills/gitturtle-native-qa/**",
+        "docs/validation.md"
+      ],
+      "acceptance": [
+        {
+          "id": "input",
+          "description": "The Hyprland backend implements the scenario runner's pointer (move, press, release, click, drag, wheel) and keyboard (key chords such as Shift+F10 and Ctrl+comma, and text) operations with window-relative logical coordinates; unit tests check the argument arrays and the scale conversion at scale 1 and 2 without running the helpers."
+        },
+        {
+          "id": "missing-helpers",
+          "description": "A missing helper (`wtype`, the virtual-pointer tool, `grim`, `hyprctl`) stops the scenario before launch with a message that names it and its Arch package; no step runs with partial input support (unit test with a PATH lacking each helper)."
+        },
+        {
+          "id": "docs",
+          "description": "scripts/native_qa/README.md and the native-QA skill describe the Hyprland backend, its helpers and its limits, and docs/validation.md no longer says the tooling is unavailable on Hyprland hosts."
+        },
+        {
+          "id": "native",
+          "description": "On the Hyprland host an existing scenario (opening a commit in History, a right-click menu, and a text-size change) runs end to end through `qa.py scenario run` against a release build and a disposable fixture, with its frames and log recorded in the task's evidence."
+        }
+      ],
+      "profiles": [
+        "tooling",
+        "native"
+      ],
+      "commit": "feat(native-qa): drive scenarios on Hyprland"
+    }
+  ]
+}

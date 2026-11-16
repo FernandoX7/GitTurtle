@@ -227,13 +227,20 @@ pub enum WriteCommand {
 pub struct WriteOutcome {
     pub message: String,
     pub commit_oid: Option<String>,
+    /// A Fetch or Pull that brought nothing new, decided by reading refs
+    /// before and after Git ran rather than from its output: a Fetch left
+    /// every ref, and the commits FETCH_HEAD lists that no ref names, as they
+    /// were, and a Pull left HEAD on the same commit. False for every other
+    /// write, and whenever either read fails, so it never claims that nothing
+    /// changed without having seen it.
+    pub up_to_date: bool,
 }
 
 impl GitRepository {
     /// No index refresh, filesystem-monitor invocation, or automatic network access.
     pub fn status(&self) -> Result<RepositoryStatus> {
         ensure!(!self.bare, "A bare repository has no working copy");
-        let mut command = passive_status_command(&self.path)?;
+        let mut command = passive_status_command(self.target())?;
         command.args([
             "-c",
             "diff.renameLimit=1000",
@@ -246,15 +253,19 @@ impl GitRepository {
             "-z",
         ]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Unable to read working-copy status: {}",
-            text(&output.stderr).trim()
-        );
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to read working-copy status: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
         let bytes = output.stdout;
         let mut status = parse_status(&bytes)?;
         let git_dir = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--absolute-git-dir"],
         )?));
         for (file, name) in [
@@ -276,7 +287,7 @@ impl GitRepository {
     /// Unlike object inspection, this command intentionally reads normal Git config.
     pub fn profile(&self) -> Result<GitProfile> {
         let mut profile = self.profile_config()?;
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.args(["var", "GIT_AUTHOR_IDENT"]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
         if output.status.success() {
@@ -292,7 +303,7 @@ impl GitRepository {
     }
 
     pub fn remotes(&self) -> Result<Vec<Remote>> {
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.args(["remote"]);
         let bytes = checked_write_output(command, None, GIT_TIMEOUT)?.stdout;
         text(&bytes)
@@ -300,7 +311,7 @@ impl GitRepository {
             .map(|name| {
                 validate_remote_name(name)?;
                 let read = |push: bool| -> Result<String> {
-                    let mut command = normal_command(&self.path);
+                    let mut command = normal_command(self.target());
                     command.args(["remote", "get-url"]);
                     if push {
                         command.arg("--push");
@@ -320,7 +331,7 @@ impl GitRepository {
     }
 
     fn normal_config(&self, key: &str) -> Result<Option<String>> {
-        normal_config_at(&self.path, key)
+        normal_config_at(self.target(), key)
     }
 
     /// Worktree reads never run clean/smudge filters and never follow stored symlinks.
@@ -451,7 +462,7 @@ impl GitRepository {
         // check-attr is a passive read of normal attributes; it never invokes a
         // filter or a diff driver. Keep display bytes raw, and disclose cases in
         // which combining those bytes with index contents would be misleading.
-        let mut command = normal_command(&self.path);
+        let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").args([
             "check-attr",
             "-z",
@@ -518,7 +529,7 @@ impl GitRepository {
         // Holding the real index.lock prevents other cooperating Git writers
         // from changing the target between validation and atomic publication.
         let index = path_from_bytes(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &["rev-parse", "--path-format=absolute", "--git-path", "index"],
         )?));
         let transaction = PartialIndex::acquire(index)?;
@@ -551,7 +562,7 @@ impl GitRepository {
                 .context("Missing object identity for file removal")?;
             format!("0 {}\t", "0".repeat(oid.len())).into_bytes()
         } else {
-            let mut hash = normal_command(&self.path);
+            let mut hash = normal_command(self.target());
             hash.args(["hash-object", "-w", "--stdin"]);
             if diff.area == ChangeArea::Unstaged {
                 hash.arg("--path").arg(&diff.path);
@@ -563,7 +574,7 @@ impl GitRepository {
             ));
             validate_oid(&oid)?;
             if diff.area == ChangeArea::Unstaged {
-                let mut raw_hash = normal_command(&self.path);
+                let mut raw_hash = normal_command(self.target());
                 raw_hash.args(["hash-object", "--stdin", "--no-filters"]);
                 let raw_oid = checked_write_output(raw_hash, Some(bytes), WRITE_TIMEOUT)?.stdout;
                 ensure!(
@@ -581,7 +592,7 @@ impl GitRepository {
         input.extend_from_slice(diff.path.as_os_str().as_encoded_bytes());
         input.push(0);
         transaction.prepare(self)?;
-        let mut update = normal_command(&self.path);
+        let mut update = normal_command(self.target());
         update.env("GIT_INDEX_FILE", &transaction.lock).args([
             "update-index",
             "-z",
@@ -597,20 +608,37 @@ impl GitRepository {
             }
             .into(),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 
     /// Must be called from the application's serialized explicit-operation worker.
     /// Never place this in a replaceable preview queue or automatically retry it.
+    ///
+    /// Every write's outcome passes here, so its message is Git's output as
+    /// a terminal leaves it (`as_terminal_leaves`) for every surface that
+    /// shows it: the status line, the notice banner and their accessible text.
     pub fn execute(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
-        let mut outcome = self.execute_inner(operation)?;
-        outcome.message = authentication::redact_current(&outcome.message);
+        // A command the confinement stopped (its `.git` gone mid-write) says
+        // what Git finds there now; the diagnosis runs only after a failure.
+        let mut outcome = self
+            .execute_inner(operation)
+            .map_err(|error| self.word_gone(error))?;
+        outcome.message =
+            as_terminal_leaves(&authentication::redact_current(&outcome.message)).into_owned();
         Ok(outcome)
     }
 
     fn execute_inner(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
         ensure!(!self.bare, "Open a working copy to perform Git operations");
-        let mut command = normal_command(&self.path);
+        // Every write runs at the repository's path, confined to it: with its
+        // `.git` gone, each command fails before it changes anything, the
+        // first of a multi-command write included, rather than write to the
+        // work tree enclosing it. Checked here first from the filesystem,
+        // with no process, so a write that cannot run never starts Git;
+        // where the commands cannot be confined, Git is asked instead.
+        self.ensure_found_at_path()?;
+        let mut command = normal_command(self.target());
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;
         match operation {
@@ -703,7 +731,7 @@ impl GitRepository {
             WriteCommand::Checkout { branch } => {
                 self.validate_branch(branch)?;
                 run_git(
-                    &self.path,
+                    self.target(),
                     &["show-ref", "--verify", &format!("refs/heads/{branch}")],
                 )?;
                 command.args(["switch", "--no-guess", "--", branch]);
@@ -760,7 +788,7 @@ impl GitRepository {
                 self.validate_remote(remote)?;
                 self.validate_branch(local_branch)?;
                 self.validate_branch(remote_branch)?;
-                let mut urls = normal_command(&self.path);
+                let mut urls = normal_command(self.target());
                 urls.args(["remote", "get-url", "--push", "--all", "--", remote]);
                 ensure!(
                     text(&checked_write_output(urls, None, GIT_TIMEOUT)?.stdout)
@@ -770,7 +798,7 @@ impl GitRepository {
                     "This remote has multiple push destinations. Configure a remote with one push URL so the visible destination is unambiguous."
                 );
                 run_git(
-                    &self.path,
+                    self.target(),
                     &[
                         "show-ref",
                         "--verify",
@@ -781,7 +809,7 @@ impl GitRepository {
                 // upstream only for a branch without one. A configuration change
                 // between this read and the push is accepted: at worst an upstream
                 // added concurrently is replaced, as before this check existed.
-                let set_upstream = !branch_upstream_configured(&self.path, local_branch)?;
+                let set_upstream = !branch_upstream_configured(self.target(), local_branch)?;
                 configure_network(&mut command, self)?;
                 command.args(push_arguments(
                     remote,
@@ -800,13 +828,18 @@ impl GitRepository {
                 return self.execute_profile(&plan);
             }
         }
+        let before = self.sync_snapshot(operation);
         let output = checked_write_output(command, input, timeout)?;
+        // Read after the write only once Git reported success; a failed read
+        // leaves `up_to_date` false rather than turning the write into a
+        // failure.
+        let up_to_date = before.is_some() && before == self.sync_snapshot(operation);
         let message = format!("{}{}", text(&output.stdout), text(&output.stderr))
             .trim()
             .to_owned();
         let commit_oid = if matches!(operation, WriteCommand::Commit { .. }) {
             Some(text(trim_line(&run_git(
-                &self.path,
+                self.target(),
                 &["rev-parse", "--verify", "HEAD"],
             )?)))
         } else {
@@ -819,7 +852,106 @@ impl GitRepository {
                 message
             },
             commit_oid,
+            up_to_date,
         })
+    }
+
+    /// A SHA-256 digest of what decides whether `operation` brought anything
+    /// new, read passively, so the network write holds 32 bytes rather than
+    /// the state itself. For a Fetch: every ref with its commit, since
+    /// configured refspecs and followed tags can update refs outside the
+    /// remote's own namespace, and the commits FETCH_HEAD lists that no ref
+    /// names, which is all a fetch that stores no ref (a remote without
+    /// `remote.<name>.fetch`, or a refspec without a destination) leaves
+    /// behind. For a Pull: the commit HEAD names. `None` for other writes and
+    /// whenever a read fails, which leaves `up_to_date` false: on an unborn
+    /// branch, whose successful Pull always brings commits, or where
+    /// FETCH_HEAD cannot be read safely.
+    fn sync_snapshot(&self, operation: &WriteCommand) -> Option<[u8; 32]> {
+        let mut digest = Sha256::new();
+        match operation {
+            WriteCommand::Fetch { .. } => {
+                let records = run_git(
+                    self.target(),
+                    &[
+                        "for-each-ref",
+                        "--format=%(symref)%00%(objectname) %(refname)",
+                    ],
+                )
+                .ok()?;
+                // A symbolic ref names a ref compared here itself, and Git's
+                // fetch creates `refs/remotes/<remote>/HEAD` where a remote
+                // was added rather than cloned (`followRemoteHEAD`), which
+                // brings nothing new.
+                let records: Vec<_> = records
+                    .split(|byte| *byte == b'\n')
+                    .filter_map(|record| record.strip_prefix(b"\0"))
+                    .collect();
+                for record in &records {
+                    digest.update(record);
+                    digest.update(b"\n");
+                }
+                // FETCH_HEAD also lists what the last fetch or pull stored in
+                // refs, and which lines are for merging follows the current
+                // branch, so only the commits no ref names count: those a
+                // fetch brought without storing them.
+                let named: std::collections::HashSet<&[u8]> = records
+                    .iter()
+                    .filter_map(|record| record.split(|byte| *byte == b' ').next())
+                    .collect();
+                let mut unnamed = self.fetched_commits()?;
+                unnamed.retain(|oid| !named.contains(oid.as_bytes()));
+                unnamed.sort_unstable();
+                unnamed.dedup();
+                // No ref record holds a NUL, so the commits start after one.
+                digest.update(b"\0");
+                for oid in unnamed {
+                    digest.update(oid);
+                    digest.update(b"\n");
+                }
+            }
+            WriteCommand::Pull { .. } => {
+                digest.update(run_git(self.target(), &["rev-parse", "--verify", "HEAD"]).ok()?);
+            }
+            _ => return None,
+        }
+        Some(digest.finalize().into())
+    }
+
+    /// The object IDs FETCH_HEAD lists, each line's first field, none where
+    /// there is no FETCH_HEAD yet, or `None` where it cannot be read safely
+    /// or holds a line without an object ID. Git names its place
+    /// (`rev-parse --git-path`, a worktree's own). Its directory is reached
+    /// following symbolic links, as Git reaches it, where `.git` is a link to
+    /// the directory; FETCH_HEAD itself is read without following one, only
+    /// as a regular file within [`MAX_BLOB_BYTES`] (`read_worktree_file`).
+    fn fetched_commits(&self) -> Option<Vec<String>> {
+        let location = run_git(self.target(), &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
+        let location = self.path.join(path_from_bytes(trim_line(&location)));
+        // `read_worktree_file` opens the directory it is given without
+        // following a link, which a linked `.git` refuses.
+        let directory = location.parent()?.canonicalize().ok()?;
+        let name = location.file_name()?;
+        let bytes = match read_worktree_file(&directory, Path::new(name), "100644") {
+            // A symbolic link's stored target: Git writes through the link.
+            Ok((mode, _)) if mode == "120000" => return None,
+            Ok((_, bytes)) => bytes,
+            Err(_) => {
+                let missing = location
+                    .symlink_metadata()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+                return missing.then(Vec::new);
+            }
+        };
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let oid = std::str::from_utf8(line.split(|byte| *byte == b'\t').next()?).ok()?;
+                validate_oid(oid).ok()?;
+                Some(oid.to_owned())
+            })
+            .collect()
     }
 
     pub fn init(destination: impl AsRef<Path>, initial_branch: &str) -> Result<Self> {
@@ -827,8 +959,8 @@ impl GitRepository {
         let parent = destination
             .parent()
             .context("Choose a destination inside an existing folder")?;
-        validate_branch_at(parent, initial_branch)?;
-        let mut command = normal_command(parent);
+        validate_branch_at(GitTarget::unconfined(parent), initial_branch)?;
+        let mut command = normal_command(GitTarget::unconfined(parent));
         command
             .args(["init", "--initial-branch", initial_branch, "--"])
             .arg(&destination);
@@ -855,12 +987,12 @@ impl GitRepository {
         let parent = destination
             .parent()
             .context("Choose a destination inside an existing folder")?;
-        let mut command = normal_command(parent);
+        let mut command = normal_command(GitTarget::unconfined(parent));
         authentication::configure_askpass(
             &mut command,
-            normal_config_at(parent, "core.askPass")?.is_some(),
+            normal_config_at(GitTarget::unconfined(parent), "core.askPass")?.is_some(),
         )?;
-        if normal_config_at(parent, "core.sshCommand")?.is_none() {
+        if normal_config_at(GitTarget::unconfined(parent), "core.sshCommand")?.is_none() {
             configure_default_network(&mut command);
         }
         command
@@ -877,16 +1009,17 @@ impl GitRepository {
     }
 
     fn has_head(&self) -> Result<bool> {
-        let result = run_git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
-        ensure!(
-            result.status.success() || result.status.code() == Some(1),
-            "Unable to resolve HEAD: {}",
-            text(&result.stderr)
-        );
+        let result = run_git_output(self.target(), &["rev-parse", "--verify", "--quiet", "HEAD"])?;
+        if !(result.status.success() || result.status.code() == Some(1)) {
+            return Err(git_failure(
+                &result.stderr,
+                format!("Unable to resolve HEAD: {}", reported(&result.stderr)),
+            ));
+        }
         Ok(result.status.success())
     }
     fn validate_branch(&self, name: &str) -> Result<()> {
-        validate_branch_at(&self.path, name)
+        validate_branch_at(self.target(), name)
     }
     fn validate_remote(&self, name: &str) -> Result<()> {
         validate_remote_name(name)?;
@@ -902,10 +1035,10 @@ impl GitRepository {
                 name.starts_with("refs/heads/") || name.starts_with("refs/remotes/"),
                 "Choose an existing branch or commit as the starting point"
             );
-            run_git(&self.path, &["check-ref-format", name])?;
+            run_git(self.target(), &["check-ref-format", name])?;
         }
         Ok(text(trim_line(&run_git(
-            &self.path,
+            self.target(),
             &[
                 "rev-parse",
                 "--verify",
@@ -1210,7 +1343,7 @@ impl PartialIndex {
                     .context("Unable to prepare the staged selection")?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut command = normal_command(&repository.path);
+                let mut command = normal_command(repository.target());
                 command
                     .env("GIT_INDEX_FILE", &self.lock)
                     .args(["read-tree", "--empty"]);
@@ -1376,7 +1509,7 @@ fn path_input(paths: &[PathBuf]) -> Result<Vec<u8>> {
     }
     Ok(input)
 }
-fn validate_branch_at(path: &Path, name: &str) -> Result<()> {
+fn validate_branch_at(target: GitTarget<'_>, name: &str) -> Result<()> {
     const INVALID_NAME: &str = "Invalid branch name. Use a name such as feature/my-change; avoid spaces, a leading '-' and Git-special characters.";
     ensure!(
         !name.is_empty()
@@ -1386,11 +1519,11 @@ fn validate_branch_at(path: &Path, name: &str) -> Result<()> {
             && !name.contains('\0'),
         INVALID_NAME
     );
-    let output = run_git_output(path, &["check-ref-format", &format!("refs/heads/{name}")])
+    let output = run_git_output(target, &["check-ref-format", &format!("refs/heads/{name}")])
         .context("Unable to validate the branch name")?;
     if !output.status.success() {
-        let stderr = text(&output.stderr);
-        let stdout = text(&output.stdout);
+        let stderr = reported(&output.stderr);
+        let stdout = reported(&output.stdout);
         let diagnostics = [stderr.trim(), stdout.trim()]
             .into_iter()
             .filter(|message| !message.is_empty())
@@ -1471,9 +1604,9 @@ fn fresh_destination(path: &Path) -> Result<PathBuf> {
 /// Status may otherwise execute clean/process filters while verifying a dirty
 /// stat entry. Disable every configured local filter driver without touching the
 /// repository's config. Raw worktree bytes are also what our preview displays.
-fn passive_status_command(path: &Path) -> Result<Command> {
+fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
     let result = run_git_output(
-        path,
+        target,
         &[
             "config",
             "--includes",
@@ -1483,11 +1616,17 @@ fn passive_status_command(path: &Path) -> Result<Command> {
             "^filter\\..*\\.(clean|process|required)$",
         ],
     )?;
-    ensure!(
-        result.status.success() || result.status.code() == Some(1),
-        "Unable to inspect configured filters"
-    );
-    let mut command = git_command(path);
+    // Typed as every configuration read is (`git_failure`): in a linked
+    // worktree whose administration directory is gone, this is where status
+    // and worktree removal's inspection first find no repository.
+    if !(result.status.success() || result.status.code() == Some(1)) {
+        return Err(git_failure_summarized(
+            &result.stderr,
+            Some("Unable to inspect configured filters".into()),
+            "Unable to inspect configured filters".into(),
+        ));
+    }
+    let mut command = git_command(target);
     for key in result
         .stdout
         .split(|b| *b == 0)
@@ -1512,9 +1651,9 @@ fn passive_status_command(path: &Path) -> Result<Command> {
 /// Passive read of whether `branch` already records an upstream branch.
 /// Git treats a branch without `branch.<name>.merge` as having no upstream,
 /// which is also the condition `push.autoSetupRemote` uses.
-fn branch_upstream_configured(path: &Path, branch: &str) -> Result<bool> {
+fn branch_upstream_configured(target: GitTarget<'_>, branch: &str) -> Result<bool> {
     let output = run_git_output(
-        path,
+        target,
         &[
             "config",
             "--null",
@@ -1525,11 +1664,15 @@ fn branch_upstream_configured(path: &Path, branch: &str) -> Result<bool> {
     if output.status.code() == Some(1) {
         return Ok(false);
     }
-    ensure!(
-        output.status.success(),
-        "Unable to read the branch's upstream configuration: {}",
-        text(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to read the branch's upstream configuration: {}",
+                reported(&output.stderr).trim()
+            ),
+        ));
+    }
     Ok(!output.stdout.is_empty())
 }
 /// Ordinary branch push arguments. The explicit refspec and disabled
@@ -1566,25 +1709,30 @@ fn push_arguments(
     ]);
     args
 }
-fn normal_config_at(path: &Path, key: &str) -> Result<Option<String>> {
-    let mut command = normal_command(path);
+fn normal_config_at(target: GitTarget<'_>, key: &str) -> Result<Option<String>> {
+    let mut command = normal_command(target);
     command.args(["config", "--null", "--get", key]);
     let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
     if output.status.code() == Some(1) {
         return Ok(None);
     }
-    ensure!(
-        output.status.success(),
-        "Unable to read Git configuration: {}",
-        text(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to read Git configuration: {}",
+                reported(&output.stderr).trim()
+            ),
+        ));
+    }
     Ok(Some(text(
         output.stdout.strip_suffix(&[0]).unwrap_or(&output.stdout),
     )))
 }
 
-pub(super) fn normal_command(path: &Path) -> Command {
+pub(super) fn normal_command(target: GitTarget<'_>) -> Command {
     let mut command = Command::new("git");
+    target.confine(&mut command);
     command
         .args([
             "--no-pager",
@@ -1598,7 +1746,7 @@ pub(super) fn normal_command(path: &Path) -> Command {
             "protocol.ext.allow=never",
         ])
         .arg("-C")
-        .arg(path)
+        .arg(target.directory())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("LC_ALL", "C")
@@ -1648,6 +1796,12 @@ fn configure_network(command: &mut Command, repo: &GitRepository) -> Result<()> 
     Ok(())
 }
 
+/// `value`, a Git stream a failure's summary reads, always redacted, even
+/// where the report embedding it is not (`git_failure_line`).
+pub(crate) fn redact_stream(value: &str) -> String {
+    authentication::redact_current(value)
+}
+
 fn checked_write_output(
     command: Command,
     input: Option<Vec<u8>>,
@@ -1662,30 +1816,43 @@ fn checked_write_output(
     let fast_forward_pull = command.get_args().any(|arg| arg == "pull")
         && command.get_args().any(|arg| arg == "--ff-only");
     let output = bounded_write_output(command, input, timeout)?;
-    let stderr = authentication::redact_current(&text(&output.stderr));
-    let stdout = authentication::redact_current(&text(&output.stdout));
+    // Git's own streams, redacted and then as a terminal leaves them, before
+    // any words of ours join them; the guidance below and the failure's type
+    // (`git_failure`, so `execute` words a repository gone mid-write as gone)
+    // read the raw bytes.
+    let stderr = reported_redacted(&output.stderr, authentication::redact_current);
+    let stdout = reported_redacted(&output.stdout, authentication::redact_current);
     if !output.status.success()
         && let Some(headline) =
             diagnostics::pull_refusal_headline(&output.stderr, &output.stdout, fast_forward_pull)
     {
-        bail!("{headline}\n\nGit stderr:\n{stderr}\n\nGit stdout:\n{stdout}");
+        return Err(git_failure_summarized(
+            &output.stderr,
+            Some(headline.to_owned()),
+            format!("{headline}\n\nGit stderr:\n{stderr}\n\nGit stdout:\n{stdout}"),
+        ));
     }
-    ensure!(
-        output.status.success(),
-        "Git operation failed: {}{}{}",
-        if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        },
-        if stdout.trim().is_empty() || stderr.trim().is_empty() {
-            String::new()
-        } else {
-            format!("\n{}", stdout.trim())
-        },
-        diagnostics::guidance(&output.stderr, &output.stdout, creates_commit)
-            .map_or(String::new(), |help| format!("\n\n{help}"))
-    );
+    if !output.status.success() {
+        return Err(git_failure_summarized(
+            &output.stderr,
+            git_failure_line(&output.stderr, &output.stdout),
+            format!(
+                "Git operation failed: {}{}{}",
+                if stderr.trim().is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                },
+                if stdout.trim().is_empty() || stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stdout.trim())
+                },
+                diagnostics::guidance(&output.stderr, &output.stdout, creates_commit)
+                    .map_or(String::new(), |help| format!("\n\n{help}"))
+            ),
+        ));
+    }
     Ok(output)
 }
 
@@ -1991,6 +2158,441 @@ fn preview_bytes(file: &FileChange, old: &[u8], new: &[u8]) -> TextPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Git's output reads as a terminal leaves it: progress overwritten by
+    /// the outcome, `\r\n` line ends, a trailing carriage return, lines left
+    /// blank, and text around the returns in other scripts; output without a
+    /// carriage return is unchanged, blank lines and all.
+    #[test]
+    fn write_output_reads_as_a_terminal_leaves_it() {
+        for (output, shown) in [
+            (
+                "Rebasing (1/3)\rRebasing (2/3)\rRebasing (3/3)\rSuccessfully rebased and updated refs/heads/main.\n",
+                "Successfully rebased and updated refs/heads/main.\n",
+            ),
+            ("Updated 2 paths\r\nDone.\r\n", "Updated 2 paths\nDone.\n"),
+            ("Rebasing (3/3)\r", "Rebasing (3/3)"),
+            ("Counting 1\rCounting 2\r\r", "Counting 2"),
+            ("first\n\r\n  \rlast", "first\nlast"),
+            ("\n \r\nRebasing (1/1)\rDone.\n", "Done.\n"),
+            ("Étape 1/2\r🐢 fini ✓\r\nΩ", "🐢 fini ✓\nΩ"),
+            ("no return\n\n  spaced \n", "no return\n\n  spaced \n"),
+            ("", ""),
+        ] {
+            assert_eq!(as_terminal_leaves(output), shown, "{output:?}");
+        }
+        assert!(matches!(
+            as_terminal_leaves("unchanged\n"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    /// A rebase run as a write reports its outcome line alone, where Git
+    /// wrote each step's progress before it on the same line.
+    #[test]
+    fn a_rebase_reports_its_outcome_without_its_progress() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=f@example.invalid",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+            output
+        };
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "f@example.invalid"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        git(&["branch", "side"]);
+        for step in ["one", "two", "three"] {
+            std::fs::write(root.join(step), step).unwrap();
+            git(&["add", step]);
+            git(&["commit", "-q", "-m", step]);
+        }
+        git(&["switch", "-q", "side"]);
+        std::fs::write(root.join("side"), "side").unwrap();
+        git(&["add", "side"]);
+        git(&["commit", "-q", "-m", "side"]);
+        git(&["switch", "-q", "main"]);
+        let plan = repo.integration_plan("side").unwrap();
+        let outcome = repo
+            .execute(&WriteCommand::Integration(IntegrationCommand::Rebase {
+                plan,
+            }))
+            .unwrap();
+        assert_eq!(
+            outcome.message,
+            "Successfully rebased and updated refs/heads/main."
+        );
+        let log = git(&["log", "--format=%s", "main"]);
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout),
+            "three\ntwo\none\nside\nbase\n",
+            "the three commits were replayed onto side"
+        );
+    }
+
+    /// A write that fails reports Git's own output as a terminal leaves it,
+    /// after our words: a pre-commit hook writes two steps' progress, each
+    /// ended by a carriage return, then its error on the same line, and the
+    /// failure reads "Git operation failed: error: …" with no step before
+    /// the error. Applied to the composed text instead, the rule would keep
+    /// only the error and lose our words before it.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_write_reports_its_error_without_its_progress() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        let hooks = temp.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\nprintf 'Checking (1/2)\\rChecking (2/2)\\rerror: notes.txt is not formatted\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The repository's own settings, over whatever the caller's global
+        // configuration says.
+        git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        git(&["config", "commit.gpgSign", "false"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "f@example.invalid"]);
+        std::fs::write(root.join("notes.txt"), "notes\n").unwrap();
+        git(&["add", "notes.txt"]);
+
+        let error = repo
+            .execute(&WriteCommand::Commit {
+                message: "notes".into(),
+            })
+            .expect_err("the hook refuses the commit");
+        let report = format!("{error:#}");
+        assert_eq!(
+            report.lines().next(),
+            Some("Git operation failed: error: notes.txt is not formatted"),
+            "{report:?}"
+        );
+        assert!(
+            !report.contains("Checking") && !report.contains('\r'),
+            "no progress before the error: {report:?}"
+        );
+        assert!(!repo.has_head().unwrap(), "nothing was committed");
+    }
+
+    /// A failed write's report as core writes it, from Git's own streams, and
+    /// the line typed onto it for the banner. Core's words open the report's
+    /// first line, so no line of Git's first output ever starts one, and a
+    /// reading of the report found only the second marker: `git fetch nope`
+    /// lost "'nope' does not appear to be a git repository". A diverged Pull
+    /// keeps core's own headline; a report with no marker carries no summary
+    /// and the app shows its first line; a credential URL stays redacted.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_writes_summary_is_the_line_that_says_what_went_wrong() {
+        const NO_REPOSITORY: &str = "fatal: 'nope' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n";
+        let credential_url = "fatal: unable to access 'https://oauth2:s3cr3t-t0k3n@git.example.invalid/org/repo.git/': The requested URL returned error: 403\n";
+        type Case<'a> = (&'a str, &'a str, &'a str, &'a [&'a str], Option<&'a str>);
+        let cases: &[Case] = &[
+            (
+                "git fetch nope",
+                NO_REPOSITORY,
+                "",
+                &[],
+                Some("fatal: 'nope' does not appear to be a git repository"),
+            ),
+            (
+                "a push of a missing ref, error: then error:",
+                "error: src refspec nope does not match any\nerror: failed to push some refs to 'origin'\n",
+                "",
+                &[],
+                Some("error: src refspec nope does not match any"),
+            ),
+            (
+                "a dirty pull --rebase",
+                "error: cannot pull with rebase: You have unstaged changes.\nerror: Please commit or stash them.\n",
+                "",
+                &[],
+                Some("error: cannot pull with rebase: You have unstaged changes."),
+            ),
+            (
+                "SSH Permission denied then fatal:",
+                "git@host.example.invalid: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\n",
+                "",
+                &[],
+                Some("fatal: Could not read from remote repository."),
+            ),
+            (
+                "an RPC failed line",
+                "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\n",
+                "",
+                &[],
+                Some("error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500"),
+            ),
+            (
+                "hints before the marker",
+                "hint: Updates were rejected\nhint: pull first\nfatal: the remote hung up\n",
+                "",
+                &[],
+                Some("fatal: the remote hung up"),
+            ),
+            (
+                "the marker in stdout alone",
+                "",
+                "Merge progress\nerror: only stdout says so\n",
+                &[],
+                Some("error: only stdout says so"),
+            ),
+            (
+                "stderr before stdout",
+                "fatal: stderr says so\n",
+                "error: stdout says so\n",
+                &[],
+                Some("fatal: stderr says so"),
+            ),
+            (
+                "the diverged pull's headline",
+                "hint: Diverging branches cannot be fast-forwarded.\nfatal: Not possible to fast-forward, aborting.\n",
+                "",
+                &["pull", "--ff-only"],
+                Some("Branches have diverged; choose Merge or Rebase to continue."),
+            ),
+            ("no marker", "some hook refused\nmore\n", "", &[], None),
+            (
+                "a credential URL stays redacted",
+                credential_url,
+                "",
+                &[],
+                Some(
+                    "fatal: unable to access 'https://[redacted]@git.example.invalid/org/repo.git/': The requested URL returned error: 403",
+                ),
+            ),
+        ];
+        for (case, stderr, stdout, words, expected) in cases {
+            let mut command = Command::new("sh");
+            command
+                .args(["-c", "printf %s \"$0\" >&2; printf %s \"$1\"; exit 1"])
+                .arg(stderr)
+                .arg(stdout)
+                .args(*words);
+            let error = checked_write_output(command, None, WRITE_TIMEOUT)
+                .expect_err("the fake command fails");
+            let report = format!("{error:#}");
+            assert_eq!(
+                failure_summary(&error).as_deref(),
+                *expected,
+                "{case}: {report}"
+            );
+            assert!(!report.contains("s3cr3t-t0k3n"), "{case}: {report}");
+            if let Some(line) = expected {
+                assert!(!line.contains("s3cr3t-t0k3n"), "{case}: {line}");
+                assert!(
+                    !report.contains("oauth2") && !line.contains("oauth2"),
+                    "{case}: {report}"
+                );
+            }
+        }
+        // Words of ours around a typed failure lead its line, as they lead
+        // its report.
+        let contexted = checked_write_output(
+            {
+                let mut command = Command::new("sh");
+                command.args(["-c", "printf 'fatal: disk full\n' >&2; exit 1"]);
+                command
+            },
+            None,
+            WRITE_TIMEOUT,
+        )
+        .expect_err("the fake command fails")
+        .context("The resolution may be saved but not staged; refresh and inspect before retrying");
+        assert_eq!(
+            failure_summary(&contexted).as_deref(),
+            Some(
+                "The resolution may be saved but not staged; refresh and inspect before retrying: fatal: disk full"
+            )
+        );
+    }
+
+    /// A failure that redacts Git's output redacts each stream before it is
+    /// read as a terminal leaves it: a pre-commit hook that writes a
+    /// credential marker, a carriage return and then its secret fails with
+    /// the secret redacted, where reading it so first left "Git operation
+    /// failed: SECRET1", the secret alone, which no marker names. Every
+    /// failure that redacts reads Git's streams the same way
+    /// (`reported_redacted`), with the redaction it uses: the interactive
+    /// rebase's stop and Git LFS's tooling checks too.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_write_never_shows_a_secret_after_a_carriage_return() {
+        use std::os::unix::fs::PermissionsExt;
+        let cases = [
+            (
+                b"password=\rSECRET1\n".as_slice(),
+                "SECRET1",
+                "Git operation failed: password=[redacted]",
+            ),
+            (
+                b"Authorization: Bearer \rSECRET2\n",
+                "SECRET2",
+                "Git operation failed: Authorization:[redacted]",
+            ),
+        ];
+        for (written, secret, first) in cases {
+            for redact in [
+                authentication::redact_current as fn(&str) -> String,
+                redact_diagnostic,
+            ] {
+                let shown = reported_redacted(written, redact);
+                assert!(!shown.contains(secret), "{shown:?}");
+                assert!(shown.ends_with("[redacted]"), "{shown:?}");
+            }
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let root = temp.path().join("work");
+            let repo = GitRepository::init(&root, "main").unwrap();
+            let git = |args: &[&str]| {
+                let output = Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(args)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "git {args:?}: {output:?}");
+            };
+            let hooks = temp.path().join("hooks");
+            std::fs::create_dir(&hooks).unwrap();
+            let bytes = temp.path().join("written");
+            std::fs::write(&bytes, written).unwrap();
+            let hook = hooks.join("pre-commit");
+            std::fs::write(
+                &hook,
+                format!("#!/bin/sh\ncat '{}' >&2\nexit 1\n", bytes.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+            git(&["config", "commit.gpgSign", "false"]);
+            git(&["config", "user.name", "Fixture"]);
+            git(&["config", "user.email", "f@example.invalid"]);
+            std::fs::write(root.join("notes.txt"), "notes\n").unwrap();
+            git(&["add", "notes.txt"]);
+
+            let error = repo
+                .execute(&WriteCommand::Commit {
+                    message: "notes".into(),
+                })
+                .expect_err("the hook refuses the commit");
+            let report = format!("{error:#}");
+            assert!(!report.contains(secret), "{report:?}");
+            assert_eq!(report.lines().next(), Some(first), "{report:?}");
+            assert!(!repo.has_head().unwrap(), "nothing was committed");
+        }
+    }
+
+    /// A write whose `.git` goes away while it runs, its Git saying so where
+    /// the path it names holds a carriage return: here a pre-commit hook
+    /// that writes a credential marker, a return and its secret, then Git's
+    /// words, and removes the `.git`. The failure carries the type Git's raw
+    /// words decide, so `execute` words it as the repository gone
+    /// (`word_gone`), its own message as it was, redacted and then read as
+    /// a terminal leaves it, with no secret. Told apart by that message,
+    /// which keeps none of "not a git repository", the write said only "Git
+    /// operation failed: …".
+    #[cfg(unix)]
+    #[test]
+    fn a_write_finding_no_repository_is_worded_gone_whatever_its_message_keeps() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        let hooks = temp.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let written = temp.path().join("written");
+        std::fs::write(
+            &written,
+            b"password=\rSECRET1\nfatal: not a git repository: /a\rb/.git/worktrees/x\n",
+        )
+        .unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ncat '{}' >&2\nrm -rf '{}'\nexit 1\n",
+                written.display(),
+                root.join(".git").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        git(&["config", "commit.gpgSign", "false"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "f@example.invalid"]);
+        std::fs::write(root.join("notes.txt"), "notes\n").unwrap();
+        git(&["add", "notes.txt"]);
+
+        let error = repo
+            .execute(&WriteCommand::Commit {
+                message: "notes".into(),
+            })
+            .expect_err("the hook refuses the commit");
+        assert!(!root.join(".git").exists(), "the hook removed the `.git`");
+        // The write's own message, as before the type: redacted, then as a
+        // terminal leaves it.
+        let failed = "Git operation failed: password=[redacted]\nb/.git/worktrees/x\n\nReview Git's output and the current repository state. For a commit, check the configured hooks, identity and signing program. GitTurtle preserves that configuration and does not bypass failures or retry automatically.";
+        assert_eq!(error.root_cause().to_string(), failed);
+        assert!(
+            error.chain().any(|cause| cause.is::<NotARepository>()),
+            "{error:#}"
+        );
+        assert!(finds_no_repository(&error), "{error:#}");
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "The repository at {} is gone: Git finds no repository there: {failed}",
+                repo.path().display()
+            )
+        );
+        assert!(!format!("{error:#}").contains("SECRET1"), "{error:#}");
+    }
+
     #[test]
     fn push_passes_set_upstream_only_for_a_branch_without_one() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -2015,11 +2617,11 @@ mod tests {
         };
         // A branch.remote alone is not an upstream for Git either.
         git(&["config", "branch.main.remote", "origin"]);
-        let set = !branch_upstream_configured(&root, "main").unwrap();
+        let set = !branch_upstream_configured(GitTarget::unconfined(&root), "main").unwrap();
         assert!(set);
         assert_eq!(flagged(set), 1);
         git(&["config", "branch.main.merge", "refs/heads/main"]);
-        let set = !branch_upstream_configured(&root, "main").unwrap();
+        let set = !branch_upstream_configured(GitTarget::unconfined(&root), "main").unwrap();
         assert!(!set);
         assert_eq!(flagged(set), 0);
         let args = push_arguments("lan", "main", "trunk", set);
@@ -2027,7 +2629,7 @@ mod tests {
             args[args.len() - 3..],
             ["--", "lan", "refs/heads/main:refs/heads/trunk"]
         );
-        assert!(!branch_upstream_configured(&root, "other").unwrap());
+        assert!(!branch_upstream_configured(GitTarget::unconfined(&root), "other").unwrap());
     }
     #[test]
     fn mutation_deadline_includes_pipe_holding_hook_descendant_after_parent_exit() {
