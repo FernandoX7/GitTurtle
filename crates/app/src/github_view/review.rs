@@ -239,6 +239,15 @@ pub(super) struct ReviewState {
     /// renders, so the guard knows the focus it finds on nothing drawn went with a pane
     /// ([`Panel::hand_off_lost_pane_focus`]).
     pub pane_held: Option<FocusHandle>,
+    /// The focus of the failure's line on the panel's top line while the line is a stop of
+    /// its own ([`FailureStop`]).
+    pub failure_focus: FocusHandle,
+    /// Whether that line is a stop ([`FailureStop`]).
+    pub failure_stop: FailureStop,
+    /// Set as a landing moves focus onto the failure's line: a screen reader follows focus
+    /// and reads the line there, so the window's alert does not say that failure as well
+    /// ([`Panel::announce`]).
+    pub failure_read: bool,
     /// The control that held focus inside the body's view as the panel last closed, which
     /// reopening gives focus back to where a frame still draws it there
     /// ([`Panel::focus_reopened`]). Held weakly: a control's handle lives as long as its owner
@@ -266,6 +275,33 @@ pub(super) struct ReviewState {
     pub show_list: bool,
     pub connection_open: bool,
     pub recovery_open: bool,
+}
+/// Whether the failure's line on the panel's top line is a stop of its own: it is one for
+/// the failure or refusal a send ended in that offers no remedy, where focus goes to the line
+/// itself ([`Panel::focus_failure`]), from that landing until the line answers something else,
+/// and for as long as it then still holds focus. Any other failure's line, a read's or one no
+/// landing focused, is text between the stops, as it was, so the Tab order changes only where
+/// focus was put on the line. A frame reads the one value; the top line's change, which the
+/// panel finds anyway, moves it on ([`FailureStop::answered`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum FailureStop {
+    /// The line is no stop.
+    #[default]
+    No,
+    /// Focus has just been put on the line, which no frame has drawn as that failure's yet.
+    Landed,
+    /// A frame has drawn the line as that failure's.
+    Shown,
+}
+impl FailureStop {
+    /// The top line's failure changed or was answered again: the landing's own line is now
+    /// drawn, and any later answer is another failure's, whose line is no stop.
+    pub(super) fn answered(self) -> Self {
+        match self {
+            Self::Landed => Self::Shown,
+            Self::Shown | Self::No => Self::No,
+        }
+    }
 }
 impl ReviewState {
     pub fn new(window: &mut Window, cx: &mut Context<Panel>) -> Self {
@@ -323,6 +359,9 @@ impl ReviewState {
             closing: None,
             closers_drawn: Default::default(),
             pane_held: None,
+            failure_focus: cx.focus_handle().tab_stop(true),
+            failure_stop: FailureStop::No,
+            failure_read: false,
             held: None,
             held_part: None,
             reopening: Default::default(),
