@@ -1998,7 +1998,16 @@ impl HeldKeys {
     /// as a key pressed while that one is down acts no more than it does, and ending the
     /// other key's press where focus left while it was down ([`HeldKey::left`]), so a key-up
     /// lost outside costs this one press and no more.
-    fn key_down(&mut self, own: usize) {
+    ///
+    /// A keystroke the platform sends no key-up for (`withheld`, [`key_up_withheld`]) begins
+    /// no press and repeats none: nothing would end a press it began. A Command-Return on
+    /// Send to GitHub, which sends nothing, once began a press that never ended on macOS; the
+    /// next send's hand-off latched it ([`Panel::land_focus`]), and every Space typed in the
+    /// review body after that send was stopped until Return had been pressed again.
+    fn key_down(&mut self, own: usize, withheld: bool) {
+        if withheld {
+            return;
+        }
         if let Some(press) = self.keys[own].as_mut() {
             press.released = None;
             press.left = false;
@@ -2047,6 +2056,14 @@ fn held_key(keystroke: &gpui_kit::Keystroke) -> Option<usize> {
         "space" => Some(1),
         _ => None,
     }
+}
+/// Whether the platform sends no key-up for `keystroke`, as Cocoa sends none for a key
+/// pressed with Command held on macOS. A key pressed with any other modifier sends one, and
+/// off macOS so does a key pressed with Super, the platform modifier there. The toolkit's
+/// record of a held Return goes by the same condition (`gpui-base`'s `dialog.rs`,
+/// `key_up_withheld`); unverified without a Mac, as that one is.
+fn key_up_withheld(keystroke: &gpui_kit::Keystroke) -> bool {
+    cfg!(target_os = "macos") && keystroke.modifiers.platform
 }
 /// The control a request or refusal of the panel started from, where its failure, or that
 /// Cancel stopped it, answers ([`Panel::outcome`]): feedback answers on the control the person
@@ -3876,7 +3893,7 @@ impl Panel {
                 .any(|context| context.contains(review::BODY) || context.contains(HELD));
             let mut held = held.borrow_mut();
             if heard {
-                held.key_down(own);
+                held.key_down(own, key_up_withheld(&event.keystroke));
                 let in_field = event
                     .context_stack
                     .iter()
@@ -26442,6 +26459,59 @@ mod tests {
     async fn return_split_on_send_types_nothing_into_a_reply_that_fails(cx: &mut TestAppContext) {
         let handed = Handed::Wrote(Composed::Reply, false);
         assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    /// A Return pressed with the platform's command modifier latches nothing. On Send to
+    /// GitHub it sends nothing, and where the platform sends such a key no key-up, as macOS
+    /// does for one pressed with Command held, none follows it here either: it begins no
+    /// press, so the review then sent by a click hands focus to its body with nothing held,
+    /// and each Space typed there afterwards types. It once began a press that never ended;
+    /// the send's hand-off latched it, and every Space typed in the body was stopped until
+    /// Return had been pressed again.
+    #[gpui::test]
+    async fn a_command_return_on_send_leaves_the_body_its_keys(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        const COMMAND_RETURN: &str = "cmd-enter";
+        key_goes_down(cx, COMMAND_RETURN, false);
+        // As the platform delivers it: its key-up, where it sends one.
+        if !key_up_withheld(&gpui::Keystroke::parse(COMMAND_RETURN).unwrap()) {
+            key_comes_up(cx, COMMAND_RETURN);
+        }
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_some()),
+            "a Command-Return on Send sends nothing"
+        );
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.pending && panel.confirm.is_none() && panel.error.is_none(),
+                "the click sends the review: {:?}",
+                panel.error
+            );
+        });
+        assert!(
+            field_holds(&field, cx),
+            "the send hands focus to the review body"
+        );
+        let spaces = |text: &str| text.chars().filter(|typed| *typed == ' ').count();
+        for pressed in 1..=3 {
+            x11_key_down(cx, "space");
+            key_comes_up(cx, "space");
+            draw(cx);
+            let now = handed.text(&panel, cx);
+            assert!(
+                now.len() == typed.len() + pressed && spaces(&now) == spaces(&typed) + pressed,
+                "Space {pressed} typed in the body after the send types: {now:?}"
+            );
+        }
     }
 
     /// Where a held key's repeats are marked held and no release comes before the key's own,
