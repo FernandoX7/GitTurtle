@@ -181,13 +181,22 @@ def check_site(root=ROOT):
         if digest != item["sha256"]:
             errors.append(f"{target.name}: provenance hash needs updating")
         # A picture scaled down as a whole names its source's hash and the method.
-        if "source_sha256" in item or "method" in item:
-            source = root.parent / item["source"]
-            if not item.get("source_sha256") or not item.get("method"):
-                errors.append(f"{target.name}: a derivative needs source_sha256 and method")
-            elif (source.is_file()
-                  and hashlib.sha256(source.read_bytes()).hexdigest() != item["source_sha256"]):
+        # A picture taken from the repository's own captures is either that
+        # capture byte for byte or such a derivative: one that differs from its
+        # source without saying how is refused, and so is one whose source is gone.
+        derivative = "source_sha256" in item or "method" in item
+        source = root.parent / item["source"]
+        from_capture = str(item["source"]).startswith("docs/")
+        if derivative and (not item.get("source_sha256") or not item.get("method")):
+            errors.append(f"{target.name}: a derivative needs source_sha256 and method")
+        elif (derivative or from_capture) and not source.is_file():
+            errors.append(f"{target.name}: its source {item['source']} is missing")
+        elif derivative or from_capture:
+            source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            if derivative and source_digest != item["source_sha256"]:
                 errors.append(f"{target.name}: derivative source hash needs updating")
+            elif not derivative and source_digest != digest:
+                errors.append(f"{target.name}: differs from its source, so it needs source_sha256 and method")
     errors.extend(check_headers(public))
     return errors
 
