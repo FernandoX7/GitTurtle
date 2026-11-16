@@ -938,8 +938,17 @@ cover current upstream x86-64 Omarchy.
    first tag, with a security review (no workflow built it, while this plan and the README
    promise it), and `linux` in the release workflow then means both Linux targets; the
    `gitturtle-bin` PKGBUILD is drafted and tested with `makepkg` now, and the owner pushes
-   it to the AUR once the GitHub Release exists. Still the owner's: the first release's
-   tag, environment and dispatch, the four macOS packages, and the token check. Then add
+   it to the AUR once the GitHub Release exists. Owner decisions, 2026-11-16 (each the
+   recommendation put to the owner): `v0.1.0` is tagged after phase 5, run on an x86-64
+   Omarchy 4.5 machine the owner provides, where the CI-built archive and the
+   `gitturtle-bin` PKGBUILD are also run (the support claim is checked where most Omarchy
+   users are before anything is published); the four macOS packages get their declared
+   license text with the Cargo author's copyright line as recorded supplements, as `mac`
+   did, in a reviewed commit when macOS distribution is taken up with signing; the owner
+   runs the token check before the tag; the held Return with a composing input method
+   stays post-launch, with no engine installed for it now. Still the owner's: the x86-64
+   machine, the token check's run, and the first release's tag, environment and dispatch.
+   Then add
    an AUR package (`gitturtle-bin`) and
    later propose GitTurtle to `omacom/omarchy-pkgs`, so `omarchy pkg add gitturtle`
    works. The owner also plans macOS downloads from gitturtle.com, signed with the
