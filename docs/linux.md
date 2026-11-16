@@ -253,7 +253,9 @@ More than one monitor and a physical HiDPI panel have no recorded check yet; see
 the [validation record](validation.md#september-27-omarchy-and-hyprland).
 Omarchy 4.5 on x86-64 has no recorded check yet;
 [Omarchy on Apple Silicon](#omarchy-on-apple-silicon-aarch64) says what has
-run on Omarchy 4.5.
+run on Omarchy 4.5, and
+[Check a build on an Omarchy machine](#check-a-build-on-an-omarchy-machine)
+is the one command that makes that check.
 
 Under XWayland (launched with `env -u WAYLAND_DISPLAY`), History, Compare,
 Settings with the Omarchy theme, the command palette, shortcuts and typing
@@ -338,6 +340,61 @@ On Hyprland:
   `xdg-desktop-portal-gtk`'s dialog, which Omarchy's portal configuration
   selects. The first open after login took about four seconds while that
   backend started.
+
+### Check a build on an Omarchy machine
+
+[`scripts/omarchy-verify.sh`](../scripts/omarchy-verify.sh) checks a CI-built
+archive on an Omarchy 4.5 machine, x86-64 or AArch64, in one run, and packs
+what it found as one file to send back. It runs from a source checkout and
+needs nothing that a stock Omarchy lacks.
+
+Download the machine's archive from a Quality run
+([CI package downloads](ci-artifacts.md#find-and-verify-a-download)) into one
+folder with its `.sha256`, and with its `.manifest.json` and
+`ci-provenance.json` when you have them. Then run the script from a directory
+outside your home: GitTurtle's header shows the path of the demo repository
+the run makes, and the pictures should not carry your name.
+
+```sh
+cd /var/tmp
+/path/to/GitTurtle/scripts/omarchy-verify.sh \
+  ~/Downloads/GitTurtle-<version>-<commit>-linux-$(uname -m)-release.tar.gz
+```
+
+It prints what it is about to do and waits for Enter. First it changes
+nothing: it records the host, verifies the archive (its `.sha256`, the
+`SHA256SUMS` inside, `--build-info`, `ldd`, the manifest), installs it with
+the archive's own `install.py` into a disposable home, and builds the
+[`gitturtle-bin`](../packaging/aur/README.md) package from it. Then, for about
+six minutes in which the keyboard and pointer are left alone, it opens the
+installed build on a demo repository and takes a picture of GitTurtle's own
+window, never of the screen, at each step: the first launch, every theme
+`omarchy-theme-list` names, one other font, the window floating, its monitor
+at the scales 1, 1.25, 1.5 and 2 that its mode allows, the window inactive
+beside a terminal, and 30 seconds at rest before it is closed.
+
+What it changes, it puts back when the step ends and on every exit, Ctrl+C
+included: the theme and wallpaper (Omarchy's own `omarchy-theme-set`, with
+everything Omarchy retints on a switch), the monospace font and the terminal
+and fontconfig files `omarchy-font-set` rewrites, the monitor's scale, the
+window's floating state, the focused window, and two settings it turns on for
+the run, notification silencing and stay-awake. It refuses that part when
+Hyprland is not the compositor, when the session is locked, on battery below
+30 %, or when its results directory lies under your home. It never runs as root, never calls sudo, makes no network request,
+writes only under its results directory, and leaves an installed GitTurtle and
+its settings alone: the installer gets a disposable home and the app a new
+`XDG_CONFIG_HOME`.
+
+What comes back is `gitturtle-omarchy-check-<UTC date and time>.tar.gz`, which
+the last line names after "send this file back": `report.txt`, with one
+section per check ending in `RESULT <check> ok`, `FAILED: <why>` or
+`skipped: <why>`, the records it quotes, and the pictures. They name no host,
+no user and no home directory.
+
+`--no-desktop` runs only the part that changes nothing, `--hands` adds four
+prompts at the end for Omarchy's copy and paste bindings and the folder
+picker, and `--expect-revision <commit>` fails an archive built from another
+commit; `--help` has the rest. No x86-64 run is recorded yet.
 
 ### Omarchy on Apple Silicon (AArch64)
 
