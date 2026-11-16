@@ -40,6 +40,17 @@ impl Draft {
             Self::Reply(reply) => format!("reply:{}", json!(&reply.target)),
         }
     }
+    /// Whether this is the draft the creation `sent` was written in: the one saved for its
+    /// destination, head and base that holds the title and the description GitHub was sent.
+    /// Another head's, base's or repository's draft is not, whatever it holds, nor is text
+    /// saved under the same key that was not sent, which is still the person's.
+    pub fn sent_as(&self, sent: &NewPull) -> bool {
+        matches!(self, Self::Pull(kept) if kept.repository == sent.repository
+            && kept.head == sent.head
+            && kept.base == sent.base
+            && kept.title == sent.title
+            && kept.body == sent.body)
+    }
     #[cfg(test)]
     pub fn text(&self) -> &str {
         match self {
@@ -99,6 +110,21 @@ impl Draft {
         }
     }
 }
+/// What the panel's saver holds under a draft's key ([`save_batch`]): the draft to keep there,
+/// or the creation GitHub confirmed, whose own saved draft leaves the store
+/// ([`Draft::sent_as`]). Both go through the one serialized saver, so the removal replaces a
+/// snapshot of the sent text still queued under that key and lands after one being written,
+/// as a confirmed reply's empty snapshot does.
+#[derive(Clone, Debug)]
+pub(crate) enum Change {
+    Keep(Box<Draft>),
+    Created(Box<NewPull>),
+}
+impl From<Draft> for Change {
+    fn from(draft: Draft) -> Self {
+        Self::Keep(Box::new(draft))
+    }
+}
 #[derive(Default, Serialize, Deserialize)]
 struct Store {
     version: u32,
@@ -133,16 +159,23 @@ pub(crate) fn load() -> Result<Vec<Draft>> {
 pub(crate) fn save(draft: Draft) -> Result<()> {
     save_at(&path()?, draft)
 }
-pub(crate) fn save_batch(batch: &std::collections::HashMap<String, Draft>) -> Result<()> {
+pub(crate) fn save_batch(batch: &std::collections::HashMap<String, Change>) -> Result<()> {
     save_batch_at(&path()?, batch.values().cloned())
 }
 #[cfg(test)]
 fn save_at(path: &Path, draft: Draft) -> Result<()> {
     save_batch_at(path, [draft])
 }
-fn save_batch_at(path: &Path, drafts: impl IntoIterator<Item = Draft>) -> Result<()> {
+fn save_batch_at(path: &Path, changes: impl IntoIterator<Item = impl Into<Change>>) -> Result<()> {
     let mut store = load_at(path)?;
-    let drafts: Vec<_> = drafts.into_iter().collect();
+    let mut drafts = Vec::new();
+    for change in changes {
+        match change.into() {
+            Change::Keep(draft) => drafts.push(*draft),
+            // A confirmed creation takes exactly its own draft out, before anything is saved.
+            Change::Created(sent) => store.entries.retain(|entry| !entry.sent_as(&sent)),
+        }
+    }
     // An empty reply is queued through the same serialized saver as typing.
     // Removing it here cannot race an earlier accepted save, and completed
     // conversations do not consume the allowance for unfinished work. Apply
@@ -723,6 +756,104 @@ mod tests {
         changed = completed;
         changed.target.thread_id = "PRRT_another_thread".into();
         assert!(!reply_was_completed(&reopened, &changed));
+    }
+    fn creation(repository: &str, head: &str, base: &str, body: &str) -> NewPull {
+        NewPull {
+            repository: Repository::parse(repository).unwrap(),
+            title: "Title".into(),
+            body: body.into(),
+            head: head.into(),
+            base: base.into(),
+            draft: true,
+            expected_head: None,
+            expected_base: None,
+        }
+    }
+    /// What GitHub was sent for `draft`: its text, with the identities reviewed before Send.
+    fn sent(draft: &NewPull) -> NewPull {
+        NewPull {
+            expected_head: Some("1".repeat(40)),
+            expected_base: Some("2".repeat(40)),
+            ..draft.clone()
+        }
+    }
+    #[test]
+    fn a_confirmed_creation_removes_only_its_own_draft() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let own = creation("fixture/repo", "feature", "main", "Sent");
+        // Each holds the very text that was sent: only its key tells it from the creation's.
+        let others = [
+            creation("fixture/repo", "other", "main", "Sent"),
+            creation("fixture/repo", "feature", "release", "Sent"),
+            creation("fixture/other", "feature", "main", "Sent"),
+        ];
+        let kept: Vec<_> = others
+            .into_iter()
+            .map(Draft::Pull)
+            .chain([Draft::Reply(reply("An unfinished reply"))])
+            .collect();
+        save_batch_at(
+            &path,
+            kept.iter().cloned().chain([Draft::Pull(own.clone())]),
+        )
+        .unwrap();
+        save_batch_at(&path, [Change::Created(Box::new(sent(&own)))]).unwrap();
+        let keys = |entries: &[Draft]| entries.iter().map(Draft::key).collect::<Vec<_>>();
+        assert_eq!(keys(&load_at(&path).unwrap().entries), keys(&kept));
+        // Text saved under the creation's key since the send is not what GitHub was sent.
+        let newer = creation("fixture/repo", "feature", "main", "Written since");
+        save_at(&path, Draft::Pull(newer)).unwrap();
+        save_batch_at(&path, [Change::Created(Box::new(sent(&own)))]).unwrap();
+        let stored = load_at(&path).unwrap().entries;
+        assert_eq!(stored.len(), kept.len() + 1);
+        assert!(stored.iter().any(|entry| entry.text() == "Written since"));
+    }
+    #[test]
+    fn a_confirmed_creation_joins_the_save_of_its_draft_and_removes_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let own = creation("fixture/repo", "feature", "main", "Sent");
+        let other = creation("fixture/repo", "other", "main", "Unfinished");
+        save_at(&path, Draft::Pull(other)).unwrap();
+        let executor = crate::operations::SerialExecutor::new("creation-draft-test");
+        let saver = crate::commit_drafts::CoalescingSaver::<String, Change>::default();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let mut first_save = true;
+        let destination = path.clone();
+        let pending = Draft::Pull(own.clone());
+        let key = pending.key();
+        let response = saver
+            .queue_with(&executor, key.clone(), pending.into(), move |batch| {
+                if first_save {
+                    first_save = false;
+                    started.send(())?;
+                    gate.recv()?;
+                }
+                save_batch_at(&destination, batch.values().cloned())
+            })
+            .unwrap();
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // GitHub's answer arrives while the snapshot Send saved is still being written: the
+        // removal joins that save and lands after it, never before.
+        assert!(
+            saver
+                .queue_with(
+                    &executor,
+                    key,
+                    Change::Created(Box::new(sent(&own))),
+                    |_| { panic!("the removal must join the accepted save") }
+                )
+                .is_none()
+        );
+        release.send(()).unwrap();
+        futures::executor::block_on(response).unwrap().unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), 1);
+        assert_eq!(reopened.entries[0].text(), "Unfinished");
     }
     #[test]
     fn changed_head_keeps_older_review_recoverable() {

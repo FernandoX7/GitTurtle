@@ -2610,7 +2610,7 @@ struct Panel {
     /// The draft's save status, shared with each frame's labels, which copy nothing of it.
     save_status: SharedString,
     draft_issue: Option<DraftIssue>,
-    saver: commit_drafts::CoalescingSaver<String, Draft>,
+    saver: commit_drafts::CoalescingSaver<String, drafts::Change>,
     deferred_draft: DeferredDraft,
     draft_timer: Option<Task<()>>,
     save_response_generation: u64,
@@ -2947,7 +2947,7 @@ impl Panel {
                 let queued = self.saver.queue_with(
                     &owner.preferences_writer,
                     draft.key(),
-                    draft,
+                    draft.into(),
                     drafts::save_batch,
                 );
                 if queued.is_some() {
@@ -2974,8 +2974,12 @@ impl Panel {
             self.saved.push(draft.clone());
         }
         let response = match self.owner.update(cx, |owner, _| {
-            self.saver
-                .queue_with(&owner.preferences_writer, key, draft, drafts::save_batch)
+            self.saver.queue_with(
+                &owner.preferences_writer,
+                key,
+                draft.into(),
+                drafts::save_batch,
+            )
         }) {
             Ok(response) => response,
             Err(_) => {
@@ -3011,6 +3015,45 @@ impl Panel {
             .detach();
         }
         cx.notify();
+    }
+    /// A creation GitHub confirmed has used up its draft: exactly the draft `sent` was written
+    /// in leaves the draft store, as a confirmed reply's does, through the same saver as
+    /// typing, so the removal replaces a snapshot of the sent text still queued under its key
+    /// and lands after one being written ([`drafts::Change::Created`]). Recover drafts stops
+    /// counting it at once, and the form gives up the title and the description where it
+    /// still holds what was sent, so New pull request opens empty for that head and base.
+    /// Left there, the form reopened on the text just sent, and sending it again could only
+    /// be refused. Draft or Ready stays as the person chose it: a choice, not text that was
+    /// sent. Nothing else goes: another head's, base's or repository's draft, and text under
+    /// the same key that was not sent, are the person's ([`Draft::sent_as`]). A removal the
+    /// store refuses keeps the draft on disk, which loses nothing.
+    fn use_up_draft(&mut self, sent: &NewPull, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .deferred_draft
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.sent_as(sent))
+        {
+            self.draft_timer = None;
+            self.deferred_draft.clear();
+        }
+        if self.current_draft(cx).is_ok_and(|form| form.sent_as(sent)) {
+            self.title
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.body
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.save_status = SharedString::default();
+        }
+        self.saved.retain(|saved| !saved.sent_as(sent));
+        let key = Draft::Pull(sent.clone()).key();
+        let used = drafts::Change::Created(Box::new(sent.clone()));
+        if let Ok(response) = self.owner.update(cx, |owner, _| {
+            self.saver
+                .queue_with(&owner.preferences_writer, key, used, drafts::save_batch)
+        }) {
+            // A window closed next waits for the removal as it does for a save.
+            let _ = track_save_completion(&mut self.save_completion, response);
+        }
     }
     /// Answers a press with `error` on the failure line, said at once however often the same
     /// refusal repeats ([`Presses`]): on the panel's top line ([`Origin::Panel`]).
@@ -3696,6 +3739,11 @@ impl Panel {
     ///
     /// An answer that held only the number names it and says Refresh PRs opens it, and one
     /// that could not be read says what it once said: the creation was accepted either way.
+    ///
+    /// An answer that names the pull request, whole or by its number, confirms the creation,
+    /// and the creation's draft is used up ([`Self::use_up_draft`]). One that could not be
+    /// read confirms nothing of what was made, so the draft stays whole, as it does through
+    /// every failure and refusal: the text is the person's.
     fn show_created(
         &mut self,
         new: &NewPull,
@@ -3703,6 +3751,9 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !matches!(created, github::Created::Unread) {
+            self.use_up_draft(new, window, cx);
+        }
         self.create = false;
         self.review.show_list = true;
         let pull = match created {
@@ -22833,6 +22884,232 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         assert_an_edit_onto_a_saved_draft_takes_it(cx, true, true).await;
+    }
+
+    /// The draft [`creation_panel`]'s form holds, as [`form`] gives one.
+    fn sent_form() -> (String, String, bool) {
+        (
+            "Keep the review's place".into(),
+            "Typed description".into(),
+            true,
+        )
+    }
+
+    /// What a creation's end leaves of its draft, once the saves it queued have landed: the
+    /// New pull request form, chosen again by a click where the end closed it, then the
+    /// creation drafts of the store on disk and of Recover drafts, each as [`form`] gives one.
+    async fn left_of_the_draft(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        cx: &mut VisualTestContext,
+    ) -> [Vec<(String, String, bool)>; 3] {
+        use crate::tags::tests::draw;
+        for _ in 0..2 {
+            settle_panel(app, cx).await;
+            draw(cx);
+        }
+        if !panel.read_with(cx, |panel, _| panel.create) {
+            click_in_body(app, "github-create", cx).await;
+            settle_panel(app, cx).await;
+            draw(cx);
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create),
+            "New pull request opens the form"
+        );
+        [
+            vec![form(panel, cx)],
+            creations(&drafts::load().expect("the draft store")),
+            panel.read_with(cx, |panel, _| creations(&panel.saved)),
+        ]
+    }
+
+    /// A creation GitHub confirms uses up its draft: once the answer names the pull request,
+    /// by the whole pull request or by its number alone (`answer`), New pull request opens
+    /// the form empty for that head and base, the store on disk holds the draft no more and
+    /// Recover drafts no longer counts it; the notice names the pull request and says nothing
+    /// of a draft. The form reopened on the title and the description just sent, the store
+    /// and Recover drafts still holding them, and sending them again could only be refused.
+    async fn assert_a_confirmed_creation_uses_up_its_draft(cx: &mut TestAppContext, answer: &str) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let at = (13, 1480., 973.);
+        send_creation(&app, &panel, &script, at, (201, answer), cx).await;
+        let notice = panel
+            .read_with(cx, |panel, _| panel.notice.clone())
+            .expect("the creation's notice");
+        assert!(
+            notice.contains("ull request #203 created.") && !notice.contains("draft remains"),
+            "the notice names the pull request and no draft: {notice}"
+        );
+        let counted = panel.read_with(cx, |panel, _| panel.saved.len());
+        let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+        assert_eq!(
+            (counted, form, stored, listed),
+            (
+                0,
+                vec![(String::new(), String::new(), true)],
+                Vec::new(),
+                Vec::new()
+            ),
+            "what Recover drafts counts as the creation lands, then the reopened form, the \
+             draft store and Recover drafts"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+    }
+
+    #[gpui::test]
+    async fn a_confirmed_creation_uses_up_its_draft(cx: &mut TestAppContext) {
+        assert_a_confirmed_creation_uses_up_its_draft(cx, &made(true).to_string()).await;
+    }
+
+    #[gpui::test]
+    async fn a_creation_confirmed_by_its_number_uses_up_its_draft(cx: &mut TestAppContext) {
+        assert_a_confirmed_creation_uses_up_its_draft(cx, r#"{"number":203}"#).await;
+    }
+
+    /// A creation that fails keeps its draft whole, whatever the failure: after each of
+    /// [`FAILED_CREATIONS`], sent from the form the one before left, the form still holds the
+    /// title and the description, and the store and Recover drafts hold that draft once. An
+    /// uncertain outcome's text is the person's to send again or to keep.
+    #[gpui::test]
+    async fn a_creation_that_fails_keeps_its_draft(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        open_creation(&app, (13, 1480., 973.), cx).await;
+        for (kind, status, said) in FAILED_CREATIONS {
+            let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+            cx.update(|window, cx| send.focus(window, cx));
+            draw(cx);
+            press_return(cx);
+            settle_panel(&app, cx).await;
+            draw(cx);
+            assert_eq!(
+                panel
+                    .read_with(cx, |panel, _| panel.error.clone())
+                    .as_deref(),
+                Some(said),
+                "{kind}"
+            );
+            let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+            for (kept, held) in [
+                (form, "form"),
+                (stored, "store"),
+                (listed, "Recover drafts"),
+            ] {
+                assert_eq!(kept, [sent_form()], "{kind}: the {held} keeps the draft");
+            }
+        }
+    }
+
+    /// A creation refused because its branch already has a pull request keeps its draft
+    /// whole: nothing was created, and the text is the person's.
+    #[gpui::test]
+    async fn a_creation_refused_for_an_existing_pull_request_keeps_its_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        send_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(HELD)
+        );
+        let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+        for (kept, held) in [
+            (form, "form"),
+            (stored, "store"),
+            (listed, "Recover drafts"),
+        ] {
+            assert_eq!(kept, [sent_form()], "the {held} keeps the draft");
+        }
+    }
+
+    /// An accepted creation whose answer could not be read keeps its draft whole: no number
+    /// confirms what was made, so the text stays with the person, and New pull request
+    /// opens the form on it.
+    #[gpui::test]
+    async fn a_creation_whose_answer_cannot_be_read_keeps_its_draft(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let at = (13, 1480., 973.);
+        send_creation(&app, &panel, &script, at, (201, "<html>"), cx).await;
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request created. Refresh PRs to open it.")
+        );
+        let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+        for (kept, held) in [
+            (form, "form"),
+            (stored, "store"),
+            (listed, "Recover drafts"),
+        ] {
+            assert_eq!(kept, [sent_form()], "the {held} keeps the draft");
+        }
+    }
+
+    /// A confirmed creation takes its own draft and no other: drafts saved for another head,
+    /// for another base and for another repository, each holding the very title and
+    /// description that were sent, stay in the store and in Recover drafts.
+    #[gpui::test]
+    async fn a_confirmed_creation_leaves_every_other_draft(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let (title, body, draft) = sent_form();
+        let other = |repository: &str, head: &str, base: &str| {
+            Draft::Pull(NewPull {
+                repository: Repository::parse(repository).unwrap(),
+                title: title.clone(),
+                body: body.clone(),
+                head: head.into(),
+                base: base.into(),
+                draft,
+                expected_head: None,
+                expected_base: None,
+            })
+        };
+        let others = [
+            other("fixture/repo", "other", "main"),
+            other("fixture/repo", "feature", "release"),
+            other("fixture/other", "feature", "main"),
+        ];
+        for draft in others.clone() {
+            drafts::save(draft).expect("the draft store");
+        }
+        let at = (13, 1480., 973.);
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            at,
+            (201, &made(true).to_string()),
+            cx,
+        )
+        .await;
+        let [form, _, _] = left_of_the_draft(&app, &panel, cx).await;
+        assert_eq!(
+            form,
+            [(String::new(), String::new(), true)],
+            "the form opens empty"
+        );
+        let keys = |saved: &[Draft]| {
+            let mut keys: Vec<_> = saved.iter().map(Draft::key).collect();
+            keys.sort();
+            keys
+        };
+        let kept = keys(&others);
+        assert_eq!(
+            keys(&drafts::load().expect("the draft store")),
+            kept,
+            "the store keeps every other draft"
+        );
+        assert_eq!(
+            panel.read_with(cx, |panel, _| keys(&panel.saved)),
+            kept,
+            "Recover drafts keeps every other draft"
+        );
     }
 
     /// The script's answers to opening pull request 7: the pull request, its reviews, checks
