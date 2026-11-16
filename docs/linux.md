@@ -375,22 +375,26 @@ from it. The source revision is read from `build-info.json` in the archive
 before anything from the archive runs; when `--expect-revision`, the manifest
 or `ci-provenance.json` names another one, the executable, the installer, the
 package build and the whole desktop part are skipped as "identity not
-established". Then, for about two minutes and ten seconds a theme (about six
-minutes with the 24 themes of a stock Omarchy 4.5; the plan gives the figure
-for the machine), in which the keyboard and pointer are left alone, it moves
-to a workspace that holds no window, opens the
-installed build there on a demo repository and takes a picture of GitTurtle's
-own window, never of the screen, at each step: the first launch, every theme
+established". Then comes the desktop part, in which the keyboard and pointer
+are left alone. It takes about two minutes for everything but the themes, and
+about ten seconds more for each theme: about six minutes with the 24 themes of
+a stock Omarchy 4.5. Both figures are estimates: the plan gives the sum for
+the machine, and the run times every switch and writes it in the report. The
+script moves to a workspace that holds no window, opens the installed build
+there on a demo repository and takes a picture of GitTurtle's own window,
+never of the screen, at each step: the first launch, every theme
 `omarchy-theme-list` names, one other font, the window floating, its monitor
 at the scales 1, 1.25, 1.5 and 2 that its mode allows, the window inactive
 beside a terminal the script opens, and 30 seconds at rest before it is
 closed. A picture is refused, and its check fails, while another window or
-another monitor overlaps the window's rectangle. Where Omarchy's rules make
-the window translucent, the wallpaper shows through it faintly; the report
-gives the opacity Hyprland reports beside each picture.
+another monitor overlaps the window's rectangle, or while Omarchy's shell does
+not confirm that notifications are silenced. Where Omarchy's rules make the
+window translucent, the wallpaper shows through it faintly; the report gives
+the opacity Hyprland reports beside each picture.
 
 What it changes, it puts back when the step ends and on every exit, Ctrl+C
-included: the workspace shown, the theme and wallpaper, Omarchy's
+included, and also when its output is piped into a program that has ended: the
+workspace shown, the theme and wallpaper, Omarchy's
 `skip-<editor>-theme-changes` toggles, the monospace font and the terminal and
 fontconfig files `omarchy-font-set` rewrites (through a symbolic link too: the
 bytes of the file a link leads to are saved and put back, and the link stays a
@@ -405,12 +409,14 @@ the last lines of the run say where.
 A kill the script cannot catch (`kill -9`) or a power loss leaves the desktop
 as the step in progress had it. Before its first change the script prints
 where the starting state is written (`records/desktop-start.txt`, and
-`work/restore` with the saved copies) and how to put each thing back by hand:
-the workspace (`SUPER` and its number), the theme (`omarchy-theme-set`), the
-skip toggles the run made (remove the files `manifest.txt` lists under
-`~/.local/state/omarchy/toggles`), the font files (copy each saved `font-N`
-over the file `manifest.txt` names) and the font (`omarchy-font-set`), the
-monitor's scale (`hyprctl reload`), notification silencing
+`work/restore` with the saved copies) and how to put each thing back by hand,
+in the order the script itself uses: the workspace (`SUPER` and its number),
+the theme (`omarchy-theme-set`), the skip toggles the run made (remove the
+files `manifest.txt` lists under `~/.local/state/omarchy/toggles`, and that
+directory too when `manifest.txt` says the run made it), the font
+(`omarchy-font-set`) and only then the font files, because `omarchy-font-set`
+rewrites them (copy each saved `font-N` over the file `manifest.txt` names),
+the monitor's scale (`hyprctl reload`), notification silencing
 (`omarchy-shell notifications setDnd off`) and stay-awake
 (`omarchy-toggle-idle allow-idle`).
 
@@ -424,28 +430,44 @@ tells a running browser to read it again. The script keeps a switch from doing
 more. It turns Omarchy's skip toggles on for the run, so that no editor's
 settings are rewritten and no extension is installed (VS Code, VS Code
 Insiders, VSCodium and Cursor each have one in Omarchy 4.5). And it skips the
-themes check, with the reason, where a switch would reach the network or
-raise a dialog: where Omarchy's theme sync is on (each switch would push the
+themes check, with the reason, where a switch would do more than that. Two
+reasons stand whatever is asked, because a switch would reach the network or
+raise a dialog: Omarchy's theme sync being on (each switch would push the
 theme to your herdr machines over SSH; `omarchy-toggle-theme-sync` turns it
-off), where Omarchy's sudo rule for the browser colour is missing (each switch
-would raise a password dialog), where you have a `theme-set` hook of your own
-under `~/.config/omarchy/hooks` (move it aside for the run; the hook Omarchy
-installs for its wallpaper daemon is recognised), or where `omarchy-theme-set`
-names a step the script was not read against. A `font-set` hook of your own
-skips the font check in the same way.
+off), and Omarchy's sudo rule for the browser colour missing (each switch
+would raise a password dialog).
+
+Two more reasons are about what the script cannot vouch for, and the plan
+names each one before Enter. The first is a `theme-set` hook under
+`~/.config/omarchy/hooks` that is not byte for byte the one Omarchy packages
+for its wallpaper daemon: the plan gives the hook's file name and says whether
+it differs from the packaged `/usr/share/owe/10-owe-sync` (the installed hook
+is a copy made when that package was installed, so it differs on a stock
+machine once the package has been updated) or is not Omarchy's at all. The
+second is a step of `omarchy-theme-set` that is not among the 19 read for
+Omarchy 4.5.0, which a newer Omarchy may add. Read what the plan names, then
+either move a hook aside for the run or pass `--themes-anyway`, which runs the
+themes check despite those two reasons and nothing else: it never overrides
+theme sync or a missing sudo rule, and it covers only what the plan named, not
+a hook or step that appears afterwards. A `font-set` hook skips the font check
+in the same way, and no option overrides that.
 
 The plan is decided once, before Enter: a part it says will not run is not
 started later in the run. It refuses the desktop part when Hyprland is not the
 compositor, when the session is locked or Omarchy cannot tell whether it is,
-on battery below 30 %, or when the monitor has no workspace without a window.
-With the desktop part asked for, a results directory under your home stops the
-run at the start, before the archive is checked. It never runs as root and
-makes no network request. Its one use of sudo is the
-question Omarchy's own command asks, `sudo -n -l`, which runs nothing and
-never prompts, to learn whether that sudo rule exists. Besides the changes
-above it writes only under its results directory, and it leaves an installed
-GitTurtle and its settings alone: the installer gets a disposable home and the
-app a new `XDG_CONFIG_HOME`.
+on battery below 30 %, when the desktop is on a named workspace or shows a
+special one (the run starts from a numbered workspace and returns to it), or
+when the monitor has no workspace without a window. With the desktop part
+asked for, a results directory under your home stops the run at the start,
+before the archive is checked. It never runs as root and makes no network
+request. Its one use of sudo is the question Omarchy's own command asks,
+`sudo -n -l`, which elevates nothing, runs no command and never prompts, to
+learn whether that sudo rule exists; the plan says when it was asked. Besides
+the changes above it writes only under its results directory, and it leaves an
+installed GitTurtle and its settings alone: the installer gets a disposable
+home and the app a new `XDG_CONFIG_HOME`. It ends only processes it started:
+the app it started is ended before another is started, and all of them are
+ended on every exit.
 
 What comes back is `gitturtle-omarchy-check-<UTC date and time>.tar.gz`, which
 the last line names after "send this file back": `report.txt`, with one
@@ -458,7 +480,12 @@ file is packed only after every record was read as text and none of them does.
 The exit status is 0 when no check failed and the file was packed, 1 when a
 check failed or nothing was packed, and 2 when the script refused to start.
 
-`--no-desktop` runs only the part that changes nothing, and `--hands` adds
+`--no-desktop` runs only the part that changes nothing. `--skip LIST` leaves
+out the checks it names, separated by commas, from `package`, `themes`,
+`font`, `floating`, `scales`, `inactive`, `rest` and `hands`: each reports
+`skipped: by --skip` and changes nothing, the plan shows what will run, and
+any other name stops the run before anything runs (exit 2). It is for a run in
+stages, or a second run of only what failed. `--hands` adds
 four prompts at the end for Omarchy's copy and paste bindings and the folder
 picker; that part runs beside your terminal, on the workspace you started
 from. Each prompt takes a picture when you press Enter, except the third,

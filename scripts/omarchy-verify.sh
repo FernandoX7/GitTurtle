@@ -12,10 +12,13 @@
 # The archive's installer and executable run only after its checksums match and its
 # source revision is the expected one, and only with a disposable home under the
 # results directory. Nothing here runs as root or asks the network for anything, and
-# the only processes ended are the two this script starts itself (the app and one
-# terminal). Omarchy's own theme switch does more than this script does, so the
+# the only processes ended are ones this script started itself (the app, one at a
+# time; one terminal; the sleep of a wait that a stop cut short), each of them on
+# every exit. Omarchy's own theme switch does more than this script does, so the
 # themes check runs only where that switch reaches no network, installs nothing
-# and raises no dialog: see theme_blocker.
+# and raises no dialog, as far as its steps and hooks are known; one that is not
+# known stops the check unless the plan named it and --themes-anyway was given:
+# see theme_blocker.
 
 set -u
 
@@ -48,7 +51,8 @@ readonly FONT_FILES=(alacritty/alacritty.toml kitty/kitty.conf ghostty/config fo
 # under /etc through Omarchy's passwordless sudo rule, or through a pkexec dialog
 # where that rule is missing. The others rewrite and reload local configuration.
 # A step that is not in this list has not been read, so the themes check does not
-# run where omarchy-theme-set names one.
+# run where omarchy-theme-set names one, unless --themes-anyway was given and the
+# plan has named that step.
 readonly THEME_STEPS_READ=(omarchy-restart-btop omarchy-restart-helix omarchy-restart-hyprctl omarchy-restart-opencode
   omarchy-restart-terminal omarchy-theme-set-browser omarchy-theme-set-claude omarchy-theme-set-fcitx5
   omarchy-theme-set-foot omarchy-theme-set-gnome omarchy-theme-set-herdr-machines omarchy-theme-set-hermes
@@ -56,9 +60,18 @@ readonly THEME_STEPS_READ=(omarchy-restart-btop omarchy-restart-helix omarchy-re
   omarchy-theme-set-t3code omarchy-theme-set-tmux omarchy-theme-set-vscode)
 # The hooks Omarchy itself installs under ~/.config/omarchy/hooks: a hook that
 # equals one of these byte for byte is Omarchy's (it tells the wallpaper daemon,
-# over a local socket, to refresh). Any other hook is the owner's own program.
+# over a local socket, to refresh). Any other hook is one this script cannot vouch
+# for: the owner's own program, or a copy of Omarchy's that differs from the
+# packaged file (the installed hook is a copy made when its package was installed,
+# so an update of the package leaves the two different on a stock machine).
 readonly OMARCHY_HOOKS=(/usr/share/owe/10-owe-sync)
 readonly BROWSER_POLICY_COMMAND=/usr/bin/omarchy-theme-set-browser-policy # the path Omarchy's sudo rule names
+# The checks --skip can leave out; every later check stands on the others.
+readonly SKIPPABLE=(package themes font floating scales inactive rest hands)
+# Two reasons for skipping the themes check that are recognised again by their
+# words: the one --themes-anyway sets aside, and the one sudo's answer gives.
+readonly UNREAD="a switch here would also run what this script was not read against"
+readonly NO_SUDO_RULE="Omarchy's passwordless sudo rule for the browser colour is missing, so every switch would raise a password dialog"
 # A host or user called one of these is not removed from the records: the report
 # needs the word itself, and it identifies no one.
 readonly GENERIC_WORDS=" omarchy arch archlinux linux hyprland gitturtle localhost home user "
@@ -82,7 +95,7 @@ export LC_ALL=C
 # ---------------------------------------------------------------- state
 
 ARCHIVE_ARG="" OUT_ARG="" EXPECT_REVISION="" FONT_CHOICE=""
-DESKTOP=yes ASSUME_YES=no HANDS=no KEEP_WORK=no
+DESKTOP=yes ASSUME_YES=no HANDS=no KEEP_WORK=no THEMES_ANYWAY=no SKIPS=()
 ARCHIVE="" ARCHIVE_NAME="" ARCHIVE_SHA256="" ARCHIVE_TOP="" ARCHIVE_TRUSTED=no
 OUT="" OUT_CREATED="" WORK="" RECORDS="" PICTURES="" REPORT="" RESTORE=""
 BUNDLE="" BUNDLE_BINARY_SHA256="" BUNDLE_REVISION="" BUILD_REVISION="" IDENTITY_REFUSAL=""
@@ -96,7 +109,8 @@ START_FOCUS="" START_DND="" START_AWAKE=""
 START_WORKSPACE="" ALONE=no HANDS_DONE=0 HANDS_ABSENT=no
 LAUNCH="" DEMO="" APP_PID="" APP_ADDRESS=""
 START_THEME="" START_WALLPAPER=""
-THEME_BLOCKER="" SKIP_TOGGLES=() SKIP_TOGGLES_MADE=() TOGGLES_DIRECTORY_MADE=no
+THEME_BLOCKER="" THEME_UNKNOWNS=() SUDO_ASKED=no
+SKIP_TOGGLES=() SKIP_TOGGLES_MADE=() TOGGLES_DIRECTORY_MADE=no
 START_FONT="" FONT_PROBLEM="" FONT_SAVED=() FONT_DIRECTORY=() FONT_REAL=() FONT_LINK=()
 START_FLOATING=""
 MONITOR_NAME="" MONITOR_MODE="" MONITOR_POSITION="" MONITOR_START_SCALE="" MONITOR_START_LINE=""
@@ -118,6 +132,15 @@ it, and its .manifest.json and ci-provenance.json are read when they do.
   --expect-revision SHA  the commit the archive must be built from; with another
                          one, nothing from the archive runs
   --no-desktop          run only the checks that change nothing (host to package)
+  --skip LIST            leave out the checks LIST names, separated by commas, from:
+                         package, themes, font, floating, scales, inactive, rest,
+                         hands. Each reports "skipped: by --skip" and changes
+                         nothing; any other name stops the run before anything
+                         runs (exit 2). The plan shows what will run
+  --themes-anyway        run the themes check although a theme switch here also
+                         runs a hook or a step this script was not read against,
+                         each of which the plan names; it sets nothing else aside
+                         (see below)
   --yes                  do not wait for Enter before starting
   --hands                end with four prompts for you: Omarchy's copy and paste
                          bindings and the folder picker (about two minutes)
@@ -133,7 +156,7 @@ why>" (the check ran, but could not cover a part named below), "RESULT <check>
 FAILED: <why>" or "RESULT <check> skipped: <why>"; one failure does not stop the
 next check. The exit status is 0 when no check FAILED and the results were packed,
 1 when a check FAILED or the results could not be packed, and 2 when the script
-refused to start.
+refused to start or was given an option or a --skip name it does not know.
   host      architecture, kernel, page size, Omarchy and Hyprland versions, each
             monitor's name, mode and scale, the GPU, the current theme and font
   archive   the .sha256, the extraction, SHA256SUMS inside, the source revision
@@ -173,33 +196,47 @@ own commands:
   - notification silencing (on, so that none lands in a picture) and stay-awake
     (on, so that neither the screensaver nor the lock starts during the run).
 Each is recorded before it is changed and put back when its check ends and on every
-exit, Ctrl+C included (a stop takes effect when the step in progress returns). The
+exit, Ctrl+C included, and output that is no longer read (the run piped into a
+program that has ended); a stop takes effect when the step in progress returns. The
 script prints its plan and waits for Enter; the plan is decided once, and a part it
 says will not run is not started later in the run. It refuses the desktop part
 when Hyprland is not the compositor, when the session is locked or its lock state
-cannot be told, on battery below 30 %, or when this monitor has no workspace
-without a window. With the desktop part asked for, a results directory that lies
-under your home or names you or the host stops the run at the start (exit 2):
-GitTurtle's header shows the demo repository's path, so run it from /var/tmp.
-The desktop part takes about two minutes and ten seconds a theme: about six
-minutes with the 24 themes of a stock Omarchy 4.5. The plan gives the figure for
-this machine; --hands adds your own time.
+cannot be told, on battery below 30 %, when the desktop is on a named workspace
+or shows a special one (the run starts from a numbered workspace and returns to
+it), or when this monitor has no workspace without a window. With the desktop
+part asked for, a results directory that lies under your home or names you or
+the host stops the run at the start (exit 2): GitTurtle's header shows the demo
+repository's path, so run it from /var/tmp.
+The desktop part takes about two minutes for everything but the themes, and about
+ten seconds more for each theme: about six minutes with the 24 themes of a stock
+Omarchy 4.5. Both figures are estimates; the run times every switch and writes
+it in the report. The plan gives the sum for this machine; --hands adds your own
+time.
 A kill the script cannot catch (kill -9) or a power loss leaves the desktop as the
 step in progress had it. Before the first change the script prints where the
 starting state is written (records/desktop-start.txt, and work/restore under the
 results directory, with the saved copies and their manifest.txt) and how to put
-each thing back by hand: the workspace (SUPER + its number), the theme
-(omarchy-theme-set), the skip toggles this run made (remove them), the font files
-(copy each saved font-N over the file manifest.txt names) and the font
-(omarchy-font-set), the scale (hyprctl reload), notification silencing
-(omarchy-shell notifications setDnd off) and stay-awake (omarchy-toggle-idle
-allow-idle).
+each thing back by hand, in the order the script itself uses: the workspace
+(SUPER + its number), the theme (omarchy-theme-set), the skip toggles this run
+made and the toggles directory if it made that too (remove them), the font
+(omarchy-font-set) and only then the font files, which omarchy-font-set rewrites
+(copy each saved font-N over the file manifest.txt names), the scale (hyprctl
+reload), notification silencing (omarchy-shell notifications setDnd off) and
+stay-awake (omarchy-toggle-idle allow-idle).
 The themes check is skipped, with the reason, where a switch would do more than the
-above: where Omarchy's theme sync is on (it pushes each theme to your herdr machines
-over SSH), where Omarchy's sudo rule for the browser colour is missing (each switch
-would raise a password dialog), where you have a theme-set hook of your own (the
-script cannot know what it does), or where omarchy-theme-set has a step that was
-not read for this script. The font check is skipped where you have a font-set hook.
+above. Two reasons stand whatever is asked: Omarchy's theme sync being on (it
+pushes each theme to your herdr machines over SSH), and Omarchy's sudo rule for
+the browser colour missing (each switch would raise a password dialog). Two more
+are named in the plan, one by one, and --themes-anyway runs the check despite
+them: a theme-set hook that is not byte for byte the one Omarchy packages (the
+plan gives its file name and says whether it differs from the packaged
+/usr/share/owe/10-owe-sync, as the installed copy does after that package was
+updated, or is not Omarchy's at all), and a step of omarchy-theme-set that is
+not among the 19 read for Omarchy 4.5.0 (a newer Omarchy may add one). The
+script cannot know what such a hook or step does: read it first. --themes-anyway
+sets aside those two reasons only, and only for what the plan named: never theme
+sync, never the sudo rule, and not a hook or step that appears after the plan.
+The font check is skipped where a font-set hook would run.
 
 Identity: the checksum beside an archive shows that the download is whole, not who
 built it. Take the archive from the green Quality run on main for the commit being
@@ -210,24 +247,29 @@ manifest or ci-provenance.json names another one, the installer, the executable,
 the package build and the desktop part are all skipped: identity not established.
 Privacy: report.txt and the records name no host, no user and no home directory
 (written "~"), and they are packed only after every record was read as text and
-none of them does; the app shows only the demo repository made for the run. A picture is
-a grab of GitTurtle's own window rectangle, never of the screen, and is refused
-(its check FAILED, no file written) while another window or another monitor
-overlaps that rectangle. Where Omarchy's rules make the window translucent, the
-wallpaper shows through it faintly; the report gives the opacity Hyprland reports.
-The script makes no network request, and the themes check runs only where
-Omarchy's theme switch makes none either.
+none of them does; the app shows only the demo repository made for the run. A
+picture is a grab of GitTurtle's own window rectangle, never of the screen, and
+is refused (its check FAILED, no file written) while another window or another
+monitor overlaps that rectangle, or while Omarchy's shell does not confirm that
+notifications are silenced. Where Omarchy's rules make the window translucent,
+the wallpaper shows through it faintly; the report gives the opacity Hyprland
+reports. The script makes no network request, and the themes check runs only
+where what the script has read of Omarchy's theme switch makes none either; a
+hook or step that --themes-anyway sets aside is one it has not read.
 Safety: it never runs as root. It asks sudo one question, the one Omarchy's own
-command asks ("sudo -n -l": nothing runs and nothing prompts), to learn whether
-Omarchy's passwordless rule for the browser colour exists; Omarchy's theme switch
-then uses that rule, and nothing else here uses sudo. Besides the changes above, it
-writes only under the results directory; your installed GitTurtle and its settings are never touched (the
-installer gets a disposable home, the app a new XDG_CONFIG_HOME); it ends only the
-processes it started; every wait has a limit; a symlinked or missing archive, a
-missing .sha256 or a checksum that does not match stops it before anything from the
-archive runs. What it saved before a change it puts back by a copy and a rename, so
-no file of yours is ever missing in between; if anything is not as it was found,
-the saved copies stay under the results directory and the last lines say where.
+command asks ("sudo -n -l": it elevates nothing, runs no command and prompts for
+nothing), to learn whether Omarchy's passwordless rule for the browser colour
+exists; the plan says when it was asked. Omarchy's theme switch then uses that
+rule, and nothing else here uses sudo. Besides the changes above, it writes only
+under the results directory; your installed GitTurtle and its settings are never
+touched (the installer gets a disposable home, the app a new XDG_CONFIG_HOME);
+it ends only processes it started, ends the app it started before it starts
+another (--hands opens a second one), and ends all of them on every exit; every
+wait has a limit; a symlinked or missing archive, a missing .sha256 or a
+checksum that does not match stops it before anything from the archive runs.
+What it saved before a change it puts back by a copy and a rename, so no file of
+yours is ever missing in between; if anything is not as it was found, the saved
+copies stay under the results directory and the last lines say where.
 
 It ends by printing "send this file back:" and the packed results, DIR.tar.gz.
 TEXT
@@ -358,6 +400,12 @@ parse_arguments() {
         FONT_CHOICE=$2
         shift
         ;;
+      --skip)
+        [[ -n ${2:-} ]] || die "--skip needs a list of checks, comma-separated, from: ${SKIPPABLE[*]}."
+        add_skips "$2"
+        shift
+        ;;
+      --themes-anyway) THEMES_ANYWAY=yes ;;
       --no-desktop) DESKTOP=no ;;
       --yes) ASSUME_YES=yes ;;
       --hands) HANDS=yes ;;
@@ -371,6 +419,26 @@ parse_arguments() {
     shift
   done
   [[ -n $ARCHIVE_ARG ]] || die "name the archive to check (see --help)."
+}
+# --skip LIST: the names of checks to leave out, separated by commas. A name that
+# is not one of SKIPPABLE stops the run here, before anything else happens.
+add_skips() {
+  local name
+  local -a names=()
+  IFS=, read -ra names <<<"$1"
+  for name in "${names[@]}"; do
+    [[ $name =~ ^[a-z]+$ && " ${SKIPPABLE[*]} " == *" $name "* ]] ||
+      die "--skip: \"$name\" is not a check that can be skipped. It takes, comma-separated: ${SKIPPABLE[*]}."
+    skip_named "$name" || SKIPS+=("$name")
+  done
+}
+skip_named() { [[ " ${SKIPS[*]} " == *" $1 "* ]]; }
+# The RESULT of a check that --skip named; false then. Every check that can be
+# skipped asks this first, so a skipped check reads nothing and changes nothing.
+skip_gate() {
+  skip_named "$CHECK" || return 0
+  skipped "by --skip"
+  return 1
 }
 
 refuse_missing_tools() {
@@ -484,6 +552,16 @@ desktop_refusal() {
     echo "$low"
     return
   fi
+  case $(starting_workspace) in
+    special)
+      echo "a special workspace (a scratchpad) is shown on this monitor, and the run starts from a numbered workspace and returns to it: hide the special one first"
+      return
+      ;;
+    named)
+      echo "the desktop is on a named workspace, and the run starts from one of this monitor's ten numbered workspaces and returns to it: go to a numbered one first"
+      return
+      ;;
+  esac
   if [[ -z $(empty_workspace) ]]; then
     echo "this monitor has no workspace without a window for the run to use: empty one of its ten"
   fi
@@ -509,20 +587,43 @@ theme_skip_toggles() {
     grep -oE 'omarchy-toggle-enabled skip-[a-z0-9-]+-theme-changes' "$source"
   done < <(theme_steps) | sed 's/^omarchy-toggle-enabled //' | sort -u
 }
-# How many hooks of the owner's own Omarchy would run for EVENT (theme-set or
-# font-set): omarchy-hook runs the file of that name and every file in its .d
-# directory that is not a .sample.
+# The hooks Omarchy would run for EVENT (theme-set or font-set) that are not byte
+# for byte one it packages, one a line: the hook's file name under
+# ~/.config/omarchy/hooks, and whether it is a copy of a packaged hook that
+# differs from it or no hook of Omarchy's at all. omarchy-hook runs the file of
+# that name and every file in its .d directory that is not a .sample.
 own_hooks() {
-  local hook known count=0 own
+  local hook known name packaged own
   for hook in "$HOOKS/$1" "$HOOKS/$1.d"/*; do
     [[ -f $hook && $hook != *.sample ]] || continue
-    own=yes
+    own=yes packaged=""
     for known in "${OMARCHY_HOOKS[@]}"; do
       [[ ! -f $known ]] || ! cmp -s -- "$known" "$hook" || own=no
+      [[ ${known##*/} != "${hook##*/}" ]] || packaged=$known
     done
-    [[ $own == no ]] || count=$((count + 1))
+    [[ $own == yes ]] || continue
+    # A file name is the owner's to choose: only plain characters are repeated.
+    name=$(printf '%s' "${hook#"$HOOKS"/}" | tr -c 'A-Za-z0-9._+/-' '?')
+    if [[ -z $packaged ]]; then
+      echo "the hook $name, which is not one that Omarchy packages"
+    elif [[ -f $packaged ]]; then
+      echo "the hook $name, which differs from the packaged $packaged"
+    else
+      echo "the hook $name, which has the name of Omarchy's $packaged, a file that is not installed to compare it with"
+    fi
   done
-  echo "$count"
+}
+# What a theme switch here would run that this script cannot vouch for, one a
+# line, each by its file name: a step omarchy-theme-set names that is not among
+# those read, and a theme-set hook that is not Omarchy's packaged one. These, and
+# only these, are what --themes-anyway sets aside once the plan has named them.
+theme_unknowns() {
+  local step
+  for step in $(theme_steps); do
+    [[ " ${THEME_STEPS_READ[*]} " == *" $step "* ]] ||
+      echo "the step $step, which is not among the ${#THEME_STEPS_READ[@]} read for Omarchy 4.5.0"
+  done
+  own_hooks theme-set
 }
 # True when sudo would run Omarchy's browser-colour command without a password:
 # the question omarchy-theme-set-browser-policy asks before it chooses between
@@ -533,19 +634,17 @@ browser_rule_present() {
 # Why an omarchy-theme-set here would reach the network, install something or
 # raise a dialog, or could not be judged; nothing when it does none of these.
 # The sudo question comes last, after everything that can be read from files.
+# --themes-anyway sets aside one reason only: a hook or a step that is not known,
+# and only one the plan named (THEME_UNKNOWNS). Never theme sync, never the sudo
+# rule, never a step that could not be read or an editor without its toggle.
 theme_blocker() {
-  local step steps editor guarded hooks
+  local steps editor guarded unknown
+  local -a unknowns=() late=()
   steps=$(theme_steps)
   if [[ -z $steps ]]; then
     echo "omarchy-theme-set's per-application steps could not be read from its source"
     return
   fi
-  for step in $steps; do
-    if [[ " ${THEME_STEPS_READ[*]} " != *" $step "* ]]; then
-      echo "omarchy-theme-set here runs $step, a step this script was not read against (it knows Omarchy 4.5's)"
-      return
-    fi
-  done
   editor=$(command -v omarchy-theme-set-vscode) || editor=""
   if [[ -n $editor ]]; then
     guarded=$(grep -cE '^if ! omarchy-toggle-enabled skip-[a-z0-9-]+-theme-changes; then$' "$editor")
@@ -558,54 +657,141 @@ theme_blocker() {
     echo "Omarchy's theme sync is on, and every switch would push the theme to your herdr machines over SSH (omarchy-toggle-theme-sync turns it off)"
     return
   fi
-  hooks=$(own_hooks theme-set)
-  if ((hooks > 0)); then
-    echo "$hooks theme-set hook(s) of your own under ~/.config/omarchy/hooks would run on every switch, and the script cannot know what they do: move them aside for the run"
-    return
+  mapfile -t unknowns < <(theme_unknowns)
+  if ((${#unknowns[@]} > 0)); then
+    if [[ $THEMES_ANYWAY == no ]]; then
+      echo "$UNREAD: $(printf '%s; ' "${unknowns[@]}" | sed 's/; $//'). Read each one: --themes-anyway then runs the themes check despite these, and despite nothing else"
+      return
+    fi
+    for unknown in "${unknowns[@]}"; do
+      [[ $'\n'"$(printf '%s\n' "${THEME_UNKNOWNS[@]}")"$'\n' == *$'\n'"$unknown"$'\n'* ]] || late+=("$unknown")
+    done
+    if ((${#late[@]} > 0)); then
+      echo "$UNREAD, and --themes-anyway covers only what the plan named, not what appeared after it: $(printf '%s; ' "${late[@]}" | sed 's/; $//')"
+      return
+    fi
   fi
   if ! browser_rule_present; then
-    echo "Omarchy's passwordless sudo rule for the browser colour is missing, so every switch would raise a password dialog"
+    echo "$NO_SUDO_RULE"
   fi
+}
+# theme_blocker asks sudo its one question only when nothing it read from files
+# stands in the way, so the question was asked exactly when the answer REASON is
+# none or the missing rule.
+sudo_question_asked() { have sudo && [[ -z $1 || $1 == "$NO_SUDO_RULE" ]]; }
+
+# Which checks the plan lets run and which it does not, each with its reason. A
+# check that runs can still end "skipped" for a reason it finds itself.
+plan_checks() {
+  local name reason
+  local -a run=(host archive install) reasons=() not=()
+  local -A names=()
+  for name in package launch themes font floating scales inactive rest hands; do
+    reason=""
+    if skip_named "$name"; then
+      reason="by --skip"
+    elif [[ $name != package && -n $DESKTOP_REFUSAL ]]; then
+      reason="no desktop part"
+    elif [[ $name == themes && -n $THEME_BLOCKER ]]; then
+      reason="see below"
+    elif [[ $name == hands && $HANDS == no ]]; then
+      reason="--hands was not given"
+    fi
+    if [[ -z $reason ]]; then
+      run+=("$name")
+    else
+      [[ -n ${names[$reason]:-} ]] || reasons+=("$reason")
+      names[$reason]+=${names[$reason]:+, }$name
+    fi
+  done
+  say "Checks that run: ${run[*]}."
+  for reason in "${reasons[@]}"; do not+=("${names[$reason]} ($reason)"); done
+  ((${#not[@]} == 0)) || say "Not run: $(printf '%s; ' "${not[@]}" | sed 's/; $//')."
+}
+# The plan's word on the one question sudo was asked to decide it, when it was.
+say_sudo_asked() {
+  [[ $SUDO_ASKED == yes ]] || return 0
+  say "    To learn whether that sudo rule exists, sudo was asked one question before this"
+  say "    plan was printed (sudo -n -l, the question Omarchy's own command asks): it"
+  say "    elevates nothing and runs no command."
+}
+# The plan's naming of each hook or step that is not known: HEADING, then one a line.
+name_unknowns() {
+  local unknown
+  ((${#THEME_UNKNOWNS[@]} > 0)) || return 0
+  say "    $1"
+  for unknown in "${THEME_UNKNOWNS[@]}"; do say "      $unknown"; done
 }
 
 show_plan_and_wait() {
   local themes="?" answer="" seconds=$REST_OF_DESKTOP
   say "GitTurtle on Omarchy: check of $ARCHIVE_NAME (its .sha256 matches)."
   say "Results: $OUT, packed at the end as ${OUT##*/}.tar.gz beside it."
+  plan_checks
   say ""
   say "First, nothing on the desktop changes: this host, the archive, its installer into a"
-  say "disposable home under the results directory, and the gitturtle-bin package build."
+  if skip_named package; then
+    say "disposable home under the results directory (the package build is skipped)."
+  else
+    say "disposable home under the results directory, and the gitturtle-bin package build."
+  fi
   if [[ -n $DESKTOP_REFUSAL ]]; then
     say "The desktop part will NOT run: $DESKTOP_REFUSAL."
   else
     have omarchy-theme-list && themes=$(timeout 10 omarchy-theme-list 2>/dev/null | grep -c .)
-    [[ -z $THEME_BLOCKER && $themes =~ ^[0-9]+$ ]] && seconds=$((seconds + themes * THEME_SECONDS))
-    say "Then the desktop part, about $(((seconds + 59) / 60)) minutes ($THEME_SECONDS s a theme, and $((REST_OF_DESKTOP / 60)) minutes for"
-    say "the rest); leave the keyboard and pointer alone:"
+    if skip_named themes || [[ -n $THEME_BLOCKER || ! $themes =~ ^[0-9]+$ ]]; then
+      say "Then the desktop part, about $((REST_OF_DESKTOP / 60)) minutes (an estimate); leave the keyboard and"
+      say "pointer alone:"
+    else
+      seconds=$((seconds + themes * THEME_SECONDS))
+      say "Then the desktop part, about $(((seconds + 59) / 60)) minutes: about $((REST_OF_DESKTOP / 60)) for everything but the themes,"
+      say "and about $THEME_SECONDS s for each of the $themes themes. Both are estimates: the run times"
+      say "every switch and writes it in the report. Leave the keyboard and pointer alone:"
+    fi
     say "  - the desktop moves to an empty workspace of this monitor, where GitTurtle"
     say "    opens on a demo repository; notifications are silenced and the session is"
     say "    kept awake;"
-    if [[ -n $THEME_BLOCKER ]]; then
+    if skip_named themes; then
+      say "  - the themes are NOT switched: by --skip;"
+    elif [[ -n $THEME_BLOCKER ]]; then
       say "  - the themes are NOT switched: $THEME_BLOCKER;"
+      say_sudo_asked
+      [[ $THEME_BLOCKER == "$UNREAD"* ]] ||
+        name_unknowns "Also in the way, and all that --themes-anyway would set aside (never the reason above):"
     else
       say "  - each of $themes Omarchy themes is set with omarchy-theme-set. A switch also"
       say "    retints what Omarchy retints: the terminals and the programs in them,"
       say "    Hyprland's configuration, GTK's colour scheme and icons, Omarchy's themes for"
-      say "    the coding agents it supports, T3 Code, Obsidian and fcitx5, the keyboard"
-      say "    backlight, and the browsers' colour: a file under /etc, written through Omarchy's"
-      say "    own passwordless sudo rule, which a running browser is told to read again."
+      say "    the coding agents it supports, T3 Code, Obsidian and fcitx5. It still touches"
+      say "    two things that are not files of yours: the keyboard backlight, where Omarchy"
+      say "    drives one, and the browsers' colour, a file under /etc written through"
+      say "    Omarchy's own passwordless sudo rule, which a running browser is told to read again."
+      say_sudo_asked
       say "    For the run these Omarchy toggles are on, so that no editor is touched and no"
       say "    extension installed: ${SKIP_TOGGLES[*]:-none exist here}."
-      say "    Nothing is sent to herdr machines (theme sync is off), and no hook of yours runs;"
+      if ((${#THEME_UNKNOWNS[@]} == 0)); then
+        say "    Nothing is sent to herdr machines (theme sync is off), and no hook of yours runs;"
+      else
+        say "    Nothing is sent to herdr machines (theme sync is off)."
+        name_unknowns "--themes-anyway was given, so every switch also runs, unread by this script:"
+      fi
     fi
-    say "  - one other monospace font is set with omarchy-font-set;"
-    say "  - the window floats; its monitor goes through the scales ${SCALES[*]};"
-    say "  - one terminal opens and closes; GitTurtle is closed."
+    skip_named font || say "  - one other monospace font is set with omarchy-font-set;"
+    skip_named floating || say "  - the window floats;"
+    skip_named scales || say "  - the window's monitor goes through the scales ${SCALES[*]};"
+    skip_named inactive || say "  - one terminal opens and closes;"
+    if skip_named rest; then
+      say "  - GitTurtle is not rested and closed (the rest check is skipped): the script"
+      say "    ends it by its pid, before --hands opens its own or when the run ends."
+    else
+      say "  - GitTurtle rests for $REST_SECONDS s and is closed."
+    fi
     say "Everything is put back as it was found: workspace, theme and wallpaper, the"
     say "toggles, font and the files omarchy-font-set rewrites, scale, tiling, focus,"
     say "notifications and idle. A picture of GitTurtle's own window is taken at each"
-    say "step, never of the screen, and only while nothing else overlaps the window."
-    [[ $HANDS == no ]] || say "At the end it asks four things of you (--hands), beside this terminal."
+    say "step, never of the screen, and only while nothing else overlaps the window and"
+    say "notifications are known to be silenced."
+    [[ $HANDS == no ]] || skip_named hands || say "At the end it asks four things of you (--hands), beside this terminal."
     say "Before the first change it prints where the desktop's starting state and the saved"
     say "copies are kept, and how to put the desktop back by hand after a kill or a power loss."
   fi
@@ -634,6 +820,20 @@ focus_workspace() { hypr_request dispatch "hl.dsp.focus({ workspace = \"$1\" })"
 
 # "ID WINDOWS" of the workspace that has the focus.
 active_workspace() { hypr_json activeworkspace | jq -r '"\(.id) \(.windows)"' 2>/dev/null; }
+# "numbered" where the run can start, else "special" or "named": the run leaves for
+# an empty workspace among the monitor's ten numbered ones and comes back by its
+# number, and no picture is taken under a special workspace. Hyprland gives a
+# named workspace an id below 1.
+starting_workspace() {
+  hypr_json monitors | jq -r '
+    ([.[] | select(.focused)] | first) as $monitor
+    | if $monitor == null then "unknown"
+      elif ($monitor.specialWorkspace.name // "") != "" then "special"
+      elif ($monitor.activeWorkspace.id | type) != "number" then "unknown"
+      elif $monitor.activeWorkspace.id < 1 then "named"
+      else "numbered"
+      end' 2>/dev/null
+}
 # The first workspace without a window among the ten Omarchy gives the focused
 # monitor (1-10 on the first monitor, 11-20 on the next), and never one that
 # another monitor shows; nothing when all ten hold windows.
@@ -717,11 +917,17 @@ picture_target() {
 }
 
 # pictures/NAME.png: the app's own window rectangle, grabbed only while nothing
-# else can be in it and discarded if that changed during the grab.
+# else can be in it and discarded if that changed during the grab. A notification
+# is drawn over windows and may show anything, so a picture is taken only while
+# the shell itself says that notifications are silenced.
 picture() {
   local name=$1 file=$PICTURES/$1.png target verdict rest x y w h scale floating focus=inactive
   if session_locked; then
     report "picture $name: not taken: the session is locked"
+    return 1
+  fi
+  if [[ $(dnd_state) != on ]]; then
+    report "picture $name: not taken: notification silencing could not be confirmed, and a notification would be drawn over the window"
     return 1
   fi
   target=$(picture_target)
@@ -736,7 +942,7 @@ picture() {
     report "picture $name: not taken: grim failed ($(tail -n 1 "$WORK/grim.log"))"
     return 1
   fi
-  if [[ $(picture_target) != "$target" ]] || session_locked; then
+  if [[ $(picture_target) != "$target" ]] || session_locked || [[ $(dnd_state) != on ]]; then
     rm -f -- "$file"
     report "picture $name: discarded: the desktop changed while it was taken"
     return 1
@@ -902,7 +1108,11 @@ mirror_fontconfig() {
 # new XDG_CONFIG_HOME, caches to a new XDG_CACHE_HOME, and Git sees a fixed
 # identity instead of the owner's configuration (main has already dropped every
 # GIT_* and GITTURTLE_* variable of the calling shell).
+#
+# One app at a time: an app this script started earlier is ended before another
+# is started, and none is started while that one could not be ended (false then).
 launch_app() {
+  stop_app || return 1
   mkdir -p "$LAUNCH/config" "$LAUNCH/cache"
   printf '[user]\n\tname = Maya Chen\n\temail = maya@aurora.example.invalid\n' >"$LAUNCH/gitconfig"
   mirror_fontconfig
@@ -941,33 +1151,65 @@ panic_lines() {
   count=$(grep -cE 'panicked at|fatal runtime error|stack backtrace' "$LAUNCH/app.log" 2>/dev/null)
   echo "${count:-0}"
 }
-# Ends a process this script started, by its exact pid: TERM, a wait with a limit,
-# then KILL and one more. False when the process outlived both; never waits longer.
+# True while PID is a running child of this script: a process it started from its
+# own shell (never from a subshell), and not another one that the kernel gave the
+# same number after that one had ended. From the moment of the fork, whatever the
+# child has become since.
+still_ours() {
+  local stat
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  stat=${stat##*) } # "STATE PARENT ..."
+  [[ ${stat%% *} != Z ]] || return 1
+  stat=${stat#* }
+  [[ ${stat%% *} == "$$" ]]
+}
+# Ends a process this script started, by its exact pid and only while it is still
+# that process: TERM, a wait with a limit, then KILL and one more. False when the
+# process outlived both; never waits longer.
 stop_process() {
-  process_running "$1" || return 0
+  still_ours "$1" || return 0
   kill "$1" 2>/dev/null
   wait_for_exit "$1" "$STOP_WAIT_MS" && return 0
+  still_ours "$1" || return 0
   kill -KILL "$1" 2>/dev/null
   wait_for_exit "$1" "$STOP_WAIT_MS"
 }
 # Collects a child that has ended; one that still runs is left, never waited for.
 reap() { process_running "$1" || wait "$1" 2>/dev/null; }
 # Ends the app this script started, if it still runs: its own child, by its exact
-# pid, and only while that pid still runs the installed executable.
+# pid. False when it could not be ended.
 stop_app() {
+  local ended=yes
   [[ -n $APP_PID ]] || return 0
-  if process_running "$APP_PID"; then
-    if [[ $(readlink "/proc/$APP_PID/exe" 2>/dev/null) != "$INSTALLED_BINARY"* ]]; then
-      restore_failed "the app: its pid no longer runs the installed executable, so it was left running"
-    elif stop_process "$APP_PID"; then
+  if still_ours "$APP_PID"; then
+    if stop_process "$APP_PID"; then
       report "the app was still running and was ended by its pid"
     else
       restore_failed "the app: its process still runs after TERM and KILL"
+      ended=no
     fi
   fi
   reap "$APP_PID"
   [[ ! -f $LAUNCH/app.log ]] || record app-output.txt <"$LAUNCH/app.log"
   APP_PID="" APP_ADDRESS=""
+  [[ $ended == yes ]]
+}
+# Every exit ends what this script started: whatever is still in the shell's own
+# list of what it put in the background once the restores have run (an app or a
+# terminal whose pid a stop came too early to note, the sleep of a wait that a
+# stop cut short), each by its exact pid.
+stop_leftovers() {
+  local pid ended=0
+  for pid in $(jobs -pr); do
+    still_ours "$pid" || continue
+    if stop_process "$pid"; then
+      ended=$((ended + 1))
+    else
+      restore_failed "a process this script started still runs after TERM and KILL"
+    fi
+    reap "$pid"
+  done
+  ((ended == 0)) || report "the exit: $ended more process(es) this script had started still ran and were ended, each by its pid"
 }
 
 # --- the theme: Omarchy's own switch, and the wallpaper it brings
@@ -1461,7 +1703,14 @@ check_manifest() {
       (if .package.binary_sha256 != $binary then "package.binary_sha256 is not the SHA-256 of bin/gitturtle" else empty end),
       (if ($compiled | length) == 1 and .package.compiled_identity != $compiled[0]
        then "package.compiled_identity is not what --build-info prints" else empty end)' "$manifest" 2>&1)
-  [[ $differs == yes ]] || report "manifest: its archive name, size and SHA-256, its package block, and the executable's SHA-256 and compiled identity equal what was extracted and run"
+  [[ $differs == no ]] || return 0
+  # The compiled identity is compared with what the executable says only when the
+  # executable ran and answered; the line says which of the two happened.
+  if [[ -s $WORK/build-info.json ]]; then
+    report "manifest: its archive name, size and SHA-256, its package block, and the executable's SHA-256 and compiled identity equal what was extracted and run"
+  else
+    report "manifest: its archive name, size and SHA-256, its package block and the executable's SHA-256 equal what was extracted; its compiled identity was not compared with the executable's own answer, because the executable gave none (it was not run, or did not answer --build-info)"
+  fi
 }
 
 # The CI job's own record, when it was downloaded with the archive.
@@ -1488,7 +1737,9 @@ check_archive() {
   : >"$WORK/build-info.json"
   report "archive: $ARCHIVE_NAME, $(stat -c %s -- "$ARCHIVE") bytes"
   report "sha256: $ARCHIVE_SHA256, the one in $ARCHIVE_NAME.sha256 (compared before anything else ran)"
-  timeout 300 tar -tzvf "$ARCHIVE" >"$WORK/archive-listing.txt" 2>/dev/null || : >"$WORK/archive-listing.txt"
+  # Owners as numbers: a name can hold a space, which would move the size out of
+  # the third column and let a member count as nothing.
+  timeout 300 tar --numeric-owner -tzvf "$ARCHIVE" >"$WORK/archive-listing.txt" 2>/dev/null || : >"$WORK/archive-listing.txt"
   timeout 300 tar -tzf "$ARCHIVE" >"$WORK/archive-names.txt" 2>/dev/null || : >"$WORK/archive-names.txt"
   ARCHIVE_TOP=$(sed -n '1s|/.*||p' "$WORK/archive-names.txt")
   unsafe=$(archive_listing_problem)
@@ -1497,9 +1748,17 @@ check_archive() {
     result
     return
   fi
-  unpacked=$(awk '{ bytes += $3 } END { printf "%.0f", bytes }' "$WORK/archive-listing.txt")
+  # A size that is not a plain number is never counted as nothing: the sum is then
+  # not a number either, and the archive is not extracted.
+  unpacked=$(awk '$2 !~ /^[0-9]+\/[0-9]+$/ || $3 !~ /^[0-9]+$/ { unread = 1 } { bytes += $3 }
+    END { if (unread) print "unknown"; else printf "%.0f", bytes }' "$WORK/archive-listing.txt")
   entries=$(grep -c . "$WORK/archive-names.txt")
-  if [[ ! $unpacked =~ ^[0-9]+$ ]] || ((unpacked > MAX_UNPACKED || entries > MAX_ENTRIES)); then
+  if [[ ! $unpacked =~ ^[0-9]+$ ]]; then
+    problem "not extracted: a size in its listing could not be read, so what it would unpack to is not known"
+    result
+    return
+  fi
+  if ((unpacked > MAX_UNPACKED || entries > MAX_ENTRIES)); then
     problem "not extracted: it would unpack to $unpacked bytes in $entries entries, over the limit of $MAX_UNPACKED bytes and $MAX_ENTRIES entries"
     result
     return
@@ -1585,6 +1844,7 @@ check_install() {
 check_package() {
   local test=$REPO_ROOT/packaging/aur/test-local.sh tool status
   section d package "the gitturtle-bin package, built from this archive"
+  skip_gate || return
   if [[ $ARCHIVE_TRUSTED != yes ]]; then
     skipped "${IDENTITY_REFUSAL:-the archive did not pass its own checksums}, so nothing from it runs"
     return
@@ -1644,11 +1904,15 @@ catch (kill -9) or a power loss, put it back by hand, in this order:
   the workspace          it was $START_WORKSPACE: SUPER + $(((${START_WORKSPACE:-1} - 1) % 10 + 1)), its number among this monitor's ten
   the theme              omarchy-theme-set "$theme"
   the skip toggles       remove each file that $RESTORE/manifest.txt
-                         lists as "toggle ... made by this run"
-  the font files         for each font-N line of that manifest.txt, copy
+                         lists as "toggle ... made by this run", and then the
+                         toggles directory, if a line there says
+                         "directory ... made by this run" (rmdir: it goes only
+                         when nothing else is in it)
+  the font               omarchy-font-set "$font"
+  the font files         after the font, because omarchy-font-set rewrites
+                         them: for each font-N line of that manifest.txt, copy
                          $RESTORE/font-N over the file the line
                          names, and remove a file a line calls "absent"
-  the font               omarchy-font-set "$font"
   the monitor's scale    hyprctl reload
   notification silencing omarchy-shell notifications setDnd ${START_DND:-off}
   stay-awake             $([[ $START_AWAKE == yes ]] && echo "it was on: nothing to do" || echo "omarchy-toggle-idle allow-idle")
@@ -1707,7 +1971,7 @@ begin_desktop_part() {
     return 0
   fi
   register_restore restore_notifications
-  silence_notifications || report "NOTE notifications could not be silenced: look at every picture before sending the file"
+  silence_notifications || report "NOTE notifications could not be silenced: no picture is taken while that cannot be confirmed, so a check that needs one will say FAILED"
   register_restore restore_idle
   keep_awake || report "NOTE stay-awake could not be turned on: the screensaver may start during the run"
 }
@@ -1781,7 +2045,12 @@ check_launch() {
   fi
   register_restore stop_app
   started=$(now_ms)
-  launch_app
+  if ! launch_app; then
+    problem "an app this script started earlier could not be ended, so no other was started"
+    run_restore stop_app
+    result
+    return
+  fi
   if ! wait_for_app_window; then
     problem "no GitTurtle window within $WINDOW_WAIT s (the process $(process_running "$APP_PID" && echo "still runs" || echo "has ended"))"
     run_restore stop_app
@@ -1812,9 +2081,10 @@ report_preferences() {
 }
 
 check_themes() {
-  local name slug status started taken=0 passed=0
+  local name slug status started unread taken=0 passed=0
   local -a names=()
   section f themes "every Omarchy theme, live"
+  skip_gate || return
   window_gate || return
   START_THEME=$(theme_now)
   if [[ -z $START_THEME ]] || ! have omarchy-theme-list || ! have omarchy-theme-set; then
@@ -1836,7 +2106,12 @@ check_themes() {
     skipped "an Omarchy skip toggle could not be turned on under ~/.local/state/omarchy/toggles, so a switch could reach an editor"
     return
   fi
-  report "themes: Omarchy's skip toggles are on for the switches: ${SKIP_TOGGLES[*]:-none exist here} (made by this run: ${SKIP_TOGGLES_MADE[*]:-none}); theme sync to herdr machines is off; no hook of the owner's runs; the browser colour goes through Omarchy's passwordless sudo rule"
+  if ((${#THEME_UNKNOWNS[@]} == 0)); then
+    unread="no hook of the owner's runs"
+  else
+    unread="run with --themes-anyway although every switch also runs, unread by this script: $(printf '%s; ' "${THEME_UNKNOWNS[@]}" | sed 's/; $//')"
+  fi
+  report "themes: Omarchy's skip toggles are on for the switches: ${SKIP_TOGGLES[*]:-none exist here} (made by this run: ${SKIP_TOGGLES_MADE[*]:-none}); theme sync to herdr machines is off; $unread; the browser colour goes through Omarchy's passwordless sudo rule"
   START_WALLPAPER=$(wallpaper_now)
   mapfile -t names < <(timeout 10 omarchy-theme-list 2>/dev/null | grep .)
   report "themes: omarchy-theme-list names ${#names[@]}; starting from $START_THEME; each picture is taken $SETTLE s after omarchy-theme-set returns"
@@ -1912,8 +2187,9 @@ other_font() {
 }
 
 check_font() {
-  local other status
+  local other status hook
   section g font "omarchy-font-set, live"
+  skip_gate || return
   window_gate || return
   if ! have omarchy-font-set || ! have omarchy-font-current; then
     skipped "omarchy-font-set or omarchy-font-current is missing"
@@ -1934,9 +2210,10 @@ check_font() {
     skipped "the font to set or the current font is not a plain family name that omarchy-font-list prints; nothing was changed"
     return
   fi
-  if (($(own_hooks font-set) > 0)); then
+  hook=$(own_hooks font-set | head -n 1)
+  if [[ -n $hook ]]; then
     START_FONT=""
-    skipped "a font-set hook of your own under ~/.config/omarchy/hooks would run on the change, and the script cannot know what it does: move it aside for the run"
+    skipped "a font-set hook under ~/.config/omarchy/hooks would run on the change, and the script cannot know what it does ($hook): move it aside for the run"
     return
   fi
   if ! save_font_files; then
@@ -1967,6 +2244,7 @@ check_font() {
 check_floating() {
   local now
   section h floating "tiled and floating"
+  skip_gate || return
   window_gate || return
   START_FLOATING=$(app_window .floating)
   picture "window-as-opened" || problem "no picture of the window as it opened"
@@ -1990,6 +2268,7 @@ check_scales() {
   local facts width height refresh x y transform scale reported taken=0 fractional=0
   local -a impossible=()
   section i scales "fractional scales"
+  skip_gate || return
   window_gate || return
   facts=$(hypr_json monitors | jq -r --argjson id "$(app_window .monitor)" '.[] | select(.id == $id) | "\(.name) \(.width) \(.height) \(.refreshRate) \(.x) \(.y) \(.transform) \(.scale)"' 2>/dev/null)
   read -r MONITOR_NAME width height refresh x y transform MONITOR_START_SCALE <<<"$facts"
@@ -2053,6 +2332,7 @@ check_scales() {
 check_inactive() {
   local title=gitturtle-omarchy-check-$$ before deadline
   section j inactive "readability while another window has the focus"
+  skip_gate || return
   window_gate || return
   if ! have xdg-terminal-exec; then
     skipped "xdg-terminal-exec, which opens Omarchy's default terminal, is missing"
@@ -2095,6 +2375,7 @@ cpu_and_threads() { sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $
 check_rest() {
   local ticks_before ticks_after threads_before threads_after hz started status crashes
   section k rest "at rest, and the exit"
+  skip_gate || return
   window_gate || return
   hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
   read -r ticks_before threads_before <<<"$(cpu_and_threads "$APP_PID")"
@@ -2204,6 +2485,7 @@ check_hands() {
   local copy paste before new
   HANDS_DONE=0 HANDS_ABSENT=no
   section l hands "the owner's two minutes"
+  skip_gate || return
   if [[ $HANDS == no ]]; then
     skipped "--hands was not given"
     return
@@ -2217,8 +2499,15 @@ check_hands() {
     skipped "no installed executable or demo repository (see the install and launch checks)"
     return
   fi
+  # The app of the earlier checks still runs when the rest check, which closes it,
+  # was skipped: launch_app ends it before it starts the one for this check.
   register_restore stop_app
-  launch_app
+  if ! launch_app; then
+    problem "the GitTurtle the earlier checks used could not be ended, so no second one was started"
+    run_restore stop_app
+    result
+    return
+  fi
   if ! wait_for_app_window; then
     problem "no GitTurtle window within $WINDOW_WAIT s"
     run_restore stop_app
@@ -2271,6 +2560,7 @@ write_restore_section() {
   report ""
   report "== restore: what was put back, and what is left"
   restore_all
+  stop_leftovers
   # A restore that did not take, in any check or just now, fails this one.
   PROBLEMS=("${RESTORE_FAILURES[@]}")
   if [[ -z $DESKTOP_START ]]; then
@@ -2384,7 +2674,8 @@ on_signal() {
 }
 finish() {
   local status=$?
-  trap '' INT TERM HUP # nothing cuts the restore short
+  trap '' INT TERM HUP QUIT # nothing cuts the restore short,
+  trap : PIPE               # nor does a terminal or a pipe that no longer reads
   trap - EXIT
   [[ -n $OUT_CREATED ]] || exit "$status"
   [[ -z $STOPPED_BY ]] || report "STOPPED by $STOPPED_BY during the $CHECK check: restoring, then packing what was done"
@@ -2423,8 +2714,13 @@ main() {
   DESKTOP_REFUSAL=$(desktop_refusal)
   if [[ -z $DESKTOP_REFUSAL ]]; then
     [[ -z $FONT_CHOICE ]] || listed_font "$FONT_CHOICE" || die "--font $FONT_CHOICE is not a family that omarchy-font-list prints."
-    mapfile -t SKIP_TOGGLES < <(theme_skip_toggles)
-    THEME_BLOCKER=$(theme_blocker)
+    # A themes check that --skip names asks nothing either, sudo included.
+    if ! skip_named themes; then
+      mapfile -t SKIP_TOGGLES < <(theme_skip_toggles)
+      mapfile -t THEME_UNKNOWNS < <(theme_unknowns)
+      THEME_BLOCKER=$(theme_blocker)
+      ! sudo_question_asked "$THEME_BLOCKER" || SUDO_ASKED=yes
+    fi
   fi
   show_plan_and_wait
 
@@ -2432,6 +2728,10 @@ main() {
   trap 'on_signal INT 130' INT
   trap 'on_signal TERM 143' TERM
   trap 'on_signal HUP 129' HUP
+  trap 'on_signal QUIT 131' QUIT
+  # Output that is no longer read (the run piped into a program that has ended)
+  # is a stop like the others, not an end without the restores.
+  trap 'on_signal PIPE 141' PIPE
   mkdir -- "$OUT" || die "cannot create $OUT"
   OUT_CREATED=yes
   mkdir -- "$WORK" "$RECORDS" "$PICTURES"
@@ -2441,7 +2741,7 @@ main() {
   report "GitTurtle on Omarchy: check of a CI-built archive"
   report "started: $(date -u +%FT%TZ)"
   report "script: scripts/omarchy-verify.sh, sha256 $(sha256_of "${BASH_SOURCE[0]}"), checkout $(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-  report "options: desktop part $([[ -z $DESKTOP_REFUSAL ]] && echo yes || echo "no ($DESKTOP_REFUSAL)"), hands $HANDS, expected revision ${EXPECT_REVISION:-none}"
+  report "options: desktop part $([[ -z $DESKTOP_REFUSAL ]] && echo yes || echo "no ($DESKTOP_REFUSAL)"), hands $HANDS, expected revision ${EXPECT_REVISION:-none}, skipped by --skip: ${SKIPS[*]:-none}, --themes-anyway $THEMES_ANYWAY"
 
   check_host
   check_archive
