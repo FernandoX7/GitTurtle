@@ -1597,9 +1597,13 @@ struct Confirmation {
 /// The pull request the loaded list holds for a creation GitHub refused because its head
 /// branch already has one ([`Panel::refused_for_existing`]): what the failure line's one
 /// action, Open #N, opens, as a press on its row does. `line` is the failure line it was found
-/// for, and the action is drawn only beside that line, so it never stands by another failure.
+/// for, and the action is drawn only beside that line, so it never stands by another failure;
+/// `repository` is the one the creation was refused in, whose pull request `pull` is, and the
+/// action is offered only while the destination names it ([`Panel::offered`]): a number alone
+/// names another pull request in every other repository.
 struct Existing {
     line: String,
+    repository: Repository,
     pull: PullRequest,
 }
 /// The row among `rows`, the loaded page of `new`'s repository, that is the open pull request
@@ -2381,6 +2385,16 @@ impl Panel {
                     this.review.composing = None;
                     this.review.show_list = true;
                     this.rows.clear();
+                    // The rows went, so the list holds no repository's page, nor rows a
+                    // creation gave; and the pull request a refused creation named was the
+                    // repository's the field named until now, so its line and action go too.
+                    this.listed = None;
+                    this.created_only = false;
+                    if let Some(existing) = this.existing.take()
+                        && this.error.as_ref() == Some(&existing.line)
+                    {
+                        this.error = None;
+                    }
                     this.pull = None;
                     this.status = None;
                     this.description = None;
@@ -3164,6 +3178,7 @@ impl Panel {
                 );
                 self.existing = Some(Existing {
                     line: line.clone(),
+                    repository: new.repository.clone(),
                     pull,
                 });
                 line
@@ -3173,6 +3188,30 @@ impl Panel {
                 new.head
             ),
         }
+    }
+    /// The pull request a refused creation's line offers to open ([`Existing`]): beside the
+    /// line it was found for alone, and only while the destination field names the repository
+    /// the creation was refused in. The field's edit takes it away, and this holds whatever
+    /// reached the field without one.
+    fn offered(&self, cx: &App) -> Option<&PullRequest> {
+        self.existing
+            .as_ref()
+            .filter(|existing| self.error.as_ref() == Some(&existing.line))
+            .filter(|existing| {
+                self.destination(cx)
+                    .is_ok_and(|destination| destination == existing.repository)
+            })
+            .map(|existing| &existing.pull)
+    }
+    /// Open #N's press: opens the pull request the line offers, as a press on its row does
+    /// ([`Self::inspect`]), checked again as it is pressed, before any request, so it reads
+    /// nothing once the destination names another repository.
+    fn open_existing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pull) = self.offered(cx).cloned() else {
+            cx.notify();
+            return;
+        };
+        self.inspect(pull, window, cx);
     }
     /// Says the lines the panel shows through the window's announcements, once each, as the
     /// panel opens with them and whenever they change: its notice politely
@@ -3638,18 +3677,14 @@ impl Render for Panel {
                 .text_color(rgb(p.muted))
                 .into_any_element()
         }));
-        // The pull request a refused creation's line offers to open, beside that line alone.
-        let existing = self
-            .existing
-            .as_ref()
-            .filter(|existing| self.error.as_ref() == Some(&existing.line))
-            .map(|existing| existing.pull.clone());
+        // The pull request a refused creation's line offers to open ([`Self::offered`]).
+        let existing = self.offered(cx).map(|pull| pull.number);
         lines.extend(
             self.outcome("github-error", "github-cancelled", cx)
                 .filter(|_| !self.answers_in_reply())
                 .map(|line| {
                     let line = line.ml(text_inset());
-                    let Some(pull) = existing else {
+                    let Some(number) = existing else {
                         return line.into_any_element();
                     };
                     // The line's one action stands beside its words where the row holds both
@@ -3657,7 +3692,7 @@ impl Render for Panel {
                     // are, the words wrapping in the row's width. Its press is the row's
                     // ([`Self::inspect`]): it sends the one read, which takes the line, and the
                     // action with it, away.
-                    let open = format!("Open #{}", pull.number);
+                    let open = format!("Open #{number}");
                     div()
                         .flex()
                         .flex_wrap()
@@ -3669,8 +3704,8 @@ impl Render for Panel {
                                 self.button("github-open-existing", open, "", false, cx)
                                     .debug_selector(|| "github-open-existing".into())
                                     .disabled(pending)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.inspect(pull.clone(), window, cx)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_existing(window, cx)
                                     })),
                             ),
                         )
@@ -22404,6 +22439,297 @@ mod tests {
     async fn a_creation_whose_answer_cannot_be_read_is_still_created(cx: &mut TestAppContext) {
         let said = "Pull request created. Refresh PRs to open it.";
         assert_unread_creation_is_still_created(cx, "<html>", said).await;
+    }
+
+    /// Types `text` into the open panel's destination field, as a person does, and draws.
+    fn type_into_destination(panel: &Entity<Panel>, text: &str, cx: &mut VisualTestContext) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            let field = panel.read(cx).destination.read(cx).focus_handle(cx);
+            field.focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_input(text);
+        draw(cx);
+    }
+
+    /// The destination field's text.
+    fn destination_text(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+        panel.read_with(cx, |panel, cx| {
+            panel.destination.read(cx).value().to_string()
+        })
+    }
+
+    /// The refusal's action never outlives its repository: once the destination names another
+    /// one, the line that named pull request #7 and its Open #7 are gone, and nothing reads
+    /// that repository's #7. The edit once left both drawn, and the press read the pull
+    /// request of that number in whatever repository the field then named.
+    #[gpui::test]
+    async fn open_existing_goes_as_the_destination_names_another_repository(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        let action = whole_in_body(cx, "github-open-existing", name);
+        assert_eq!(script.requests.lock().unwrap().len(), 5);
+
+        type_into_destination(&panel, "x", cx);
+        assert_ne!(destination_text(&panel, cx), "fixture/repo", "another one");
+        assert!(
+            cx.debug_bounds("github-open-existing").is_none(),
+            "the action goes with its repository"
+        );
+        assert!(
+            cx.debug_bounds("github-error").is_none(),
+            "and the line that named its pull request"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.existing.is_none() && panel.error.is_none());
+            assert!(panel.listed.is_none() && panel.rows.is_empty());
+        });
+        // A press where the action stood reads nothing.
+        cx.simulate_click(action.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            5,
+            "no pull request of the other repository is read"
+        );
+        assert!(panel.read_with(cx, |panel, _| panel.pull.is_none()));
+    }
+
+    /// Whatever puts another repository's name in the destination field without the field's
+    /// edit, Open #7 is drawn only while the field names the repository the creation was
+    /// refused in, and its press, checked again as it is pressed, reads nothing otherwise:
+    /// back on that repository, it opens its #7 once.
+    #[gpui::test]
+    async fn open_existing_is_offered_only_in_the_repository_it_was_refused_in(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        whole_in_body(cx, "github-open-existing", name);
+        let name_repository = |named: &str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel
+                        .destination
+                        .update(cx, |input, cx| input.set_value(named, window, cx));
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        name_repository("fixture/other", cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.existing.is_some()),
+            "no edit of the field took the pull request"
+        );
+        whole_in_body(cx, "github-error", name);
+        assert!(
+            cx.debug_bounds("github-open-existing").is_none(),
+            "no action in another repository"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open_existing(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            5,
+            "its press reads nothing there"
+        );
+        assert!(panel.read_with(cx, |panel, _| panel.pull.is_none() && !panel.pending));
+
+        name_repository("fixture/repo", cx);
+        let action = whole_in_body(cx, "github-open-existing", name);
+        answer_opening(&script);
+        cx.simulate_click(action.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(7)
+        );
+        assert_eq!(openings(&script), 1, "opened once");
+        assert!(script.asked("GET", "repos/fixture/repo/pulls/7") >= 1);
+        assert!(
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| !request.endpoint.contains("fixture/other")),
+            "nothing of the other repository was read"
+        );
+    }
+
+    /// A creation after the destination was edited away and back shows its row alone and says
+    /// so: the edit took the listed rows, so the list no longer holds that repository's page.
+    /// It once kept the repository as listed and showed the new row as the whole list.
+    #[gpui::test]
+    async fn a_creation_after_the_destination_was_edited_away_and_back_shows_only_its_row(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let rows = vec![listed_pull(7, "fixture:other", "main")];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        type_into_destination(&panel, "x", cx);
+        assert_ne!(destination_text(&panel, cx), "fixture/repo", "edited away");
+        cx.simulate_keystrokes("backspace");
+        draw(cx);
+        assert_eq!(destination_text(&panel, cx), "fixture/repo", "and back");
+        assert!(numbers(&panel, cx).is_empty(), "the edit took the rows");
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+
+        let at = (13, 1480., 973.);
+        let answer = made(false).to_string();
+        send_creation(&app, &panel, &script, at, (201, &answer), cx).await;
+        assert_eq!(numbers(&panel, cx), [203]);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.created_only),
+            "the list holds no page of the repository"
+        );
+        let row = whole_in_body(cx, "github-pr-card-203", name);
+        let line = whole_in_body(cx, "github-list-partial", name);
+        assert!(line.top() >= row.bottom(), "the line stands under the row");
+    }
+
+    /// The destination's edit takes what the list held with its rows: a row a creation's
+    /// answer gave, alone and said to be, leaves the list empty and reading as one never
+    /// loaded.
+    #[gpui::test]
+    async fn editing_the_destination_forgets_what_the_list_held(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let at = (13, 1480., 973.);
+        let answer = made(false).to_string();
+        send_creation(&app, &panel, &script, at, (201, &answer), cx).await;
+        assert!(panel.read_with(cx, |panel, _| panel.created_only && panel.listed.is_some()));
+        type_into_destination(&panel, "x", cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.rows.is_empty() && panel.listed.is_none() && !panel.created_only);
+        });
+        whole_in_body(cx, "github-list-empty", "13 pt in 1480 × 973");
+        assert!(cx.debug_bounds("github-list-partial").is_none());
+    }
+
+    /// A request that starts takes the refused creation's pull request with its line: Refresh
+    /// PRs after the refusal, though it fails, leaves no pull request to open.
+    #[gpui::test]
+    async fn a_request_that_starts_forgets_the_refused_creations_pull_request(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        whole_in_body(cx, "github-open-existing", name);
+        assert!(panel.read_with(cx, |panel, _| panel.existing.is_some()));
+
+        let refresh = whole_in_body(cx, "github-refresh", name);
+        script.answer(500, "{}");
+        let read = app.read_with(cx, |app, _| app.operations.hold());
+        cx.simulate_click(refresh.center(), Modifiers::none());
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.pending, "Refresh PRs reads");
+            assert!(panel.existing.is_none(), "as the request starts");
+        });
+        drop(read);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.error.is_some() && panel.error.as_deref() != Some(HELD));
+            assert!(panel.existing.is_none());
+        });
+        assert!(cx.debug_bounds("github-open-existing").is_none());
+    }
+
+    /// A refusal's line that lands above the body, where every line stands while a
+    /// conversation is open, is in view there, so the frame that draws it takes the request to
+    /// show it. Kept, the request moved the body to the line once it flowed among the content
+    /// again, as the conversation closed, away from what the person was reading.
+    #[gpui::test]
+    async fn a_refusal_drawn_above_the_body_asks_for_no_reveal_later(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 461., 490.);
+        let answer = (422, github::EXISTS);
+        let send = review_creation(&app, &panel, &script, at, answer, false, cx).await;
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let target = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap()
+            .items[0]
+            .target
+            .clone();
+        let converse = |open: Option<CapturedThread>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.conversations.active = open;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        converse(Some(target), cx);
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(HELD)
+        );
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the line");
+        assert!(
+            line.bottom() <= body.top(),
+            "the line {line:?} stands above the body {body:?}"
+        );
+        assert!(
+            !panel.read_with(cx, |panel, _| panel.show_line.get()),
+            "in view there, it asks for no reveal"
+        );
+
+        // The body at its foot as the conversation closes: the line flows among the content,
+        // above the body's view, and the body stays.
+        panel.read_with(cx, |panel, _| {
+            let body = &panel.review.body_scroll;
+            body.set_offset(point(px(0.), -body.max_offset().y));
+        });
+        draw(cx);
+        converse(None, cx);
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the line");
+        assert!(
+            line.bottom() <= body.top(),
+            "the body {body:?} did not move to the line {line:?}"
+        );
     }
 
     /// The open panel with its local reads drained.
