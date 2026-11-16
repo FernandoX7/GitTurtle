@@ -375,8 +375,10 @@ from it. The source revision is read from `build-info.json` in the archive
 before anything from the archive runs; when `--expect-revision`, the manifest
 or `ci-provenance.json` names another one, the executable, the installer, the
 package build and the whole desktop part are skipped as "identity not
-established". Then, for about six minutes in which the keyboard and pointer
-are left alone, it moves to a workspace that holds no window, opens the
+established". Then, for about two minutes and ten seconds a theme (about six
+minutes with the 24 themes of a stock Omarchy 4.5; the plan gives the figure
+for the machine), in which the keyboard and pointer are left alone, it moves
+to a workspace that holds no window, opens the
 installed build there on a demo repository and takes a picture of GitTurtle's
 own window, never of the screen, at each step: the first launch, every theme
 `omarchy-theme-list` names, one other font, the window floating, its monitor
@@ -400,6 +402,18 @@ check fails and the saved copies stay in `work/restore` under the results
 directory, with a `manifest.txt` that says which copy belongs to which file;
 the last lines of the run say where.
 
+A kill the script cannot catch (`kill -9`) or a power loss leaves the desktop
+as the step in progress had it. Before its first change the script prints
+where the starting state is written (`records/desktop-start.txt`, and
+`work/restore` with the saved copies) and how to put each thing back by hand:
+the workspace (`SUPER` and its number), the theme (`omarchy-theme-set`), the
+skip toggles the run made (remove the files `manifest.txt` lists under
+`~/.local/state/omarchy/toggles`), the font files (copy each saved `font-N`
+over the file `manifest.txt` names) and the font (`omarchy-font-set`), the
+monitor's scale (`hyprctl reload`), notification silencing
+(`omarchy-shell notifications setDnd off`) and stay-awake
+(`omarchy-toggle-idle allow-idle`).
+
 A theme switch is Omarchy's own `omarchy-theme-set`, and it does what Omarchy
 does on every switch: it retints the terminals and the programs in them,
 Hyprland's configuration, GTK's colour scheme and icons, the themes Omarchy
@@ -420,10 +434,13 @@ installs for its wallpaper daemon is recognised), or where `omarchy-theme-set`
 names a step the script was not read against. A `font-set` hook of your own
 skips the font check in the same way.
 
-It refuses the desktop part when Hyprland is not the compositor, when the
-session is locked, on battery below 30 %, when the monitor has no workspace
-without a window, or when its results directory lies under your home. It
-never runs as root and makes no network request. Its one use of sudo is the
+The plan is decided once, before Enter: a part it says will not run is not
+started later in the run. It refuses the desktop part when Hyprland is not the
+compositor, when the session is locked or Omarchy cannot tell whether it is,
+on battery below 30 %, or when the monitor has no workspace without a window.
+With the desktop part asked for, a results directory under your home stops the
+run at the start, before the archive is checked. It never runs as root and
+makes no network request. Its one use of sudo is the
 question Omarchy's own command asks, `sudo -n -l`, which runs nothing and
 never prompts, to learn whether that sudo rule exists. Besides the changes
 above it writes only under its results directory, and it leaves an installed
@@ -432,14 +449,22 @@ app a new `XDG_CONFIG_HOME`.
 
 What comes back is `gitturtle-omarchy-check-<UTC date and time>.tar.gz`, which
 the last line names after "send this file back": `report.txt`, with one
-section per check ending in `RESULT <check> ok`, `FAILED: <why>` or
-`skipped: <why>`, the records it quotes, and the pictures. They name no host,
-no user and no home directory.
+section per check, the records it quotes, and the pictures. A section ends in
+`RESULT <check> ok`, `partial: <what was not covered and why>` when the check
+ran but could not cover a part of it (a scale the monitor's mode does not
+allow, a manifest that was not downloaded), `FAILED: <why>` or
+`skipped: <why>`. They name no host, no user and no home directory, and the
+file is packed only after every record was read as text and none of them does.
+The exit status is 0 when no check failed and the file was packed, 1 when a
+check failed or nothing was packed, and 2 when the script refused to start.
 
 `--no-desktop` runs only the part that changes nothing, and `--hands` adds
 four prompts at the end for Omarchy's copy and paste bindings and the folder
 picker; that part runs beside your terminal, on the workspace you started
-from. `--help` has the rest. No x86-64 run is recorded yet.
+from. Each prompt takes a picture when you press Enter, except the third,
+which takes none because the folder picker lists your folders; a prompt left
+unanswered, or without its picture, is reported as not covered. `--help` has
+the rest. No x86-64 run is recorded yet.
 
 ### Omarchy on Apple Silicon (AArch64)
 

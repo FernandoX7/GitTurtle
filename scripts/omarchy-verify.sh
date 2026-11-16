@@ -32,6 +32,10 @@ readonly TERMINAL_LIFE=90   # seconds after which the inactive check's terminal 
 readonly ANSWER_WAIT=600    # seconds a prompt waits for Enter or an answer
 readonly MIN_BATTERY=30     # percent; below it, discharging, the desktop part does not start
 readonly SCALES=(1 1.25 1.5 2)
+readonly THEME_SECONDS=10    # one theme in the plan's estimate: the switch, its intro and the settle time
+readonly REST_OF_DESKTOP=120 # seconds the plan's estimate gives everything else in the desktop part
+readonly MAX_UNPACKED=$((1024 * 1024 * 1024)) # bytes an archive may unpack to (a release unpacks to about 0.2 GiB)
+readonly MAX_ENTRIES=20000   # files and directories an archive may hold
 # The files `omarchy-font-set` (Omarchy 4.5) rewrites under ~/.config; it creates
 # kitty/ and fontconfig/ when they are missing.
 readonly FONT_FILES=(alacritty/alacritty.toml kitty/kitty.conf ghostty/config foot/foot.ini fontconfig/fonts.conf)
@@ -85,11 +89,11 @@ BUNDLE="" BUNDLE_BINARY_SHA256="" BUNDLE_REVISION="" BUILD_REVISION="" IDENTITY_
 DISPOSABLE_HOME="" INSTALLED_BINARY=""
 DISPOSABLE_ENV=()
 HOME_REAL="" USER_NAME="" HOST_NAME="" REDACT=() SCAN_PATTERN=""
-CHECK="" PROBLEMS=() COUNT_OK=0 COUNT_FAILED=0 COUNT_SKIPPED=0
+CHECK="" PROBLEMS=() PARTIALS=() COUNT_OK=0 COUNT_PARTIAL=0 COUNT_FAILED=0 COUNT_SKIPPED=0
 START_EPOCH=0 STOPPED_BY="" OWNER_INSTALL_START=""
 DESKTOP_REFUSAL="" DESKTOP_START="" RESTORES=() RESTORE_FAILURES=() KEEP_RESTORE=no
 START_FOCUS="" START_DND="" START_AWAKE=""
-START_WORKSPACE="" ALONE=no
+START_WORKSPACE="" ALONE=no HANDS_DONE=0 HANDS_ABSENT=no
 LAUNCH="" DEMO="" APP_PID="" APP_ADDRESS=""
 START_THEME="" START_WALLPAPER=""
 THEME_BLOCKER="" SKIP_TOGGLES=() SKIP_TOGGLES_MADE=() TOGGLES_DIRECTORY_MADE=no
@@ -124,8 +128,12 @@ it, and its .manifest.json and ci-provenance.json are read when they do.
   -h, --help             this text
 
 Checks, in this order. report.txt gets one section each, appended as it finishes and
-ending in "RESULT <check> ok", "RESULT <check> FAILED: <why>" or "RESULT <check>
-skipped: <why>"; one failure does not stop the next check.
+ending in "RESULT <check> ok", "RESULT <check> partial: <what was not covered and
+why>" (the check ran, but could not cover a part named below), "RESULT <check>
+FAILED: <why>" or "RESULT <check> skipped: <why>"; one failure does not stop the
+next check. The exit status is 0 when no check FAILED and the results were packed,
+1 when a check FAILED or the results could not be packed, and 2 when the script
+refused to start.
   host      architecture, kernel, page size, Omarchy and Hyprland versions, each
             monitor's name, mode and scale, the GPU, the current theme and font
   archive   the .sha256, the extraction, SHA256SUMS inside, the source revision
@@ -142,6 +150,7 @@ skipped: <why>"; one failure does not stop the next check.
   rest      CPU time over 30 s and threads; closed through Hyprland; gone within
             2 s; no core dump and no crash line in the user journal
   hands     with --hands: the copy and paste bindings, the folder picker, Cancel
+            (prompt 3 takes no picture: the folder picker lists your folders)
 
 The desktop part (launch to hands) moves to a workspace that holds no window, opens
 GitTurtle and one terminal window there, and changes, with Omarchy's and Hyprland's
@@ -165,11 +174,26 @@ own commands:
     (on, so that neither the screensaver nor the lock starts during the run).
 Each is recorded before it is changed and put back when its check ends and on every
 exit, Ctrl+C included (a stop takes effect when the step in progress returns). The
-script prints this plan and waits for Enter. It refuses the desktop part when
-Hyprland is not the compositor, when the session is locked, on battery below 30 %,
-when this monitor has no workspace without a window, or when the results directory
-lies under your home or names you or the host: GitTurtle's header shows the demo
-repository's path, so run it from /var/tmp.
+script prints its plan and waits for Enter; the plan is decided once, and a part it
+says will not run is not started later in the run. It refuses the desktop part
+when Hyprland is not the compositor, when the session is locked or its lock state
+cannot be told, on battery below 30 %, or when this monitor has no workspace
+without a window. With the desktop part asked for, a results directory that lies
+under your home or names you or the host stops the run at the start (exit 2):
+GitTurtle's header shows the demo repository's path, so run it from /var/tmp.
+The desktop part takes about two minutes and ten seconds a theme: about six
+minutes with the 24 themes of a stock Omarchy 4.5. The plan gives the figure for
+this machine; --hands adds your own time.
+A kill the script cannot catch (kill -9) or a power loss leaves the desktop as the
+step in progress had it. Before the first change the script prints where the
+starting state is written (records/desktop-start.txt, and work/restore under the
+results directory, with the saved copies and their manifest.txt) and how to put
+each thing back by hand: the workspace (SUPER + its number), the theme
+(omarchy-theme-set), the skip toggles this run made (remove them), the font files
+(copy each saved font-N over the file manifest.txt names) and the font
+(omarchy-font-set), the scale (hyprctl reload), notification silencing
+(omarchy-shell notifications setDnd off) and stay-awake (omarchy-toggle-idle
+allow-idle).
 The themes check is skipped, with the reason, where a switch would do more than the
 above: where Omarchy's theme sync is on (it pushes each theme to your herdr machines
 over SSH), where Omarchy's sudo rule for the browser colour is missing (each switch
@@ -185,7 +209,8 @@ the archive before anything from the archive runs; if --expect-revision, the
 manifest or ci-provenance.json names another one, the installer, the executable,
 the package build and the desktop part are all skipped: identity not established.
 Privacy: report.txt and the records name no host, no user and no home directory
-(written "~"); the app shows only the demo repository made for the run. A picture is
+(written "~"), and they are packed only after every record was read as text and
+none of them does; the app shows only the demo repository made for the run. A picture is
 a grab of GitTurtle's own window rectangle, never of the screen, and is refused
 (its check FAILED, no file written) while another window or another monitor
 overlaps that rectangle. Where Omarchy's rules make the window translucent, the
@@ -272,7 +297,7 @@ record_more() { redact >>"$RECORDS/$1"; }
 
 section() { # LETTER NAME TITLE
   CHECK=$2
-  PROBLEMS=()
+  PROBLEMS=() PARTIALS=()
   report ""
   report "== $1. $2: $3"
 }
@@ -280,17 +305,28 @@ problem() {
   PROBLEMS+=("$*")
   report "PROBLEM $*"
 }
-# The check's last line: ok, or FAILED with its first problem.
+# A named part of the check that could not be covered, and why: the check ran, but
+# its RESULT is "partial" rather than "ok", so it never says more than it did.
+uncovered() {
+  PARTIALS+=("$*")
+  report "NOT COVERED $*"
+}
+# The check's last line: FAILED with its first problem, partial with the first
+# part it could not cover, or ok.
 result() {
   local more=""
-  if ((${#PROBLEMS[@]} == 0)); then
+  if ((${#PROBLEMS[@]} > 0)); then
+    ((${#PROBLEMS[@]} > 1)) && more=" (and $((${#PROBLEMS[@]} - 1)) more above)"
+    report "RESULT $CHECK FAILED: ${PROBLEMS[0]}$more"
+    COUNT_FAILED=$((COUNT_FAILED + 1))
+  elif ((${#PARTIALS[@]} > 0)); then
+    ((${#PARTIALS[@]} > 1)) && more=" (and $((${#PARTIALS[@]} - 1)) more above)"
+    report "RESULT $CHECK partial: ${PARTIALS[0]}$more"
+    COUNT_PARTIAL=$((COUNT_PARTIAL + 1))
+  else
     report "RESULT $CHECK ok"
     COUNT_OK=$((COUNT_OK + 1))
-    return
   fi
-  ((${#PROBLEMS[@]} > 1)) && more=" (and $((${#PROBLEMS[@]} - 1)) more above)"
-  report "RESULT $CHECK FAILED: ${PROBLEMS[0]}$more"
-  COUNT_FAILED=$((COUNT_FAILED + 1))
 }
 skipped() {
   report "RESULT $CHECK skipped: $*"
@@ -317,7 +353,8 @@ parse_arguments() {
         shift
         ;;
       --font)
-        [[ -n ${2:-} ]] || die "--font needs a font family."
+        [[ ${2:-} =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+-]{0,79}$ ]] ||
+          die "--font needs a font family as omarchy-font-list prints it (letters, digits, spaces and . _ + -)."
         FONT_CHOICE=$2
         shift
         ;;
@@ -395,11 +432,15 @@ path_names_someone() {
   return 1
 }
 
-# Exit 0 locked, 1 unlocked, 2 undetermined: Omarchy's own test, which its
-# callers read as unlocked unless it says locked.
+# Omarchy's own test exits 0 locked, 1 unlocked, 2 undetermined. Only "unlocked"
+# counts as unlocked here: a state that cannot be determined, a missing command
+# or a test that does not answer in time all count as locked.
 session_locked() {
-  have omarchy-hyprland-session-locked || return 1
+  local status
+  have omarchy-hyprland-session-locked || return 0
   timeout 5 omarchy-hyprland-session-locked
+  status=$?
+  ((status != 1))
 }
 
 # Prints why, when a system battery is discharging below MIN_BATTERY percent.
@@ -435,16 +476,12 @@ desktop_refusal() {
     return
   fi
   if session_locked; then
-    echo "the session is locked"
+    echo "the session is locked, or Omarchy cannot tell whether it is"
     return
   fi
   low=$(battery_low)
   if [[ -n $low ]]; then
     echo "$low"
-    return
-  fi
-  if path_names_someone "$OUT"; then
-    echo "the results directory lies under your home or names you or the host, and GitTurtle's header shows the demo repository's path: use --out /var/tmp/${OUT##*/}"
     return
   fi
   if [[ -z $(empty_workspace) ]]; then
@@ -532,7 +569,7 @@ theme_blocker() {
 }
 
 show_plan_and_wait() {
-  local themes="?" answer=""
+  local themes="?" answer="" seconds=$REST_OF_DESKTOP
   say "GitTurtle on Omarchy: check of $ARCHIVE_NAME (its .sha256 matches)."
   say "Results: $OUT, packed at the end as ${OUT##*/}.tar.gz beside it."
   say ""
@@ -542,7 +579,9 @@ show_plan_and_wait() {
     say "The desktop part will NOT run: $DESKTOP_REFUSAL."
   else
     have omarchy-theme-list && themes=$(timeout 10 omarchy-theme-list 2>/dev/null | grep -c .)
-    say "Then the desktop part, about six minutes; leave the keyboard and pointer alone:"
+    [[ -z $THEME_BLOCKER && $themes =~ ^[0-9]+$ ]] && seconds=$((seconds + themes * THEME_SECONDS))
+    say "Then the desktop part, about $(((seconds + 59) / 60)) minutes ($THEME_SECONDS s a theme, and $((REST_OF_DESKTOP / 60)) minutes for"
+    say "the rest); leave the keyboard and pointer alone:"
     say "  - the desktop moves to an empty workspace of this monitor, where GitTurtle"
     say "    opens on a demo repository; notifications are silenced and the session is"
     say "    kept awake;"
@@ -567,7 +606,10 @@ show_plan_and_wait() {
     say "notifications and idle. A picture of GitTurtle's own window is taken at each"
     say "step, never of the screen, and only while nothing else overlaps the window."
     [[ $HANDS == no ]] || say "At the end it asks four things of you (--hands), beside this terminal."
+    say "Before the first change it prints where the desktop's starting state and the saved"
+    say "copies are kept, and how to put the desktop back by hand after a kill or a power loss."
   fi
+  say "This plan is final: a part it says will not run is not started later in the run."
   [[ $ASSUME_YES == no ]] || return 0
   [[ -t 3 ]] || die "standard input is not a terminal: pass --yes to start without the Enter."
   printf 'Press Enter to start, Ctrl+C to stop: '
@@ -759,15 +801,26 @@ put_back_link() {
 
 # --- notifications: silenced, so that none is drawn over the window in a picture
 dnd_state() { timeout 5 omarchy-shell notifications isDnd 2>/dev/null; } # prints on or off
+# The state is named, on or off, as the shell's own setDnd takes it: a toggle
+# would turn silencing off again if anything else had turned it on meanwhile.
+# The indicator is refreshed as Omarchy's own toggle command does after a change.
+set_dnd() {
+  timeout 10 omarchy-shell notifications setDnd "$1" >/dev/null 2>&1
+  timeout 5 omarchy-shell -q omarchy.indicators refresh >/dev/null 2>&1
+}
 silence_notifications() {
   [[ -n $START_DND ]] || return 1
-  [[ $(dnd_state) == on ]] || timeout 10 omarchy-toggle-notification-silencing >/dev/null 2>&1
+  [[ $(dnd_state) == on ]] || set_dnd on
   [[ $(dnd_state) == on ]]
 }
 restore_notifications() {
   [[ -n $START_DND ]] || return 0
-  [[ $(dnd_state) == "$START_DND" ]] || timeout 10 omarchy-toggle-notification-silencing >/dev/null 2>&1
-  report "restore notifications: silencing is $(dnd_state), was $START_DND"
+  [[ $(dnd_state) == "$START_DND" ]] || set_dnd "$START_DND"
+  if [[ $(dnd_state) == "$START_DND" ]]; then
+    report "restore notifications: silencing is $START_DND, as it was"
+  else
+    restore_failed "notifications: silencing is $(dnd_state), and it was $START_DND"
+  fi
 }
 
 # --- idle: Omarchy starts its screensaver after 150 s without input and locks at 300 s
@@ -825,7 +878,11 @@ restore_focus() {
     return 0
   fi
   [[ $(active_address) == "$START_FOCUS" ]] || focus_window "$START_FOCUS"
-  report "restore focus: the window that had it $([[ $(active_address) == "$START_FOCUS" ]] && echo "has it again" || echo "does NOT have it")"
+  if [[ $(active_address) == "$START_FOCUS" ]]; then
+    report "restore focus: the window that had it has it again"
+  else
+    restore_failed "focus: the window that had the focus does not have it again"
+  fi
 }
 
 # --- the app: the installed executable on the demo repository, with a new XDG_CONFIG_HOME
@@ -1380,7 +1437,7 @@ check_libraries() {
 check_manifest() {
   local manifest=$ARCHIVE.manifest.json line differs=no
   if [[ ! -f $manifest || -L $manifest ]]; then
-    problem "no $ARCHIVE_NAME.manifest.json beside the archive (a file, not a link)"
+    uncovered "the manifest's fields: no $ARCHIVE_NAME.manifest.json beside the archive (a file, not a link)"
     return
   fi
   if ! jq -e 'type == "object"' "$manifest" >/dev/null 2>&1; then
@@ -1426,13 +1483,13 @@ check_provenance() {
 }
 
 check_archive() {
-  local unsafe
+  local unsafe unpacked entries
   section b archive "the archive, its checksums and what its executable says"
   : >"$WORK/build-info.json"
   report "archive: $ARCHIVE_NAME, $(stat -c %s -- "$ARCHIVE") bytes"
   report "sha256: $ARCHIVE_SHA256, the one in $ARCHIVE_NAME.sha256 (compared before anything else ran)"
-  tar -tzvf "$ARCHIVE" >"$WORK/archive-listing.txt" 2>/dev/null
-  tar -tzf "$ARCHIVE" >"$WORK/archive-names.txt" 2>/dev/null
+  timeout 300 tar -tzvf "$ARCHIVE" >"$WORK/archive-listing.txt" 2>/dev/null || : >"$WORK/archive-listing.txt"
+  timeout 300 tar -tzf "$ARCHIVE" >"$WORK/archive-names.txt" 2>/dev/null || : >"$WORK/archive-names.txt"
   ARCHIVE_TOP=$(sed -n '1s|/.*||p' "$WORK/archive-names.txt")
   unsafe=$(archive_listing_problem)
   if [[ -n $unsafe ]]; then
@@ -1440,14 +1497,21 @@ check_archive() {
     result
     return
   fi
+  unpacked=$(awk '{ bytes += $3 } END { printf "%.0f", bytes }' "$WORK/archive-listing.txt")
+  entries=$(grep -c . "$WORK/archive-names.txt")
+  if [[ ! $unpacked =~ ^[0-9]+$ ]] || ((unpacked > MAX_UNPACKED || entries > MAX_ENTRIES)); then
+    problem "not extracted: it would unpack to $unpacked bytes in $entries entries, over the limit of $MAX_UNPACKED bytes and $MAX_ENTRIES entries"
+    result
+    return
+  fi
   mkdir -p "$WORK/archive"
-  if ! tar -xzf "$ARCHIVE" -C "$WORK/archive" --no-same-owner 2>"$WORK/tar.log"; then
+  if ! timeout 600 tar -xzf "$ARCHIVE" -C "$WORK/archive" --no-same-owner 2>"$WORK/tar.log"; then
     problem "tar could not extract the archive: $(tail -n 1 "$WORK/tar.log")"
     result
     return
   fi
   BUNDLE=$WORK/archive/$ARCHIVE_TOP
-  report "extracted: $(find "$BUNDLE" -type f | grep -c .) files under $ARCHIVE_TOP/"
+  report "extracted: $(find "$BUNDLE" -type f | grep -c .) files under $ARCHIVE_TOP/ ($unpacked bytes, within the limit of $MAX_UNPACKED)"
   if check_bundle_sums; then
     # The executable runs (--build-info) and is loaded (ldd) only once the archive
     # is the build it is expected to be; the manifest and the CI record are read
@@ -1505,7 +1569,7 @@ check_install() {
   if [[ ! -f $entry ]]; then
     problem "no applications/$APP_ID.desktop was installed"
   elif ! have desktop-file-validate; then
-    report "desktop-file-validate: not installed, the entry was not validated"
+    uncovered "the desktop entry's validation: desktop-file-validate is not installed"
   else
     validation=$(timeout 30 desktop-file-validate "$entry" 2>&1)
     status=$?
@@ -1569,8 +1633,31 @@ desktop_snapshot() {
   for file in "${FONT_FILES[@]}"; do printf 'file ~/.config/%s %s\n' "$file" "$(file_mark "$HOME/.config/$file")"; done
 }
 
+# How to put the desktop back by hand, with this run's own values.
+by_hand() {
+  local theme font
+  theme=$(sed -n 's/^theme //p' <<<"$DESKTOP_START")
+  font=$(sed -n 's/^font //p' <<<"$DESKTOP_START")
+  cat <<TEXT
+The script puts all of this back itself, on every exit. After a kill it could not
+catch (kill -9) or a power loss, put it back by hand, in this order:
+  the workspace          it was $START_WORKSPACE: SUPER + $(((${START_WORKSPACE:-1} - 1) % 10 + 1)), its number among this monitor's ten
+  the theme              omarchy-theme-set "$theme"
+  the skip toggles       remove each file that $RESTORE/manifest.txt
+                         lists as "toggle ... made by this run"
+  the font files         for each font-N line of that manifest.txt, copy
+                         $RESTORE/font-N over the file the line
+                         names, and remove a file a line calls "absent"
+  the font               omarchy-font-set "$font"
+  the monitor's scale    hyprctl reload
+  notification silencing omarchy-shell notifications setDnd ${START_DND:-off}
+  stay-awake             $([[ $START_AWAKE == yes ]] && echo "it was on: nothing to do" || echo "omarchy-toggle-idle allow-idle")
+A GitTurtle window or a terminal this run opened can simply be closed.
+TEXT
+}
 # The starting state, written where a hard stop still leaves it readable: in the
-# records, which are packed, and beside the saved copies in work/restore.
+# records, which are packed, and beside the saved copies in work/restore. The
+# terminal is told where both are and how to put the desktop back by hand.
 record_desktop_start() {
   DESKTOP_START=$(desktop_snapshot)
   restore_note "# What this run saved or made: kind, path, note, separated by tabs. desktop-start.txt beside this file is the desktop as it was found."
@@ -1578,18 +1665,28 @@ record_desktop_start() {
     echo "The desktop as the desktop part found it ($(date -u +%FT%TZ)):"
     printf '%s\n' "$DESKTOP_START"
     echo
-    echo "The script puts all of it back. If it was killed outright, by hand:"
-    echo "  omarchy-theme-set <theme>      omarchy-font-set \"<font>\"      hyprctl reload   (the monitor's scale)"
-    echo "  omarchy-toggle-notification-silencing   (if silencing is on and was off)"
-    echo "  omarchy-toggle-idle allow-idle          (if stay-awake is on and was off)"
+    by_hand
   } | tee -a "$RESTORE/desktop-start.txt" | record desktop-start.txt
+  say ""
+  say "The desktop as it is now is written in $RECORDS/desktop-start.txt and in"
+  say "$RESTORE/desktop-start.txt; saved copies go to $RESTORE."
+  by_hand | while IFS= read -r line; do say "$line"; done
+  say ""
 }
 
 # Records the starting state, moves to a workspace of the run's own, then makes
 # the two changes every picture needs: no notification, no screensaver.
 begin_desktop_part() {
-  [[ $DESKTOP == no ]] || DESKTOP_REFUSAL=$(desktop_refusal)
+  local now
+  # The plan stands: a part it said would not run stays off, whatever has changed
+  # since (the charger plugged in during the package build). A change for the
+  # worse still stops it.
   [[ -z $DESKTOP_REFUSAL ]] || return 0
+  now=$(desktop_refusal)
+  if [[ -n $now ]]; then
+    DESKTOP_REFUSAL="$now (this changed after the plan was printed)"
+    return 0
+  fi
   # Without an installed executable of an established identity there is nothing to
   # show, so nothing on the desktop is changed.
   [[ -z $IDENTITY_REFUSAL && -n $INSTALLED_BINARY ]] || return 0
@@ -1715,7 +1812,7 @@ report_preferences() {
 }
 
 check_themes() {
-  local name slug status taken=0 passed=0
+  local name slug status started taken=0 passed=0
   local -a names=()
   section f themes "every Omarchy theme, live"
   window_gate || return
@@ -1741,8 +1838,15 @@ check_themes() {
   fi
   report "themes: Omarchy's skip toggles are on for the switches: ${SKIP_TOGGLES[*]:-none exist here} (made by this run: ${SKIP_TOGGLES_MADE[*]:-none}); theme sync to herdr machines is off; no hook of the owner's runs; the browser colour goes through Omarchy's passwordless sudo rule"
   START_WALLPAPER=$(wallpaper_now)
-  mapfile -t names < <(timeout 10 omarchy-theme-list 2>/dev/null)
+  mapfile -t names < <(timeout 10 omarchy-theme-list 2>/dev/null | grep .)
   report "themes: omarchy-theme-list names ${#names[@]}; starting from $START_THEME; each picture is taken $SETTLE s after omarchy-theme-set returns"
+  if ((${#names[@]} == 0)); then
+    run_restore restore_skip_toggles
+    START_THEME=""
+    problem "omarchy-theme-list named no theme, so none was checked"
+    result
+    return
+  fi
   register_restore restore_theme
   for name in "${names[@]}"; do
     slug=$(theme_slug "$name")
@@ -1766,6 +1870,7 @@ check_themes() {
       problem "an Omarchy skip toggle was turned off during the run; the remaining themes were not tried"
       break
     else
+      started=$(now_ms)
       set_theme "$slug"
       status=$?
       if [[ $(theme_now) != "$slug" || ! -f $OMARCHY_CURRENT/theme/colors.toml ]]; then
@@ -1773,6 +1878,7 @@ check_themes() {
         break
       fi
       wait_theme_intro
+      report "theme $slug: omarchy-theme-set and its intro took $(($(now_ms) - started)) ms"
     fi
     nap "$SETTLE"
     report "theme $slug: $(grep -m1 '^background' "$OMARCHY_CURRENT/theme/colors.toml" | tr -d ' '), light.mode $([[ -f $OMARCHY_CURRENT/theme/light.mode ]] && echo present || echo absent)"
@@ -1785,9 +1891,12 @@ check_themes() {
   [[ $(theme_now) == "$START_THEME" ]] || problem "the theme is $(theme_now), not the starting $START_THEME"
   [[ ! -f $WORK/theme-set.log ]] || record theme-set-output.txt <"$WORK/theme-set.log"
   report "themes: $taken pictured, $passed passed over, of ${#names[@]}"
+  ((passed == 0)) || uncovered "$passed of ${#names[@]} themes: passed over, each with its reason above"
   result
 }
 
+plain_font_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+-]{0,79}$ ]]; }
+listed_font() { timeout 10 omarchy-font-list 2>/dev/null | grep -Fxq -- "$1"; }
 # The first other family whose first word differs, so that the change can be seen.
 other_font() {
   local family first=""
@@ -1815,6 +1924,14 @@ check_font() {
   if [[ -z $START_FONT || -z $other || $other == "$START_FONT" ]]; then
     START_FONT=""
     skipped "omarchy-font-list names no other font than the current one"
+    return
+  fi
+  # Both names are passed to omarchy-font-set, which puts them into sed
+  # expressions and configuration files: only plain names, and for the font that
+  # is set, only one that omarchy-font-list prints.
+  if ! plain_font_name "$START_FONT" || ! plain_font_name "$other" || ! listed_font "$other"; then
+    START_FONT=""
+    skipped "the font to set or the current font is not a plain family name that omarchy-font-list prints; nothing was changed"
     return
   fi
   if (($(own_hooks font-set) > 0)); then
@@ -1870,7 +1987,8 @@ check_floating() {
 }
 
 check_scales() {
-  local facts width height refresh x y transform scale reported taken=0
+  local facts width height refresh x y transform scale reported taken=0 fractional=0
+  local -a impossible=()
   section i scales "fractional scales"
   window_gate || return
   facts=$(hypr_json monitors | jq -r --argjson id "$(app_window .monitor)" '.[] | select(.id == $id) | "\(.name) \(.width) \(.height) \(.refreshRate) \(.x) \(.y) \(.transform) \(.scale)"' 2>/dev/null)
@@ -1897,6 +2015,7 @@ check_scales() {
     fi
     if ! scale_divides_mode "$scale" "$width" "$height"; then
       report "scale $scale: not requested: ${width}x$height does not divide into whole logical pixels at $scale, so Hyprland would refuse it and choose another"
+      impossible+=("$scale")
       continue
     fi
     if same_scale "$(monitor_scale)" "$scale"; then
@@ -1908,15 +2027,26 @@ check_scales() {
     reported=$(monitor_scale)
     if ! same_scale "$reported" "$scale"; then
       report "scale $scale: Hyprland reports $reported: refused, no picture"
+      impossible+=("$scale")
       continue
     fi
     report "scale $scale: Hyprland reports $reported"
-    if picture "scale-$scale"; then taken=$((taken + 1)); else problem "no picture at scale $scale"; fi
+    if picture "scale-$scale"; then
+      taken=$((taken + 1))
+      [[ $scale != *.* ]] || fractional=$((fractional + 1))
+    else
+      problem "no picture at scale $scale"
+    fi
   done
   run_restore restore_scale
   [[ $(monitor_line) == "$MONITOR_START_LINE" ]] || problem "the monitor is not as it was found"
   nap "$SETTLE"
   ((taken > 0)) || problem "no scale was pictured"
+  if ((fractional == 0)); then
+    uncovered "fractional scales: neither 1.25 nor 1.5 is possible on this monitor's mode, ${width}x$height"
+  elif ((${#impossible[@]} > 0)); then
+    uncovered "scale ${impossible[*]}: not possible on this monitor's mode, ${width}x$height"
+  fi
   result
 }
 
@@ -2001,7 +2131,7 @@ report_crashes() {
     report "coredumpctl: $found entries naming gitturtle since the script started"
     ((found == 0)) || problem "coredumpctl lists $found core dumps of gitturtle"
   else
-    report "coredumpctl: not installed"
+    uncovered "core dumps: coredumpctl is not installed"
   fi
   if have journalctl; then
     timeout 30 journalctl --user --no-pager --output=cat --since "@$START_EPOCH" 2>/dev/null |
@@ -2013,7 +2143,7 @@ report_crashes() {
       problem "the user journal holds $found crash lines for gitturtle (records/journal-crash-lines.txt)"
     fi
   else
-    report "journalctl: not installed"
+    uncovered "crash lines in the user journal: journalctl is not installed"
   fi
 }
 
@@ -2022,26 +2152,40 @@ binding_keys() {
   sed -n "s/^o\\.bind(\"\\([^\"]*\\)\", \"$1\".*/\\1/p" "$OMARCHY_PATH/default/hypr/bindings/clipboard.lua" 2>/dev/null | head -n 1
 }
 # One prompt: what to do, Enter, a picture unless PICTURE is "-", then y or n.
+# A prompt counts as done only with its answer and, where it takes one, its picture;
+# otherwise it is a part the check did not cover (HANDS_DONE stays as it was).
 ask() { # NUMBER PICTURE DO QUESTION
-  local answer=""
+  local answer="" pictured=yes
+  if [[ $HANDS_ABSENT == yes ]]; then
+    uncovered "hands $1: not asked, the prompt before it went unanswered"
+    return 1
+  fi
   say ""
   say "[$1/4] $3"
   printf '      Press Enter here when that is done: '
   if ! read -r -u 3 -t "$ANSWER_WAIT" answer; then
-    report "hands $1: no Enter within $ANSWER_WAIT s"
+    HANDS_ABSENT=yes
+    uncovered "hands $1: no Enter within $ANSWER_WAIT s"
     return 1
   fi
-  [[ $2 == - ]] || picture "$2"
+  [[ $2 == - ]] || picture "$2" || pictured=no
   answer=""
   while [[ $answer != y && $answer != n ]]; do
     printf '      %s [y/n]: ' "$4"
     read -r -u 3 -t "$ANSWER_WAIT" answer || {
-      report "hands $1: no answer within $ANSWER_WAIT s"
+      HANDS_ABSENT=yes
+      uncovered "hands $1: no answer within $ANSWER_WAIT s"
       return 1
     }
   done
   report "hands $1: $3 | $4 $answer"
-  [[ $answer == y ]] || problem "hands $1: answered n: $4"
+  if [[ $answer != y ]]; then
+    problem "hands $1: answered n: $4"
+  elif [[ $pictured == no ]]; then
+    uncovered "hands $1: answered y, but its picture could not be taken"
+    return 1
+  fi
+  HANDS_DONE=$((HANDS_DONE + 1))
 }
 # Says only whether the clipboard holds a commit of the demo repository; nothing
 # else that it may hold is ever written down.
@@ -2058,6 +2202,7 @@ report_clipboard() {
 
 check_hands() {
   local copy paste before new
+  HANDS_DONE=0 HANDS_ABSENT=no
   section l hands "the owner's two minutes"
   if [[ $HANDS == no ]]; then
     skipped "--hands was not given"
@@ -2101,6 +2246,11 @@ check_hands() {
   ask 4 hands-after-cancel "Press Cancel in the folder picker." \
     "Is GitTurtle as it was before Ctrl+O (same repository, same view)?"
   run_restore stop_app
+  # Nothing answered and nothing failed: the check did not happen.
+  if ((HANDS_DONE == 0 && ${#PROBLEMS[@]} == 0)); then
+    skipped "none of the four prompts was answered with its picture (${PARTIALS[0]:-no answer})"
+    return
+  fi
   result
 }
 
@@ -2171,8 +2321,36 @@ say_what_was_kept() {
   say "  copy (font-0 to font-4) belongs to which file and what this run made."
 }
 
+# The names of the records that name the home directory, the user or the host.
+# False, printing why, when the scan could not vouch for every record: one that
+# is not text, one that cannot be read, a scan that fails. Nothing is packed then.
+privacy_scan() {
+  local file status
+  local -a files=()
+  mapfile -d '' -t files < <(find "$REPORT" "$RECORDS" -type f -print0 2>/dev/null)
+  if ((${#files[@]} == 0)) || [[ ! -f $REPORT ]]; then
+    echo "the report and the records could not be listed"
+    return 1
+  fi
+  for file in "${files[@]}"; do
+    [[ -s $file ]] || continue
+    if ! grep -qI '' -- "$file" 2>/dev/null; then
+      echo "${file#"$OUT"/} cannot be read as text"
+      return 1
+    fi
+    grep -qE -e "$SCAN_PATTERN" -- "$file" 2>/dev/null
+    status=$?
+    if ((status == 0)); then
+      printf '%s ' "${file#"$OUT"/}"
+    elif ((status != 1)); then
+      echo "the scan of ${file#"$OUT"/} failed (grep exit $status)"
+      return 1
+    fi
+  done
+}
+
 # Packs report.txt, records/ and pictures/ with numeric, neutral owners, and only
-# when no record names the home directory, the user or the host.
+# when every record was read and none names the home directory, the user or the host.
 pack_results() {
   local name=${OUT##*/} leaks
   if [[ $KEEP_WORK == yes ]]; then
@@ -2180,14 +2358,18 @@ pack_results() {
   else
     remove_work
   fi
-  leaks=$(grep -rIlE -e "$SCAN_PATTERN" "$REPORT" "$RECORDS" 2>/dev/null | sed "s|^$OUT/||" | tr '\n' ' ')
+  if ! leaks=$(privacy_scan); then
+    say "privacy scan: it could not be completed: $leaks"
+    say "NOT packed: a record that was not read is not sent. The results are in $OUT."
+    return 1
+  fi
   if [[ -n $leaks ]]; then
     report "privacy scan: the home directory, the user or the host is named in: $leaks"
     report "NOT packed. Look at those files, then send the directory or not."
     return 1
   fi
-  report "privacy scan: no record names the home directory, the user or the host"
-  report "finished: $(date -u +%FT%TZ); $COUNT_OK ok, $COUNT_FAILED FAILED, $COUNT_SKIPPED skipped"
+  report "privacy scan: every record was read as text, and none names the home directory, the user or the host"
+  report "finished: $(date -u +%FT%TZ); $COUNT_OK ok, $COUNT_PARTIAL partial, $COUNT_FAILED FAILED, $COUNT_SKIPPED skipped"
   if ! tar -czf "$OUT.tar.gz" --owner=0 --group=0 --numeric-owner --exclude="$name/work" -C "${OUT%/*}" "$name"; then
     say "The results could not be packed; they are in $OUT."
     return 1
@@ -2231,8 +2413,16 @@ main() {
   refuse_unverified_archive
   choose_results_directory
   build_redaction
+  # With the desktop part asked for, the results directory must name no one:
+  # said now, before the archive checks, rather than after them.
+  if [[ $DESKTOP == yes ]] && path_names_someone "$OUT"; then
+    die "the results directory lies under your home or names you or the host, and GitTurtle's header shows the demo repository's path in every picture: use --out /var/tmp/${OUT##*/}, or --no-desktop."
+  fi
+  # The plan is decided here, once, and printed; nothing later in the run starts
+  # a part it says will not run.
   DESKTOP_REFUSAL=$(desktop_refusal)
   if [[ -z $DESKTOP_REFUSAL ]]; then
+    [[ -z $FONT_CHOICE ]] || listed_font "$FONT_CHOICE" || die "--font $FONT_CHOICE is not a family that omarchy-font-list prints."
     mapfile -t SKIP_TOGGLES < <(theme_skip_toggles)
     THEME_BLOCKER=$(theme_blocker)
   fi
