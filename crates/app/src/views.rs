@@ -11593,15 +11593,21 @@ pub(crate) mod tests {
         panic!("a running quiet read never landed");
     }
 
-    /// Lands the recent-project saves asked for so far, so a recent list a
-    /// test then sets on the hub by hand stays as set. Every snapshot that
+    /// Lands the recent-project saves asked for so far. Every snapshot that
     /// lands remembers its repository on the preference thread
-    /// (`GitTurtle::remember_repository`), and the save's reply gives the
-    /// hub the store's own list. [`settle`] cannot wait for that thread, so
-    /// the reply lands at whatever park follows the write: on a hosted
-    /// Ubuntu runner one landed after a test had set three recent projects
-    /// and before the frame it read the second row from, which drew the
-    /// store's one project.
+    /// (`GitTurtle::remember_repository`), and the save's reply adds the
+    /// project to the window's list, which draws a frame, and gives the hub
+    /// the store's own list. [`settle`] cannot wait for that thread, so the
+    /// reply lands at whatever park follows the write. On a hosted Ubuntu
+    /// runner one landed after a test had set three recent projects and
+    /// before the frame it read the second row from, which drew the store's
+    /// one project. Landing in the park after a resize whose frames a test
+    /// counts, it draws that step's frame a second time.
+    ///
+    /// [`styled_history_window`] lands the opening's own, so a test begins
+    /// with none in flight. A test that opens another repository, and then
+    /// sets the hub's recent list by hand or counts frames, lands that
+    /// opening's save here first.
     pub(crate) fn land_recent_saves_for_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         app.read_with(cx, |app, _| app.preferences_writer.drain());
         cx.executor().run_until_parked();
@@ -24068,6 +24074,17 @@ pub(crate) mod tests {
         let app = observed.borrow_mut().take().unwrap();
         cx.simulate_resize(size(px(1000.), px(680.)));
         settle(&app, cx).await;
+        // The opening asks two threads that `settle` cannot wait for, and
+        // each reply draws a frame as it lands: the snapshot's
+        // recent-project save, on the preference thread, and the working
+        // rows' path filter, which the status read asks for as it lands, on
+        // the filter's lane. Both land here, so no test begins with either
+        // in flight: landing in the park after a resize, either draws that
+        // step's frame a second time, and a hosted Ubuntu runner drew two
+        // in the first step
+        // `a_compare_width_step_draws_one_frame_where_it_settles` counts.
+        app.read_with(cx, |app, _| app.file_paths.drain());
+        land_recent_saves_for_test(&app, cx);
         assert_eq!(
             app.read_with(cx, |app, _| app
                 .profile

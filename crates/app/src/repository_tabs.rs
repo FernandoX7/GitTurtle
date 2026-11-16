@@ -13584,9 +13584,6 @@ pub(crate) mod tests {
         let paths: Vec<_> = recents.iter().map(|repo| repo.path().to_owned()).collect();
         let paths_kept = paths.clone();
         let hub = app.read_with(cx, |app, _| app.hub.clone());
-        // The opening's own save lands first: its reply gives the hub the
-        // store's list, the fixture alone, in place of the one set here.
-        crate::views::tests::land_recent_saves_for_test(&app, cx);
         cx.update(|window, cx| {
             hub.update(cx, |hub, cx| hub.set_recent(paths, cx));
             app.update(cx, |app, cx| app.show_projects(window, cx));
@@ -13732,9 +13729,6 @@ pub(crate) mod tests {
             .collect();
         let hub = app.read_with(cx, |app, _| app.hub.clone());
         let recents = paths.clone();
-        // The opening's own save lands first: its reply gives the hub the
-        // store's list, the fixture alone, in place of the one set here.
-        crate::views::tests::land_recent_saves_for_test(&app, cx);
         cx.update(|window, cx| {
             hub.update(cx, |hub, cx| hub.set_recent(recents, cx));
             app.update(cx, |app, cx| app.show_projects(window, cx));
@@ -13914,9 +13908,6 @@ pub(crate) mod tests {
             .collect();
         let paths: Vec<_> = recents.iter().map(|repo| repo.path().to_owned()).collect();
         let hub = app.read_with(cx, |app, _| app.hub.clone());
-        // The opening's own save lands first: its reply gives the hub the
-        // store's list, the fixture alone, in place of the one set here.
-        crate::views::tests::land_recent_saves_for_test(&app, cx);
         cx.update(|window, cx| {
             hub.update(cx, |hub, cx| hub.set_recent(paths, cx));
             app.update(cx, |app, cx| app.show_projects(window, cx));
@@ -14037,9 +14028,6 @@ pub(crate) mod tests {
             }
         });
         let hub = app.read_with(cx, |app, _| app.hub.clone());
-        // The opening's own save lands first: its reply gives the hub the
-        // store's list, the fixture alone, in place of the one set here.
-        crate::views::tests::land_recent_saves_for_test(&app, cx);
         cx.update(|window, cx| {
             hub.update(cx, |hub, cx| {
                 hub.set_recent(vec![other.path().to_owned()], cx)
