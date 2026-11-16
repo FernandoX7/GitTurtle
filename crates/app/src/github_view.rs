@@ -3208,7 +3208,15 @@ impl Panel {
             });
             self.confirm = None;
             if held {
+                // Sending shows nothing new, so the body shows nothing anew: the focus moves,
+                // and the body's record of the focus it has shown moves with it. Revealed, the
+                // reply's draft scrolled back into view as its Send started.
+                let shown = std::mem::take(&mut *self.review.revealed_focus.borrow_mut());
                 self.focus_visible_section(window, cx);
+                *self.review.revealed_focus.borrow_mut() = review::FocusObservation {
+                    focus: window.focused(cx),
+                    ..shown
+                };
             }
         }
     }
