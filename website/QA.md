@@ -101,3 +101,30 @@ shell and terminates option parsing before URL data. Its complete live HTTP/TLS
 check passed again after this refinement; the evidence records the current
 helper hash and unchanged deployed asset identity. Hosted security analysis is
 tracked on the pull request separately from the live checks.
+
+## November 16, 2026 content refresh
+
+The page was brought up to date with the application the repository README describes: the same design, more of the app. It now runs hero, speed, a six-tab tour, themes, Omarchy, how it works, Get started and open source, with ten of the README's pictures copied byte for byte ([provenance](README.md#screenshot-provenance-and-replacement)). This revision is not deployed: publishing, the smoke check and the deployment record are the owner's steps.
+
+Headless Chromium 153.0.8010.36 on Arch Linux ARM rendered the page from its local files over a DevTools pipe, with no window and with host resolution disabled. The page made sixteen requests, all for its own files, and none to another origin.
+
+| Check | Observed result |
+| --- | --- |
+| Full page at 1440, 1000, 700 and 380 pixels | Every frame inspected: nothing cut, overlapping or misaligned; Manrope loaded; every rendered picture loaded at its declared aspect ratio. |
+| Horizontal overflow at fourteen widths from 320 to 1920 pixels | None: the document and every element stayed inside the viewport. |
+| Six tour tabs at 1440 and 380 pixels | Each tab's picture and caption inspected. The caption block keeps one height across the six tabs at 1440, 1000, 700 and 380. |
+| Tabs by keyboard | Home, five presses of Right, a wrap in each direction and End selected and focused the expected tab, showed only its panel and kept one tab sequentially focusable; Tab then moved into the visible panel. |
+| Reduced motion, emulated | Scroll behavior computed as `auto` and the button and link transitions as `0s`; without the emulation, `smooth` and `0.18s`. |
+| Scripts disabled, at 1440 and 380 pixels | The tab buttons stay hidden and all six pictures, captions and full-size links appear in document order. |
+| Custom 404 at 1440 and 380 pixels | Inspected from a copy with its root-relative URLs made relative, since a file cannot resolve them; no console message. |
+
+From a file, Chromium refuses the font preload's `crossorigin` request and logs two errors and two warnings for each load of the page; the font itself loads through the stylesheet, and the 404 page, which has no preload, logs nothing. The page was not observed over HTTP in this round, so the console over HTTPS, the response headers and the content security policy against the new markup remain to be checked at deployment. The markup has no inline style or script. 200% browser zoom, a physical phone, a screen reader and forced colors were not exercised. The frames were reviewed locally and are not in the repository.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `public/index.html` | 28,861 | `ca59da727800ccba68700ef50d55c546d1f4d2afd751a1039c530173510b00af` |
+| `public/styles.css` | 16,164 | `bf4c86520f896add7730e69f53f832be2ec0fcf59c5b1175883b884c2ac0fbeb` |
+| `public/site.js` | 1,693 | `13334bb59acf3a0c743da306974e20753bd46e34dcf6aa053df7933b9d5c35e3` |
+| `public/404.html` | 705 | `8825cb47ad0a13243824fb07a9c9cd2c293fed0c840d460b84896d703b684bb0` |
+
+The script is unchanged from the September record. The first view requests 612,660 bytes: the page, stylesheet, script, font, icon and the History picture. Every other picture loads lazily, and a tab's picture only when the tab is first shown; with all of them the page weighs 5,778,296 bytes. The largest response is `omarchy-themes.png` at 948,008 bytes, under the 2 MiB that `smoke.py` allows.
