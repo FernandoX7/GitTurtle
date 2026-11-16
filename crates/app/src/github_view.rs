@@ -1935,7 +1935,9 @@ struct Presses {
 /// Return's and Space's presses going down in the panel, so that a control a landing gives
 /// focus takes no press that was down as it landed ([`Panel::land_focus`]): the new pull
 /// request's row after a creation, and Open #N or Refresh PRs after one refused for an existing
-/// pull request. GPUI clicks the focused control as Space or Return comes up where it went
+/// pull request; and so that the text field Send to GitHub hands focus to as a send starts,
+/// a creation's title, the review body or a reply, takes no text from one
+/// ([`Panel::hear_keys`]). GPUI clicks the focused control as Space or Return comes up where it went
 /// down at the same focus, and its X11 client hands a held key's repeat on as a release and a
 /// fresh press where the two reach it in separate batches, so a Space still held on Send to
 /// GitHub as its creation landed opened the new pull request at the repeat after the one that
@@ -2018,6 +2020,9 @@ impl HeldKeys {
 /// footer's Back to repository: with focus in any of them, the panel hears Return and Space
 /// come up ([`HeldKeys`]).
 const HELD: &str = "GitTurtleGithubHeldKeys";
+/// The key context the toolkit gives a text field, one line or many (`gpui_kit::base::input`):
+/// with focus in one of the panel's, a latched press types nothing ([`Panel::hear_keys`]).
+const FIELD: &str = "Input";
 /// A Return or Space press in the panel ([`HeldKeys`]).
 #[derive(Clone, Copy)]
 struct HeldKey {
@@ -3448,6 +3453,12 @@ impl Panel {
                     focus: window.focused(cx),
                     ..shown
                 };
+                // The key that sent is still down as focus arrives, a Return that sent going
+                // down and, under X11, a Space whose repeat's release sent mid-hold: its press
+                // is latched, so it types nothing into the field focus went to ([`HeldKeys`]).
+                if let Some(focus) = window.focused(cx) {
+                    self.land_focus(&focus, window, cx);
+                }
             }
         }
     }
@@ -3456,9 +3467,22 @@ impl Panel {
     /// or repeats; anywhere else, as in a dialog over the panel, a key of the panel still down
     /// may come up unheard ([`HeldKeys::leave`]). The panel's close drops it,
     /// so a closed panel, kept warm for its repository, takes no part in the window's keys.
+    ///
+    /// It stops one key-down and no other: Return's or Space's, heard in the panel, while that
+    /// key's press is latched and a text field of the panel holds focus ([`FIELD`]). A latched
+    /// press was down as a landing or a send's hand-off moved focus and has not come up since
+    /// ([`Panel::land_focus`]), so the key-down is a repeat of the press that pressed Send, or
+    /// of a key pressed while that one was down, and never a press the person aimed at the
+    /// field: a key they press in a field they are typing in begins its own press, unlatched,
+    /// and repeats there. Stopped, the key-down reaches no binding and types no character:
+    /// Space held on Send to GitHub, which under X11 sends at a repeat's release mid-hold,
+    /// typed a space into the title, the review body or the reply at each later repeat once
+    /// the send had ended, and Return a line where a repeat's release and press came in two
+    /// batches. On a control that is no text field nothing is stopped: a latched press's
+    /// click there is refused where it would act ([`HeldKeys::refuses`]).
     fn hear_keys(&mut self, window: crate::gpui::WindowId, cx: &mut Context<Self>) {
         let held = self.held.clone();
-        self.hears_keys = Some(cx.intercept_keystrokes(move |event, pressed_in, _| {
+        self.hears_keys = Some(cx.intercept_keystrokes(move |event, pressed_in, cx| {
             let Some(own) = held_key(&event.keystroke) else {
                 return;
             };
@@ -3472,6 +3496,13 @@ impl Panel {
             let mut held = held.borrow_mut();
             if heard {
                 held.key_down(own);
+                let in_field = event
+                    .context_stack
+                    .iter()
+                    .any(|context| context.contains(FIELD));
+                if in_field && held.keys[own].is_some_and(|press| press.latched) {
+                    cx.stop_propagation();
+                }
             } else {
                 held.leave();
             }
@@ -24492,6 +24523,703 @@ mod tests {
         unchanged(cx, "a fresh press on the failure's line");
         assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
         assert!(panel.read_with(cx, |panel, _| !panel.pending));
+    }
+
+    /// A send whose Send to GitHub hands focus to a text field: a creation, to its title, and
+    /// what was written in a composer, to that composer, refused by GitHub or, with `true`,
+    /// accepted.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Handed {
+        Creation,
+        Wrote(Composed, bool),
+    }
+
+    impl Handed {
+        /// The text of the field Send hands focus to.
+        fn text(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+            panel.read_with(cx, |panel, cx| match self {
+                Self::Creation => panel.title.read(cx).value().to_string(),
+                Self::Wrote(composed, _) => {
+                    composed_input(panel, composed).read(cx).value().to_string()
+                }
+            })
+        }
+
+        /// That field's focus handle.
+        fn focus(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> FocusHandle {
+            cx.update(|_, cx| {
+                let panel = panel.read(cx);
+                match self {
+                    Self::Creation => panel.title.read(cx).focus_handle(cx),
+                    Self::Wrote(composed, _) => {
+                        composed_input(panel, composed).read(cx).focus_handle(cx)
+                    }
+                }
+            })
+        }
+
+        /// Whether the send is accepted.
+        fn sent(self) -> bool {
+            matches!(self, Self::Wrote(_, true))
+        }
+
+        /// Whether the send's failure takes focus to its line on the panel's top line
+        /// (`Panel::focus_failure`): a reply's is drawn in its composer, where focus stays.
+        fn rests_on_line(self) -> bool {
+            !self.sent() && self != Self::Wrote(Composed::Reply, false)
+        }
+    }
+
+    /// Whether the failure's line on the panel's top line holds focus.
+    fn on_failure_stop(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| panel.read(cx).review.failure_focus.is_focused(window))
+    }
+
+    /// Whether `field` holds focus.
+    fn field_holds(field: &FocusHandle, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, _| field.is_focused(window))
+    }
+
+    /// The composer `composed` is written in: a conversation's reply, or the review body.
+    fn composed_input(panel: &Panel, composed: Composed) -> &Entity<TextareaState> {
+        match composed {
+            Composed::Reply => &panel.conversations.input,
+            _ => &panel.body,
+        }
+    }
+
+    /// The panel open at 13 pt in an active 1,480 × 973 window with `handed`'s submission
+    /// reviewed and Send to GitHub holding focus, the script holding the send's answers.
+    async fn handing_panel(
+        cx: &mut TestAppContext,
+        handed: Handed,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let Handed::Wrote(composed, sent) = handed else {
+            let (fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+            let refused = (422, r#"{"message":"Validation Failed"}"#);
+            let at = (13, 1480., 973.);
+            let send = review_creation(&app, &panel, &script, at, refused, true, cx).await;
+            cx.update(|window, cx| {
+                window.activate_window();
+                send.focus(window, cx)
+            });
+            draw(cx);
+            return (fixture, app, panel, cx);
+        };
+        let (fixture, app, cx) = repository_window(cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let pull = github::review::fixture_pull(false);
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let mut threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(
+                &pull.capture(repository),
+                None,
+                &OperationControl::default(),
+            )
+            .unwrap();
+        for thread in &mut threads.items {
+            thread.target.account = github::Scripted::LOGIN.into();
+        }
+        // The pull request read again before the write, then the write's answer; a reply's
+        // first read finds the script empty, as a lost connection answers nothing.
+        if composed != Composed::Reply {
+            script.answer(200, serde_json::to_string(&pull).unwrap());
+            if sent {
+                script.answer(201, r#"{"id":1}"#);
+            } else {
+                script.answer(422, r#"{"message":"Validation Failed"}"#);
+            }
+        }
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Review;
+                panel.discussion = composed == Composed::Comment;
+                if composed == Composed::Reply {
+                    panel.receive_threads(threads, None);
+                }
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        // The draft written, then its submission reviewed: an edit takes a confirmation away.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    let target = panel.conversations.threads[0].target.clone();
+                    panel.begin_reply(target, window, cx);
+                }
+                composed_input(panel, composed)
+                    .clone()
+                    .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    panel.review_reply(window, cx);
+                } else {
+                    panel.review_submission(window, cx);
+                }
+            })
+        });
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "{handed:?}: the submission is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        (fixture, app, panel, cx)
+    }
+
+    /// `key` going down as GPUI's X11 window hands a key-down on (`x11/window.rs`,
+    /// `handle_input`): the event and then, where nothing stopped it, the character it types
+    /// into the field with focus. Return carries none there, a control character: a field
+    /// types its line from the key's binding.
+    fn x11_key_down(cx: &mut VisualTestContext, key: &str) {
+        if key == "enter" {
+            key_goes_down(cx, key, false);
+        } else {
+            cx.update(|window, cx| {
+                window.dispatch_keystroke(gpui::Keystroke::parse(key).unwrap(), cx);
+            });
+        }
+    }
+
+    /// [`x11_repeat`] with the character its press types ([`x11_key_down`]): the held key's
+    /// release and press as they reach GPUI's X11 client in two batches of events.
+    fn x11_split_repeat(cx: &mut VisualTestContext, key: &str) {
+        key_comes_up(cx, key);
+        cx.executor().run_until_parked();
+        x11_key_down(cx, key);
+        crate::tags::tests::draw(cx);
+    }
+
+    /// A key held on Send to GitHub types nothing into the field Send hands focus to. Under
+    /// X11 a held key repeats as a release and a fresh press, and a pair the client reads in
+    /// two batches reaches the window as a key-up while the key is still down: Space, which
+    /// clicks as it comes up, then sends mid-hold, as Return does going down, focus goes to
+    /// the title, the review body or the reply, and every later repeat is a key-down there.
+    /// The field takes none while the request runs; once the send had ended, each of Space's
+    /// repeats typed a space into the kept draft, over a selection left in it. `key`'s
+    /// repeats, alone as one batch gives them and split, change nothing of the field while
+    /// `handed` is sent or once it has ended, nor does the key coming up; a fresh press after
+    /// that types its character once.
+    async fn assert_a_key_held_on_send_types_nothing(
+        cx: &mut TestAppContext,
+        key: &'static str,
+        handed: Handed,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let name = format!("{key} held on Send for {handed:?}");
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        x11_key_down(cx, key);
+        draw(cx);
+        if key == "space" {
+            assert!(
+                panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_some()),
+                "{name}: Space sends only as it comes up"
+            );
+            x11_split_repeat(cx, key);
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending && panel.confirm.is_none()),
+            "{name}: it sends"
+        );
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "{name}: focus goes to the field the draft was written in"
+        );
+        let hold = |cx: &mut VisualTestContext, when: &str| {
+            for split in [false, false, true, false, true, true] {
+                if split {
+                    x11_split_repeat(cx, key);
+                } else {
+                    x11_key_down(cx, key);
+                    draw(cx);
+                }
+                assert_eq!(handed.text(&panel, cx), typed, "{name}, {when}");
+            }
+        };
+        hold(cx, "while it is sent");
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.pending && panel.confirm.is_none(), "{name}: it ends");
+            assert_eq!(
+                panel.error.is_none(),
+                handed.sent(),
+                "{name}: {:?}",
+                panel.error
+            );
+        });
+        // A failure that answers on the panel's top line takes focus to its line, which is no
+        // text field; a reply's stays in its composer, and an accepted send leaves focus where
+        // Send handed it.
+        let on_line = handed.rests_on_line();
+        assert_eq!(
+            (on_failure_stop(&panel, cx), field_holds(&field, cx)),
+            (on_line, !on_line),
+            "{name}: focus rests on the failure's line, or stays in the field"
+        );
+        hold(cx, "once the send has ended");
+        if on_line {
+            // The key is still down as focus comes back to the field, as a click in it brings
+            // it: the press that sent stays latched across the line, and types nothing there.
+            cx.update(|window, cx| field.focus(window, cx));
+            draw(cx);
+            hold(cx, "back in the field with the key still down");
+        }
+        key_comes_up(cx, key);
+        draw(cx);
+        assert_eq!(handed.text(&panel, cx), typed, "{name}, come up");
+
+        // A fresh press in that field types once: a title takes no Return.
+        cx.update(|window, cx| field.focus(window, cx));
+        draw(cx);
+        x11_key_down(cx, key);
+        key_comes_up(cx, key);
+        draw(cx);
+        let fresh = handed.text(&panel, cx);
+        if (key, handed) == ("enter", Handed::Creation) {
+            assert_eq!(fresh, typed, "{name}: a title takes no Return");
+        } else {
+            let character = if key == "space" { ' ' } else { '\n' };
+            let count = |text: &str| text.chars().filter(|held| *held == character).count();
+            assert!(
+                fresh.len() == typed.len() + 1 && count(&fresh) == count(&typed) + 1,
+                "{name}: a fresh press types once: {fresh:?}"
+            );
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_none()),
+            "{name}: nothing is reviewed or sent again"
+        );
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_the_title_of_a_creation_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_types_nothing(cx, "space", Handed::Creation).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_review_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Review, false);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_review_that_is_sent(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Review, true);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_comment_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Comment, false);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_comment_that_is_sent(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Comment, true);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_reply_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Reply, false);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    // The same with Return, which sends as it goes down. A repeat whose release and press
+    // came in two batches typed a line into the review body or the reply once the send had
+    // ended: the composers' own hold of that Return ends at the first task the application
+    // runs after an Enter key-up (`Panel::return_came_up`), and one runs between the batches.
+    #[gpui::test]
+    async fn return_held_on_send_types_nothing_into_the_title_of_a_creation_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_types_nothing(cx, "enter", Handed::Creation).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_review_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Review, false);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_review_that_is_sent(
+        cx: &mut TestAppContext,
+    ) {
+        let handed = Handed::Wrote(Composed::Review, true);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_comment_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Comment, false);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_comment_that_is_sent(
+        cx: &mut TestAppContext,
+    ) {
+        let handed = Handed::Wrote(Composed::Comment, true);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_reply_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Reply, false);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    /// Where a held key's repeats are marked held and no release comes before the key's own,
+    /// as on Wayland and macOS, Space on Send to GitHub sends as it comes up, so no repeat of
+    /// it follows into the field: nothing is typed, and the next Space there types once.
+    #[gpui::test]
+    async fn space_held_on_send_with_marked_repeats_types_nothing_and_the_next_types_once(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Comment, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        key_goes_down(cx, "space", false);
+        for _ in 0..3 {
+            key_goes_down(cx, "space", true);
+            draw(cx);
+        }
+        assert!(panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_some()));
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.pending && panel.confirm.is_none() && panel.error.is_none());
+        });
+        assert!(cx.update(|window, _| field.is_focused(window)));
+        assert_eq!(handed.text(&panel, cx), TYPED);
+        x11_key_down(cx, "space");
+        key_comes_up(cx, "space");
+        draw(cx);
+        let fresh = handed.text(&panel, cx);
+        assert!(
+            fresh.len() == TYPED.len() + 1 && fresh.replace(' ', "") == TYPED.replace(' ', ""),
+            "the next Space types once: {fresh:?}"
+        );
+    }
+
+    /// A key the person holds in a field they are typing in repeats there: a run of spaces
+    /// and a held letter in a new pull request's title, as X11 delivers them, each type every
+    /// repeat, with no send before them and after a creation sent by a key has failed.
+    #[gpui::test]
+    async fn a_key_held_in_the_title_repeats_there(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Creation;
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let focus = handed.focus(&panel, cx);
+        let hold = |cx: &mut VisualTestContext, when: &str| {
+            for (key, typed) in [("space", ' '), ("a", 'a')] {
+                let before = handed.text(&panel, cx);
+                x11_key_down(cx, key);
+                draw(cx);
+                x11_key_down(cx, key);
+                draw(cx);
+                x11_split_repeat(cx, key);
+                x11_split_repeat(cx, key);
+                key_comes_up(cx, key);
+                draw(cx);
+                let after = handed.text(&panel, cx);
+                let count = |text: &str| text.chars().filter(|held| *held == typed).count();
+                assert!(
+                    after.len() == before.len() + 4 && count(&after) == count(&before) + 4,
+                    "{when}: {key} held in the title types each repeat: {after:?}"
+                );
+            }
+        };
+        // Keep editing takes the confirmation away and leaves focus in the title.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.confirm = None;
+                cx.notify();
+            });
+            focus.focus(window, cx)
+        });
+        draw(cx);
+        hold(cx, "before any send");
+
+        // Sent by Return, which comes up before the creation fails.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.review_submission(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        x11_key_down(cx, "enter");
+        key_comes_up(cx, "enter");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.pending && panel.error.is_some(),
+                "the creation fails"
+            );
+        });
+        cx.update(|window, cx| focus.focus(window, cx));
+        draw(cx);
+        hold(cx, "after a failed send");
+    }
+
+    /// How focus comes back to a text field from the line of a failed send while the key that
+    /// sent is still down.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Back {
+        /// The line goes, as it does when the next request starts, and the panel hands the
+        /// focus it held to the content it shows (`Panel::hand_off_lost_pane_focus`).
+        LineGoes,
+        /// Tab, from the line on through the stops below it.
+        Tab,
+    }
+
+    /// A key held on Send to GitHub across a send that fails types nothing into the field
+    /// focus comes back to from the failure's line. The failure takes focus to its line, which
+    /// takes no text, and the press that sent stays latched across the line for as long as its
+    /// key is down: when `back` brings focus into the field Send handed it to as the send
+    /// started, `key`'s repeats, alone and split as X11 delivers them, change nothing of it.
+    /// Once the key has come up, a fresh press there types once.
+    async fn assert_a_key_held_past_a_failures_line_types_nothing(
+        cx: &mut TestAppContext,
+        key: &'static str,
+        handed: Handed,
+        back: Back,
+    ) {
+        use crate::tags::tests::draw;
+        assert!(handed.rests_on_line(), "{handed:?} fails on the top line");
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let name = format!("{key} held on Send for {handed:?}, {back:?}");
+        x11_key_down(cx, key);
+        draw(cx);
+        if key == "space" {
+            x11_split_repeat(cx, key);
+        }
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.error.is_some()),
+            "{name}: the send fails"
+        );
+        assert!(
+            on_failure_stop(&panel, cx),
+            "{name}: the failure's line takes focus"
+        );
+        let hold = |cx: &mut VisualTestContext, when: &str| {
+            for split in [false, false, true, false, true, true] {
+                if split {
+                    x11_split_repeat(cx, key);
+                } else {
+                    x11_key_down(cx, key);
+                    draw(cx);
+                }
+                assert_eq!(handed.text(&panel, cx), typed, "{name}, {when}");
+            }
+        };
+        hold(cx, "on the failure's line");
+        match back {
+            Back::LineGoes => {
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.error = None;
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                draw(cx);
+            }
+            Back::Tab => {
+                for _ in 0..60 {
+                    if field_holds(&field, cx) {
+                        break;
+                    }
+                    cx.simulate_keystrokes("tab");
+                    draw(cx);
+                }
+            }
+        }
+        assert!(
+            field_holds(&field, cx),
+            "{name}: focus comes back to the field"
+        );
+        hold(cx, "back in the field with the key still down");
+        key_comes_up(cx, key);
+        draw(cx);
+        assert_eq!(handed.text(&panel, cx), typed, "{name}, come up");
+        x11_key_down(cx, key);
+        key_comes_up(cx, key);
+        draw(cx);
+        let fresh = handed.text(&panel, cx);
+        if (key, handed) == ("enter", Handed::Creation) {
+            assert_eq!(fresh, typed, "{name}: a title takes no Return");
+        } else {
+            let character = if key == "space" { ' ' } else { '\n' };
+            let count = |text: &str| text.chars().filter(|held| *held == character).count();
+            assert!(
+                fresh.len() == typed.len() + 1 && count(&fresh) == count(&typed) + 1,
+                "{name}: a fresh press types once: {fresh:?}"
+            );
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_none()),
+            "{name}: nothing is reviewed or sent again"
+        );
+    }
+
+    #[gpui::test]
+    async fn space_held_past_a_failed_creations_line_types_nothing_as_the_line_goes(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Creation, Back::LineGoes);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "space", handed, back).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_past_a_failed_creations_line_types_nothing_after_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Creation, Back::Tab);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "space", handed, back).await;
+    }
+
+    #[gpui::test]
+    async fn return_held_past_a_failed_reviews_line_types_nothing_as_the_line_goes(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Wrote(Composed::Review, false), Back::LineGoes);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "enter", handed, back).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_past_a_failed_comments_line_types_nothing_after_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Wrote(Composed::Comment, false), Back::Tab);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "space", handed, back).await;
+    }
+
+    /// A key held on Send to GitHub across a creation whose answer told only the pull
+    /// request's number types nothing into the destination field. With no row to show, that
+    /// landing gives focus to the content the panel shows, the list's destination field, where
+    /// each of a held Space's repeats would type a space and the field's edit would clear the
+    /// list: the press that sent is latched, and the field takes none of it until the key has
+    /// come up. A fresh Space there then types once.
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_the_destination_of_a_creation_told_by_number(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let told = (201, r#"{"number":203}"#);
+        let send = review_creation(&app, &panel, &script, (13, 1480., 973.), told, true, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let destination = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                panel.destination.read(cx).value().to_string()
+            })
+        };
+        let named = destination(cx);
+        x11_key_down(cx, "space");
+        draw(cx);
+        x11_split_repeat(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request #203 created. Refresh PRs to open it."),
+            "{:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let field = cx.update(|_, cx| panel.read(cx).destination.read(cx).focus_handle(cx));
+        assert!(
+            field_holds(&field, cx),
+            "the landing gives the destination field focus"
+        );
+        for split in [false, false, true, false, true, true] {
+            if split {
+                x11_split_repeat(cx, "space");
+            } else {
+                x11_key_down(cx, "space");
+                draw(cx);
+            }
+            assert_eq!(destination(cx), named, "the held Space types nothing");
+        }
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert_eq!(destination(cx), named, "come up");
+        x11_key_down(cx, "space");
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert_eq!(
+            destination(cx),
+            format!("{named} "),
+            "a fresh Space types once"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
     }
 
     /// Tabs from wherever focus is until it stands on the dialog footer's Back to repository:
