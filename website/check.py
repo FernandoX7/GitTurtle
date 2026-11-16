@@ -180,6 +180,14 @@ def check_site(root=ROOT):
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
         if digest != item["sha256"]:
             errors.append(f"{target.name}: provenance hash needs updating")
+        # A picture scaled down as a whole names its source's hash and the method.
+        if "source_sha256" in item or "method" in item:
+            source = root.parent / item["source"]
+            if not item.get("source_sha256") or not item.get("method"):
+                errors.append(f"{target.name}: a derivative needs source_sha256 and method")
+            elif (source.is_file()
+                  and hashlib.sha256(source.read_bytes()).hexdigest() != item["source_sha256"]):
+                errors.append(f"{target.name}: derivative source hash needs updating")
     errors.extend(check_headers(public))
     return errors
 

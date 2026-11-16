@@ -1,5 +1,5 @@
 {
-  "status": "All product pictures are byte-for-byte copies of the repository README's pictures under docs/screenshots/readme/: unaltered native captures of a clean release build of 025eaf40bf3b1f565b4488bd4434e2e3b1c6c141 on Omarchy 4.5, showing a disposable demo repository. Eight are single window grabs; the two theme sheets are composed from frames taken the same way, as the evidence records.",
+  "status": "All product pictures come from the repository README's pictures under docs/screenshots/readme/: unaltered native captures of a clean release build of 025eaf40bf3b1f565b4488bd4434e2e3b1c6c141 on Omarchy 4.5, showing a disposable demo repository. Ten are byte-for-byte copies; omarchy-desktop.png is the whole picture scaled down, never cropped, retouched or recolored, and its entry names the source, the source's sha256 and the method. Eight are single window grabs; the three sheets are composed from frames taken the same way, as the evidence records.",
   "recorded_on": "2026-11-16",
   "assets": [
     {
@@ -93,6 +93,18 @@
       "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
+      "site_path": "public/assets/omarchy-desktop.png",
+      "source": "docs/screenshots/readme/omarchy-desktop.png",
+      "source_sha256": "e8e0c43ff4a5afc22d85582548ad3bbc49224aafd2d3e7160004cd5f632b4969",
+      "source_bytes": 2405054,
+      "method": "The whole picture scaled down from 3456x3383 to 1728x1692, never cropped, retouched or recolored, with its alpha channel kept and no ancillary chunk written: ImageMagick 7.1.2-34, magick <source> -filter Lanczos -resize 1728x -define png:include-chunk=none <site_path>",
+      "identity": "Same build, machine and desktop as history.png; a sheet composed from whole-monitor frames of the app tiled beside a terminal, each theme set with the desktop's omarchy-theme-set: Tokyo Night unscaled, Catppuccin Latte and Gruvbox at half size, on a transparent background; not a single grab; source 3456x3383, site copy 1728x1692",
+      "sha256": "41f721cb538e8c069712462f98040216d3a65f28c806715b5bd3cb10763a0f8f",
+      "bytes": 1177156,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
       "site_path": "public/assets/app-icon.png",
       "source": "assets/branding/app-icon.png",
       "identity": "existing project artwork",
@@ -102,9 +114,12 @@
     {
       "site_path": "public/assets/turtle.png",
       "source": "assets/AppIcon.icon/Assets/turtle.png",
-      "identity": "existing canonical project artwork",
-      "sha256": "73262e257f69c3b474ad02356dc42d15e916183c539ebeb2ba5bb9c1e70bb9a1",
-      "bytes": 942906
+      "source_sha256": "73262e257f69c3b474ad02356dc42d15e916183c539ebeb2ba5bb9c1e70bb9a1",
+      "source_bytes": 942906,
+      "method": "Project artwork, not an app capture: the whole picture scaled down from 1254x1254 to 540x540, three times its displayed size, with its alpha channel kept and no ancillary chunk written: ImageMagick 7.1.2-34, magick <source> -filter Lanczos -resize 540x -define png:include-chunk=none <site_path>",
+      "identity": "existing canonical project artwork, scaled down",
+      "sha256": "4acc96f40346ad54940d94cd112f90e4c923b9c0d461c0dfe27473ea29bee39b",
+      "bytes": 235756
     },
     {
       "site_path": "public/fonts/manrope-latin.a30ddcd34970.woff2",
