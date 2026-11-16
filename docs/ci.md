@@ -179,13 +179,84 @@ frames fails as unscannable rather than being sampled. A match
 fails the job and therefore `Quality gate`. The job records one of four statuses,
 and the gate prints it:
 
-- `scanned`: every added or changed image was scanned and none matched.
+- `scanned`: every added or changed image was scanned and none matched (by all
+  eight [shards](#shards) together).
 - `no-images`: the event adds or changes no raster image.
 - `unavailable`: the secret is absent, which is always the case for a fork pull
   request. The job emits a `::notice::` and a step-summary line saying the images
   were **not** scanned; the gate line says so too. It is not a pass.
 - `no-comparison`: manual dispatch, or a main push without a previous commit, has
   nothing to compare, and the notice says the images were not scanned.
+
+#### Shards
+
+The matching is brute force: its cost is the images' pixels times the templates'
+pixels. As one 45-minute job it was cancelled before it finished the 735 images
+(477 megapixels) of a pull request, printing nothing, so `Quality gate` failed
+([Quality 43781503794](https://github.com/FernandoX7/GitTurtle/actions/runs/43781503794)).
+The job is therefore a matrix of eight shards, `Image privacy · 1/8` to
+`Image privacy · 8/8`, with `fail-fast: false` and 90 minutes each. Every shard
+checks out the same commit and makes the same plan; `image_privacy.py slice`
+then gives it every eighth image of the sorted list, counted from its own
+number. The slices are a pure function of the list, the number and the count:
+each image is in exactly one of them, and a directory of large frames spreads
+over all eight. `slice` is told the shard's number and the matrix's real job
+count (`strategy.job-total`) and refuses a number outside 1 to 8, a count other
+than 8, an empty list, and a list that is not sorted and unique, so a matrix
+edited to fewer jobs fails instead of leaving slices that no job scans. The
+shards change which runner scans an image and nothing else: the comparisons,
+suffixes, name refusal, animation-frame rule, templates, threshold, engine and
+`--redacted` are the same, and no image is scanned twice.
+
+A shard whose slice is empty, which happens when fewer than eight images are
+listed, records `scanned` in the slice step and runs neither the Pillow
+installation nor the scan step, so the secret is not mapped into that job. A
+shard with images prints its slice's size before it scans and, like the single
+job before it, prints its verdicts only when its whole scan ends; a shard
+cancelled at its limit shows the size and no verdict.
+
+The 90 minutes are a budget, not a measurement of the secret's set, whose size
+is unknown outside the secret. At the cost the
+[tooling guide](../scripts/native_qa/README.md#privacy-templates) records for
+the local set (17.6 s of one core per 1000x680 frame, about 26 core-seconds per
+megapixel), 477 megapixels need about 3.4 core-hours on that faster core,
+before the extra readings of magnified crops. Eight four-core shards of 90
+minutes allow 48. No hosted run of the shards is recorded here yet.
+
+`Quality gate` reads the matrix as the one job `needs.image-privacy`, exactly
+as before, and still requires the result `success` together with one of the
+four statuses ([`gate`](../scripts/ci/changes.py)):
+
+- **Outputs.** GitHub combines a matrix's job outputs from all of its jobs, the
+  last job to set a name overrides the others, an empty value sets nothing, and
+  the jobs run in no guaranteed order
+  ([workflow syntax, `jobs.<job_id>.outputs`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs)).
+  So every shard writes a status that is true of the whole list once all eight
+  succeed. The plan's status is the same in every shard, because each reads the
+  same event, commit and secret. A shard replaces `scan` with `scanned` only
+  when its whole slice was scanned without a match, or was empty; a shard that
+  fails, times out or is cancelled leaves `scan`, which the gate does not
+  accept.
+- **Result.** GitHub's [`needs` context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context)
+  lists `success`, `failure`, `cancelled` and `skipped` for
+  `needs.<job_id>.result` and does not say how a matrix's jobs combine into it.
+  The gate relies here on what it already relies on for the test, Clippy,
+  release and tooling matrices: the result is `success` only when every job of
+  the matrix succeeded. The [validation matrix](validation.md) records both
+  cases on this repository: one failed macOS test job beside a green Ubuntu one
+  failed the gate in Quality 41900575513, and one test job cancelled at its
+  time limit did in Quality 41757534359.
+
+With all eight shards successful, every slice was scanned clean and every shard
+says `scanned`, whichever sets the output last. With one failed, cancelled,
+timed out or skipped, the result is not `success` and the gate fails whatever
+the output says. One limit remains: each shard reads at its own start whether
+the secret exists. Do not create or remove the secret while a Quality run is in
+progress, and re-run the whole run, not only its failed jobs, after changing
+it: shards that disagree about the secret would report `unavailable` and
+`scanned` side by side, and the gate would print whichever was set last.
+
+#### The secret
 
 The secret is safe to hold because GitHub passes secrets only to runs from this
 repository's own branches, whose authors already have write access; a fork pull
@@ -442,7 +513,11 @@ workflow policy test in `scripts/ci/tests/test_nextest.py` holds the Ubuntu and
 macOS test matrix and the Arch Linux job at 60 minutes. With the
 single Arch Linux job, at most eight compilation runners (three on macOS) are
 requested per Quality run, plus the independent inexpensive checks. Formatting is bounded
-at five minutes, policy and the final gate at five, and tooling at ten.
+at five minutes, policy and the final gate at five, and tooling at ten. The
+[image privacy scan](#shards) adds eight Ubuntu jobs of at most 90 minutes to every
+run. When the plan is `no-images`, `unavailable` or `no-comparison`, each ends after
+its checkout and plan; a shard with an empty slice of a scanned list ends after its
+checkout, plan and slice.
 GitHub may queue those jobs under the repository's existing concurrency
 limits; matrix bounds do not promise simultaneous starts. See the documented
 [matrix controls](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).

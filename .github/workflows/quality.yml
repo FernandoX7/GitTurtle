@@ -651,12 +651,27 @@ jobs:
   # that exist only in the optional NATIVE_QA_PRIVACY_TEMPLATES secret. GitHub
   # withholds secrets from fork pull requests; those runs, and a repository
   # without the secret, record "unavailable" with a notice instead of a pass.
+  # The matching is brute force (image pixels times template pixels), so eight
+  # shards each make the same plan and scan every eighth image of its list;
+  # image_privacy.py's `slice` refuses any other shard number or job count. A
+  # matrix job's output is the last shard's to set it, so every shard reports a
+  # status that is true of the whole list once all eight succeed, and Quality
+  # gate needs this job's result to be success: a failed, cancelled or timed
+  # out shard fails the gate (docs/ci.md#image-privacy-scan).
   image-privacy:
-    name: Image privacy
+    name: Image privacy · ${{ matrix.shard }}/8
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # One 45-minute job was cancelled before it finished 735 images (quality
+    # run 43781503794); eight shards of 90 minutes give a list sixteen times
+    # that runner time. The templates' size, and so the real cost, is not
+    # known outside the secret.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     outputs:
-      status: ${{ steps.scan.outputs.status || steps.plan.outputs.status }}
+      status: ${{ steps.scan.outputs.status || steps.slice.outputs.status || steps.plan.outputs.status }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -667,21 +682,31 @@ jobs:
         env:
           TEMPLATES_CONFIGURED: ${{ secrets.NATIVE_QA_PRIVACY_TEMPLATES != '' }}
         run: python3 scripts/ci/image_privacy.py plan --list "$RUNNER_TEMP/image-privacy/images" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+      # strategy.job-total is the matrix's real job count, so a matrix edited to
+      # fewer jobs than the script's eight slices is refused instead of leaving
+      # slices unscanned. An empty slice records "scanned" here, without the secret.
+      - name: Take this shard's slice of the list
+        id: slice
+        if: steps.plan.outputs.status == 'scan'
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: python3 scripts/ci/image_privacy.py slice --list "$RUNNER_TEMP/image-privacy/images" --slice "$RUNNER_TEMP/image-privacy/slice" --shard "$SHARD" --shards "$SHARDS" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
       # The Ubuntu archive's signed package; the scan's C engine uses the runner's compiler.
       - name: Install Pillow from the Ubuntu archive
-        if: steps.plan.outputs.status == 'scan'
+        if: steps.slice.outputs.slice == 'scan'
         run: |
           if ! /usr/bin/python3 -c 'import PIL' 2>/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq --no-install-recommends python3-pil
           fi
           /usr/bin/python3 -c 'import PIL; print("Pillow", PIL.__version__)'
-      - name: Template-scan added or changed images
+      - name: Template-scan this shard's added or changed images
         id: scan
-        if: steps.plan.outputs.status == 'scan'
+        if: steps.slice.outputs.slice == 'scan'
         env:
           NATIVE_QA_PRIVACY_TEMPLATES: ${{ secrets.NATIVE_QA_PRIVACY_TEMPLATES }}
-        run: /usr/bin/python3 scripts/ci/image_privacy.py scan --list "$RUNNER_TEMP/image-privacy/images" --directory "$RUNNER_TEMP/image-privacy" --jobs "$(nproc)" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+        run: /usr/bin/python3 scripts/ci/image_privacy.py scan --list "$RUNNER_TEMP/image-privacy/slice" --directory "$RUNNER_TEMP/image-privacy" --jobs "$(nproc)" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
 
   website:
     name: Website

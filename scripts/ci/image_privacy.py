@@ -9,7 +9,16 @@ the images were not scanned; nothing reports a pass. `scan` writes the secret
 to a private file under the runner's temporary directory, runs the redacted
 scan in scripts/native_qa, and removes the file.
 
-The only workflow outputs are a fixed status word and a count. Image paths
+The matching is brute force, so the workflow runs the job as a matrix of
+SHARDS shards. Every shard makes the same plan, and `slice` gives it every
+SHARDS-th image of the sorted list: the slices are disjoint and together are
+the list. A shard whose slice is empty has nothing to scan and never sees the
+secret. A matrix job's output is the last shard's to set it, so a shard writes
+`scanned` only when its whole slice is clean (an empty slice of a list other
+shards scan included): with every shard successful, `scanned` is true of the
+whole list.
+
+The only workflow outputs are fixed status words and a count. Image paths
 travel NUL-delimited in a file, and scan output is printed with workflow
 commands stopped, so no path is interpreted as a command.
 """
@@ -33,6 +42,10 @@ SECRET = "NATIVE_QA_PRIVACY_TEMPLATES"
 QA = HERE.parent / "native_qa" / "qa.py"
 SUFFIXES = (b".png", b".jpg", b".jpeg", b".gif", b".webp")
 ZERO = "0" * 40
+# The image-privacy matrix in .github/workflows/quality.yml has this many
+# shards. `slice` refuses any other count: a matrix of fewer jobs cutting the
+# list this many ways would leave slices that no job scans.
+SHARDS = 8
 
 
 def comparisons(repository: Path, event_name: str, event: dict, checkout_sha: str) -> list[tuple[str, str]]:
@@ -83,6 +96,21 @@ def plan(repository: Path, event_name: str, event: dict, checkout_sha: str, conf
     return "scan", images
 
 
+def slice_of(images: list[bytes], shard: int, shards: int) -> list[bytes]:
+    """Shard `shard`'s images: every `shards`-th one of the sorted list, from index `shard - 1`.
+
+    A pure function of the list, the shard's number and the count, so jobs that
+    share nothing but the plan cut the same partition: each image is in exactly
+    one slice, in list order, and neighbours in the list (one directory's large
+    or small frames) go to different shards.
+    """
+    if type(shard) is not int or type(shards) is not int or shards != SHARDS or not 1 <= shard <= shards:
+        raise changes.PolicyError(f"shard {shard!r} of {shards!r} is not one of the workflow's {SHARDS} shards")
+    if any(first >= second for first, second in zip(images, images[1:])):
+        raise changes.PolicyError("the image list is not sorted and unique, so its slices are undefined")
+    return images[shard - 1::shards]
+
+
 NOTICES = {
     "unavailable": "{count} added or changed image(s) were NOT template-scanned: the {secret} secret is not "
                    "available to this run (a fork pull request or an unconfigured repository). This is not a pass; "
@@ -113,6 +141,37 @@ def run_plan(args) -> int:
     if args.output:
         with args.output.open("a", encoding="utf-8") as output:
             output.write(f"status={status}\nimages={count}\n")
+    return 0
+
+
+def run_slice(args) -> int:
+    try:
+        images = [path for path in args.list.read_bytes().split(b"\0") if path]
+        mine = slice_of(images, args.shard, args.shards)
+    except (changes.PolicyError, OSError) as error:
+        print(f"::error title=Image privacy::cannot take this shard's slice of the image list: {error}")
+        return 2
+    if not images:
+        # `scanned` would claim a scan nobody made: the plan reports an empty list itself.
+        print("::error title=Image privacy::the slice step received no images")
+        return 2
+    args.slice.parent.mkdir(parents=True, exist_ok=True)
+    args.slice.write_bytes(b"".join(path + b"\0" for path in mine))
+    print(json.dumps({"shard": args.shard, "shards": args.shards, "images": len(images), "slice": len(mine)},
+                     sort_keys=True))
+    if mine:
+        line = f"shard {args.shard} of {args.shards} scans {len(mine)} of {len(images)} added or changed image(s)."
+    else:
+        line = (f"shard {args.shard} of {args.shards} has none of the {len(images)} added or changed image(s) "
+                "to scan; the other shards scan them.")
+    if args.summary:
+        with args.summary.open("a", encoding="utf-8") as summary:
+            summary.write(f"**Image privacy:** {line}\n")
+    if args.output:
+        with args.output.open("a", encoding="utf-8") as output:
+            # An empty slice is wholly scanned: the scan step, the only one that
+            # is given the secret, does not run for it.
+            output.write("slice=scan\n" if mine else "slice=empty\nstatus=scanned\n")
     return 0
 
 
@@ -173,6 +232,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--summary", type=Path, help="append a skip notice to GITHUB_STEP_SUMMARY")
     p.add_argument("--repository", type=Path, default=Path("."))
     p.set_defaults(func=run_plan)
+    c = sub.add_parser("slice", help="write one shard's share of the planned list; needs no secret")
+    c.add_argument("--list", type=Path, required=True, help="the NUL-delimited list `plan` wrote")
+    c.add_argument("--slice", type=Path, required=True, help="write this shard's NUL-delimited images here")
+    c.add_argument("--shard", type=int, required=True, help=f"this job's number, 1 to {SHARDS}")
+    c.add_argument("--shards", type=int, required=True, help=f"the matrix's job count; anything but {SHARDS} is refused")
+    c.add_argument("--output", type=Path, help="append slice= and, for an empty slice, status=scanned to GITHUB_OUTPUT")
+    c.add_argument("--summary", type=Path, help="append this shard's share to GITHUB_STEP_SUMMARY")
+    c.set_defaults(func=run_slice)
     s = sub.add_parser("scan", help=f"redacted template scan of the listed images, templates from ${SECRET}")
     s.add_argument("--list", type=Path, required=True)
     s.add_argument("--directory", type=Path, required=True, help="private scratch directory under RUNNER_TEMP")
