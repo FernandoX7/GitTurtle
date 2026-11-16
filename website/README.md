@@ -42,19 +42,28 @@ macOS and Linux are described as source previews. Linux's initial build target i
 
 ### Screenshot provenance and replacement
 
-History, Split and Working Changes use unaltered client-area captures of native preview source `013e3348a29735617982bfd217551fdf91e4c694` in a disposable Aurora fixture.
+Every product picture is a byte-for-byte copy of one of the repository README's pictures under `docs/screenshots/readme/`. They are unaltered native captures of `gitturtle-025eaf4`, a clean release build of `025eaf40bf3b1f565b4488bd4434e2e3b1c6c141`, on an M2 Pro MacBook Pro running Omarchy 4.5.0-3 (Hyprland 0.56.2 on native Wayland, at scale 2). They show a disposable demo repository whose people, addresses and paths are invented. [The November 16 record](../docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45) holds the build, the method, the fixture, each picture's state and hash, and the privacy check.
 
-| Website asset | Capture | Exercised application identity |
+| Website asset | README picture | Shown state |
 | --- | --- | --- |
-| `public/assets/history.png` | `final-history.png` | Source `013e3348a29735617982bfd217551fdf91e4c694`; release binary SHA-256 `164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c`; Ubuntu 24.04 virtual X11/Xvfb with Openbox, default Midnight theme; 1480 × 800. |
-| `public/assets/compare.png` | `final-split.png` | Same captured executable/environment as History; actual Split view with Before and After source and highlighted changes; 1480 × 800. |
-| `public/assets/changes.png` | `final-working.png` | Same captured executable/environment as History. Shows an unstaged `App.tsx` edit, staged `notes/preview-check.md`, and the composer title `Document the preview workflow` with Commit 1 file available; 1480 × 800. |
+| `public/assets/history.png` | `history.png` | History in the Omarchy theme following Tokyo Night, project list on, a commit selected with its seven changed files; 2960 × 1946. |
+| `public/assets/compare.png` | `compare.png` | Compare, the split view of `src/App.tsx` in the selected commit; 2960 × 1946. |
+| `public/assets/changes.png` | `changes.png` | Changes, the unstaged diff of `src/App.tsx` with two hunks, two files staged and a message typed; 2960 × 1946. |
+| `public/assets/file-history.png` | `file-history.png` | File history of `src/theme.css`, revision 2 of 5; 2960 × 1946. |
+| `public/assets/image-compare.png` | `image-compare.png` | Compare of a PNG, Side by side at Fit; 2960 × 1946. |
+| `public/assets/keyboard-shortcuts.png` | `keyboard-shortcuts.png` | Keyboard Shortcuts over History, 64 shortcuts listed; 2960 × 1946. |
+| `public/assets/settings-themes.png` | `settings-themes.png` | Settings, the Omarchy card selected and following Tokyo Night; 2960 × 1946. |
+| `public/assets/theme-editor.png` | `theme-editor.png` | The theme editor, an unsaved theme based on Midnight with its accent changed; 2960 × 1946. |
+| `public/assets/themes-builtin.png` | `themes-builtin.png` | A sheet: the History frame in eight built-in themes, four dark and four light; 1836 × 694. |
+| `public/assets/omarchy-themes.png` | `omarchy-themes.png` | A sheet: the History frame under 23 stock Omarchy themes, eighteen dark and five light; 1836 × 1002. |
 
-All native inputs for the captured executable were committed; its source tree was marked modified because of untracked docs/site work. These images were captured in a virtual X11 desktop, not on the physical desktop. They establish the displayed application state, not scrolling smoothness or macOS coverage. The coordinator records native evidence in [the current preview evidence directory](../docs/benchmarks/native-preview-20260914). `asset-provenance.json` records the copied bytes, image hashes, source commit and binary identity.
+The eight 2960 × 1946 pictures are single grabs of the app's window. The two sheets are composed from frames taken the same way, each reduced to a labeled tile on a transparent background, and are not single grabs. All ten come from Linux on Wayland: none is a macOS or X11 capture. They establish the displayed application state, not speed. `asset-provenance.json` records each copy's source path, bytes, SHA-256 and evidence; `check.py` compares the hashes.
 
-The final installed native source is `417b5e8d0c739ca3746d2cab379db58efa4d8ea9`. Its later change filters unrelated sibling events from recovery sentinel watches in `local_refresh.rs`; it does not change the displayed UI. The website screenshots remain captures of `013e3348…` and are not represented as captures of `417b5e8…`.
+Three of the README's pictures are not on the site. `command-palette.png` and `markdown.png` are not used by the page. `omarchy-desktop.png`, the whole-desktop sheet (3456 × 3383), is 2,405,054 bytes: more than the 2 MiB (2,097,152 bytes) that `smoke.py` allows one response. A picture is copied whole or not at all, so it stays out until a smaller capture exists.
 
-All initial bootstrap images have been replaced. For later image updates, retain real fixture content and app pixels, update this table, the provenance hashes, HTML image dimensions/alt text and tour captions, and the visible screenshot-evidence link. No app UI has been generated, composited or painted over. A short real recording may be added with visible playback controls, no autoplay, and a still-image fallback.
+The first three pictures the site shipped, captures of preview source `013e3348a29735617982bfd217551fdf91e4c694` from September 14, 2026, were replaced on November 16, 2026. Their record remains in [the September preview evidence directory](../docs/benchmarks/native-preview-20260914).
+
+For later picture updates, copy the README's picture byte for byte: never resample, crop, composite or paint over one. Give each `img` its true `width` and `height` and a real alt text, and update this table, the provenance entries, the captions and the visible evidence link together. A short real recording may be added with visible playback controls, no autoplay, and a still-image fallback.
 
 The app icon and turtle use existing project artwork from `assets/branding/app-icon.png` and `assets/AppIcon.icon/Assets/turtle.png`. Manrope Latin is self-hosted from Google Fonts (variable 400–800); its original SIL Open Font License is retained in `public/fonts/OFL.txt`. Typeface source: [Google Fonts Manrope](https://github.com/google/fonts/tree/main/ofl/manrope). No image-generation tool was used to alter product evidence.
 

@@ -1,33 +1,96 @@
 {
-  "status": "All product screenshots are unaltered captures of native preview source 013e3348a29735617982bfd217551fdf91e4c694 in a disposable fixture; they are not captures of the later installed source 417b5e8d0c739ca3746d2cab379db58efa4d8ea9.",
-  "recorded_on": "2026-09-14",
+  "status": "All product pictures are byte-for-byte copies of the repository README's pictures under docs/screenshots/readme/: unaltered native captures of a clean release build of 025eaf40bf3b1f565b4488bd4434e2e3b1c6c141 on Omarchy 4.5, showing a disposable demo repository. Eight are single window grabs; the two theme sheets are composed from frames taken the same way, as the evidence records.",
+  "recorded_on": "2026-11-16",
   "assets": [
     {
       "site_path": "public/assets/history.png",
-      "source": "native QA capture final-history.png",
-      "identity": "013e3348a29735617982bfd217551fdf91e4c694; native inputs committed; source tree marked modified by untracked docs/site; Ubuntu 24.04 virtual X11/Xvfb + Openbox; default Midnight; 1480x800",
-      "sha256": "fe485747a4a517e0e91125d4954c05f582cdb8230e4676b2eb128611dd627ec9",
-      "bytes": 154001,
-      "binary_sha256": "164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c",
-      "evidence": "docs/benchmarks/native-preview-20260914"
-    },
-    {
-      "site_path": "public/assets/changes.png",
-      "source": "native QA capture final-working.png",
-      "identity": "013e3348a29735617982bfd217551fdf91e4c694; native inputs committed; source tree marked modified by untracked docs/site; Ubuntu 24.04 virtual X11/Xvfb + Openbox; default Midnight; 1480x800",
-      "sha256": "65b867506af4343c47e12e13bee4437b4ad209efcf39fa34ad43340c7b64b56e",
-      "bytes": 121955,
-      "binary_sha256": "164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c",
-      "evidence": "docs/benchmarks/native-preview-20260914"
+      "source": "docs/screenshots/readme/history.png",
+      "identity": "025eaf40bf3b1f565b4488bd4434e2e3b1c6c141, clean release, aarch64-unknown-linux-gnu, rustc 1.99.0; M2 Pro MacBook Pro, Omarchy 4.5.0-3, Hyprland 0.56.2 on native Wayland at scale 2; Omarchy theme following a stock Tokyo Night; History, project list on, ccb54bc selected with its seven changed files; window grab, 2960x1946",
+      "sha256": "aff11743a10f630adad584ce07868e284e3e9a092240fdd642c3b5fe7b97884e",
+      "bytes": 515200,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/compare.png",
-      "source": "native QA capture final-split.png",
-      "identity": "013e3348a29735617982bfd217551fdf91e4c694; native inputs committed; source tree marked modified by untracked docs/site; Ubuntu 24.04 virtual X11/Xvfb + Openbox; default Midnight; 1480x800",
-      "sha256": "d203ba0905a7e0e1f7d26e7ee6c4f85bf438e096ba0ddd35c37d2d72b20abd91",
-      "bytes": 155361,
-      "binary_sha256": "164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c",
-      "evidence": "docs/benchmarks/native-preview-20260914"
+      "source": "docs/screenshots/readme/compare.png",
+      "identity": "Same build, machine, desktop and theme as history.png; Compare, split view of src/App.tsx in ccb54bc; window grab, 2960x1946",
+      "sha256": "b88c9eabf3a7ebe561c92688a978fc5404e0d15b80079a228a3ebf868bbe7877",
+      "bytes": 483122,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/changes.png",
+      "source": "docs/screenshots/readme/changes.png",
+      "identity": "Same build, machine, desktop and theme as history.png; Changes, the unstaged diff of src/App.tsx with two hunks, two files staged, a message typed; window grab, 2960x1946",
+      "sha256": "34e7a9e72bad3e98bef3f2c6cc9685374958b2058640e66c71505a683bc8bf0b",
+      "bytes": 362466,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/file-history.png",
+      "source": "docs/screenshots/readme/file-history.png",
+      "identity": "Same build, machine, desktop and theme as history.png; File history of src/theme.css, revision 2 of 5; window grab, 2960x1946",
+      "sha256": "690a979a01ebafc7ecb9e0c7dce61514d4a72879f3cfa36e193d5b1f59658883",
+      "bytes": 360627,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/image-compare.png",
+      "source": "docs/screenshots/readme/image-compare.png",
+      "identity": "Same build, machine, desktop and theme as history.png; Compare of a PNG, Side by side at Fit; window grab, 2960x1946",
+      "sha256": "11eecd5ba31fe3c7aba7f91b735551a05c7841d2c1324236a5438979ebc5bf62",
+      "bytes": 279580,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/keyboard-shortcuts.png",
+      "source": "docs/screenshots/readme/keyboard-shortcuts.png",
+      "identity": "Same build, machine, desktop and theme as history.png; Keyboard Shortcuts over History, 64 shortcuts listed; window grab, 2960x1946",
+      "sha256": "deb090e33b9e75009aca6b878e5d85c4bb7ad7dc9422b9c07d9195554eaf8c41",
+      "bytes": 434420,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/settings-themes.png",
+      "source": "docs/screenshots/readme/settings-themes.png",
+      "identity": "Same build, machine, desktop and theme as history.png; Settings, the Omarchy card selected and following Tokyo Night; window grab, 2960x1946",
+      "sha256": "c6b5dc65e5b5ea241dd07c85f4f41ce273674c85b9fd5530ed9f1294050683e5",
+      "bytes": 363935,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/theme-editor.png",
+      "source": "docs/screenshots/readme/theme-editor.png",
+      "identity": "Same build, machine, desktop and theme as history.png; the theme editor, an unsaved theme based on Midnight with its accent changed; window grab, 2960x1946",
+      "sha256": "bd5d124bcb8d88bf8a835cd8547491099d67900fef1f8fef0f1f1e3f06e41ba4",
+      "bytes": 363980,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/themes-builtin.png",
+      "source": "docs/screenshots/readme/themes-builtin.png",
+      "identity": "Same build, machine and desktop as history.png; a sheet composed from eight History frames, one per built-in theme chosen in Settings (Midnight, Catppuccin Mocha, Nord, Ember, Porcelain, Braden, Rosé Pine Dawn, Solarized Light), each reduced to a labeled 441-pixel tile on a transparent background; not a single grab; 1836x694",
+      "sha256": "b123a8d89c67b88aa7974ece1729a4791037b071ef9d0e9964ad1b4d95847fd4",
+      "bytes": 626592,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/omarchy-themes.png",
+      "source": "docs/screenshots/readme/omarchy-themes.png",
+      "identity": "Same build, machine and desktop as history.png; a sheet composed from History frames under 23 stock Omarchy themes, eighteen dark and five light, each set with the desktop's omarchy-theme-set and reduced to a labeled 286-pixel tile on a transparent background; not a single grab; 1836x1002",
+      "sha256": "b0b9efdb2661a1b4d59cb79b72fac04ae834dde16055388b04ccc42af20d17cc",
+      "bytes": 948008,
+      "binary_sha256_prefix": "4bbb41f4",
+      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/app-icon.png",
