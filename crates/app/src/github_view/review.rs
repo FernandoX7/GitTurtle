@@ -1816,6 +1816,49 @@ pub(super) fn show(
     );
 }
 
+/// [`show`] in the frame being drawn, from its own layout and before the content `scroll`
+/// scrolls prepaints, so that frame draws `shown` where it stays and no later frame moves it:
+/// the first frame after a change lays out its final state (DESIGN.md, Motion). `scroll` has
+/// placed its content at its offset already, so `shown` is where this frame would draw it.
+/// The view's top edge lands as a reveal after paint lands it ([`landed_edge`]), from the
+/// starts and lines the last frame kept, which the place of what it keeps whole never depends
+/// on, and what is taller than the view shows from its top, as a stop that draws its ring on
+/// its own edge does. Returns how far `scroll` moved its content, if it moved: the caller
+/// prepaints the content there. A deferred [`show`] drew the frame it was asked in with
+/// `shown` still out of view and moved the view in the next.
+pub(super) fn show_laid_out(
+    scroll: &ScrollHandle,
+    blocks: &Blocks,
+    shown: Bounds<Pixels>,
+    inset: Pixels,
+    cx: &App,
+) -> Option<Pixels> {
+    let view = scroll.bounds();
+    let (top, bottom) = (shown.top() - inset, shown.bottom() + inset);
+    if top >= view.top() && bottom <= view.bottom() {
+        return None;
+    }
+    let offset = scroll.offset();
+    let edge = landed_edge(
+        scroll,
+        blocks,
+        view,
+        offset,
+        (top, bottom),
+        inset,
+        true,
+        false,
+        cx,
+    );
+    let y = (offset.y + view.top() - edge).clamp(-scroll.max_offset().y, Pixels::ZERO);
+    let moved = y - offset.y;
+    if moved == Pixels::ZERO {
+        return None;
+    }
+    scroll.set_offset(point(offset.x, y));
+    Some(moved)
+}
+
 /// What a reveal does once its scroll has landed, with where what it showed lies then
 /// ([`show_then`]).
 type Landed = Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App)>;
