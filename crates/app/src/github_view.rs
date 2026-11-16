@@ -3354,6 +3354,11 @@ impl Panel {
         };
         let focus = self.review.buttons.focus(remedy, cx);
         focus.focus(window, cx);
+        // Shown whole with its ring whatever input sent the creation: the body's parts reveal
+        // the control focus moves onto only after a key, and after a pointer's click on Send,
+        // Refresh PRs, a part of the toolbar above the line, stood at the body's top edge with
+        // the top of its ring cut.
+        self.review.reopening.reveal();
         self.land_focus(&focus, window, cx);
     }
     /// Shows the pull request a creation of `new` made, from the creation's own answer and with
@@ -24364,6 +24369,46 @@ mod tests {
         assert!(cx.update(|window, _| row.is_focused(window)));
         let sent = panel.read_with(cx, |panel, _| panel.request_generation);
         assert_the_second_return_opens_the_row(&app, &panel, &script, sent, cx).await;
+    }
+
+    /// A creation refused for an existing pull request after a pointer's click on Send to
+    /// GitHub leaves focus on the remedy its line names, as one sent by Return does, drawn
+    /// with its ring whole at 13 pt in a 461 × 490 window: Open #7 where the loaded list holds
+    /// the pull request, and Refresh PRs where it does not, the line whole in the body's view
+    /// with it, and nothing requested.
+    async fn assert_a_clicked_refusal_gives_its_remedy_focus(
+        cx: &mut TestAppContext,
+        landed: Landed,
+    ) {
+        let at = (13, 461., 490.);
+        let name = format!("{landed:?} after a click, at 13 pt in 461 × 490");
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, landed.rows(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        crate::tags::tests::draw(cx);
+        let focus = landed.focus(&panel, cx);
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{name}: the remedy holds focus"
+        );
+        whole_in_body(cx, "github-error", &name);
+        let control = whole_in_body(cx, landed.selector(), &name);
+        assert_ringed_whole(cx, control, &name);
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_clicked_refusal_gives_open_existing_focus_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_clicked_refusal_gives_its_remedy_focus(cx, Landed::Open).await;
+    }
+
+    #[gpui::test]
+    async fn a_clicked_refusal_with_no_row_gives_refresh_focus_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_clicked_refusal_gives_its_remedy_focus(cx, Landed::Refresh).await;
     }
 
     /// The open panel with its local reads drained.
