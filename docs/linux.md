@@ -348,42 +348,87 @@ archive on an Omarchy 4.5 machine, x86-64 or AArch64, in one run, and packs
 what it found as one file to send back. It runs from a source checkout and
 needs nothing that a stock Omarchy lacks.
 
-Download the machine's archive from a Quality run
-([CI package downloads](ci-artifacts.md#find-and-verify-a-download)) into one
+Download the machine's archive from the green Quality run on `main` for the
+commit being released, never from a pull request's run
+([CI package downloads](ci-artifacts.md#find-and-verify-a-download)), into one
 folder with its `.sha256`, and with its `.manifest.json` and
-`ci-provenance.json` when you have them. Then run the script from a directory
-outside your home: GitTurtle's header shows the path of the demo repository
-the run makes, and the pictures should not carry your name.
+`ci-provenance.json` when you have them. The checksum beside an archive shows
+that the download is whole, not who built it: the trusted value is that
+commit's SHA, taken from the run's page and given to `--expect-revision`. Then
+run the script from a directory outside your home: GitTurtle's header shows
+the path of the demo repository the run makes, and the pictures should not
+carry your name.
 
 ```sh
 cd /var/tmp
 /path/to/GitTurtle/scripts/omarchy-verify.sh \
-  ~/Downloads/GitTurtle-<version>-<commit>-linux-$(uname -m)-release.tar.gz
+  ~/Downloads/GitTurtle-<version>-<commit>-linux-$(uname -m)-release.tar.gz \
+  --expect-revision <the commit's SHA>
 ```
 
 It prints what it is about to do and waits for Enter. First it changes
 nothing: it records the host, verifies the archive (its `.sha256`, the
-`SHA256SUMS` inside, `--build-info`, `ldd`, the manifest), installs it with
-the archive's own `install.py` into a disposable home, and builds the
-[`gitturtle-bin`](../packaging/aur/README.md) package from it. Then, for about
-six minutes in which the keyboard and pointer are left alone, it opens the
-installed build on a demo repository and takes a picture of GitTurtle's own
-window, never of the screen, at each step: the first launch, every theme
+`SHA256SUMS` inside, its source revision, `--build-info`, `ldd`, the
+manifest), installs it with the archive's own `install.py` into a disposable
+home, and builds the [`gitturtle-bin`](../packaging/aur/README.md) package
+from it. The source revision is read from `build-info.json` in the archive
+before anything from the archive runs; when `--expect-revision`, the manifest
+or `ci-provenance.json` names another one, the executable, the installer, the
+package build and the whole desktop part are skipped as "identity not
+established". Then, for about six minutes in which the keyboard and pointer
+are left alone, it moves to a workspace that holds no window, opens the
+installed build there on a demo repository and takes a picture of GitTurtle's
+own window, never of the screen, at each step: the first launch, every theme
 `omarchy-theme-list` names, one other font, the window floating, its monitor
 at the scales 1, 1.25, 1.5 and 2 that its mode allows, the window inactive
-beside a terminal, and 30 seconds at rest before it is closed.
+beside a terminal the script opens, and 30 seconds at rest before it is
+closed. A picture is refused, and its check fails, while another window or
+another monitor overlaps the window's rectangle. Where Omarchy's rules make
+the window translucent, the wallpaper shows through it faintly; the report
+gives the opacity Hyprland reports beside each picture.
 
 What it changes, it puts back when the step ends and on every exit, Ctrl+C
-included: the theme and wallpaper (Omarchy's own `omarchy-theme-set`, with
-everything Omarchy retints on a switch), the monospace font and the terminal
-and fontconfig files `omarchy-font-set` rewrites, the monitor's scale, the
-window's floating state, the focused window, and two settings it turns on for
-the run, notification silencing and stay-awake. It refuses that part when
-Hyprland is not the compositor, when the session is locked, on battery below
-30 %, or when its results directory lies under your home. It never runs as root, never calls sudo, makes no network request,
-writes only under its results directory, and leaves an installed GitTurtle and
-its settings alone: the installer gets a disposable home and the app a new
-`XDG_CONFIG_HOME`.
+included: the workspace shown, the theme and wallpaper, Omarchy's
+`skip-<editor>-theme-changes` toggles, the monospace font and the terminal and
+fontconfig files `omarchy-font-set` rewrites (through a symbolic link too: the
+bytes of the file a link leads to are saved and put back, and the link stays a
+link), the monitor's scale, the window's floating state, the focused window,
+and two settings it turns on for the run, notification silencing and
+stay-awake. A file is put back by a copy beside it and a rename, so it is
+never missing in between. If anything is not as it was found, the restore
+check fails and the saved copies stay in `work/restore` under the results
+directory, with a `manifest.txt` that says which copy belongs to which file;
+the last lines of the run say where.
+
+A theme switch is Omarchy's own `omarchy-theme-set`, and it does what Omarchy
+does on every switch: it retints the terminals and the programs in them,
+Hyprland's configuration, GTK's colour scheme and icons, the themes Omarchy
+keeps for the coding agents it supports, T3 Code, Obsidian and fcitx5, the
+keyboard backlight where Omarchy drives one, and the browsers' colour, a file under
+`/etc` that Omarchy writes through its own passwordless sudo rule before it
+tells a running browser to read it again. The script keeps a switch from doing
+more. It turns Omarchy's skip toggles on for the run, so that no editor's
+settings are rewritten and no extension is installed (VS Code, VS Code
+Insiders, VSCodium and Cursor each have one in Omarchy 4.5). And it skips the
+themes check, with the reason, where a switch would reach the network or
+raise a dialog: where Omarchy's theme sync is on (each switch would push the
+theme to your herdr machines over SSH; `omarchy-toggle-theme-sync` turns it
+off), where Omarchy's sudo rule for the browser colour is missing (each switch
+would raise a password dialog), where you have a `theme-set` hook of your own
+under `~/.config/omarchy/hooks` (move it aside for the run; the hook Omarchy
+installs for its wallpaper daemon is recognised), or where `omarchy-theme-set`
+names a step the script was not read against. A `font-set` hook of your own
+skips the font check in the same way.
+
+It refuses the desktop part when Hyprland is not the compositor, when the
+session is locked, on battery below 30 %, when the monitor has no workspace
+without a window, or when its results directory lies under your home. It
+never runs as root and makes no network request. Its one use of sudo is the
+question Omarchy's own command asks, `sudo -n -l`, which runs nothing and
+never prompts, to learn whether that sudo rule exists. Besides the changes
+above it writes only under its results directory, and it leaves an installed
+GitTurtle and its settings alone: the installer gets a disposable home and the
+app a new `XDG_CONFIG_HOME`.
 
 What comes back is `gitturtle-omarchy-check-<UTC date and time>.tar.gz`, which
 the last line names after "send this file back": `report.txt`, with one
@@ -391,10 +436,10 @@ section per check ending in `RESULT <check> ok`, `FAILED: <why>` or
 `skipped: <why>`, the records it quotes, and the pictures. They name no host,
 no user and no home directory.
 
-`--no-desktop` runs only the part that changes nothing, `--hands` adds four
-prompts at the end for Omarchy's copy and paste bindings and the folder
-picker, and `--expect-revision <commit>` fails an archive built from another
-commit; `--help` has the rest. No x86-64 run is recorded yet.
+`--no-desktop` runs only the part that changes nothing, and `--hands` adds
+four prompts at the end for Omarchy's copy and paste bindings and the folder
+picker; that part runs beside your terminal, on the workspace you started
+from. `--help` has the rest. No x86-64 run is recorded yet.
 
 ### Omarchy on Apple Silicon (AArch64)
 

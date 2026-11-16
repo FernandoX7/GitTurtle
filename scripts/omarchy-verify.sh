@@ -9,10 +9,13 @@
 # the restore registry; every desktop change with its restore directly under it;
 # one function per check, in the order they run; the end of a run; main.
 #
-# The archive's installer and executable run only after its checksums match, and
-# only with a disposable home under the results directory. Nothing here runs as
-# root or asks the network for anything, and the only processes ended are the two
-# this script starts itself (the app and one terminal).
+# The archive's installer and executable run only after its checksums match and its
+# source revision is the expected one, and only with a disposable home under the
+# results directory. Nothing here runs as root or asks the network for anything, and
+# the only processes ended are the two this script starts itself (the app and one
+# terminal). Omarchy's own theme switch does more than this script does, so the
+# themes check runs only where that switch reaches no network, installs nothing
+# and raises no dialog: see theme_blocker.
 
 set -u
 
@@ -24,6 +27,7 @@ readonly WINDOW_WAIT=20     # seconds for the app's window to appear
 readonly SWITCH_WAIT=180    # seconds for one omarchy-theme-set or omarchy-font-set
 readonly REST_SECONDS=30    # the rest check's interval without input
 readonly EXIT_WAIT_MS=2000  # the process must be gone this long after its window closes
+readonly STOP_WAIT_MS=3000  # a process being ended gets this long after TERM, and again after KILL
 readonly TERMINAL_LIFE=90   # seconds after which the inactive check's terminal ends by itself
 readonly ANSWER_WAIT=600    # seconds a prompt waits for Enter or an answer
 readonly MIN_BATTERY=30     # percent; below it, discharging, the desktop part does not start
@@ -31,6 +35,26 @@ readonly SCALES=(1 1.25 1.5 2)
 # The files `omarchy-font-set` (Omarchy 4.5) rewrites under ~/.config; it creates
 # kitty/ and fontconfig/ when they are missing.
 readonly FONT_FILES=(alacritty/alacritty.toml kitty/kitty.conf ghostty/config foot/foot.ini fontconfig/fonts.conf)
+# The per-application steps of `omarchy-theme-set` (Omarchy 4.5.0), each read for
+# what it does on a switch. Only two have an off switch: omarchy-theme-set-vscode
+# (a skip-<editor>-theme-changes toggle for each of its four editors; without it
+# the step runs `<editor> --install-extension`) and omarchy-theme-set-herdr-machines
+# (the herdr-theme-sync toggle; with it on, the theme is pushed to other machines
+# over SSH). omarchy-theme-set-browser has none: it writes the browsers' colour
+# under /etc through Omarchy's passwordless sudo rule, or through a pkexec dialog
+# where that rule is missing. The others rewrite and reload local configuration.
+# A step that is not in this list has not been read, so the themes check does not
+# run where omarchy-theme-set names one.
+readonly THEME_STEPS_READ=(omarchy-restart-btop omarchy-restart-helix omarchy-restart-hyprctl omarchy-restart-opencode
+  omarchy-restart-terminal omarchy-theme-set-browser omarchy-theme-set-claude omarchy-theme-set-fcitx5
+  omarchy-theme-set-foot omarchy-theme-set-gnome omarchy-theme-set-herdr-machines omarchy-theme-set-hermes
+  omarchy-theme-set-hunk omarchy-theme-set-keyboard omarchy-theme-set-obsidian omarchy-theme-set-pi
+  omarchy-theme-set-t3code omarchy-theme-set-tmux omarchy-theme-set-vscode)
+# The hooks Omarchy itself installs under ~/.config/omarchy/hooks: a hook that
+# equals one of these byte for byte is Omarchy's (it tells the wallpaper daemon,
+# over a local socket, to refresh). Any other hook is the owner's own program.
+readonly OMARCHY_HOOKS=(/usr/share/owe/10-owe-sync)
+readonly BROWSER_POLICY_COMMAND=/usr/bin/omarchy-theme-set-browser-policy # the path Omarchy's sudo rule names
 # A host or user called one of these is not removed from the records: the report
 # needs the word itself, and it identifies no one.
 readonly GENERIC_WORDS=" omarchy arch archlinux linux hyprland gitturtle localhost home user "
@@ -42,6 +66,8 @@ readonly REPO_ROOT=${SCRIPT_DIR%/*}
 export OMARCHY_PATH
 readonly OMARCHY_CURRENT=$HOME/.local/state/omarchy/current
 readonly STAY_AWAKE=$HOME/.local/state/omarchy/indicators/stay-awake
+readonly TOGGLES=$HOME/.local/state/omarchy/toggles
+readonly HOOKS=$HOME/.config/omarchy/hooks
 
 # Parsing below reads English messages and dot decimals. What this script starts
 # for the desktop (the app, the terminal, Omarchy's commands) gets the session's
@@ -54,17 +80,20 @@ export LC_ALL=C
 ARCHIVE_ARG="" OUT_ARG="" EXPECT_REVISION="" FONT_CHOICE=""
 DESKTOP=yes ASSUME_YES=no HANDS=no KEEP_WORK=no
 ARCHIVE="" ARCHIVE_NAME="" ARCHIVE_SHA256="" ARCHIVE_TOP="" ARCHIVE_TRUSTED=no
-OUT="" OUT_CREATED="" WORK="" RECORDS="" PICTURES="" REPORT=""
-BUNDLE="" BUNDLE_BINARY_SHA256="" BUILD_REVISION="" DISPOSABLE_HOME="" INSTALLED_BINARY=""
+OUT="" OUT_CREATED="" WORK="" RECORDS="" PICTURES="" REPORT="" RESTORE=""
+BUNDLE="" BUNDLE_BINARY_SHA256="" BUNDLE_REVISION="" BUILD_REVISION="" IDENTITY_REFUSAL=""
+DISPOSABLE_HOME="" INSTALLED_BINARY=""
 DISPOSABLE_ENV=()
 HOME_REAL="" USER_NAME="" HOST_NAME="" REDACT=() SCAN_PATTERN=""
 CHECK="" PROBLEMS=() COUNT_OK=0 COUNT_FAILED=0 COUNT_SKIPPED=0
 START_EPOCH=0 STOPPED_BY="" OWNER_INSTALL_START=""
-DESKTOP_REFUSAL="" DESKTOP_START="" RESTORES=()
+DESKTOP_REFUSAL="" DESKTOP_START="" RESTORES=() RESTORE_FAILURES=() KEEP_RESTORE=no
 START_FOCUS="" START_DND="" START_AWAKE=""
+START_WORKSPACE="" ALONE=no
 LAUNCH="" DEMO="" APP_PID="" APP_ADDRESS=""
 START_THEME="" START_WALLPAPER=""
-START_FONT="" FONT_SAVED=() FONT_DIRECTORY=()
+THEME_BLOCKER="" SKIP_TOGGLES=() SKIP_TOGGLES_MADE=() TOGGLES_DIRECTORY_MADE=no
+START_FONT="" FONT_PROBLEM="" FONT_SAVED=() FONT_DIRECTORY=() FONT_REAL=() FONT_LINK=()
 START_FLOATING=""
 MONITOR_NAME="" MONITOR_MODE="" MONITOR_POSITION="" MONITOR_START_SCALE="" MONITOR_START_LINE=""
 TERMINAL_PID="" TERMINAL_ADDRESS=""
@@ -82,8 +111,9 @@ it, and its .manifest.json and ci-provenance.json are read when they do.
 
   --out DIR              results directory, which must not exist
                          (default: ./gitturtle-omarchy-check-<UTC date and time>)
-  --expect-revision SHA  fail unless the executable reports this source revision
-  --no-desktop           run only the checks that change nothing (host to package)
+  --expect-revision SHA  the commit the archive must be built from; with another
+                         one, nothing from the archive runs
+  --no-desktop          run only the checks that change nothing (host to package)
   --yes                  do not wait for Enter before starting
   --hands                end with four prompts for you: Omarchy's copy and paste
                          bindings and the folder picker (about two minutes)
@@ -98,8 +128,8 @@ ending in "RESULT <check> ok", "RESULT <check> FAILED: <why>" or "RESULT <check>
 skipped: <why>"; one failure does not stop the next check.
   host      architecture, kernel, page size, Omarchy and Hyprland versions, each
             monitor's name, mode and scale, the GPU, the current theme and font
-  archive   the .sha256, the extraction, SHA256SUMS inside, bin/gitturtle
-            --build-info, ldd, the manifest's fields
+  archive   the .sha256, the extraction, SHA256SUMS inside, the source revision
+            (see Identity), bin/gitturtle --build-info, ldd, the manifest's fields
   install   the archive's install.py into a disposable home, what it installed,
             desktop-file-validate, the same executable as the archive's
   package   packaging/aur/test-local.sh builds gitturtle-bin from the archive
@@ -113,10 +143,20 @@ skipped: <why>"; one failure does not stop the next check.
             2 s; no core dump and no crash line in the user journal
   hands     with --hands: the copy and paste bindings, the folder picker, Cancel
 
-The desktop part (launch to hands) opens GitTurtle and one terminal window, and it
-changes, with Omarchy's and Hyprland's own commands:
-  - the theme (omarchy-theme-set: the wallpaper and all that Omarchy retints on a
-    switch, the browser colour through Omarchy's own passwordless rule included);
+The desktop part (launch to hands) moves to a workspace that holds no window, opens
+GitTurtle and one terminal window there, and changes, with Omarchy's and Hyprland's
+own commands:
+  - the workspace shown (an empty one of this monitor's; --hands then runs beside
+    your terminal, on the workspace you started from);
+  - the theme (omarchy-theme-set: the wallpaper, and what Omarchy retints on a
+    switch: the terminals and the programs in them, Hyprland's configuration,
+    GTK's colour scheme and icons, the themes Omarchy keeps for the coding agents
+    it supports, T3 Code, Obsidian and fcitx5, the keyboard backlight where
+    Omarchy drives one, and the browsers' colour, a file under /etc that Omarchy
+    writes through its own passwordless sudo rule before it tells a running
+    browser to read it again);
+  - Omarchy's skip-<editor>-theme-changes toggles (on for the run, so that a
+    switch leaves VS Code, VSCodium and Cursor alone and installs no extension);
   - the monospace font (omarchy-font-set: the terminal and fontconfig files it
     rewrites, and its restart of the Omarchy shell);
   - the scale of the monitor that holds the window; the window's floating state;
@@ -127,18 +167,42 @@ Each is recorded before it is changed and put back when its check ends and on ev
 exit, Ctrl+C included (a stop takes effect when the step in progress returns). The
 script prints this plan and waits for Enter. It refuses the desktop part when
 Hyprland is not the compositor, when the session is locked, on battery below 30 %,
-or when the results directory lies under your home or names you or the host:
-GitTurtle's header shows the demo repository's path, so run it from /var/tmp.
+when this monitor has no workspace without a window, or when the results directory
+lies under your home or names you or the host: GitTurtle's header shows the demo
+repository's path, so run it from /var/tmp.
+The themes check is skipped, with the reason, where a switch would do more than the
+above: where Omarchy's theme sync is on (it pushes each theme to your herdr machines
+over SSH), where Omarchy's sudo rule for the browser colour is missing (each switch
+would raise a password dialog), where you have a theme-set hook of your own (the
+script cannot know what it does), or where omarchy-theme-set has a step that was
+not read for this script. The font check is skipped where you have a font-set hook.
 
+Identity: the checksum beside an archive shows that the download is whole, not who
+built it. Take the archive from the green Quality run on main for the commit being
+released, never from a pull request's run, and give that commit to
+--expect-revision. The script reads the source revision from build-info.json in
+the archive before anything from the archive runs; if --expect-revision, the
+manifest or ci-provenance.json names another one, the installer, the executable,
+the package build and the desktop part are all skipped: identity not established.
 Privacy: report.txt and the records name no host, no user and no home directory
-(written "~"); pictures are grabs of GitTurtle's own window rectangle, never of the
-screen, and the app shows only the demo repository made for the run. The script makes
-no network request.
-Safety: it never runs as root and never calls sudo; it writes only under the results
-directory; your installed GitTurtle and its settings are never touched (the installer
-gets a disposable home, the app a new XDG_CONFIG_HOME); it ends only the processes it
-started; every wait has a limit; a symlinked or missing archive, a missing .sha256 or
-a checksum that does not match stops it before anything from the archive runs.
+(written "~"); the app shows only the demo repository made for the run. A picture is
+a grab of GitTurtle's own window rectangle, never of the screen, and is refused
+(its check FAILED, no file written) while another window or another monitor
+overlaps that rectangle. Where Omarchy's rules make the window translucent, the
+wallpaper shows through it faintly; the report gives the opacity Hyprland reports.
+The script makes no network request, and the themes check runs only where
+Omarchy's theme switch makes none either.
+Safety: it never runs as root. It asks sudo one question, the one Omarchy's own
+command asks ("sudo -n -l": nothing runs and nothing prompts), to learn whether
+Omarchy's passwordless rule for the browser colour exists; Omarchy's theme switch
+then uses that rule, and nothing else here uses sudo. Besides the changes above, it
+writes only under the results directory; your installed GitTurtle and its settings are never touched (the
+installer gets a disposable home, the app a new XDG_CONFIG_HOME); it ends only the
+processes it started; every wait has a limit; a symlinked or missing archive, a
+missing .sha256 or a checksum that does not match stops it before anything from the
+archive runs. What it saved before a change it puts back by a copy and a rename, so
+no file of yours is ever missing in between; if anything is not as it was found,
+the saved copies stay under the results directory and the last lines say where.
 
 It ends by printing "send this file back:" and the packed results, DIR.tar.gz.
 TEXT
@@ -311,7 +375,7 @@ choose_results_directory() {
   OUT=${parent%/}/$name
   [[ ! -e $OUT.tar.gz && ! -L $OUT.tar.gz ]] || die "$OUT.tar.gz already exists. Choose another --out."
   WORK=$OUT/work RECORDS=$OUT/records PICTURES=$OUT/pictures REPORT=$OUT/report.txt
-  DISPOSABLE_HOME=$WORK/home LAUNCH=$WORK/launch
+  DISPOSABLE_HOME=$WORK/home LAUNCH=$WORK/launch RESTORE=$WORK/restore
   # Whatever runs from the archive without a window sees only this home.
   DISPOSABLE_ENV=("HOME=$DISPOSABLE_HOME" "XDG_DATA_HOME=$DISPOSABLE_HOME/.local/share"
     "XDG_CONFIG_HOME=$DISPOSABLE_HOME/.config" "XDG_CACHE_HOME=$DISPOSABLE_HOME/.cache"
@@ -381,6 +445,89 @@ desktop_refusal() {
   fi
   if path_names_someone "$OUT"; then
     echo "the results directory lies under your home or names you or the host, and GitTurtle's header shows the demo repository's path: use --out /var/tmp/${OUT##*/}"
+    return
+  fi
+  if [[ -z $(empty_workspace) ]]; then
+    echo "this monitor has no workspace without a window for the run to use: empty one of its ten"
+  fi
+}
+
+# --- what Omarchy's theme switch does besides the retints, and whether it may run
+# The per-application steps omarchy-theme-set names: its two lists, what it adds
+# to them, and the mirror it starts last.
+theme_steps() {
+  local source
+  source=$(command -v omarchy-theme-set) && [[ -f $source && -r $source ]] || return 1
+  {
+    sed -n '/^[a-z_]*_theme_commands=(/,/^)/p' "$source"
+    grep -E '_theme_commands\+=\(' "$source"
+    grep -E '^[[:space:]]*setsid omarchy-' "$source"
+  } | grep -oE 'omarchy-[a-z0-9-]+' | sort -u
+}
+# The skip toggles those steps ask Omarchy for, one name a line.
+theme_skip_toggles() {
+  local step source
+  while IFS= read -r step; do
+    source=$(command -v "$step") && [[ -f $source && -r $source ]] || continue
+    grep -oE 'omarchy-toggle-enabled skip-[a-z0-9-]+-theme-changes' "$source"
+  done < <(theme_steps) | sed 's/^omarchy-toggle-enabled //' | sort -u
+}
+# How many hooks of the owner's own Omarchy would run for EVENT (theme-set or
+# font-set): omarchy-hook runs the file of that name and every file in its .d
+# directory that is not a .sample.
+own_hooks() {
+  local hook known count=0 own
+  for hook in "$HOOKS/$1" "$HOOKS/$1.d"/*; do
+    [[ -f $hook && $hook != *.sample ]] || continue
+    own=yes
+    for known in "${OMARCHY_HOOKS[@]}"; do
+      [[ ! -f $known ]] || ! cmp -s -- "$known" "$hook" || own=no
+    done
+    [[ $own == no ]] || count=$((count + 1))
+  done
+  echo "$count"
+}
+# True when sudo would run Omarchy's browser-colour command without a password:
+# the question omarchy-theme-set-browser-policy asks before it chooses between
+# sudo and a pkexec dialog. Listing runs nothing and, under -n, prompts for nothing.
+browser_rule_present() {
+  have sudo && timeout 10 sudo -n -l -l "$BROWSER_POLICY_COMMAND" 000000 2>/dev/null | grep -q '!authenticate'
+}
+# Why an omarchy-theme-set here would reach the network, install something or
+# raise a dialog, or could not be judged; nothing when it does none of these.
+# The sudo question comes last, after everything that can be read from files.
+theme_blocker() {
+  local step steps editor guarded hooks
+  steps=$(theme_steps)
+  if [[ -z $steps ]]; then
+    echo "omarchy-theme-set's per-application steps could not be read from its source"
+    return
+  fi
+  for step in $steps; do
+    if [[ " ${THEME_STEPS_READ[*]} " != *" $step "* ]]; then
+      echo "omarchy-theme-set here runs $step, a step this script was not read against (it knows Omarchy 4.5's)"
+      return
+    fi
+  done
+  editor=$(command -v omarchy-theme-set-vscode) || editor=""
+  if [[ -n $editor ]]; then
+    guarded=$(grep -cE '^if ! omarchy-toggle-enabled skip-[a-z0-9-]+-theme-changes; then$' "$editor")
+    if ((guarded == 0)) || [[ $(grep -cE '^[[:space:]]*set_theme "' "$editor") != "$guarded" ]]; then
+      echo "omarchy-theme-set-vscode has an editor step without a skip toggle, and it installs the theme's extension"
+      return
+    fi
+  fi
+  if [[ -f $TOGGLES/herdr-theme-sync ]]; then
+    echo "Omarchy's theme sync is on, and every switch would push the theme to your herdr machines over SSH (omarchy-toggle-theme-sync turns it off)"
+    return
+  fi
+  hooks=$(own_hooks theme-set)
+  if ((hooks > 0)); then
+    echo "$hooks theme-set hook(s) of your own under ~/.config/omarchy/hooks would run on every switch, and the script cannot know what they do: move them aside for the run"
+    return
+  fi
+  if ! browser_rule_present; then
+    echo "Omarchy's passwordless sudo rule for the browser colour is missing, so every switch would raise a password dialog"
   fi
 }
 
@@ -396,15 +543,30 @@ show_plan_and_wait() {
   else
     have omarchy-theme-list && themes=$(timeout 10 omarchy-theme-list 2>/dev/null | grep -c .)
     say "Then the desktop part, about six minutes; leave the keyboard and pointer alone:"
-    say "  - GitTurtle opens on a demo repository; notifications are silenced and the"
-    say "    session is kept awake;"
-    say "  - each of $themes Omarchy themes is set, then one other monospace font;"
+    say "  - the desktop moves to an empty workspace of this monitor, where GitTurtle"
+    say "    opens on a demo repository; notifications are silenced and the session is"
+    say "    kept awake;"
+    if [[ -n $THEME_BLOCKER ]]; then
+      say "  - the themes are NOT switched: $THEME_BLOCKER;"
+    else
+      say "  - each of $themes Omarchy themes is set with omarchy-theme-set. A switch also"
+      say "    retints what Omarchy retints: the terminals and the programs in them,"
+      say "    Hyprland's configuration, GTK's colour scheme and icons, Omarchy's themes for"
+      say "    the coding agents it supports, T3 Code, Obsidian and fcitx5, the keyboard"
+      say "    backlight, and the browsers' colour: a file under /etc, written through Omarchy's"
+      say "    own passwordless sudo rule, which a running browser is told to read again."
+      say "    For the run these Omarchy toggles are on, so that no editor is touched and no"
+      say "    extension installed: ${SKIP_TOGGLES[*]:-none exist here}."
+      say "    Nothing is sent to herdr machines (theme sync is off), and no hook of yours runs;"
+    fi
+    say "  - one other monospace font is set with omarchy-font-set;"
     say "  - the window floats; its monitor goes through the scales ${SCALES[*]};"
     say "  - one terminal opens and closes; GitTurtle is closed."
-    say "Everything is put back as it was found: theme and wallpaper, font and the files"
-    say "omarchy-font-set rewrites, scale, tiling, focus, notifications and idle. A picture"
-    say "of GitTurtle's own window is taken at each step, never of the screen."
-    [[ $HANDS == no ]] || say "At the end it asks four things of you (--hands)."
+    say "Everything is put back as it was found: workspace, theme and wallpaper, the"
+    say "toggles, font and the files omarchy-font-set rewrites, scale, tiling, focus,"
+    say "notifications and idle. A picture of GitTurtle's own window is taken at each"
+    say "step, never of the screen, and only while nothing else overlaps the window."
+    [[ $HANDS == no ]] || say "At the end it asks four things of you (--hands), beside this terminal."
   fi
   [[ $ASSUME_YES == no ]] || return 0
   [[ -t 3 ]] || die "standard input is not a terminal: pass --yes to start without the Enter."
@@ -426,6 +588,35 @@ hypr_request() {
 focus_window() { hypr_request dispatch "hl.dsp.focus({ window = \"address:$1\" })"; }
 close_window() { hypr_request dispatch "hl.dsp.window.close({ window = \"address:$1\" })"; }
 toggle_floating() { hypr_request dispatch "hl.dsp.window.float({ window = \"address:$1\", action = \"toggle\" })"; }
+focus_workspace() { hypr_request dispatch "hl.dsp.focus({ workspace = \"$1\" })"; }
+
+# "ID WINDOWS" of the workspace that has the focus.
+active_workspace() { hypr_json activeworkspace | jq -r '"\(.id) \(.windows)"' 2>/dev/null; }
+# The first workspace without a window among the ten Omarchy gives the focused
+# monitor (1-10 on the first monitor, 11-20 on the next), and never one that
+# another monitor shows; nothing when all ten hold windows.
+empty_workspace() {
+  local monitors workspaces
+  monitors=$(hypr_json monitors) && workspaces=$(hypr_json workspaces) || return 1
+  jq -rn --argjson monitors "$monitors" --argjson workspaces "$workspaces" '
+    ([$monitors[] | select(.focused)] | first) as $monitor
+    | ($monitor.activeWorkspace.id // 0) as $now
+    | if $now < 1 then empty
+      else
+        ((($now - 1) / 10 | floor) * 10) as $base
+        | first(range($base + 1; $base + 11)
+            | select(. as $id | all($workspaces[]; .id != $id or (.windows == 0 and .monitorID == $monitor.id))))
+      end' 2>/dev/null
+}
+# What Hyprland reports as the app's window opacity: "ACTIVE/INACTIVE".
+window_opacity() {
+  local active inactive
+  active=$(timeout 5 hyprctl getprop "address:$APP_ADDRESS" opacity 2>/dev/null | head -n 1)
+  inactive=$(timeout 5 hyprctl getprop "address:$APP_ADDRESS" opacity_inactive 2>/dev/null | head -n 1)
+  [[ $active =~ ^[0-9.]+$ ]] || active=unknown
+  [[ $inactive =~ ^[0-9.]+$ ]] || inactive=unknown
+  printf '%s/%s' "$active" "$inactive"
+}
 
 active_address() { hypr_json activewindow | jq -r '.address // empty' 2>/dev/null; }
 window_exists() { hypr_json clients | jq -e --arg address "$1" 'any(.[]; .address == $address)' >/dev/null 2>&1; }
@@ -441,18 +632,26 @@ monitor_lines() {
 # ---------------------------------------------------------------- pictures
 
 # "ok X Y W H SCALE FLOATING" when a grab of the app's rectangle can hold nothing
-# but its window (and, through Omarchy's window opacity, a trace of what lies
-# under it); otherwise "blocked" and why.
+# but its window (and, through Omarchy's window opacity, the wallpaper under it);
+# otherwise "blocked" and why. No other window may overlap the rectangle, tiled
+# or floating, since a translucent window shows what lies under it, and no other
+# monitor may reach into it. While the run has a workspace of its own (ALONE),
+# the only other window allowed on it at all is the terminal this script opened.
 picture_target() {
   local clients monitors
   clients=$(hypr_json clients) && monitors=$(hypr_json monitors) || {
     echo "blocked Hyprland does not answer"
     return
   }
-  jq -rn --argjson clients "$clients" --argjson monitors "$monitors" --argjson pid "${APP_PID:-0}" '
+  jq -rn --argjson clients "$clients" --argjson monitors "$monitors" --argjson pid "${APP_PID:-0}" \
+    --arg alone "$ALONE" --arg terminal "${TERMINAL_ADDRESS:-}" '
     def overlaps($a):
       .at[0] < ($a.at[0] + $a.size[0]) and (.at[0] + .size[0]) > $a.at[0]
       and .at[1] < ($a.at[1] + $a.size[1]) and (.at[1] + .size[1]) > $a.at[1];
+    # A monitor as a rectangle of the layout: its mode over its scale, turned with it.
+    def area:
+      (if (.transform % 2) == 1 then [.height, .width] else [.width, .height] end) as $mode
+      | {at: [.x, .y], size: [$mode[0] / .scale, $mode[1] / .scale]};
     ([$clients[] | select(.pid == $pid and .mapped)] | first) as $app
     | if $app == null then "blocked the app has no window"
       elif $app.hidden then "blocked the window is hidden"
@@ -464,8 +663,11 @@ picture_target() {
           else
             [$clients[] | select(.address != $app.address and .mapped and (.hidden | not)
               and (.workspace.id == $app.workspace.id or (.pinned and .monitor == $app.monitor)))] as $others
-            | if any($others[]; (.fullscreen // 0) != 0) then "blocked another window is fullscreen on its workspace"
-              elif any($others[]; (.floating or .pinned) and overlaps($app)) then "blocked a floating window overlaps it"
+            | if any($monitors[] | select(.id != $app.monitor and (.disabled | not) and (.mirrorOf // "none") == "none");
+                     area | overlaps($app)) then "blocked another monitor overlaps the rectangle of the window"
+              elif any($others[]; (.fullscreen // 0) != 0) then "blocked another window is fullscreen on its workspace"
+              elif any($others[]; overlaps($app)) then "blocked another window overlaps it"
+              elif $alone == "yes" and any($others[]; .address != $terminal) then "blocked another window is on the workspace of the run"
               else "ok \($app.at[0]) \($app.at[1]) \($app.size[0]) \($app.size[1]) \($monitor.scale) \($app.floating)"
               end
           end
@@ -499,7 +701,7 @@ picture() {
   fi
   [[ $(active_address) != "$APP_ADDRESS" ]] || focus=active
   [[ $floating == true ]] && floating=floating || floating=tiled
-  report "picture $name: pictures/$name.png, window ${w}x$h at $x,$y, monitor scale $scale, $floating, $focus"
+  report "picture $name: pictures/$name.png, window ${w}x$h at $x,$y, monitor scale $scale, $floating, $focus, opacity $(window_opacity) (active/inactive, as Hyprland reports)"
 }
 
 # ---------------------------------------------------------------- the restore registry
@@ -517,6 +719,40 @@ run_restore() {
 }
 restore_all() {
   while ((${#RESTORES[@]} > 0)); do run_restore "${RESTORES[-1]}"; done
+}
+# A restore that did not take: said at once, and a FAILED line of the restore
+# check at the end, which also keeps the saved copies.
+restore_failed() {
+  RESTORE_FAILURES+=("$*")
+  report "restore FAILED: $*"
+}
+# work/restore holds what a put-back needs, and its manifest.txt says what each
+# saved copy is and what else this run made; work/ is never packed, so full paths
+# may stand in it.
+restore_note() {
+  [[ -d $RESTORE ]] || mkdir -p -m 700 -- "$RESTORE" || return 1
+  printf '%s\n' "$*" >>"$RESTORE/manifest.txt"
+}
+# SAVED over TARGET by a copy beside TARGET and a rename, so that TARGET is never
+# missing or half written; false, with TARGET untouched, when that cannot be done.
+put_back() {
+  local saved=$1 target=$2 temporary
+  temporary=$(mktemp -- "${target%/*}/.${target##*/}.gitturtle-check.XXXXXX" 2>/dev/null) || return 1
+  if cp -p -- "$saved" "$temporary" 2>/dev/null && cmp -s -- "$saved" "$temporary" && mv -fT -- "$temporary" "$target" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$temporary"
+  return 1
+}
+# PATH becomes a link that reads TEXT again, by a rename over whatever replaced it.
+put_back_link() {
+  local text=$1 path=$2 temporary
+  temporary=${path%/*}/.${path##*/}.gitturtle-check.$$
+  if ln -s -- "$text" "$temporary" 2>/dev/null && mv -fT -- "$temporary" "$path" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$temporary"
+  return 1
 }
 
 # ---------------------------------------------------------------- desktop changes, each with its restore
@@ -544,6 +780,41 @@ restore_idle() {
   [[ $START_AWAKE == no ]] || return 0
   [[ ! -f $STAY_AWAKE ]] || timeout 10 omarchy-toggle-idle allow-idle >/dev/null 2>&1
   report "restore idle: stay-awake is $([[ -f $STAY_AWAKE ]] && echo on || echo off), was off"
+}
+
+# --- the workspace: an empty one for the run, so that no window of the owner's is
+# beside, under or over the app's; false when the desktop is not on one afterwards
+go_to_empty_workspace() {
+  local now windows target
+  read -r now windows <<<"$(active_workspace)"
+  [[ $now == "$START_WORKSPACE" ]] || return 1
+  if [[ $windows != 0 ]]; then
+    target=$(empty_workspace)
+    [[ $target =~ ^[0-9]+$ ]] || return 1
+    focus_workspace "$target"
+    nap 0.5
+    read -r now windows <<<"$(active_workspace)"
+    [[ $now == "$target" && $windows == 0 ]] || return 1
+  fi
+  ALONE=yes
+  report "workspace: the run has workspace $now, which held no window; it started on $START_WORKSPACE"
+}
+restore_workspace() {
+  local now
+  ALONE=no
+  [[ $START_WORKSPACE =~ ^[0-9]+$ ]] || return 0
+  now=$(active_workspace)
+  if [[ ${now%% *} != "$START_WORKSPACE" ]]; then
+    focus_workspace "$START_WORKSPACE"
+    nap 0.5
+    now=$(active_workspace)
+  fi
+  if [[ ${now%% *} == "$START_WORKSPACE" ]]; then
+    report "restore workspace: back on workspace $START_WORKSPACE, where the run started"
+  else
+    restore_failed "workspace: the desktop is on workspace ${now%% *}, and the run started on $START_WORKSPACE"
+  fi
+  START_WORKSPACE=""
 }
 
 # --- focus: the window that had it when the desktop part began
@@ -613,16 +884,31 @@ panic_lines() {
   count=$(grep -cE 'panicked at|fatal runtime error|stack backtrace' "$LAUNCH/app.log" 2>/dev/null)
   echo "${count:-0}"
 }
+# Ends a process this script started, by its exact pid: TERM, a wait with a limit,
+# then KILL and one more. False when the process outlived both; never waits longer.
+stop_process() {
+  process_running "$1" || return 0
+  kill "$1" 2>/dev/null
+  wait_for_exit "$1" "$STOP_WAIT_MS" && return 0
+  kill -KILL "$1" 2>/dev/null
+  wait_for_exit "$1" "$STOP_WAIT_MS"
+}
+# Collects a child that has ended; one that still runs is left, never waited for.
+reap() { process_running "$1" || wait "$1" 2>/dev/null; }
 # Ends the app this script started, if it still runs: its own child, by its exact
 # pid, and only while that pid still runs the installed executable.
 stop_app() {
   [[ -n $APP_PID ]] || return 0
-  if process_running "$APP_PID" && [[ $(readlink "/proc/$APP_PID/exe" 2>/dev/null) == "$INSTALLED_BINARY"* ]]; then
-    kill "$APP_PID" 2>/dev/null
-    wait_for_exit "$APP_PID" 3000 || kill -KILL "$APP_PID" 2>/dev/null
-    report "the app was still running and was ended by its pid"
+  if process_running "$APP_PID"; then
+    if [[ $(readlink "/proc/$APP_PID/exe" 2>/dev/null) != "$INSTALLED_BINARY"* ]]; then
+      restore_failed "the app: its pid no longer runs the installed executable, so it was left running"
+    elif stop_process "$APP_PID"; then
+      report "the app was still running and was ended by its pid"
+    else
+      restore_failed "the app: its process still runs after TERM and KILL"
+    fi
   fi
-  wait "$APP_PID" 2>/dev/null
+  reap "$APP_PID"
   [[ ! -f $LAUNCH/app.log ]] || record app-output.txt <"$LAUNCH/app.log"
   APP_PID="" APP_ADDRESS=""
 }
@@ -640,8 +926,49 @@ theme_has_colors() {
 }
 # Waits for Omarchy's retints too, and never reads a terminal: a switch typed in
 # one would let Omarchy's browser-colour step ask for a password there.
+# OMARCHY_THEME_SYNC_FROM is what Omarchy's mirror to herdr machines takes as "this
+# theme came from another machine": it then sends nothing, whatever its toggle says.
 set_theme() {
-  "${SESSION_ENV[@]}" OMARCHY_THEME_WAIT=1 timeout "$SWITCH_WAIT" omarchy-theme-set "$1" </dev/null >>"$WORK/theme-set.log" 2>&1 3<&-
+  "${SESSION_ENV[@]}" OMARCHY_THEME_WAIT=1 OMARCHY_THEME_SYNC_FROM=gitturtle-omarchy-check \
+    timeout "$SWITCH_WAIT" omarchy-theme-set "$1" </dev/null >>"$WORK/theme-set.log" 2>&1 3<&-
+}
+# Omarchy's skip toggles, on for the run: with one on, omarchy-theme-set-vscode
+# leaves that editor alone, so no extension is installed and no settings file is
+# rewritten. A toggle the owner already has on stays theirs: only one this run
+# makes is noted, before it is made, and only that one is removed afterwards.
+skip_toggles_on() { # false when a switch could still reach an editor
+  local toggle
+  if [[ ! -d $TOGGLES ]]; then
+    restore_note "directory	$TOGGLES	made by this run"
+    TOGGLES_DIRECTORY_MADE=yes
+    mkdir -p -- "$TOGGLES" || return 1
+  fi
+  for toggle in "${SKIP_TOGGLES[@]}"; do
+    if [[ ! -e $TOGGLES/$toggle && ! -L $TOGGLES/$toggle ]]; then
+      restore_note "toggle	$TOGGLES/$toggle	made by this run; remove it" || return 1
+      SKIP_TOGGLES_MADE+=("$toggle")
+      : >"$TOGGLES/$toggle"
+    fi
+    [[ -f $TOGGLES/$toggle ]] || return 1
+  done
+}
+skip_toggles_all_on() {
+  local toggle
+  for toggle in "${SKIP_TOGGLES[@]}"; do [[ -f $TOGGLES/$toggle ]] || return 1; done
+}
+restore_skip_toggles() {
+  local toggle
+  local -a removed=()
+  for toggle in "${SKIP_TOGGLES_MADE[@]}"; do
+    if rm -f -- "$TOGGLES/$toggle" && [[ ! -e $TOGGLES/$toggle ]]; then
+      removed+=("$toggle")
+    else
+      restore_failed "toggle: $toggle is still on, and this run turned it on"
+    fi
+  done
+  [[ $TOGGLES_DIRECTORY_MADE == no ]] || rmdir -- "$TOGGLES" 2>/dev/null
+  ((${#SKIP_TOGGLES[@]} == 0)) || report "restore skip toggles: removed ${removed[*]:-none}; the others were on before the run"
+  SKIP_TOGGLES_MADE=() TOGGLES_DIRECTORY_MADE=no
 }
 wait_theme_intro() { # the wallpaper's intro, 15 s at most
   local id tries=60
@@ -665,43 +992,95 @@ restore_theme() {
 }
 
 # --- the font: Omarchy's own command, and the files it rewrites
-same_file() {
-  if [[ -L $1 || -L $2 ]]; then
-    [[ -L $1 && -L $2 && $(readlink -- "$1") == "$(readlink -- "$2")" ]]
+# omarchy-font-set writes through a link at kitty.conf and fonts.conf (sed
+# --follow-symlinks, a redirection) and replaces a link with a file of its own at
+# the other three (sed -i). So what is saved, compared and put back is the regular
+# file a path leads to, wherever that lies under the home, and the link's own text.
+# "absent", "file RESOLVED", or "unsafe WHY" for a path this script will not change.
+font_path_state() {
+  local path=$1 real
+  if [[ ! -e $path && ! -L $path ]]; then
+    real=$(realpath -m -- "${path%/*}" 2>/dev/null)
+    if [[ $real == "$HOME_REAL"/* ]]; then echo absent; else echo "unsafe its directory leads outside your home"; fi
+    return
+  fi
+  if ! real=$(realpath -e -- "$path" 2>/dev/null); then
+    echo "unsafe it is a link that leads nowhere"
+  elif [[ ! -f $real ]]; then
+    echo "unsafe it leads to something that is not a regular file"
+  elif [[ $real != "$HOME_REAL"/* ]]; then
+    echo "unsafe it leads outside your home"
   else
-    cmp -s -- "$1" "$2"
+    echo "file $real"
   fi
 }
-save_font_files() { # copies under work/, never packed; false when one cannot be saved
-  local file index=0
-  mkdir -p -m 700 "$WORK/restore" || return 1
+# Copies under work/restore, never packed, each named in manifest.txt. False, with
+# FONT_PROBLEM saying why, when a path is unsafe or cannot be saved: nothing has
+# been changed then.
+save_font_files() {
+  local file path state index=0
+  FONT_PROBLEM=""
   for file in "${FONT_FILES[@]}"; do
+    state=$(font_path_state "$HOME/.config/$file")
+    if [[ $state == unsafe* ]]; then
+      FONT_PROBLEM="~/.config/$file, which omarchy-font-set rewrites: ${state#unsafe }"
+      return 1
+    fi
+  done
+  for file in "${FONT_FILES[@]}"; do
+    path=$HOME/.config/$file
+    state=$(font_path_state "$path")
     FONT_DIRECTORY[index]=absent
-    [[ ! -d $HOME/.config/${file%/*} ]] || FONT_DIRECTORY[index]=present
-    if [[ -e $HOME/.config/$file || -L $HOME/.config/$file ]]; then
-      cp -a -- "$HOME/.config/$file" "$WORK/restore/font-$index" || return 1
+    [[ ! -d ${path%/*} ]] || FONT_DIRECTORY[index]=present
+    FONT_LINK[index]=""
+    [[ ! -L $path ]] || FONT_LINK[index]=$(readlink -- "$path")
+    FONT_REAL[index]="" FONT_SAVED[index]=absent
+    if [[ $state == file* ]]; then
+      FONT_REAL[index]=${state#file }
       FONT_SAVED[index]=copy
+      if ! restore_note "font-$index	$path	the bytes of ${FONT_REAL[index]}${FONT_LINK[index]:+	$path was a link reading ${FONT_LINK[index]}}" ||
+        ! cp -p -- "${FONT_REAL[index]}" "$RESTORE/font-$index" || ! cmp -s -- "${FONT_REAL[index]}" "$RESTORE/font-$index"; then
+        FONT_PROBLEM="~/.config/$file could not be saved first"
+        return 1
+      fi
     else
-      FONT_SAVED[index]=absent
+      restore_note "absent	$path	did not exist; remove it" || return 1
     fi
     index=$((index + 1))
   done
 }
-put_back_font_files() { # byte for byte; a file or directory the change created is removed
-  local file path index=0
+# Byte for byte, by a copy and a rename; a link the change replaced is a link
+# again; a file or directory the change created is removed. What cannot be put
+# back is left as it is and becomes a FAILED line of the restore check.
+put_back_font_files() {
+  local file path saved index=0
   local -a done=()
   for file in "${FONT_FILES[@]}"; do
-    path=$HOME/.config/$file
+    path=$HOME/.config/$file saved=$RESTORE/font-$index
     case ${FONT_SAVED[index]:-} in
       copy)
-        if ! same_file "$WORK/restore/font-$index" "$path"; then
-          rm -f -- "$path"
-          cp -a -- "$WORK/restore/font-$index" "$path" && done+=("$file put back")
+        if [[ -n ${FONT_LINK[index]} ]] && [[ ! -L $path || $(readlink -- "$path") != "${FONT_LINK[index]}" ]]; then
+          if put_back_link "${FONT_LINK[index]}" "$path"; then
+            done+=("$file is a link again")
+          else
+            restore_failed "font: ~/.config/$file was a link and could not be made one again (work/restore/manifest.txt has its text)"
+          fi
+        fi
+        if ! cmp -s -- "$saved" "${FONT_REAL[index]}"; then
+          if put_back "$saved" "${FONT_REAL[index]}"; then
+            done+=("$file put back")
+          else
+            restore_failed "font: ~/.config/$file could not be put back; its saved copy is work/restore/font-$index"
+          fi
         fi
         ;;
       absent)
         if [[ -e $path || -L $path ]]; then
-          rm -f -- "$path" && done+=("$file removed, it did not exist")
+          if rm -f -- "$path"; then
+            done+=("$file removed, it did not exist")
+          else
+            restore_failed "font: ~/.config/$file did not exist and could not be removed"
+          fi
         fi
         [[ ${FONT_DIRECTORY[index]:-} != absent ]] || rmdir -- "${path%/*}" 2>/dev/null
         ;;
@@ -763,13 +1142,22 @@ restore_scale() {
 
 # --- the terminal: Omarchy's default one, opened to take the focus
 close_terminal() {
+  local deadline
   if [[ $TERMINAL_ADDRESS =~ ^0x[0-9a-f]+$ ]] && window_exists "$TERMINAL_ADDRESS"; then
     close_window "$TERMINAL_ADDRESS"
+    deadline=$(($(now_ms) + STOP_WAIT_MS))
+    while (($(now_ms) < deadline)) && window_exists "$TERMINAL_ADDRESS"; do nap 0.1; done
+    # A terminal that runs as one process for all its windows is the owner's
+    # process, not this script's: its window is asked to close, and no more.
+    ! window_exists "$TERMINAL_ADDRESS" ||
+      restore_failed "the terminal: its window is still open ${STOP_WAIT_MS} ms after Hyprland was asked to close it (its command ends by itself within $TERMINAL_LIFE s)"
   fi
   if [[ -n $TERMINAL_PID ]]; then
-    # This script's own child, by its exact pid; its command also ends by itself.
-    wait_for_exit "$TERMINAL_PID" 3000 || kill "$TERMINAL_PID" 2>/dev/null
-    wait "$TERMINAL_PID" 2>/dev/null
+    # This script's own child, by its exact pid: a moment to end with its window,
+    # then TERM and KILL, each with a limit, so the restores after it never wait.
+    wait_for_exit "$TERMINAL_PID" 1000 || stop_process "$TERMINAL_PID" ||
+      restore_failed "the terminal: its process still runs after TERM and KILL"
+    reap "$TERMINAL_PID"
   fi
   TERMINAL_ADDRESS="" TERMINAL_PID=""
 }
@@ -886,13 +1274,69 @@ check_bundle_sums() {
   fi
 }
 
+# Who built this, settled before anything from the archive executes: the source
+# revision in the archive's own build-info.json, which --expect-revision, the
+# manifest and the CI record beside the archive must all name. False, with
+# IDENTITY_REFUSAL saying why, when they do not; nothing from the archive runs then.
+establish_identity() {
+  local info=$BUNDLE/build-info.json binary=$BUNDLE/bin/gitturtle manifest=$ARCHIVE.manifest.json
+  local provenance=${ARCHIVE%/*}/ci-provenance.json other difference
+  local -a differs=() agreed=()
+  if [[ ! -f $info || -L $info ]] || ! jq -e 'type == "object"' "$info" >/dev/null 2>&1; then
+    differs+=("the archive has no build-info.json that names its source revision")
+  else
+    BUNDLE_REVISION=$(jq -r '.compiled_identity.source_revision // ""' "$info" 2>/dev/null)
+    [[ $BUNDLE_REVISION =~ ^[0-9a-f]{40}$ ]] || differs+=("build-info.json in the archive names no source revision")
+    if [[ -f $binary && ! -L $binary ]]; then
+      BUNDLE_BINARY_SHA256=$(sha256_of "$binary")
+      [[ $(jq -r '.binary_sha256 // ""' "$info" 2>/dev/null) == "$BUNDLE_BINARY_SHA256" ]] ||
+        differs+=("build-info.json in the archive gives another SHA-256 than bin/gitturtle has")
+    fi
+  fi
+  if [[ -n $EXPECT_REVISION ]]; then
+    if [[ -n $BUNDLE_REVISION && $BUNDLE_REVISION == "$EXPECT_REVISION"* ]]; then
+      agreed+=("--expect-revision $EXPECT_REVISION")
+    else
+      differs+=("--expect-revision $EXPECT_REVISION, but the archive's build-info.json names ${BUNDLE_REVISION:-none}")
+    fi
+  fi
+  if [[ -f $manifest && ! -L $manifest ]]; then
+    other=$(jq -r '.package.compiled_identity.source_revision // ""' "$manifest" 2>/dev/null)
+    if [[ -n $BUNDLE_REVISION && $other == "$BUNDLE_REVISION" ]]; then
+      agreed+=("the manifest")
+    else
+      differs+=("the manifest names revision ${other:-none}, the archive's build-info.json ${BUNDLE_REVISION:-none}")
+    fi
+  fi
+  if [[ -f $provenance && ! -L $provenance && $(jq -r '.archive // ""' "$provenance" 2>/dev/null) == "$ARCHIVE_NAME" ]]; then
+    other=$(jq -r '.revision // ""' "$provenance" 2>/dev/null)
+    if [[ -n $BUNDLE_REVISION && $other == "$BUNDLE_REVISION" ]]; then
+      agreed+=("ci-provenance.json")
+    else
+      differs+=("ci-provenance.json names revision ${other:-none}, the archive's build-info.json ${BUNDLE_REVISION:-none}")
+    fi
+  fi
+  if ((${#differs[@]} == 0)); then
+    report "identity: source revision $BUNDLE_REVISION, read from build-info.json in the archive before anything from it ran; named also by: $(printf '%s, ' "${agreed[@]:-nothing else (no --expect-revision, manifest or CI record)}" | sed 's/, $//')"
+    return 0
+  fi
+  for difference in "${differs[@]}"; do problem "identity: $difference"; done
+  refuse_identity "${differs[0]}"
+  return 1
+}
+# From here on nothing from the archive runs: not its executable, not its
+# installer, not the package build, not the desktop part.
+refuse_identity() {
+  [[ -n $IDENTITY_REFUSAL ]] || IDENTITY_REFUSAL="identity not established: $1"
+  ARCHIVE_TRUSTED=no
+}
+
 check_build_info() {
   local binary=$BUNDLE/bin/gitturtle status target
   if [[ ! -f $binary || ! -x $binary ]]; then
     problem "no executable bin/gitturtle in the archive"
     return
   fi
-  BUNDLE_BINARY_SHA256=$(sha256_of "$binary")
   report "executable: bin/gitturtle, $(stat -c %s -- "$binary") bytes, sha256 $BUNDLE_BINARY_SHA256"
   timeout 30 env "${DISPOSABLE_ENV[@]}" "$binary" --build-info >"$WORK/build-info.json" 2>"$WORK/build-info.err"
   status=$?
@@ -906,16 +1350,18 @@ check_build_info() {
   target=$(jq -r '.target // ""' "$WORK/build-info.json")
   report "--build-info: $(jq -r '"version \(.version), source_revision \(.source_revision), source_tree \(.source_tree), target \(.target), profile \(.profile), \(.rustc), build_unix_seconds \(.build_unix_seconds)"' "$WORK/build-info.json")"
   [[ $target == "$(uname -m)-"* ]] || problem "the executable targets $target, and this machine is $(uname -m)"
-  if [[ -n $EXPECT_REVISION ]]; then
-    if [[ $BUILD_REVISION == "$EXPECT_REVISION"* ]]; then
-      report "--expect-revision $EXPECT_REVISION: the executable's source revision"
-    else
-      problem "--expect-revision $EXPECT_REVISION, but the executable reports $BUILD_REVISION"
-    fi
+  # The executable has now spoken for itself, once and in the disposable home. If it
+  # is not the build its archive said it was, nothing else from the archive runs.
+  if [[ $BUILD_REVISION != "$BUNDLE_REVISION" ]]; then
+    problem "identity: the executable reports revision ${BUILD_REVISION:-none}, the archive's build-info.json $BUNDLE_REVISION"
+    refuse_identity "the executable reports another revision than its archive's build-info.json"
+  elif [[ -n $EXPECT_REVISION ]]; then
+    report "--expect-revision $EXPECT_REVISION: the executable's source revision"
   fi
   if ! jq -e --slurpfile compiled "$WORK/build-info.json" --arg sum "$BUNDLE_BINARY_SHA256" \
     '.compiled_identity == $compiled[0] and .binary_sha256 == $sum' "$BUNDLE/build-info.json" >/dev/null 2>&1; then
     problem "the archive's build-info.json does not describe this executable (its compiled_identity or binary_sha256 differs)"
+    refuse_identity "the archive's build-info.json does not describe its executable"
   fi
 }
 
@@ -1003,9 +1449,14 @@ check_archive() {
   BUNDLE=$WORK/archive/$ARCHIVE_TOP
   report "extracted: $(find "$BUNDLE" -type f | grep -c .) files under $ARCHIVE_TOP/"
   if check_bundle_sums; then
-    ARCHIVE_TRUSTED=yes
-    check_build_info
-    check_libraries
+    # The executable runs (--build-info) and is loaded (ldd) only once the archive
+    # is the build it is expected to be; the manifest and the CI record are read
+    # either way.
+    if establish_identity; then
+      ARCHIVE_TRUSTED=yes
+      check_build_info
+      check_libraries
+    fi
     check_manifest
     check_provenance
   fi
@@ -1016,7 +1467,7 @@ check_install() {
   local installer=$BUNDLE/install.py status entry installed validation
   section c install "the archive's installer, into a disposable home"
   if [[ $ARCHIVE_TRUSTED != yes ]]; then
-    skipped "the archive did not pass its own checksums, so nothing from it runs"
+    skipped "${IDENTITY_REFUSAL:-the archive did not pass its own checksums}, so nothing from it runs"
     return
   fi
   if ! have python3; then
@@ -1071,7 +1522,7 @@ check_package() {
   local test=$REPO_ROOT/packaging/aur/test-local.sh tool status
   section d package "the gitturtle-bin package, built from this archive"
   if [[ $ARCHIVE_TRUSTED != yes ]]; then
-    skipped "the archive did not pass its own checksums, so nothing from it runs"
+    skipped "${IDENTITY_REFUSAL:-the archive did not pass its own checksums}, so nothing from it runs"
     return
   fi
   if [[ ! -f $test ]]; then
@@ -1098,17 +1549,17 @@ check_package() {
 
 # The state the desktop part must leave as it found it, one "key value" line each.
 # The wallpaper's path may name a private picture, so only its digest is kept.
+# The bytes a path leads to, through a link too, and the link's own text.
 file_mark() {
-  if [[ -L $1 ]]; then
-    printf 'link:%s' "$(readlink -- "$1" | sha256sum | cut -c1-16)"
-  elif [[ -f $1 ]]; then
-    sha256sum <"$1" | cut -c1-16
-  else
-    printf absent
-  fi
+  local mark=absent
+  [[ ! -f $1 ]] || mark=$(sha256sum <"$1" | cut -c1-16)
+  [[ ! -L $1 ]] || mark+=" link:$(readlink -- "$1" | sha256sum | cut -c1-16)"
+  printf '%s' "$mark"
 }
 desktop_snapshot() {
-  local file
+  local file toggle
+  printf 'workspace %s\n' "$(active_workspace | cut -d' ' -f1)"
+  for toggle in "${SKIP_TOGGLES[@]}"; do printf 'toggle %s %s\n' "$toggle" "$([[ -f $TOGGLES/$toggle ]] && echo on || echo off)"; done
   printf 'theme %s\n' "$(theme_now)"
   printf 'wallpaper %s\n' "$(wallpaper_now | sha256sum | cut -c1-16)"
   printf 'font %s\n' "$(timeout 5 omarchy-font-current 2>/dev/null)"
@@ -1118,17 +1569,11 @@ desktop_snapshot() {
   for file in "${FONT_FILES[@]}"; do printf 'file ~/.config/%s %s\n' "$file" "$(file_mark "$HOME/.config/$file")"; done
 }
 
-# Records the starting state where a hard stop still leaves it readable, then
-# makes the two changes every picture needs: no notification, no screensaver.
-begin_desktop_part() {
-  [[ $DESKTOP == no ]] || DESKTOP_REFUSAL=$(desktop_refusal)
-  [[ -z $DESKTOP_REFUSAL ]] || return 0
-  START_FOCUS=$(active_address)
-  START_DND=$(dnd_state)
-  [[ $START_DND == on || $START_DND == off ]] || START_DND=""
-  START_AWAKE=no
-  [[ ! -f $STAY_AWAKE ]] || START_AWAKE=yes
+# The starting state, written where a hard stop still leaves it readable: in the
+# records, which are packed, and beside the saved copies in work/restore.
+record_desktop_start() {
   DESKTOP_START=$(desktop_snapshot)
+  restore_note "# What this run saved or made: kind, path, note, separated by tabs. desktop-start.txt beside this file is the desktop as it was found."
   {
     echo "The desktop as the desktop part found it ($(date -u +%FT%TZ)):"
     printf '%s\n' "$DESKTOP_START"
@@ -1137,20 +1582,54 @@ begin_desktop_part() {
     echo "  omarchy-theme-set <theme>      omarchy-font-set \"<font>\"      hyprctl reload   (the monitor's scale)"
     echo "  omarchy-toggle-notification-silencing   (if silencing is on and was off)"
     echo "  omarchy-toggle-idle allow-idle          (if stay-awake is on and was off)"
-  } | record desktop-start.txt
+  } | tee -a "$RESTORE/desktop-start.txt" | record desktop-start.txt
+}
+
+# Records the starting state, moves to a workspace of the run's own, then makes
+# the two changes every picture needs: no notification, no screensaver.
+begin_desktop_part() {
+  [[ $DESKTOP == no ]] || DESKTOP_REFUSAL=$(desktop_refusal)
+  [[ -z $DESKTOP_REFUSAL ]] || return 0
+  # Without an installed executable of an established identity there is nothing to
+  # show, so nothing on the desktop is changed.
+  [[ -z $IDENTITY_REFUSAL && -n $INSTALLED_BINARY ]] || return 0
+  START_FOCUS=$(active_address)
+  START_WORKSPACE=$(active_workspace | cut -d' ' -f1)
+  START_DND=$(dnd_state)
+  [[ $START_DND == on || $START_DND == off ]] || START_DND=""
+  START_AWAKE=no
+  [[ ! -f $STAY_AWAKE ]] || START_AWAKE=yes
+  record_desktop_start
   register_restore restore_focus
+  register_restore restore_workspace
+  if ! go_to_empty_workspace; then
+    run_restore restore_workspace
+    DESKTOP_REFUSAL="the desktop could not be moved to a workspace without a window, so no picture could be kept clear of your windows"
+    report "NOTE $DESKTOP_REFUSAL: the desktop part does not run"
+    run_restore restore_focus
+    return 0
+  fi
   register_restore restore_notifications
   silence_notifications || report "NOTE notifications could not be silenced: look at every picture before sending the file"
   register_restore restore_idle
   keep_awake || report "NOTE stay-awake could not be turned on: the screensaver may start during the run"
 }
 
-# The RESULT of a check that cannot run without the app's window; false then.
-window_gate() {
+# The RESULT of a desktop check that cannot run at all; false then. An archive
+# whose identity is not established shows nothing, whatever the desktop allows.
+desktop_gate() {
+  if [[ -n $IDENTITY_REFUSAL ]]; then
+    skipped "$IDENTITY_REFUSAL, so nothing from the archive runs"
+    return 1
+  fi
   if [[ -n $DESKTOP_REFUSAL ]]; then
     skipped "$DESKTOP_REFUSAL"
     return 1
   fi
+}
+# The RESULT of a check that cannot run without the app's window; false then.
+window_gate() {
+  desktop_gate || return 1
   if session_locked; then
     skipped "the session is locked"
     return 1
@@ -1193,10 +1672,7 @@ make_demo_repository() {
 check_launch() {
   local started appeared
   section e launch "first launch of the installed executable"
-  if [[ -n $DESKTOP_REFUSAL ]]; then
-    skipped "$DESKTOP_REFUSAL"
-    return
-  fi
+  desktop_gate || return
   if [[ -z $INSTALLED_BINARY ]]; then
     skipped "no installed executable (see the install check)"
     return
@@ -1249,6 +1725,21 @@ check_themes() {
     skipped "Omarchy names no current theme, or omarchy-theme-list or omarchy-theme-set is missing"
     return
   fi
+  # Asked again here: what was true for the plan may have changed since.
+  [[ -n $THEME_BLOCKER ]] || THEME_BLOCKER=$(theme_blocker)
+  if [[ -n $THEME_BLOCKER ]]; then
+    START_THEME=""
+    skipped "$THEME_BLOCKER"
+    return
+  fi
+  register_restore restore_skip_toggles
+  if ! skip_toggles_on; then
+    run_restore restore_skip_toggles
+    START_THEME=""
+    skipped "an Omarchy skip toggle could not be turned on under ~/.local/state/omarchy/toggles, so a switch could reach an editor"
+    return
+  fi
+  report "themes: Omarchy's skip toggles are on for the switches: ${SKIP_TOGGLES[*]:-none exist here} (made by this run: ${SKIP_TOGGLES_MADE[*]:-none}); theme sync to herdr machines is off; no hook of the owner's runs; the browser colour goes through Omarchy's passwordless sudo rule"
   START_WALLPAPER=$(wallpaper_now)
   mapfile -t names < <(timeout 10 omarchy-theme-list 2>/dev/null)
   report "themes: omarchy-theme-list names ${#names[@]}; starting from $START_THEME; each picture is taken $SETTLE s after omarchy-theme-set returns"
@@ -1271,6 +1762,9 @@ check_themes() {
     fi
     if [[ $(theme_now) == "$slug" ]]; then
       report "theme $slug: already the current theme, not set again (that would move on to its next wallpaper)"
+    elif ! skip_toggles_all_on; then
+      problem "an Omarchy skip toggle was turned off during the run; the remaining themes were not tried"
+      break
     else
       set_theme "$slug"
       status=$?
@@ -1285,6 +1779,7 @@ check_themes() {
     if picture "theme-$slug"; then taken=$((taken + 1)); else problem "no picture of theme $slug"; fi
   done
   run_restore restore_theme
+  run_restore restore_skip_toggles
   nap "$SETTLE"
   picture "theme-restored-$START_THEME" || problem "no picture after the starting theme was restored"
   [[ $(theme_now) == "$START_THEME" ]] || problem "the theme is $(theme_now), not the starting $START_THEME"
@@ -1322,9 +1817,14 @@ check_font() {
     skipped "omarchy-font-list names no other font than the current one"
     return
   fi
+  if (($(own_hooks font-set) > 0)); then
+    START_FONT=""
+    skipped "a font-set hook of your own under ~/.config/omarchy/hooks would run on the change, and the script cannot know what it does: move it aside for the run"
+    return
+  fi
   if ! save_font_files; then
     START_FONT=""
-    skipped "a file omarchy-font-set rewrites could not be saved first"
+    skipped "${FONT_PROBLEM:-a file omarchy-font-set rewrites could not be saved first}; nothing was changed"
     return
   fi
   report "font: $START_FONT -> $other; ~/.config/fontconfig $([[ -d $HOME/.config/fontconfig ]] && echo "exists" || echo "does not exist yet (omarchy-font-set creates it)")"
@@ -1563,10 +2063,7 @@ check_hands() {
     skipped "--hands was not given"
     return
   fi
-  if [[ -n $DESKTOP_REFUSAL ]]; then
-    skipped "$DESKTOP_REFUSAL"
-    return
-  fi
+  desktop_gate || return
   if [[ ! -t 3 ]]; then
     skipped "standard input is not a terminal to answer in"
     return
@@ -1587,6 +2084,7 @@ check_hands() {
   copy=$(binding_keys "Universal copy")
   paste=$(binding_keys "Universal paste")
   report "bindings, from $OMARCHY_PATH/default/hypr/bindings/clipboard.lua: copy \"${copy:-not found}\", paste \"${paste:-not found}\""
+  report "hands: GitTurtle is open beside this terminal, on the workspace the run started from; a picture is taken only while no other window overlaps GitTurtle's"
   say ""
   say "Four things for you to do in the GitTurtle window that just opened. Step 1"
   say "replaces what your clipboard holds with a commit's hash."
@@ -1623,16 +2121,24 @@ write_restore_section() {
   report ""
   report "== restore: what was put back, and what is left"
   restore_all
+  # A restore that did not take, in any check or just now, fails this one.
+  PROBLEMS=("${RESTORE_FAILURES[@]}")
   if [[ -z $DESKTOP_START ]]; then
     report "desktop: nothing on it was changed"
   else
     changes=$(diff <(printf '%s\n' "$DESKTOP_START") <(desktop_snapshot) | grep '^[<>]')
     if [[ -z $changes ]]; then
-      report "desktop: as found: theme, wallpaper, font, notification silencing, stay-awake, every monitor, and the files omarchy-font-set rewrites"
+      report "desktop: as found: workspace, theme, wallpaper, Omarchy's skip toggles, font, notification silencing, stay-awake, every monitor, and the bytes of the files omarchy-font-set rewrites"
     else
       report "desktop: NOT as found (\"<\" as found, \">\" now; records/desktop-start.txt has the start):"
       while IFS= read -r line; do report "  $line"; done <<<"$changes"
       problem "the desktop is not as it was found"
+    fi
+    # The saved copies go only when everything is back; otherwise they are what
+    # the owner puts the rest back with.
+    if ((${#PROBLEMS[@]} > 0)); then
+      KEEP_RESTORE=yes
+      report "kept, and not packed: <results>/work/restore, with the desktop as it was found (desktop-start.txt), the saved copies and manifest.txt, which says what each is"
     fi
     report "left by Omarchy's own commands: its bookkeeping of the theme visits under ~/.local/state/omarchy (each theme's remembered wallpaper, theme.generation, its logs)"
   fi
@@ -1646,10 +2152,23 @@ write_restore_section() {
   result
 }
 
+# Removes work/, except work/restore while something is not back as it was found.
 remove_work() {
   [[ -n $OUT && $WORK == "$OUT/work" && -d $WORK ]] || return 0
   chmod -R u+w -- "$WORK" 2>/dev/null
-  rm -rf -- "$WORK"
+  if [[ $KEEP_RESTORE == yes && -d $RESTORE ]]; then
+    find "$WORK" -mindepth 1 -maxdepth 1 ! -name restore -exec rm -rf -- {} +
+  else
+    rm -rf -- "$WORK"
+  fi
+}
+say_what_was_kept() {
+  [[ $KEEP_RESTORE == yes && -d $RESTORE ]] || return 0
+  say ""
+  say "NOT everything is as it was found. Kept, and not packed, to put the rest back with:"
+  say "  $RESTORE"
+  say "  desktop-start.txt is the desktop as it was found; manifest.txt says which saved"
+  say "  copy (font-0 to font-4) belongs to which file and what this run made."
 }
 
 # Packs report.txt, records/ and pictures/ with numeric, neutral owners, and only
@@ -1689,6 +2208,7 @@ finish() {
   [[ -z $STOPPED_BY ]] || report "STOPPED by $STOPPED_BY during the $CHECK check: restoring, then packing what was done"
   write_restore_section
   pack_results || status=1
+  say_what_was_kept
   ((status != 0 || COUNT_FAILED == 0)) || status=1
   exit "$status"
 }
@@ -1712,6 +2232,10 @@ main() {
   choose_results_directory
   build_redaction
   DESKTOP_REFUSAL=$(desktop_refusal)
+  if [[ -z $DESKTOP_REFUSAL ]]; then
+    mapfile -t SKIP_TOGGLES < <(theme_skip_toggles)
+    THEME_BLOCKER=$(theme_blocker)
+  fi
   show_plan_and_wait
 
   trap finish EXIT
@@ -1741,6 +2265,9 @@ main() {
   check_scales
   check_inactive
   check_rest
+  # The prompts are answered in the owner's terminal, so the hands part runs
+  # beside it: the run's own workspace is left first.
+  run_restore restore_workspace
   check_hands
   exit 0
 }
