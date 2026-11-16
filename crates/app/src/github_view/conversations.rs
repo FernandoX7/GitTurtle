@@ -1197,7 +1197,15 @@ impl Panel {
                         self.button("github-confirm-send", send, "", true, cx)
                             .debug_selector(|| "github-confirm-send".into())
                             .disabled(pending)
-                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                            .on_click(cx.listener(|this, event, window, cx| {
+                                this.submit(window, cx);
+                                // Sending gives focus to the composer the draft was written
+                                // in, as Keep editing does, so its Return is held off the
+                                // composers the same way: the composer takes nothing while
+                                // the request runs, but each repeat after a failed send typed
+                                // a new line into the draft the failure kept.
+                                this.hold_enter_on_composer(event, window, cx);
+                            })),
                     )
                     .child(
                         self.button("github-edit-submission", "Keep editing", "", false, cx)

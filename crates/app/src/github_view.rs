@@ -23806,6 +23806,349 @@ mod tests {
         whole_in_body(cx, "github-review-submit", "where focus is");
     }
 
+    /// What a send that fails was written in: the review body, sent as a review or as a
+    /// comment on the pull request, or a conversation's reply.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Composed {
+        Review,
+        Comment,
+        Reply,
+    }
+
+    impl Composed {
+        /// The text of the composer the draft was written in.
+        fn text(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+            panel.read_with(cx, |panel, cx| {
+                let input = match self {
+                    Self::Reply => &panel.conversations.input,
+                    _ => &panel.body,
+                };
+                input.read(cx).value().to_string()
+            })
+        }
+
+        /// Whether that composer holds focus.
+        fn focused(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> bool {
+            cx.update(|window, cx| {
+                let panel = panel.read(cx);
+                let input = match self {
+                    Self::Reply => &panel.conversations.input,
+                    _ => &panel.body,
+                };
+                input.read(cx).focus_handle(cx).is_focused(window)
+            })
+        }
+
+        /// How many times the script was asked for what fails the send: the review's or the
+        /// comment's own POST, refused, or a reply's first read, which finds no connection.
+        fn failed(self, script: &github::Scripted) -> usize {
+            match self {
+                Self::Review => script.asked("POST", "/reviews"),
+                Self::Comment => script.asked("POST", "/comments"),
+                Self::Reply => script.requests.lock().unwrap().len(),
+            }
+        }
+    }
+
+    /// The draft a failing send keeps: two lines, so one more typed into it shows.
+    const TYPED: &str = "Looks right.\nOne more line.";
+
+    /// A held Return's repeats after its first key-down, as each platform delivers them
+    /// (`branch_actions::tests::REPEATS`): X11's fresh presses with no key-up, a release and
+    /// its press together, and a repeat marked held, each followed by the frames drawn before
+    /// the next, where `unchanged` asserts that nothing was typed.
+    fn hold_return(
+        cx: &mut VisualTestContext,
+        when: &str,
+        unchanged: impl Fn(&mut VisualTestContext, &str),
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            crate::tags::tests::draw(cx);
+            unchanged(cx, &format!("{when}, {repeat}"));
+        }
+    }
+
+    /// Return held on Send to GitHub types nothing into the draft it was sent from: a review,
+    /// a comment or a reply whose send fails keeps its text byte for byte through the held
+    /// key's repeats, while it is sent and once the failure has given the composer back, and
+    /// through an unpaired release, another key and the next repeat; after the key-up a fresh
+    /// press types its line. Sending moves focus off Send to the composer the draft was
+    /// written in, which is disabled only while the request runs: each repeat after the
+    /// failure typed a new line into the kept draft (decided 2026-11-11: a Return that opens
+    /// or focuses a composer never types into it).
+    async fn assert_a_return_held_on_send_types_nothing_into_its_draft(
+        cx: &mut TestAppContext,
+        composed: Composed,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let pull = github::review::fixture_pull(false);
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let mut threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(
+                &pull.capture(repository),
+                None,
+                &OperationControl::default(),
+            )
+            .unwrap();
+        for thread in &mut threads.items {
+            thread.target.account = github::Scripted::LOGIN.into();
+        }
+        // The pull request read again before the write, then the write refused; a reply's
+        // first read finds the script empty, as a lost connection answers nothing.
+        if composed != Composed::Reply {
+            script.answer(200, serde_json::to_string(&pull).unwrap());
+            script.answer(422, r#"{"message":"Validation Failed"}"#);
+        }
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Review;
+                panel.discussion = composed == Composed::Comment;
+                if composed == Composed::Reply {
+                    panel.receive_threads(threads, None);
+                }
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        // The draft written, then its submission reviewed: an edit takes a confirmation away.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    let target = panel.conversations.threads[0].target.clone();
+                    panel.begin_reply(target, window, cx);
+                    panel
+                        .conversations
+                        .input
+                        .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+                } else {
+                    panel
+                        .body
+                        .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+                }
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    panel.review_reply(window, cx);
+                } else {
+                    panel.review_submission(window, cx);
+                }
+            })
+        });
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "{composed:?}: the submission is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        enter(cx, Some(false));
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending && panel.confirm.is_none()),
+            "{composed:?}: Return on Send to GitHub sends"
+        );
+        assert!(
+            composed.focused(&panel, cx),
+            "{composed:?}: focus goes to the composer the draft was written in"
+        );
+        let unchanged = |cx: &mut VisualTestContext, when: &str| {
+            assert_eq!(composed.text(&panel, cx), TYPED, "{composed:?}, {when}");
+        };
+        hold_return(cx, "while it is sent", unchanged);
+
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.pending && panel.confirm.is_none() && panel.error.is_some(),
+                "{composed:?}: the send fails and says so: {:?}",
+                panel.error
+            );
+        });
+        assert_eq!(composed.failed(&script), 1, "{composed:?}: sent once");
+        assert!(
+            composed.focused(&panel, cx),
+            "{composed:?}: the kept draft's composer holds focus"
+        );
+        hold_return(cx, "once it has failed", unchanged);
+        // An unpaired release with its press, then another key and the next repeat, which the
+        // toolkit counts a fresh press.
+        enter(cx, None);
+        enter(cx, Some(false));
+        draw(cx);
+        key_goes_down(cx, "left", false);
+        key_comes_up(cx, "left");
+        draw(cx);
+        enter(cx, Some(false));
+        draw(cx);
+        unchanged(cx, "the repeat after an unpaired release and another key");
+
+        enter(cx, None);
+        draw(cx);
+        enter(cx, Some(false));
+        draw(cx);
+        let typed = composed.text(&panel, cx);
+        assert!(
+            typed.len() == TYPED.len() + 1 && typed.replace('\n', "") == TYPED.replace('\n', ""),
+            "{composed:?}: a fresh press after the key-up types its line: {typed:?}"
+        );
+        enter(cx, None);
+        draw(cx);
+        assert_eq!(
+            composed.failed(&script),
+            1,
+            "{composed:?}: nothing was sent again"
+        );
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_none()),
+            "{composed:?}: nothing was reviewed again"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_send_types_nothing_into_a_review_that_fails(cx: &mut TestAppContext) {
+        assert_a_return_held_on_send_types_nothing_into_its_draft(cx, Composed::Review).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_send_types_nothing_into_a_comment_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_return_held_on_send_types_nothing_into_its_draft(cx, Composed::Comment).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_send_types_nothing_into_a_reply_that_fails(cx: &mut TestAppContext) {
+        assert_a_return_held_on_send_types_nothing_into_its_draft(cx, Composed::Reply).await;
+    }
+
+    /// Return held on Send to GitHub for a creation that fails changes nothing of its form:
+    /// sending gives focus to the title, a single-line field that takes no Return, so the held
+    /// key's repeats, while the creation is sent and once it has failed, type nothing into the
+    /// title, the branches or the description, review nothing again and send nothing again,
+    /// nor does a fresh press after the key-up.
+    #[gpui::test]
+    async fn a_return_held_on_send_changes_nothing_of_a_creation_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let refused = (422, r#"{"message":"Validation Failed"}"#);
+        let at = (13, 1480., 973.);
+        let send = review_creation(&app, &panel, &script, at, refused, true, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let form = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                let fields = [&panel.title, &panel.head, &panel.base]
+                    .map(|input| input.read(cx).value().to_string());
+                (fields, panel.body.read(cx).value().to_string())
+            })
+        };
+        let typed = form(cx);
+        let in_title = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let title = panel.read(cx).title.read(cx).focus_handle(cx);
+                title.is_focused(window)
+            })
+        };
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        enter(cx, Some(false));
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        assert!(in_title(cx), "focus goes to the title");
+        let unchanged = |cx: &mut VisualTestContext, when: &str| {
+            assert_eq!(form(cx), typed, "{when}");
+            assert!(
+                panel.read_with(cx, |panel, _| panel.confirm.is_none()),
+                "{when}: nothing is reviewed again"
+            );
+            assert!(script.asked("POST", "/pulls") <= 1, "{when}: sent once");
+        };
+        hold_return(cx, "while it is sent", unchanged);
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            2,
+            "the held creation has asked nothing yet"
+        );
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.create && !panel.pending && panel.existing.is_none(),
+                "the form stays open"
+            );
+            assert!(
+                panel
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("No automatic retry was made")),
+                "the refusal every other write gets: {:?}",
+                panel.error
+            );
+        });
+        assert_eq!(script.requests.lock().unwrap().len(), 5);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        assert!(in_title(cx), "focus stays in the title");
+        hold_return(cx, "once it has failed", unchanged);
+        enter(cx, None);
+        draw(cx);
+        enter(cx, Some(false));
+        enter(cx, None);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        unchanged(cx, "a fresh press in the title");
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+        assert!(panel.read_with(cx, |panel, _| !panel.pending));
+    }
+
     /// The open panel with its local reads drained.
     async fn settle_panel(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         let (operations_done, preferences_done) = app.read_with(cx, |app, _| {
