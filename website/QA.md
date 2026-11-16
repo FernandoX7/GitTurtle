@@ -101,3 +101,64 @@ shell and terminates option parsing before URL data. Its complete live HTTP/TLS
 check passed again after this refinement; the evidence records the current
 helper hash and unchanged deployed asset identity. Hosted security analysis is
 tracked on the pull request separately from the live checks.
+
+## November 16, 2026 content refresh
+
+The page was brought up to date with the application the repository README describes: the same design, more of the app. It now runs hero, speed, a six-tab tour, themes, Omarchy, how it works, Get started and open source, with ten of the README's pictures copied byte for byte ([provenance](README.md#screenshot-provenance-and-replacement)). This revision is not deployed: publishing, the smoke check and the deployment record are the owner's steps.
+
+Headless Chromium 153.0.8010.36 on Arch Linux ARM rendered the page from its local files over a DevTools pipe, with no window and with host resolution disabled. The page made sixteen requests, all for its own files, and none to another origin.
+
+| Check | Observed result |
+| --- | --- |
+| Full page at 1440, 1000, 700 and 380 pixels | Every frame inspected: nothing cut, overlapping or misaligned; Manrope loaded; every rendered picture loaded at its declared aspect ratio. |
+| Horizontal overflow at fourteen widths from 320 to 1920 pixels | None: the document and every element stayed inside the viewport. |
+| Six tour tabs at 1440 and 380 pixels | Each tab's picture and caption inspected. The caption block keeps one height across the six tabs at 1440, 1000, 700 and 380. |
+| Tabs by keyboard | Home, five presses of Right, a wrap in each direction and End selected and focused the expected tab, showed only its panel and kept one tab sequentially focusable; Tab then moved into the visible panel. |
+| Reduced motion, emulated | Scroll behavior computed as `auto` and the button and link transitions as `0s`; without the emulation, `smooth` and `0.18s`. |
+| Scripts disabled, at 1440 and 380 pixels | The tab buttons stay hidden and all six pictures, captions and full-size links appear in document order. |
+| Custom 404 at 1440 and 380 pixels | Inspected from a copy with its root-relative URLs made relative, since a file cannot resolve them; no console message. |
+
+From a file, Chromium refuses the font preload's `crossorigin` request and logs two errors and two warnings for each load of the page; the font itself loads through the stylesheet, and the 404 page, which has no preload, logs nothing. The page was not observed over HTTP in this round, so the console over HTTPS, the response headers and the content security policy against the new markup remain to be checked at deployment. The markup has no inline style or script. 200% browser zoom, a physical phone, a screen reader and forced colors were not exercised. The frames were reviewed locally and are not in the repository.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `public/index.html` | 28,861 | `ca59da727800ccba68700ef50d55c546d1f4d2afd751a1039c530173510b00af` |
+| `public/styles.css` | 16,164 | `bf4c86520f896add7730e69f53f832be2ec0fcf59c5b1175883b884c2ac0fbeb` |
+| `public/site.js` | 1,693 | `13334bb59acf3a0c743da306974e20753bd46e34dcf6aa053df7933b9d5c35e3` |
+| `public/404.html` | 705 | `8825cb47ad0a13243824fb07a9c9cd2c293fed0c840d460b84896d703b684bb0` |
+
+The script is unchanged from the September record. The first view requests 612,660 bytes: the page, stylesheet, script, font, icon and the History picture. Every other picture loads lazily, and a tab's picture only when the tab is first shown; with all of them the page weighs 5,778,296 bytes. The largest response is `omarchy-themes.png` at 948,008 bytes, under the 2 MiB that `smoke.py` allows.
+
+## November 16, 2026 design and copy follow-up
+
+A second pass the same day followed a design and copy review of the refresh. The speed figures now say what was measured and on what in one sentence each, with their labels inside their headings. The Omarchy section opens with the desktop picture beside its lead, carries four points instead of six, and shows its theme sheet on a mat in the site's deep green with the 23 themes named in the caption. The details heading stays in view beside its list, each picture link is named by its picture's alt text, and the turtle is a smaller file. This revision is not deployed either.
+
+The desktop picture is the one app capture the site scales down ([the rule and its record](README.md#screenshot-provenance-and-replacement)). At 2,208 pixels wide it weighed 1.73 MB, over the 1.5 MB allowed for it, so the site carries it at 1,728 × 1,692 and 1,177,156 bytes. It was judged at full size in frames rendered at one and at two device pixels per pixel in a 1440-pixel window, where it is 703 pixels wide: the app's and the terminal's text is small and crisp in both, and the two half-size desktops stay legible as pictures rather than as text.
+
+The same headless Chromium 153.0.8010.36 rendered the page from its local files over a DevTools pipe, with no window, host resolution disabled and the user's browser flags left out. Every request in the run, 458 across all loads, was for the site's own files.
+
+| Check | Observed result |
+| --- | --- |
+| Full page at 1440, 1000, 700 and 380 pixels | Every frame inspected: nothing cut, overlapping or misaligned; Manrope loaded; every rendered picture loaded at its declared size. |
+| Horizontal overflow at fourteen widths from 320 to 1920 pixels | None. |
+| A single word alone on a last line, at 1440, 1000, 700 and 380 pixels | None in any headline, paragraph or caption, the six tab captions included. Two were found and fixed at 380: the tour's headline and the hero's caption. |
+| Theme names at 380 pixels | Both sheets' captions are whole and name every theme in text. |
+| Six tour tabs at 1440 and 380 pixels, by keyboard | As in the first pass: Home, five presses of Right, a wrap each way and End selected and focused the expected tab and showed only its panel; the caption block keeps one height. |
+| Picture links | Chromium's accessibility tree names each of the eleven by its picture's alt text followed by "View full size", which is visually hidden text; no picture link has an `aria-label`. |
+| Speed headings | Each is one heading in the accessibility tree, such as "WINDOW UP: 115 ms". The colon is in the text and drawn at no size. |
+| Details heading at 1440 pixels | Stays 40 pixels from the top while its list scrolls past; ordinary at 700 pixels, where the columns stack. Emulated reduced motion leaves it in place, with scroll behavior `auto` and transitions `0s`. |
+| Inline code | 11.44 pixels in 13-pixel text, 0.88 of its size. |
+| The sheet's mat | Computes to `color-mix` of `--deep` at 70% with black, the same green as the section behind it, darker. |
+| Scripts disabled, at 1440 and 380 pixels | The tab buttons stay hidden and all six pictures, captions and links appear in order. |
+| Custom 404 at 1440 and 380 pixels | Inspected from a copy with its root-relative URLs made relative; no console message. |
+
+Manrope's Latin subset has no non-breaking hyphen: Chromium drew U+2011 from a fallback font, so "ad-hoc" is kept on one line with `white-space: nowrap` instead. The limits of the first pass stand: the page was not observed over HTTP, so the console over HTTPS, the response headers and the content security policy against this markup remain to be checked at deployment, and from a file the font preload logs the same errors as before. The accessible names were read from Chromium's accessibility tree, not heard in a screen reader. 200% browser zoom, a physical phone, a screen reader and forced colors were not exercised. The frames were reviewed locally and are not in the repository.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `public/index.html` | 29,346 | `1c7963d56640a7e4582fbadde19a137b9f8aa7e6ce29f8b4ed960dd55751f279` |
+| `public/styles.css` | 17,373 | `dbb524707416d81ef1c585561ca988d8c32afde3e7dd42391ac870391cf4462e` |
+| `public/site.js` | 1,693 | `13334bb59acf3a0c743da306974e20753bd46e34dcf6aa053df7933b9d5c35e3` |
+| `public/404.html` | 705 | `9c8136d61e8e2438c5ab9553dda1b5b0b5d2a2b03d76b59731cbbe91c7cf9ed8` |
+
+The script is unchanged. The first view requests 614,354 bytes: the page, stylesheet, script, font, icon and the History picture. With every picture the page weighs 6,249,996 bytes in seventeen files: the desktop picture adds 1,177,156 bytes and the turtle falls from 942,906 to 235,756. The largest response is now `omarchy-desktop.png`, under the 2 MiB that `smoke.py` allows.
