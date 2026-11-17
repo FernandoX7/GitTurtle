@@ -1964,6 +1964,11 @@ struct Presses {
 struct HeldKeys {
     /// Return's press, then Space's ([`held_key`]).
     keys: [Option<HeldKey>; 2],
+    /// Escape's press, heard as theirs are, from its key-down to the first frame after its
+    /// key-up. Only the end of a send that refused it latches it ([`HeldKeys::latch_escape`]),
+    /// and no other key's press reads it: an Escape answered "wait for the result" and still
+    /// down as the result comes closes nothing until it has come up.
+    escape: Option<HeldKey>,
     /// The number of the last key-up that released one.
     key_ups: u64,
     /// While a press is latched, marks the presses as focus leaves the control the landing
@@ -2023,6 +2028,38 @@ impl HeldKeys {
             self.keys[1 - own] = None;
         }
     }
+    /// Records Escape going down in the panel: its press begins, or repeats where one is under
+    /// way, marked held or not, also right after its key-up, as an X11 repeat's release and
+    /// press arrive. Returns whether the press is latched ([`Self::latch_escape`]), its
+    /// key-down then one to stop.
+    fn escape_down(&mut self) -> bool {
+        let press = self.escape.get_or_insert(HeldKey {
+            latched: false,
+            released: None,
+            left: false,
+        });
+        press.released = None;
+        press.latched
+    }
+    /// A send that refused Escape has ended ([`Panel::run_from`]): an Escape press still under
+    /// way is latched, so that its key-downs are stopped until it has come up
+    /// ([`Panel::hear_keys`]). The refusal said to wait for the result; the next repeat of the
+    /// same press, under X11 a fresh key-down, once found the send ended and closed the panel
+    /// on the result it had just shown. A key-up lost meanwhile costs one Escape at most: the
+    /// next one is taken for the held key's and ends the hold as it comes up.
+    fn latch_escape(&mut self) {
+        if let Some(press) = self.escape.as_mut() {
+            press.latched = true;
+        }
+    }
+    /// The press of the key kept at `key`: Return's or Space's ([`held_key`]), or Escape's
+    /// ([`ESCAPE`]).
+    fn press(&mut self, key: usize) -> &mut Option<HeldKey> {
+        match key {
+            ESCAPE => &mut self.escape,
+            own => &mut self.keys[own],
+        }
+    }
 }
 /// The key context of the panel's top line and body together while the line stands above the
 /// body, where its Open #N is no part of the body ([`review::BODY`]), and of the dialog
@@ -2056,6 +2093,13 @@ fn held_key(keystroke: &gpui_kit::Keystroke) -> Option<usize> {
         "space" => Some(1),
         _ => None,
     }
+}
+/// Escape's place among the presses [`HeldKeys`] keeps ([`HeldKeys::press`]).
+const ESCAPE: usize = 2;
+/// Where [`HeldKeys`] keeps the press `keystroke` is of: Return's or Space's ([`held_key`]), or
+/// Escape's ([`ESCAPE`]), whatever modifiers it carries.
+fn heard_key(keystroke: &gpui_kit::Keystroke) -> Option<usize> {
+    held_key(keystroke).or_else(|| (keystroke.key == "escape").then_some(ESCAPE))
 }
 /// Whether the platform sends no key-up for `keystroke`, as Cocoa sends none for a key
 /// pressed with Command held on macOS. A key pressed with any other modifier sends one, and
@@ -2371,6 +2415,10 @@ mod account {
             .collect()
     }
 }
+/// What Escape, or Back to repository, is answered with while a send is in flight
+/// ([`Panel::close`]): to wait for that send's result, so the line goes as the result comes
+/// ([`Panel::run_from`]).
+const SEND_IN_FLIGHT: &str = "A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.";
 /// What a request's reply says when none arrives.
 const INTERRUPTED: &str = "GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2652,6 +2700,10 @@ struct Panel {
     /// That Cancel stopped the last request ([`RequestKind::cancelled`]),
     /// said in `error`'s place until the next request.
     cancelled: Option<&'static str>,
+    /// The request Escape was refused during, by its generation ([`Panel::close`]): the
+    /// refusal says to wait for that request's result, so its line goes as the request ends,
+    /// before the result is received ([`Panel::run_from`]).
+    refused_during: Option<u64>,
     /// Where `error` or `cancelled` answers: the control the request or refusal they answer
     /// started from ([`Origin`]).
     origin: Origin,
@@ -2712,7 +2764,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],listed:None,existing:None,created_only:false,show_row:Default::default(),show_line:Default::default(),row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),held:Default::default(),hears_keys:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,refused_during:None,origin:Origin::Panel,presses:Presses::default(),held:Default::default(),hears_keys:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:SharedString::default(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
             reviewed: false,
             home: None,
@@ -3491,6 +3543,17 @@ impl Panel {
                 }
                 this.pending = false;
                 this.control = None;
+                // A refusal that answered Escape while this request ran said to wait for its
+                // result ([`Self::close`]), so its line goes before the result is received:
+                // left there, it stood under "Pull request #N created." and was said again
+                // as this request's answer, as if the send had not worked.
+                let refused = this.refused_during.take() == Some(generation);
+                let cleared = refused && this.error.as_deref() == Some(SEND_IN_FLIGHT);
+                if cleared {
+                    this.error = None;
+                }
+                // Whether that line, a stop, held focus as it went.
+                let on_line = cleared && this.review.failure_focus.is_focused(window);
                 // The busy row goes: focus on its Cancel moves to the section
                 // the panel shows, as when it opens, before the reply moves it
                 // anywhere else.
@@ -3511,6 +3574,20 @@ impl Panel {
                         }
                         (result, _) => receive(result, this, window, cx),
                     }
+                }
+                // Focus the refusal's line held goes where the result put it, the new row or
+                // the failure's own line; where the result moved it nowhere and left no line
+                // for it to rest on, it goes to the content the panel shows now, before the
+                // frame that draws the result, with the keys then down held off it
+                // ([`Self::hand_focus_to_content`]). Left to the guard for focus on nothing
+                // drawn, it moved a frame later, unheld.
+                if on_line && this.error.is_none() && this.review.failure_focus.is_focused(window) {
+                    this.hand_focus_to_content(window, cx);
+                }
+                // An Escape this request refused that is still down closes nothing at its
+                // next repeat, which finds the request ended ([`HeldKeys::latch_escape`]).
+                if refused {
+                    this.held.borrow_mut().latch_escape();
                 }
                 // `run` cleared the failure line, so one there now is this press's answer.
                 if this.error.is_some() {
@@ -3842,22 +3919,30 @@ impl Panel {
             });
             self.confirm = None;
             if held {
-                // Sending shows nothing new, so the body shows nothing anew: the focus moves,
-                // and the body's record of the focus it has shown moves with it. Revealed, the
-                // reply's draft scrolled back into view as its Send started.
-                let shown = std::mem::take(&mut *self.review.revealed_focus.borrow_mut());
-                self.focus_visible_section(window, cx);
-                *self.review.revealed_focus.borrow_mut() = review::FocusObservation {
-                    focus: window.focused(cx),
-                    ..shown
-                };
-                // The key that sent is still down as focus arrives, a Return that sent going
-                // down and, under X11, a Space whose repeat's release sent mid-hold: its press
-                // is latched, so it types nothing into the field focus went to ([`HeldKeys`]).
-                if let Some(focus) = window.focused(cx) {
-                    self.land_focus(&focus, window, cx);
-                }
+                self.hand_focus_to_content(window, cx);
             }
+        }
+    }
+    /// The panel's one hand-off of focus from a control that goes to the content it shows
+    /// ([`Self::focus_visible_section`]): from Send to GitHub or Keep editing as the
+    /// confirmation goes with its action sent ([`Self::submit`]), and from an Escape
+    /// refusal's line as it goes with the send it refused during ([`Self::run_from`]).
+    fn hand_focus_to_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The hand-off shows nothing new, so the body shows nothing anew: the focus moves,
+        // and the body's record of the focus it has shown moves with it. Revealed, the
+        // reply's draft scrolled back into view as its Send started.
+        let shown = std::mem::take(&mut *self.review.revealed_focus.borrow_mut());
+        self.focus_visible_section(window, cx);
+        *self.review.revealed_focus.borrow_mut() = review::FocusObservation {
+            focus: window.focused(cx),
+            ..shown
+        };
+        // A key still down as focus arrives, a Return that sent going down, under X11 a
+        // Space whose repeat's release sent mid-hold, or one pressed on the refusal's line:
+        // its press is latched, so it types nothing into the field focus went to
+        // ([`HeldKeys`]).
+        if let Some(focus) = window.focused(cx) {
+            self.land_focus(&focus, window, cx);
         }
     }
     /// Hears Return and Space go down in `window`, the panel's, while the panel is open
@@ -3878,10 +3963,14 @@ impl Panel {
     /// the send had ended, and Return a line where a repeat's release and press came in two
     /// batches. On a control that is no text field nothing is stopped: a latched press's
     /// click there is refused where it would act ([`HeldKeys::refuses`]).
+    ///
+    /// It hears Escape too, and stops its key-down wherever in the panel it is heard while
+    /// its press is latched ([`HeldKeys::latch_escape`]): the dialog's Cancel, which closes
+    /// the panel, and a field's own Escape take none of it.
     fn hear_keys(&mut self, window: crate::gpui::WindowId, cx: &mut Context<Self>) {
         let held = self.held.clone();
         self.hears_keys = Some(cx.intercept_keystrokes(move |event, pressed_in, cx| {
-            let Some(own) = held_key(&event.keystroke) else {
+            let Some(own) = heard_key(&event.keystroke) else {
                 return;
             };
             if pressed_in.window_handle().window_id() != window {
@@ -3892,6 +3981,12 @@ impl Panel {
                 .iter()
                 .any(|context| context.contains(review::BODY) || context.contains(HELD));
             let mut held = held.borrow_mut();
+            if own == ESCAPE {
+                if heard && held.escape_down() {
+                    cx.stop_propagation();
+                }
+                return;
+            }
             if heard {
                 held.key_down(own, key_up_withheld(&event.keystroke));
                 let in_field = event
@@ -3906,7 +4001,8 @@ impl Panel {
             }
         }));
     }
-    /// Notes the key-up of a Return or Space press under way ([`HeldKeys::key_down`]), before
+    /// Notes the key-up of a Return, Space or Escape press under way ([`HeldKeys::key_down`],
+    /// [`HeldKeys::escape_down`]), before
     /// the control it comes up on takes its click, which a latched press refuses
     /// ([`HeldKeys::refuses`]): the press
     /// ends at the next frame, unless its key goes down again first. GPUI's X11 client drops
@@ -3921,12 +4017,12 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(own) = held_key(&event.keystroke) else {
+        let Some(own) = heard_key(&event.keystroke) else {
             return;
         };
         let mut held = self.held.borrow_mut();
         let key_up = held.key_ups.wrapping_add(1);
-        let Some(press) = held.keys[own].as_mut() else {
+        let Some(press) = held.press(own).as_mut() else {
             return;
         };
         press.released = Some(key_up);
@@ -3936,11 +4032,11 @@ impl Panel {
             let _ = panel.update(cx, |panel, _| panel.end_press(own, key_up));
         });
     }
-    /// Ends the press of Return, else Space, that `key_up` released, unless its key went down
-    /// again; the other key's press stays.
+    /// Ends the press of Return, Space or Escape that `key_up` released, unless its key went
+    /// down again; the other keys' presses stay.
     fn end_press(&mut self, own: usize, key_up: u64) {
         let mut held = self.held.borrow_mut();
-        let press = &mut held.keys[own];
+        let press = held.press(own);
         if press.is_some_and(|press| press.released == Some(key_up)) {
             *press = None;
         }
@@ -4386,7 +4482,10 @@ impl Panel {
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.request.writing() {
-            self.refuse("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.");
+            self.refuse(SEND_IN_FLIGHT);
+            // The refusal says to wait for this send's result, and goes as it comes
+            // ([`Self::run_from`]).
+            self.refused_during = Some(self.request_generation);
             // Escape pressed from what is being sent answers on the top line, out of view
             // from there: the line is shown and takes focus, as a failed send's is.
             self.focus_failure(window, cx);
@@ -28417,6 +28516,402 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(script.asked("POST", "/pulls"), 1, "{name}: sent once");
         assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    /// Send to GitHub pressed by Return on `send` with the request held in flight, then Escape
+    /// going down: the refusal answers on the panel's top line, which takes focus and is read
+    /// from there, so the window's alert says nothing. Returns the hold on the request;
+    /// Escape is still down.
+    fn escape_goes_down_during_the_send(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        send: &FocusHandle,
+        cx: &mut VisualTestContext,
+    ) -> crate::operations::Held {
+        use crate::copy_feedback::tests::alerted;
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(SEND_IN_FLIGHT),
+            "Escape is refused while the send is in flight"
+        );
+        assert!(on_failure_stop(panel, cx), "the refusal's line takes focus");
+        assert_eq!(alerted(cx), None, "the refusal is read from its line");
+        sending
+    }
+
+    /// Lets the send that `sending` holds land, and returns the frames of the body since its
+    /// answer, those drawn without the busy row: the landing's own, then four of the display's.
+    async fn frames_since_the_send_landed(
+        app: &Entity<GitTurtle>,
+        sending: crate::operations::Held,
+        cx: &mut VisualTestContext,
+    ) -> Vec<review::BodyFrame> {
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(app, cx).await;
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let landed: Vec<_> = review::BODY_FRAMES
+            .take()
+            .expect("watched")
+            .into_iter()
+            .filter(|frame| !frame.parts.iter().any(|(part, _)| part == "busy"))
+            .collect();
+        assert!(
+            landed.len() > 4,
+            "the landing draws a frame of the body by itself, before the display's four: {}",
+            landed.len()
+        );
+        landed
+    }
+
+    /// One settled frame: every one of `frames` draws the body's view, the PR list's and each
+    /// part of the body where the first did, with the focus the first drew.
+    fn assert_one_settled_frame(frames: &[review::BodyFrame], name: &str) {
+        let first = &frames[0];
+        for (drawn, frame) in frames.iter().enumerate() {
+            assert!(
+                frame.view == first.view
+                    && frame.pulls == first.pulls
+                    && frame.parts == first.parts
+                    && frame.focused == first.focused,
+                "{name}: frame {drawn} since the answer draws the body as the first did:\n\
+                 {frame:?}\nthe first:\n{first:?}"
+            );
+        }
+    }
+
+    /// What a review that landed after an Escape refusal leaves: its own notice alone on the
+    /// top line, said politely once, no failure's line under it, nothing alerted, and the
+    /// draft as it was written (`typed`).
+    fn assert_the_sent_review_stands_alone(
+        panel: &Entity<Panel>,
+        handed: Handed,
+        typed: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::copy_feedback::tests::{alerted, announced};
+        let notice = panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.error, None, "the refusal went with the send");
+            assert!(!panel.pending && !panel.closed);
+            panel.notice.clone().expect("the review's notice")
+        });
+        assert!(
+            notice.contains("The local draft remains available"),
+            "the review's own notice: {notice:?}"
+        );
+        assert!(
+            cx.debug_bounds("github-error").is_none(),
+            "no failure's line is drawn under the notice"
+        );
+        assert_eq!(
+            alerted(cx),
+            None,
+            "nothing is alerted once the review has landed"
+        );
+        assert_eq!(
+            announced(cx).map(|(_, said)| said),
+            Some(notice),
+            "the notice is said, politely"
+        );
+        assert_eq!(
+            handed.text(panel, cx),
+            typed,
+            "the draft is as it was written"
+        );
+    }
+
+    /// An Escape refusal does not outlive the send it refused during. Escape while a creation
+    /// is sent answers "…is in progress… Wait for the result…" on the top line, read from the
+    /// line as focus comes to it; the creation then lands, at 13 pt in a 461 × 490 window,
+    /// and the panel shows the notice that names the pull request and no failure's line, says
+    /// the notice once and alerts nothing, and the new row takes the focus the line held, in
+    /// one settled frame. The refusal's line once stayed under "Pull request #N created." and
+    /// was said again, as an alert, as the creation landed: it read as a send that had not
+    /// worked.
+    #[gpui::test]
+    async fn an_escape_refusal_goes_as_the_creation_it_refused_during_lands(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::copy_feedback::tests::{alerted, announced};
+        use crate::tags::tests::draw;
+        const NOTICE: &str = "Draft pull request #203 created.";
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let answer = made(true).to_string();
+        let at = (13, 461., 490.);
+        let send = review_creation(&app, &panel, &script, at, (201, &answer), false, cx).await;
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        key_comes_up(cx, "escape");
+        draw(cx);
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.error, None, "the refusal went with the send");
+            assert_eq!(panel.notice.as_deref(), Some(NOTICE));
+            assert!(!panel.pending && !panel.create && !panel.closed);
+        });
+        assert!(
+            cx.debug_bounds("github-error").is_none(),
+            "no failure's line is drawn under the notice"
+        );
+        whole_in_body(cx, "github-notice", "the creation's notice");
+        assert_eq!(
+            alerted(cx),
+            None,
+            "nothing is alerted once the creation has landed"
+        );
+        assert_eq!(
+            announced(cx).map(|(_, said)| said).as_deref(),
+            Some(NOTICE),
+            "the notice is said, politely"
+        );
+        let row = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept(("github-pr", 203_u64))
+            })
+            .expect("the new row");
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&row),
+            "the first frame since the answer draws the new row with focus"
+        );
+        assert_one_settled_frame(&landed, "a creation after an Escape refusal");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "sent once");
+    }
+
+    /// The same for a review, where the person has gone back to the draft meanwhile: the
+    /// refusal's line goes as the review lands, the review's notice stands alone, nothing is
+    /// alerted, and focus stays in the review body, where the person put it, in one settled
+    /// frame.
+    #[gpui::test]
+    async fn an_escape_refusal_goes_as_the_review_it_refused_during_lands(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let send = cx.update(|window, cx| window.focused(cx).expect("Send to GitHub"));
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        key_comes_up(cx, "escape");
+        draw(cx);
+        // Back to the draft, as a click in it brings focus there.
+        cx.update(|window, cx| field.focus(window, cx));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-error").is_some() && field_holds(&field, cx),
+            "the refusal's line stands while the review is sent, focus back in the draft"
+        );
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        assert_the_sent_review_stands_alone(&panel, handed, &typed, cx);
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&field),
+            "focus stays in the review body"
+        );
+        assert_one_settled_frame(&landed, "a review after an Escape refusal");
+    }
+
+    /// The refusal's line holds focus as it goes with the review it refused during, at 13 pt
+    /// in a 461 × 490 window: the first frame since the answer draws the body with focus in
+    /// the review body, the content the panel shows, and no later frame moves the body or the
+    /// focus; a Space pressed on the line and still down as the review lands types nothing
+    /// there until it has come up, and then types once. Focus once stayed on the line no frame
+    /// drew until the panel's guard moved it a frame later, with nothing held, and the Space's
+    /// next repeat typed into the draft just sent.
+    #[gpui::test]
+    async fn focus_on_an_escape_refusals_line_goes_to_the_review_body_as_the_review_lands(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let send = cx.update(|window, cx| window.focused(cx).expect("Send to GitHub"));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        cx.update(|window, _| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            assert_eq!(window.viewport_size(), size(px(461.), px(490.)));
+        });
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        key_comes_up(cx, "escape");
+        draw(cx);
+        x11_key_down(cx, "space");
+        draw(cx);
+        assert!(
+            on_failure_stop(&panel, cx) && panel.read_with(cx, |panel, _| panel.pending),
+            "Space on the refusal's line presses nothing"
+        );
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        assert_the_sent_review_stands_alone(&panel, handed, &typed, cx);
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&field),
+            "the first frame since the answer draws focus in the review body"
+        );
+        assert_one_settled_frame(&landed, "focus on the refusal's line as the review lands");
+        for split in [false, true, false, true] {
+            if split {
+                x11_split_repeat(cx, "space");
+            } else {
+                x11_key_down(cx, "space");
+                draw(cx);
+            }
+            assert_eq!(
+                handed.text(&panel, cx),
+                typed,
+                "the Space still down types nothing into the review body"
+            );
+        }
+        key_comes_up(cx, "space");
+        draw(cx);
+        x11_key_down(cx, "space");
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert_eq!(
+            handed.text(&panel, cx).len(),
+            typed.len() + 1,
+            "a fresh Space types once"
+        );
+    }
+
+    /// Escape still held as the review it was refused during lands closes nothing and types
+    /// nothing: its repeats, marked held as Wayland and macOS mark them and as X11 hands them
+    /// on, in one batch and in two, leave the panel open on the review's notice with focus in
+    /// the review body and the draft as it was; once it has come up, a fresh Escape closes
+    /// the panel. The refusal said to wait for the result, and the next repeat of the same
+    /// press closed the panel on it.
+    #[gpui::test]
+    async fn escape_held_as_the_review_it_was_refused_during_lands_closes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let send = cx.update(|window, cx| window.focused(cx).expect("Send to GitHub"));
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&field),
+            "the first frame since the answer draws focus in the review body"
+        );
+        let open = |cx: &mut VisualTestContext, when: &str| {
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{when}: the panel stays open"
+            );
+            assert_the_sent_review_stands_alone(&panel, handed, &typed, cx);
+            assert!(field_holds(&field, cx), "{when}: focus stays in the draft");
+        };
+        open(cx, "as the review lands");
+        key_goes_down(cx, "escape", true);
+        draw(cx);
+        open(cx, "a repeat marked held");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        open(cx, "an X11 repeat in one batch");
+        x11_repeat(cx, "escape");
+        open(cx, "an X11 repeat in two batches");
+        key_comes_up(cx, "escape");
+        draw(cx);
+        open(cx, "come up");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx))
+                && panel.read_with(cx, |panel, _| panel.closed),
+            "a fresh Escape closes the panel"
+        );
+    }
+
+    /// An Escape refusal gives way to the failure of the send it refused during, at 13 pt in
+    /// a 461 × 490 window: the top line then reads that failure alone, in one settled frame,
+    /// focus staying on the line, which is said once, by the window's alert, since focus
+    /// moved nowhere for a screen reader to follow; the creation was sent once. Escape, still
+    /// held as the send fails, closes nothing at its repeats, so the failure stays to be
+    /// read, and a fresh Escape closes the panel.
+    #[gpui::test]
+    async fn an_escape_refusal_gives_way_to_the_failure_of_the_send_it_refused_during(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::copy_feedback::tests::alerted;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (_, status, failed) = FAILED_CREATIONS[0];
+        open_creation(&app, (13, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        let stands = |cx: &mut VisualTestContext, when: &str| {
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{when}: the panel stays open"
+            );
+            panel.read_with(cx, |panel, _| {
+                assert_eq!(panel.error.as_deref(), Some(failed), "{when}");
+                assert!(!panel.pending && panel.create && !panel.closed, "{when}");
+            });
+            let (wrong, _) = failure_shown(failed, when, cx);
+            assert!(wrong.is_empty(), "{wrong:#?}");
+            assert!(
+                on_failure_stop(&panel, cx),
+                "{when}: focus stays on the line"
+            );
+        };
+        stands(cx, "as the send fails");
+        let line = panel.read_with(cx, |panel, _| panel.review.failure_focus.clone());
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&line),
+            "the first frame since the answer draws the failure's line with focus"
+        );
+        assert_one_settled_frame(&landed, "a failure after an Escape refusal");
+        let said = alerted(cx).expect("the failure is alerted, focus being on its line already");
+        assert_eq!(said.1, failed, "the alert says the failure");
+        key_goes_down(cx, "escape", true);
+        draw(cx);
+        stands(cx, "a repeat marked held");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        stands(cx, "an X11 repeat in one batch");
+        x11_repeat(cx, "escape");
+        stands(cx, "an X11 repeat in two batches");
+        assert_eq!(
+            alerted(cx).map(|(id, _)| id),
+            Some(said.0),
+            "the failure is said once: no later frame draws another alert"
+        );
+        key_comes_up(cx, "escape");
+        draw(cx);
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx))
+                && panel.read_with(cx, |panel, _| panel.closed),
+            "a fresh Escape closes the panel"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 1, "sent once");
     }
 
     #[gpui::test]
