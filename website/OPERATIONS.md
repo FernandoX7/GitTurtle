@@ -40,6 +40,12 @@ A future renewal cannot be claimed tested at initial installation.
   connections, framing, forms and base-URL injection. `X-Frame-Options: DENY`
   also covers older clients. MIME sniffing is disabled, referrers are restricted,
   and camera, microphone and geolocation are disabled.
+- The zone's **Web Analytics automatic setup is set to Disable** (Analytics & Logs,
+  Web Analytics, Manage site). Cloudflare enables it by default for a proxied
+  site and then adds its beacon script to HTML served to browsers. The CSP
+  refuses that script, so nothing was collected while it was on, but every
+  visit logged the refusal. Keep it disabled; adopting analytics would be a
+  deliberate change to the CSP and to the statements here and in the README.
 - Cloudflare Browser Cache TTL respects existing headers (value `0`), replacing
   the initial four-hour override. HTML, CSS, JavaScript and stable image URLs
   require revalidation. Cloudflare's
