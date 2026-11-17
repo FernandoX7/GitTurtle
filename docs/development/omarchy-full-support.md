@@ -1019,7 +1019,13 @@ cover current upstream x86-64 Omarchy.
    Record it in the validation matrix and update the README's support table.
 6. **Launch kit.**
    - A short native recording of `omarchy theme set` cycling while GitTurtle retints
-     beside the terminal.
+     beside the terminal. Taken on 2026-11-17 on the AArch64 development machine
+     (Omarchy 4.5.0) from the CI-built archive of `a9d2fea4`, the commit to be released:
+     24.6 seconds at 1,920 × 1,200 and 60 frames a second, in which the command runs six
+     times in a terminal beside GitTurtle's History (Gruvbox, Flexoki Light, Catppuccin,
+     Rose Pine, Nord, and Tokyo Night again) and both retint with each switch. It stays
+     outside the repository until the announcement, and it is taken again only if a
+     change before the tag alters what it shows.
    - A README section for Omarchy users, with an optional launch-or-focus binding for
      `~/.config/hypr/bindings.lua`.
    - The announcement text, claiming only what phase 4 recorded.
