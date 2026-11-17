@@ -5,6 +5,7 @@
 <p align="center"><b>A fast, native Git client for macOS and Linux.</b><br>History, review and everyday Git work in one window.</p>
 
 <p align="center">
+  <a href="https://gitturtle.com/">Website</a> ·
   <a href="#a-tour-in-a-minute">Features</a> ·
   <a href="#themes">Themes</a> ·
   <a href="#first-class-omarchy-support">Omarchy</a> ·

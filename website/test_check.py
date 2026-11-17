@@ -58,6 +58,15 @@ class PageChecks(unittest.TestCase):
         self.assertTrue(any("expected one canonical URL" in issue for issue in errors))
         self.assertTrue(any("same description" in issue for issue in errors))
 
+    def test_search_bot_override_blocks_guides(self):
+        robots = self.public / "robots.txt"
+        robots.write_text(robots.read_text() + "\nUser-agent: OAI-SearchBot\nDisallow: /docs/\n")
+        errors = check_site(self.root)
+        self.assertCountEqual(errors, [
+            f"robots.txt: blocks OAI-SearchBot from indexable page {ORIGIN}/docs/",
+            f"robots.txt: blocks OAI-SearchBot from indexable page {ORIGIN}/docs/install/",
+        ])
+
     def test_missing_responsive_image(self):
         self.guides.write_text(self.guides.read_text() + '<picture><source srcset="/missing.webp"></picture>')
         self.assertTrue(any("missing target /missing.webp" in issue for issue in check_site(self.root)))

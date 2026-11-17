@@ -212,8 +212,9 @@ def check_pages(public, documents, write_sitemap):
     if ORIGIN + "/sitemap.xml" not in (robots.site_maps() or []):
         errors.append("robots.txt: missing canonical sitemap")
     for url in urls:
-        if not robots.can_fetch("*", url):
-            errors.append(f"robots.txt: blocks indexable page {url}")
+        for agent in ("*", "Googlebot", "bingbot", "OAI-SearchBot"):
+            if not robots.can_fetch(agent, url):
+                errors.append(f"robots.txt: blocks {agent} from indexable page {url}")
 
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
