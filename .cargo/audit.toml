@@ -3,7 +3,8 @@
 #
 # Each entry is an "unmaintained" advisory for a crate that the pinned GPUI
 # toolkit or the vendored Mermaid renderer's font stack brings in (`instant`
-# also through the app's exact `notify` pin, whose `notify-types` needs it).
+# also through the app's exact `notify` pin, whose `notify-types` needs it;
+# `chrono` also through the app itself, so deny.toml lists it as well).
 # deny.toml
 # reports unmaintained crates only for direct workspace dependencies
 # (`unmaintained = "workspace"`); docs/security-build-audit.md records each
@@ -31,4 +32,10 @@ ignore = [
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
+    # chrono 0.4.45: the app's own dates (crates/app) and gpui-base,
+    # gpui-component, gpui-pre, gpui-pre-scheduler and gpui-pre-zlog. In the
+    # RustSec database since 2026-11-17 with no patched version; the app's use
+    # is to be replaced after the first release, and the entry is read again by
+    # 2026-12-17.
+    "RUSTSEC-2026-0543",
 ]

@@ -17,7 +17,12 @@ yanked = "deny"
 # toolkit's transitive font/SVG stack is tracked through vendor updates, not
 # per candidate.
 unmaintained = "workspace"
-ignore = []
+# Accepted by ID, each with its reason and the date to read it again;
+# docs/security-build-audit.md records each decision. A vulnerability is never
+# ignored here.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 was flagged unmaintained on 2026-11-17 with no patched version and no vulnerability named; the app uses it in two files and the pinned GPUI toolkit depends on it; replacing the app's use is on the post-launch list; read again by 2026-12-17" },
+]
 
 [licenses]
 version = 2
