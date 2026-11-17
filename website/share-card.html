@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex">
+  <title>GitTurtle sharing artwork</title>
+  <style>
+    @font-face {
+      font-family: Manrope;
+      src: url("public/fonts/manrope-latin.a30ddcd34970.woff2") format("woff2");
+      font-weight: 400 800;
+    }
+    * { box-sizing: border-box; }
+    body {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 1200px;
+      height: 630px;
+      margin: 0;
+      overflow: hidden;
+      background: radial-gradient(ellipse at 50% 0%, #f8faf2 0, #e7f2e6 54%, #d6eadb 100%);
+      color: #163d31;
+      font-family: Manrope, sans-serif;
+    }
+    canvas { position: absolute; inset: 0; }
+    h1, p, figure { position: relative; margin: 0; }
+    h1 {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-top: 35px;
+      font-size: 80px;
+      font-weight: 780;
+      line-height: 1;
+      letter-spacing: -.07em;
+    }
+    h1 img { width: 77px; height: 77px; }
+    p { margin-top: 15px; font-size: 44px; font-weight: 590; letter-spacing: -.052em; line-height: 1.15; }
+    p span { color: #247455; }
+    figure {
+      width: 592px;
+      margin-top: 22px;
+      padding: 6px;
+      border: 1px solid #a8c5b2;
+      border-radius: 13px;
+      background: #ecf5ea;
+      box-shadow: 0 13px 34px #183f261f, 0 2px 7px #14341e12;
+    }
+    figure img { display: block; width: 100%; height: auto; border-radius: 7px; }
+  </style>
+</head>
+<body>
+  <canvas width="1200" height="630" aria-hidden="true"></canvas>
+  <h1><img src="public/assets/app-icon.png" alt="">GitTurtle</h1>
+  <p>A calmer home for your <span>Git.</span></p>
+  <figure><img src="public/assets/history.png" width="2960" height="1946" alt="GitTurtle’s History view"></figure>
+  <script>
+    // Two branches meeting the History window. The center also works as a square thumbnail.
+    const pen = document.querySelector('canvas').getContext('2d');
+    pen.strokeStyle = '#a8c9b4';
+    pen.fillStyle = '#e1efe2';
+    pen.lineWidth = 2;
+    for (const path of [
+      'M -20 292 H 380',
+      'M 60 292 C 140 292 133 376 217 376 H 380',
+      'M 842 428 H 1220',
+      'M 864 338 H 958 C 1040 338 1030 428 1114 428'
+    ]) pen.stroke(new Path2D(path));
+    for (const [x, y] of [[60, 292], [217, 376], [255, 292], [958, 338], [1114, 428]]) {
+      pen.beginPath();
+      pen.arc(x, y, 6, 0, 2 * Math.PI);
+      pen.fill();
+      pen.stroke();
+    }
+  </script>
+</body>
+</html>

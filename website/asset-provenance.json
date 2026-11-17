@@ -160,6 +160,16 @@
       "identity": "Manrope Latin variable 400-800; SIL OFL",
       "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972",
       "bytes": 24836
+    },
+    {
+      "site_path": "public/assets/gitturtle-social.png",
+      "source": "website/share-card.html",
+      "source_sha256": "7c6fff207ce8588dea542e9905d5092374088b4eb1f067b12b7bb61d6880840f",
+      "source_bytes": 2528,
+      "method": "Rendered website/share-card.html at 1200 × 630 CSS pixels and device scale 1 in Chromium 157 after the bundled Manrope font and both local images loaded.",
+      "identity": "Sharing artwork using the project app icon and the complete native History capture. The source assets and font have individual entries above.",
+      "sha256": "cd8e0958362781d06cbbae80b81a37c7874cb0f229196c54d02db16d6cacd476",
+      "bytes": 295959
     }
   ]
 }

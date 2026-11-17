@@ -67,6 +67,13 @@ class PageChecks(unittest.TestCase):
             f"robots.txt: blocks OAI-SearchBot from indexable page {ORIGIN}/docs/install/",
         ])
 
+    def test_sharing_image_is_first_party_and_exists(self):
+        self.home.write_text(self.home.read_text() + '<meta property="og:image" content="/social.png">'
+                             + f'<meta name="twitter:image" content="{ORIGIN}/missing.png">')
+        errors = check_site(self.root)
+        self.assertTrue(any("absolute first-party HTTPS URL" in issue for issue in errors))
+        self.assertTrue(any(f"missing target {ORIGIN}/missing.png" in issue for issue in errors))
+
     def test_missing_responsive_image(self):
         self.guides.write_text(self.guides.read_text() + '<picture><source srcset="/missing.webp"></picture>')
         self.assertTrue(any("missing target /missing.webp" in issue for issue in check_site(self.root)))

@@ -30,6 +30,10 @@ The homepage tour shows History first. Clicking a tab or using Left, Right, Home
 
 Each indexable page has its own canonical URL, title, description and social sharing metadata. The homepage identifies GitTurtle as the site name with WebSite JSON-LD and describes the Git client with SoftwareApplication data. Guide breadcrumbs are ordinary links and carry matching BreadcrumbList data. The sitemap uses the public domain. Visitors and search crawlers can read the complete instructions in the original HTML. The static checks catch crawler-specific rules that would block Googlebot, Bingbot, DuckDuckBot, DuckAssistBot, Yahoo Slurp or OAI-SearchBot from a canonical page.
 
+### Social sharing card
+
+The homepage and guides point Open Graph and X to the same [1200 × 630 PNG](public/assets/gitturtle-social.png). Each guide shares its own title and description. The [card artwork](share-card.html) combines the app icon, the full History capture and the bundled Manrope font. To update it, open the artwork locally in Chromium, set the viewport to 1200 × 630 at device scale 1 and capture the viewport once the images and font have loaded. Update the source and image hashes in `asset-provenance.json`. Check the wordmark, headline and application window in wide and square crops.
+
 ## Content and release truth
 
 The site's GitHub links open the project repository. The guide articles, platform installation instructions, release status, benchmark records and notices have first-party destinations. Product guides are curated from the [repository sources](guides/README.md#content-sources). Update the relevant articles when a release changes a workflow or system requirement.

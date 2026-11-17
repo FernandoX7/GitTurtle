@@ -200,3 +200,7 @@ These are local browser and static-file checks. They cover emulated phone viewpo
 ### Full-size screenshots
 
 The ten screenshot links on the homepage and four guides use a native modal dialog. Chromium 157 and WebKit 27.2 at 1440 × 900 and 390 × 844 returned to the original screenshot, selected tour tab and exact starting scroll offset after dismissal. Escape, Close and the backdrop dismissed the viewer. Tab and Shift+Tab cycled its controls. Actual size showed the 2960-pixel-wide original and supported two-axis panning via keyboard and emulated touch. The same images opened directly with scripts disabled. The Chromium checks also exercised a failed download and recovery and found zero axe WCAG 2.0/2.1 A/AA violations in the open viewer.
+
+### Search crawlers and link previews
+
+All 17 preview URLs returned HTTP 200 with their canonical URL and content in the original HTML when requested locally with Googlebot, bingbot, DuckDuckBot, Slurp and OAI-SearchBot user agents. Each page supplies a distinct sharing title and description. Open Graph and X point to a 1200 × 630 PNG (295,959 bytes), and the centered square and 2:1 crops at 300 pixels wide preserve the wordmark, headline and entire app window. This checks the responses and artwork supplied to link unfurlers. Search inclusion, provider caching and how individual apps display a live share are external to the local preview.

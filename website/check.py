@@ -88,6 +88,12 @@ class References(HTMLParser):
                 fields = candidate.split()
                 if fields:
                     self.refs.append(fields[0])
+        if tag == "meta" and (attrs.get("property") == "og:image" or attrs.get("name") == "twitter:image"):
+            image_url = attrs.get("content") or ""
+            if image_url.startswith(ORIGIN + "/"):
+                self.refs.append(image_url)
+            else:
+                self.errors.append("sharing image needs an absolute first-party HTTPS URL")
         if tag == "a" and attrs.get("href"):
             self.links.append(attrs["href"])
         if tag == "title" or (tag == "script" and attrs.get("type") == "application/ld+json"):
