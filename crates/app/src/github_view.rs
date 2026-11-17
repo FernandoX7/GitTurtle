@@ -22794,7 +22794,14 @@ mod tests {
 
     /// A window on an empty repository and the panel over it, signed in as the script's
     /// account with `rows` listed for `fixture/repo` and its New pull request form filled for
-    /// `head` onto `main`: closed and warm, for [`send_creation`]. Every request it sends is
+    /// `head` onto `main`: closed and warm, for [`send_creation`], with the draft its close
+    /// saved in the store. The window's writer saves it on a thread of its own, and a save
+    /// reads the store and replaces it whole ([`drafts::save_batch`]), so the panel is handed
+    /// back once that save has landed: a test may then write the store itself
+    /// ([`drafts::save`]). Handed back sooner, a test that saved three drafts next lost the
+    /// second to the close's save, which had read the store before that draft was in it and
+    /// replaced the store after: once among some hundred runs beside the other creation
+    /// tests, whose load alone made the writer's thread that late. Every request it sends is
     /// answered from the returned script, never by GitHub. Keep the directory until the test
     /// ends.
     fn creation_panel<'a>(
@@ -22839,6 +22846,8 @@ mod tests {
             });
             panel
         });
+        // The store is at rest: the close's save has landed.
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
         (fixture, app, panel, script, cx)
     }
 

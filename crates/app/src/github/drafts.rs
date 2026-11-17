@@ -155,6 +155,12 @@ fn load_at(path: &Path) -> Result<Store> {
 pub(crate) fn load() -> Result<Vec<Draft>> {
     Ok(load_at(&path()?)?.entries)
 }
+/// Saves `draft` from the calling thread, as a test's fixture. A save reads the store and
+/// replaces it whole, and the app has one thread that does, its window's writer: a test calls
+/// this while that writer has no save of the store queued or running, before a panel exists
+/// or once the writer has drained (`SerialExecutor::drain`), or from a job of that writer.
+/// Beside a save of the writer's, one of the two replaces the store with what it read before
+/// the other wrote, and the other's draft is gone.
 #[cfg(test)]
 pub(crate) fn save(draft: Draft) -> Result<()> {
     save_at(&path()?, draft)
