@@ -1,0 +1,50 @@
+<!doctype html>
+$marker
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$page_title</title>
+  <meta name="description" content="$description">
+  <link rel="canonical" href="$canonical">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="GitTurtle">
+  <meta property="og:title" content="$page_title">
+  <meta property="og:description" content="$description">
+  <meta property="og:url" content="$canonical">
+  <meta property="og:image" content="https://gitturtle.com/assets/history.png">
+  <meta property="og:image:alt" content="The GitTurtle history view, showing branches, commits and changed files.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" href="/assets/app-icon.png">
+  <link rel="preload" href="/fonts/manrope-latin.a30ddcd34970.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css?v=5">
+  <link rel="stylesheet" href="/guides.css">
+  <script type="application/ld+json">$breadcrumb_data</script>
+$guide_script</head>
+<body class="guide-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="brand" href="/" aria-label="GitTurtle home"><img src="/assets/app-icon.png" width="40" height="40" alt=""><span>GitTurtle</span></a>
+    <nav aria-label="Main navigation">
+      <a href="/#experience">Tour</a>
+      <a href="/docs/"$docs_current>Docs</a>
+      <a href="https://github.com/FernandoX7/GitTurtle">GitHub <span aria-hidden="true">↗</span></a>
+      <a class="nav-cta" href="/install/"$install_current>Get GitTurtle <span aria-hidden="true">→</span></a>
+    </nav>
+  </header>
+  <main class="guide-layout wrap" id="main">
+    <article class="guide-copy">
+      <nav class="guide-crumbs" aria-label="Breadcrumb"><ol>$crumbs</ol></nav>
+      <header class="guide-intro"><h1>$title</h1><p>$description</p></header>
+      $body
+    </article>
+    <aside class="guide-aside"><nav aria-label="$section"><h2>$section</h2>
+      $sidebar
+    </nav></aside>
+  </main>
+  <footer class="site-footer wrap">
+    <a class="brand" href="/" aria-label="GitTurtle home"><img src="/assets/app-icon.png" width="32" height="32" alt=""><span>GitTurtle</span></a>
+    <nav aria-label="Footer navigation"><a href="/docs/">Documentation</a><a href="/install/">Installation</a><a href="/releases/">Release status</a><a href="/support/">Support</a><a href="/legal/">License &amp; notices</a></nav>
+  </footer>
+</body>
+</html>

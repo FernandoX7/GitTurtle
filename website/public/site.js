@@ -10,6 +10,7 @@ for (const walkthrough of document.querySelectorAll('[data-walkthrough]')) {
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-controls', panels[index].id);
     panels[index].setAttribute('role', 'tabpanel');
+    panels[index].setAttribute('aria-labelledby', tab.id);
     panels[index].tabIndex = 0;
   });
   function select(index, focus = false) {
@@ -17,7 +18,6 @@ for (const walkthrough of document.querySelectorAll('[data-walkthrough]')) {
       const selected = current === index;
       tab.setAttribute('aria-selected', String(selected));
       tab.tabIndex = selected ? 0 : -1;
-      tab.classList.toggle('is-active', selected);
       panels[current].hidden = !selected;
     });
     if (focus) tabs[index].focus();
@@ -37,5 +37,11 @@ for (const walkthrough of document.querySelectorAll('[data-walkthrough]')) {
     });
   });
   walkthrough.dataset.enhanced = 'true';
-  select(1);
+  function selectLinkedPanel() {
+    const index = panels.findIndex(panel => '#' + panel.id === location.hash);
+    if (index >= 0) select(index);
+  }
+  select(0);
+  selectLinkedPanel();
+  window.addEventListener('hashchange', selectLinkedPanel);
 }

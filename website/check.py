@@ -3,7 +3,10 @@
 from fnmatch import fnmatchcase
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit, unquote
+from urllib.parse import quote, unquote, urlsplit
+from urllib.robotparser import RobotFileParser
+from xml.sax.saxutils import escape
+import argparse
 import hashlib
 import json
 import os
@@ -11,6 +14,9 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parent
+ORIGIN = "https://gitturtle.com"
+REPOSITORY = "https://github.com/FernandoX7/GitTurtle"
+GITHUB_DOMAINS = ("github.com", "githubusercontent.com", "github.io", "github.dev", "githubassets.com", "git.io")
 NONPUBLIC_SUFFIXES = {
     ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
     ".map", ".log", ".bak", ".backup", ".swp", ".swo", ".tmp",
@@ -57,7 +63,14 @@ class References(HTMLParser):
         self.ids = set()
         self.refs = []
         self.errors = []
+        self.links = []
+        self.titles = []
+        self.descriptions = []
+        self.canonicals = []
+        self.statements = []
         self.noindex = False
+        self.capture = None
+        self.parts = []
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -70,19 +83,50 @@ class References(HTMLParser):
         for key in ("href", "src"):
             if attrs.get(key):
                 self.refs.append(attrs[key])
+        if tag in ("img", "source") and attrs.get("srcset"):
+            for candidate in attrs["srcset"].split(","):
+                fields = candidate.split()
+                if fields:
+                    self.refs.append(fields[0])
+        if tag == "a" and attrs.get("href"):
+            self.links.append(attrs["href"])
+        if tag == "title" or (tag == "script" and attrs.get("type") == "application/ld+json"):
+            self.capture = tag
+            self.parts = []
+        if tag == "link" and "canonical" in (attrs.get("rel") or "").lower().split():
+            self.canonicals.append(attrs.get("href"))
+        if tag == "meta" and (attrs.get("name") or "").lower() == "description":
+            self.descriptions.append((attrs.get("content") or "").strip())
         if tag == "button" and attrs.get("type") != "button":
             self.errors.append("button requires explicit type=button")
         if tag == "meta" and (attrs.get("name") or "").lower() == "robots":
-            self.noindex = "noindex" in {
-                directive.strip() for directive in (attrs.get("content") or "").lower().split(",")
-            }
+            directives = set(re.split(r"[,\s]+", (attrs.get("content") or "").lower()))
+            self.noindex |= bool({"noindex", "none"} & directives)
+
+    def handle_data(self, data):
+        if self.capture:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag != self.capture:
+            return
+        content = "".join(self.parts).strip()
+        self.capture = None
+        if tag == "title":
+            self.titles.append(content)
+        else:
+            try:
+                value = json.loads(content)
+                self.statements.extend(value if isinstance(value, list) else [value])
+            except ValueError as error:
+                self.errors.append(f"invalid JSON-LD: {error}")
 
 
 def local_target(public, source, ref):
     url = urlsplit(ref)
-    if url.scheme or url.netloc:
+    if (url.scheme or url.netloc) and url.hostname != urlsplit(ORIGIN).hostname:
         return None
-    path = unquote(url.path)
+    path = unquote(url.path) or ("/" if url.netloc else "")
     target = (public / path.lstrip("/") if path.startswith("/")
               else source.parent / path) if path else source
     target = target.resolve()
@@ -93,6 +137,95 @@ def local_target(public, source, ref):
     elif not target.suffix and target.with_suffix(".html").is_file():
         target = target.with_suffix(".html")
     return target
+
+
+def page_url(public, source):
+    path = source.relative_to(public).as_posix()
+    if source.name == "index.html":
+        path = path.removesuffix("index.html")
+    else:
+        path = path.removesuffix(".html")
+    return f"{ORIGIN}/{quote(path)}"
+
+
+def matches_application(statement):
+    if not isinstance(statement, dict):
+        return False
+    types = statement.get("@type", [])
+    types = types if isinstance(types, list) else [types]
+    if ("SoftwareApplication" in types and statement.get("name") == "GitTurtle"
+            and statement.get("url") == ORIGIN + "/"):
+        return True
+    graph = statement.get("@graph", [])
+    return isinstance(graph, list) and any(matches_application(node) for node in graph)
+
+
+def check_pages(public, documents, write_sitemap):
+    errors = []
+    homepage = public / "index.html"
+    searchable = {source for source, doc in documents.items() if not doc.noindex and source != public / "404.html"}
+    for source, doc in documents.items():
+        if source.name == "index.html" and doc.noindex:
+            errors.append(f"{source.relative_to(public)}: public index page declares noindex")
+
+    seen = {"title": {}, "description": {}}
+    edges = {}
+    for source, doc in documents.items():
+        label = source.relative_to(public)
+        if source in searchable:
+            if doc.canonicals != [page_url(public, source)]:
+                errors.append(f"{label}: expected one canonical URL {page_url(public, source)}")
+            for key, values in (("title", doc.titles), ("description", doc.descriptions)):
+                if len(values) != 1 or not values[0]:
+                    errors.append(f"{label}: expected one nonempty {key}")
+                    continue
+                value = " ".join(values[0].split()).casefold()
+                if value in seen[key]:
+                    errors.append(f"{label}: same {key} as {seen[key][value]}")
+                seen[key][value] = label
+        edges[source] = set()
+        for ref in doc.links:
+            host = (urlsplit(ref).hostname or "").lower().rstrip(".")
+            if any(host == domain or host.endswith("." + domain) for domain in GITHUB_DOMAINS) and ref != REPOSITORY:
+                errors.append(f"{label}: GitHub link must point to the project repository: {ref}")
+            target = local_target(public, source, ref)
+            if target in searchable:
+                edges[source].add(target)
+
+    # A canonical, script or sitemap entry cannot make an orphan page browsable.
+    reached = set()
+    todo = [homepage]
+    while todo:
+        source = todo.pop()
+        if source not in reached:
+            reached.add(source)
+            todo.extend(edges.get(source, ()))
+    for source in sorted(searchable - reached):
+        errors.append(f"{source.relative_to(public)}: no hyperlink path from homepage")
+
+    if homepage in documents and not any(matches_application(item) for item in documents[homepage].statements):
+        errors.append("index.html: expected SoftwareApplication JSON-LD for GitTurtle at its canonical URL")
+
+    urls = sorted(page_url(public, source) for source in searchable)
+    robots = RobotFileParser()
+    robots.parse((public / "robots.txt").read_text().splitlines())
+    if ORIGIN + "/sitemap.xml" not in (robots.site_maps() or []):
+        errors.append("robots.txt: missing canonical sitemap")
+    for url in urls:
+        if not robots.can_fetch("*", url):
+            errors.append(f"robots.txt: blocks indexable page {url}")
+
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    lines.extend(f"  <url><loc>{escape(url)}</loc></url>" for url in urls)
+    sitemap = "\n".join([*lines, "</urlset>", ""])
+    path = public / "sitemap.xml"
+    if not path.is_file() or path.read_text() != sitemap:
+        if write_sitemap and not errors:
+            path.write_text(sitemap)
+        else:
+            errors.append("sitemap.xml: regenerate current page URLs with python3 website/check.py --write-sitemap")
+    return errors
 
 
 def check_headers(public):
@@ -134,7 +267,7 @@ def check_headers(public):
     return errors
 
 
-def check_site(root=ROOT):
+def check_site(root=ROOT, write_sitemap=False):
     public = root / "public"
     errors = check_public_files(public)
     if errors:
@@ -145,7 +278,8 @@ def check_site(root=ROOT):
         doc = References()
         doc.feed(source.read_text())
         documents[source] = doc
-        errors.extend(f"{source.name}: {message}" for message in doc.errors)
+        doc.close()
+        errors.extend(f"{source.relative_to(public)}: {message}" for message in doc.errors)
     for required in ("index.html", "404.html"):
         if public / required not in documents:
             errors.append(f"missing {required}")
@@ -155,14 +289,14 @@ def check_site(root=ROOT):
             if target is None:
                 continue
             if not target.is_file():
-                errors.append(f"{source.name}: missing asset {ref}")
+                errors.append(f"{source.relative_to(public)}: missing target {ref}")
             fragment = unquote(urlsplit(ref).fragment)
             if fragment and target in documents and fragment not in documents[target].ids:
-                errors.append(f"{source.name}: missing anchor {ref}")
+                errors.append(f"{source.relative_to(public)}: missing anchor {ref}")
             if source.name == "404.html" and urlsplit(ref).path and not ref.startswith("/"):
                 errors.append(f"404.html: local URL must work at nested missing paths: {ref}")
     missing_page = documents.get(public / "404.html")
-    if missing_page and (not missing_page.noindex or "/" not in missing_page.refs):
+    if missing_page and (not missing_page.noindex or "/" not in missing_page.links):
         errors.append("404.html: requires robots noindex and a root home link")
     for source in sorted(public.rglob("*.css")):
         css = re.sub(r"/\*.*?\*/", "", source.read_text(), flags=re.S)
@@ -198,18 +332,22 @@ def check_site(root=ROOT):
             elif not derivative and source_digest != digest:
                 errors.append(f"{target.name}: differs from its source, so it needs source_sha256 and method")
     errors.extend(check_headers(public))
+    errors.extend(check_pages(public, documents, write_sitemap and not errors))
     return errors
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--write-sitemap", action="store_true", help="regenerate sitemap.xml from indexable pages")
+    args = parser.parse_args()
     try:
-        errors = check_site()
+        errors = check_site(write_sitemap=args.write_sitemap)
     except (OSError, ValueError, KeyError) as error:
         errors = [str(error)]
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print("Static HTML/CSS references, anchors, asset hashes, immutable URLs and 404 inputs passed.")
+    print("Static links, crawl paths, page metadata, sitemap, asset hashes, headers and 404 inputs passed.")
     return 0
 
 

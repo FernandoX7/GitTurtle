@@ -27,6 +27,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Check local website inputs
-        run: python3 website/check.py
+        run: |
+          python3 website/build_guides.py --check
+          python3 website/test_check.py
+          python3 website/check.py
       - name: Check JavaScript syntax
-        run: node --check website/public/site.js
+        run: |
+          node --check website/public/site.js
+          node --check website/public/guide.js
