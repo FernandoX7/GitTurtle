@@ -89,10 +89,15 @@ def render(template, route, title, description, body):
             for index, (url, label) in enumerate(crumb_links, start=1)
         ],
     }
+    scripts = []
+    if 'data-screenshot=' in body:
+        scripts.append('  <script defer src="/site.js"></script>\n')
+    if '<pre>' in body:
+        scripts.append('  <script defer src="/guide.js"></script>\n')
     return template.substitute(
         crumbs=crumbs, breadcrumb_data=json.dumps(breadcrumb_data, ensure_ascii=False),
         page_title=escape(title if 'GitTurtle' in title else f'{title} | GitTurtle'),
-        guide_script='  <script defer src="/guide.js"></script>\n' if '<pre>' in body else '',
+        guide_scripts=''.join(scripts),
         marker=MARKER, title=escape(title), description=escape(description),
         canonical=ORIGIN + route, section=section, sidebar=sidebar, body=body,
         docs_current=' aria-current="page"' if route == '/docs/' else '',

@@ -196,3 +196,7 @@ The preview served the static files over local HTTP. It covers the homepage, sev
 The three narrow-screen tour images total 543,648 bytes, compared with 1,360,788 bytes for their full-size PNGs. The homepage requests the selected view first. Those figures measure transfer size.
 
 These are local browser and static-file checks. They cover emulated phone viewports. Physical devices, assistive-technology sessions, hosted responses for this revision and search inclusion were outside this preview.
+
+### Full-size screenshots
+
+The ten screenshot links on the homepage and four guides use a native modal dialog. Chromium 157 and WebKit 27.2 at 1440 × 900 and 390 × 844 returned to the original screenshot, selected tour tab and exact starting scroll offset after dismissal. Escape, Close and the backdrop dismissed the viewer. Tab and Shift+Tab cycled its controls. Actual size showed the 2960-pixel-wide original and supported two-axis panning via keyboard and emulated touch. The same images opened directly with scripts disabled. The Chromium checks also exercised a failed download and recovery and found zero axe WCAG 2.0/2.1 A/AA violations in the open viewer.
