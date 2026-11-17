@@ -6185,6 +6185,7 @@ mod tests {
                     worktree: std::path::PathBuf::from(format!("logical-fixture-{index}")),
                     panel: form,
                     bytes,
+                    unsaved: false,
                 });
             }
             assert_eq!(warm.0.len(), 3);

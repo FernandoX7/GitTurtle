@@ -599,8 +599,18 @@ struct WarmPanel {
     worktree: std::path::PathBuf,
     panel: Entity<Panel>,
     bytes: usize,
+    /// Whether the panel's New pull request form holds text the draft store does not
+    /// ([`Panel::holds_unsaved`]), which the closed panel alone keeps.
+    unsaved: bool,
 }
 impl WarmPanels {
+    /// Keeps `entry`'s closed panel, in place of an earlier one of its window and worktree,
+    /// within the cache's bounds: eight panels and 32 MiB of counted payload, past which the
+    /// panel closed longest ago goes, of those whose form's text the store holds. One whose
+    /// form holds text saved nowhere stays, counted like any other: its status told the
+    /// person that keeping the window open keeps that text, and going with the ninth panel
+    /// closed after it the text was lost in an open window. Each such panel took typing to
+    /// make, and what it holds beyond the bounds is its own payload.
     fn retain(&mut self, entry: WarmPanel) {
         self.0
             .retain(|old| old.owner != entry.owner || old.worktree != entry.worktree);
@@ -608,7 +618,10 @@ impl WarmPanels {
         while self.0.len() > 8
             || self.0.iter().map(|entry| entry.bytes).sum::<usize>() > 32 * 1024 * 1024
         {
-            self.0.remove(0);
+            let Some(oldest) = self.0.iter().position(|entry| !entry.unsaved) else {
+                break;
+            };
+            self.0.remove(oldest);
         }
     }
 }
@@ -2523,6 +2536,13 @@ impl FormKey {
         }
     }
 }
+/// The New pull request form's text, whole: its title, its description and Draft or Ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FormText {
+    title: String,
+    body: String,
+    draft: bool,
+}
 /// Whether two creation drafts hold the same text: title, description and Draft or Ready.
 fn same_text(one: &NewPull, other: &NewPull) -> bool {
     one.title == other.title && one.body == other.body && one.draft == other.draft
@@ -2561,8 +2581,10 @@ const DRAFT_QUIET_PERIOD: Duration = Duration::from_millis(500);
 /// whole, until the next edit ([`Panel::settle_form`]): the words a restored review's has.
 const DRAFT_RESTORED: &str = "Draft restored locally";
 /// What the form's save status reads while its text has no key and another draft holds the
-/// one its fields name ([`Panel::settle_form`]): neither is put in the other's place.
-const DRAFT_HELD: &str = "Draft not saved: another draft is saved for this head and base. Discard it in Recover drafts to save this one. Keep this window open or copy your text.";
+/// one its fields name ([`Panel::settle_form`]): neither is put in the other's place. It
+/// names the three things that key is made of, and what it says of the window holds
+/// ([`Panel::leave_form`]).
+const DRAFT_HELD: &str = "Draft not saved: another draft is saved for this destination, head and base. Discard it in Recover drafts to save this one. Keep this window open or copy your text.";
 /// The GitHub CLI sign-in command that Copy sign-in command copies.
 const SIGN_IN_COMMAND: &str = "gh auth login --hostname github.com --web --skip-ssh-key";
 type DraftSaveReply = futures::channel::oneshot::Receiver<anyhow::Result<()>>;
@@ -2685,6 +2707,11 @@ struct Panel {
     /// Whether the form shows a saved draft it took whole, with nothing edited since: its
     /// status says so until the next edit ([`DRAFT_RESTORED`]).
     restored: bool,
+    /// What the New pull request form held as it was left, whole, while the panel shows
+    /// anything else ([`Panel::leave_form`]): the form opens again on it
+    /// ([`Panel::create`]). The store may hold none of it, and the description's field is
+    /// the review body's meanwhile.
+    left: Option<FormText>,
     draft: bool,
     event: ReviewEvent,
     discussion: bool,
@@ -2770,6 +2797,7 @@ impl Panel {
             home: None,
             naming: false,
             restored: false,
+            left: None,
             #[cfg(test)]
             scripted:None,
         };
@@ -3094,6 +3122,8 @@ impl Panel {
     ///    store, and no saved draft takes its place in the form. The form keeps it, the saved
     ///    draft stays, and the status says the text is not saved and why ([`DRAFT_HELD`]),
     ///    until that draft is discarded, the fields name a free key or the form is emptied.
+    ///    The window is all that holds it meanwhile, as the status says, so the panel keeps
+    ///    it through whatever takes the form or its fields away ([`Self::leave_form`]).
     ///
     /// A form that opens with neither a title nor a description takes the draft saved under
     /// its key though the key is its own: an emptied form is never saved, so the draft it
@@ -3149,6 +3179,67 @@ impl Panel {
             .update(cx, |input, cx| input.set_value(&saved.title, window, cx));
         self.body
             .update(cx, |input, cx| input.set_value(&saved.body, window, cx));
+    }
+    /// The New pull request form gives way to the list or to a pull request: the panel keeps
+    /// what it held, whole, for the form to open on again ([`Self::create`]). Every route
+    /// that stops showing the form goes through here, before anything else takes its fields:
+    /// Pull requests, Refresh PRs, a pull request's opening and a creation's landing.
+    ///
+    /// The store is no place to take the text from again. Text may have no key, while the
+    /// destination names no repository or while another draft holds the key the fields name
+    /// ([`DRAFT_HELD`]); it may have changed since its last save, which a destination that
+    /// names no repository holds back; its save may have failed; and its draft may have been
+    /// discarded in Recover drafts since. Each of those statuses tells the person that
+    /// keeping the window open keeps the text, and the description's field is the review
+    /// body's too: with a pull request opened in between, the form once came back holding
+    /// its title and no description, the text nowhere.
+    ///
+    /// What is kept stays in this panel, which is one captured repository's for as long as
+    /// it lives, and keeping it saves nothing and takes nothing: the form's fields hold it
+    /// again before the key they name is settled, so the one rule decides what it is saved
+    /// under and whether a saved draft takes its place ([`Self::settle_form`]). It ends as
+    /// the form's text does: edited away, saved under a key it gains, used up by its own
+    /// creation ([`Self::use_up_draft`], which empties the form before it is left), or gone
+    /// with the window.
+    fn leave_form(&mut self, cx: &App) {
+        if std::mem::take(&mut self.create) {
+            self.left = Some(self.form_text(cx));
+        }
+    }
+    /// What the form's fields hold, whole. They are the form's while it is shown.
+    fn form_text(&self, cx: &App) -> FormText {
+        FormText {
+            title: self.title.read(cx).value().to_string(),
+            body: self.body.read(cx).value().to_string(),
+            draft: self.draft,
+        }
+    }
+    /// Whether the form, shown or left, holds text the panel does not know to be saved as
+    /// it is under the key it belongs to: the window is then all that holds it, and the
+    /// panel is kept while closed whatever the warm cache's bounds ([`WarmPanels::retain`]).
+    fn holds_unsaved(&self, cx: &App) -> bool {
+        let text = match &self.left {
+            _ if self.create => self.form_text(cx),
+            Some(left) => left.clone(),
+            None => return false,
+        };
+        !(text.title.is_empty() && text.body.is_empty())
+            && !self.stored_at_home().is_some_and(|saved| {
+                saved.title == text.title && saved.body == text.body && saved.draft == text.draft
+            })
+    }
+    /// Puts `left` back in the form, whole, writing only a field that holds something else:
+    /// one that kept its text keeps its cursor and its scroll with it.
+    fn hold_again(&mut self, left: &FormText, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = left.draft;
+        if self.title.read(cx).value() != left.title.as_str() {
+            self.title
+                .update(cx, |input, cx| input.set_value(&left.title, window, cx));
+        }
+        if self.body.read(cx).value() != left.body.as_str() {
+            self.body
+                .update(cx, |input, cx| input.set_value(&left.body, window, cx));
+        }
     }
     /// Saves the form's text under the key it belongs to, at once, where it differs from what
     /// is stored there: before its fields name another key ([`Self::settle_form`], point 2).
@@ -3665,7 +3756,7 @@ impl Panel {
             }
         };
         let opener = self.opener();
-        self.run(RequestKind::Load,move|control|{let transport=opener.open()?;let login=transport.login().to_owned();let page=Client(transport).list(&repository,page,&control)?;Ok((page,login,repository))},|result,this,_,_|match result {Ok((page,login,repository))=>{this.create=false;this.review.show_list=true;this.confirm=None;this.rows=page.items;this.listed=Some(repository);this.created_only=false;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        self.run(RequestKind::Load,move|control|{let transport=opener.open()?;let login=transport.login().to_owned();let page=Client(transport).list(&repository,page,&control)?;Ok((page,login,repository))},|result,this,_,cx|match result {Ok((page,login,repository))=>{this.leave_form(cx);this.review.show_list=true;this.confirm=None;this.rows=page.items;this.listed=Some(repository);this.created_only=false;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn inspect(&mut self, pull: PullRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -3687,7 +3778,7 @@ impl Panel {
             Ok((pull,captured,status,files,comments))
         },|result,this,window,cx|match result {
             Ok((pull,captured,status,files,comments))=>{
-                this.create=false;this.confirm=None;this.review.reset_content();this.conversations.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
+                this.leave_form(cx);this.confirm=None;this.review.reset_content();this.conversations.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
                 this.description=pull.body.as_ref().map(|body|text::editor(body,"markdown",None,window,cx));
                 let mut errors=vec![];
                 match status {Ok(status)=>this.status=Some(status),Err(error)=>{this.status=None;errors.push(format!("Review/check status: {error:#}"));}}
@@ -3738,14 +3829,15 @@ impl Panel {
         self.status = None;
         self.description = None;
         self.confirm = None;
-        if reviewed {
-            self.body
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            // The review took the description's place, no edit of the person's: the form
-            // holds again what it was left with, the draft saved under its key as it was.
-            if let Some(left) = self.stored_at_home().cloned() {
-                self.fill_form(&left, window, cx);
-            }
+        match self.left.take() {
+            // A review took the description's place, no edit of the person's: the form
+            // holds again what it was left with, whole, whether or not the store holds it
+            // ([`Self::leave_form`]).
+            Some(left) => self.hold_again(&left, window, cx),
+            None if reviewed => self
+                .body
+                .update(cx, |input, cx| input.set_value("", window, cx)),
+            None => {}
         }
         // The key the fields name counts as the form opens ([`Self::settle_form`]).
         self.restored = false;
@@ -4145,7 +4237,7 @@ impl Panel {
         if !matches!(created, github::Created::Unread) {
             self.use_up_draft(new, window, cx);
         }
-        self.create = false;
+        self.leave_form(cx);
         self.review.show_list = true;
         let pull = match created {
             github::Created::Pull(pull) => *pull,
@@ -4526,6 +4618,7 @@ impl Panel {
                 worktree: self.repo.path().to_owned(),
                 panel: cx.entity(),
                 bytes: self.retained_review_bytes(cx),
+                unsaved: self.holds_unsaved(cx),
             };
             cx.default_global::<WarmPanels>().retain(entry);
         }
@@ -5061,7 +5154,7 @@ impl Render for Panel {
                 .when(self.review.section==Section::Files,|element|element.child(self.render_files(window,cx)))
                 .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element
-                .child(self.button("github-create-back","Pull requests","arrow-left",false, cx).debug_selector(||"github-create-back".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.create=false;this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
+                .child(self.button("github-create-back","Pull requests","arrow-left",false, cx).debug_selector(||"github-create-back".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.leave_form(cx);this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
                 .child(label("github-create-fields","New pull request · published head → destination base").font_weight(FontWeight::SEMIBOLD))
                 // Each one-line field is one line of the body, which its reveals leave whole.
                 .child(div().debug_selector(||"github-create-title".into()).child(self.stop_mark(&self.title.read(cx).focus_handle(cx),review::ring_room,false,false)).child(review::one_line()).child(Input::new(&self.title).aria_label("Pull request title").disabled(pending)))
@@ -23786,6 +23879,329 @@ mod tests {
         assert_eq!(form(&panel, cx), typed, "the form keeps what was typed");
         assert_eq!(status(&panel, cx), DRAFT_HELD);
         assert_one_creation_saved(&panel, &stored_form(), "the read landed", cx);
+    }
+
+    /// What [`held_form`] types into the form, as [`form`] gives it.
+    fn held_text() -> (String, String, bool) {
+        ("Typed title".into(), "Typed description".into(), true)
+    }
+
+    /// The one creation draft [`held_form`]'s store holds, as [`by_key`] gives it.
+    fn held_out() -> Vec<(String, String, String, bool)> {
+        by_key(&[keyed("acme/app", "fix")])
+    }
+
+    /// A form whose text is saved nowhere: with a draft stored for `fix` onto `main` in
+    /// `acme/app`, and `beside` it, the form opens with no destination, a title and a
+    /// description are typed into it, and the destination is typed to `acme/app` and left.
+    /// The form keeps what was typed, the store keeps its draft, and the status says that
+    /// the text is not saved and that keeping the window open keeps it ([`assert_held`]).
+    async fn held_form(
+        cx: &mut TestAppContext,
+        beside: Option<Draft>,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let stored: Vec<_> = [keyed("acme/app", "fix")]
+            .into_iter()
+            .chain(beside)
+            .collect();
+        let (fixture, app, panel, script, cx) = keyed_form(cx, "", "fix", &stored).await;
+        let (title, description, _) = held_text();
+        title_typed(&panel, &title, cx);
+        cx.update(|window, cx| {
+            let field = panel.read(cx).body.read(cx).focus_handle(cx);
+            field.focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_input(&description);
+        draw(cx);
+        retype(&panel, Names::Destination, 0, "acme/app", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_held(&app, &panel, "the destination left", cx).await;
+        (fixture, app, panel, script, cx)
+    }
+
+    /// Asserts that the form is shown holding [`held_text`] whole, that its status says the
+    /// text is not saved, and that the store and Recover drafts hold the stored draft alone,
+    /// as it was.
+    async fn assert_held(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        when: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create),
+            "{when}: the form is shown"
+        );
+        assert_eq!(form(panel, cx), held_text(), "{when}: the form, whole");
+        assert_eq!(status(panel, cx), DRAFT_HELD, "{when}: the status");
+        assert_kept(app, panel, &held_out(), when, cx).await;
+    }
+
+    /// The form is left and a pull request opened, each press a click answered from the
+    /// script: Pull requests shows the list, Refresh PRs lists pull request 7 and its row
+    /// opens it, which gives the description's field to its review.
+    async fn open_seven_from_the_form(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        cx: &mut VisualTestContext,
+    ) {
+        click_in_body(app, "github-create-back", cx).await;
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.create),
+            "Pull requests shows the list"
+        );
+        let listed = serde_json::json!([listed_pull(7, "fixture:feature", "main")]);
+        script.answer(200, listed.to_string());
+        click_in_body(app, "github-refresh", cx).await;
+        answer_opening(script);
+        click_in_body(app, "github-pr-7", cx).await;
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(7),
+            "pull request 7 is open: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+    }
+
+    /// What the description's field holds, the form's or an open pull request's review's.
+    fn shared_field(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+        panel.read_with(cx, |panel, cx| panel.body.read(cx).value().to_string())
+    }
+
+    /// Text the form holds unsaved is not lost while the window lives: with the status
+    /// saying that keeping the window open keeps it, Pull requests, Refresh PRs and a pull
+    /// request's opening, which empties the field the description shares, are followed by
+    /// New pull request, and the form holds the title, the description and Draft as they
+    /// were typed, its status says again that they are not saved, and the store holds its
+    /// one draft as it was. The form came back with its title and no description, which was
+    /// nowhere.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_a_pull_request_opened_in_between(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        assert_eq!(shared_field(&panel, cx), "", "the review has no text yet");
+        assert_kept(&app, &panel, &held_out(), "the pull request open", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_held(&app, &panel, "back in the form", cx).await;
+    }
+
+    /// The same with a review's saved text taking the description's place: the opened pull
+    /// request's review is restored into the shared field, and New pull request gives the
+    /// form its own text back, none of the review's, whose draft stays as it was.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_a_review_taking_its_place(cx: &mut TestAppContext) {
+        let review = Draft::Review(ReviewDraft {
+            pull: listed_pull(7, "fixture:feature", "main")
+                .capture(Repository::parse("acme/app").unwrap()),
+            body: "Review text".into(),
+            event: ReviewEvent::Comment,
+            comments: vec![],
+            composing: None,
+            discussion: true,
+        });
+        let (_fixture, app, panel, script, cx) = held_form(cx, Some(review)).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        assert_eq!(
+            shared_field(&panel, cx),
+            "Review text",
+            "the review's text takes the description's place"
+        );
+        click_in_body(&app, "github-create", cx).await;
+        assert_held(&app, &panel, "back in the form", cx).await;
+        let reviews: Vec<_> = drafts::load()
+            .expect("the draft store")
+            .iter()
+            .filter(|draft| matches!(draft, Draft::Review(_)))
+            .map(|draft| draft.text().to_string())
+            .collect();
+        assert_eq!(
+            reviews,
+            ["Review text"],
+            "the review's draft stays as it was"
+        );
+    }
+
+    /// The panel is closed and `app` opens it again.
+    async fn close_and_open(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.closed), "closed");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| !panel.closed), "open again");
+    }
+
+    /// The same with the panel closed and opened again, on the form and then on the pull
+    /// request opened in between: the panel reopens on the form whole, its status as it
+    /// was, and what it keeps of the form while a pull request is shown outlasts its close.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_the_panel_closed_and_opened_again(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        close_and_open(&app, &panel, cx).await;
+        assert_held(&app, &panel, "the panel reopened on the form", cx).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        close_and_open(&app, &panel, cx).await;
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(7),
+            "the panel reopens on the pull request"
+        );
+        assert_kept(
+            &app,
+            &panel,
+            &held_out(),
+            "reopened on the pull request",
+            cx,
+        )
+        .await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_held(&app, &panel, "back in the form", cx).await;
+    }
+
+    /// A closed panel whose form holds text saved nowhere outlasts the warm cache's bound:
+    /// with nine other panels closed after it, one more than the cache keeps, the same panel
+    /// opens again on the form whole, its status as it was. The oldest closed panel went
+    /// with the ninth, and the next opening built a new, empty one in the same window.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_the_warm_caches_bound(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, _script, cx) = held_form(cx, None).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let kept = cx.update(|_, cx| {
+            let warm = cx.default_global::<WarmPanels>();
+            for other in 0..9 {
+                warm.retain(WarmPanel {
+                    owner: app.entity_id(),
+                    worktree: format!("/another/worktree/{other}").into(),
+                    panel: panel.clone(),
+                    bytes: 0,
+                    unsaved: false,
+                });
+            }
+            warm.0.len()
+        });
+        assert_eq!(kept, 8, "the cache keeps eight panels");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.closed),
+            "the panel that holds the text opens again"
+        );
+        assert_held(&app, &panel, "the panel reopened", cx).await;
+    }
+
+    /// Held text gains its key once the draft that held it is discarded, and is then saved
+    /// whole: discarded in Recover drafts while a pull request is shown, the saved draft is
+    /// gone from the store, and New pull request opens the form on the title and the
+    /// description as they were typed and saves them under the key its fields name.
+    #[gpui::test]
+    async fn text_held_unsaved_is_saved_once_the_other_draft_is_discarded(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        let saved = panel.read_with(cx, |panel, _| panel.saved[0].clone());
+        assert_eq!(by_key(std::slice::from_ref(&saved)), held_out());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.discard_draft(saved, window, cx))
+        });
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            draw(cx);
+        }
+        assert_kept(&app, &panel, &[], "the saved draft discarded", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(form(&panel, cx), held_text(), "the form, whole");
+        let kept = [under("acme/app", "fix", held_text())];
+        assert_kept(&app, &panel, &kept, "back in the form", cx).await;
+        assert_eq!(status(&panel, cx), "Draft saved locally");
+    }
+
+    /// A creation confirmed from held text uses up no draft but its own, which is the text
+    /// that was sent and nothing in the store: after a pull request opened in between, the
+    /// review step shows the title and the description as they were typed, for the
+    /// destination, head and base the form names; once the answer names the pull request,
+    /// the draft saved for that key, never sent, is still in the store and in Recover drafts
+    /// as it was, and New pull request opens on it whole, the sent text gone with its
+    /// creation.
+    #[gpui::test]
+    async fn a_creation_confirmed_from_text_held_unsaved_uses_up_no_saved_draft(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        // The head's and the base's commits, which the review step reads and Send reads again.
+        let identities = |script: &github::Scripted| {
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "1".repeat(40)));
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "2".repeat(40)));
+        };
+        identities(&script);
+        click_in_body(&app, "github-review-submit", cx).await;
+        let reviewed = panel.read_with(cx, |panel, _| match &panel.confirm {
+            Some(Confirmation {
+                action: Action::Create(pull),
+                ..
+            }) => Some((
+                Draft::Pull(pull.clone()).key(),
+                (pull.title.clone(), pull.body.clone(), pull.draft),
+            )),
+            _ => None,
+        });
+        assert_eq!(
+            reviewed,
+            Some(("create:acme/app:fix:main".to_string(), held_text())),
+            "the creation reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        identities(&script);
+        script.answer(201, r#"{"number":203}"#);
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            draw(cx);
+        }
+        assert_eq!(
+            script.asked("POST", "/pulls"),
+            1,
+            "one creation was sent: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request #203 created. Refresh PRs to open it.")
+        );
+        assert_kept(&app, &panel, &held_out(), "the creation confirmed", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            shows("acme/app", "fix"),
+            "the form opens on the draft saved for its key, the sent text gone"
+        );
+        assert_eq!(status(&panel, cx), "Draft restored locally");
+        assert_kept(&app, &panel, &held_out(), "back in the form", cx).await;
     }
 
     /// The draft [`creation_panel`]'s form holds, as [`form`] gives one.
