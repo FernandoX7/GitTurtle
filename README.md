@@ -197,7 +197,7 @@ GitTurtle is young, and some things are not there yet:
 - **Early pull-request review.** On macOS and Linux, GitTurtle connects a GitHub.com account through the GitHub CLI to browse pull requests, review changed files and submit comments and reviews. It is covered by tests and offline checks, not yet by a run against a live account.
 - **Bounded Git workflows.** Merge-preserving and root rebases and submodule management stay with Git's own tools, and previews, history windows and partial staging have documented size limits.
 
-Read the [Linux limits](docs/linux.md#platform-limits) and [current feature limits](docs/user-guide.md#current-limits) before relying on a workflow. Next up are prebuilt releases, a live GitHub sign-in check on Linux, and desktop checks on Ubuntu GNOME and, for the newest features, on a Mac.
+Read the [Linux limits](docs/linux.md#platform-limits) and [current feature limits](docs/user-guide.md#current-limits) before relying on a workflow. Next up are prebuilt releases and desktop checks on Ubuntu GNOME and, for the newest features, on a Mac.
 
 ## Documentation and community
 
