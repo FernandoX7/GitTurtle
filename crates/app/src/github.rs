@@ -306,14 +306,139 @@ impl Response {
             ),
         }
     }
+    /// Whether this answers a creation with "the head branch already has a pull request", told
+    /// by its form: status 422 and a body within the size limit that parses and holds an
+    /// `errors` entry whose `resource` is "PullRequest" and whose `message` starts with GitHub's
+    /// sentence for it. Any other 422, a 409, and a body that does not parse or is over the
+    /// limit are not it.
+    fn pull_exists(&self) -> bool {
+        self.status == 422
+            && self.json::<Value>().is_ok_and(|body| {
+                body["errors"].as_array().is_some_and(|errors| {
+                    errors.iter().any(|error| {
+                        error["resource"].as_str() == Some("PullRequest")
+                            && error["message"].as_str().is_some_and(|message| {
+                                message.starts_with("A pull request already exists for ")
+                            })
+                    })
+                })
+            })
+    }
     fn next_page(&self) -> bool {
         self.headers
             .get("link")
             .is_some_and(|v| v.split(',').any(|p| p.contains("rel=\"next\"")))
     }
 }
+/// GitHub refused a creation because its head branch already has a pull request
+/// ([`Response::pull_exists`]). It is the one refused write whose outcome is certain, nothing
+/// was created, so it is carried typed for the panel to say so from the head branch it
+/// captured, with the pull request where its loaded list holds it. GitHub's own text is matched
+/// and never kept: this type holds none of it, and its words are the app's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PullExists;
+impl std::fmt::Display for PullExists {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The head branch already has a pull request. Nothing was created.")
+    }
+}
+impl std::error::Error for PullExists {}
+/// What GitHub accepted ([`Client::execute`]).
+#[derive(Clone, Debug)]
+pub(crate) struct Sent {
+    /// What the attempt record keeps of it: "GitHub accepted … at ‹destination›".
+    pub notice: String,
+    /// For a creation, what its answer told of the pull request it made.
+    pub created: Option<Created>,
+}
+impl Sent {
+    /// An accepted action that created no pull request.
+    fn plain(notice: String) -> Self {
+        Self {
+            notice,
+            created: None,
+        }
+    }
+}
+/// What a creation's answer told of the pull request GitHub made. Whatever it told, the
+/// creation was accepted: an answer that cannot be read is no failure, and nothing is sent
+/// again.
+#[derive(Clone, Debug)]
+pub(crate) enum Created {
+    /// The pull request, as the list reads one: valid, open and the one sent, from the sent
+    /// head branch onto the sent base.
+    Pull(Box<PullRequest>),
+    /// Its number alone.
+    Number(u64),
+    /// Nothing that could be read.
+    Unread,
+}
+impl Created {
+    /// What a creation of `new` learned from its answer: `pull` where the answer parsed as a
+    /// pull request that is valid, open and the one sent; otherwise its `number`, or nothing.
+    fn read(pull: Option<PullRequest>, number: Option<u64>, new: &NewPull) -> Self {
+        let branch = new
+            .head
+            .split_once(':')
+            .map_or(new.head.as_str(), |(_, branch)| branch);
+        match (pull, number) {
+            (Some(pull), _)
+                if pull.validate().is_ok()
+                    && pull.state == "open"
+                    && pull.head.branch == branch
+                    && pull.base.branch == new.base =>
+            {
+                Self::Pull(Box::new(pull))
+            }
+            (_, Some(number)) => Self::Number(number),
+            _ => Self::Unread,
+        }
+    }
+}
 pub(crate) trait Transport {
     fn request(&mut self, request: Request, control: &OperationControl) -> Result<Response>;
+}
+/// A transport that answers from a script and keeps what it was asked, for a test of a route
+/// the offline fixture has no answer for, as a creation is. It reaches no credential, process
+/// or network, and a request past the script's end fails.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct Scripted {
+    pub requests: std::sync::Arc<std::sync::Mutex<Vec<Request>>>,
+    answers: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Response>>>,
+}
+#[cfg(test)]
+impl Scripted {
+    /// The account a scripted transport is signed in as.
+    pub const LOGIN: &str = "scripted-author";
+    /// Adds `body` under `status` as the next answer.
+    pub fn answer(&self, status: u16, body: impl Into<Vec<u8>>) {
+        self.answers.lock().unwrap().push_back(Response {
+            status,
+            headers: BTreeMap::new(),
+            body: body.into(),
+        });
+    }
+    /// How many requests of `method` it was asked at an endpoint ending in `ending`.
+    pub fn asked(&self, method: &str, ending: &str) -> usize {
+        let requests = self.requests.lock().unwrap();
+        requests
+            .iter()
+            .filter(|request| request.method == method && request.endpoint.ends_with(ending))
+            .count()
+    }
+}
+/// GitHub's answer to a creation from a branch that already has a pull request, as captured on
+/// 2026-11-16 under status 422, its owner and branch a fixture's.
+#[cfg(test)]
+pub(crate) const EXISTS: &str = r#"{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for fixture:feature."}],"documentation_url":"https://docs.github.com/rest/pulls/pulls#create-a-pull-request","status":"422"}"#;
+#[cfg(test)]
+impl Transport for Scripted {
+    fn request(&mut self, request: Request, _: &OperationControl) -> Result<Response> {
+        self.requests.lock().unwrap().push(request);
+        let answer = self.answers.lock().unwrap().pop_front();
+        answer.ok_or_else(|| anyhow!("The script holds no further answer"))
+    }
 }
 pub(crate) struct Client<T>(pub T);
 impl<T: Transport> Client<T> {
@@ -527,15 +652,19 @@ impl<T: Transport> Client<T> {
         pull.expected_base = Some(base.into());
         Ok(pull)
     }
-    pub fn execute(&mut self, action: Action, control: &OperationControl) -> Result<String> {
+    pub fn execute(&mut self, action: Action, control: &OperationControl) -> Result<Sent> {
         ensure!(
             !control.is_cancelled(),
             "GitHub action cancelled before submission"
         );
         match &action {
-            Action::Reply { target, body } => return self.reply_to_thread(target, body, control),
+            Action::Reply { target, body } => {
+                return self.reply_to_thread(target, body, control).map(Sent::plain);
+            }
             Action::SetThreadResolved { target, resolved } => {
-                return self.set_thread_resolved(target, *resolved, control);
+                return self
+                    .set_thread_resolved(target, *resolved, control)
+                    .map(Sent::plain);
             }
             _ => {}
         }
@@ -622,13 +751,42 @@ impl<T: Transport> Client<T> {
             "GitHub action cancelled before submission"
         );
         let response = self.0.request(Request { method: "POST", endpoint, body: Some(body) }, control).map_err(|error| anyhow!("{error}. The GitHub outcome may be uncertain. Check the destination before resubmitting; no automatic retry was made."))?;
+        // Only a creation is refused this way; every other write keeps the one sentence.
+        if matches!(action, Action::Create(_)) && response.pull_exists() {
+            return Err(PullExists.into());
+        }
         response.check(true)?;
+        // A creation GitHub accepted was made, whatever its answer can tell of it: the pull
+        // request as the list reads one, its number alone, or nothing. None of that is a
+        // failure, and nothing is sent again.
+        if let Action::Create(new) = &action {
+            let value = response.json::<Value>().ok();
+            let number = value
+                .as_ref()
+                .and_then(|value| value["number"].as_u64())
+                .filter(|number| *number > 0);
+            let pull = value.and_then(|value| serde_json::from_value::<PullRequest>(value).ok());
+            let notice = match number {
+                Some(number) => format!(
+                    "GitHub accepted action {number} at {}",
+                    action.destination()
+                ),
+                None => format!(
+                    "GitHub accepted the pull request at {}; its answer could not be read",
+                    action.destination()
+                ),
+            };
+            return Ok(Sent {
+                notice,
+                created: Some(Created::read(pull, number, new)),
+            });
+        }
         let value: Value = response.json().map_err(|_| anyhow!("GitHub accepted the action but its response could not be read. Check the destination before resubmitting; no automatic retry was made."))?;
         let id = value["number"].as_u64().or_else(|| value["id"].as_u64()).ok_or_else(|| anyhow!("GitHub accepted the action but returned no identity. Check the destination before resubmitting."))?;
-        Ok(format!(
+        Ok(Sent::plain(format!(
             "GitHub accepted action {id} at {}",
             action.destination()
-        ))
+        )))
     }
     fn revalidate(&mut self, captured: &CapturedPull, control: &OperationControl) -> Result<()> {
         let current = self.pull(&captured.repository, captured.number, control)?;
@@ -1048,6 +1206,255 @@ mod tests {
             client.0.requests[2].body.as_ref().unwrap()["body"],
             "Exact body\n"
         );
+    }
+    /// What every other refused write says.
+    const REJECTED: &str = "GitHub rejected the reviewed target or content. Refresh and review the branches, permissions, and diff positions. No automatic retry was made. Check GitHub before resubmitting.";
+    fn reviewed() -> NewPull {
+        NewPull {
+            repository: repo(),
+            title: "Ready".into(),
+            body: "Body".into(),
+            head: "feature".into(),
+            base: "main".into(),
+            draft: true,
+            expected_head: Some("1".repeat(40)),
+            expected_base: Some("2".repeat(40)),
+        }
+    }
+    fn answer(status: u16, body: &str) -> Result<Response> {
+        Ok(Response {
+            status,
+            headers: BTreeMap::new(),
+            body: body.as_bytes().to_vec(),
+        })
+    }
+    /// A client whose transport answers a creation's two identity rechecks, then `last`.
+    fn creating(last: Result<Response>) -> Client<Mock> {
+        Client(Mock {
+            responses: VecDeque::from([
+                response(json!({"sha":"1".repeat(40)})),
+                response(json!({"sha":"2".repeat(40)})),
+                last,
+            ]),
+            ..Default::default()
+        })
+    }
+    /// Answers reads from the offline fixture and every mutation with the captured refusal.
+    struct RefusingMutations(review::UiTransport);
+    impl Transport for RefusingMutations {
+        fn request(&mut self, request: Request, control: &OperationControl) -> Result<Response> {
+            let mutation = request.body.as_ref().is_some_and(|body| {
+                body["query"]
+                    .as_str()
+                    .is_some_and(|query| query.starts_with("mutation"))
+            });
+            if mutation {
+                answer(422, EXISTS)
+            } else {
+                self.0.request(request, control)
+            }
+        }
+    }
+    /// A creation GitHub refuses because its head branch already has a pull request is told
+    /// apart by the form of the answer captured on 2026-11-16 and carried typed, in the app's
+    /// words and none of GitHub's. Every other refused write keeps the one sentence word for
+    /// word: a 422 of another form, one whose body does not parse or is over the size limit, a
+    /// 409, and the same answer to a discussion comment, a review and a reply. The refusal
+    /// once read as any other, "GitHub rejected the reviewed target or content…", which sent
+    /// the person to check branches, permissions and diff positions.
+    #[test]
+    fn only_a_creation_refused_for_an_existing_pull_request_is_told_apart() {
+        let control = OperationControl::default();
+        let refused = |last: Result<Response>| {
+            let mut client = creating(last);
+            let error = client
+                .execute(Action::Create(reviewed()), &control)
+                .unwrap_err();
+            assert_eq!(client.0.requests.len(), 3, "one creation, sent once");
+            error
+        };
+        let error = refused(answer(422, EXISTS));
+        assert!(error.is::<PullExists>(), "{error:#}");
+        assert_eq!(
+            error.to_string(),
+            "The head branch already has a pull request. Nothing was created."
+        );
+        assert!(
+            !format!("{error:#} {error:?}").contains("fixture:feature"),
+            "none of GitHub's text is kept"
+        );
+        let mut oversized = EXISTS.as_bytes().to_vec();
+        oversized.resize(MAX_RESPONSE + 1, b' ');
+        let other = |message: &str, resource: &str| {
+            json!({"message":"Validation Failed","errors":[{"resource":resource,"code":"custom","message":message}]}).to_string()
+        };
+        for (name, status, body) in [
+            (
+                "another 422",
+                422,
+                other("No commits between main and feature", "PullRequest").into_bytes(),
+            ),
+            (
+                "the sentence about another resource",
+                422,
+                other(
+                    "A pull request already exists for fixture:feature.",
+                    "Issue",
+                )
+                .into_bytes(),
+            ),
+            (
+                "the sentence inside another message",
+                422,
+                other(
+                    "Refused. A pull request already exists for fixture:feature.",
+                    "PullRequest",
+                )
+                .into_bytes(),
+            ),
+            ("a 422 with no errors", 422, b"{}".to_vec()),
+            ("a 422 that does not parse", 422, b"<html>".to_vec()),
+            ("an empty 422", 422, Vec::new()),
+            ("a 422 over the size limit", 422, oversized),
+            ("a 409", 409, EXISTS.as_bytes().to_vec()),
+        ] {
+            let error = refused(Ok(Response {
+                status,
+                headers: BTreeMap::new(),
+                body,
+            }));
+            assert!(!error.is::<PullExists>(), "{name}");
+            assert_eq!(error.to_string(), REJECTED, "{name}");
+        }
+        // The same answer to any other write: a discussion comment, a review and a reply.
+        let listed = pull();
+        for action in [
+            Action::Comment {
+                pull: listed.capture(repo()),
+                body: "Comment".into(),
+            },
+            Action::Review(ReviewDraft {
+                pull: listed.capture(repo()),
+                body: "Review".into(),
+                event: ReviewEvent::Approve,
+                comments: vec![],
+                composing: None,
+                discussion: false,
+            }),
+        ] {
+            let mut client = Client(Mock {
+                responses: VecDeque::from([response(json!(listed)), answer(422, EXISTS)]),
+                ..Default::default()
+            });
+            let error = client.execute(action, &control).unwrap_err();
+            assert!(!error.is::<PullExists>());
+            assert_eq!(error.to_string(), REJECTED);
+        }
+        let fixture = || review::UiTransport::Fixture { moved: false };
+        let identity = review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let threads = Client(fixture())
+            .review_threads(&identity, None, &control)
+            .unwrap();
+        let reply = Action::Reply {
+            target: threads.items[0].target.clone(),
+            body: "Reply".into(),
+        };
+        let error = Client(RefusingMutations(fixture()))
+            .execute(reply, &control)
+            .unwrap_err();
+        assert!(!error.is::<PullExists>());
+        assert_eq!(error.to_string(), REJECTED);
+    }
+    /// A creation GitHub accepts returns the pull request its answer holds, as the list reads
+    /// one, where the answer is the pull request that was sent; otherwise its number alone, or
+    /// nothing. Whatever the answer, an accepted creation is never a failure and is sent once:
+    /// it once kept only the number, and an answer it could not read ended as "GitHub accepted
+    /// the action but its response could not be read". Every other write keeps those failures.
+    #[test]
+    fn an_accepted_creation_returns_its_pull_request_and_never_fails() {
+        let control = OperationControl::default();
+        let created = |status: u16, body: String| {
+            let mut client = creating(answer(status, &body));
+            let sent = client
+                .execute(Action::Create(reviewed()), &control)
+                .unwrap_or_else(|error| panic!("{body}: {error:#}"));
+            assert_eq!(client.0.requests.len(), 3, "one creation, sent once");
+            (sent.created.expect("a creation"), sent.notice)
+        };
+        let made = || {
+            let mut made = json!(pull());
+            made["number"] = json!(203);
+            made
+        };
+        const ACCEPTED: &str = "GitHub accepted action 203 at github.com/fixture/repo · feature (1111111111111111111111111111111111111111) → main (2222222222222222222222222222222222222222) · draft PR";
+        for status in [200, 201] {
+            let (created, notice) = created(status, made().to_string());
+            let Created::Pull(pull) = created else {
+                panic!("{created:?}");
+            };
+            assert_eq!((pull.number, pull.draft), (203, true));
+            assert_eq!(
+                (pull.head.branch.as_str(), pull.base.branch.as_str()),
+                ("feature", "main")
+            );
+            assert_eq!(notice, ACCEPTED);
+        }
+        let other = |change: &dyn Fn(&mut Value)| {
+            let mut made = made();
+            change(&mut made);
+            made.to_string()
+        };
+        for (name, body) in [
+            ("the number alone", json!({"number":203}).to_string()),
+            (
+                "another head",
+                other(&|made| made["head"]["ref"] = json!("other")),
+            ),
+            (
+                "another base",
+                other(&|made| made["base"]["ref"] = json!("release")),
+            ),
+            (
+                "a closed one",
+                other(&|made| made["state"] = json!("closed")),
+            ),
+            (
+                "an invalid identity",
+                other(&|made| made["head"]["sha"] = json!("x")),
+            ),
+        ] {
+            let (created, notice) = created(201, body);
+            assert!(
+                matches!(created, Created::Number(203)),
+                "{name}: {created:?}"
+            );
+            assert_eq!(notice, ACCEPTED, "{name}");
+        }
+        for body in ["<html>", "", "{}", r#"{"number":0}"#, r#"{"id":9}"#] {
+            let (created, notice) = created(201, body.into());
+            assert!(matches!(created, Created::Unread), "{body}: {created:?}");
+            assert!(
+                notice.starts_with("GitHub accepted the pull request at github.com/fixture/repo")
+            );
+        }
+        // A comment's accepted answer that cannot be read stays the failure it was.
+        let listed = pull();
+        for (body, said) in [
+            ("<html>", "could not be read"),
+            ("{}", "returned no identity"),
+        ] {
+            let mut client = Client(Mock {
+                responses: VecDeque::from([response(json!(listed)), answer(201, body)]),
+                ..Default::default()
+            });
+            let comment = Action::Comment {
+                pull: listed.capture(repo()),
+                body: "Comment".into(),
+            };
+            let error = client.execute(comment, &control).unwrap_err();
+            assert!(error.to_string().contains(said), "{error:#}");
+        }
     }
     #[cfg(unix)]
     #[test]

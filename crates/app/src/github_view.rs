@@ -76,6 +76,21 @@ fn phrases(
     )
     .text_size(crate::appearance::ui_text(12.))
 }
+/// `button` with `name` as its accessible name where its label alone would not say what it
+/// acts on. In tests the name is kept under `selector` ([`NAMED_FOR_READING`]): the test
+/// platform builds no accessibility tree, and a kit Button's node is not reachable.
+fn named_for_reading(button: Button, selector: &'static str, name: String) -> Button {
+    #[cfg(test)]
+    NAMED_FOR_READING.with(|named| named.borrow_mut().insert(selector, name.clone()));
+    let _ = selector;
+    button.accessibility_label(name)
+}
+#[cfg(test)]
+thread_local! {
+    /// The accessible names [`named_for_reading`] last gave, by selector.
+    static NAMED_FOR_READING: std::cell::RefCell<std::collections::BTreeMap<&'static str, String>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
 /// A path's line of the panel, its label and the path, built once for the path it names
 /// ([`PathText::new`]), so a frame builds none of its text: the panel's frames clone its
 /// shared strings, which count references.
@@ -234,6 +249,118 @@ impl Element for LaidOut {
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+    }
+}
+/// `element`, recording the layout ID it is laid out under in `laid` where there is one
+/// ([`LaidOut`]), and otherwise as it is.
+fn laid_out(
+    element: impl IntoElement,
+    laid: Option<&std::rc::Rc<std::cell::Cell<Option<LayoutId>>>>,
+) -> AnyElement {
+    match laid {
+        Some(laid) => LaidOut {
+            child: element.into_any_element(),
+            laid: laid.clone(),
+        }
+        .into_any_element(),
+        None => element.into_any_element(),
+    }
+}
+/// The body's content in the frame that first draws a failure or a refusal a send ended in,
+/// on the top line among the content ([`Panel::show_line`]): the body shows the failure's
+/// line, with its action where it has one (`line`), and with Refresh PRs where focus rests
+/// on it as the line's remedy (`remedy`), before its content prepaints, so this frame draws
+/// them where they stay, with the focus the landing gave, and no later frame moves them: the
+/// first frame after a change lays out its final state (DESIGN.md, Motion). The reveal once
+/// ran after that frame had painted ([`review::show`]): the frame drew the line above the
+/// view and the form below it moved down by the line's height, about five lines at 18 pt in a
+/// 461 × 490 window, and the next frame jumped to the line. Made for that frame alone: every
+/// other frame's content is drawn as it is, and reads one flag.
+struct Failed {
+    content: AnyElement,
+    body: ScrollHandle,
+    blocks: review::Blocks,
+    revealed: std::rc::Rc<std::cell::RefCell<review::FocusObservation>>,
+    line: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+    remedy: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+}
+impl Failed {
+    /// How far the body moves its content to show the line whole, a line's room clear of its
+    /// edges, by the least movement, having moved its scroll by as much, if it moves
+    /// ([`review::show_laid_out`]). A line taller than the view shows from its top, where its
+    /// first lines and the top of its ring are.
+    fn show(&self, window: &mut Window, cx: &App) -> Option<Pixels> {
+        let mut shown = window.layout_bounds(self.line.get()?);
+        if let Some(remedy) = self.remedy.get() {
+            shown = shown.union(&window.layout_bounds(remedy));
+        }
+        let inset = review::reveal_room(window, cx);
+        review::show_laid_out(&self.body, &self.blocks, shown, inset, cx)
+    }
+}
+impl IntoElement for Failed {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for Failed {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.content.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let moved = self.show(window, cx);
+        // The landing has shown the focus it gave: the body's parts, which reveal a focus
+        // new to them once the frame has painted, show nothing anew, so a line taller than
+        // the view stays where this frame put it.
+        *self.revealed.borrow_mut() = review::FocusObservation {
+            focus: window.focused(cx),
+            viewport: self.body.bounds(),
+            rem_size: window.rem_size(),
+        };
+        // Content the body moves is prepainted where its new offset puts it.
+        match moved {
+            Some(moved) => window.with_element_offset(point(Pixels::ZERO, moved), |window| {
+                self.content.prepaint(window, cx);
+            }),
+            None => {
+                self.content.prepaint(window, cx);
+            }
+        }
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content.paint(window, cx);
     }
 }
 /// One line of the panel's text, `prefix` and then `path` elided in its middle where the line
@@ -472,8 +599,18 @@ struct WarmPanel {
     worktree: std::path::PathBuf,
     panel: Entity<Panel>,
     bytes: usize,
+    /// Whether the panel's New pull request form holds text the draft store does not
+    /// ([`Panel::holds_unsaved`]), which the closed panel alone keeps.
+    unsaved: bool,
 }
 impl WarmPanels {
+    /// Keeps `entry`'s closed panel, in place of an earlier one of its window and worktree,
+    /// within the cache's bounds: eight panels and 32 MiB of counted payload, past which the
+    /// panel closed longest ago goes, of those whose form's text the store holds. One whose
+    /// form holds text saved nowhere stays, counted like any other: its status told the
+    /// person that keeping the window open keeps that text, and going with the ninth panel
+    /// closed after it the text was lost in an open window. Each such panel took typing to
+    /// make, and what it holds beyond the bounds is its own payload.
     fn retain(&mut self, entry: WarmPanel) {
         self.0
             .retain(|old| old.owner != entry.owner || old.worktree != entry.worktree);
@@ -481,7 +618,10 @@ impl WarmPanels {
         while self.0.len() > 8
             || self.0.iter().map(|entry| entry.bytes).sum::<usize>() > 32 * 1024 * 1024
         {
-            self.0.remove(0);
+            let Some(oldest) = self.0.iter().position(|entry| !entry.unsaved) else {
+                break;
+            };
+            self.0.remove(oldest);
         }
     }
 }
@@ -1436,8 +1576,10 @@ impl GitTurtle {
             .map(|index| warm.0.remove(index).panel);
         let reopened = cached.is_some();
         let form = if let Some(form) = cached {
+            let window = window.window_handle().window_id();
             form.update(cx, |panel, cx| {
                 panel.closed = false;
+                panel.hear_keys(window, cx);
                 panel.confirm = None;
                 // Reopening onto its destination field, its first part, the panel shows its
                 // body from the top, the banner above the field included. Closed with the body
@@ -1518,11 +1660,18 @@ impl GitTurtle {
                 .child(form.clone())
                 .footer(
                     DialogFooter::new().child(
-                        button("github-close", "Back to repository", "", false)
-                            .debug_selector(|| "github-close".into())
-                            .on_click(move |_, window, cx| {
-                                close.update(cx, |this, cx| this.close(window, cx))
-                            }),
+                        // Back to repository stands where the panel hears Return and Space go
+                        // down and come up, as its body does ([`HeldKeys`]).
+                        div()
+                            .key_context(HELD)
+                            .capture_key_up(window.listener_for(&form, Panel::note_key_up))
+                            .child(
+                                button("github-close", "Back to repository", "", false)
+                                    .debug_selector(|| "github-close".into())
+                                    .on_click(move |_, window, cx| {
+                                        close.update(cx, |this, cx| this.close(window, cx))
+                                    }),
+                            ),
                     ),
                 )
                 .on_cancel(move |_, window, cx| {
@@ -1594,6 +1743,189 @@ struct Confirmation {
     action: Action,
     account: String,
 }
+/// The pull request the loaded list holds for a creation GitHub refused because its head
+/// branch already has one ([`Panel::refused_for_existing`]): what the failure line's one
+/// action, Open #N, opens, as a press on its row does. `line` is the failure line it was found
+/// for, and the action is drawn only beside that line, so it never stands by another failure;
+/// `repository` is the one the creation was refused in, whose pull request `pull` is, and the
+/// action is offered only while the destination names it ([`Panel::offered`]): a number alone
+/// names another pull request in every other repository.
+struct Existing {
+    line: String,
+    repository: Repository,
+    pull: PullRequest,
+}
+/// The row among `rows`, the loaded page of `new`'s repository, that is the open pull request
+/// a creation of `new` was refused for: the one open row from the same head, the same owner
+/// and the same branch, as GitHub names a head (`owner:branch`), onto the same base branch. A
+/// same-named branch of another fork is another head, and a row whose head names no owner, or
+/// a second row that fits, tells nothing for certain: then there is none, since naming another
+/// pull request is worse than naming none. An owner's name matches whatever its case, as
+/// GitHub's logins do.
+fn held_pull<'a>(rows: &'a [PullRequest], new: &NewPull) -> Option<&'a PullRequest> {
+    let (owner, branch) = new
+        .head
+        .split_once(':')
+        .unwrap_or((new.repository.owner.as_str(), new.head.as_str()));
+    let mut held = rows.iter().filter(|row| {
+        row.state == "open"
+            && row.base.branch == new.base
+            && row.head.branch == branch
+            && row
+                .head
+                .label
+                .split_once(':')
+                .is_some_and(|(by, named)| by.eq_ignore_ascii_case(owner) && named == branch)
+    });
+    match (held.next(), held.next()) {
+        (Some(row), None) => Some(row),
+        _ => None,
+    }
+}
+/// The body's content in the frame that first draws a creation's result
+/// ([`Panel::show_created`]), which shows the result from its notice: where this frame's
+/// layout puts the notice's line (`line`) and the list below it (`list`), whose first row is
+/// the new one, not both whole in `body`'s view, the body scrolls that line, the start of a
+/// block, to its top, as an opening pull request shows from its title, so the notice and the
+/// row under it are in view together. It does so before the content prepaints, so this frame
+/// draws both where they stay and no later frame moves them: the first frame after a change
+/// lays out its final state (DESIGN.md, Motion). The body once followed the row's own reveal
+/// first, which follows focus and shows the row by the least movement, and came to the
+/// notice four frames of the list later: at 18 pt in a 461 × 490 window the notice stood
+/// 33 px above the body's top until then, and jumped into view about 50 ms after the row.
+/// Made for that frame alone; every other frame's content is drawn as it is.
+struct Created {
+    content: AnyElement,
+    body: ScrollHandle,
+    line: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+    list: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+}
+impl Created {
+    /// How far the body moves its content to show the notice and the list together, having
+    /// moved its scroll by as much, if it moves. The body has placed its content at its offset
+    /// already, so each place read here is where this frame would draw it.
+    fn show(&self, window: &mut Window) -> Option<Pixels> {
+        let line = window.layout_bounds(self.line.get()?);
+        let list = window.layout_bounds(self.list.get()?);
+        let (view, offset) = (self.body.bounds(), self.body.offset());
+        if line.top() >= view.top() && list.bottom() <= view.bottom() {
+            return None;
+        }
+        let y = (offset.y + view.top() - line.top()).clamp(-self.body.max_offset().y, px(0.));
+        let moved = y - offset.y;
+        if moved == Pixels::ZERO {
+            return None;
+        }
+        self.body.set_offset(point(offset.x, y));
+        Some(moved)
+    }
+}
+impl IntoElement for Created {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for Created {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.content.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Content the body moves is prepainted where its new offset puts it.
+        match self.show(window) {
+            Some(moved) => window.with_element_offset(point(Pixels::ZERO, moved), |window| {
+                self.content.prepaint(window, cx);
+            }),
+            None => {
+                self.content.prepaint(window, cx);
+            }
+        }
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content.paint(window, cx);
+    }
+}
+/// How a request of the panel opens its transport once the operation executor runs it
+/// ([`Panel::opener`]): the offline fixture's or the connected account's
+/// ([`UiTransport::open`]), or, in a test that gave the panel one, a script's answers.
+struct Opener {
+    fixture: bool,
+    moved: bool,
+    #[cfg(test)]
+    scripted: Option<github::Scripted>,
+}
+impl Opener {
+    fn open(self) -> anyhow::Result<PanelTransport> {
+        #[cfg(test)]
+        if let Some(scripted) = self.scripted {
+            return Ok(PanelTransport::Scripted(scripted));
+        }
+        Ok(PanelTransport::Ui(UiTransport::open(
+            self.fixture,
+            self.moved,
+        )?))
+    }
+}
+/// The transport an [`Opener`] opened.
+enum PanelTransport {
+    Ui(UiTransport),
+    #[cfg(test)]
+    Scripted(github::Scripted),
+}
+impl PanelTransport {
+    /// The account its requests are sent as.
+    fn login(&self) -> &str {
+        match self {
+            Self::Ui(transport) => transport.login(),
+            #[cfg(test)]
+            Self::Scripted(_) => github::Scripted::LOGIN,
+        }
+    }
+}
+impl github::Transport for PanelTransport {
+    fn request(
+        &mut self,
+        request: github::Request,
+        control: &OperationControl,
+    ) -> anyhow::Result<github::Response> {
+        match self {
+            Self::Ui(transport) => transport.request(request, control),
+            #[cfg(test)]
+            Self::Scripted(transport) => transport.request(request, control),
+        }
+    }
+}
 /// The lines the panel says through the window's announcements ([`Panel::announce`]): its
 /// notice, its failure, drawn in its body or in the reply composer, and refused input, with
 /// the presses that answered with them.
@@ -1612,6 +1944,183 @@ struct Heard {
 struct Presses {
     error: usize,
     issue: usize,
+}
+/// Return's and Space's presses going down in the panel, so that a control a landing gives
+/// focus takes no press that was down as it landed ([`Panel::land_focus`]): the new pull
+/// request's row after a creation, and Open #N or Refresh PRs after one refused for an existing
+/// pull request; and so that the text field Send to GitHub hands focus to as a send starts,
+/// a creation's title, the review body or a reply, takes no text from one
+/// ([`Panel::hear_keys`]). GPUI clicks the focused control as Space or Return comes up where it went
+/// down at the same focus, and its X11 client hands a held key's repeat on as a release and a
+/// fresh press where the two reach it in separate batches, so a Space still held on Send to
+/// GitHub as its creation landed opened the new pull request at the repeat after the one that
+/// found focus on its row, and a Return whose release ended a batch did at once: a read from
+/// GitHub nobody pressed. Each key keeps its own press, as the Diff view's do
+/// (`diff_view::Presses`), from its first key-down to the first frame after its key-up
+/// ([`Panel::note_key_up`]). The panel hears a key go down through a keystroke interceptor
+/// ([`Panel::new`]) and not a key listener: a key bound in the focused control's context, as
+/// Return is in a field, reaches no listener, and a Return held on Send repeats in the form's
+/// first field while the creation is sent. It counts only where the panel hears the key come
+/// up too, with focus inside the body, on the line above it or on the dialog footer's Back to
+/// repository ([`HELD`]): everywhere the panel's dialog draws a stop.
+///
+/// A press never outlasts the hearing of its key. The panel's close ends every press
+/// ([`Panel::close`]), and a press under way as focus goes to nothing the window draws, where
+/// no key-up is heard, is marked as one whose key-up may have been lost ([`HeldKeys::leave`]).
+/// The footer once stood outside the hearing: a Return that sent and came up on Back to
+/// repository, like a key down as the panel closed, stayed recorded, the next landing latched
+/// it with no key down, and the other key did nothing on the controls a landing focuses until
+/// the recorded one had been pressed once; and a Space held on Back to repository across a
+/// landing, which the panel never heard go down, opened the new pull request at its next
+/// repeat.
+#[derive(Default)]
+struct HeldKeys {
+    /// Return's press, then Space's ([`held_key`]).
+    keys: [Option<HeldKey>; 2],
+    /// Escape's press, heard as theirs are, from its key-down to the first frame after its
+    /// key-up. Only the end of a send that refused it latches it ([`HeldKeys::latch_escape`]),
+    /// and no other key's press reads it: an Escape answered "wait for the result" and still
+    /// down as the result comes closes nothing until it has come up.
+    escape: Option<HeldKey>,
+    /// The number of the last key-up that released one.
+    key_ups: u64,
+    /// While a press is latched, marks the presses as focus leaves the control the landing
+    /// gave it, for another control, with the panel as it closes, or with the window as it
+    /// turns inactive ([`HeldKeys::leave`]).
+    watch: Option<Subscription>,
+}
+impl HeldKeys {
+    /// Whether `event` is a keyboard's click while a press that was down as a landing gave a
+    /// control focus is still under way: such a click does nothing. A pointer's click is not
+    /// the held key's, and acts.
+    fn refuses(&self, event: &ClickEvent) -> bool {
+        matches!(event, ClickEvent::Keyboard(_)) && self.latched()
+    }
+    /// Whether a latched press is under way.
+    fn latched(&self) -> bool {
+        self.keys.iter().flatten().any(|press| press.latched)
+    }
+    /// Marks each press under way as focus leaves where its key-up would be seen: it may come
+    /// up where the panel never sees it ([`HeldKey::left`]). Nothing ends here: under X11
+    /// another client's keyboard grab takes the window's focus and gives it back while the
+    /// key is still down, and its next repeat would then press what the landing focused.
+    fn leave(&mut self) {
+        for press in self.keys.iter_mut().flatten() {
+            press.left = true;
+        }
+    }
+    /// Records Return, else Space, going down in the panel. A key-down of a key whose press
+    /// is under way repeats it, marked held or not, also right after its key-up, as an X11
+    /// repeat's release and press arrive, and after focus left, as a key still held repeats
+    /// once focus is back. Otherwise the key's press begins: latched if the other key's is,
+    /// as a key pressed while that one is down acts no more than it does, and ending the
+    /// other key's press where focus left while it was down ([`HeldKey::left`]), so a key-up
+    /// lost outside costs this one press and no more.
+    ///
+    /// A keystroke the platform sends no key-up for (`withheld`, [`key_up_withheld`]) begins
+    /// no press and repeats none: nothing would end a press it began. A Command-Return on
+    /// Send to GitHub, which sends nothing, once began a press that never ended on macOS; the
+    /// next send's hand-off latched it ([`Panel::land_focus`]), and every Space typed in the
+    /// review body after that send was stopped until Return had been pressed again.
+    fn key_down(&mut self, own: usize, withheld: bool) {
+        if withheld {
+            return;
+        }
+        if let Some(press) = self.keys[own].as_mut() {
+            press.released = None;
+            press.left = false;
+            return;
+        }
+        let other = self.keys[1 - own];
+        self.keys[own] = Some(HeldKey {
+            latched: other.is_some_and(|press| press.latched),
+            released: None,
+            left: false,
+        });
+        if other.is_some_and(|press| press.left) {
+            self.keys[1 - own] = None;
+        }
+    }
+    /// Records Escape going down in the panel: its press begins, or repeats where one is under
+    /// way, marked held or not, also right after its key-up, as an X11 repeat's release and
+    /// press arrive. Returns whether the press is latched ([`Self::latch_escape`]), its
+    /// key-down then one to stop.
+    fn escape_down(&mut self) -> bool {
+        let press = self.escape.get_or_insert(HeldKey {
+            latched: false,
+            released: None,
+            left: false,
+        });
+        press.released = None;
+        press.latched
+    }
+    /// A send that refused Escape has ended ([`Panel::run_from`]): an Escape press still under
+    /// way is latched, so that its key-downs are stopped until it has come up
+    /// ([`Panel::hear_keys`]). The refusal said to wait for the result; the next repeat of the
+    /// same press, under X11 a fresh key-down, once found the send ended and closed the panel
+    /// on the result it had just shown. A key-up lost meanwhile costs one Escape at most: the
+    /// next one is taken for the held key's and ends the hold as it comes up.
+    fn latch_escape(&mut self) {
+        if let Some(press) = self.escape.as_mut() {
+            press.latched = true;
+        }
+    }
+    /// The press of the key kept at `key`: Return's or Space's ([`held_key`]), or Escape's
+    /// ([`ESCAPE`]).
+    fn press(&mut self, key: usize) -> &mut Option<HeldKey> {
+        match key {
+            ESCAPE => &mut self.escape,
+            own => &mut self.keys[own],
+        }
+    }
+}
+/// The key context of the panel's top line and body together while the line stands above the
+/// body, where its Open #N is no part of the body ([`review::BODY`]), and of the dialog
+/// footer's Back to repository: with focus in any of them, the panel hears Return and Space
+/// come up ([`HeldKeys`]).
+const HELD: &str = "GitTurtleGithubHeldKeys";
+/// The key context the toolkit gives a text field, one line or many (`gpui_kit::base::input`):
+/// with focus in one of the panel's, a latched press types nothing ([`Panel::hear_keys`]).
+const FIELD: &str = "Input";
+/// A Return or Space press in the panel ([`HeldKeys`]).
+#[derive(Clone, Copy)]
+struct HeldKey {
+    /// Whether it was down as a landing gave a control focus, or went down while such a press
+    /// of the other key was: until it ends, no keyboard click acts on the controls a landing
+    /// gives focus ([`HeldKeys::refuses`]).
+    latched: bool,
+    /// The number of the key-up that released it, until it ends at the next frame: a key-down
+    /// before then repeats it, as the press of an X11 repeat follows its release.
+    released: Option<u64>,
+    /// Whether focus left while it was down, so its key-up may have been lost: the next
+    /// key-down of its key repeats it all the same, as a key still held would, and a press the
+    /// other key begins ends it and inherits its latch, so a lost key-up costs one press at
+    /// most and never leaves the keyboard refused.
+    left: bool,
+}
+/// Where [`HeldKeys`] keeps `keystroke`'s press, Return's then Space's, whatever modifiers it
+/// carries: under X11 a repeat carries those held as it repeats. No other key has one.
+fn held_key(keystroke: &gpui_kit::Keystroke) -> Option<usize> {
+    match keystroke.key.as_str() {
+        "enter" => Some(0),
+        "space" => Some(1),
+        _ => None,
+    }
+}
+/// Escape's place among the presses [`HeldKeys`] keeps ([`HeldKeys::press`]).
+const ESCAPE: usize = 2;
+/// Where [`HeldKeys`] keeps the press `keystroke` is of: Return's or Space's ([`held_key`]), or
+/// Escape's ([`ESCAPE`]), whatever modifiers it carries.
+fn heard_key(keystroke: &gpui_kit::Keystroke) -> Option<usize> {
+    held_key(keystroke).or_else(|| (keystroke.key == "escape").then_some(ESCAPE))
+}
+/// Whether the platform sends no key-up for `keystroke`, as Cocoa sends none for a key
+/// pressed with Command held on macOS. A key pressed with any other modifier sends one, and
+/// off macOS so does a key pressed with Super, the platform modifier there. The toolkit's
+/// record of a held Return goes by the same condition (`gpui-base`'s `dialog.rs`,
+/// `key_up_withheld`); unverified without a Mac, as that one is.
+fn key_up_withheld(keystroke: &gpui_kit::Keystroke) -> bool {
+    cfg!(target_os = "macos") && keystroke.modifiers.platform
 }
 /// The control a request or refusal of the panel started from, where its failure, or that
 /// Cancel stopped it, answers ([`Panel::outcome`]): feedback answers on the control the person
@@ -1919,6 +2428,10 @@ mod account {
             .collect()
     }
 }
+/// What Escape, or Back to repository, is answered with while a send is in flight
+/// ([`Panel::close`]): to wait for that send's result, so the line goes as the result comes
+/// ([`Panel::run_from`]).
+const SEND_IN_FLIGHT: &str = "A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.";
 /// What a request's reply says when none arrives.
 const INTERRUPTED: &str = "GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1990,6 +2503,50 @@ fn capture_draft(
 fn empty_pull_draft(draft: &Draft) -> bool {
     matches!(draft, Draft::Pull(pull) if pull.title.is_empty() && pull.body.is_empty())
 }
+/// The key a new pull request's draft is saved under ([`Draft::key`]): its destination, its
+/// head and its base. The New pull request form's text belongs to one, the key it was typed
+/// or restored under ([`Panel::settle_form`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FormKey {
+    repository: Repository,
+    head: String,
+    base: String,
+}
+impl FormKey {
+    /// The key `form`'s fields name.
+    fn of(form: &NewPull) -> Self {
+        Self {
+            repository: form.repository.clone(),
+            head: form.head.clone(),
+            base: form.base.clone(),
+        }
+    }
+    /// Whether `pull` is a draft of this key.
+    fn names(&self, pull: &NewPull) -> bool {
+        pull.repository == self.repository && pull.head == self.head && pull.base == self.base
+    }
+    /// The draft that keeps `form`'s title, description and Draft or Ready under this key,
+    /// whatever key the form's fields name.
+    fn keep(&self, form: &NewPull) -> NewPull {
+        NewPull {
+            repository: self.repository.clone(),
+            head: self.head.clone(),
+            base: self.base.clone(),
+            ..form.clone()
+        }
+    }
+}
+/// The New pull request form's text, whole: its title, its description and Draft or Ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FormText {
+    title: String,
+    body: String,
+    draft: bool,
+}
+/// Whether two creation drafts hold the same text: title, description and Draft or Ready.
+fn same_text(one: &NewPull, other: &NewPull) -> bool {
+    one.title == other.title && one.body == other.body && one.draft == other.draft
+}
 /// One unpublished form snapshot, regardless of how often typing changes its
 /// destination key. Only a quiet form or an explicit transition reaches the
 /// durable saver; previously accepted destination drafts remain independent.
@@ -2020,6 +2577,14 @@ impl DeferredDraft {
     }
 }
 const DRAFT_QUIET_PERIOD: Duration = Duration::from_millis(500);
+/// What the New pull request form's save status reads once it shows a saved draft it took
+/// whole, until the next edit ([`Panel::settle_form`]): the words a restored review's has.
+const DRAFT_RESTORED: &str = "Draft restored locally";
+/// What the form's save status reads while its text has no key and another draft holds the
+/// one its fields name ([`Panel::settle_form`]): neither is put in the other's place. It
+/// names the three things that key is made of, and what it says of the window holds
+/// ([`Panel::leave_form`]).
+const DRAFT_HELD: &str = "Draft not saved: another draft is saved for this destination, head and base. Discard it in Recover drafts to save this one. Keep this window open or copy your text.";
 /// The GitHub CLI sign-in command that Copy sign-in command copies.
 const SIGN_IN_COMMAND: &str = "gh auth login --hostname github.com --web --skip-ssh-key";
 type DraftSaveReply = futures::channel::oneshot::Receiver<anyhow::Result<()>>;
@@ -2093,6 +2658,24 @@ struct Panel {
     title: Entity<InputState>,
     body: Entity<TextareaState>,
     rows: Vec<PullRequest>,
+    /// The repository whose open pull requests `rows` lists, once Refresh PRs or a page of
+    /// them loaded: a refused creation names a pull request only from its own repository's
+    /// rows ([`Panel::refused_for_existing`]).
+    listed: Option<Repository>,
+    /// The pull request the failure line offers to open ([`Existing`]).
+    existing: Option<Existing>,
+    /// Whether `rows` holds only pull requests a creation's answer gave, with no page GitHub
+    /// listed: the list then says so, since it must not read as the open pull requests, and
+    /// Refresh PRs loads those ([`Panel::show_created`]).
+    created_only: bool,
+    /// Set as a creation's row joins the list: the frame that next draws the list shows the
+    /// notice that names the pull request and its row together ([`Created`]), and the row's
+    /// own reveal, which follows focus, counts as made.
+    show_row: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Set as a failure lands that the body must show wherever it has scrolled: the frame
+    /// that next draws the top line among the content shows the line in that frame
+    /// ([`Failed`]).
+    show_line: std::rc::Rc<std::cell::Cell<bool>>,
     /// The part each of `rows`' titles is in the body (`pr-{number}`), built once for each page
     /// the rows change to ([`Panel::name_row_parts`]) rather than for each row in each frame.
     row_parts: Vec<(u64, SharedString)>,
@@ -2107,6 +2690,28 @@ struct Panel {
     status: Option<PullStatus>,
     description: Option<Entity<EditorState>>,
     create: bool,
+    /// Whether the description's field holds a review's text, restored or typed for an opened
+    /// pull request, rather than what the New pull request form left in it: the form and the
+    /// review body share the field, and the form opens by clearing it only of a review's text
+    /// ([`Panel::create`]).
+    reviewed: bool,
+    /// The key the form's text belongs to ([`FormKey`]): the one it was typed or restored
+    /// under, which the form is saved under and no other, whatever its fields name meanwhile
+    /// ([`Panel::settle_form`]). None while the text has no key, typed with a destination
+    /// that names no repository, or while another draft holds the key its fields name.
+    home: Option<FormKey>,
+    /// Whether an edit of the destination, the head or the base has named a key that does
+    /// not count yet: the field's loss of focus settles it ([`Panel::settle_key`]). Focus
+    /// that only passes through one of the three settles nothing.
+    naming: bool,
+    /// Whether the form shows a saved draft it took whole, with nothing edited since: its
+    /// status says so until the next edit ([`DRAFT_RESTORED`]).
+    restored: bool,
+    /// What the New pull request form held as it was left, whole, while the panel shows
+    /// anything else ([`Panel::leave_form`]): the form opens again on it
+    /// ([`Panel::create`]). The store may hold none of it, and the description's field is
+    /// the review body's meanwhile.
+    left: Option<FormText>,
     draft: bool,
     event: ReviewEvent,
     discussion: bool,
@@ -2122,11 +2727,20 @@ struct Panel {
     /// That Cancel stopped the last request ([`RequestKind::cancelled`]),
     /// said in `error`'s place until the next request.
     cancelled: Option<&'static str>,
+    /// The request Escape was refused during, by its generation ([`Panel::close`]): the
+    /// refusal says to wait for that request's result, so its line goes as the request ends,
+    /// before the result is received ([`Panel::run_from`]).
+    refused_during: Option<u64>,
     /// Where `error` or `cancelled` answers: the control the request or refusal they answer
     /// started from ([`Origin`]).
     origin: Origin,
     /// The presses answered with `error` and `draft_issue` ([`Presses`]).
     presses: Presses,
+    /// Return's and Space's presses going down in the panel ([`HeldKeys`]), shared with the
+    /// keystroke interceptor that hears them go down, kept while the panel is open
+    /// ([`Self::hear_keys`]).
+    held: std::rc::Rc<std::cell::RefCell<HeldKeys>>,
+    hears_keys: Option<Subscription>,
     pending: bool,
     /// The busy row's Cancel, which hands focus to the shown section as the
     /// row goes.
@@ -2147,7 +2761,7 @@ struct Panel {
     /// The draft's save status, shared with each frame's labels, which copy nothing of it.
     save_status: SharedString,
     draft_issue: Option<DraftIssue>,
-    saver: commit_drafts::CoalescingSaver<String, Draft>,
+    saver: commit_drafts::CoalescingSaver<String, drafts::Change>,
     deferred_draft: DeferredDraft,
     draft_timer: Option<Task<()>>,
     save_response_generation: u64,
@@ -2156,6 +2770,9 @@ struct Panel {
     templates: Vec<github::Template>,
     attempts: Vec<drafts::Attempt>,
     local_control: Option<HistoryCancellation>,
+    /// The script a test's requests are answered from, in place of a transport ([`Opener`]).
+    #[cfg(test)]
+    scripted: Option<github::Scripted>,
 }
 impl Panel {
     fn new(
@@ -2173,9 +2790,16 @@ impl Panel {
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
-            rows:vec![],row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
+            rows:vec![],listed:None,existing:None,created_only:false,show_row:Default::default(),show_line:Default::default(),row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,refused_during:None,origin:Origin::Panel,presses:Presses::default(),held:Default::default(),hears_keys:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:SharedString::default(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
+            reviewed: false,
+            home: None,
+            naming: false,
+            restored: false,
+            left: None,
+            #[cfg(test)]
+            scripted:None,
         };
         if this.review.fixture {
             this.destination.update(cx, |input, cx| {
@@ -2187,6 +2811,17 @@ impl Panel {
         // A pane that goes with focus hands it on ([`Panel::hand_off_lost_pane_focus`]).
         this.subscriptions
             .push(cx.on_focus_lost(window, Self::hand_off_lost_pane_focus));
+        // A key held as the window turns inactive may come up outside it ([`HeldKeys::leave`]).
+        this.subscriptions
+            .push(cx.observe_window_activation(window, |this, window, _| {
+                if !window.is_window_active() {
+                    this.held.borrow_mut().leave();
+                }
+            }));
+        // As may one held as focus goes to nothing the window draws, where no key-up is heard.
+        this.subscriptions
+            .push(cx.on_focus_lost(window, |this, _, _| this.held.borrow_mut().leave()));
+        this.hear_keys(window.window_handle().window_id(), cx);
         this.subscriptions.push(cx.subscribe_in(
             &this.review.input,
             window,
@@ -2211,11 +2846,21 @@ impl Panel {
             this.subscriptions.push(cx.subscribe_in(
                 &input,
                 window,
-                |this, _, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::Change) {
+                |this, input, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => {
                         this.confirm = None;
-                        this.defer_draft_save(window, cx);
+                        // An edit of the head or the base names another draft's key, which
+                        // counts once the field is left ([`Self::settle_form`]).
+                        if input == &this.title {
+                            this.defer_draft_save(window, cx);
+                        } else {
+                            this.key_edited(window, cx);
+                        }
                     }
+                    InputEvent::Blur if input != &this.title && this.naming => {
+                        this.settle_key(window, cx)
+                    }
+                    _ => {}
                 },
             ));
         }
@@ -2233,6 +2878,9 @@ impl Panel {
             &this.destination,
             window,
             |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Blur) && this.naming {
+                    this.settle_key(window, cx);
+                }
                 if matches!(event, InputEvent::Change) {
                     // Destination edits arrive after the field changed. Flush the
                     // old captured review snapshot before clearing its identity.
@@ -2247,13 +2895,24 @@ impl Panel {
                     this.review.composing = None;
                     this.review.show_list = true;
                     this.rows.clear();
+                    // The rows went, so the list holds no repository's page, nor rows a
+                    // creation gave; and the pull request a refused creation named was the
+                    // repository's the field named until now, so its line and action go too.
+                    this.listed = None;
+                    this.created_only = false;
+                    if let Some(existing) = this.existing.take()
+                        && this.error.as_ref() == Some(&existing.line)
+                    {
+                        this.error = None;
+                    }
                     this.pull = None;
                     this.status = None;
                     this.description = None;
                     this.confirm = None;
                     this.page = 1;
                     this.has_next = false;
-                    this.defer_draft_save(window, cx);
+                    // As an edit of the head does, this one names another draft's key.
+                    this.key_edited(window, cx);
                     cx.notify();
                 }
             },
@@ -2331,12 +2990,23 @@ impl Panel {
                         }
                         match saved {
                             Ok(mut saved) => {
+                                // Whether the form saved its text under its key before
+                                // this read landed, in place of whatever the store held.
+                                let own = this.stored_at_home().is_some();
                                 for draft in std::mem::take(&mut this.saved) {
                                     let key = draft.key();
                                     saved.retain(|old| old.key() != key);
                                     saved.push(draft);
                                 }
                                 this.saved = saved;
+                                // The key counts as the saved drafts are read: a draft the
+                                // read found under it, which the form neither showed nor
+                                // saved over, is no text of the form's, so the form's has
+                                // no key until the rule gives it one ([`Self::settle_form`]).
+                                if !own && this.stored_at_home().is_some() {
+                                    this.home = None;
+                                }
+                                this.settle_key(window, cx);
                             }
                             Err(error) => this.local_read_failed(format!("{error:#}")),
                         }
@@ -2392,9 +3062,283 @@ impl Panel {
             self.save_status = SharedString::default();
             return None;
         }
-        Some(draft)
+        let form = match draft {
+            Draft::Pull(form) => form,
+            other => return Some(other),
+        };
+        // The form is saved under the key its text belongs to and under no other, whatever
+        // its fields name meanwhile. Text with no key takes the one they name where no other
+        // draft holds it, and is otherwise not saved, which the status says.
+        let key = FormKey::of(&form);
+        if self.home.is_none() {
+            if self
+                .stored(&key)
+                .is_some_and(|saved| !same_text(saved, &form))
+            {
+                self.save_status = DRAFT_HELD.into();
+                return None;
+            }
+            self.home = Some(key);
+        }
+        self.home.as_ref().map(|home| Draft::Pull(home.keep(&form)))
+    }
+    /// The creation draft the panel knows to be saved under `key`.
+    fn stored(&self, key: &FormKey) -> Option<&NewPull> {
+        self.saved.iter().find_map(|saved| match saved {
+            Draft::Pull(saved) if key.names(saved) => Some(saved),
+            _ => None,
+        })
+    }
+    /// The draft saved under the key the form's text belongs to.
+    fn stored_at_home(&self) -> Option<&NewPull> {
+        self.home.as_ref().and_then(|home| self.stored(home))
+    }
+    /// Settles the key the New pull request form's fields name, by the one rule for whose
+    /// text a key holds (decided 2026-11-16; it loses nothing in any order of edits).
+    ///
+    /// 1. A draft belongs to the key it was typed or restored under: its destination, head
+    ///    and base ([`FormKey`]). Nothing is taken and nothing is saved for a key the three
+    ///    fields only pass through. A key counts once its edit has settled, which is when
+    ///    the edited field loses focus ([`Self::settle_key`]), and at each transition that
+    ///    saves the form at once ([`Self::save_draft`]: Review submission…, Pull requests,
+    ///    Refresh PRs, a pull request's opening, the panel's close); as the form opens
+    ///    (`opening`); and as the saved drafts are read. Focus leaving the field settles an
+    ///    edit, not the quiet period a save waits out: a pause in the middle of a name would
+    ///    count the prefix it stopped at, `fix` on the way to `fix-2`, and the form's text
+    ///    waits on no timer to be safe, by the next point.
+    /// 2. Before the fields name another key, the form's text is saved under the key it
+    ///    belongs to, where it differs from what is stored there ([`Self::keep_home`]): at
+    ///    the first keystroke of the edit ([`Self::key_edited`]) and again here. The edit
+    ///    saves nothing under the key it names.
+    /// 3. At the settled key, a draft saved there is taken whole, its title, its description
+    ///    and Draft or Ready, in place of what the form showed, which is safe under its own
+    ///    key and in Recover drafts. With none saved there the form keeps its text, which
+    ///    belongs to the new key from now on and is saved there at the next save. A form is
+    ///    never filled from two drafts.
+    /// 4. The form's status says a draft was restored, until the next edit
+    ///    ([`DRAFT_RESTORED`]).
+    /// 5. Text with no key, typed while the destination named no repository or before the
+    ///    saved drafts were read, is saved nowhere: it takes no saved draft's place in the
+    ///    store, and no saved draft takes its place in the form. The form keeps it, the saved
+    ///    draft stays, and the status says the text is not saved and why ([`DRAFT_HELD`]),
+    ///    until that draft is discarded, the fields name a free key or the form is emptied.
+    ///    The window is all that holds it meanwhile, as the status says, so the panel keeps
+    ///    it through whatever takes the form or its fields away ([`Self::leave_form`]).
+    ///
+    /// A form that opens with neither a title nor a description takes the draft saved under
+    /// its key though the key is its own: an emptied form is never saved, so the draft it
+    /// had is still there. While the form stays open, what the person empties stays empty.
+    ///
+    /// The form once took a saved draft at every keystroke of the three fields and saved
+    /// itself under each key it named: typed towards `fix-2`, an empty form took `fix`'s
+    /// draft on the way and saved it over `fix-2`'s; a form that opened on one head's draft,
+    /// edited onto another head's, saved the first over the second; and a form holding only
+    /// a title took the other draft's description under it and saved the mix there.
+    fn settle_form(&mut self, opening: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.create {
+            return;
+        }
+        self.naming = false;
+        // A destination that names no repository names no key: the text keeps the one it has.
+        let Ok(Draft::Pull(form)) = self.current_draft(cx) else {
+            return;
+        };
+        let key = FormKey::of(&form);
+        let empty = form.title.is_empty() && form.body.is_empty();
+        let moved = self.home.as_ref() != Some(&key);
+        if !moved && !(opening && empty) {
+            return;
+        }
+        if moved {
+            self.keep_home(window, cx);
+        }
+        let Some(saved) = self
+            .stored(&key)
+            .filter(|saved| !same_text(saved, &form))
+            .cloned()
+        else {
+            // Nothing is saved there, or the very text the form holds.
+            self.home = Some(key);
+            return;
+        };
+        if self.home.is_none() && !empty {
+            self.save_status = DRAFT_HELD.into();
+            return;
+        }
+        self.home = Some(key);
+        self.fill_form(&saved, window, cx);
+        // What was reviewed is no longer what the form shows.
+        self.confirm = None;
+        self.restored = true;
+        self.save_status = DRAFT_RESTORED.into();
+    }
+    /// Puts `saved`'s title, description and Draft or Ready in the form.
+    fn fill_form(&mut self, saved: &NewPull, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = saved.draft;
+        self.title
+            .update(cx, |input, cx| input.set_value(&saved.title, window, cx));
+        self.body
+            .update(cx, |input, cx| input.set_value(&saved.body, window, cx));
+    }
+    /// The New pull request form gives way to the list or to a pull request: the panel keeps
+    /// what it held, whole, for the form to open on again ([`Self::create`]). Every route
+    /// that stops showing the form goes through here, before anything else takes its fields:
+    /// Pull requests, Refresh PRs, a pull request's opening and a creation's landing.
+    ///
+    /// The store is no place to take the text from again. Text may have no key, while the
+    /// destination names no repository or while another draft holds the key the fields name
+    /// ([`DRAFT_HELD`]); it may have changed since its last save, which a destination that
+    /// names no repository holds back; its save may have failed; and its draft may have been
+    /// discarded in Recover drafts since. Each of those statuses tells the person that
+    /// keeping the window open keeps the text, and the description's field is the review
+    /// body's too: with a pull request opened in between, the form once came back holding
+    /// its title and no description, the text nowhere.
+    ///
+    /// What is kept stays in this panel, which is one captured repository's for as long as
+    /// it lives, and keeping it saves nothing and takes nothing: the form's fields hold it
+    /// again before the key they name is settled, so the one rule decides what it is saved
+    /// under and whether a saved draft takes its place ([`Self::settle_form`]). It ends as
+    /// the form's text does: edited away, saved under a key it gains, used up by its own
+    /// creation ([`Self::use_up_draft`], which empties the form before it is left), or gone
+    /// with the window.
+    fn leave_form(&mut self, cx: &App) {
+        if std::mem::take(&mut self.create) {
+            self.left = Some(self.form_text(cx));
+        }
+    }
+    /// What the form's fields hold, whole. They are the form's while it is shown.
+    fn form_text(&self, cx: &App) -> FormText {
+        FormText {
+            title: self.title.read(cx).value().to_string(),
+            body: self.body.read(cx).value().to_string(),
+            draft: self.draft,
+        }
+    }
+    /// Whether the form, shown or left, holds text the panel does not know to be saved as
+    /// it is under the key it belongs to: the window is then all that holds it, and the
+    /// panel is kept while closed whatever the warm cache's bounds ([`WarmPanels::retain`]).
+    fn holds_unsaved(&self, cx: &App) -> bool {
+        let text = match &self.left {
+            _ if self.create => self.form_text(cx),
+            Some(left) => left.clone(),
+            None => return false,
+        };
+        !(text.title.is_empty() && text.body.is_empty())
+            && !self.stored_at_home().is_some_and(|saved| {
+                saved.title == text.title && saved.body == text.body && saved.draft == text.draft
+            })
+    }
+    /// Puts `left` back in the form, whole, writing only a field that holds something else:
+    /// one that kept its text keeps its cursor and its scroll with it.
+    fn hold_again(&mut self, left: &FormText, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = left.draft;
+        if self.title.read(cx).value() != left.title.as_str() {
+            self.title
+                .update(cx, |input, cx| input.set_value(&left.title, window, cx));
+        }
+        if self.body.read(cx).value() != left.body.as_str() {
+            self.body
+                .update(cx, |input, cx| input.set_value(&left.body, window, cx));
+        }
+    }
+    /// Saves the form's text under the key it belongs to, at once, where it differs from what
+    /// is stored there: before its fields name another key ([`Self::settle_form`], point 2).
+    /// A snapshot waiting out the quiet period is of that text and goes. Nothing is saved of
+    /// a form with neither a title nor a description, nor of text that has no key.
+    fn keep_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_timer = None;
+        self.deferred_draft.clear();
+        let Some(home) = self.home.clone() else {
+            return;
+        };
+        let own = NewPull {
+            repository: home.repository.clone(),
+            title: self.title.read(cx).value().to_string(),
+            body: self.body.read(cx).value().to_string(),
+            head: home.head.clone(),
+            base: home.base.clone(),
+            draft: self.draft,
+            expected_head: None,
+            expected_base: None,
+        };
+        if own.title.is_empty() && own.body.is_empty() {
+            return;
+        }
+        if self
+            .stored(&home)
+            .is_some_and(|saved| same_text(saved, &own))
+        {
+            return;
+        }
+        self.persist_draft(Draft::Pull(own), window, cx);
+    }
+    /// An edit of the destination, the head or the base: with the form open, its text is
+    /// saved under the key it belongs to before the fields name another
+    /// ([`Self::keep_home`]), and nothing is taken or saved for the key they name now, which
+    /// counts once the field is left ([`Self::settle_key`]). With no form open the edit
+    /// defers a save as any other does.
+    fn key_edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.create {
+            self.defer_draft_save(window, cx);
+            return;
+        }
+        let restored = std::mem::take(&mut self.restored);
+        self.naming = true;
+        self.keep_home(window, cx);
+        match self.current_draft(cx) {
+            Err(issue) => {
+                self.save_status = issue.save_message().into();
+                if self.draft_issue.is_some() {
+                    self.draft_issue = Some(issue);
+                }
+            }
+            Ok(form) => {
+                self.draft_issue = None;
+                // A status that spoke of the key the fields named until now speaks of what
+                // holds: the text is stored under its own key, or waits for the key it gets.
+                let stale = restored
+                    || [DRAFT_HELD, DraftIssue::Destination.save_message()]
+                        .contains(&self.save_status.as_ref());
+                if stale {
+                    self.save_status = if empty_pull_draft(&form) {
+                        ""
+                    } else if self.home.is_some() {
+                        "Draft saved locally"
+                    } else {
+                        "Saving local draft…"
+                    }
+                    .into();
+                }
+            }
+        }
+        cx.notify();
+    }
+    /// The field whose edit named another key lost focus, or the saved drafts were read: the
+    /// key counts ([`Self::settle_form`]). Text that had no key until now is saved at once
+    /// under the one it got, since it is saved nowhere else.
+    fn settle_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.create {
+            return;
+        }
+        let keyless = self.home.is_none();
+        self.settle_form(false, window, cx);
+        if keyless {
+            self.save_form(window, cx);
+        }
+        cx.notify();
+    }
+    /// Saves the form or the review at once, where there is something to save: nothing of a
+    /// form that shows a restored draft nothing has edited since, which holds what is stored
+    /// and whose status stays.
+    fn save_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(draft) = self.draft_to_save(cx)
+            && !(self.restored && self.holds_stored(&draft))
+        {
+            self.persist_draft(draft, window, cx);
+        }
     }
     fn defer_draft_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.restored = false;
         self.draft_timer = None;
         self.deferred_draft.clear();
         if let Some(draft) = self.draft_to_save(cx) {
@@ -2422,10 +3366,18 @@ impl Panel {
         // A superseded timer must never enqueue its older destination afterward.
         self.draft_timer = None;
         self.deferred_draft.clear();
-        if let Some(draft) = self.draft_to_save(cx) {
-            self.persist_draft(draft, window, cx);
-        }
+        // The transition acts on the form as it stands, so the key its fields name counts
+        // ([`Self::settle_form`]).
+        self.settle_form(false, window, cx);
+        self.save_form(window, cx);
         cx.notify();
+    }
+    /// Whether `draft` is a creation draft the panel knows to be saved as it is, under its
+    /// key.
+    fn holds_stored(&self, draft: &Draft) -> bool {
+        matches!(draft, Draft::Pull(form) if self
+            .stored(&FormKey::of(form))
+            .is_some_and(|saved| same_text(saved, form)))
     }
     fn flush_draft_for_shutdown(&mut self, cx: &mut App) -> Option<DraftSaveCompletion> {
         self.draft_timer = None;
@@ -2449,7 +3401,7 @@ impl Panel {
                 let queued = self.saver.queue_with(
                     &owner.preferences_writer,
                     draft.key(),
-                    draft,
+                    draft.into(),
                     drafts::save_batch,
                 );
                 if queued.is_some() {
@@ -2465,6 +3417,8 @@ impl Panel {
         self.save_completion.clone()
     }
     fn persist_draft(&mut self, draft: Draft, window: &mut Window, cx: &mut Context<Self>) {
+        // Whatever is saved from here on is no draft the form has just taken.
+        self.restored = false;
         let key = draft.key();
         if matches!(&draft, Draft::Reply(reply) if reply.body.is_empty()) {
             // Empty replies are serialized deletions, not recoverable snapshots.
@@ -2476,8 +3430,12 @@ impl Panel {
             self.saved.push(draft.clone());
         }
         let response = match self.owner.update(cx, |owner, _| {
-            self.saver
-                .queue_with(&owner.preferences_writer, key, draft, drafts::save_batch)
+            self.saver.queue_with(
+                &owner.preferences_writer,
+                key,
+                draft.into(),
+                drafts::save_batch,
+            )
         }) {
             Ok(response) => response,
             Err(_) => {
@@ -2497,22 +3455,72 @@ impl Panel {
                     // A previous destination's reply must not claim the
                     // currently invalid or newly edited form has been saved.
                     let current = this.current_draft(cx);
-                    apply_save_completion(
-                        &mut this.save_status,
-                        response_generation,
-                        this.save_response_generation,
-                        current,
-                        this.deferred_draft.is_pending()
-                            || this.conversations.deferred.is_pending()
-                            || this.saver.is_pending(),
-                        succeeded,
-                    );
+                    // Nor does the save of what a form held before it took a saved draft
+                    // replace what its status says of that draft, nor any save claim that
+                    // text with no key was saved; a failed save is said either way.
+                    let kept = this.create
+                        && succeeded
+                        && (this.restored
+                            || (this.home.is_none()
+                                && matches!(&current, Ok(form) if !empty_pull_draft(form))));
+                    if !kept {
+                        apply_save_completion(
+                            &mut this.save_status,
+                            response_generation,
+                            this.save_response_generation,
+                            current,
+                            this.deferred_draft.is_pending()
+                                || this.conversations.deferred.is_pending()
+                                || this.saver.is_pending(),
+                            succeeded,
+                        );
+                    }
                     cx.notify();
                 });
             })
             .detach();
         }
         cx.notify();
+    }
+    /// A creation GitHub confirmed has used up its draft: exactly the draft `sent` was written
+    /// in leaves the draft store, as a confirmed reply's does, through the same saver as
+    /// typing, so the removal replaces a snapshot of the sent text still queued under its key
+    /// and lands after one being written ([`drafts::Change::Created`]). Recover drafts stops
+    /// counting it at once, and the form gives up the title and the description where it
+    /// still holds what was sent, so New pull request opens empty for that head and base.
+    /// Left there, the form reopened on the text just sent, and sending it again could only
+    /// be refused. Draft or Ready stays as the person chose it: a choice, not text that was
+    /// sent. Nothing else goes: another head's, base's or repository's draft, and text under
+    /// the same key that was not sent, are the person's ([`Draft::sent_as`]). A removal the
+    /// store refuses keeps the draft on disk, which loses nothing.
+    fn use_up_draft(&mut self, sent: &NewPull, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .deferred_draft
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.sent_as(sent))
+        {
+            self.draft_timer = None;
+            self.deferred_draft.clear();
+        }
+        if self.current_draft(cx).is_ok_and(|form| form.sent_as(sent)) {
+            self.title
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.body
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.save_status = SharedString::default();
+            self.restored = false;
+        }
+        self.saved.retain(|saved| !saved.sent_as(sent));
+        let key = Draft::Pull(sent.clone()).key();
+        let used = drafts::Change::Created(Box::new(sent.clone()));
+        if let Ok(response) = self.owner.update(cx, |owner, _| {
+            self.saver
+                .queue_with(&owner.preferences_writer, key, used, drafts::save_batch)
+        }) {
+            // A window closed next waits for the removal as it does for a save.
+            let _ = track_save_completion(&mut self.save_completion, response);
+        }
     }
     /// Answers a press with `error` on the failure line, said at once however often the same
     /// refusal repeats ([`Presses`]): on the panel's top line ([`Origin::Panel`]).
@@ -2596,6 +3604,12 @@ impl Panel {
             Ok(submitted) => submitted,
             Err(reason) => {
                 self.refuse_at(origin, format!("{reason}, then try again."));
+                // A Send refused at the foot of what it sends answers on the top line, out of
+                // view from there: the line is shown and takes focus, as a failed send's is
+                // ([`Self::focus_failure`]). A reply's Send is answered in its composer.
+                if kind == RequestKind::Send && !self.answers_in_reply() {
+                    self.focus_failure(window, cx);
+                }
                 cx.notify();
                 return false;
             }
@@ -2606,6 +3620,7 @@ impl Panel {
         self.pending = true;
         self.request = kind;
         self.error = None;
+        self.existing = None;
         self.cancelled = None;
         self.origin = origin.clone();
         self.notice = None;
@@ -2619,6 +3634,17 @@ impl Panel {
                 }
                 this.pending = false;
                 this.control = None;
+                // A refusal that answered Escape while this request ran said to wait for its
+                // result ([`Self::close`]), so its line goes before the result is received:
+                // left there, it stood under "Pull request #N created." and was said again
+                // as this request's answer, as if the send had not worked.
+                let refused = this.refused_during.take() == Some(generation);
+                let cleared = refused && this.error.as_deref() == Some(SEND_IN_FLIGHT);
+                if cleared {
+                    this.error = None;
+                }
+                // Whether that line, a stop, held focus as it went.
+                let on_line = cleared && this.review.failure_focus.is_focused(window);
                 // The busy row goes: focus on its Cancel moves to the section
                 // the panel shows, as when it opens, before the reply moves it
                 // anywhere else.
@@ -2640,6 +3666,20 @@ impl Panel {
                         (result, _) => receive(result, this, window, cx),
                     }
                 }
+                // Focus the refusal's line held goes where the result put it, the new row or
+                // the failure's own line; where the result moved it nowhere and left no line
+                // for it to rest on, it goes to the content the panel shows now, before the
+                // frame that draws the result, with the keys then down held off it
+                // ([`Self::hand_focus_to_content`]). Left to the guard for focus on nothing
+                // drawn, it moved a frame later, unheld.
+                if on_line && this.error.is_none() && this.review.failure_focus.is_focused(window) {
+                    this.hand_focus_to_content(window, cx);
+                }
+                // An Escape this request refused that is still down closes nothing at its
+                // next repeat, which finds the request ended ([`HeldKeys::latch_escape`]).
+                if refused {
+                    this.held.borrow_mut().latch_escape();
+                }
                 // `run` cleared the failure line, so one there now is this press's answer.
                 if this.error.is_some() {
                     this.presses.error = this.presses.error.wrapping_add(1);
@@ -2649,6 +3689,15 @@ impl Panel {
         }));
         cx.notify();
         true
+    }
+    /// How the request being started opens its transport ([`Opener`]).
+    fn opener(&self) -> Opener {
+        Opener {
+            fixture: self.review.fixture,
+            moved: self.review.fixture_moved,
+            #[cfg(test)]
+            scripted: self.scripted.clone(),
+        }
     }
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.review.fixture {
@@ -2706,9 +3755,8 @@ impl Panel {
                 return;
             }
         };
-        let fixture = self.review.fixture;
-        let moved = self.review.fixture_moved;
-        self.run(RequestKind::Load,move|control|{let transport=UiTransport::open(fixture,moved)?;let login=transport.login().to_owned();Ok((Client(transport).list(&repository,page,&control)?,login))},|result,this,_,_|match result {Ok((page,login))=>{this.create=false;this.review.show_list=true;this.confirm=None;this.rows=page.items;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        let opener = self.opener();
+        self.run(RequestKind::Load,move|control|{let transport=opener.open()?;let login=transport.login().to_owned();let page=Client(transport).list(&repository,page,&control)?;Ok((page,login,repository))},|result,this,_,cx|match result {Ok((page,login,repository))=>{this.leave_form(cx);this.review.show_list=true;this.confirm=None;this.rows=page.items;this.listed=Some(repository);this.created_only=false;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn inspect(&mut self, pull: PullRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -2719,10 +3767,9 @@ impl Panel {
                 return;
             }
         };
-        let fixture = self.review.fixture;
-        let moved = self.review.fixture_moved;
+        let opener = self.opener();
         self.run(RequestKind::Load,move|control|{
-            let mut client=Client(UiTransport::open(fixture,moved)?);
+            let mut client=Client(opener.open()?);
             let pull=client.pull(&repository,pull.number,&control)?;
             let captured=pull.capture(repository);
             let status=client.status(&captured,&control);
@@ -2731,7 +3778,7 @@ impl Panel {
             Ok((pull,captured,status,files,comments))
         },|result,this,window,cx|match result {
             Ok((pull,captured,status,files,comments))=>{
-                this.create=false;this.confirm=None;this.review.reset_content();this.conversations.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
+                this.leave_form(cx);this.confirm=None;this.review.reset_content();this.conversations.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
                 this.description=pull.body.as_ref().map(|body|text::editor(body,"markdown",None,window,cx));
                 let mut errors=vec![];
                 match status {Ok(status)=>this.status=Some(status),Err(error)=>{this.status=None;errors.push(format!("Review/check status: {error:#}"));}}
@@ -2740,6 +3787,7 @@ impl Panel {
                 this.pull=Some(pull);
                 let draft=this.saved.iter().find_map(|draft|match draft {Draft::Review(review) if review.pull==captured=>Some(review.clone()),_=>None});
                 this.body.update(cx,|input,cx|input.set_value(draft.as_ref().map(|d|d.body.clone()).unwrap_or_default(),window,cx));
+                this.reviewed=true;
                 this.event=draft.as_ref().map(|d|d.event).unwrap_or(ReviewEvent::Comment);
                 let had_review=draft.is_some();
                 this.restore_review(draft,window,cx);
@@ -2766,6 +3814,12 @@ impl Panel {
             return;
         }
         self.save_draft(window, cx);
+        // The description's field is the review body's too: what a review left in it goes,
+        // and what the form itself left there stays. Cleared each time the form opened, and
+        // the title then saved alone over the draft just saved, a description typed before
+        // Pull requests was gone from the form and from the store as New pull request came
+        // back to it, and one the store could not take was gone with the field.
+        let reviewed = std::mem::take(&mut self.reviewed) || self.pull.is_some();
         self.create = true;
         self.conversations.reset_content();
         self.review.reset_content();
@@ -2775,8 +3829,19 @@ impl Panel {
         self.status = None;
         self.description = None;
         self.confirm = None;
-        self.body
-            .update(cx, |input, cx| input.set_value("", window, cx));
+        match self.left.take() {
+            // A review took the description's place, no edit of the person's: the form
+            // holds again what it was left with, whole, whether or not the store holds it
+            // ([`Self::leave_form`]).
+            Some(left) => self.hold_again(&left, window, cx),
+            None if reviewed => self
+                .body
+                .update(cx, |input, cx| input.set_value("", window, cx)),
+            None => {}
+        }
+        // The key the fields name counts as the form opens ([`Self::settle_form`]).
+        self.restored = false;
+        self.settle_form(true, window, cx);
         self.notice=Some("Use a branch already published to GitHub. Creating a PR never pushes a branch. Choose Draft or Ready, then review the destination.".into());
         self.save_draft(window, cx);
         cx.notify();
@@ -2828,13 +3893,12 @@ impl Panel {
                 return;
             }
         }
-        let fixture = self.review.fixture;
-        let moved = self.review.fixture_moved;
+        let opener = self.opener();
         if let Draft::Pull(pull) = draft {
             self.run(
                 RequestKind::Load,
                 move |control| {
-                    let transport = UiTransport::open(fixture, moved)?;
+                    let transport = opener.open()?;
                     let account = transport.login().to_owned();
                     Ok((Client(transport).prepare_create(pull, &control)?, account))
                 },
@@ -2879,8 +3943,7 @@ impl Panel {
             return;
         };
         self.save_draft(window, cx);
-        let fixture = self.review.fixture;
-        let moved = self.review.fixture_moved;
+        let opener = self.opener();
         let sent_action = confirmation.action.clone();
         // A reply's Send answers in the reply's composer, where the reply was written; every
         // other action's, a conversation's Resolve or Reopen included, on the panel's top line.
@@ -2889,7 +3952,7 @@ impl Panel {
             _ => Origin::Panel,
         };
         let sent = self.run_from(origin, RequestKind::Send, move |control| {
-            let transport = UiTransport::open(fixture, moved)?;
+            let transport = opener.open()?;
             anyhow::ensure!(transport.login() == confirmation.account, "The connected GitHub account changed. Review the destination again before submitting.");
             let destination = format!("{} · account {}", confirmation.action.destination(), confirmation.account);
             drafts::record_attempt(destination.clone(), "Submission started; if no final outcome appears, inspect GitHub before sending again.".into())?;
@@ -2898,32 +3961,388 @@ impl Panel {
                 _ => None,
             };
             let result = Client(transport).execute(confirmation.action, &control);
-            let outcome = match &result { Ok(notice) => notice.clone(), Err(error) => format!("{error:#}") };
+            let outcome = match &result { Ok(sent) => sent.notice.clone(), Err(error) => format!("{error:#}") };
             if let Err(error) = drafts::record_reply_outcome(destination, outcome.chars().take(4000).collect(), completed_reply.as_ref().filter(|_|result.is_ok())) {
                 return Err(anyhow::anyhow!("The GitHub action finished but saving its outcome failed: {error}. Check GitHub before resubmitting."));
             }
             result
         }, move |result, this, window, cx| match result {
-            Ok(notice) => {
+            Ok(sent) => {
                 if matches!(sent_action, Action::Reply {..} | Action::SetThreadResolved {..}) {
                     this.finish_conversation_action(&sent_action, window, cx);
+                } else if let (Action::Create(new), Some(created)) = (&sent_action, sent.created) {
+                    this.show_created(new, created, window, cx);
                 } else {
-                    this.notice = Some(format!("{notice}. The local draft remains available; submitting it again creates another outbound action."));
-                    if matches!(sent_action, Action::Create(_)) {
-                        this.create = false; this.review.show_list = true;
-                        this.notice = Some("Pull request created. Refresh PRs to open it.".into());
-                        this.focus_visible_section(window, cx);
-                    }
+                    this.notice = Some(format!("{}. The local draft remains available; submitting it again creates another outbound action.", sent.notice));
                 }
             },
             Err(error) => {
-                this.error = Some(format!("{error:#}"));
-                if this.conversations.active.is_some() { this.focus_visible_section(window,cx); }
+                let exists = matches!(sent_action, Action::Create(_)) && error.is::<github::PullExists>();
+                this.error = Some(match &sent_action {
+                    // The one refusal whose outcome is certain: the panel says what it found,
+                    // from the head it captured, in place of the sentence every other one gets.
+                    Action::Create(new) if exists => this.refused_for_existing(new),
+                    _ => format!("{error:#}"),
+                });
+                // One rule for where focus rests once a send has failed: on the remedy the
+                // failure's line offers, and otherwise on that line itself.
+                if exists { this.focus_refusal(window, cx); }
+                else if matches!(sent_action, Action::Reply { .. }) {
+                    // A reply's failure is drawn in its composer, where focus goes back to
+                    // the draft; one whose composer has gone answers on the top line.
+                    this.show_line.set(true);
+                    if this.conversations.active.is_some() { this.focus_visible_section(window,cx); }
+                }
+                else { this.focus_failure(window, cx); }
             },
         }, window, cx);
         if sent {
+            // The confirmation goes with its controls, so focus one of them holds, as Send
+            // does once pressed, goes to the content the panel shows, as it does when Keep
+            // editing takes the confirmation away. Left on Send, which no frame then drew,
+            // nothing showed focus and the window's keys reached nothing of the panel: the
+            // Return's own key-up never reached the toolkit's record of the press, and the
+            // next Return in the panel, taken for its repeat, did nothing.
+            let held = window.focused(cx).is_some_and(|focus| {
+                focus == self.conversations.confirm_focus
+                    || ["github-confirm-send", "github-edit-submission"]
+                        .into_iter()
+                        .any(|id| self.review.buttons.kept(id).as_ref() == Some(&focus))
+            });
             self.confirm = None;
+            if held {
+                self.hand_focus_to_content(window, cx);
+            }
         }
+    }
+    /// The panel's one hand-off of focus from a control that goes to the content it shows
+    /// ([`Self::focus_visible_section`]): from Send to GitHub or Keep editing as the
+    /// confirmation goes with its action sent ([`Self::submit`]), and from an Escape
+    /// refusal's line as it goes with the send it refused during ([`Self::run_from`]).
+    fn hand_focus_to_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The hand-off shows nothing new, so the body shows nothing anew: the focus moves,
+        // and the body's record of the focus it has shown moves with it. Revealed, the
+        // reply's draft scrolled back into view as its Send started.
+        let shown = std::mem::take(&mut *self.review.revealed_focus.borrow_mut());
+        self.focus_visible_section(window, cx);
+        *self.review.revealed_focus.borrow_mut() = review::FocusObservation {
+            focus: window.focused(cx),
+            ..shown
+        };
+        // A key still down as focus arrives, a Return that sent going down, under X11 a
+        // Space whose repeat's release sent mid-hold, or one pressed on the refusal's line:
+        // its press is latched, so it types nothing into the field focus went to
+        // ([`HeldKeys`]).
+        if let Some(focus) = window.focused(cx) {
+            self.land_focus(&focus, window, cx);
+        }
+    }
+    /// Hears Return and Space go down in `window`, the panel's, while the panel is open
+    /// ([`HeldKeys`]): with focus where the panel hears them come up, the key's press begins
+    /// or repeats; anywhere else, as in a dialog over the panel, a key of the panel still down
+    /// may come up unheard ([`HeldKeys::leave`]). The panel's close drops it,
+    /// so a closed panel, kept warm for its repository, takes no part in the window's keys.
+    ///
+    /// It stops one key-down and no other: Return's or Space's, heard in the panel, while that
+    /// key's press is latched and a text field of the panel holds focus ([`FIELD`]). A latched
+    /// press was down as a landing or a send's hand-off moved focus and has not come up since
+    /// ([`Panel::land_focus`]), so the key-down is a repeat of the press that pressed Send, or
+    /// of a key pressed while that one was down, and never a press the person aimed at the
+    /// field: a key they press in a field they are typing in begins its own press, unlatched,
+    /// and repeats there. Stopped, the key-down reaches no binding and types no character:
+    /// Space held on Send to GitHub, which under X11 sends at a repeat's release mid-hold,
+    /// typed a space into the title, the review body or the reply at each later repeat once
+    /// the send had ended, and Return a line where a repeat's release and press came in two
+    /// batches. On a control that is no text field nothing is stopped: a latched press's
+    /// click there is refused where it would act ([`HeldKeys::refuses`]).
+    ///
+    /// It hears Escape too, and stops its key-down wherever in the panel it is heard while
+    /// its press is latched ([`HeldKeys::latch_escape`]): the dialog's Cancel, which closes
+    /// the panel, and a field's own Escape take none of it.
+    fn hear_keys(&mut self, window: crate::gpui::WindowId, cx: &mut Context<Self>) {
+        let held = self.held.clone();
+        self.hears_keys = Some(cx.intercept_keystrokes(move |event, pressed_in, cx| {
+            let Some(own) = heard_key(&event.keystroke) else {
+                return;
+            };
+            if pressed_in.window_handle().window_id() != window {
+                return;
+            }
+            let heard = event
+                .context_stack
+                .iter()
+                .any(|context| context.contains(review::BODY) || context.contains(HELD));
+            let mut held = held.borrow_mut();
+            if own == ESCAPE {
+                if heard && held.escape_down() {
+                    cx.stop_propagation();
+                }
+                return;
+            }
+            if heard {
+                held.key_down(own, key_up_withheld(&event.keystroke));
+                let in_field = event
+                    .context_stack
+                    .iter()
+                    .any(|context| context.contains(FIELD));
+                if in_field && held.keys[own].is_some_and(|press| press.latched) {
+                    cx.stop_propagation();
+                }
+            } else {
+                held.leave();
+            }
+        }));
+    }
+    /// Notes the key-up of a Return, Space or Escape press under way ([`HeldKeys::key_down`],
+    /// [`HeldKeys::escape_down`]), before
+    /// the control it comes up on takes its click, which a latched press refuses
+    /// ([`HeldKeys::refuses`]): the press
+    /// ends at the next frame, unless its key goes down again first. GPUI's X11 client drops
+    /// a repeat's release when its press comes in the same batch of events, but a pair split
+    /// across two batches reaches the panel as a key-up, an idle pass and a key-down; the next
+    /// batch comes within microseconds, a frame some milliseconds later, and a person's next
+    /// press later still. A press is down until then, so a landing between the two halves of
+    /// such a repeat finds the key down.
+    fn note_key_up(
+        &mut self,
+        event: &gpui_kit::KeyUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(own) = heard_key(&event.keystroke) else {
+            return;
+        };
+        let mut held = self.held.borrow_mut();
+        let key_up = held.key_ups.wrapping_add(1);
+        let Some(press) = held.press(own).as_mut() else {
+            return;
+        };
+        press.released = Some(key_up);
+        held.key_ups = key_up;
+        let panel = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = panel.update(cx, |panel, _| panel.end_press(own, key_up));
+        });
+    }
+    /// Ends the press of Return, Space or Escape that `key_up` released, unless its key went
+    /// down again; the other keys' presses stay.
+    fn end_press(&mut self, own: usize, key_up: u64) {
+        let mut held = self.held.borrow_mut();
+        let press = held.press(own);
+        if press.is_some_and(|press| press.released == Some(key_up)) {
+            *press = None;
+        }
+        if !held.latched() {
+            held.watch = None;
+        }
+    }
+    /// A landing gave `focus`, a control of the panel, focus the person did not move there:
+    /// the presses of Return and Space then under way are latched, so no keyboard click acts
+    /// on the controls a landing focuses until each has come up ([`HeldKeys`]). With none
+    /// under way nothing is latched, and the person's next press acts.
+    fn land_focus(&mut self, focus: &FocusHandle, window: &mut Window, cx: &mut Context<Self>) {
+        let mut latched = false;
+        for press in self.held.borrow_mut().keys.iter_mut().flatten() {
+            press.latched = true;
+            latched = true;
+        }
+        let watch = latched.then(|| {
+            cx.on_focus_out(focus, window, |this, _, _, _| {
+                this.held.borrow_mut().leave()
+            })
+        });
+        self.held.borrow_mut().watch = watch;
+    }
+    /// Gives focus to the remedy a refused creation's line names ([`Self::refused_for_existing`]):
+    /// its action, Open #N, where the line offers one, and otherwise Refresh PRs, drawn with
+    /// its ring where the keyboard sent, so Tab goes on from there and Escape closes the
+    /// panel; and holds the keys then down off it ([`Self::land_focus`]).
+    fn focus_refusal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let remedy = if self.offered(cx).is_some() {
+            "github-open-existing"
+        } else {
+            "github-refresh"
+        };
+        let focus = self.review.buttons.focus(remedy, cx);
+        focus.focus(window, cx);
+        // Shown whole with its ring whatever input sent the creation: the body's parts reveal
+        // the control focus moves onto only after a key, and after a pointer's click on Send,
+        // Refresh PRs, a part of the toolbar above the line, stood at the body's top edge with
+        // the top of its ring cut.
+        self.review.reopening.reveal();
+        self.land_focus(&focus, window, cx);
+    }
+    /// Rests focus on the failure's line itself, on the panel's top line, as a send ends in a
+    /// failure or a refusal whose line offers no remedy: a creation, a review, a comment and a
+    /// conversation's Resolve or Reopen, at every size. One rule with [`Self::focus_refusal`]:
+    /// focus goes where the answer is, on the remedy where the line names one and otherwise on
+    /// the line, which is the next thing the person reads. The line is then a stop of its own
+    /// ([`review::FailureStop`]): it draws its ring on its own edge, shown whatever input sent,
+    /// since a pointer's click on Send leaves the window's ring unmarked and focus on a line
+    /// that drew none was on nothing the person saw; Tab goes on to the control below it and
+    /// Shift+Tab comes back; it takes no press, so Return and Space do nothing there and a key
+    /// still held from Send presses nothing; and the body shows it whole wherever it had
+    /// scrolled, in the frame that first draws it ([`Failed`]). A screen reader follows focus
+    /// to the line and reads it there, once: the window's alert leaves that failure to it
+    /// ([`Self::announce`]). The two refusals that answer a send there follow the same rule:
+    /// Send to GitHub pressed while the window is busy ([`Self::run_from`]) and Escape pressed
+    /// while the send is in flight ([`Self::close`]).
+    ///
+    /// Focus once stayed on the form's title field after a failed creation, or went to Pull
+    /// requests where the view could not hold the line and the field, a ring that read
+    /// "leave" where the person meant to fix and try again, and after a failed review,
+    /// comment or Resolve stayed where sending left it, which the line's reveal could leave
+    /// out of view.
+    fn focus_failure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_line.set(true);
+        let focus = self.review.failure_focus.clone();
+        self.review.failure_stop = review::FailureStop::Landed;
+        // Focus that is on the line already moves nowhere, so nothing reads it: the alert does.
+        self.review.failure_read = !focus.is_focused(window);
+        focus.focus(window, cx);
+        if let Some(owner) = self.owner.upgrade() {
+            owner.read(cx).focus_ring.mark(window);
+        }
+    }
+    /// Shows the pull request a creation of `new` made, from the creation's own answer and with
+    /// no request after it. The notice names it, "Pull request #N created." or, for a draft,
+    /// "Draft pull request #N created."; its row comes first in the list, as GitHub lists the
+    /// newest first, in place of a row of the same number, drawn as any listed row is; and the
+    /// row is the keyboard's place, shown whole in its list and in the body whatever input sent
+    /// the creation. It is not opened: opening it reads from GitHub, which is the person's
+    /// press. The notice once read "Pull request created. Refresh PRs to open it.", the list
+    /// unchanged.
+    ///
+    /// The row joins the first page of `new`'s repository where that is what `rows` lists: a
+    /// full page then gives up its last row, which GitHub now lists on the next page, so the
+    /// next page read from there neither doubles nor skips a row. Where `rows` lists nothing,
+    /// another repository or a later page, the new row stands alone on page 1 and the list
+    /// says it shows only that ([`Panel::created_only`]), since a new row first on a later page
+    /// would place the newest pull request there.
+    ///
+    /// An answer that held only the number names it and says Refresh PRs opens it, and one
+    /// that could not be read says what it once said: the creation was accepted either way.
+    ///
+    /// An answer that names the pull request, whole or by its number, confirms the creation,
+    /// and the creation's draft is used up ([`Self::use_up_draft`]). One that could not be
+    /// read confirms nothing of what was made, so the draft stays whole, as it does through
+    /// every failure and refusal: the text is the person's.
+    fn show_created(
+        &mut self,
+        new: &NewPull,
+        created: github::Created,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(created, github::Created::Unread) {
+            self.use_up_draft(new, window, cx);
+        }
+        self.leave_form(cx);
+        self.review.show_list = true;
+        let pull = match created {
+            github::Created::Pull(pull) => *pull,
+            unlisted => {
+                self.notice = Some(match unlisted {
+                    github::Created::Number(number) => {
+                        format!("Pull request #{number} created. Refresh PRs to open it.")
+                    }
+                    _ => "Pull request created. Refresh PRs to open it.".into(),
+                });
+                self.focus_visible_section(window, cx);
+                return;
+            }
+        };
+        let number = pull.number;
+        let kind = if pull.draft {
+            "Draft pull request"
+        } else {
+            "Pull request"
+        };
+        self.notice = Some(format!("{kind} #{number} created."));
+        let listed = self.listed.as_ref() == Some(&new.repository) && self.page == 1;
+        if listed {
+            self.rows.retain(|row| row.number != number);
+            self.rows.insert(0, pull);
+            if self.rows.len() > github::PAGE_SIZE {
+                self.rows.truncate(github::PAGE_SIZE);
+                self.has_next = true;
+            }
+        } else {
+            self.rows = vec![pull];
+            self.page = 1;
+            self.has_next = false;
+            self.listed = Some(new.repository.clone());
+        }
+        self.created_only = !listed || self.created_only;
+        // The row's title takes focus at the top of its list, whose first row it is, and the
+        // frame that draws it shows the notice and the row together ([`Created`]).
+        self.review.pull_scroll.set_offset(point(px(0.), px(0.)));
+        self.show_row.set(true);
+        let focus = self.review.buttons.focus(("github-pr", number), cx);
+        focus.focus(window, cx);
+        // A key still down from Send presses nothing on the row ([`Self::land_focus`]).
+        self.land_focus(&focus, window, cx);
+    }
+    /// What the failure line says of a creation of `new` that GitHub refused because its head
+    /// branch already has a pull request, in the app's own words and from the head the
+    /// creation captured, none of GitHub's text: with the pull request's number, and Open #N as
+    /// the line's one action, where the loaded list of that repository holds it
+    /// ([`held_pull`]), and otherwise that Refresh PRs shows it. Nothing is looked up or
+    /// refreshed for it: the next request is the person's press. The outcome is certain, so
+    /// the line says "Nothing was created" where an uncertain write's says to check GitHub. The
+    /// body shows the line wherever it has scrolled ([`Failed`]): Send stands at
+    /// the form's foot, and the line once landed above the body's top, out of view, at 13 pt in
+    /// a 461 × 490 window.
+    fn refused_for_existing(&mut self, new: &NewPull) -> String {
+        self.show_line.set(true);
+        let held = self
+            .listed
+            .as_ref()
+            .filter(|listed| **listed == new.repository)
+            .and_then(|_| held_pull(&self.rows, new))
+            .cloned();
+        match held {
+            Some(pull) => {
+                let line = format!(
+                    "{} already has pull request #{}. Nothing was created.",
+                    new.head, pull.number
+                );
+                self.existing = Some(Existing {
+                    line: line.clone(),
+                    repository: new.repository.clone(),
+                    pull,
+                });
+                line
+            }
+            None => format!(
+                "{} already has a pull request. Nothing was created. Refresh PRs to see it.",
+                new.head
+            ),
+        }
+    }
+    /// The pull request a refused creation's line offers to open ([`Existing`]): beside the
+    /// line it was found for alone, and only while the destination field names the repository
+    /// the creation was refused in. The field's edit takes it away, and this holds whatever
+    /// reached the field without one.
+    fn offered(&self, cx: &App) -> Option<&PullRequest> {
+        self.existing
+            .as_ref()
+            .filter(|existing| self.error.as_ref() == Some(&existing.line))
+            .filter(|existing| {
+                self.destination(cx)
+                    .is_ok_and(|destination| destination == existing.repository)
+            })
+            .map(|existing| &existing.pull)
+    }
+    /// Open #N's press: opens the pull request the line offers, as a press on its row does
+    /// ([`Self::inspect`]), checked again as it is pressed, before any request, so it reads
+    /// nothing once the destination names another repository.
+    fn open_existing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pull) = self.offered(cx).cloned() else {
+            cx.notify();
+            return;
+        };
+        self.inspect(pull, window, cx);
     }
     /// Says the lines the panel shows through the window's announcements, once each, as the
     /// panel opens with them and whenever they change: its notice politely
@@ -2947,6 +4366,9 @@ impl Panel {
             issue: self.draft_issue,
             presses: self.presses,
         };
+        // A failure whose line took focus as it landed is read from that line, as a screen
+        // reader follows focus there: said by the window's alert as well, it was read twice.
+        let read = std::mem::take(&mut self.review.failure_read);
         if shown == self.heard {
             return;
         }
@@ -2970,7 +4392,7 @@ impl Panel {
         // are one alert, as the alert node holds one.
         let alert = [
             shown.error.clone().filter(|_| {
-                shown.error != heard.error || shown.presses.error != heard.presses.error
+                !read && (shown.error != heard.error || shown.presses.error != heard.presses.error)
             }),
             shown
                 .issue
@@ -3152,7 +4574,13 @@ impl Panel {
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.request.writing() {
-            self.refuse("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.");
+            self.refuse(SEND_IN_FLIGHT);
+            // The refusal says to wait for this send's result, and goes as it comes
+            // ([`Self::run_from`]).
+            self.refused_during = Some(self.request_generation);
+            // Escape pressed from what is being sent answers on the top line, out of view
+            // from there: the line is shown and takes focus, as a failed send's is.
+            self.focus_failure(window, cx);
             cx.notify();
             return;
         }
@@ -3166,6 +4594,10 @@ impl Panel {
         self.pressed.set(None);
         // And a Return held off a review comment, whose key-up lands outside the panel.
         self.forget_return();
+        // Closed, the panel takes no part in the window's keys ([`Self::hear_keys`]), and
+        // keeps no press it heard go down: its key comes up outside the closed panel.
+        self.hears_keys = None;
+        *self.held.borrow_mut() = HeldKeys::default();
         self.hold_closing_focus(window, cx);
         self.save_draft(window, cx);
         self.closed = true;
@@ -3186,6 +4618,7 @@ impl Panel {
                 worktree: self.repo.path().to_owned(),
                 panel: cx.entity(),
                 bytes: self.retained_review_bytes(cx),
+                unsaved: self.holds_unsaved(cx),
             };
             cx.default_global::<WarmPanels>().retain(entry);
         }
@@ -3243,12 +4676,17 @@ impl Panel {
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(Ok(())) => {
                         this.saved.retain(|draft| draft.key() != key);
                         this.notice =
                             Some("The selected saved draft was discarded locally.".into());
+                        // Text the discarded draft kept out of the store takes the key it
+                        // gave up ([`Self::settle_form`], point 5).
+                        if this.home.is_none() {
+                            this.settle_key(window, cx);
+                        }
                     }
                     _ => this.refuse(
                         "Could not discard the selected draft; its stored text was preserved.",
@@ -3332,6 +4770,8 @@ impl Render for Panel {
             &review.section_focus,
             &review.connection_focus,
             &review.identities_focus,
+            // The failure's line, a stop while it answers a send, goes as the line clears.
+            &review.failure_focus,
         ]
         .into_iter()
         .any(|pane| pane.contains_focused(window, cx));
@@ -3366,6 +4806,13 @@ impl Render for Panel {
             self.review
                 .top_line_scroll
                 .set_offset(point(px(0.), px(0.)));
+            // The failure's line is a stop for the failure that put focus on it, until the
+            // line answers another ([`review::FailureStop`]).
+            if said.error != self.top_line_said.error
+                || said.presses.error != self.top_line_said.presses.error
+            {
+                self.review.failure_stop = self.review.failure_stop.answered();
+            }
             self.top_line_said = said;
         }
         let mut lines = Vec::new();
@@ -3377,10 +4824,90 @@ impl Render for Panel {
                 .text_color(rgb(p.muted))
                 .into_any_element()
         }));
+        // The pull request a refused creation's line offers to open ([`Self::offered`]).
+        let existing = self.offered(cx).map(|pull| pull.number);
+        // A failure landed that the body must show ([`Self::show_line`]): this frame lays out
+        // its line, and Refresh PRs where focus rests on it as the line's remedy, and the body
+        // shows them before its content prepaints ([`Failed`]). Above the body the line is
+        // always in view.
+        let landed = (self.show_line.take() && !pinned).then(|| {
+            let laid = || std::rc::Rc::new(std::cell::Cell::new(None));
+            (laid(), laid())
+        });
+        let refresh_laid = landed.as_ref().map(|(_, remedy)| remedy).filter(|_| {
+            self.review
+                .buttons
+                .kept("github-refresh")
+                .is_some_and(|refresh| refresh.is_focused(window))
+        });
+        let line_laid = landed.as_ref().map(|(line, _)| line);
+        // The failure's line as a stop of its own, for the failure that put focus on it and
+        // for as long as it holds that focus ([`Self::focus_failure`]): the line tracks the
+        // focus, so a screen reader that follows focus reads the line, and draws its ring on
+        // its own edge, 1 px of accent laid over the line so nothing moves for it, as a pane
+        // that is a stop does. Among the content it is a part of the body, which shows it
+        // whole when the keyboard comes back to it; above the body it is in view already.
+        let failure = self.review.failure_focus.clone();
+        let stop = self.error.is_some()
+            && (self.review.failure_stop != review::FailureStop::No || failure.is_focused(window));
+        let ring = stop
+            .then(|| self.owner.upgrade())
+            .flatten()
+            .and_then(|owner| owner.read(cx).focus_ring.edge(&failure, rgb(p.accent)));
         lines.extend(
             self.outcome("github-error", "github-cancelled", cx)
                 .filter(|_| !self.answers_in_reply())
-                .map(|line| line.ml(text_inset()).into_any_element()),
+                .map(|line| {
+                    let line = line.ml(text_inset());
+                    let Some(number) = existing else {
+                        if !stop {
+                            return line.into_any_element();
+                        }
+                        return if pinned {
+                            div().debug_selector(|| "github-part-failure".into())
+                        } else {
+                            self.ringed_part("failure", div(), &failure, cx)
+                        }
+                        .relative()
+                        .child(line.track_focus(&failure))
+                        .children(ring)
+                        .into_any_element();
+                    };
+                    // The line's one action stands beside its words where the row holds both
+                    // whole, and below them otherwise, at the panel's edge as its other Buttons
+                    // are, the words wrapping in the row's width. Its press is the row's
+                    // ([`Self::inspect`]): it sends the one read, which takes the line, and the
+                    // action with it, away.
+                    let open = format!("Open #{number}");
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(line.min_w_0())
+                        .child(
+                            self.part("open-existing", div(), cx).child(
+                                // Its name says what #N is: read alone, as a screen reader
+                                // lists a window's buttons, "Open #7" named nothing.
+                                named_for_reading(
+                                    self.button("github-open-existing", open, "", false, cx),
+                                    "github-open-existing",
+                                    format!("Open pull request #{number}"),
+                                )
+                                .debug_selector(|| "github-open-existing".into())
+                                .disabled(pending)
+                                .on_click(cx.listener(
+                                    |this, event, window, cx| {
+                                        if !this.held.borrow().refuses(event) {
+                                            this.open_existing(window, cx)
+                                        }
+                                    },
+                                )),
+                            ),
+                        )
+                        .into_any_element()
+                })
+                .map(|row| laid_out(row, line_laid)),
         );
         lines.extend(self.draft_issue.map(|issue| {
             label("github-draft-validation", issue.message())
@@ -3437,6 +4964,12 @@ impl Render for Panel {
         // difference, read from where this frame lays the line out ([`Self::unpin_top_line`]).
         let stood = self.review.top_line_pinned.replace(pinned);
         let unpinned = stood && !pinned;
+        // A creation landed: this frame lays out the notice's line and the list, which the
+        // body shows together before its content prepaints ([`Created`]).
+        let created = (self.show_row.take() && !self.create && !pinned && !unpinned).then(|| {
+            let laid = || std::rc::Rc::new(std::cell::Cell::new(None));
+            (laid(), laid())
+        });
         let (flowing_line, top_line) = if pinned {
             (
                 None,
@@ -3458,7 +4991,8 @@ impl Render for Panel {
         } else {
             self.review.top_line.set(Pixels::ZERO);
             let line = self.flow_top_line(lines, busy, flowing.clone());
-            (line.map(IntoElement::into_any_element), None)
+            let laid = created.as_ref().map(|(line, _)| line);
+            (line.map(|line| laid_out(line, laid)), None)
         };
         // Each part of the content starts a block of the body ([`review::Blocks`]), and the
         // line among it records the room it takes there, up to the part after it
@@ -3490,7 +5024,7 @@ impl Render for Panel {
                 // whole row scrolled a field already whole, and the banner above it out of
                 // view.
                 .child(self.part("destination",div(),cx).debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).child(review::one_line()).child(review::starts_block()).child(div().on_children_prepainted(self.reveal_field_on_focus(self.destination.read(cx).focus_handle(cx))).child(self.stop_mark(&self.destination.read(cx).focus_handle(cx),review::ring_room,false,false)).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending))))
-                .child(self.part("refresh",div(),cx).child(review::starts_block()).child(self.button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false, cx).debug_selector(||"github-refresh".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
+                .child(laid_out(self.part("refresh",div(),cx).child(review::starts_block()).child(self.button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false, cx).debug_selector(||"github-refresh".into()).disabled(pending).on_click(cx.listener(|this,event,window,cx|if !this.held.borrow().refuses(event){this.refresh(1,window,cx)}))),refresh_laid))
                 .child(self.part("create",div(),cx).child(review::starts_block()).child(self.closing(button("github-create","New pull request","plus",false),&self.review.create_focus,pending||self.review.fixture).debug_selector(||"github-create".into()).on_click(cx.listener(|this,_,window,cx|{this.review.closer=Some(this.review.create_focus.clone());this.create(window,cx)}))))
                 .child(div().flex_1()).child(self.part("account",div(),cx).child(review::starts_block()).child(self.closing(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open),&self.review.account_focus,pending).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).on_click(cx.listener(|this,_,_,cx|{
                     this.review.closer=Some(this.review.account_focus.clone());
@@ -3525,9 +5059,13 @@ impl Render for Panel {
                 // margin, so the rows' text keeps the panel's edge, and above the first row and
                 // below the last the room is the list's own (a negative margin there collapsed
                 // the panel's scrolling body to its padding).
-                .child(review::clipped_lines(crate::native_accessibility::clips_children(div().on_children_prepainted({let (revealed,scroll,blocks)=(self.review.pull_revealed.clone(),self.review.pull_scroll.clone(),self.review.pull_blocks.clone());move|_,window,cx|{
+                .child(laid_out(review::clipped_lines(crate::native_accessibility::clips_children(div().on_children_prepainted({let (revealed,scroll,blocks)=(self.review.pull_revealed.clone(),self.review.pull_scroll.clone(),self.review.pull_blocks.clone());let (landed,body,shown)=(created.is_some(),self.review.body_scroll.clone(),self.review.revealed_focus.clone());move|_,window,cx|{
                     // The focus its rows' reveals showed ([`Panel::pull_part`]).
-                    review::record_shown(&revealed,&scroll,|context|context.contains(review::PULL),window,cx);blocks.finish();}})
+                    review::record_shown(&revealed,&scroll,|context|context.contains(review::PULL),window,cx);blocks.finish();
+                    // A creation's row, the first, which this frame shows with the notice above
+                    // the list ([`Created`]): its own reveal, which follows focus and would move
+                    // the list or the body a frame later, is made, in the list and in the body.
+                    if landed{for (shown,view) in [(&revealed,&scroll),(&shown,&body)]{*shown.borrow_mut()=review::FocusObservation{focus:window.focused(cx),viewport:view.bounds(),rem_size:window.rem_size()};}}}})
                     .id("github-pr-list").debug_selector(||"github-pr-list".into()).track_scroll(&self.review.pull_scroll).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().zip(&self.row_parts).map(|(pull,(_,part))|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row, as the Files list's rows are: it rests on the panel surface,
@@ -3553,7 +5091,7 @@ impl Render for Panel {
                         let pressed=!pending&&self.pressed.get()==Some(number);let (down,up,out)=(self.pressed.clone(),self.pressed.clone(),self.pressed.clone());
                         div().id(("github-pr-card",pull.number)).debug_selector(move||format!("github-pr-card-{number}")).child(review::one_line()).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected||pressed{p.selected}else{p.panel})).when(!pending&&!pressed,|row|row.hover(move|row|row.bg(rgb(hover))))
                             .when(!pending,|row|row.capture_any_mouse_down(move|event,window,_|if event.button==MouseButton::Left{down.set(Some(number));window.refresh();}).capture_any_mouse_up(move|_,window,_|if up.take().is_some(){window.refresh();}).on_mouse_up_out(MouseButton::Left,move|_,window,_|if out.take().is_some(){window.refresh();})).flex().flex_col()
-                            .child(self.pull_part(part.clone(),div(),cx).child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx)))))
+                            .child(self.pull_part(part.clone(),div(),cx).child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,event,window,cx|if !this.held.borrow().refuses(event){this.inspect(pull.clone(),window,cx)}))))
                             .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().px(text_inset()).pb_1().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     // One line with the next step: a repository with no GitHub remote names
@@ -3562,6 +5100,9 @@ impl Render for Panel {
                     // repository moves to a name field, not a search, so it draws no glyph.
                     // The empty state, its line and action, is one line of the body: the body's
                     // reveals leave neither cut at its edge.
+                    // Rows a creation's answer gave, with no page listed, are not the open pull
+                    // requests: one line under them says so and names the step that loads those.
+                    .when(self.created_only&&!self.rows.is_empty(),|element|element.child(phrases("github-list-partial",if self.rows.len()==1{"Only the new pull request is shown · Refresh PRs loads the open ones"}else{"Only the new pull requests are shown · Refresh PRs loads the open ones"}).flex_shrink_0().px(text_inset()).pb_1().text_color(rgb(p.muted)).children(appearance::text_probe(||"github-list-partial".into()))))
                     .when(self.rows.is_empty(),|element|element.child(self.part("pr-empty",div(),cx).py_5().px(text_inset()).child(div().child(review::one_line()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
                         EmptyState::new("github-list-empty","No GitHub remote · Name the repository to load its pull requests").tooltip("Enter the destination as owner/repository or a GitHub.com remote URL. Opening this panel reads local settings and drafts only.")
                             .action(self.held_button("github-choose-destination",crate::empty_state::action("github-choose-destination","Name repository",""),cx).disabled(pending).on_click(cx.listener(|this,_,window,cx|{let focus=this.destination.read(cx).focus_handle(cx);window.focus(&focus,cx);
@@ -3570,7 +5111,7 @@ impl Render for Panel {
                                 *this.review.revealed_focus.borrow_mut()=Default::default();cx.notify();})))
                     }else{
                         EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
-                    }.block(cx)))))),&self.review.pull_blocks).when(self.review.reopening.holds_row(),|list|list.child(review::list_mark(self.review.reopening.clone()))))
+                    }.block(cx)))))),&self.review.pull_blocks).when(self.review.reopening.holds_row(),|list|list.child(review::list_mark(self.review.reopening.clone()))),created.as_ref().map(|(_,list)|list)))
                 // A row that cannot hold its controls wraps them below, whole. A label after a
                 // Button takes the panel's text inset, which the Button gives back, so beside it
                 // nothing moves and on a line of its own the label starts at the panel's edge
@@ -3613,10 +5154,10 @@ impl Render for Panel {
                 .when(self.review.section==Section::Files,|element|element.child(self.render_files(window,cx)))
                 .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element
-                .child(self.button("github-create-back","Pull requests","arrow-left",false, cx).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.create=false;this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
+                .child(self.button("github-create-back","Pull requests","arrow-left",false, cx).debug_selector(||"github-create-back".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.leave_form(cx);this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
                 .child(label("github-create-fields","New pull request · published head → destination base").font_weight(FontWeight::SEMIBOLD))
                 // Each one-line field is one line of the body, which its reveals leave whole.
-                .child(div().child(self.stop_mark(&self.title.read(cx).focus_handle(cx),review::ring_room,false,false)).child(review::one_line()).child(Input::new(&self.title).aria_label("Pull request title").disabled(pending)))
+                .child(div().debug_selector(||"github-create-title".into()).child(self.stop_mark(&self.title.read(cx).focus_handle(cx),review::ring_room,false,false)).child(review::one_line()).child(Input::new(&self.title).aria_label("Pull request title").disabled(pending)))
                 .child(div().flex().gap_2().child(div().flex_1().child(review::one_line()).child(Input::new(&self.head).aria_label("Published head branch").disabled(pending))).child(div().flex_1().child(review::one_line()).child(Input::new(&self.base).aria_label("Destination base branch").disabled(pending))))
                 .child(div().flex().gap_2().children([(true,"Draft"),(false,"Ready")].map(|(draft,name)|self.button(name,name,"",self.draft==draft, cx).toggled(self.draft==draft).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.draft=draft;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(self.button("github-load-templates","Load local base templates","",false, cx).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.load_templates(window,cx)))))
@@ -3677,6 +5218,32 @@ impl Render for Panel {
             self.review.pull_scroll.clone(),
             self.review.pull_blocks.clone(),
         );
+        // In the frame that first draws a creation's row, the body shows it with its notice
+        // before the content prepaints ([`Created`]).
+        let content = match created {
+            Some((line, list)) => Created {
+                content: content.into_any_element(),
+                body: self.review.body_scroll.clone(),
+                line,
+                list,
+            }
+            .into_any_element(),
+            None => content.into_any_element(),
+        };
+        // In the frame a failure lands in, the body shows its line before the content
+        // prepaints ([`Failed`]).
+        let content = match landed {
+            Some((line, remedy)) => Failed {
+                content,
+                body: self.review.body_scroll.clone(),
+                blocks: self.review.body_blocks.clone(),
+                revealed: self.review.revealed_focus.clone(),
+                line,
+                remedy,
+            }
+            .into_any_element(),
+            None => content,
+        };
         let body = cue.list(
             div()
                 .on_children_prepainted(cue.observe(move |_, window, cx| {
@@ -3716,6 +5283,11 @@ impl Render for Panel {
                 // An Enter coming up anywhere in the body ends a Return held off a review
                 // comment ([`Panel::return_came_up`]).
                 .capture_key_up(cx.listener(Self::return_came_up))
+                // Return and Space coming up anywhere in the panel ([`HeldKeys`]): here, or
+                // around the line above the body and the body.
+                .when(top_line.is_none(), |body| {
+                    body.capture_key_up(cx.listener(Self::note_key_up))
+                })
                 .key_context(review::BODY)
                 .id("github-panel")
                 .debug_selector(|| "github-panel".into())
@@ -3741,6 +5313,8 @@ impl Render for Panel {
                 // The top line's controls too; a key-up in the body reaches both listeners,
                 // whose ends are one.
                 .capture_key_up(cx.listener(Self::return_came_up))
+                .capture_key_up(cx.listener(Self::note_key_up))
+                .key_context(HELD)
                 .min_w_0()
                 .max_h(body_max_height(window))
                 .flex()
@@ -21203,6 +22777,6801 @@ mod tests {
         }
         cx.update(|window, cx| window.focus(&field, cx));
         assert_eq!(hints(cx), None, "a field has no keys of its own to name");
+    }
+
+    /// A pull request `fixture/repo` lists: `number`, open, from `head` (`owner:branch`) onto
+    /// `base`.
+    fn listed_pull(number: u64, head: &str, base: &str) -> PullRequest {
+        let branch = head.split_once(':').map_or(head, |(_, branch)| branch);
+        serde_json::from_value(serde_json::json!({
+            "number": number, "title": format!("Listed pull request {number}"), "state": "open",
+            "draft": false, "user": {"login": "fixture-author"},
+            "head": {"sha": "1".repeat(40), "ref": branch, "label": head},
+            "base": {"sha": "2".repeat(40), "ref": base, "label": format!("fixture:{base}")},
+        }))
+        .expect("a listed pull request")
+    }
+
+    /// A window on an empty repository and the panel over it, signed in as the script's
+    /// account with `rows` listed for `fixture/repo` and its New pull request form filled for
+    /// `head` onto `main`: closed and warm, for [`send_creation`], with the draft its close
+    /// saved in the store. The window's writer saves it on a thread of its own, and a save
+    /// reads the store and replaces it whole ([`drafts::save_batch`]), so the panel is handed
+    /// back once that save has landed: a test may then write the store itself
+    /// ([`drafts::save`]). Handed back sooner, a test that saved three drafts next lost the
+    /// second to the close's save, which had read the store before that draft was in it and
+    /// replaced the store after: once among some hundred runs beside the other creation
+    /// tests, whose load alone made the writer's thread that late. Every request it sends is
+    /// answered from the returned script, never by GitHub. Keep the directory until the test
+    /// ends.
+    fn creation_panel<'a>(
+        cx: &'a mut TestAppContext,
+        rows: Vec<PullRequest>,
+        head: &str,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        &'a mut VisualTestContext,
+    ) {
+        let (fixture, app, cx) = repository_window(cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                // Listed by Refresh PRs, as rows are.
+                panel.listed =
+                    (!rows.is_empty()).then(|| Repository::parse("fixture/repo").unwrap());
+                panel.rows = rows;
+                panel.create = true;
+                for (input, value) in [
+                    (&panel.destination, "fixture/repo"),
+                    (&panel.title, "Keep the review's place"),
+                    (&panel.head, head),
+                    (&panel.base, "main"),
+                ] {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+                panel.body.update(cx, |input, cx| {
+                    input.set_value("Typed description", window, cx)
+                });
+                panel.close(window, cx);
+            });
+            panel
+        });
+        // The store is at rest: the close's save has landed.
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        (fixture, app, panel, script, cx)
+    }
+
+    /// Return going down and coming up on whatever holds focus.
+    fn press_return(cx: &mut VisualTestContext) {
+        let keystroke = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    }
+
+    /// Opens [`creation_panel`]'s panel in a `width` × `height` window at `interface` pt, the
+    /// window resized first, and sends its form by its own presses: Return on Review
+    /// submission…, the script answering the head's and the base's identities, then Return on
+    /// Send to GitHub, the script answering the two rechecks and then the creation with `body`
+    /// under `status`.
+    async fn send_creation(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        at: (u8, f32, f32),
+        answer: (u16, &str),
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let send = review_creation(app, panel, script, at, answer, false, cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        press_return(cx);
+        settle_panel(app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+    }
+
+    /// [`send_creation`] with Send to GitHub pressed by a click, which leaves no Return going
+    /// down or coming up behind it.
+    async fn click_creation(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        at: (u8, f32, f32),
+        answer: (u16, &str),
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        review_creation(app, panel, script, at, answer, false, cx).await;
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+    }
+
+    /// The first part of [`send_creation`], up to the confirmation, with the script holding
+    /// the answers Send to GitHub then gets; Send's focus handle. With `by_click`, Review
+    /// submission… is pressed by a click, so the test's next Return is the window's first.
+    async fn review_creation(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        (interface, width, height): (u8, f32, f32),
+        (status, body): (u16, &str),
+        by_click: bool,
+        cx: &mut VisualTestContext,
+    ) -> FocusHandle {
+        use crate::tags::tests::draw;
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+        draw(cx);
+        cx.update(|window, _| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            assert_eq!(window.viewport_size(), size(px(width), px(height)));
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(app, cx).await;
+        draw(cx);
+        let identities = |script: &github::Scripted| {
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "1".repeat(40)));
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "2".repeat(40)));
+        };
+        identities(script);
+        let review = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-review-submit")
+            })
+            .expect("Review submission…");
+        if by_click {
+            let review = whole_in_body(cx, "github-review-submit", "Review submission…");
+            cx.simulate_click(review.center(), Modifiers::none());
+        } else {
+            cx.update(|window, cx| review.focus(window, cx));
+            draw(cx);
+            press_return(cx);
+        }
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "the creation is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        identities(script);
+        script.answer(status, body);
+        panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub")
+    }
+
+    /// `selector`'s bounds, drawn whole inside the body's view.
+    fn whole_in_body(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+        at: &str,
+    ) -> Bounds<Pixels> {
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let drawn = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{at}: {selector} is drawn"));
+        assert!(
+            drawn.size.width > px(0.)
+                && drawn.size.height > px(0.)
+                && drawn.top() >= body.top()
+                && drawn.bottom() <= body.bottom()
+                && drawn.left() >= body.left()
+                && drawn.right() <= body.right(),
+            "{at}: {selector} at {drawn:?} is whole in the body's view {body:?}"
+        );
+        drawn
+    }
+
+    /// What the New pull request form holds: its title, its description and whether Draft is
+    /// chosen.
+    fn form(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> (String, String, bool) {
+        panel.read_with(cx, |panel, cx| {
+            (
+                panel.title.read(cx).value().to_string(),
+                panel.body.read(cx).value().to_string(),
+                panel.draft,
+            )
+        })
+    }
+
+    /// The creation drafts `saved` holds, each as [`form`] gives one.
+    fn creations(saved: &[Draft]) -> Vec<(String, String, bool)> {
+        saved
+            .iter()
+            .filter_map(|draft| match draft {
+                Draft::Pull(pull) => Some((pull.title.clone(), pull.body.clone(), pull.draft)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Asserts that the draft store on disk and the panel's Recover drafts each hold `form`
+    /// as their one creation draft.
+    fn assert_one_creation_saved(
+        panel: &Entity<Panel>,
+        form: &(String, String, bool),
+        when: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        let stored = creations(&drafts::load().expect("the draft store"));
+        let one = std::slice::from_ref(form);
+        assert_eq!(stored, one, "{when}: the draft store");
+        let listed = panel.read_with(cx, |panel, _| creations(&panel.saved));
+        assert_eq!(listed, one, "{when}: Recover drafts");
+    }
+
+    /// A pointer's click on `selector`, drawn whole in the body's view, and what follows it.
+    async fn click_in_body(
+        app: &Entity<GitTurtle>,
+        selector: &'static str,
+        cx: &mut VisualTestContext,
+    ) {
+        let control = whole_in_body(cx, selector, "before its click");
+        cx.simulate_click(control.center(), Modifiers::none());
+        settle_panel(app, cx).await;
+        crate::tags::tests::draw(cx);
+    }
+
+    /// [`creation_panel`]'s panel open at 13 pt in a 1,480 × 973 window, with `typed` typed
+    /// into its form's title and into its description.
+    async fn typed_form<'a>(
+        cx: &'a mut TestAppContext,
+        rows: Vec<PullRequest>,
+        typed: &str,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        &'a mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let before = form(&panel, cx);
+        for description in [false, true] {
+            cx.update(|window, cx| {
+                let panel = panel.read(cx);
+                let field = if description {
+                    panel.body.read(cx).focus_handle(cx)
+                } else {
+                    panel.title.read(cx).focus_handle(cx)
+                };
+                field.focus(window, cx)
+            });
+            draw(cx);
+            cx.simulate_input(typed);
+            draw(cx);
+        }
+        let after = form(&panel, cx);
+        for (before, after) in [(&before.0, &after.0), (&before.1, &after.1)] {
+            assert!(
+                after.len() == before.len() + typed.len() && after.contains(typed),
+                "typing reaches the title and the description: {after:?}"
+            );
+        }
+        (fixture, app, panel, script, cx)
+    }
+
+    /// A new pull request's description outlasts leaving its form and coming back: with a
+    /// title and a description typed, Pull requests saves the draft and shows the list, and
+    /// New pull request opens the form on what it held, the store and Recover drafts holding
+    /// that draft once. Opening the form cleared the description, which is the review body's
+    /// field too, and then saved the title with no description over the draft it had just
+    /// saved: the text was gone from the form and from the store.
+    #[gpui::test]
+    async fn a_description_outlasts_leaving_the_form_and_coming_back(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, _script, cx) = typed_form(cx, Vec::new(), " typed").await;
+        let typed = form(&panel, cx);
+        click_in_body(&app, "github-create-back", cx).await;
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.create),
+            "Pull requests shows the list"
+        );
+        assert_one_creation_saved(&panel, &typed, "back at the list", cx);
+        click_in_body(&app, "github-create", cx).await;
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create),
+            "New pull request opens the form"
+        );
+        assert_eq!(form(&panel, cx), typed, "the form holds what was typed");
+        assert_one_creation_saved(&panel, &typed, "back in the form", cx);
+    }
+
+    /// The form opens on its saved draft once a pull request was opened in between: opening
+    /// one puts its review's text, here none, in the field the description shares, so the
+    /// description comes back from the draft saved as the form was left.
+    #[gpui::test]
+    async fn a_description_outlasts_a_pull_request_opened_in_between(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) =
+            typed_form(cx, rows_holding_seven(), " typed").await;
+        let typed = form(&panel, cx);
+        click_in_body(&app, "github-create-back", cx).await;
+        answer_opening(&script);
+        click_in_body(&app, "github-pr-7", cx).await;
+        assert_eq!(
+            panel.read_with(cx, |panel, cx| {
+                let opened = panel.pull.as_ref().map(|pull| pull.number);
+                (opened, panel.body.read(cx).value().to_string())
+            }),
+            (Some(7), String::new()),
+            "the opened pull request's review has no text: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        click_in_body(&app, "github-create", cx).await;
+        assert!(panel.read_with(cx, |panel, _| panel.create && panel.pull.is_none()));
+        assert_eq!(form(&panel, cx), typed, "the form holds what was typed");
+        assert_one_creation_saved(&panel, &typed, "back in the form", cx);
+    }
+
+    /// A form that could not be saved keeps its text through Pull requests and New pull
+    /// request: with a destination that names no repository the draft is not saved, as its
+    /// status says, and the window is all that holds what was typed since.
+    #[gpui::test]
+    async fn a_form_that_could_not_be_saved_keeps_its_description(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, _script, cx) = typed_form(cx, Vec::new(), " typed").await;
+        let before = form(&panel, cx);
+        // What the store took while the destination named a repository.
+        let stored = creations(&drafts::load().expect("the draft store"));
+        assert_eq!(stored.len(), 1);
+        cx.update(|window, cx| {
+            let destination = panel.read(cx).destination.clone();
+            destination.update(cx, |input, cx| input.set_value("nowhere", window, cx));
+            let description = panel.read(cx).body.read(cx).focus_handle(cx);
+            description.focus(window, cx)
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        cx.simulate_input(" more");
+        draw(cx);
+        let typed = form(&panel, cx);
+        assert_eq!(typed.1.len(), before.1.len() + " more".len());
+        click_in_body(&app, "github-create-back", cx).await;
+        assert!(panel.read_with(cx, |panel, _| !panel.create));
+        click_in_body(&app, "github-create", cx).await;
+        assert!(panel.read_with(cx, |panel, _| panel.create));
+        assert_eq!(form(&panel, cx), typed, "the form holds what was typed");
+        assert_eq!(
+            creations(&drafts::load().expect("the draft store")),
+            stored,
+            "the store keeps the draft it took"
+        );
+    }
+
+    /// The draft a store saved in an earlier run holds for `feature` onto `main` in
+    /// `fixture/repo`, as [`form`] gives one: Ready, with a title and a description.
+    fn stored_form() -> (String, String, bool) {
+        ("Saved title".into(), "Saved description".into(), false)
+    }
+
+    /// A window on an empty repository whose draft store holds [`stored_form`], and a new
+    /// panel over it for `destination` with `head` as its branch, nothing typed: closed and
+    /// warm at 13 pt in a 1,480 × 973 window.
+    fn stored_panel<'a>(
+        cx: &'a mut TestAppContext,
+        destination: &str,
+        head: &str,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &'a mut VisualTestContext,
+    ) {
+        let (fixture, app, cx) = repository_window(cx);
+        let (title, body, draft) = stored_form();
+        drafts::save(Draft::Pull(NewPull {
+            repository: Repository::parse("fixture/repo").unwrap(),
+            title,
+            body,
+            head: "feature".into(),
+            base: "main".into(),
+            draft,
+            expected_head: None,
+            expected_base: None,
+        }))
+        .expect("the draft store");
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, head.into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(github::Scripted::default());
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel
+                    .destination
+                    .update(cx, |input, cx| input.set_value(destination, window, cx));
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        crate::tags::tests::draw(cx);
+        (fixture, app, panel, cx)
+    }
+
+    /// A new panel opens the form on the draft saved for its head and base, whole: its
+    /// title, its description and Ready, with the store and Recover drafts holding it once.
+    /// It opened empty, and the first title typed was saved with no description over it.
+    #[gpui::test]
+    async fn a_new_panel_opens_the_form_on_its_saved_draft_whole(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = stored_panel(cx, "fixture/repo", "feature");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(form(&panel, cx), (String::new(), String::new(), true));
+        click_in_body(&app, "github-create", cx).await;
+        assert!(panel.read_with(cx, |panel, _| panel.create));
+        assert_eq!(form(&panel, cx), stored_form(), "the saved draft, whole");
+        assert_one_creation_saved(&panel, &stored_form(), "in the form", cx);
+    }
+
+    /// A form left for one repository opens for another on that repository's saved draft,
+    /// whole, both drafts kept: what it held is saved under the key it was left with, so the
+    /// form shows the draft of the key it has now rather than writing the other's text over
+    /// it. The title alone was saved over the second repository's draft.
+    #[gpui::test]
+    async fn a_form_reopened_for_another_repository_shows_the_draft_saved_for_it(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = stored_panel(cx, "fixture/other", "feature");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        click_in_body(&app, "github-create", cx).await;
+        for description in [false, true] {
+            cx.update(|window, cx| {
+                let panel = panel.read(cx);
+                let field = if description {
+                    panel.body.read(cx).focus_handle(cx)
+                } else {
+                    panel.title.read(cx).focus_handle(cx)
+                };
+                field.focus(window, cx)
+            });
+            draw(cx);
+            cx.simulate_input("Typed for another");
+            draw(cx);
+        }
+        let typed = form(&panel, cx);
+        assert_eq!(typed.1, "Typed for another");
+        click_in_body(&app, "github-create-back", cx).await;
+        cx.update(|window, cx| {
+            let destination = panel.read(cx).destination.clone();
+            destination.update(cx, |input, cx| input.set_value("fixture/repo", window, cx));
+        });
+        draw(cx);
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(form(&panel, cx), stored_form(), "the saved draft, whole");
+        let stored = creations(&drafts::load().expect("the draft store"));
+        assert!(
+            stored.len() == 2 && stored.contains(&typed) && stored.contains(&stored_form()),
+            "both drafts stay in the store: {stored:?}"
+        );
+    }
+
+    /// A form opened before the saved drafts are read takes its draft as they land: the
+    /// panel's local read waits behind other work, the form opens with nothing in it, and
+    /// the read's landing fills it, where nothing was typed meanwhile.
+    #[gpui::test]
+    async fn a_form_opened_before_the_drafts_are_read_takes_its_draft_as_they_land(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = stored_panel(cx, "fixture/repo", "feature");
+        let reading = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        draw(cx);
+        let create = whole_in_body(cx, "github-create", "New pull request");
+        cx.simulate_click(create.center(), Modifiers::none());
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.create && panel.saved.is_empty()));
+        assert_eq!(form(&panel, cx), (String::new(), String::new(), true));
+        drop(reading);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        settle_panel(&app, cx).await;
+        assert_eq!(form(&panel, cx), stored_form(), "the saved draft, whole");
+        assert_one_creation_saved(&panel, &stored_form(), "in the form", cx);
+    }
+
+    /// An edit of the head or of the destination that brings the open form to a saved
+    /// draft's key shows that draft whole once the edited field is left, with its Ready, and
+    /// never saves an emptier draft over it: a form holding nothing takes it, and so does one
+    /// with a title typed for another head, whose title is saved under the key it was typed
+    /// for, since a form is never filled from two drafts. Nothing is taken while the field
+    /// keeps focus. A title typed while the destination named no repository has no key, so
+    /// it stays in the form and the saved draft stays in the store. The typed title was once
+    /// saved with no description over the saved draft; and later the form kept the typed
+    /// title over the saved description, and that was saved, the saved title gone.
+    async fn assert_an_edit_onto_a_saved_draft_takes_it(
+        cx: &mut TestAppContext,
+        destination: bool,
+        titled: bool,
+    ) {
+        use crate::tags::tests::draw;
+        // The field the edit types into starts with nothing in it.
+        let (first, head) = if destination {
+            ("", "feature")
+        } else {
+            ("fixture/repo", "")
+        };
+        let (_fixture, app, panel, cx) = stored_panel(cx, first, head);
+        // An active window, as one typed in is: an inactive one reports no field left.
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(form(&panel, cx), (String::new(), String::new(), true));
+        if titled {
+            cx.update(|window, cx| {
+                let title = panel.read(cx).title.read(cx).focus_handle(cx);
+                title.focus(window, cx)
+            });
+            draw(cx);
+            cx.simulate_input("Typed title");
+            draw(cx);
+        }
+        let typed = form(&panel, cx);
+        cx.update(|window, cx| {
+            let panel = panel.read(cx);
+            let field = if destination {
+                &panel.destination
+            } else {
+                &panel.head
+            };
+            field.read(cx).focus_handle(cx).focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_input(if destination {
+            "fixture/repo"
+        } else {
+            "feature"
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            form(&panel, cx),
+            typed,
+            "nothing is taken while the field keeps focus"
+        );
+        leave_for_title(&app, &panel, cx).await;
+        let expected = if titled && destination {
+            typed.clone()
+        } else {
+            stored_form()
+        };
+        assert_eq!(
+            form(&panel, cx),
+            expected,
+            "the form once the field is left"
+        );
+        // Pull requests saves what the form holds.
+        click_in_body(&app, "github-create-back", cx).await;
+        let stored = creations(&drafts::load().expect("the draft store"));
+        let kept = if titled && !destination {
+            vec![stored_form(), typed]
+        } else {
+            vec![stored_form()]
+        };
+        assert_eq!(
+            stored, kept,
+            "the saved draft stays whole in the store, beside a title typed for another head"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_head_edited_onto_a_saved_draft_shows_it_whole(cx: &mut TestAppContext) {
+        assert_an_edit_onto_a_saved_draft_takes_it(cx, false, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_head_edited_onto_a_saved_draft_keeps_its_description(cx: &mut TestAppContext) {
+        assert_an_edit_onto_a_saved_draft_takes_it(cx, false, true).await;
+    }
+
+    #[gpui::test]
+    async fn a_destination_edited_onto_a_saved_draft_keeps_its_description(
+        cx: &mut TestAppContext,
+    ) {
+        assert_an_edit_onto_a_saved_draft_takes_it(cx, true, true).await;
+    }
+
+    /// The draft a store holds for `head` onto `main` in `repository`: Ready, its title and
+    /// its description naming both, so a test tells whose text a form or a key holds.
+    fn keyed(repository: &str, head: &str) -> Draft {
+        let (title, body, draft) = shows(repository, head);
+        Draft::Pull(NewPull {
+            repository: Repository::parse(repository).unwrap(),
+            title,
+            body,
+            head: head.into(),
+            base: "main".into(),
+            draft,
+            expected_head: None,
+            expected_base: None,
+        })
+    }
+
+    /// What [`form`] gives for a form that shows [`keyed`]'s draft whole.
+    fn shows(repository: &str, head: &str) -> (String, String, bool) {
+        (
+            format!("Title of {head} in {repository}"),
+            format!("Description of {head} in {repository}"),
+            false,
+        )
+    }
+
+    /// The creation drafts `saved` holds, each as its key, title, description and Draft, in
+    /// the keys' order.
+    fn by_key(saved: &[Draft]) -> Vec<(String, String, String, bool)> {
+        let mut kept: Vec<_> = saved
+            .iter()
+            .filter_map(|draft| match draft {
+                Draft::Pull(pull) => Some((
+                    draft.key(),
+                    pull.title.clone(),
+                    pull.body.clone(),
+                    pull.draft,
+                )),
+                _ => None,
+            })
+            .collect();
+        kept.sort();
+        kept
+    }
+
+    /// One of [`by_key`]'s entries: `text`, as [`form`] gives it, kept for `head` onto `main`
+    /// in `repository`.
+    fn under(
+        repository: &str,
+        head: &str,
+        (title, body, draft): (String, String, bool),
+    ) -> (String, String, String, bool) {
+        (
+            format!("create:{repository}:{head}:main"),
+            title,
+            body,
+            draft,
+        )
+    }
+
+    /// Asserts that the draft store on disk and Recover drafts each hold exactly `expected`,
+    /// every key once, with the saves queued so far landed.
+    async fn assert_kept(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        expected: &[(String, String, String, bool)],
+        when: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        settle_panel(app, cx).await;
+        let mut expected = expected.to_vec();
+        expected.sort();
+        assert_eq!(
+            by_key(&drafts::load().expect("the draft store")),
+            expected,
+            "{when}: the draft store"
+        );
+        assert_eq!(
+            panel.read_with(cx, |panel, _| by_key(&panel.saved)),
+            expected,
+            "{when}: Recover drafts lists each draft once"
+        );
+    }
+
+    /// A window on an empty repository whose draft store holds `stored`, and a new panel over
+    /// it for `destination` with `head` as its branch, open at 13 pt in a 1,480 × 973 window
+    /// with New pull request chosen by a click. Its requests are answered from the script.
+    async fn keyed_form<'a>(
+        cx: &'a mut TestAppContext,
+        destination: &str,
+        head: &str,
+        stored: &[Draft],
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        &'a mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (fixture, app, cx) = repository_window(cx);
+        for draft in stored {
+            drafts::save(draft.clone()).expect("the draft store");
+        }
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, head.into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel
+                    .destination
+                    .update(cx, |input, cx| input.set_value(destination, window, cx));
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        // An active window, as one typed in is: an inactive one reports no field left.
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        click_in_body(&app, "github-create", cx).await;
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create),
+            "New pull request opens the form"
+        );
+        (fixture, app, panel, script, cx)
+    }
+
+    /// A field of the form that names its draft's key.
+    #[derive(Clone, Copy, Debug)]
+    enum Names {
+        Destination,
+        Head,
+    }
+
+    /// Types `text` at the end of what `field` holds, after `erased` Backspaces there, each
+    /// one keystroke of the view's own: focus stays in the field.
+    fn retype(
+        panel: &Entity<Panel>,
+        field: Names,
+        erased: usize,
+        text: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            let panel = panel.read(cx);
+            let field = match field {
+                Names::Destination => &panel.destination,
+                Names::Head => &panel.head,
+            };
+            field.read(cx).focus_handle(cx).focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_keystrokes("end");
+        for _ in 0..erased {
+            cx.simulate_keystrokes("backspace");
+        }
+        cx.simulate_input(text);
+        draw(cx);
+    }
+
+    /// Types `text` into the form's title, at its end, and leaves focus there.
+    fn title_typed(panel: &Entity<Panel>, text: &str, cx: &mut VisualTestContext) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            let title = panel.read(cx).title.read(cx).focus_handle(cx);
+            title.focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_keystrokes("end");
+        cx.simulate_input(text);
+        draw(cx);
+    }
+
+    /// Focus leaves the field it is in for the form's title, as a click on the title takes
+    /// it, and the frames and saves that follow land: an edit of the field has settled.
+    async fn leave_for_title(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        cx: &mut VisualTestContext,
+    ) {
+        title_typed(panel, "", cx);
+        settle_panel(app, cx).await;
+        crate::tags::tests::draw(cx);
+    }
+
+    /// What the form's save status reads.
+    fn status(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+        panel.read_with(cx, |panel, _| panel.save_status.to_string())
+    }
+
+    /// Route (a): a name typed through another draft's key takes nothing there and saves
+    /// nothing there. With drafts saved for a short name and for a longer one that begins with
+    /// it, an empty form whose `field` is typed to the longer one, a key at a time, passes
+    /// through the shorter one's key with nothing taken; the quiet period then passes with
+    /// focus still in the field and nothing is saved; and once the field is left the form
+    /// shows the longer one's draft whole, and says it restored it. The store and Recover
+    /// drafts hold both drafts as they were throughout, each once. At the shorter name the
+    /// form took that draft, at the longer one, no longer empty, it took nothing, and the
+    /// save that followed wrote the shorter one's text over the longer one's draft.
+    async fn assert_a_name_typed_through_a_drafts_key_takes_nothing_there(
+        cx: &mut TestAppContext,
+        field: Names,
+    ) {
+        use crate::tags::tests::draw;
+        let (destination, head, short, long, stored) = match field {
+            Names::Head => (
+                "acme/app",
+                "",
+                "fix",
+                "fix-2",
+                [keyed("acme/app", "fix"), keyed("acme/app", "fix-2")],
+            ),
+            Names::Destination => (
+                "",
+                "fix",
+                "acme/app",
+                "acme/app-web",
+                [keyed("acme/app", "fix"), keyed("acme/app-web", "fix")],
+            ),
+        };
+        let longer = match field {
+            Names::Head => shows("acme/app", "fix-2"),
+            Names::Destination => shows("acme/app-web", "fix"),
+        };
+        let all = by_key(&stored);
+        let (_fixture, app, panel, _script, cx) = keyed_form(cx, destination, head, &stored).await;
+        let empty = (String::new(), String::new(), true);
+        assert_eq!(form(&panel, cx), empty, "the form opens empty");
+        retype(&panel, field, 0, short, cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            form(&panel, cx),
+            empty,
+            "{field:?} typed as far as {short}: the form takes nothing of that key's draft"
+        );
+        retype(&panel, field, 0, &long[short.len()..], cx);
+        cx.executor().advance_clock(DRAFT_QUIET_PERIOD * 2);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            form(&panel, cx),
+            empty,
+            "{field:?} typed to {long}, focus still in it: nothing is taken yet"
+        );
+        assert_kept(&app, &panel, &all, "typed, the quiet period over", cx).await;
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            longer,
+            "{field:?} left at {long}: the form shows that key's draft whole"
+        );
+        assert_eq!(status(&panel, cx), "Draft restored locally", "{field:?}");
+        assert_kept(&app, &panel, &all, "the field left", cx).await;
+        // Pull requests saves what the form holds.
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &all, "after Pull requests", cx).await;
+    }
+
+    #[gpui::test]
+    async fn a_head_typed_through_a_drafts_key_takes_nothing_there(cx: &mut TestAppContext) {
+        assert_a_name_typed_through_a_drafts_key_takes_nothing_there(cx, Names::Head).await;
+    }
+
+    #[gpui::test]
+    async fn a_destination_typed_through_a_drafts_key_takes_nothing_there(cx: &mut TestAppContext) {
+        assert_a_name_typed_through_a_drafts_key_takes_nothing_there(cx, Names::Destination).await;
+    }
+
+    /// Route (b), and back and forth: a form that opened on one head's saved draft and has
+    /// its head edited to another's shows the other's draft whole, and edited back shows the
+    /// first one's again, three times over, the store and Recover drafts holding both drafts
+    /// as they were each time. Text then typed into the title under the second head is that
+    /// head's: it is saved under that key as the head is edited away, the first head's draft
+    /// comes back as it was, and the second head shows what was typed. A saved copy counted
+    /// only as the form opened, so nothing was taken at the second head and the first head's
+    /// text was saved over the second one's draft.
+    #[gpui::test]
+    async fn a_head_edited_between_two_drafts_shows_each_whole(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "alpha"), keyed("acme/app", "beta")];
+        let all = by_key(&stored);
+        let (_fixture, app, panel, _script, cx) =
+            keyed_form(cx, "acme/app", "alpha", &stored).await;
+        let (alpha, beta) = (shows("acme/app", "alpha"), shows("acme/app", "beta"));
+        assert_eq!(form(&panel, cx), alpha, "the form opens on alpha's draft");
+        assert_eq!(status(&panel, cx), "Draft restored locally", "as it opens");
+        for turn in 0..3 {
+            retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+            leave_for_title(&app, &panel, cx).await;
+            assert_eq!(form(&panel, cx), beta, "turn {turn}: beta's draft, whole");
+            assert_eq!(status(&panel, cx), "Draft restored locally", "turn {turn}");
+            assert_kept(&app, &panel, &all, &format!("turn {turn}, at beta"), cx).await;
+            retype(&panel, Names::Head, "beta".len(), "alpha", cx);
+            leave_for_title(&app, &panel, cx).await;
+            assert_eq!(form(&panel, cx), alpha, "turn {turn}: alpha's draft, whole");
+            assert_kept(&app, &panel, &all, &format!("turn {turn}, at alpha"), cx).await;
+        }
+        retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+        title_typed(&panel, " and more", cx);
+        assert_ne!(status(&panel, cx), "Draft restored locally", "edited");
+        let edited = (format!("{} and more", beta.0), beta.1.clone(), beta.2);
+        assert_eq!(form(&panel, cx), edited, "typed under beta");
+        retype(&panel, Names::Head, "beta".len(), "alpha", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(form(&panel, cx), alpha, "alpha's draft is as it was");
+        let kept = [
+            under("acme/app", "alpha", alpha),
+            under("acme/app", "beta", edited.clone()),
+        ];
+        assert_kept(&app, &panel, &kept, "beta edited, back at alpha", cx).await;
+        retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            edited,
+            "beta shows what was typed under it"
+        );
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &kept, "after Pull requests", cx).await;
+    }
+
+    /// Route (c): a form that holds a title and no description, its head edited onto one with
+    /// a saved title and description, shows that draft whole, and the title it held is saved
+    /// under the head it was typed for. The form became its own title over the other draft's
+    /// description and was saved so under the other head, whose title was gone.
+    #[gpui::test]
+    async fn a_titled_form_edited_onto_a_draft_shows_that_draft_whole(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "beta")];
+        let (_fixture, app, panel, _script, cx) =
+            keyed_form(cx, "acme/app", "alpha", &stored).await;
+        assert_eq!(form(&panel, cx), (String::new(), String::new(), true));
+        title_typed(&panel, "Typed title", cx);
+        let beta = shows("acme/app", "beta");
+        let kept = [
+            under(
+                "acme/app",
+                "alpha",
+                ("Typed title".into(), String::new(), true),
+            ),
+            under("acme/app", "beta", beta.clone()),
+        ];
+        // The edit's first keystroke saves the title under the head it was typed for, with
+        // no quiet period waited out and the field not yet left.
+        retype(&panel, Names::Head, 0, "-", cx);
+        assert_kept(&app, &panel, &kept, "one keystroke into the edit", cx).await;
+        retype(&panel, Names::Head, "alpha-".len(), "beta", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            beta,
+            "the form is never filled from two drafts"
+        );
+        assert_eq!(status(&panel, cx), "Draft restored locally");
+        assert_kept(&app, &panel, &kept, "the head left at beta", cx).await;
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &kept, "after Pull requests", cx).await;
+    }
+
+    /// The review step shows exactly what the form shows: with the head typed onto a saved
+    /// draft's and Review submission… clicked from there, the click itself settling the
+    /// edit, the confirmation holds that draft's title, description and Ready for that head,
+    /// which is what the form shows. It reviewed the form's own title over the other draft's
+    /// description.
+    #[gpui::test]
+    async fn a_review_after_a_head_edit_shows_what_the_form_shows(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "beta")];
+        let (_fixture, app, panel, script, cx) = keyed_form(cx, "acme/app", "alpha", &stored).await;
+        title_typed(&panel, "Typed title", cx);
+        retype(&panel, Names::Head, "alpha".len(), "beta", cx);
+        script.answer(200, format!(r#"{{"sha":"{}"}}"#, "1".repeat(40)));
+        script.answer(200, format!(r#"{{"sha":"{}"}}"#, "2".repeat(40)));
+        click_in_body(&app, "github-review-submit", cx).await;
+        let reviewed = panel.read_with(cx, |panel, _| match &panel.confirm {
+            Some(Confirmation {
+                action: Action::Create(pull),
+                ..
+            }) => Some((
+                pull.head.clone(),
+                (pull.title.clone(), pull.body.clone(), pull.draft),
+            )),
+            _ => None,
+        });
+        let beta = shows("acme/app", "beta");
+        assert_eq!(
+            reviewed,
+            Some(("beta".to_string(), beta.clone())),
+            "the creation reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        assert_eq!(form(&panel, cx), beta, "the form shows what is reviewed");
+        assert_eq!(
+            status(&panel, cx),
+            "Draft restored locally",
+            "the review saves nothing of a draft just restored"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 0, "nothing is sent");
+    }
+
+    /// Text that has no key takes no other draft's place: typed while the destination names
+    /// no repository it is saved nowhere, and with the destination then typed onto a
+    /// repository that has a draft saved for the form's head and base, the form keeps what
+    /// was typed, the saved draft stays in the store and in Recover drafts, and the status
+    /// says the text is not saved and why. The form took the saved description under the
+    /// typed title, and that was saved over the saved draft.
+    #[gpui::test]
+    async fn text_typed_with_no_key_takes_no_saved_drafts_place(cx: &mut TestAppContext) {
+        let stored = [keyed("acme/app", "fix")];
+        let all = by_key(&stored);
+        let (_fixture, app, panel, _script, cx) = keyed_form(cx, "", "fix", &stored).await;
+        title_typed(&panel, "Typed title", cx);
+        retype(&panel, Names::Destination, 0, "acme/app", cx);
+        leave_for_title(&app, &panel, cx).await;
+        let typed = ("Typed title".to_string(), String::new(), true);
+        assert_eq!(form(&panel, cx), typed, "the form keeps what was typed");
+        assert_eq!(status(&panel, cx), DRAFT_HELD);
+        assert_kept(&app, &panel, &all, "the destination left", cx).await;
+        click_in_body(&app, "github-create-back", cx).await;
+        assert_kept(&app, &panel, &all, "after Pull requests", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            typed,
+            "the form still holds what was typed"
+        );
+        // Discarded in Recover drafts, the saved draft gives its key up to the form's text.
+        let saved = panel.read_with(cx, |panel, _| panel.saved[0].clone());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.discard_draft(saved, window, cx))
+        });
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            crate::tags::tests::draw(cx);
+        }
+        let kept = [under("acme/app", "fix", typed.clone())];
+        assert_kept(&app, &panel, &kept, "the saved draft discarded", cx).await;
+        assert_eq!(form(&panel, cx), typed);
+    }
+
+    /// The saved drafts' read follows the same rule: a form opened before they are read, a
+    /// title typed into it meanwhile and saved nowhere yet, keeps that title as the read
+    /// lands with a draft saved for its key, which stays in the store and in Recover drafts.
+    /// The form took the saved description under the typed title.
+    #[gpui::test]
+    async fn text_typed_before_the_drafts_are_read_takes_no_saved_drafts_place(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = stored_panel(cx, "fixture/repo", "feature");
+        let reading = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        draw(cx);
+        let create = whole_in_body(cx, "github-create", "New pull request");
+        cx.simulate_click(create.center(), Modifiers::none());
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.create && panel.saved.is_empty()));
+        title_typed(&panel, "Typed title", cx);
+        drop(reading);
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            draw(cx);
+        }
+        let typed = ("Typed title".to_string(), String::new(), true);
+        assert_eq!(form(&panel, cx), typed, "the form keeps what was typed");
+        assert_eq!(status(&panel, cx), DRAFT_HELD);
+        assert_one_creation_saved(&panel, &stored_form(), "the read landed", cx);
+    }
+
+    /// What [`held_form`] types into the form, as [`form`] gives it.
+    fn held_text() -> (String, String, bool) {
+        ("Typed title".into(), "Typed description".into(), true)
+    }
+
+    /// The one creation draft [`held_form`]'s store holds, as [`by_key`] gives it.
+    fn held_out() -> Vec<(String, String, String, bool)> {
+        by_key(&[keyed("acme/app", "fix")])
+    }
+
+    /// A form whose text is saved nowhere: with a draft stored for `fix` onto `main` in
+    /// `acme/app`, and `beside` it, the form opens with no destination, a title and a
+    /// description are typed into it, and the destination is typed to `acme/app` and left.
+    /// The form keeps what was typed, the store keeps its draft, and the status says that
+    /// the text is not saved and that keeping the window open keeps it ([`assert_held`]).
+    async fn held_form(
+        cx: &mut TestAppContext,
+        beside: Option<Draft>,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let stored: Vec<_> = [keyed("acme/app", "fix")]
+            .into_iter()
+            .chain(beside)
+            .collect();
+        let (fixture, app, panel, script, cx) = keyed_form(cx, "", "fix", &stored).await;
+        let (title, description, _) = held_text();
+        title_typed(&panel, &title, cx);
+        cx.update(|window, cx| {
+            let field = panel.read(cx).body.read(cx).focus_handle(cx);
+            field.focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_input(&description);
+        draw(cx);
+        retype(&panel, Names::Destination, 0, "acme/app", cx);
+        leave_for_title(&app, &panel, cx).await;
+        assert_held(&app, &panel, "the destination left", cx).await;
+        (fixture, app, panel, script, cx)
+    }
+
+    /// Asserts that the form is shown holding [`held_text`] whole, that its status says the
+    /// text is not saved, and that the store and Recover drafts hold the stored draft alone,
+    /// as it was.
+    async fn assert_held(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        when: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create),
+            "{when}: the form is shown"
+        );
+        assert_eq!(form(panel, cx), held_text(), "{when}: the form, whole");
+        assert_eq!(status(panel, cx), DRAFT_HELD, "{when}: the status");
+        assert_kept(app, panel, &held_out(), when, cx).await;
+    }
+
+    /// The form is left and a pull request opened, each press a click answered from the
+    /// script: Pull requests shows the list, Refresh PRs lists pull request 7 and its row
+    /// opens it, which gives the description's field to its review.
+    async fn open_seven_from_the_form(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        cx: &mut VisualTestContext,
+    ) {
+        click_in_body(app, "github-create-back", cx).await;
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.create),
+            "Pull requests shows the list"
+        );
+        let listed = serde_json::json!([listed_pull(7, "fixture:feature", "main")]);
+        script.answer(200, listed.to_string());
+        click_in_body(app, "github-refresh", cx).await;
+        answer_opening(script);
+        click_in_body(app, "github-pr-7", cx).await;
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(7),
+            "pull request 7 is open: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+    }
+
+    /// What the description's field holds, the form's or an open pull request's review's.
+    fn shared_field(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+        panel.read_with(cx, |panel, cx| panel.body.read(cx).value().to_string())
+    }
+
+    /// Text the form holds unsaved is not lost while the window lives: with the status
+    /// saying that keeping the window open keeps it, Pull requests, Refresh PRs and a pull
+    /// request's opening, which empties the field the description shares, are followed by
+    /// New pull request, and the form holds the title, the description and Draft as they
+    /// were typed, its status says again that they are not saved, and the store holds its
+    /// one draft as it was. The form came back with its title and no description, which was
+    /// nowhere.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_a_pull_request_opened_in_between(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        assert_eq!(shared_field(&panel, cx), "", "the review has no text yet");
+        assert_kept(&app, &panel, &held_out(), "the pull request open", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_held(&app, &panel, "back in the form", cx).await;
+    }
+
+    /// The same with a review's saved text taking the description's place: the opened pull
+    /// request's review is restored into the shared field, and New pull request gives the
+    /// form its own text back, none of the review's, whose draft stays as it was.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_a_review_taking_its_place(cx: &mut TestAppContext) {
+        let review = Draft::Review(ReviewDraft {
+            pull: listed_pull(7, "fixture:feature", "main")
+                .capture(Repository::parse("acme/app").unwrap()),
+            body: "Review text".into(),
+            event: ReviewEvent::Comment,
+            comments: vec![],
+            composing: None,
+            discussion: true,
+        });
+        let (_fixture, app, panel, script, cx) = held_form(cx, Some(review)).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        assert_eq!(
+            shared_field(&panel, cx),
+            "Review text",
+            "the review's text takes the description's place"
+        );
+        click_in_body(&app, "github-create", cx).await;
+        assert_held(&app, &panel, "back in the form", cx).await;
+        let reviews: Vec<_> = drafts::load()
+            .expect("the draft store")
+            .iter()
+            .filter(|draft| matches!(draft, Draft::Review(_)))
+            .map(|draft| draft.text().to_string())
+            .collect();
+        assert_eq!(
+            reviews,
+            ["Review text"],
+            "the review's draft stays as it was"
+        );
+    }
+
+    /// The panel is closed and `app` opens it again.
+    async fn close_and_open(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.closed), "closed");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| !panel.closed), "open again");
+    }
+
+    /// The same with the panel closed and opened again, on the form and then on the pull
+    /// request opened in between: the panel reopens on the form whole, its status as it
+    /// was, and what it keeps of the form while a pull request is shown outlasts its close.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_the_panel_closed_and_opened_again(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        close_and_open(&app, &panel, cx).await;
+        assert_held(&app, &panel, "the panel reopened on the form", cx).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        close_and_open(&app, &panel, cx).await;
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(7),
+            "the panel reopens on the pull request"
+        );
+        assert_kept(
+            &app,
+            &panel,
+            &held_out(),
+            "reopened on the pull request",
+            cx,
+        )
+        .await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_held(&app, &panel, "back in the form", cx).await;
+    }
+
+    /// A closed panel whose form holds text saved nowhere outlasts the warm cache's bound:
+    /// with nine other panels closed after it, one more than the cache keeps, the same panel
+    /// opens again on the form whole, its status as it was. The oldest closed panel went
+    /// with the ninth, and the next opening built a new, empty one in the same window.
+    #[gpui::test]
+    async fn text_held_unsaved_outlasts_the_warm_caches_bound(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, _script, cx) = held_form(cx, None).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let kept = cx.update(|_, cx| {
+            let warm = cx.default_global::<WarmPanels>();
+            for other in 0..9 {
+                warm.retain(WarmPanel {
+                    owner: app.entity_id(),
+                    worktree: format!("/another/worktree/{other}").into(),
+                    panel: panel.clone(),
+                    bytes: 0,
+                    unsaved: false,
+                });
+            }
+            warm.0.len()
+        });
+        assert_eq!(kept, 8, "the cache keeps eight panels");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.closed),
+            "the panel that holds the text opens again"
+        );
+        assert_held(&app, &panel, "the panel reopened", cx).await;
+    }
+
+    /// Held text gains its key once the draft that held it is discarded, and is then saved
+    /// whole: discarded in Recover drafts while a pull request is shown, the saved draft is
+    /// gone from the store, and New pull request opens the form on the title and the
+    /// description as they were typed and saves them under the key its fields name.
+    #[gpui::test]
+    async fn text_held_unsaved_is_saved_once_the_other_draft_is_discarded(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        let saved = panel.read_with(cx, |panel, _| panel.saved[0].clone());
+        assert_eq!(by_key(std::slice::from_ref(&saved)), held_out());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.discard_draft(saved, window, cx))
+        });
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            draw(cx);
+        }
+        assert_kept(&app, &panel, &[], "the saved draft discarded", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(form(&panel, cx), held_text(), "the form, whole");
+        let kept = [under("acme/app", "fix", held_text())];
+        assert_kept(&app, &panel, &kept, "back in the form", cx).await;
+        assert_eq!(status(&panel, cx), "Draft saved locally");
+    }
+
+    /// A creation confirmed from held text uses up no draft but its own, which is the text
+    /// that was sent and nothing in the store: after a pull request opened in between, the
+    /// review step shows the title and the description as they were typed, for the
+    /// destination, head and base the form names; once the answer names the pull request,
+    /// the draft saved for that key, never sent, is still in the store and in Recover drafts
+    /// as it was, and New pull request opens on it whole, the sent text gone with its
+    /// creation.
+    #[gpui::test]
+    async fn a_creation_confirmed_from_text_held_unsaved_uses_up_no_saved_draft(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = held_form(cx, None).await;
+        open_seven_from_the_form(&app, &panel, &script, cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        // The head's and the base's commits, which the review step reads and Send reads again.
+        let identities = |script: &github::Scripted| {
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "1".repeat(40)));
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "2".repeat(40)));
+        };
+        identities(&script);
+        click_in_body(&app, "github-review-submit", cx).await;
+        let reviewed = panel.read_with(cx, |panel, _| match &panel.confirm {
+            Some(Confirmation {
+                action: Action::Create(pull),
+                ..
+            }) => Some((
+                Draft::Pull(pull.clone()).key(),
+                (pull.title.clone(), pull.body.clone(), pull.draft),
+            )),
+            _ => None,
+        });
+        assert_eq!(
+            reviewed,
+            Some(("create:acme/app:fix:main".to_string(), held_text())),
+            "the creation reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        identities(&script);
+        script.answer(201, r#"{"number":203}"#);
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        for _ in 0..2 {
+            settle_panel(&app, cx).await;
+            draw(cx);
+        }
+        assert_eq!(
+            script.asked("POST", "/pulls"),
+            1,
+            "one creation was sent: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request #203 created. Refresh PRs to open it.")
+        );
+        assert_kept(&app, &panel, &held_out(), "the creation confirmed", cx).await;
+        click_in_body(&app, "github-create", cx).await;
+        assert_eq!(
+            form(&panel, cx),
+            shows("acme/app", "fix"),
+            "the form opens on the draft saved for its key, the sent text gone"
+        );
+        assert_eq!(status(&panel, cx), "Draft restored locally");
+        assert_kept(&app, &panel, &held_out(), "back in the form", cx).await;
+    }
+
+    /// The draft [`creation_panel`]'s form holds, as [`form`] gives one.
+    fn sent_form() -> (String, String, bool) {
+        (
+            "Keep the review's place".into(),
+            "Typed description".into(),
+            true,
+        )
+    }
+
+    /// What a creation's end leaves of its draft, once the saves it queued have landed: the
+    /// New pull request form, chosen again by a click where the end closed it, then the
+    /// creation drafts of the store on disk and of Recover drafts, each as [`form`] gives one.
+    async fn left_of_the_draft(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        cx: &mut VisualTestContext,
+    ) -> [Vec<(String, String, bool)>; 3] {
+        use crate::tags::tests::draw;
+        for _ in 0..2 {
+            settle_panel(app, cx).await;
+            draw(cx);
+        }
+        if !panel.read_with(cx, |panel, _| panel.create) {
+            click_in_body(app, "github-create", cx).await;
+            settle_panel(app, cx).await;
+            draw(cx);
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| panel.create),
+            "New pull request opens the form"
+        );
+        [
+            vec![form(panel, cx)],
+            creations(&drafts::load().expect("the draft store")),
+            panel.read_with(cx, |panel, _| creations(&panel.saved)),
+        ]
+    }
+
+    /// A creation GitHub confirms uses up its draft: once the answer names the pull request,
+    /// by the whole pull request or by its number alone (`answer`), New pull request opens
+    /// the form empty for that head and base, the store on disk holds the draft no more and
+    /// Recover drafts no longer counts it; the notice names the pull request and says nothing
+    /// of a draft. The form reopened on the title and the description just sent, the store
+    /// and Recover drafts still holding them, and sending them again could only be refused.
+    async fn assert_a_confirmed_creation_uses_up_its_draft(cx: &mut TestAppContext, answer: &str) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let at = (13, 1480., 973.);
+        send_creation(&app, &panel, &script, at, (201, answer), cx).await;
+        let notice = panel
+            .read_with(cx, |panel, _| panel.notice.clone())
+            .expect("the creation's notice");
+        assert!(
+            notice.contains("ull request #203 created.") && !notice.contains("draft remains"),
+            "the notice names the pull request and no draft: {notice}"
+        );
+        let counted = panel.read_with(cx, |panel, _| panel.saved.len());
+        let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+        assert_eq!(
+            (counted, form, stored, listed),
+            (
+                0,
+                vec![(String::new(), String::new(), true)],
+                Vec::new(),
+                Vec::new()
+            ),
+            "what Recover drafts counts as the creation lands, then the reopened form, the \
+             draft store and Recover drafts"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+    }
+
+    #[gpui::test]
+    async fn a_confirmed_creation_uses_up_its_draft(cx: &mut TestAppContext) {
+        assert_a_confirmed_creation_uses_up_its_draft(cx, &made(true).to_string()).await;
+    }
+
+    #[gpui::test]
+    async fn a_creation_confirmed_by_its_number_uses_up_its_draft(cx: &mut TestAppContext) {
+        assert_a_confirmed_creation_uses_up_its_draft(cx, r#"{"number":203}"#).await;
+    }
+
+    /// A creation that fails keeps its draft whole, whatever the failure: after each of
+    /// [`FAILED_CREATIONS`], sent from the form the one before left, the form still holds the
+    /// title and the description, and the store and Recover drafts hold that draft once. An
+    /// uncertain outcome's text is the person's to send again or to keep.
+    #[gpui::test]
+    async fn a_creation_that_fails_keeps_its_draft(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        open_creation(&app, (13, 1480., 973.), cx).await;
+        for (kind, status, said) in FAILED_CREATIONS {
+            let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+            cx.update(|window, cx| send.focus(window, cx));
+            draw(cx);
+            press_return(cx);
+            settle_panel(&app, cx).await;
+            draw(cx);
+            assert_eq!(
+                panel
+                    .read_with(cx, |panel, _| panel.error.clone())
+                    .as_deref(),
+                Some(said),
+                "{kind}"
+            );
+            let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+            for (kept, held) in [
+                (form, "form"),
+                (stored, "store"),
+                (listed, "Recover drafts"),
+            ] {
+                assert_eq!(kept, [sent_form()], "{kind}: the {held} keeps the draft");
+            }
+        }
+    }
+
+    /// A creation refused because its branch already has a pull request keeps its draft
+    /// whole: nothing was created, and the text is the person's.
+    #[gpui::test]
+    async fn a_creation_refused_for_an_existing_pull_request_keeps_its_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        send_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(HELD)
+        );
+        let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+        for (kept, held) in [
+            (form, "form"),
+            (stored, "store"),
+            (listed, "Recover drafts"),
+        ] {
+            assert_eq!(kept, [sent_form()], "the {held} keeps the draft");
+        }
+    }
+
+    /// An accepted creation whose answer could not be read keeps its draft whole: no number
+    /// confirms what was made, so the text stays with the person, and New pull request
+    /// opens the form on it.
+    #[gpui::test]
+    async fn a_creation_whose_answer_cannot_be_read_keeps_its_draft(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let at = (13, 1480., 973.);
+        send_creation(&app, &panel, &script, at, (201, "<html>"), cx).await;
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request created. Refresh PRs to open it.")
+        );
+        let [form, stored, listed] = left_of_the_draft(&app, &panel, cx).await;
+        for (kept, held) in [
+            (form, "form"),
+            (stored, "store"),
+            (listed, "Recover drafts"),
+        ] {
+            assert_eq!(kept, [sent_form()], "the {held} keeps the draft");
+        }
+    }
+
+    /// A confirmed creation takes its own draft and no other: drafts saved for another head,
+    /// for another base and for another repository, each holding the very title and
+    /// description that were sent, stay in the store and in Recover drafts.
+    #[gpui::test]
+    async fn a_confirmed_creation_leaves_every_other_draft(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let (title, body, draft) = sent_form();
+        let other = |repository: &str, head: &str, base: &str| {
+            Draft::Pull(NewPull {
+                repository: Repository::parse(repository).unwrap(),
+                title: title.clone(),
+                body: body.clone(),
+                head: head.into(),
+                base: base.into(),
+                draft,
+                expected_head: None,
+                expected_base: None,
+            })
+        };
+        let others = [
+            other("fixture/repo", "other", "main"),
+            other("fixture/repo", "feature", "release"),
+            other("fixture/other", "feature", "main"),
+        ];
+        for draft in others.clone() {
+            drafts::save(draft).expect("the draft store");
+        }
+        let at = (13, 1480., 973.);
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            at,
+            (201, &made(true).to_string()),
+            cx,
+        )
+        .await;
+        let [form, _, _] = left_of_the_draft(&app, &panel, cx).await;
+        assert_eq!(
+            form,
+            [(String::new(), String::new(), true)],
+            "the form opens empty"
+        );
+        let keys = |saved: &[Draft]| {
+            let mut keys: Vec<_> = saved.iter().map(Draft::key).collect();
+            keys.sort();
+            keys
+        };
+        let kept = keys(&others);
+        assert_eq!(
+            keys(&drafts::load().expect("the draft store")),
+            kept,
+            "the store keeps every other draft"
+        );
+        assert_eq!(
+            panel.read_with(cx, |panel, _| keys(&panel.saved)),
+            kept,
+            "Recover drafts keeps every other draft"
+        );
+    }
+
+    /// The script's answers to opening pull request 7: the pull request, its reviews, checks
+    /// and statuses, and its files with the pull request read again beside them. Its
+    /// conversations go unanswered, which Overview says.
+    fn answer_opening(script: &github::Scripted) {
+        let pull = serde_json::to_string(&listed_pull(7, "fixture:feature", "main")).unwrap();
+        for body in [pull.as_str(), "[]", "{}", "{}", "[]", pull.as_str()] {
+            script.answer(200, body);
+        }
+    }
+
+    /// How many times the script was asked to open pull request 7: each opening reads its
+    /// reviews once.
+    fn openings(script: &github::Scripted) -> usize {
+        script.asked("GET", "/pulls/7/reviews?per_page=100")
+    }
+
+    const HELD: &str = "feature already has pull request #7. Nothing was created.";
+    const UNTOLD: &str =
+        "feature already has a pull request. Nothing was created. Refresh PRs to see it.";
+
+    /// The loaded page as a refused creation of `feature` onto `main` finds it: the pull
+    /// request it was refused for, #7, among a fork's same-named branch and the same head onto
+    /// another base.
+    fn rows_holding_seven() -> Vec<PullRequest> {
+        vec![
+            listed_pull(8, "other:feature", "main"),
+            listed_pull(9, "fixture:feature", "release"),
+            listed_pull(7, "fixture:feature", "main"),
+        ]
+    }
+
+    /// The row a refused creation names is the open one from the same head, owner and branch,
+    /// onto the same base, and where that cannot be told there is none: a fork's same-named
+    /// branch, another base, a closed row, a head naming no owner and two rows that fit name
+    /// nothing, since the line must never name another pull request.
+    #[test]
+    fn a_refused_creation_names_only_the_row_that_is_certainly_its_pull_request() {
+        let new = |head: &str| NewPull {
+            repository: Repository::parse("Fixture/repo").unwrap(),
+            title: "Title".into(),
+            body: String::new(),
+            head: head.into(),
+            base: "main".into(),
+            draft: true,
+            expected_head: None,
+            expected_base: None,
+        };
+        let held =
+            |rows: &[PullRequest], head: &str| held_pull(rows, &new(head)).map(|row| row.number);
+        let rows = rows_holding_seven();
+        assert_eq!(held(&rows, "feature"), Some(7), "the owner's case aside");
+        assert_eq!(held(&rows, "fixture:feature"), Some(7));
+        assert_eq!(held(&rows, "other:feature"), Some(8), "the fork's own head");
+        assert_eq!(
+            held(&rows[..2], "feature"),
+            None,
+            "a fork's branch and another base"
+        );
+        assert_eq!(held(&rows, "feat"), None);
+        let mut closed = rows.clone();
+        closed[2].state = "closed".into();
+        assert_eq!(held(&closed, "feature"), None, "a closed row");
+        let mut unnamed = rows.clone();
+        unnamed[2].head.label = String::new();
+        assert_eq!(held(&unnamed, "feature"), None, "a head naming no owner");
+        let mut twice = rows.clone();
+        twice.push(listed_pull(10, "fixture:feature", "main"));
+        assert_eq!(held(&twice, "feature"), None, "two rows that fit");
+    }
+
+    /// A creation GitHub refuses because its head branch already has a pull request says so by
+    /// the control that sent, from the head the form captured, with the number of the pull
+    /// request the loaded list holds and one action, Open #7: the line and the action are drawn
+    /// whole in the body's view at `at`, though Send stood at the form's foot, the form stays
+    /// open with what was typed, its draft kept, and nothing is requested until the action's
+    /// press, which opens the pull request as a press on its row does. The refusal once read
+    /// "GitHub rejected the reviewed target or content…", on a line above the body's top.
+    async fn assert_refused_creation_names_its_pull_request(
+        cx: &mut TestAppContext,
+        at: (u8, f32, f32),
+    ) {
+        use crate::tags::tests::draw;
+        let name = format!("{} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        send_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.error.as_deref(), Some(HELD), "{name}");
+            assert!(
+                panel.create && panel.confirm.is_none() && !panel.pending,
+                "{name}: the form stays open"
+            );
+            assert_eq!(
+                panel.title.read(cx).value().as_ref(),
+                "Keep the review's place"
+            );
+            assert_eq!(panel.body.read(cx).value().as_ref(), "Typed description");
+            assert!(
+                panel
+                    .saved
+                    .iter()
+                    .any(|draft| matches!(draft, Draft::Pull(pull) if pull.head == "feature")),
+                "{name}: the draft is kept"
+            );
+            assert_eq!(panel.rows.len(), 3, "{name}: the list is as it was");
+        });
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            5,
+            "{name}: nothing was looked up or refreshed for the line"
+        );
+        let line = whole_in_body(cx, "github-error", &name);
+        let action = whole_in_body(cx, "github-open-existing", &name);
+        assert!(
+            action.left() >= line.right() || action.top() >= line.bottom(),
+            "{name}: the action {action:?} stands beside or below the words {line:?}"
+        );
+        assert!(
+            whole_in_body(cx, "github-create-fields", &name).top() >= line.bottom(),
+            "{name}: the form is drawn below the line"
+        );
+
+        answer_opening(&script);
+        cx.simulate_click(action.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(
+                panel.pull.as_ref().map(|pull| pull.number),
+                Some(7),
+                "{name}: the action opens the pull request: {:?}",
+                panel.error
+            );
+            assert!(!panel.create && !panel.pending, "{name}");
+        });
+        assert_eq!(openings(&script), 1, "{name}: opened once");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "{name}: sent once");
+        assert!(cx.debug_bounds("github-open-existing").is_none(), "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_refused_creation_names_its_pull_request_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_refused_creation_names_its_pull_request(cx, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_refused_creation_names_its_pull_request_at_18_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_refused_creation_names_its_pull_request(cx, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_refused_creation_names_its_pull_request_at_13_pt_in_a_wide_window(
+        cx: &mut TestAppContext,
+    ) {
+        assert_refused_creation_names_its_pull_request(cx, (13, 1480., 973.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_refused_creation_names_its_pull_request_at_18_pt_in_a_wide_window(
+        cx: &mut TestAppContext,
+    ) {
+        assert_refused_creation_names_its_pull_request(cx, (18, 1480., 973.)).await;
+    }
+
+    /// Where the loaded list cannot tell the pull request, the line names no number and offers
+    /// no action: it says Refresh PRs shows it, drawn whole at `at`, and no request follows.
+    async fn assert_refused_creation_names_no_number(
+        cx: &mut TestAppContext,
+        rows: Vec<PullRequest>,
+        listed: Option<&str>,
+        at: (u8, f32, f32),
+    ) {
+        let name = format!("{} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.listed = listed.map(|listed| Repository::parse(listed).unwrap())
+            })
+        });
+        send_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.error.as_deref(), Some(UNTOLD), "{name}");
+            assert!(panel.create && panel.existing.is_none(), "{name}");
+        });
+        whole_in_body(cx, "github-error", &name);
+        assert!(
+            cx.debug_bounds("github-open-existing").is_none(),
+            "{name}: no action"
+        );
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_refused_creation_names_no_number_from_a_forks_same_named_branch(
+        cx: &mut TestAppContext,
+    ) {
+        let rows = rows_holding_seven()[..2].to_vec();
+        assert_refused_creation_names_no_number(cx, rows, Some("fixture/repo"), (18, 461., 490.))
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_refused_creation_names_no_number_from_a_list_never_loaded(cx: &mut TestAppContext) {
+        assert_refused_creation_names_no_number(cx, Vec::new(), None, (13, 1480., 973.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_refused_creation_names_no_number_from_the_list_of_another_repository(
+        cx: &mut TestAppContext,
+    ) {
+        let rows = rows_holding_seven();
+        assert_refused_creation_names_no_number(cx, rows, Some("fixture/other"), (13, 461., 490.))
+            .await;
+    }
+
+    /// Open #7 opens once under the press rules a row's title has: Return held on it, its
+    /// repeats marked held and, as X11 sends them, as fresh presses, before and after the read
+    /// lands, start one read and send nothing again.
+    #[gpui::test]
+    async fn open_existing_opens_once_under_a_held_return_and_its_repeats(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        click_creation(
+            &app,
+            &panel,
+            &script,
+            (13, 1480., 973.),
+            (422, github::EXISTS),
+            cx,
+        )
+        .await;
+        let action = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-open-existing")
+            })
+            .expect("Open #7");
+        cx.update(|window, cx| action.focus(window, cx));
+        draw(cx);
+        answer_opening(&script);
+        let requests = panel.read_with(cx, |panel, _| panel.request_generation);
+        let keystroke = gpui::Keystroke::parse("enter").unwrap();
+        let down = |held: bool, cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                is_held: held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let read = app.read_with(cx, |app, _| app.operations.hold());
+        down(false, cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "the press starts the read: {:?}, focused {}",
+            panel.read_with(cx, |panel, _| panel.error.clone()),
+            cx.update(|window, _| action.is_focused(window))
+        );
+        for held in [true, true, false, false] {
+            down(held, cx);
+        }
+        drop(read);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        for held in [true, false] {
+            down(held, cx);
+        }
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.pull.as_ref().map(|pull| pull.number), Some(7));
+            assert_eq!(
+                panel.request_generation,
+                requests.wrapping_add(1),
+                "one press, one read"
+            );
+            assert!(!panel.pending && panel.confirm.is_none());
+        });
+        assert_eq!(openings(&script), 1, "opened once");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "nothing was sent again");
+    }
+
+    /// A double-click on Open #7 opens once and sends nothing again.
+    #[gpui::test]
+    async fn open_existing_opens_once_under_a_double_click(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            (13, 1480., 973.),
+            (422, github::EXISTS),
+            cx,
+        )
+        .await;
+        let action = whole_in_body(cx, "github-open-existing", "13 pt in 1480 × 973");
+        answer_opening(&script);
+        let requests = panel.read_with(cx, |panel, _| panel.request_generation);
+        let read = app.read_with(cx, |app, _| app.operations.hold());
+        cx.simulate_click(action.center(), Modifiers::none());
+        cx.simulate_click(action.center(), Modifiers::none());
+        draw(cx);
+        cx.simulate_click(action.center(), Modifiers::none());
+        drop(read);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.pull.as_ref().map(|pull| pull.number), Some(7));
+            assert_eq!(
+                panel.request_generation,
+                requests.wrapping_add(1),
+                "one read"
+            );
+        });
+        assert_eq!(openings(&script), 1, "opened once");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "nothing was sent again");
+    }
+
+    /// GitHub's answer to the creation of `feature` onto `main`: pull request 203, a draft or
+    /// ready, as a list entry is.
+    fn made(draft: bool) -> serde_json::Value {
+        let mut made = serde_json::to_value(listed_pull(203, "fixture:feature", "main")).unwrap();
+        made["draft"] = draft.into();
+        made["title"] = "Keep the review's place".into();
+        made
+    }
+
+    /// The numbers of the list's rows, in order.
+    fn numbers(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> Vec<u64> {
+        panel.read_with(cx, |panel, _| {
+            panel.rows.iter().map(|row| row.number).collect()
+        })
+    }
+
+    /// The script's answers to opening pull request 203 ([`answer_opening`]).
+    fn answer_opening_made(script: &github::Scripted, draft: bool) {
+        let pull = made(draft).to_string();
+        for body in [pull.as_str(), "[]", "{}", "{}", "[]", pull.as_str()] {
+            script.answer(200, body);
+        }
+    }
+
+    /// A creation GitHub accepts shows its pull request from the creation's own answer: the
+    /// notice names it, a draft as one, its row is first in the list above the listed rows,
+    /// whole in the list and in the body's view at `at`, and holds focus; nothing is opened and
+    /// no request follows the send until the person's press on the row, which opens it. It
+    /// once said "Pull request created. Refresh PRs to open it." over the list as it was.
+    async fn assert_created_pull_request_is_shown(
+        cx: &mut TestAppContext,
+        at: (u8, f32, f32),
+        draft: bool,
+    ) {
+        use crate::tags::tests::draw;
+        let name = format!("{} pt in {} × {}", at.0, at.1, at.2);
+        let rows = vec![
+            listed_pull(7, "fixture:other", "main"),
+            listed_pull(6, "fixture:older", "main"),
+        ];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            at,
+            (201, &made(draft).to_string()),
+            cx,
+        )
+        .await;
+        let said = if draft {
+            "Draft pull request #203 created."
+        } else {
+            "Pull request #203 created."
+        };
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.notice.as_deref(), Some(said), "{name}");
+            assert_eq!(panel.error, None, "{name}");
+            assert!(
+                !panel.create && !panel.pending && panel.pull.is_none() && !panel.created_only,
+                "{name}: the list shows and nothing is opened"
+            );
+        });
+        assert_eq!(
+            numbers(&panel, cx),
+            [203, 7, 6],
+            "{name}: first in the list"
+        );
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            5,
+            "{name}: no request follows the send"
+        );
+        whole_in_body(cx, "github-notice", &name);
+        let row = whole_in_body(cx, "github-pr-card-203", &name);
+        let title = whole_in_body(cx, "github-pr-203", &name);
+        whole_in_body(cx, "github-pr-context-203", &name);
+        let list = cx.debug_bounds("github-pr-list").expect("the list");
+        assert!(
+            row.top() >= list.top() && row.bottom() <= list.bottom(),
+            "{name}: the row {row:?} is whole in its list {list:?}"
+        );
+        if let Some(listed) = cx.debug_bounds("github-pr-card-7") {
+            assert!(
+                listed.top() >= row.bottom(),
+                "{name}: above the listed rows"
+            );
+        }
+        let focus = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept(("github-pr", 203u64))
+            })
+            .expect("the row's title");
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{name}: the new row holds focus"
+        );
+
+        answer_opening_made(&script, draft);
+        cx.simulate_click(title.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(203),
+            "{name}: the person's press opens it"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 1, "{name}: sent once");
+    }
+
+    #[gpui::test]
+    async fn a_created_pull_request_is_shown_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_created_pull_request_is_shown(cx, (13, 461., 490.), true).await;
+    }
+
+    #[gpui::test]
+    async fn a_created_pull_request_is_shown_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_created_pull_request_is_shown(cx, (18, 461., 490.), false).await;
+    }
+
+    #[gpui::test]
+    async fn a_created_pull_request_is_shown_at_13_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_created_pull_request_is_shown(cx, (13, 1480., 973.), false).await;
+    }
+
+    #[gpui::test]
+    async fn a_created_pull_request_is_shown_at_18_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_created_pull_request_is_shown(cx, (18, 1480., 973.), true).await;
+    }
+
+    /// A Return held on Send to GitHub sends once and opens nothing once the creation lands
+    /// and its row takes focus: its repeats, marked held or, as X11 sends them, fresh presses,
+    /// start no request. Once the key has come up, the person's own Return opens the row.
+    #[gpui::test]
+    async fn a_return_held_on_send_opens_nothing_once_the_creation_lands(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let rows = vec![listed_pull(7, "fixture:other", "main")];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        let answer = made(true).to_string();
+        let at = (13, 1480., 973.);
+        let send = review_creation(&app, &panel, &script, at, (201, &answer), true, cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        let down = |held: bool, cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                is_held: held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        down(false, cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "Return sends as it goes down"
+        );
+        down(true, cx);
+        down(false, cx);
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(numbers(&panel, cx), [203, 7], "the creation landed");
+        let sent = panel.read_with(cx, |panel, _| panel.request_generation);
+        for held in [true, false, false] {
+            down(held, cx);
+        }
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.pull.is_none() && !panel.pending,
+                "the held Return opens nothing"
+            );
+            assert_eq!(
+                panel.request_generation, sent,
+                "no request follows the send"
+            );
+        });
+        assert_eq!(script.requests.lock().unwrap().len(), 5);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "sent once");
+
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        draw(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, "the Return come up", cx);
+        answer_opening_made(&script, true);
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        // The person's own Return opens the row, once.
+        Landed::Row.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// A creation sent before the list was ever loaded shows its row alone and says so: the
+    /// list must not read as the open pull requests, and Refresh PRs, still offered, loads
+    /// them, one row for each number.
+    #[gpui::test]
+    async fn a_creation_into_a_list_never_loaded_says_it_shows_only_the_new_row(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let at = (13, 1480., 973.);
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            at,
+            (201, &made(false).to_string()),
+            cx,
+        )
+        .await;
+        assert_eq!(numbers(&panel, cx), [203]);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.created_only && panel.page == 1 && !panel.has_next);
+            assert_eq!(panel.notice.as_deref(), Some("Pull request #203 created."));
+        });
+        let row = whole_in_body(cx, "github-pr-card-203", name);
+        let line = whole_in_body(cx, "github-list-partial", name);
+        assert!(line.top() >= row.bottom(), "the line stands under the row");
+        assert!(cx.debug_bounds("github-list-empty").is_none());
+        let refresh = whole_in_body(cx, "github-refresh", name);
+
+        let listed = serde_json::json!([made(false), listed_pull(7, "fixture:other", "main")]);
+        script.answer(200, listed.to_string());
+        cx.simulate_click(refresh.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(numbers(&panel, cx), [203, 7], "one row for each number");
+        assert!(!panel.read_with(cx, |panel, _| panel.created_only));
+        assert!(cx.debug_bounds("github-list-partial").is_none());
+    }
+
+    /// The new row takes the place of a listed row of its number, so the page holds one row
+    /// for each number and keeps its size, its last row with it.
+    #[gpui::test]
+    async fn a_created_row_takes_the_place_of_a_listed_row_of_its_number(cx: &mut TestAppContext) {
+        let mut rows: Vec<_> = (1..=github::PAGE_SIZE as u64)
+            .rev()
+            .map(|number| listed_pull(number, &format!("fixture:branch-{number}"), "main"))
+            .collect();
+        // A row of the new number, as a page listed while it was being created would hold.
+        rows[3].number = 203;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        let at = (13, 1480., 973.);
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            at,
+            (201, &made(true).to_string()),
+            cx,
+        )
+        .await;
+        let shown = numbers(&panel, cx);
+        assert_eq!(shown.len(), github::PAGE_SIZE, "the page keeps its size");
+        assert_eq!(shown[0], 203);
+        assert_eq!(shown.iter().filter(|number| **number == 203).count(), 1);
+        assert_eq!(
+            shown.last(),
+            Some(&1),
+            "its own number's row gave way, not the last"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.rows[0].title, "Keep the review's place");
+            assert!(!panel.has_next && !panel.created_only);
+        });
+    }
+
+    /// A full first page gives up its last row for the new one and offers the next page, which
+    /// lists that row: Next PR page then shows it once.
+    #[gpui::test]
+    async fn a_full_page_gives_its_last_row_to_the_next_page(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let rows: Vec<_> = (1..=github::PAGE_SIZE as u64)
+            .rev()
+            .map(|number| listed_pull(number, &format!("fixture:branch-{number}"), "main"))
+            .collect();
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        let at = (13, 1480., 973.);
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            at,
+            (201, &made(true).to_string()),
+            cx,
+        )
+        .await;
+        let shown = numbers(&panel, cx);
+        assert_eq!(shown.len(), github::PAGE_SIZE, "up to 50 PRs");
+        assert_eq!((shown[0], shown.last()), (203, Some(&2)));
+        assert!(
+            panel.read_with(cx, |panel, _| panel.has_next),
+            "the next page holds #1"
+        );
+
+        let next = serde_json::json!([listed_pull(1, "fixture:branch-1", "main")]);
+        script.answer(200, next.to_string());
+        let button = cx.debug_bounds("github-next").expect("Next PR page");
+        cx.simulate_click(button.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(numbers(&panel, cx), [1], "the row it gave up, once");
+        assert_eq!(panel.read_with(cx, |panel, _| panel.page), 2);
+        assert_eq!(script.asked("GET", "page=2"), 1);
+    }
+
+    /// With a later page of the list shown, the new row stands alone on page 1 and the list
+    /// says it shows only that: first on page 2, it would place the newest pull request there.
+    #[gpui::test]
+    async fn a_creation_from_a_later_page_shows_the_new_row_alone(cx: &mut TestAppContext) {
+        let rows = vec![listed_pull(7, "fixture:other", "main")];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.page = 2));
+        let at = (13, 1480., 973.);
+        send_creation(
+            &app,
+            &panel,
+            &script,
+            at,
+            (201, &made(true).to_string()),
+            cx,
+        )
+        .await;
+        assert_eq!(numbers(&panel, cx), [203]);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.created_only && panel.page == 1 && !panel.has_next);
+        });
+        whole_in_body(cx, "github-list-partial", "13 pt in 1480 × 973");
+    }
+
+    /// An accepted creation whose answer holds only its number, or nothing that can be read, is
+    /// still a creation: the notice says so, with the number where it has one, and that Refresh
+    /// PRs opens it; no failure is shown, the list is as it was and nothing is sent again.
+    async fn assert_unread_creation_is_still_created(
+        cx: &mut TestAppContext,
+        answer: &str,
+        said: &str,
+    ) {
+        let rows = vec![listed_pull(7, "fixture:other", "main")];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        send_creation(&app, &panel, &script, (13, 461., 490.), (201, answer), cx).await;
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.notice.as_deref(), Some(said));
+            assert_eq!(panel.error, None, "an accepted creation is no failure");
+            assert!(!panel.create && !panel.pending && !panel.created_only);
+        });
+        assert_eq!(numbers(&panel, cx), [7]);
+        whole_in_body(cx, "github-notice", "13 pt in 461 × 490");
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+    }
+
+    #[gpui::test]
+    async fn a_creation_answered_with_its_number_alone_names_it(cx: &mut TestAppContext) {
+        let said = "Pull request #203 created. Refresh PRs to open it.";
+        assert_unread_creation_is_still_created(cx, r#"{"number":203}"#, said).await;
+    }
+
+    #[gpui::test]
+    async fn a_creation_whose_answer_cannot_be_read_is_still_created(cx: &mut TestAppContext) {
+        let said = "Pull request created. Refresh PRs to open it.";
+        assert_unread_creation_is_still_created(cx, "<html>", said).await;
+    }
+
+    /// `key` going down on whatever holds focus, as the platform sends it, with no idle pass
+    /// after it; `held` marks a repeat as macOS and Wayland mark theirs.
+    fn key_goes_down(cx: &mut VisualTestContext, key: &str, held: bool) {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                    is_held: held,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+        });
+    }
+
+    /// `key` coming up on whatever holds focus, with no idle pass after it.
+    fn key_comes_up(cx: &mut VisualTestContext, key: &str) {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                }),
+                cx,
+            );
+        });
+    }
+
+    /// A held key's repeat as GPUI's X11 client hands it on where the release and the press
+    /// reach it in two batches of events: `key` coming up, an idle pass, and `key` going down
+    /// unmarked; then the frame drawn before the next repeat. (In one batch the client drops
+    /// the release, and the repeat is the key going down alone.)
+    fn x11_repeat(cx: &mut VisualTestContext, key: &str) {
+        key_comes_up(cx, key);
+        cx.executor().run_until_parked();
+        key_goes_down(cx, key, false);
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The control a creation's landing gives focus: the new pull request's row, or, refused
+    /// for an existing pull request, the line's Open #7 where the loaded list holds it and
+    /// Refresh PRs where it does not.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Landed {
+        Row,
+        Open,
+        Refresh,
+    }
+
+    impl Landed {
+        /// The rows listed before the creation is sent.
+        fn rows(self) -> Vec<PullRequest> {
+            match self {
+                Self::Row => vec![listed_pull(7, "fixture:other", "main")],
+                Self::Open => rows_holding_seven(),
+                Self::Refresh => Vec::new(),
+            }
+        }
+
+        /// GitHub's answer to the creation.
+        fn answer(self) -> (u16, String) {
+            match self {
+                Self::Row => (201, made(true).to_string()),
+                Self::Open | Self::Refresh => (422, github::EXISTS.into()),
+            }
+        }
+
+        /// The control's selector.
+        fn selector(self) -> &'static str {
+            match self {
+                Self::Row => "github-pr-203",
+                Self::Open => "github-open-existing",
+                Self::Refresh => "github-refresh",
+            }
+        }
+
+        /// The control's focus handle, once a frame has drawn it.
+        fn focus(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> FocusHandle {
+            let id: ElementId = match self {
+                Self::Row => ("github-pr", 203u64).into(),
+                Self::Open => "github-open-existing".into(),
+                Self::Refresh => "github-refresh".into(),
+            };
+            panel
+                .read_with(cx, |panel, _| panel.review.buttons.kept(id))
+                .unwrap_or_else(|| panic!("{self:?} is drawn"))
+        }
+
+        /// Scripts the answers to the control's press.
+        fn answer_press(self, script: &github::Scripted) {
+            match self {
+                Self::Row => answer_opening_made(script, true),
+                Self::Open => answer_opening(script),
+                Self::Refresh => script.answer(200, "[]"),
+            }
+        }
+
+        /// Asserts that the control's press acted, once, since `sent` requests of the panel.
+        fn assert_pressed_once(
+            self,
+            panel: &Entity<Panel>,
+            script: &github::Scripted,
+            sent: u64,
+            cx: &mut VisualTestContext,
+        ) {
+            panel.read_with(cx, |panel, _| {
+                assert_eq!(
+                    panel.request_generation,
+                    sent.wrapping_add(1),
+                    "{self:?}: one press, one request: {:?}",
+                    panel.error
+                );
+                assert!(!panel.pending, "{self:?}");
+                let opened = panel.pull.as_ref().map(|pull| pull.number);
+                match self {
+                    Self::Row => assert_eq!(opened, Some(203)),
+                    Self::Open => assert_eq!(opened, Some(7)),
+                    Self::Refresh => {
+                        assert_eq!(opened, None);
+                        assert!(panel.error.is_none() && panel.rows.is_empty());
+                    }
+                }
+            });
+            let read = script.requests.lock().unwrap().len() - 5;
+            assert_eq!(
+                read,
+                if self == Self::Refresh { 1 } else { 6 },
+                "{self:?}: the press's own reads"
+            );
+            assert_eq!(script.asked("POST", "/pulls"), 1, "nothing was sent again");
+        }
+    }
+
+    /// [`creation_panel`]'s panel for `landed`, open at 13 pt in an active 1,480 × 973 window
+    /// with its creation reviewed and Send to GitHub holding focus, the script holding the
+    /// answer that gives `landed` focus. Review submission… is pressed by Return or, with `by_click`, by a
+    /// click, which leaves no Return behind it.
+    async fn landing_panel(
+        cx: &mut TestAppContext,
+        landed: Landed,
+        by_click: bool,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        &mut VisualTestContext,
+    ) {
+        let (fixture, app, panel, script, cx) = creation_panel(cx, landed.rows(), "feature");
+        let (status, answer) = landed.answer();
+        let at = (13, 1480., 973.);
+        let send =
+            review_creation(&app, &panel, &script, at, (status, &answer), by_click, cx).await;
+        // The active window, as the one a person types in is: an inactive window reports no
+        // focus moving in it, and a test window starts as one.
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        crate::tags::tests::draw(cx);
+        assert!(cx.update(|window, _| window.is_window_active()));
+        (fixture, app, panel, script, cx)
+    }
+
+    /// Lets the held send answer and land, and returns the focus handle of the control the
+    /// landing gave focus, `landed`, with the number of the panel's requests so far.
+    async fn land<H>(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        landed: Landed,
+        sending: H,
+        cx: &mut VisualTestContext,
+    ) -> (FocusHandle, u64) {
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "the creation is being sent"
+        );
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(app, cx).await;
+        crate::tags::tests::draw(cx);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        assert_eq!(script.requests.lock().unwrap().len(), 5);
+        let focus = landed.focus(panel, cx);
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{landed:?} takes focus as the answer lands"
+        );
+        let sent = panel.read_with(cx, |panel, _| panel.request_generation);
+        (focus, sent)
+    }
+
+    /// Asserts that nothing was pressed since the creation landed: no request of the panel
+    /// since `sent`, none asked of the script, and nothing opened.
+    fn assert_nothing_pressed(
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        sent: u64,
+        when: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.pull.is_none() && !panel.pending,
+                "{when}: nothing opens"
+            );
+            assert_eq!(panel.request_generation, sent, "{when}: no request");
+        });
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{when}");
+    }
+
+    /// Return down and up on Send to GitHub and then, once the answer has landed, one Return
+    /// on the control it gave focus: that Return acts, once, none lost and none doubled. The
+    /// confirmation goes as the creation is sent, and focus once stayed on its Send, which no
+    /// frame drew: the Return's key-up then reached nothing that notes it, the toolkit's
+    /// record of the press stayed (`gpui_kit::base::enter_press_began_on`), and the next
+    /// Return, taken for its repeat, did nothing.
+    async fn assert_one_return_presses_what_a_landing_focused(
+        cx: &mut TestAppContext,
+        landed: Landed,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, false).await;
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        key_goes_down(cx, "enter", false);
+        key_comes_up(cx, "enter");
+        draw(cx);
+        let (focus, sent) = land(&app, &panel, &script, landed, sending, cx).await;
+        assert!(
+            cx.update(|window, cx| gpui_kit::base::enter_press_began_on(&focus, window, cx)),
+            "{landed:?}: Send's Return has come up, so no press is recorded on Send"
+        );
+        landed.answer_press(&script);
+        key_goes_down(cx, "enter", false);
+        key_comes_up(cx, "enter");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    #[gpui::test]
+    async fn one_return_opens_the_row_a_creation_sent_by_return_made(cx: &mut TestAppContext) {
+        assert_one_return_presses_what_a_landing_focused(cx, Landed::Row).await;
+    }
+
+    #[gpui::test]
+    async fn one_return_opens_the_pull_request_a_creation_sent_by_return_was_refused_for(
+        cx: &mut TestAppContext,
+    ) {
+        assert_one_return_presses_what_a_landing_focused(cx, Landed::Open).await;
+    }
+
+    #[gpui::test]
+    async fn one_return_refreshes_after_a_creation_sent_by_return_was_refused(
+        cx: &mut TestAppContext,
+    ) {
+        assert_one_return_presses_what_a_landing_focused(cx, Landed::Refresh).await;
+    }
+
+    /// `key`, Return or Space, held on Send to GitHub across the landing that gives `landed`
+    /// focus presses nothing there: its repeats, as X11 sends them in two batches, a release
+    /// and a fresh press, alone, or marked held, start no request and open nothing, nor does
+    /// the key coming up; a fresh press after that acts once. GPUI clicks a focused control
+    /// as Space or Return comes up where it went down at the same focus, so the release of
+    /// the repeat after the one that found focus there once opened the new pull request, a
+    /// read nobody pressed.
+    async fn assert_a_key_held_across_a_landing_presses_nothing(
+        cx: &mut TestAppContext,
+        key: &'static str,
+        landed: Landed,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, true).await;
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        // Return sends as it goes down, Space as the release of its first repeat comes up.
+        key_goes_down(cx, key, false);
+        draw(cx);
+        x11_repeat(cx, key);
+        x11_repeat(cx, key);
+        let (_, sent) = land(&app, &panel, &script, landed, sending, cx).await;
+        for _ in 0..3 {
+            x11_repeat(cx, key);
+        }
+        for held in [false, true, true] {
+            key_goes_down(cx, key, held);
+            draw(cx);
+        }
+        x11_repeat(cx, key);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let name = format!("{key} held on {landed:?}");
+        assert_nothing_pressed(&panel, &script, sent, &name, cx);
+
+        key_comes_up(cx, key);
+        draw(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, &format!("{name}, come up"), cx);
+
+        landed.answer_press(&script);
+        key_goes_down(cx, key, false);
+        key_comes_up(cx, key);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_presses_nothing_on_the_row_the_creation_made(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_across_a_landing_presses_nothing(cx, "space", Landed::Row).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_presses_nothing_on_the_refusals_open_action(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_across_a_landing_presses_nothing(cx, "space", Landed::Open).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_presses_nothing_on_refresh_after_a_refusal(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_across_a_landing_presses_nothing(cx, "space", Landed::Refresh).await;
+    }
+
+    #[gpui::test]
+    async fn return_held_on_send_presses_nothing_on_the_row_the_creation_made(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_across_a_landing_presses_nothing(cx, "enter", Landed::Row).await;
+    }
+
+    #[gpui::test]
+    async fn return_held_on_send_presses_nothing_on_the_refusals_open_action(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_across_a_landing_presses_nothing(cx, "enter", Landed::Open).await;
+    }
+
+    #[gpui::test]
+    async fn return_held_on_send_presses_nothing_on_refresh_after_a_refusal(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_across_a_landing_presses_nothing(cx, "enter", Landed::Refresh).await;
+    }
+
+    /// Space held on Send to GitHub across the creation's landing, as X11 repeats it, with the
+    /// new row holding focus and refusing the key: the panel as [`land`] leaves it, with the
+    /// number of its requests so far.
+    async fn space_held_across_a_creation(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        github::Scripted,
+        u64,
+        &mut VisualTestContext,
+    ) {
+        let (fixture, app, panel, script, cx) = landing_panel(cx, Landed::Row, true).await;
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        key_goes_down(cx, "space", false);
+        crate::tags::tests::draw(cx);
+        x11_repeat(cx, "space");
+        let (_, sent) = land(&app, &panel, &script, Landed::Row, sending, cx).await;
+        x11_repeat(cx, "space");
+        x11_repeat(cx, "space");
+        assert_nothing_pressed(&panel, &script, sent, "Space held", cx);
+        (fixture, app, panel, script, sent, cx)
+    }
+
+    /// The held key refuses only the keyboard's clicks: a pointer click on the new row while
+    /// Space is still down opens it, once.
+    #[gpui::test]
+    async fn a_click_opens_the_new_row_while_a_held_key_is_refused(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, sent, cx) = space_held_across_a_creation(cx).await;
+        let title = whole_in_body(cx, "github-pr-203", "13 pt in 1480 × 973");
+        answer_opening_made(&script, true);
+        cx.simulate_click(title.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        Landed::Row.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// A key-up lost outside the window costs one press at most: with Space held across the
+    /// landing and the window left while it was down, the next press of Space or Return there
+    /// is taken for the held key's, as its next repeat would be, and presses nothing; it ends
+    /// the hold as it comes up, and the press after it opens the row, once. The window
+    /// turning inactive ends nothing by itself: under X11 another client's keyboard grab
+    /// takes the window's focus and gives it back while the key is still down.
+    async fn assert_a_lost_key_up_costs_one_press(cx: &mut TestAppContext, next: &'static str) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, sent, cx) = space_held_across_a_creation(cx).await;
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        // Still held, as after a grab: its repeats press nothing.
+        x11_repeat(cx, "space");
+        x11_repeat(cx, "space");
+        assert_nothing_pressed(&panel, &script, sent, "held through the grab", cx);
+        // Left again, and released outside.
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        key_goes_down(cx, next, false);
+        key_comes_up(cx, next);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, "the press after the lost key-up", cx);
+
+        answer_opening_made(&script, true);
+        key_goes_down(cx, next, false);
+        key_comes_up(cx, next);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        Landed::Row.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    #[gpui::test]
+    async fn a_key_up_lost_outside_the_window_costs_one_space_at_most(cx: &mut TestAppContext) {
+        assert_a_lost_key_up_costs_one_press(cx, "space").await;
+    }
+
+    #[gpui::test]
+    async fn a_key_up_lost_outside_the_window_costs_one_return_at_most(cx: &mut TestAppContext) {
+        assert_a_lost_key_up_costs_one_press(cx, "enter").await;
+    }
+
+    /// A key held through a keyboard grab outlasts another key's press: with Space held across
+    /// the landing, the window left and back while it is down and Space repeating again, a
+    /// Return pressed and released on the row presses nothing, nor do Space's repeats after
+    /// it; once Space has come up, a fresh press opens the row, once.
+    #[gpui::test]
+    async fn a_key_held_through_a_grab_outlasts_another_keys_press(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, sent, cx) = space_held_across_a_creation(cx).await;
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        x11_repeat(cx, "space");
+        key_goes_down(cx, "enter", false);
+        key_comes_up(cx, "enter");
+        draw(cx);
+        x11_repeat(cx, "space");
+        x11_repeat(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, "Space still down", cx);
+
+        key_comes_up(cx, "space");
+        draw(cx);
+        answer_opening_made(&script, true);
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        Landed::Row.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// Return pressed twice on the new row, the first press coming after a key-up the panel
+    /// never heard: the first presses nothing and ends the hold as it comes up, and the second
+    /// opens the row, once.
+    async fn assert_the_second_return_opens_the_row(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        sent: u64,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        key_goes_down(cx, "enter", false);
+        key_comes_up(cx, "enter");
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(panel, script, sent, "the press after the lost key-up", cx);
+        answer_opening_made(script, true);
+        key_goes_down(cx, "enter", false);
+        key_comes_up(cx, "enter");
+        settle_panel(app, cx).await;
+        draw(cx);
+        Landed::Row.assert_pressed_once(panel, script, sent, cx);
+    }
+
+    /// A key-up lost after focus left the row costs one press at most: with Space held across
+    /// the landing, focus moved off the row and back and Space released unheard meanwhile,
+    /// the next Return on the row presses nothing, and the one after it opens the row.
+    #[gpui::test]
+    async fn a_key_up_lost_after_focus_left_the_row_costs_one_press_at_most(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, sent, cx) = space_held_across_a_creation(cx).await;
+        let row = Landed::Row.focus(&panel, cx);
+        let elsewhere = Landed::Refresh.focus(&panel, cx);
+        cx.update(|window, cx| elsewhere.focus(window, cx));
+        draw(cx);
+        cx.update(|window, cx| row.focus(window, cx));
+        draw(cx);
+        assert_the_second_return_opens_the_row(&app, &panel, &script, sent, cx).await;
+    }
+
+    /// A key that came up unheard before the creation was sent costs one press at most. Space
+    /// goes down on Send to GitHub and comes up where the panel does not hear it: with focus
+    /// on nothing the panel draws, where a key going down marks the press, or, with `away`,
+    /// outside the window. The creation, sent by a click, lands with that press still
+    /// recorded: the next Return on the row presses nothing, and the one after it opens the
+    /// row.
+    async fn assert_a_key_up_lost_before_the_send_costs_one_press(
+        cx: &mut TestAppContext,
+        away: bool,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, Landed::Row, true).await;
+        key_goes_down(cx, "space", false);
+        if away {
+            cx.deactivate_window();
+            cx.update(|window, _| window.activate_window());
+        } else {
+            let send = cx.update(|window, cx| window.focused(cx)).expect("Send");
+            cx.update(|window, cx| window.blur(cx));
+            draw(cx);
+            key_comes_up(cx, "space");
+            key_goes_down(cx, "space", false);
+            key_comes_up(cx, "space");
+            cx.update(|window, cx| send.focus(window, cx));
+        }
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some() && !panel.pending),
+            "nothing was sent"
+        );
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        let row = Landed::Row.focus(&panel, cx);
+        assert!(cx.update(|window, _| row.is_focused(window)));
+        let sent = panel.read_with(cx, |panel, _| panel.request_generation);
+        assert_the_second_return_opens_the_row(&app, &panel, &script, sent, cx).await;
+    }
+
+    #[gpui::test]
+    async fn a_key_up_lost_outside_the_panels_reach_costs_one_press_at_most(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_up_lost_before_the_send_costs_one_press(cx, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_key_up_lost_outside_the_window_before_the_send_costs_one_press_at_most(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_up_lost_before_the_send_costs_one_press(cx, true).await;
+    }
+
+    /// A closed panel, kept warm for its repository, hears none of the window's keys, and an
+    /// open one hears them, reopened too.
+    #[gpui::test]
+    async fn only_an_open_panel_hears_the_windows_keys(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, _script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let hears =
+            |cx: &mut VisualTestContext| panel.read_with(cx, |panel, _| panel.hears_keys.is_some());
+        assert!(!hears(cx), "closed");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        assert!(hears(cx), "reopened");
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        assert!(!hears(cx), "closed again");
+    }
+
+    /// Asserts that the last frame draws a focused Button's ring whole around `control`: 2 px
+    /// of the accent, 1 px outside its edge, every side inside the clips around it.
+    fn assert_ringed_whole(cx: &mut VisualTestContext, control: Bounds<Pixels>, at: &str) {
+        let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let outlines = crate::focus_ring::painted_outlines_where(cx, move |color| {
+            color.a > 0.
+                && gpui::Hsla {
+                    a: accent.a,
+                    ..color
+                } == accent
+        });
+        let around = |ring: Bounds<Pixels>| {
+            let (wider, taller) = (
+                ring.size.width - control.size.width,
+                ring.size.height - control.size.height,
+            );
+            (px(5.99)..=px(6.01)).contains(&wider)
+                && (px(5.99)..=px(6.01)).contains(&taller)
+                && (ring.center().x - control.center().x).abs() < px(0.5)
+                && (ring.center().y - control.center().y).abs() < px(0.5)
+        };
+        let rings: Vec<_> = outlines.iter().filter(|ring| around(ring.bounds)).collect();
+        assert!(
+            rings.len() == 1 && rings[0].drawn && rings[0].whole && rings[0].width == px(2.),
+            "{at}: one ring, whole, around {control:?}: {rings:?} among {outlines:?}"
+        );
+    }
+
+    /// A creation refused for an existing pull request leaves focus on the remedy its line
+    /// names, drawn with its ring whole at `at`: Open #7 where the loaded list holds the pull
+    /// request, and Refresh PRs where it does not, the line whole in the body's view with it.
+    /// Tab goes on from there inside the panel and Shift+Tab comes back, and Escape closes
+    /// the panel. Focus once stayed on Send, which went with its confirmation: nothing showed
+    /// focus, Tab started again from the window's first stop and Escape did nothing.
+    async fn assert_a_refusal_gives_its_remedy_focus(
+        cx: &mut TestAppContext,
+        landed: Landed,
+        at: (u8, f32, f32),
+    ) {
+        use crate::tags::tests::draw;
+        let name = format!("{landed:?} at {} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, landed.rows(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        send_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        let focus = landed.focus(&panel, cx);
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{name}: the remedy holds focus"
+        );
+        whole_in_body(cx, "github-error", &name);
+        let control = whole_in_body(cx, landed.selector(), &name);
+        assert_ringed_whole(cx, control, &name);
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let (next, inside) = cx.update(|window, cx| {
+            let inside = window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains(review::BODY));
+            (window.focused(cx), inside)
+        });
+        assert!(
+            inside && next.is_some() && next.as_ref() != Some(&focus),
+            "{name}: Tab moves on inside the panel"
+        );
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{name}: Shift+Tab comes back"
+        );
+        let control = whole_in_body(cx, landed.selector(), &name);
+        assert_ringed_whole(cx, control, &name);
+
+        escape(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "{name}: Escape closes the panel"
+        );
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_refusal_gives_open_existing_focus_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_refusal_gives_its_remedy_focus(cx, Landed::Open, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_refusal_gives_open_existing_focus_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_refusal_gives_its_remedy_focus(cx, Landed::Open, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_refusal_with_no_row_gives_refresh_focus_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_refusal_gives_its_remedy_focus(cx, Landed::Refresh, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_refusal_with_no_row_gives_refresh_focus_at_18_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_refusal_gives_its_remedy_focus(cx, Landed::Refresh, (18, 461., 490.)).await;
+    }
+
+    /// Open #7's accessible name says what it opens, "Open pull request #7", where its label,
+    /// beside the line that names the pull request, stays "Open #7": read alone, as a screen
+    /// reader lists a window's buttons, the label named nothing.
+    #[gpui::test]
+    async fn open_existing_is_named_by_what_it_opens(cx: &mut TestAppContext) {
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        NAMED_FOR_READING.with(|named| named.borrow_mut().clear());
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        let action = whole_in_body(cx, "github-open-existing", name);
+        assert_eq!(
+            NAMED_FOR_READING.with(|named| named.borrow().get("github-open-existing").cloned()),
+            Some("Open pull request #7".into())
+        );
+        // Its label is the short one: the Button is narrower than its name alone would be.
+        let named = cx.update(|window, _| {
+            crate::views::shaped_width(
+                "Open pull request #7",
+                appearance::ui_text(13.),
+                FontWeight::NORMAL,
+                window,
+            )
+        });
+        assert!(
+            action.size.width < named,
+            "the label stays Open #7: {action:?} against {named:?}"
+        );
+    }
+
+    /// The line under rows a creation's answer gave is the list's empty line in kind: the 12 px
+    /// muted secondary text, at the rows' text inset, and
+    /// read by an assistive technology as static text named by the whole line, as the empty
+    /// line it stands in for is.
+    async fn assert_the_partial_list_line_is_the_empty_lines_kind(
+        cx: &mut TestAppContext,
+        at: (u8, f32, f32),
+    ) {
+        use crate::native_accessibility::written;
+        const LINE: &str = "Only the new pull request is shown · Refresh PRs loads the open ones";
+        let name = format!("{} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let answer = made(false).to_string();
+        send_creation(&app, &panel, &script, at, (201, &answer), cx).await;
+        let line = whole_in_body(cx, "github-list-partial", &name);
+        let size = appearance::ui_text(12.);
+        let muted = cx.read(|cx| gpui::Hsla::from(rgb(palette(cx).muted)));
+        assert_eq!(
+            appearance::drawn_size("github-list-partial"),
+            Some(size),
+            "{name}: the 12 px secondary size"
+        );
+        assert_eq!(
+            appearance::drawn_color("github-list-partial"),
+            Some(muted),
+            "{name}: muted"
+        );
+        let title = cx
+            .debug_bounds("github-pr-title-203")
+            .expect("the row's title");
+        assert!(
+            (line.left() + text_inset() - title.left()).abs() < px(0.5),
+            "{name}: the line's text {line:?} starts where the row's {title:?} does"
+        );
+        let read = |id: &str| {
+            written::get(id).map(|written| written.node).map(|node| {
+                (
+                    node.role(),
+                    node.label().or(node.value()).map(str::to_owned),
+                )
+            })
+        };
+        let partial = read("github-list-partial").expect("the line is written");
+        assert_eq!(partial.1.as_deref(), Some(LINE), "{name}: named whole");
+
+        // The empty line the same list draws once its rows go.
+        type_into_destination(&panel, "x", cx);
+        assert!(cx.debug_bounds("github-list-empty").is_some(), "{name}");
+        let empty = read("github-list-empty-line").expect("the empty line is written");
+        assert_eq!(partial.0, empty.0, "{name}: read as the empty line is");
+        assert_eq!(
+            appearance::drawn_size("github-list-empty-line"),
+            Some(size),
+            "{name}: the empty line's size"
+        );
+        assert_eq!(
+            appearance::drawn_color("github-list-empty-line"),
+            Some(muted)
+        );
+    }
+
+    #[gpui::test]
+    async fn the_partial_list_line_is_drawn_and_read_as_the_empty_line_is(cx: &mut TestAppContext) {
+        assert_the_partial_list_line_is_the_empty_lines_kind(cx, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn the_partial_list_line_is_drawn_and_read_as_the_empty_line_is_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        assert_the_partial_list_line_is_the_empty_lines_kind(cx, (18, 461., 490.)).await;
+    }
+
+    /// Types `text` into the open panel's destination field, as a person does, and draws.
+    fn type_into_destination(panel: &Entity<Panel>, text: &str, cx: &mut VisualTestContext) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            let field = panel.read(cx).destination.read(cx).focus_handle(cx);
+            field.focus(window, cx)
+        });
+        draw(cx);
+        cx.simulate_input(text);
+        draw(cx);
+    }
+
+    /// The destination field's text.
+    fn destination_text(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+        panel.read_with(cx, |panel, cx| {
+            panel.destination.read(cx).value().to_string()
+        })
+    }
+
+    /// The refusal's action never outlives its repository: once the destination names another
+    /// one, the line that named pull request #7 and its Open #7 are gone, and nothing reads
+    /// that repository's #7. The edit once left both drawn, and the press read the pull
+    /// request of that number in whatever repository the field then named.
+    #[gpui::test]
+    async fn open_existing_goes_as_the_destination_names_another_repository(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        let action = whole_in_body(cx, "github-open-existing", name);
+        assert_eq!(script.requests.lock().unwrap().len(), 5);
+
+        type_into_destination(&panel, "x", cx);
+        assert_ne!(destination_text(&panel, cx), "fixture/repo", "another one");
+        assert!(
+            cx.debug_bounds("github-open-existing").is_none(),
+            "the action goes with its repository"
+        );
+        assert!(
+            cx.debug_bounds("github-error").is_none(),
+            "and the line that named its pull request"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.existing.is_none() && panel.error.is_none());
+            assert!(panel.listed.is_none() && panel.rows.is_empty());
+        });
+        // A press where the action stood reads nothing.
+        cx.simulate_click(action.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            5,
+            "no pull request of the other repository is read"
+        );
+        assert!(panel.read_with(cx, |panel, _| panel.pull.is_none()));
+    }
+
+    /// Whatever puts another repository's name in the destination field without the field's
+    /// edit, Open #7 is drawn only while the field names the repository the creation was
+    /// refused in, and its press, checked again as it is pressed, reads nothing otherwise:
+    /// back on that repository, it opens its #7 once.
+    #[gpui::test]
+    async fn open_existing_is_offered_only_in_the_repository_it_was_refused_in(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        whole_in_body(cx, "github-open-existing", name);
+        let name_repository = |named: &str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel
+                        .destination
+                        .update(cx, |input, cx| input.set_value(named, window, cx));
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        name_repository("fixture/other", cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.existing.is_some()),
+            "no edit of the field took the pull request"
+        );
+        whole_in_body(cx, "github-error", name);
+        assert!(
+            cx.debug_bounds("github-open-existing").is_none(),
+            "no action in another repository"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open_existing(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            5,
+            "its press reads nothing there"
+        );
+        assert!(panel.read_with(cx, |panel, _| panel.pull.is_none() && !panel.pending));
+
+        name_repository("fixture/repo", cx);
+        let action = whole_in_body(cx, "github-open-existing", name);
+        answer_opening(&script);
+        cx.simulate_click(action.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(7)
+        );
+        assert_eq!(openings(&script), 1, "opened once");
+        assert!(script.asked("GET", "repos/fixture/repo/pulls/7") >= 1);
+        assert!(
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| !request.endpoint.contains("fixture/other")),
+            "nothing of the other repository was read"
+        );
+    }
+
+    /// A creation after the destination was edited away and back shows its row alone and says
+    /// so: the edit took the listed rows, so the list no longer holds that repository's page.
+    /// It once kept the repository as listed and showed the new row as the whole list.
+    #[gpui::test]
+    async fn a_creation_after_the_destination_was_edited_away_and_back_shows_only_its_row(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let rows = vec![listed_pull(7, "fixture:other", "main")];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        type_into_destination(&panel, "x", cx);
+        assert_ne!(destination_text(&panel, cx), "fixture/repo", "edited away");
+        cx.simulate_keystrokes("backspace");
+        draw(cx);
+        assert_eq!(destination_text(&panel, cx), "fixture/repo", "and back");
+        assert!(numbers(&panel, cx).is_empty(), "the edit took the rows");
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+
+        let at = (13, 1480., 973.);
+        let answer = made(false).to_string();
+        send_creation(&app, &panel, &script, at, (201, &answer), cx).await;
+        assert_eq!(numbers(&panel, cx), [203]);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.created_only),
+            "the list holds no page of the repository"
+        );
+        let row = whole_in_body(cx, "github-pr-card-203", name);
+        let line = whole_in_body(cx, "github-list-partial", name);
+        assert!(line.top() >= row.bottom(), "the line stands under the row");
+    }
+
+    /// The destination's edit takes what the list held with its rows: a row a creation's
+    /// answer gave, alone and said to be, leaves the list empty and reading as one never
+    /// loaded.
+    #[gpui::test]
+    async fn editing_the_destination_forgets_what_the_list_held(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let at = (13, 1480., 973.);
+        let answer = made(false).to_string();
+        send_creation(&app, &panel, &script, at, (201, &answer), cx).await;
+        assert!(panel.read_with(cx, |panel, _| panel.created_only && panel.listed.is_some()));
+        type_into_destination(&panel, "x", cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.rows.is_empty() && panel.listed.is_none() && !panel.created_only);
+        });
+        whole_in_body(cx, "github-list-empty", "13 pt in 1480 × 973");
+        assert!(cx.debug_bounds("github-list-partial").is_none());
+    }
+
+    /// A request that starts takes the refused creation's pull request with its line: Refresh
+    /// PRs after the refusal, though it fails, leaves no pull request to open.
+    #[gpui::test]
+    async fn a_request_that_starts_forgets_the_refused_creations_pull_request(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let name = "13 pt in 1480 × 973";
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        whole_in_body(cx, "github-open-existing", name);
+        assert!(panel.read_with(cx, |panel, _| panel.existing.is_some()));
+
+        let refresh = whole_in_body(cx, "github-refresh", name);
+        script.answer(500, "{}");
+        let read = app.read_with(cx, |app, _| app.operations.hold());
+        cx.simulate_click(refresh.center(), Modifiers::none());
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.pending, "Refresh PRs reads");
+            assert!(panel.existing.is_none(), "as the request starts");
+        });
+        drop(read);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.error.is_some() && panel.error.as_deref() != Some(HELD));
+            assert!(panel.existing.is_none());
+        });
+        assert!(cx.debug_bounds("github-open-existing").is_none());
+    }
+
+    /// A refusal's line that lands above the body, where every line stands while a
+    /// conversation is open, is in view there, so the frame that draws it takes the request to
+    /// show it. Kept, the request moved the body to the line once it flowed among the content
+    /// again, as the conversation closed, away from what the person was reading.
+    #[gpui::test]
+    async fn a_refusal_drawn_above_the_body_asks_for_no_reveal_later(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) =
+            creation_panel(cx, rows_holding_seven(), "feature");
+        let at = (13, 461., 490.);
+        let answer = (422, github::EXISTS);
+        let send = review_creation(&app, &panel, &script, at, answer, false, cx).await;
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let target = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap()
+            .items[0]
+            .target
+            .clone();
+        let converse = |open: Option<CapturedThread>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.conversations.active = open;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        converse(Some(target), cx);
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(HELD)
+        );
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the line");
+        assert!(
+            line.bottom() <= body.top(),
+            "the line {line:?} stands above the body {body:?}"
+        );
+        assert!(
+            !panel.read_with(cx, |panel, _| panel.show_line.get()),
+            "in view there, it asks for no reveal"
+        );
+
+        // Focus on Review submission… at the form's foot as the conversation closes: the line
+        // flows among the content, above the body's view, and the body stays.
+        let foot = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-review-submit")
+            })
+            .expect("Review submission…");
+        cx.update(|window, cx| foot.focus(window, cx));
+        draw(cx);
+        whole_in_body(cx, "github-review-submit", "at the form's foot");
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let form = cx.debug_bounds("github-create-fields").expect("the form");
+        assert!(
+            form.top() < body.top(),
+            "the form's top {form:?} lies above the body's view {body:?}"
+        );
+        converse(None, cx);
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the line");
+        assert!(
+            line.bottom() <= body.top(),
+            "the body {body:?} did not move to the line {line:?}"
+        );
+        whole_in_body(cx, "github-review-submit", "where focus is");
+    }
+
+    /// What a send that fails was written in: the review body, sent as a review or as a
+    /// comment on the pull request, or a conversation's reply.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Composed {
+        Review,
+        Comment,
+        Reply,
+    }
+
+    impl Composed {
+        /// The text of the composer the draft was written in.
+        fn text(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+            panel.read_with(cx, |panel, cx| {
+                let input = match self {
+                    Self::Reply => &panel.conversations.input,
+                    _ => &panel.body,
+                };
+                input.read(cx).value().to_string()
+            })
+        }
+
+        /// Whether that composer holds focus.
+        fn focused(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> bool {
+            cx.update(|window, cx| {
+                let panel = panel.read(cx);
+                let input = match self {
+                    Self::Reply => &panel.conversations.input,
+                    _ => &panel.body,
+                };
+                input.read(cx).focus_handle(cx).is_focused(window)
+            })
+        }
+
+        /// How many times the script was asked for what fails the send: the review's or the
+        /// comment's own POST, refused, or a reply's first read, which finds no connection.
+        fn failed(self, script: &github::Scripted) -> usize {
+            match self {
+                Self::Review => script.asked("POST", "/reviews"),
+                Self::Comment => script.asked("POST", "/comments"),
+                Self::Reply => script.requests.lock().unwrap().len(),
+            }
+        }
+    }
+
+    /// The draft a failing send keeps: two lines, so one more typed into it shows.
+    const TYPED: &str = "Looks right.\nOne more line.";
+
+    /// A held Return's repeats after its first key-down, as each platform delivers them
+    /// (`branch_actions::tests::REPEATS`): X11's fresh presses with no key-up, a release and
+    /// its press together, and a repeat marked held, each followed by the frames drawn before
+    /// the next, where `unchanged` asserts that nothing was typed.
+    fn hold_return(
+        cx: &mut VisualTestContext,
+        when: &str,
+        unchanged: impl Fn(&mut VisualTestContext, &str),
+    ) {
+        use crate::branch_actions::tests::{REPEATS, enter};
+        for (repeat, events) in REPEATS {
+            for down in events {
+                enter(cx, *down);
+            }
+            crate::tags::tests::draw(cx);
+            unchanged(cx, &format!("{when}, {repeat}"));
+        }
+    }
+
+    /// Return held on Send to GitHub types nothing into the draft it was sent from: a review,
+    /// a comment or a reply whose send fails keeps its text byte for byte through the held
+    /// key's repeats, while it is sent and once the failure has given the composer back, and
+    /// through an unpaired release, another key and the next repeat; after the key-up a fresh
+    /// press types its line. Sending moves focus off Send to the composer the draft was
+    /// written in, which is disabled only while the request runs: each repeat after the
+    /// failure typed a new line into the kept draft (decided 2026-11-11: a Return that opens
+    /// or focuses a composer never types into it).
+    async fn assert_a_return_held_on_send_types_nothing_into_its_draft(
+        cx: &mut TestAppContext,
+        composed: Composed,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let pull = github::review::fixture_pull(false);
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let mut threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(
+                &pull.capture(repository),
+                None,
+                &OperationControl::default(),
+            )
+            .unwrap();
+        for thread in &mut threads.items {
+            thread.target.account = github::Scripted::LOGIN.into();
+        }
+        // The pull request read again before the write, then the write refused; a reply's
+        // first read finds the script empty, as a lost connection answers nothing.
+        if composed != Composed::Reply {
+            script.answer(200, serde_json::to_string(&pull).unwrap());
+            script.answer(422, r#"{"message":"Validation Failed"}"#);
+        }
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Review;
+                panel.discussion = composed == Composed::Comment;
+                if composed == Composed::Reply {
+                    panel.receive_threads(threads, None);
+                }
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        // The draft written, then its submission reviewed: an edit takes a confirmation away.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    let target = panel.conversations.threads[0].target.clone();
+                    panel.begin_reply(target, window, cx);
+                    panel
+                        .conversations
+                        .input
+                        .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+                } else {
+                    panel
+                        .body
+                        .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+                }
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    panel.review_reply(window, cx);
+                } else {
+                    panel.review_submission(window, cx);
+                }
+            })
+        });
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "{composed:?}: the submission is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        enter(cx, Some(false));
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending && panel.confirm.is_none()),
+            "{composed:?}: Return on Send to GitHub sends"
+        );
+        assert!(
+            composed.focused(&panel, cx),
+            "{composed:?}: focus goes to the composer the draft was written in"
+        );
+        let unchanged = |cx: &mut VisualTestContext, when: &str| {
+            assert_eq!(composed.text(&panel, cx), TYPED, "{composed:?}, {when}");
+        };
+        hold_return(cx, "while it is sent", unchanged);
+
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.pending && panel.confirm.is_none() && panel.error.is_some(),
+                "{composed:?}: the send fails and says so: {:?}",
+                panel.error
+            );
+        });
+        assert_eq!(composed.failed(&script), 1, "{composed:?}: sent once");
+        // A reply's failure is drawn in its composer, which keeps focus; a review's and a
+        // comment's answer on the panel's top line, where focus goes to the failure's line.
+        draw(cx);
+        if composed == Composed::Reply {
+            assert!(
+                composed.focused(&panel, cx),
+                "{composed:?}: the kept draft's composer holds focus"
+            );
+        } else {
+            assert!(
+                on_failure_line(cx),
+                "{composed:?}: the failure's line holds focus"
+            );
+        }
+        hold_return(cx, "once it has failed", unchanged);
+        // An unpaired release with its press, then another key and the next repeat, which the
+        // toolkit counts a fresh press.
+        enter(cx, None);
+        enter(cx, Some(false));
+        draw(cx);
+        key_goes_down(cx, "left", false);
+        key_comes_up(cx, "left");
+        draw(cx);
+        enter(cx, Some(false));
+        draw(cx);
+        unchanged(cx, "the repeat after an unpaired release and another key");
+
+        enter(cx, None);
+        draw(cx);
+        enter(cx, Some(false));
+        draw(cx);
+        let typed = composed.text(&panel, cx);
+        if composed == Composed::Reply {
+            assert!(
+                typed.len() == TYPED.len() + 1
+                    && typed.replace('\n', "") == TYPED.replace('\n', ""),
+                "{composed:?}: a fresh press after the key-up types its line: {typed:?}"
+            );
+        } else {
+            unchanged(cx, "a fresh press on the failure's line, which takes none");
+        }
+        enter(cx, None);
+        draw(cx);
+        assert_eq!(
+            composed.failed(&script),
+            1,
+            "{composed:?}: nothing was sent again"
+        );
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_none()),
+            "{composed:?}: nothing was reviewed again"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_send_types_nothing_into_a_review_that_fails(cx: &mut TestAppContext) {
+        assert_a_return_held_on_send_types_nothing_into_its_draft(cx, Composed::Review).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_send_types_nothing_into_a_comment_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_return_held_on_send_types_nothing_into_its_draft(cx, Composed::Comment).await;
+    }
+
+    #[gpui::test]
+    async fn a_return_held_on_send_types_nothing_into_a_reply_that_fails(cx: &mut TestAppContext) {
+        assert_a_return_held_on_send_types_nothing_into_its_draft(cx, Composed::Reply).await;
+    }
+
+    /// Return held on Send to GitHub for a creation that fails changes nothing of its form:
+    /// sending gives focus to the title, a single-line field that takes no Return, so the held
+    /// key's repeats, while the creation is sent and once it has failed, type nothing into the
+    /// title, the branches or the description, review nothing again and send nothing again,
+    /// nor does a fresh press after the key-up.
+    #[gpui::test]
+    async fn a_return_held_on_send_changes_nothing_of_a_creation_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let refused = (422, r#"{"message":"Validation Failed"}"#);
+        let at = (13, 1480., 973.);
+        let send = review_creation(&app, &panel, &script, at, refused, true, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let form = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                let fields = [&panel.title, &panel.head, &panel.base]
+                    .map(|input| input.read(cx).value().to_string());
+                (fields, panel.body.read(cx).value().to_string())
+            })
+        };
+        let typed = form(cx);
+        let in_title = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let title = panel.read(cx).title.read(cx).focus_handle(cx);
+                title.is_focused(window)
+            })
+        };
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        enter(cx, Some(false));
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        assert!(in_title(cx), "focus goes to the title");
+        let unchanged = |cx: &mut VisualTestContext, when: &str| {
+            assert_eq!(form(cx), typed, "{when}");
+            assert!(
+                panel.read_with(cx, |panel, _| panel.confirm.is_none()),
+                "{when}: nothing is reviewed again"
+            );
+            assert!(script.asked("POST", "/pulls") <= 1, "{when}: sent once");
+        };
+        hold_return(cx, "while it is sent", unchanged);
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            2,
+            "the held creation has asked nothing yet"
+        );
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                panel.create && !panel.pending && panel.existing.is_none(),
+                "the form stays open"
+            );
+            assert!(
+                panel
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("No automatic retry was made")),
+                "the refusal every other write gets: {:?}",
+                panel.error
+            );
+        });
+        assert_eq!(script.requests.lock().unwrap().len(), 5);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        draw(cx);
+        assert!(
+            !in_title(cx) && on_failure_line(cx),
+            "focus goes to the failure's line"
+        );
+        hold_return(cx, "once it has failed", unchanged);
+        enter(cx, None);
+        draw(cx);
+        enter(cx, Some(false));
+        enter(cx, None);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        unchanged(cx, "a fresh press on the failure's line");
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+        assert!(panel.read_with(cx, |panel, _| !panel.pending));
+    }
+
+    /// A send whose Send to GitHub hands focus to a text field: a creation, to its title, and
+    /// what was written in a composer, to that composer, refused by GitHub or, with `true`,
+    /// accepted.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Handed {
+        Creation,
+        Wrote(Composed, bool),
+    }
+
+    impl Handed {
+        /// The text of the field Send hands focus to.
+        fn text(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> String {
+            panel.read_with(cx, |panel, cx| match self {
+                Self::Creation => panel.title.read(cx).value().to_string(),
+                Self::Wrote(composed, _) => {
+                    composed_input(panel, composed).read(cx).value().to_string()
+                }
+            })
+        }
+
+        /// That field's focus handle.
+        fn focus(self, panel: &Entity<Panel>, cx: &mut VisualTestContext) -> FocusHandle {
+            cx.update(|_, cx| {
+                let panel = panel.read(cx);
+                match self {
+                    Self::Creation => panel.title.read(cx).focus_handle(cx),
+                    Self::Wrote(composed, _) => {
+                        composed_input(panel, composed).read(cx).focus_handle(cx)
+                    }
+                }
+            })
+        }
+
+        /// Whether the send is accepted.
+        fn sent(self) -> bool {
+            matches!(self, Self::Wrote(_, true))
+        }
+
+        /// Whether the send's failure takes focus to its line on the panel's top line
+        /// (`Panel::focus_failure`): a reply's is drawn in its composer, where focus stays.
+        fn rests_on_line(self) -> bool {
+            !self.sent() && self != Self::Wrote(Composed::Reply, false)
+        }
+    }
+
+    /// Whether the failure's line on the panel's top line holds focus.
+    fn on_failure_stop(panel: &Entity<Panel>, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| panel.read(cx).review.failure_focus.is_focused(window))
+    }
+
+    /// Whether `field` holds focus.
+    fn field_holds(field: &FocusHandle, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, _| field.is_focused(window))
+    }
+
+    /// The composer `composed` is written in: a conversation's reply, or the review body.
+    fn composed_input(panel: &Panel, composed: Composed) -> &Entity<TextareaState> {
+        match composed {
+            Composed::Reply => &panel.conversations.input,
+            _ => &panel.body,
+        }
+    }
+
+    /// The panel open at 13 pt in an active 1,480 × 973 window with `handed`'s submission
+    /// reviewed and Send to GitHub holding focus, the script holding the send's answers.
+    async fn handing_panel(
+        cx: &mut TestAppContext,
+        handed: Handed,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        let Handed::Wrote(composed, sent) = handed else {
+            let (fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+            let refused = (422, r#"{"message":"Validation Failed"}"#);
+            let at = (13, 1480., 973.);
+            let send = review_creation(&app, &panel, &script, at, refused, true, cx).await;
+            cx.update(|window, cx| {
+                window.activate_window();
+                send.focus(window, cx)
+            });
+            draw(cx);
+            return (fixture, app, panel, cx);
+        };
+        let (fixture, app, cx) = repository_window(cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let pull = github::review::fixture_pull(false);
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let mut threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(
+                &pull.capture(repository),
+                None,
+                &OperationControl::default(),
+            )
+            .unwrap();
+        for thread in &mut threads.items {
+            thread.target.account = github::Scripted::LOGIN.into();
+        }
+        // The pull request read again before the write, then the write's answer; a reply's
+        // first read finds the script empty, as a lost connection answers nothing.
+        if composed != Composed::Reply {
+            script.answer(200, serde_json::to_string(&pull).unwrap());
+            if sent {
+                script.answer(201, r#"{"id":1}"#);
+            } else {
+                script.answer(422, r#"{"message":"Validation Failed"}"#);
+            }
+        }
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Review;
+                panel.discussion = composed == Composed::Comment;
+                if composed == Composed::Reply {
+                    panel.receive_threads(threads, None);
+                }
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        // The draft written, then its submission reviewed: an edit takes a confirmation away.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    let target = panel.conversations.threads[0].target.clone();
+                    panel.begin_reply(target, window, cx);
+                }
+                composed_input(panel, composed)
+                    .clone()
+                    .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if composed == Composed::Reply {
+                    panel.review_reply(window, cx);
+                } else {
+                    panel.review_submission(window, cx);
+                }
+            })
+        });
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "{handed:?}: the submission is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        (fixture, app, panel, cx)
+    }
+
+    /// `key` going down as GPUI's X11 window hands a key-down on (`x11/window.rs`,
+    /// `handle_input`): the event and then, where nothing stopped it, the character it types
+    /// into the field with focus. Return carries none there, a control character: a field
+    /// types its line from the key's binding.
+    fn x11_key_down(cx: &mut VisualTestContext, key: &str) {
+        if key == "enter" {
+            key_goes_down(cx, key, false);
+        } else {
+            cx.update(|window, cx| {
+                window.dispatch_keystroke(gpui::Keystroke::parse(key).unwrap(), cx);
+            });
+        }
+    }
+
+    /// [`x11_repeat`] with the character its press types ([`x11_key_down`]): the held key's
+    /// release and press as they reach GPUI's X11 client in two batches of events.
+    fn x11_split_repeat(cx: &mut VisualTestContext, key: &str) {
+        key_comes_up(cx, key);
+        cx.executor().run_until_parked();
+        x11_key_down(cx, key);
+        crate::tags::tests::draw(cx);
+    }
+
+    /// A key held on Send to GitHub types nothing into the field Send hands focus to. Under
+    /// X11 a held key repeats as a release and a fresh press, and a pair the client reads in
+    /// two batches reaches the window as a key-up while the key is still down: Space, which
+    /// clicks as it comes up, then sends mid-hold, as Return does going down, focus goes to
+    /// the title, the review body or the reply, and every later repeat is a key-down there.
+    /// The field takes none while the request runs; once the send had ended, each of Space's
+    /// repeats typed a space into the kept draft, over a selection left in it. `key`'s
+    /// repeats, alone as one batch gives them and split, change nothing of the field while
+    /// `handed` is sent or once it has ended, nor does the key coming up; a fresh press after
+    /// that types its character once.
+    async fn assert_a_key_held_on_send_types_nothing(
+        cx: &mut TestAppContext,
+        key: &'static str,
+        handed: Handed,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let name = format!("{key} held on Send for {handed:?}");
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        x11_key_down(cx, key);
+        draw(cx);
+        if key == "space" {
+            assert!(
+                panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_some()),
+                "{name}: Space sends only as it comes up"
+            );
+            x11_split_repeat(cx, key);
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending && panel.confirm.is_none()),
+            "{name}: it sends"
+        );
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "{name}: focus goes to the field the draft was written in"
+        );
+        let hold = |cx: &mut VisualTestContext, when: &str| {
+            for split in [false, false, true, false, true, true] {
+                if split {
+                    x11_split_repeat(cx, key);
+                } else {
+                    x11_key_down(cx, key);
+                    draw(cx);
+                }
+                assert_eq!(handed.text(&panel, cx), typed, "{name}, {when}");
+            }
+        };
+        hold(cx, "while it is sent");
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.pending && panel.confirm.is_none(), "{name}: it ends");
+            assert_eq!(
+                panel.error.is_none(),
+                handed.sent(),
+                "{name}: {:?}",
+                panel.error
+            );
+        });
+        // A failure that answers on the panel's top line takes focus to its line, which is no
+        // text field; a reply's stays in its composer, and an accepted send leaves focus where
+        // Send handed it.
+        let on_line = handed.rests_on_line();
+        assert_eq!(
+            (on_failure_stop(&panel, cx), field_holds(&field, cx)),
+            (on_line, !on_line),
+            "{name}: focus rests on the failure's line, or stays in the field"
+        );
+        hold(cx, "once the send has ended");
+        if on_line {
+            // The key is still down as focus comes back to the field, as a click in it brings
+            // it: the press that sent stays latched across the line, and types nothing there.
+            cx.update(|window, cx| field.focus(window, cx));
+            draw(cx);
+            hold(cx, "back in the field with the key still down");
+        }
+        key_comes_up(cx, key);
+        draw(cx);
+        assert_eq!(handed.text(&panel, cx), typed, "{name}, come up");
+
+        // A fresh press in that field types once: a title takes no Return.
+        cx.update(|window, cx| field.focus(window, cx));
+        draw(cx);
+        x11_key_down(cx, key);
+        key_comes_up(cx, key);
+        draw(cx);
+        let fresh = handed.text(&panel, cx);
+        if (key, handed) == ("enter", Handed::Creation) {
+            assert_eq!(fresh, typed, "{name}: a title takes no Return");
+        } else {
+            let character = if key == "space" { ' ' } else { '\n' };
+            let count = |text: &str| text.chars().filter(|held| *held == character).count();
+            assert!(
+                fresh.len() == typed.len() + 1 && count(&fresh) == count(&typed) + 1,
+                "{name}: a fresh press types once: {fresh:?}"
+            );
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_none()),
+            "{name}: nothing is reviewed or sent again"
+        );
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_the_title_of_a_creation_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_types_nothing(cx, "space", Handed::Creation).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_review_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Review, false);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_review_that_is_sent(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Review, true);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_comment_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Comment, false);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_comment_that_is_sent(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Comment, true);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_a_reply_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Reply, false);
+        assert_a_key_held_on_send_types_nothing(cx, "space", handed).await;
+    }
+
+    // The same with Return, which sends as it goes down. A repeat whose release and press
+    // came in two batches typed a line into the review body or the reply once the send had
+    // ended: the composers' own hold of that Return ends at the first task the application
+    // runs after an Enter key-up (`Panel::return_came_up`), and one runs between the batches.
+    #[gpui::test]
+    async fn return_held_on_send_types_nothing_into_the_title_of_a_creation_that_fails(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_types_nothing(cx, "enter", Handed::Creation).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_review_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Review, false);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_review_that_is_sent(
+        cx: &mut TestAppContext,
+    ) {
+        let handed = Handed::Wrote(Composed::Review, true);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_comment_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Comment, false);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_comment_that_is_sent(
+        cx: &mut TestAppContext,
+    ) {
+        let handed = Handed::Wrote(Composed::Comment, true);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    #[gpui::test]
+    async fn return_split_on_send_types_nothing_into_a_reply_that_fails(cx: &mut TestAppContext) {
+        let handed = Handed::Wrote(Composed::Reply, false);
+        assert_a_key_held_on_send_types_nothing(cx, "enter", handed).await;
+    }
+
+    /// A Return pressed with the platform's command modifier latches nothing. On Send to
+    /// GitHub it sends nothing, and where the platform sends such a key no key-up, as macOS
+    /// does for one pressed with Command held, none follows it here either: it begins no
+    /// press, so the review then sent by a click hands focus to its body with nothing held,
+    /// and each Space typed there afterwards types. It once began a press that never ended;
+    /// the send's hand-off latched it, and every Space typed in the body was stopped until
+    /// Return had been pressed again.
+    #[gpui::test]
+    async fn a_command_return_on_send_leaves_the_body_its_keys(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        const COMMAND_RETURN: &str = "cmd-enter";
+        key_goes_down(cx, COMMAND_RETURN, false);
+        // As the platform delivers it: its key-up, where it sends one.
+        if !key_up_withheld(&gpui::Keystroke::parse(COMMAND_RETURN).unwrap()) {
+            key_comes_up(cx, COMMAND_RETURN);
+        }
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_some()),
+            "a Command-Return on Send sends nothing"
+        );
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.pending && panel.confirm.is_none() && panel.error.is_none(),
+                "the click sends the review: {:?}",
+                panel.error
+            );
+        });
+        assert!(
+            field_holds(&field, cx),
+            "the send hands focus to the review body"
+        );
+        let spaces = |text: &str| text.chars().filter(|typed| *typed == ' ').count();
+        for pressed in 1..=3 {
+            x11_key_down(cx, "space");
+            key_comes_up(cx, "space");
+            draw(cx);
+            let now = handed.text(&panel, cx);
+            assert!(
+                now.len() == typed.len() + pressed && spaces(&now) == spaces(&typed) + pressed,
+                "Space {pressed} typed in the body after the send types: {now:?}"
+            );
+        }
+    }
+
+    /// Where a held key's repeats are marked held and no release comes before the key's own,
+    /// as on Wayland and macOS, Space on Send to GitHub sends as it comes up, so no repeat of
+    /// it follows into the field: nothing is typed, and the next Space there types once.
+    #[gpui::test]
+    async fn space_held_on_send_with_marked_repeats_types_nothing_and_the_next_types_once(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Comment, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        key_goes_down(cx, "space", false);
+        for _ in 0..3 {
+            key_goes_down(cx, "space", true);
+            draw(cx);
+        }
+        assert!(panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_some()));
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.pending && panel.confirm.is_none() && panel.error.is_none());
+        });
+        assert!(cx.update(|window, _| field.is_focused(window)));
+        assert_eq!(handed.text(&panel, cx), TYPED);
+        x11_key_down(cx, "space");
+        key_comes_up(cx, "space");
+        draw(cx);
+        let fresh = handed.text(&panel, cx);
+        assert!(
+            fresh.len() == TYPED.len() + 1 && fresh.replace(' ', "") == TYPED.replace(' ', ""),
+            "the next Space types once: {fresh:?}"
+        );
+    }
+
+    /// A key the person holds in a field they are typing in repeats there: a run of spaces
+    /// and a held letter in a new pull request's title, as X11 delivers them, each type every
+    /// repeat, with no send before them and after a creation sent by a key has failed.
+    #[gpui::test]
+    async fn a_key_held_in_the_title_repeats_there(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Creation;
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let focus = handed.focus(&panel, cx);
+        let hold = |cx: &mut VisualTestContext, when: &str| {
+            for (key, typed) in [("space", ' '), ("a", 'a')] {
+                let before = handed.text(&panel, cx);
+                x11_key_down(cx, key);
+                draw(cx);
+                x11_key_down(cx, key);
+                draw(cx);
+                x11_split_repeat(cx, key);
+                x11_split_repeat(cx, key);
+                key_comes_up(cx, key);
+                draw(cx);
+                let after = handed.text(&panel, cx);
+                let count = |text: &str| text.chars().filter(|held| *held == typed).count();
+                assert!(
+                    after.len() == before.len() + 4 && count(&after) == count(&before) + 4,
+                    "{when}: {key} held in the title types each repeat: {after:?}"
+                );
+            }
+        };
+        // Keep editing takes the confirmation away and leaves focus in the title.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.confirm = None;
+                cx.notify();
+            });
+            focus.focus(window, cx)
+        });
+        draw(cx);
+        hold(cx, "before any send");
+
+        // Sent by Return, which comes up before the creation fails.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.review_submission(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        x11_key_down(cx, "enter");
+        key_comes_up(cx, "enter");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.pending && panel.error.is_some(),
+                "the creation fails"
+            );
+        });
+        cx.update(|window, cx| focus.focus(window, cx));
+        draw(cx);
+        hold(cx, "after a failed send");
+    }
+
+    /// How focus comes back to a text field from the line of a failed send while the key that
+    /// sent is still down.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Back {
+        /// The line goes, as it does when the next request starts, and the panel hands the
+        /// focus it held to the content it shows (`Panel::hand_off_lost_pane_focus`).
+        LineGoes,
+        /// Tab, from the line on through the stops below it.
+        Tab,
+    }
+
+    /// A key held on Send to GitHub across a send that fails types nothing into the field
+    /// focus comes back to from the failure's line. The failure takes focus to its line, which
+    /// takes no text, and the press that sent stays latched across the line for as long as its
+    /// key is down: when `back` brings focus into the field Send handed it to as the send
+    /// started, `key`'s repeats, alone and split as X11 delivers them, change nothing of it.
+    /// Once the key has come up, a fresh press there types once.
+    async fn assert_a_key_held_past_a_failures_line_types_nothing(
+        cx: &mut TestAppContext,
+        key: &'static str,
+        handed: Handed,
+        back: Back,
+    ) {
+        use crate::tags::tests::draw;
+        assert!(handed.rests_on_line(), "{handed:?} fails on the top line");
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let name = format!("{key} held on Send for {handed:?}, {back:?}");
+        x11_key_down(cx, key);
+        draw(cx);
+        if key == "space" {
+            x11_split_repeat(cx, key);
+        }
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.error.is_some()),
+            "{name}: the send fails"
+        );
+        assert!(
+            on_failure_stop(&panel, cx),
+            "{name}: the failure's line takes focus"
+        );
+        let hold = |cx: &mut VisualTestContext, when: &str| {
+            for split in [false, false, true, false, true, true] {
+                if split {
+                    x11_split_repeat(cx, key);
+                } else {
+                    x11_key_down(cx, key);
+                    draw(cx);
+                }
+                assert_eq!(handed.text(&panel, cx), typed, "{name}, {when}");
+            }
+        };
+        hold(cx, "on the failure's line");
+        match back {
+            Back::LineGoes => {
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.error = None;
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                draw(cx);
+            }
+            Back::Tab => {
+                for _ in 0..60 {
+                    if field_holds(&field, cx) {
+                        break;
+                    }
+                    cx.simulate_keystrokes("tab");
+                    draw(cx);
+                }
+            }
+        }
+        assert!(
+            field_holds(&field, cx),
+            "{name}: focus comes back to the field"
+        );
+        hold(cx, "back in the field with the key still down");
+        key_comes_up(cx, key);
+        draw(cx);
+        assert_eq!(handed.text(&panel, cx), typed, "{name}, come up");
+        x11_key_down(cx, key);
+        key_comes_up(cx, key);
+        draw(cx);
+        let fresh = handed.text(&panel, cx);
+        if (key, handed) == ("enter", Handed::Creation) {
+            assert_eq!(fresh, typed, "{name}: a title takes no Return");
+        } else {
+            let character = if key == "space" { ' ' } else { '\n' };
+            let count = |text: &str| text.chars().filter(|held| *held == character).count();
+            assert!(
+                fresh.len() == typed.len() + 1 && count(&fresh) == count(&typed) + 1,
+                "{name}: a fresh press types once: {fresh:?}"
+            );
+        }
+        assert!(
+            panel.read_with(cx, |panel, _| !panel.pending && panel.confirm.is_none()),
+            "{name}: nothing is reviewed or sent again"
+        );
+    }
+
+    #[gpui::test]
+    async fn space_held_past_a_failed_creations_line_types_nothing_as_the_line_goes(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Creation, Back::LineGoes);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "space", handed, back).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_past_a_failed_creations_line_types_nothing_after_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Creation, Back::Tab);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "space", handed, back).await;
+    }
+
+    #[gpui::test]
+    async fn return_held_past_a_failed_reviews_line_types_nothing_as_the_line_goes(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Wrote(Composed::Review, false), Back::LineGoes);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "enter", handed, back).await;
+    }
+
+    #[gpui::test]
+    async fn space_held_past_a_failed_comments_line_types_nothing_after_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (handed, back) = (Handed::Wrote(Composed::Comment, false), Back::Tab);
+        assert_a_key_held_past_a_failures_line_types_nothing(cx, "space", handed, back).await;
+    }
+
+    /// A key held on Send to GitHub across a creation whose answer told only the pull
+    /// request's number types nothing into the destination field. With no row to show, that
+    /// landing gives focus to the content the panel shows, the list's destination field, where
+    /// each of a held Space's repeats would type a space and the field's edit would clear the
+    /// list: the press that sent is latched, and the field takes none of it until the key has
+    /// come up. A fresh Space there then types once.
+    #[gpui::test]
+    async fn space_held_on_send_types_nothing_into_the_destination_of_a_creation_told_by_number(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let told = (201, r#"{"number":203}"#);
+        let send = review_creation(&app, &panel, &script, (13, 1480., 973.), told, true, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let destination = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                panel.destination.read(cx).value().to_string()
+            })
+        };
+        let named = destination(cx);
+        x11_key_down(cx, "space");
+        draw(cx);
+        x11_split_repeat(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request #203 created. Refresh PRs to open it."),
+            "{:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let field = cx.update(|_, cx| panel.read(cx).destination.read(cx).focus_handle(cx));
+        assert!(
+            field_holds(&field, cx),
+            "the landing gives the destination field focus"
+        );
+        for split in [false, false, true, false, true, true] {
+            if split {
+                x11_split_repeat(cx, "space");
+            } else {
+                x11_key_down(cx, "space");
+                draw(cx);
+            }
+            assert_eq!(destination(cx), named, "the held Space types nothing");
+        }
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert_eq!(destination(cx), named, "come up");
+        x11_key_down(cx, "space");
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert_eq!(
+            destination(cx),
+            format!("{named} "),
+            "a fresh Space types once"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+    }
+
+    /// Tabs from wherever focus is until it stands on the dialog footer's Back to repository:
+    /// outside the body, and not on the busy row's Cancel, which the line above the body can
+    /// hold.
+    fn tab_to_the_footer(panel: &Entity<Panel>, cx: &mut VisualTestContext) {
+        for _ in 0..24 {
+            cx.simulate_keystrokes("tab");
+            crate::tags::tests::draw(cx);
+            let cancel = panel.read_with(cx, |panel, _| panel.cancel_request.handle().clone());
+            let on_footer = cx.update(|window, cx| {
+                let in_body = window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains(review::BODY));
+                window
+                    .focused(cx)
+                    .is_some_and(|focus| focus != cancel && !in_body)
+            });
+            if on_footer {
+                return;
+            }
+        }
+        panic!("Tab reaches Back to repository");
+    }
+
+    /// A press the panel closed over ends with it: Space goes down in the panel, the panel
+    /// closes and the key comes up outside it; reopened, a creation sent by a click lands, and
+    /// the first Return on the new row opens it, once. The closed panel kept the press, the
+    /// landing latched it with no key down, and Return did nothing on the row until Space had
+    /// been pressed once.
+    #[gpui::test]
+    async fn a_press_the_panel_closed_over_holds_nothing_off_a_later_landing(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, landed.rows(), "feature");
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        let review = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-review-submit")
+            })
+            .expect("Review submission…");
+        cx.update(|window, cx| review.focus(window, cx));
+        draw(cx);
+        key_goes_down(cx, "space", false);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.held.borrow().keys[1].is_some()),
+            "the panel hears Space go down"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        draw(cx);
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.closed && panel.confirm.is_none()),
+            "the panel closed with nothing reviewed"
+        );
+
+        let (status, answer) = landed.answer();
+        let at = (13, 1480., 973.);
+        click_creation(&app, &panel, &script, at, (status, &answer), cx).await;
+        draw(cx);
+        let row = landed.focus(&panel, cx);
+        assert!(cx.update(|window, _| row.is_focused(window)));
+        let sent = panel.read_with(cx, |panel, _| panel.request_generation);
+        landed.answer_press(&script);
+        key_goes_down(cx, "enter", false);
+        key_comes_up(cx, "enter");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// A key that comes up on the footer's Back to repository holds nothing off a later
+    /// landing: Return goes down on Send to GitHub, Tab takes focus to the footer while the
+    /// creation is sent and Return comes up there; the creation lands, and the first Space on
+    /// the new row opens it, once. The panel heard no key come up on its footer: the press
+    /// stayed recorded, the landing latched it with no key down, and Space did nothing on the
+    /// row until Return had been pressed once.
+    #[gpui::test]
+    async fn a_key_that_came_up_on_the_footer_holds_nothing_off_a_landing(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, true).await;
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        key_goes_down(cx, "enter", false);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        tab_to_the_footer(&panel, cx);
+        key_comes_up(cx, "enter");
+        draw(cx);
+        let (_, sent) = land(&app, &panel, &script, landed, sending, cx).await;
+        landed.answer_press(&script);
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// Space held on the footer's Back to repository across a creation's landing presses
+    /// nothing on the new row: the creation is sent by a click, Tab takes focus to the footer
+    /// and Space goes down there, each release of its repeats asking the panel to close, which
+    /// it refuses while the creation is sent; the creation lands and gives the row focus, and
+    /// the held key's repeats and its key-up open nothing; a fresh press after that opens the
+    /// row, once. The panel heard no key on its footer, so the landing found no press to hold
+    /// off the row.
+    #[gpui::test]
+    async fn space_held_on_the_footer_presses_nothing_on_the_row_the_creation_made(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, true).await;
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        tab_to_the_footer(&panel, cx);
+        key_goes_down(cx, "space", false);
+        draw(cx);
+        x11_repeat(cx, "space");
+        x11_repeat(cx, "space");
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending && !panel.closed),
+            "the panel stays open while the creation is sent"
+        );
+        let (_, sent) = land(&app, &panel, &script, landed, sending, cx).await;
+        for _ in 0..3 {
+            x11_repeat(cx, "space");
+        }
+        for held in [false, true, true] {
+            key_goes_down(cx, "space", held);
+            draw(cx);
+        }
+        x11_repeat(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, "Space held on the footer", cx);
+        key_comes_up(cx, "space");
+        draw(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_nothing_pressed(&panel, &script, sent, "Space come up", cx);
+
+        landed.answer_press(&script);
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        landed.assert_pressed_once(&panel, &script, sent, cx);
+    }
+
+    /// A key that came up with focus on nothing the window draws costs one press at most:
+    /// Space goes down on Send to GitHub and comes up with nothing focused, where no key-up is
+    /// heard and no key goes down either; the creation, sent by a click, lands with that press
+    /// still recorded: the next Return on the row presses nothing, and the one after it opens
+    /// the row. Nothing marked the press as one whose key-up may have been lost, so Return
+    /// did nothing on the row, however often it was pressed, until Space had been pressed once.
+    #[gpui::test]
+    async fn a_key_up_lost_with_nothing_focused_costs_one_press_at_most(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let landed = Landed::Row;
+        let (_fixture, app, panel, script, cx) = landing_panel(cx, landed, true).await;
+        key_goes_down(cx, "space", false);
+        let send = cx.update(|window, cx| window.focused(cx)).expect("Send");
+        cx.update(|window, cx| window.blur(cx));
+        draw(cx);
+        key_comes_up(cx, "space");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some() && !panel.pending),
+            "nothing was sent"
+        );
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        let row = landed.focus(&panel, cx);
+        assert!(cx.update(|window, _| row.is_focused(window)));
+        let sent = panel.read_with(cx, |panel, _| panel.request_generation);
+        assert_the_second_return_opens_the_row(&app, &panel, &script, sent, cx).await;
+    }
+
+    /// A creation refused for an existing pull request after a pointer's click on Send to
+    /// GitHub leaves focus on the remedy its line names, as one sent by Return does, drawn
+    /// with its ring whole at 13 pt in a 461 × 490 window: Open #7 where the loaded list holds
+    /// the pull request, and Refresh PRs where it does not, the line whole in the body's view
+    /// with it, and nothing requested.
+    async fn assert_a_clicked_refusal_gives_its_remedy_focus(
+        cx: &mut TestAppContext,
+        landed: Landed,
+    ) {
+        let at = (13, 461., 490.);
+        let name = format!("{landed:?} after a click, at 13 pt in 461 × 490");
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, landed.rows(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        click_creation(&app, &panel, &script, at, (422, github::EXISTS), cx).await;
+        crate::tags::tests::draw(cx);
+        let focus = landed.focus(&panel, cx);
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "{name}: the remedy holds focus"
+        );
+        whole_in_body(cx, "github-error", &name);
+        let control = whole_in_body(cx, landed.selector(), &name);
+        assert_ringed_whole(cx, control, &name);
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_clicked_refusal_gives_open_existing_focus_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_clicked_refusal_gives_its_remedy_focus(cx, Landed::Open).await;
+    }
+
+    #[gpui::test]
+    async fn a_clicked_refusal_with_no_row_gives_refresh_focus_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_clicked_refusal_gives_its_remedy_focus(cx, Landed::Refresh).await;
+    }
+
+    /// The ways a creation fails that are no refusal for an existing pull request, each as the
+    /// script answers the creation itself, with a status or, with none, with no answer at all,
+    /// as a lost connection and a timeout leave the transport, and the sentence the panel's
+    /// top line then reads, word for word.
+    const FAILED_CREATIONS: [(&str, Option<u16>, &str); 6] = [
+        (
+            "a 403",
+            Some(403),
+            "GitHub refused this action. Check repository access, organization authorization, and review permissions. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a 404",
+            Some(404),
+            "GitHub repository or pull request is unavailable to this account. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a 422 of another form",
+            Some(422),
+            "GitHub rejected the reviewed target or content. Refresh and review the branches, permissions, and diff positions. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a rate limit",
+            Some(429),
+            "GitHub rate limit reached. No automatic retry was made. Check GitHub before resubmitting.",
+        ),
+        (
+            "a 502",
+            Some(502),
+            "GitHub returned HTTP 502. The remote outcome may be uncertain. Check GitHub before resubmitting; this action was not replayed.",
+        ),
+        (
+            "a lost connection",
+            None,
+            "The script holds no further answer. The GitHub outcome may be uncertain. Check the destination before resubmitting; no automatic retry was made.",
+        ),
+    ];
+
+    /// Opens [`creation_panel`]'s panel in a `width` × `height` window at `interface` pt, the
+    /// window resized first.
+    async fn open_creation(
+        app: &Entity<GitTurtle>,
+        (interface, width, height): (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+        draw(cx);
+        cx.update(|window, _| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            assert_eq!(window.viewport_size(), size(px(width), px(height)));
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(app, cx).await;
+        draw(cx);
+    }
+
+    /// Reviews the open form's creation, by Return on Review submission…, and leaves the
+    /// script holding what Send to GitHub then gets: the two rechecks and the creation's
+    /// answer under `status`, or, with none, nothing for the creation. Send's focus handle.
+    async fn review_failing_creation(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        script: &github::Scripted,
+        status: Option<u16>,
+        cx: &mut VisualTestContext,
+    ) -> FocusHandle {
+        use crate::tags::tests::draw;
+        let identities = |script: &github::Scripted| {
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "1".repeat(40)));
+            script.answer(200, format!(r#"{{"sha":"{}"}}"#, "2".repeat(40)));
+        };
+        identities(script);
+        let review = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-review-submit")
+            })
+            .expect("Review submission…");
+        cx.update(|window, cx| review.focus(window, cx));
+        draw(cx);
+        press_return(cx);
+        settle_panel(app, cx).await;
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "the creation is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        identities(script);
+        if let Some(status) = status {
+            script.answer(status, "{}");
+        }
+        panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub")
+    }
+
+    /// The lines `text` takes at the panel's 12 pt wrapped in `width`.
+    fn lines_wrapped(cx: &mut VisualTestContext, text: &str, width: Pixels) -> usize {
+        cx.update(|window, _| {
+            let style = window.text_style();
+            window
+                .text_system()
+                .shape_text(
+                    SharedString::from(text.to_owned()),
+                    appearance::ui_text(12.),
+                    &[style.to_run(text.len())],
+                    Some(width),
+                    None,
+                )
+                .map_or(1, |lines| {
+                    lines
+                        .iter()
+                        .map(|line| line.wrap_boundaries.len() + 1)
+                        .sum()
+                })
+        })
+    }
+
+    /// The accent outlines the last frame painted on `stop`'s own edge: the ring a stop that
+    /// holds focus draws there.
+    fn rings_on(
+        cx: &mut VisualTestContext,
+        stop: Bounds<Pixels>,
+    ) -> Vec<crate::focus_ring::PaintedOutline> {
+        let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        crate::focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .filter(|ring| {
+                [
+                    ring.bounds.left() - stop.left(),
+                    ring.bounds.top() - stop.top(),
+                    ring.bounds.right() - stop.right(),
+                    ring.bounds.bottom() - stop.bottom(),
+                ]
+                .into_iter()
+                .all(|apart| apart.abs() <= px(0.5))
+            })
+            .collect()
+    }
+
+    /// Whether the last frame drew the failure's line as a stop holding focus: its ring, 1 px
+    /// of the accent, on the stop's own edge.
+    fn on_failure_line(cx: &mut VisualTestContext) -> bool {
+        cx.debug_bounds("github-part-failure")
+            .is_some_and(|stop| !rings_on(cx, stop).is_empty())
+    }
+
+    /// What is wrong with how the last frame shows a send's failure, `said`, under the one
+    /// rule for a failure whose line offers no remedy: the line whole in the body's view, and
+    /// the line itself the stop that holds focus, around its words, whole in that view, with
+    /// its ring, 1 px of the accent, whole on all four sides on the stop's own edge. Nothing
+    /// where all of that holds; then the line's height with the lines its words take in its
+    /// width.
+    fn failure_shown(
+        said: &str,
+        name: &str,
+        cx: &mut VisualTestContext,
+    ) -> (Vec<String>, (Pixels, usize)) {
+        let mut wrong = Vec::new();
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let within = |drawn: Bounds<Pixels>| {
+            drawn.size.height > px(0.)
+                && drawn.top() >= body.top()
+                && drawn.bottom() <= body.bottom()
+                && drawn.left() >= body.left()
+                && drawn.right() <= body.right()
+        };
+        let line = cx.debug_bounds("github-error").expect("the failure's line");
+        if !within(line) {
+            wrong.push(format!(
+                "{name}: the line {line:?} is not whole in the body's view {body:?}"
+            ));
+        }
+        match cx.debug_bounds("github-part-failure") {
+            None => wrong.push(format!("{name}: the failure's line is no stop")),
+            Some(stop) => {
+                let around = stop.top() <= line.top()
+                    && stop.bottom() >= line.bottom()
+                    && stop.left() <= line.left()
+                    && stop.right() >= line.right();
+                if !within(stop) || !around {
+                    wrong.push(format!(
+                        "{name}: the stop {stop:?} is not whole in the body's view {body:?} \
+                         around the line {line:?}"
+                    ));
+                }
+                let rings = rings_on(cx, stop);
+                if !matches!(rings[..], [ring] if ring.drawn && ring.whole && ring.width == px(1.))
+                {
+                    wrong.push(format!(
+                        "{name}: the line holds focus, its ring whole on its own edge {stop:?}: \
+                         {rings:?}"
+                    ));
+                }
+            }
+        }
+        let lines = lines_wrapped(cx, said, line.size.width);
+        (wrong, (line.size.height, lines))
+    }
+
+    /// What is wrong with the stop Tab goes on to from the failure's line: focus inside the
+    /// body, off the line, on a control below it that the frame draws with an accent ring whole
+    /// in the body's view.
+    fn next_stop_shown(name: &str, cx: &mut VisualTestContext) -> Vec<String> {
+        let mut wrong = Vec::new();
+        let inside = cx.update(|window, _| {
+            window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains(review::BODY))
+        });
+        if !inside || on_failure_line(cx) {
+            wrong.push(format!(
+                "{name}: Tab goes on from the line to a control inside the body"
+            ));
+        }
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-part-failure");
+        let accent: gpui::Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .filter(|ring| ring.drawn && ring.whole)
+            .filter(|ring| {
+                ring.bounds.top() >= body.top()
+                    && ring.bounds.bottom() <= body.bottom()
+                    && ring.bounds.left() >= body.left()
+                    && ring.bounds.right() <= body.right()
+            })
+            .collect();
+        let below = rings
+            .iter()
+            .any(|ring| line.is_none_or(|line| ring.bounds.center().y > line.bottom()));
+        if !below {
+            wrong.push(format!(
+                "{name}: the next stop draws its ring whole in the body's view {body:?} below \
+                 the line {line:?}: {rings:?}"
+            ));
+        }
+        wrong
+    }
+
+    /// A creation that fails for any reason says why in view, at `at`: each failure's sentence,
+    /// word for word, on the panel's top line, wrapped whole inside the body's view though
+    /// Send stood at the form's foot, with the form open below it, what was typed kept and
+    /// its draft kept; focus on the line itself, a stop with its ring whole on its own edge;
+    /// Tab going on to Pull requests, the control below it, drawn whole with its ring, and
+    /// Shift+Tab coming back; and no request after the failure. Each failure is sent from the
+    /// form the one before left, as a person tries again. Focus once stayed on the form's
+    /// title field, and at 18 pt in a 461 × 490 window went to Pull requests, whose press
+    /// leaves the form.
+    async fn assert_failed_creations_are_shown(cx: &mut TestAppContext, at: (u8, f32, f32)) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        open_creation(&app, at, cx).await;
+        let mut wrong = Vec::new();
+        let mut drawn = Vec::new();
+        for (round, (kind, status, said)) in FAILED_CREATIONS.into_iter().enumerate() {
+            let name = format!("{kind} at {} pt in {} × {}", at.0, at.1, at.2);
+            let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+            cx.update(|window, cx| send.focus(window, cx));
+            draw(cx);
+            press_return(cx);
+            settle_panel(&app, cx).await;
+            draw(cx);
+            draw(cx);
+            panel.read_with(cx, |panel, cx| {
+                assert_eq!(panel.error.as_deref(), Some(said), "{name}");
+                assert!(
+                    panel.create
+                        && panel.confirm.is_none()
+                        && !panel.pending
+                        && panel.existing.is_none(),
+                    "{name}: the form stays open"
+                );
+                assert_eq!(
+                    panel.title.read(cx).value().as_ref(),
+                    "Keep the review's place",
+                    "{name}"
+                );
+                assert_eq!(
+                    panel.body.read(cx).value().as_ref(),
+                    "Typed description",
+                    "{name}"
+                );
+                assert!(
+                    panel
+                        .saved
+                        .iter()
+                        .any(|draft| matches!(draft, Draft::Pull(pull) if pull.head == "feature")),
+                    "{name}: the draft is kept"
+                );
+            });
+            assert_eq!(
+                script.asked("POST", "/pulls"),
+                round + 1,
+                "{name}: sent once"
+            );
+            assert_eq!(
+                script.requests.lock().unwrap().len(),
+                5 * (round + 1),
+                "{name}: no request follows the failure"
+            );
+            let (shown, line) = failure_shown(said, &name, cx);
+            wrong.extend(shown);
+            // Tab goes on to the control below the line, and Shift+Tab comes back to it.
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            draw(cx);
+            let back = panel
+                .read_with(cx, |panel, _| {
+                    panel.review.buttons.kept("github-create-back")
+                })
+                .expect("Pull requests");
+            if cx.update(|window, _| back.is_focused(window)) {
+                let back = whole_in_body(cx, "github-create-back", &name);
+                assert_ringed_whole(cx, back, &name);
+            } else {
+                wrong.push(format!(
+                    "{name}: Tab from the line goes to Pull requests, below it"
+                ));
+            }
+            wrong.extend(next_stop_shown(&name, cx));
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            draw(cx);
+            wrong.extend(failure_shown(said, &format!("{name}, back by Shift+Tab"), cx).0);
+            assert_eq!(
+                script.requests.lock().unwrap().len(),
+                5 * (round + 1),
+                "{name}: the keys ask nothing"
+            );
+            drawn.push((name, line));
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        // Every line its words wrap to is drawn: the lines' one height, whatever the sentence.
+        let size = appearance::ui_text(12.);
+        for (name, (height, lines)) in &drawn {
+            let each = *height / *lines as f32;
+            let (_, (first, of)) = &drawn[0];
+            assert!(
+                (each - *first / *of as f32).abs() < px(0.01) && each >= size,
+                "{name}: {lines} lines of the {size:?} text in {height:?}, where {}'s {of} take \
+                 {first:?}",
+                drawn[0].0
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_13_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (13, 1480., 973.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_says_why_in_view_at_18_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_failed_creations_are_shown(cx, (18, 1480., 973.)).await;
+    }
+
+    /// A creation cancelled from the busy row's Cancel says so in view wherever the body has
+    /// scrolled since, at 13 pt in a 461 × 490 window: the person wheels up to Cancel, on the
+    /// panel's top line, presses it and wheels back down to the form while the request winds
+    /// down, and the sentence it ends with is drawn whole in the body's view, the form open
+    /// below it, with focus on the line itself, its ring whole. Nothing was sent, and nothing
+    /// follows.
+    #[gpui::test]
+    async fn a_cancelled_creation_says_so_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        open_creation(&app, (13, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, Some(201), cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        let wheel = |cx: &mut VisualTestContext, by: Pixels| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            cx.simulate_event(ScrollWheelEvent {
+                position: body.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), by)),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        wheel(cx, px(4000.));
+        let cancel = whole_in_body(cx, "github-cancel", "the busy row's Cancel");
+        cx.simulate_click(cancel.center(), Modifiers::none());
+        draw(cx);
+        wheel(cx, px(-4000.));
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let row = cx.debug_bounds("github-busy-row").expect("the busy row");
+        assert!(
+            row.bottom() <= body.top(),
+            "back at the form's foot, the busy row {row:?} lies above the body's view {body:?}"
+        );
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        const SAID: &str = "GitHub action cancelled before submission";
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.error.as_deref(), Some(SAID));
+            assert!(panel.create && panel.confirm.is_none() && !panel.pending);
+            assert_eq!(
+                panel.title.read(cx).value().as_ref(),
+                "Keep the review's place"
+            );
+        });
+        assert_eq!(script.asked("POST", "/pulls"), 0, "nothing was sent");
+        assert_eq!(script.requests.lock().unwrap().len(), 2, "nothing follows");
+        let (wrong, _) = failure_shown(SAID, "a cancel", cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// A key held on Send to GitHub across a creation that fails presses nothing and types
+    /// nothing, at `interface` pt in a 461 × 490 window, where the failure's line is brought
+    /// into view with focus on it: the held Return's repeats, as each platform delivers them
+    /// and as X11's release and press pairs, while the creation is sent and once it has
+    /// failed, leave the form open, byte for byte, review nothing again and send nothing
+    /// again, with the line whole in view and ringed all the while. The line takes no press:
+    /// once the key has come up, a fresh Return and a fresh Space there do nothing either.
+    async fn assert_a_key_held_on_send_across_a_failed_creation_presses_nothing(
+        cx: &mut TestAppContext,
+        interface: u8,
+    ) {
+        use crate::branch_actions::tests::enter;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (kind, status, said) = FAILED_CREATIONS[0];
+        open_creation(&app, (interface, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let form = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, cx| {
+                let fields = [&panel.title, &panel.head, &panel.base]
+                    .map(|input| input.read(cx).value().to_string());
+                (fields, panel.body.read(cx).value().to_string())
+            })
+        };
+        let typed = form(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        enter(cx, Some(false));
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        let unchanged = |cx: &mut VisualTestContext, when: &str| {
+            assert_eq!(form(cx), typed, "{when}");
+            assert!(
+                panel.read_with(cx, |panel, _| panel.create && panel.confirm.is_none()),
+                "{when}: the form stays open, and nothing is reviewed again"
+            );
+            assert!(script.asked("POST", "/pulls") <= 1, "{when}: sent once");
+        };
+        hold_return(cx, "while it is sent", unchanged);
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(said),
+            "{kind}"
+        );
+        let shown = |cx: &mut VisualTestContext, when: &str| {
+            let (wrong, _) = failure_shown(said, when, cx);
+            assert!(wrong.is_empty(), "{wrong:#?}");
+        };
+        shown(cx, "as the failure lands");
+        hold_return(cx, "once it has failed", unchanged);
+        for _ in 0..3 {
+            x11_repeat(cx, "enter");
+            unchanged(cx, "a release and its press, in two batches");
+        }
+        shown(cx, "through the held key's repeats");
+        enter(cx, None);
+        draw(cx);
+        unchanged(cx, "as the key comes up");
+        enter(cx, Some(false));
+        enter(cx, None);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        unchanged(cx, "a fresh Return on the line");
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        unchanged(cx, "a fresh Space on the line");
+        shown(cx, "after the fresh presses");
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "one creation was sent");
+        assert!(panel.read_with(cx, |panel, _| !panel.pending));
+    }
+
+    #[gpui::test]
+    async fn a_key_held_on_send_across_a_failed_creation_presses_nothing_at_13_pt(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_across_a_failed_creation_presses_nothing(cx, 13).await;
+    }
+
+    #[gpui::test]
+    async fn a_key_held_on_send_across_a_failed_creation_presses_nothing_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_key_held_on_send_across_a_failed_creation_presses_nothing(cx, 18).await;
+    }
+
+    /// A creation sent by a pointer's click that fails rests focus on its line with the ring
+    /// drawn, at 13 pt in a 461 × 490 window: a click leaves the window's keyboard ring
+    /// unmarked, and a line that drew none would hold a focus nobody sees.
+    #[gpui::test]
+    async fn a_clicked_creation_that_fails_rings_its_line_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (kind, status, said) = FAILED_CREATIONS[0];
+        open_creation(&app, (13, 461., 490.), cx).await;
+        review_failing_creation(&app, &panel, &script, status, cx).await;
+        let send = whole_in_body(cx, "github-confirm-send", "Send to GitHub");
+        cx.simulate_click(send.center(), Modifiers::none());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(said),
+            "{kind}"
+        );
+        let (wrong, _) = failure_shown(said, "after a click on Send", cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+    }
+
+    /// A failure whose line takes focus is read once, from the line: the line is the node that
+    /// holds focus, a status named by its whole sentence, which a screen reader reads as it
+    /// follows focus there, and the window's alert, which says every other failure of the
+    /// panel, leaves this one to it. Said by both, the sentence was read twice.
+    #[gpui::test]
+    async fn a_failure_that_takes_focus_is_read_from_its_line_alone(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::alerted;
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (kind, status, said) = FAILED_CREATIONS[0];
+        open_creation(&app, (13, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        assert_eq!(alerted(cx), None, "nothing is alerted before the send");
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(said),
+            "{kind}"
+        );
+        let (wrong, _) = failure_shown(said, kind, cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        let line = written::get("github-error")
+            .expect("the failure's line")
+            .node;
+        assert_eq!(line.role(), Role::Status, "the line stays a status");
+        assert_eq!(line.label(), Some(said), "named by its whole sentence");
+        assert!(
+            line.supports_action(gpui::accesskit::Action::Focus),
+            "the line is the node that takes focus"
+        );
+        assert_eq!(
+            written::announced("github-error"),
+            None,
+            "the line is no live region: focus reads it"
+        );
+        assert_eq!(
+            alerted(cx),
+            None,
+            "the window's alert leaves the failure to the line that holds focus"
+        );
+    }
+
+    /// A failure's line that goes while it holds focus hands the focus to the content the
+    /// panel shows, the form's title field, drawn with its ring: left on a line no frame
+    /// draws, focus was on nothing, Tab started again from the window's first stop and Escape
+    /// reached nothing of the panel.
+    #[gpui::test]
+    async fn a_failures_line_that_goes_hands_its_focus_to_the_form(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (kind, status, said) = FAILED_CREATIONS[0];
+        open_creation(&app, (13, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        let (wrong, _) = failure_shown(said, kind, cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        let in_title = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let title = panel.read(cx).title.read(cx).focus_handle(cx);
+                title.is_focused(window)
+            })
+        };
+        assert!(!in_title(cx), "the line holds focus, not the title");
+        // The line clears, as it does when the next request starts.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.error = None;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-error").is_none()
+                && cx.debug_bounds("github-part-failure").is_none(),
+            "the line has gone"
+        );
+        assert!(
+            in_title(cx),
+            "the title field takes the focus the line held"
+        );
+        let title = whole_in_body(cx, "github-create-title", "the title field");
+        crate::focus_ring::assert_input_ringed(cx, title, "the title field");
+        escape(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the panel"
+        );
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+    }
+
+    /// A send whose failure answers on the panel's top line with no reply open: a review, a
+    /// comment on the pull request, or a conversation's Resolve or Reopen.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum TopLineSend {
+        Review,
+        Comment,
+        Resolve,
+        Reopen,
+    }
+
+    /// A review, a comment, a Resolve or a Reopen that fails says why in view, at `at`: its
+    /// failure answers on the panel's top line, which stood above the body's top as Send was
+    /// pressed at the foot of what it sends, and the body brings the line into view whole
+    /// with focus on the line itself, its ring whole on its own edge. Tab goes on to the
+    /// control below it, drawn with its ring whole in view, and Shift+Tab comes back; Return
+    /// and Space on the line do nothing. The draft is kept and nothing is sent again. Focus
+    /// once stayed where sending left it, on the kept draft or the section, which the line's
+    /// reveal could leave out of view. (A reply's failure is drawn in its composer.)
+    async fn assert_a_failed_send_says_why_in_view(
+        cx: &mut TestAppContext,
+        sent: TopLineSend,
+        at: (u8, f32, f32),
+    ) {
+        use crate::tags::tests::draw;
+        let name = format!("{sent:?} at {} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, cx) = repository_window(cx);
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let pull = github::review::fixture_pull(false);
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let mut threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(
+                &pull.capture(repository),
+                None,
+                &OperationControl::default(),
+            )
+            .unwrap();
+        for thread in &mut threads.items {
+            thread.target.account = github::Scripted::LOGIN.into();
+        }
+        let target = threads.items[0].target.clone();
+        let conversation = matches!(sent, TopLineSend::Resolve | TopLineSend::Reopen);
+        // The pull request read again before the write, then the write refused; a Resolve's
+        // or a Reopen's first read finds the script empty, as a lost connection answers
+        // nothing.
+        if !conversation {
+            script.answer(200, serde_json::to_string(&pull).unwrap());
+            script.answer(422, r#"{"message":"Validation Failed"}"#);
+        }
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = if conversation {
+                    Section::Overview
+                } else {
+                    Section::Review
+                };
+                panel.discussion = sent == TopLineSend::Comment;
+                panel.receive_threads(threads, None);
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(at.1), px(at.2)));
+        cx.update(|window, cx| appearance::apply_text_sizes(at.0, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            assert_eq!(window.viewport_size(), size(px(at.1), px(at.2)));
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        // What is sent is reviewed as its own press reviews it, at the foot of what it sends.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if conversation {
+                    panel.confirm = Some(Confirmation {
+                        account: target.account.clone(),
+                        action: Action::SetThreadResolved {
+                            target: target.clone(),
+                            resolved: sent == TopLineSend::Resolve,
+                        },
+                    });
+                    panel.focus_confirmation(window, cx);
+                } else {
+                    panel
+                        .body
+                        .update(cx, |input, cx| input.set_value(TYPED, window, cx));
+                    panel.review_submission(window, cx);
+                }
+            })
+        });
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "{name}: the submission is reviewed: {:?}",
+            panel.read_with(cx, |panel, _| panel.error.clone())
+        );
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        whole_in_body(
+            cx,
+            "github-confirm-send",
+            "Send to GitHub, where it is pressed",
+        );
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        let kept = |cx: &mut VisualTestContext, when: &str| {
+            panel.read_with(cx, |panel, cx| {
+                assert!(
+                    !panel.pending && panel.confirm.is_none() && panel.error.is_some(),
+                    "{name}, {when}: the send fails and says so: {:?}",
+                    panel.error
+                );
+                if !conversation {
+                    assert_eq!(
+                        panel.body.read(cx).value().as_ref(),
+                        TYPED,
+                        "{name}, {when}"
+                    );
+                }
+            });
+            assert_eq!(
+                script.requests.lock().unwrap().len(),
+                if conversation { 1 } else { 2 },
+                "{name}, {when}: sent once, and nothing follows the failure"
+            );
+        };
+        kept(cx, "as it lands");
+        let said = panel
+            .read_with(cx, |panel, _| panel.error.clone())
+            .expect("the failure");
+        let (wrong, _) = failure_shown(&said, &name, cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        draw(cx);
+        let wrong = next_stop_shown(&name, cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        draw(cx);
+        let (wrong, _) = failure_shown(&said, &format!("{name}, back by Shift+Tab"), cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+
+        // The line takes no press.
+        press_return(cx);
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        kept(cx, "after Return and Space on the line");
+        let (wrong, _) = failure_shown(&said, &format!("{name}, after its presses"), cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[gpui::test]
+    async fn a_failed_review_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Review, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_review_says_why_in_view_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Review, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_review_says_why_in_view_at_13_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Review, (13, 1480., 973.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_comment_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Comment, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_comment_says_why_in_view_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Comment, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_resolve_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Resolve, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_resolve_says_why_in_view_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Resolve, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_reopen_says_why_in_view_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Reopen, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_reopen_says_why_in_view_at_18_pt_in_a_wide_window(cx: &mut TestAppContext) {
+        assert_a_failed_send_says_why_in_view(cx, TopLineSend::Reopen, (18, 1480., 973.)).await;
+    }
+
+    /// A Resolve that fails beside an open reply rests focus on its line above the body, at
+    /// 13 pt in a 461 × 490 window: the panel's top line stands above the body while a reply is
+    /// open, in view, and the failure's line there is the stop that takes focus, its ring
+    /// whole on its own edge, where focus once went back to the reply's draft, away from the
+    /// answer. The reply stays open with nothing sent again.
+    #[gpui::test]
+    async fn a_failed_resolve_beside_an_open_reply_rests_focus_on_the_line_above_the_body(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let script = github::Scripted::default();
+        let scripted = script.clone();
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let pull = github::review::fixture_pull(false);
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        let mut threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(
+                &pull.capture(repository),
+                None,
+                &OperationControl::default(),
+            )
+            .unwrap();
+        for thread in &mut threads.items {
+            thread.target.account = github::Scripted::LOGIN.into();
+        }
+        let target = threads.items[0].target.clone();
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.scripted = Some(scripted);
+                panel.account = Some(github::Scripted::LOGIN.into());
+                panel.notice = None;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(threads, None);
+                panel.close(window, cx);
+            });
+            panel
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            window.activate_window();
+            app.update(cx, |app, cx| app.open_github(window, cx))
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.begin_reply(target.clone(), window, cx)
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.confirm = Some(Confirmation {
+                    account: target.account.clone(),
+                    action: Action::SetThreadResolved {
+                        target: target.clone(),
+                        resolved: true,
+                    },
+                });
+                panel.focus_confirmation(window, cx);
+            })
+        });
+        draw(cx);
+        let send = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept("github-confirm-send")
+            })
+            .expect("Send to GitHub");
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(
+                !panel.pending && panel.confirm.is_none() && panel.error.is_some(),
+                "the Resolve fails and says so: {:?}",
+                panel.error
+            );
+            assert!(panel.conversations.active.is_some(), "the reply stays open");
+        });
+        assert_eq!(script.requests.lock().unwrap().len(), 1, "sent once");
+        let top = cx
+            .debug_bounds("github-top-line")
+            .expect("the line above the body");
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the failure's line");
+        let stop = cx
+            .debug_bounds("github-part-failure")
+            .expect("the failure's line is a stop");
+        assert!(
+            stop.top() >= top.top()
+                && stop.bottom() <= body.top()
+                && stop.top() <= line.top()
+                && stop.bottom() >= line.bottom(),
+            "the stop {stop:?} stands around the line {line:?}, in the top line {top:?} above \
+             the body {body:?}"
+        );
+        let rings = rings_on(cx, stop);
+        assert!(
+            matches!(rings[..], [ring] if ring.drawn && ring.whole && ring.width == px(1.)),
+            "the line holds focus, its ring whole on its own edge {stop:?}: {rings:?}"
+        );
+    }
+
+    /// What a send ends in on the panel's top line, for the frames it lands in: a creation's
+    /// failure, whose line takes focus, or its refusal for an existing pull request, whose
+    /// remedy does, Open #7 beside the line or Refresh PRs above it.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum FailedLanding {
+        Failure,
+        Open,
+        Refresh,
+    }
+
+    /// A send's failure lands in one frame, at `interface` pt in a 461 × 490 window: the first
+    /// frame the body draws once the answer is in shows what holds focus, the failure's line
+    /// or the refusal's remedy, whole in the body's view with the focus the landing gave, and
+    /// every frame after it draws the body's view and each part of the body where that first
+    /// frame did; the last frame draws the line whole and the focused control's ring whole.
+    /// The reveal once ran after the landing's frame had painted: that frame drew the line
+    /// above the view, the form below it moved down by the line's height, and the next frame
+    /// jumped to the line.
+    async fn assert_a_failure_lands_in_one_frame(
+        cx: &mut TestAppContext,
+        interface: u8,
+        landing: FailedLanding,
+    ) {
+        use crate::tags::tests::draw;
+        let name = format!("{landing:?} at {interface} pt in 461 × 490");
+        let rows = match landing {
+            FailedLanding::Open => rows_holding_seven(),
+            FailedLanding::Failure | FailedLanding::Refresh => Vec::new(),
+        };
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let at = (interface, 461., 490.);
+        let (_, status, said) = FAILED_CREATIONS[0];
+        let send = match landing {
+            FailedLanding::Failure => {
+                open_creation(&app, at, cx).await;
+                review_failing_creation(&app, &panel, &script, status, cx).await
+            }
+            FailedLanding::Open | FailedLanding::Refresh => {
+                review_creation(&app, &panel, &script, at, (422, github::EXISTS), false, cx).await
+            }
+        };
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "{name}: sent"
+        );
+
+        // The window's frames, one for each layout of the repository page under the panel.
+        let window_frames = || {
+            crate::in_frame::probe::take()
+                .iter()
+                .filter(|frame| frame.region == "repository-columns")
+                .count()
+        };
+        crate::in_frame::probe::watch();
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        let asked = window_frames();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let later = window_frames();
+        crate::in_frame::probe::stop();
+        let drawn = review::BODY_FRAMES.take().expect("watched");
+        assert!(
+            panel.read_with(cx, |panel, _| panel.error.is_some() && !panel.pending),
+            "{name}: the send failed"
+        );
+        // The frames since the answer: the busy row, a part of the body while the send is in
+        // flight, has gone.
+        let part = |frame: &review::BodyFrame, name: &str| {
+            frame
+                .parts
+                .iter()
+                .find(|(part, _)| part == name)
+                .map(|(_, bounds)| *bounds)
+        };
+        let landed: Vec<_> = drawn
+            .iter()
+            .filter(|frame| part(frame, "busy").is_none())
+            .collect();
+        assert!(
+            asked >= 1 && later == 4 && landed.len() > later,
+            "{name}: the landing drew {asked} frames of the window by itself and the display \
+             {later} more, {} of them the body's since the answer",
+            landed.len()
+        );
+        // One settled frame: every frame since the answer draws the body's view and each part
+        // where the first of them did.
+        let focused = match landing {
+            FailedLanding::Failure => "failure",
+            FailedLanding::Open => "open-existing",
+            FailedLanding::Refresh => "refresh",
+        };
+        let mut settled: Vec<&review::BodyFrame> = Vec::new();
+        for frame in landed.iter().copied() {
+            let seen = |seen: &&review::BodyFrame| {
+                seen.view == frame.view
+                    && seen.parts == frame.parts
+                    && seen.focused == frame.focused
+            };
+            if !settled.iter().any(seen) {
+                settled.push(frame);
+            }
+        }
+        assert_eq!(
+            settled.len(),
+            1,
+            "{name}: the {} frames since the answer, {asked} of the window's drawn by the \
+             landing itself, draw the body in one place: {focused} at {:?}",
+            landed.len(),
+            settled
+                .iter()
+                .map(|frame| part(frame, focused))
+                .collect::<Vec<_>>()
+        );
+        let first = landed[0];
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let shown = part(first, focused).unwrap_or_else(|| panic!("{name}: {focused} is drawn"));
+        assert!(
+            first.focused.is_some() && revealed_whole(shown, first.view, room),
+            "{name}: the first frame draws {focused} {shown:?} whole in the body {:?}, focus \
+             given",
+            first.view
+        );
+        whole_in_body(cx, "github-error", &name);
+        match landing {
+            FailedLanding::Failure => {
+                let (wrong, _) = failure_shown(said, &name, cx);
+                assert!(wrong.is_empty(), "{wrong:#?}");
+            }
+            FailedLanding::Open | FailedLanding::Refresh => {
+                let remedy = if landing == FailedLanding::Open {
+                    Landed::Open
+                } else {
+                    Landed::Refresh
+                };
+                assert_eq!(
+                    first.focused.as_ref(),
+                    Some(&remedy.focus(&panel, cx)),
+                    "{name}: the remedy's focus"
+                );
+                let control = whole_in_body(cx, remedy.selector(), &name);
+                assert_ringed_whole(cx, control, &name);
+            }
+        }
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_lands_in_one_frame_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failure_lands_in_one_frame(cx, 13, FailedLanding::Failure).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_creation_lands_in_one_frame_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_failure_lands_in_one_frame(cx, 18, FailedLanding::Failure).await;
+    }
+
+    #[gpui::test]
+    async fn a_refusal_with_its_action_lands_in_one_frame_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_failure_lands_in_one_frame(cx, 13, FailedLanding::Open).await;
+    }
+
+    #[gpui::test]
+    async fn a_refusal_with_its_action_lands_in_one_frame_at_18_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_failure_lands_in_one_frame(cx, 18, FailedLanding::Open).await;
+    }
+
+    #[gpui::test]
+    async fn a_refusal_naming_refresh_lands_in_one_frame_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_failure_lands_in_one_frame(cx, 13, FailedLanding::Refresh).await;
+    }
+
+    #[gpui::test]
+    async fn a_refusal_naming_refresh_lands_in_one_frame_at_18_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_failure_lands_in_one_frame(cx, 18, FailedLanding::Refresh).await;
+    }
+
+    /// Send to GitHub pressed while the window is busy says why in view, at `at`: the refusal
+    /// answers on the panel's top line, which stood above the body's top as Send was pressed at
+    /// the form's foot, and the body brings the line into view whole with focus on it, its
+    /// ring whole, under the rule a failed send follows. Nothing is sent, the confirmation
+    /// stays for Send once the window is free, and Return on the line refuses nothing again.
+    /// The line once stayed out of view, and Send seemed to do nothing.
+    async fn assert_a_send_a_busy_window_refuses_says_why_in_view(
+        cx: &mut TestAppContext,
+        at: (u8, f32, f32),
+    ) {
+        use crate::tags::tests::draw;
+        let name = format!("busy at {} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        open_creation(&app, at, cx).await;
+        let send = review_failing_creation(&app, &panel, &script, None, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        whole_in_body(
+            cx,
+            "github-confirm-send",
+            "Send to GitHub, where it is pressed",
+        );
+        app.update(cx, |app, _| app.operation_busy = Some("Fetching…"));
+        draw(cx);
+        press_return(cx);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        let said = format!("{}, then try again.", crate::workspace::BUSY_REASON);
+        let refused = |cx: &mut VisualTestContext, when: &str| {
+            panel.read_with(cx, |panel, _| {
+                assert_eq!(
+                    panel.error.as_deref(),
+                    Some(said.as_str()),
+                    "{name}, {when}"
+                );
+                assert!(
+                    panel.confirm.is_some() && !panel.pending && panel.create,
+                    "{name}, {when}: the confirmation stays for Send once the window is free"
+                );
+                panel.presses.error
+            })
+        };
+        let presses = refused(cx, "as it is refused");
+        assert_eq!(
+            script.requests.lock().unwrap().len(),
+            2,
+            "{name}: nothing was sent"
+        );
+        let (wrong, _) = failure_shown(&said, &name, cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        press_return(cx);
+        key_goes_down(cx, "space", false);
+        key_comes_up(cx, "space");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            refused(cx, "after Return and Space on the line"),
+            presses,
+            "{name}: the line takes no press, so nothing is refused again"
+        );
+        assert_eq!(script.requests.lock().unwrap().len(), 2, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_send_a_busy_window_refuses_says_why_in_view_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_send_a_busy_window_refuses_says_why_in_view(cx, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_send_a_busy_window_refuses_says_why_in_view_at_18_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_send_a_busy_window_refuses_says_why_in_view(cx, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn a_send_a_busy_window_refuses_says_why_in_view_at_13_pt_in_a_wide_window(
+        cx: &mut TestAppContext,
+    ) {
+        assert_a_send_a_busy_window_refuses_says_why_in_view(cx, (13, 1480., 973.)).await;
+    }
+
+    /// Escape while a send is in flight says why in view, at `at`: the panel stays open, the
+    /// refusal answers on the panel's top line, and the body brings that line into view whole
+    /// with focus on it, its ring whole, read from the line as focus comes to it. Refused
+    /// again with focus on the line already, where nothing moves for a screen reader to
+    /// follow, the window's alert says it. The send then ends in its own failure, on the same
+    /// line, which keeps focus. The refusal once answered above the body's top, and Escape
+    /// seemed to do nothing.
+    async fn assert_escape_during_a_send_says_why_in_view(
+        cx: &mut TestAppContext,
+        at: (u8, f32, f32),
+    ) {
+        use crate::copy_feedback::tests::alerted;
+        use crate::tags::tests::draw;
+        const SAID: &str = "A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.";
+        let name = format!("Escape at {} pt in {} × {}", at.0, at.1, at.2);
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (_, status, failed) = FAILED_CREATIONS[0];
+        open_creation(&app, at, cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "{name}: sent"
+        );
+        let refused = |cx: &mut VisualTestContext, when: &str| {
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{name}, {when}: the panel stays open"
+            );
+            panel.read_with(cx, |panel, _| {
+                assert_eq!(panel.error.as_deref(), Some(SAID), "{name}, {when}");
+                assert!(panel.pending && panel.create, "{name}, {when}");
+            });
+            let (wrong, _) = failure_shown(SAID, &format!("{name}, {when}"), cx);
+            assert!(wrong.is_empty(), "{wrong:#?}");
+        };
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        draw(cx);
+        refused(cx, "refused");
+        assert_eq!(
+            alerted(cx),
+            None,
+            "{name}: the refusal is read from the line that took focus"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        draw(cx);
+        refused(cx, "refused again");
+        assert_eq!(
+            alerted(cx).map(|(_, text)| text).as_deref(),
+            Some(SAID),
+            "{name}: refused again with focus on the line already, the alert says it"
+        );
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.error.as_deref(), Some(failed), "{name}");
+            assert!(!panel.pending && panel.create, "{name}");
+        });
+        let (wrong, _) = failure_shown(failed, &format!("{name}, the send's own failure"), cx);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "{name}: sent once");
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    /// Send to GitHub pressed by Return on `send` with the request held in flight, then Escape
+    /// going down: the refusal answers on the panel's top line, which takes focus and is read
+    /// from there, so the window's alert says nothing. Returns the hold on the request;
+    /// Escape is still down.
+    fn escape_goes_down_during_the_send(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        send: &FocusHandle,
+        cx: &mut VisualTestContext,
+    ) -> crate::operations::Held {
+        use crate::copy_feedback::tests::alerted;
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| {
+            window.activate_window();
+            send.focus(window, cx)
+        });
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(SEND_IN_FLIGHT),
+            "Escape is refused while the send is in flight"
+        );
+        assert!(on_failure_stop(panel, cx), "the refusal's line takes focus");
+        assert_eq!(alerted(cx), None, "the refusal is read from its line");
+        sending
+    }
+
+    /// Lets the send that `sending` holds land, and returns the frames of the body since its
+    /// answer, those drawn without the busy row: the landing's own, then four of the display's.
+    async fn frames_since_the_send_landed(
+        app: &Entity<GitTurtle>,
+        sending: crate::operations::Held,
+        cx: &mut VisualTestContext,
+    ) -> Vec<review::BodyFrame> {
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(app, cx).await;
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let landed: Vec<_> = review::BODY_FRAMES
+            .take()
+            .expect("watched")
+            .into_iter()
+            .filter(|frame| !frame.parts.iter().any(|(part, _)| part == "busy"))
+            .collect();
+        assert!(
+            landed.len() > 4,
+            "the landing draws a frame of the body by itself, before the display's four: {}",
+            landed.len()
+        );
+        landed
+    }
+
+    /// One settled frame: every one of `frames` draws the body's view, the PR list's and each
+    /// part of the body where the first did, with the focus the first drew.
+    fn assert_one_settled_frame(frames: &[review::BodyFrame], name: &str) {
+        let first = &frames[0];
+        for (drawn, frame) in frames.iter().enumerate() {
+            assert!(
+                frame.view == first.view
+                    && frame.pulls == first.pulls
+                    && frame.parts == first.parts
+                    && frame.focused == first.focused,
+                "{name}: frame {drawn} since the answer draws the body as the first did:\n\
+                 {frame:?}\nthe first:\n{first:?}"
+            );
+        }
+    }
+
+    /// What a review that landed after an Escape refusal leaves: its own notice alone on the
+    /// top line, said politely once, no failure's line under it, nothing alerted, and the
+    /// draft as it was written (`typed`).
+    fn assert_the_sent_review_stands_alone(
+        panel: &Entity<Panel>,
+        handed: Handed,
+        typed: &str,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::copy_feedback::tests::{alerted, announced};
+        let notice = panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.error, None, "the refusal went with the send");
+            assert!(!panel.pending && !panel.closed);
+            panel.notice.clone().expect("the review's notice")
+        });
+        assert!(
+            notice.contains("The local draft remains available"),
+            "the review's own notice: {notice:?}"
+        );
+        assert!(
+            cx.debug_bounds("github-error").is_none(),
+            "no failure's line is drawn under the notice"
+        );
+        assert_eq!(
+            alerted(cx),
+            None,
+            "nothing is alerted once the review has landed"
+        );
+        assert_eq!(
+            announced(cx).map(|(_, said)| said),
+            Some(notice),
+            "the notice is said, politely"
+        );
+        assert_eq!(
+            handed.text(panel, cx),
+            typed,
+            "the draft is as it was written"
+        );
+    }
+
+    /// An Escape refusal does not outlive the send it refused during. Escape while a creation
+    /// is sent answers "…is in progress… Wait for the result…" on the top line, read from the
+    /// line as focus comes to it; the creation then lands, at 13 pt in a 461 × 490 window,
+    /// and the panel shows the notice that names the pull request and no failure's line, says
+    /// the notice once and alerts nothing, and the new row takes the focus the line held, in
+    /// one settled frame. The refusal's line once stayed under "Pull request #N created." and
+    /// was said again, as an alert, as the creation landed: it read as a send that had not
+    /// worked.
+    #[gpui::test]
+    async fn an_escape_refusal_goes_as_the_creation_it_refused_during_lands(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::copy_feedback::tests::{alerted, announced};
+        use crate::tags::tests::draw;
+        const NOTICE: &str = "Draft pull request #203 created.";
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        let answer = made(true).to_string();
+        let at = (13, 461., 490.);
+        let send = review_creation(&app, &panel, &script, at, (201, &answer), false, cx).await;
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        key_comes_up(cx, "escape");
+        draw(cx);
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.error, None, "the refusal went with the send");
+            assert_eq!(panel.notice.as_deref(), Some(NOTICE));
+            assert!(!panel.pending && !panel.create && !panel.closed);
+        });
+        assert!(
+            cx.debug_bounds("github-error").is_none(),
+            "no failure's line is drawn under the notice"
+        );
+        whole_in_body(cx, "github-notice", "the creation's notice");
+        assert_eq!(
+            alerted(cx),
+            None,
+            "nothing is alerted once the creation has landed"
+        );
+        assert_eq!(
+            announced(cx).map(|(_, said)| said).as_deref(),
+            Some(NOTICE),
+            "the notice is said, politely"
+        );
+        let row = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept(("github-pr", 203_u64))
+            })
+            .expect("the new row");
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&row),
+            "the first frame since the answer draws the new row with focus"
+        );
+        assert_one_settled_frame(&landed, "a creation after an Escape refusal");
+        assert_eq!(script.asked("POST", "/pulls"), 1, "sent once");
+    }
+
+    /// The same for a review, where the person has gone back to the draft meanwhile: the
+    /// refusal's line goes as the review lands, the review's notice stands alone, nothing is
+    /// alerted, and focus stays in the review body, where the person put it, in one settled
+    /// frame.
+    #[gpui::test]
+    async fn an_escape_refusal_goes_as_the_review_it_refused_during_lands(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let send = cx.update(|window, cx| window.focused(cx).expect("Send to GitHub"));
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        key_comes_up(cx, "escape");
+        draw(cx);
+        // Back to the draft, as a click in it brings focus there.
+        cx.update(|window, cx| field.focus(window, cx));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-error").is_some() && field_holds(&field, cx),
+            "the refusal's line stands while the review is sent, focus back in the draft"
+        );
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        assert_the_sent_review_stands_alone(&panel, handed, &typed, cx);
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&field),
+            "focus stays in the review body"
+        );
+        assert_one_settled_frame(&landed, "a review after an Escape refusal");
+    }
+
+    /// The refusal's line holds focus as it goes with the review it refused during, at 13 pt
+    /// in a 461 × 490 window: the first frame since the answer draws the body with focus in
+    /// the review body, the content the panel shows, and no later frame moves the body or the
+    /// focus; a Space pressed on the line and still down as the review lands types nothing
+    /// there until it has come up, and then types once. Focus once stayed on the line no frame
+    /// drew until the panel's guard moved it a frame later, with nothing held, and the Space's
+    /// next repeat typed into the draft just sent.
+    #[gpui::test]
+    async fn focus_on_an_escape_refusals_line_goes_to_the_review_body_as_the_review_lands(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let send = cx.update(|window, cx| window.focused(cx).expect("Send to GitHub"));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        cx.update(|window, _| {
+            assert_eq!(window.scale_factor(), 2., "the test window's scale");
+            assert_eq!(window.viewport_size(), size(px(461.), px(490.)));
+        });
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        key_comes_up(cx, "escape");
+        draw(cx);
+        x11_key_down(cx, "space");
+        draw(cx);
+        assert!(
+            on_failure_stop(&panel, cx) && panel.read_with(cx, |panel, _| panel.pending),
+            "Space on the refusal's line presses nothing"
+        );
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        assert_the_sent_review_stands_alone(&panel, handed, &typed, cx);
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&field),
+            "the first frame since the answer draws focus in the review body"
+        );
+        assert_one_settled_frame(&landed, "focus on the refusal's line as the review lands");
+        for split in [false, true, false, true] {
+            if split {
+                x11_split_repeat(cx, "space");
+            } else {
+                x11_key_down(cx, "space");
+                draw(cx);
+            }
+            assert_eq!(
+                handed.text(&panel, cx),
+                typed,
+                "the Space still down types nothing into the review body"
+            );
+        }
+        key_comes_up(cx, "space");
+        draw(cx);
+        x11_key_down(cx, "space");
+        key_comes_up(cx, "space");
+        draw(cx);
+        assert_eq!(
+            handed.text(&panel, cx).len(),
+            typed.len() + 1,
+            "a fresh Space types once"
+        );
+    }
+
+    /// Escape still held as the review it was refused during lands closes nothing and types
+    /// nothing: its repeats, marked held as Wayland and macOS mark them and as X11 hands them
+    /// on, in one batch and in two, leave the panel open on the review's notice with focus in
+    /// the review body and the draft as it was; once it has come up, a fresh Escape closes
+    /// the panel. The refusal said to wait for the result, and the next repeat of the same
+    /// press closed the panel on it.
+    #[gpui::test]
+    async fn escape_held_as_the_review_it_was_refused_during_lands_closes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let handed = Handed::Wrote(Composed::Review, true);
+        let (_fixture, app, panel, cx) = handing_panel(cx, handed).await;
+        let field = handed.focus(&panel, cx);
+        let typed = handed.text(&panel, cx);
+        let send = cx.update(|window, cx| window.focused(cx).expect("Send to GitHub"));
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&field),
+            "the first frame since the answer draws focus in the review body"
+        );
+        let open = |cx: &mut VisualTestContext, when: &str| {
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{when}: the panel stays open"
+            );
+            assert_the_sent_review_stands_alone(&panel, handed, &typed, cx);
+            assert!(field_holds(&field, cx), "{when}: focus stays in the draft");
+        };
+        open(cx, "as the review lands");
+        key_goes_down(cx, "escape", true);
+        draw(cx);
+        open(cx, "a repeat marked held");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        open(cx, "an X11 repeat in one batch");
+        x11_repeat(cx, "escape");
+        open(cx, "an X11 repeat in two batches");
+        key_comes_up(cx, "escape");
+        draw(cx);
+        open(cx, "come up");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx))
+                && panel.read_with(cx, |panel, _| panel.closed),
+            "a fresh Escape closes the panel"
+        );
+    }
+
+    /// An Escape refusal gives way to the failure of the send it refused during, at 13 pt in
+    /// a 461 × 490 window: the top line then reads that failure alone, in one settled frame,
+    /// focus staying on the line, which is said once, by the window's alert, since focus
+    /// moved nowhere for a screen reader to follow; the creation was sent once. Escape, still
+    /// held as the send fails, closes nothing at its repeats, so the failure stays to be
+    /// read, and a fresh Escape closes the panel.
+    #[gpui::test]
+    async fn an_escape_refusal_gives_way_to_the_failure_of_the_send_it_refused_during(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::copy_feedback::tests::alerted;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (_, status, failed) = FAILED_CREATIONS[0];
+        open_creation(&app, (13, 461., 490.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        let sending = escape_goes_down_during_the_send(&app, &panel, &send, cx);
+        let landed = frames_since_the_send_landed(&app, sending, cx).await;
+        let stands = |cx: &mut VisualTestContext, when: &str| {
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{when}: the panel stays open"
+            );
+            panel.read_with(cx, |panel, _| {
+                assert_eq!(panel.error.as_deref(), Some(failed), "{when}");
+                assert!(!panel.pending && panel.create && !panel.closed, "{when}");
+            });
+            let (wrong, _) = failure_shown(failed, when, cx);
+            assert!(wrong.is_empty(), "{wrong:#?}");
+            assert!(
+                on_failure_stop(&panel, cx),
+                "{when}: focus stays on the line"
+            );
+        };
+        stands(cx, "as the send fails");
+        let line = panel.read_with(cx, |panel, _| panel.review.failure_focus.clone());
+        assert_eq!(
+            landed[0].focused.as_ref(),
+            Some(&line),
+            "the first frame since the answer draws the failure's line with focus"
+        );
+        assert_one_settled_frame(&landed, "a failure after an Escape refusal");
+        let said = alerted(cx).expect("the failure is alerted, focus being on its line already");
+        assert_eq!(said.1, failed, "the alert says the failure");
+        key_goes_down(cx, "escape", true);
+        draw(cx);
+        stands(cx, "a repeat marked held");
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        stands(cx, "an X11 repeat in one batch");
+        x11_repeat(cx, "escape");
+        stands(cx, "an X11 repeat in two batches");
+        assert_eq!(
+            alerted(cx).map(|(id, _)| id),
+            Some(said.0),
+            "the failure is said once: no later frame draws another alert"
+        );
+        key_comes_up(cx, "escape");
+        draw(cx);
+        key_goes_down(cx, "escape", false);
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx))
+                && panel.read_with(cx, |panel, _| panel.closed),
+            "a fresh Escape closes the panel"
+        );
+        assert_eq!(script.asked("POST", "/pulls"), 1, "sent once");
+    }
+
+    #[gpui::test]
+    async fn escape_during_a_send_says_why_in_view_at_13_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_escape_during_a_send_says_why_in_view(cx, (13, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn escape_during_a_send_says_why_in_view_at_18_pt_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        assert_escape_during_a_send_says_why_in_view(cx, (18, 461., 490.)).await;
+    }
+
+    #[gpui::test]
+    async fn escape_during_a_send_says_why_in_view_at_13_pt_in_a_wide_window(
+        cx: &mut TestAppContext,
+    ) {
+        assert_escape_during_a_send_says_why_in_view(cx, (13, 1480., 973.)).await;
+    }
+
+    /// A failure's line taller than the body's view can hold with its room shows from its top
+    /// with focus, at 18 pt in a 461 × 300 window: the stop's top edge and its first lines are
+    /// in the view's upper half, where the ring's top is drawn, and the rest is reached by
+    /// scrolling. It lands in one frame too: every frame since the answer draws the body's
+    /// view and its parts where the first did, where the line's own reveal, which keeps a
+    /// ring's room and not a line's, once moved it again in a later frame.
+    #[gpui::test]
+    async fn a_failure_taller_than_the_view_shows_from_its_top_with_focus_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, Vec::new(), "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let (kind, status, said) = FAILED_CREATIONS[2];
+        open_creation(&app, (18, 461., 300.), cx).await;
+        let send = review_failing_creation(&app, &panel, &script, status, cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let drawn = review::BODY_FRAMES.take().expect("watched");
+        let landed: Vec<_> = drawn
+            .iter()
+            .filter(|frame| !frame.parts.iter().any(|(part, _)| part == "busy"))
+            .collect();
+        assert!(
+            landed.len() > 4
+                && landed
+                    .iter()
+                    .all(|frame| frame.view == landed[0].view && frame.parts == landed[0].parts),
+            "the {} frames since the answer draw the body in one place: the line at {:?}",
+            landed.len(),
+            landed
+                .iter()
+                .map(|frame| frame.parts.iter().find(|(part, _)| part == "failure"))
+                .collect::<Vec<_>>()
+        );
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some(said),
+            "{kind}"
+        );
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the failure's line");
+        let stop = cx
+            .debug_bounds("github-part-failure")
+            .expect("the failure's line is a stop");
+        let room = cx.update(|window, cx| review::reveal_room(window, cx));
+        assert!(
+            stop.size.height + room * 2. > body.size.height,
+            "the line {stop:?} with its room is taller than the view {body:?} can hold"
+        );
+        assert!(
+            stop.top() >= body.top() && line.top() >= body.top() && stop.top() < body.center().y,
+            "the line {stop:?} shows from its top in the view {body:?}"
+        );
+        let rings = rings_on(cx, stop);
+        assert!(
+            matches!(rings[..], [ring] if ring.drawn && ring.width == px(1.)),
+            "the line holds focus, its ring drawn on its own edge {stop:?}: {rings:?}"
+        );
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "nothing follows");
+    }
+
+    /// A creation lands in one frame, at `interface` pt in a 461 × 490 window: the first frame
+    /// the body draws once the creation's answer is in shows the new row whole, with its
+    /// ring's room, in its list and in the body's view, the row holding focus, and every
+    /// frame after it draws the body's view, the list's and each part of the body where that
+    /// first frame did, so neither the notice above the row nor the row moves again; the
+    /// last frame draws the notice whole above the row and the row's ring whole. The notice
+    /// once came to the body's top four frames after the row, about 50 ms later, and at 18 pt
+    /// stood 33 px above the body's top until then.
+    async fn assert_a_creation_lands_in_one_frame(cx: &mut TestAppContext, interface: u8) {
+        use crate::tags::tests::draw;
+        let name = format!("{interface} pt in 461 × 490");
+        let rows = vec![
+            listed_pull(7, "fixture:other", "main"),
+            listed_pull(6, "fixture:older", "main"),
+        ];
+        let (_fixture, app, panel, script, cx) = creation_panel(cx, rows, "feature");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let answer = (201, made(false).to_string());
+        let at = (interface, 461., 490.);
+        let send =
+            review_creation(&app, &panel, &script, at, (answer.0, &answer.1), false, cx).await;
+        cx.update(|window, cx| send.focus(window, cx));
+        draw(cx);
+        let sending = app.read_with(cx, |app, _| app.operations.hold());
+        press_return(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "{name}: sent"
+        );
+
+        // The window's frames, one for each layout of the repository page under the panel.
+        let window_frames = || {
+            crate::in_frame::probe::take()
+                .iter()
+                .filter(|frame| frame.region == "repository-columns")
+                .count()
+        };
+        crate::in_frame::probe::watch();
+        review::BODY_FRAMES.set(Some(Vec::new()));
+        drop(sending);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        let asked = window_frames();
+        for _ in 0..4 {
+            crate::width_walk::frame(cx);
+        }
+        let later = window_frames();
+        crate::in_frame::probe::stop();
+        let drawn = review::BODY_FRAMES.take().expect("watched");
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.notice.clone())
+                .as_deref(),
+            Some("Pull request #203 created."),
+            "{name}"
+        );
+        let landed: Vec<_> = drawn
+            .iter()
+            .filter(|frame| frame.parts.iter().any(|(part, _)| part == "pr-203"))
+            .collect();
+        assert!(
+            asked >= 1 && later == 4 && landed.len() > later,
+            "{name}: the landing drew {asked} frames of the window by itself and the display \
+             {later} more, {} of them the body's with the row",
+            landed.len()
+        );
+        // One settled frame: every frame with the row draws the body's view, the list's and
+        // each part where the first of them did.
+        let mut settled: Vec<&review::BodyFrame> = Vec::new();
+        for frame in landed.iter().copied() {
+            let seen = |seen: &&review::BodyFrame| {
+                seen.view == frame.view && seen.pulls == frame.pulls && seen.parts == frame.parts
+            };
+            if !settled.iter().any(seen) {
+                settled.push(frame);
+            }
+        }
+        assert_eq!(
+            settled.len(),
+            1,
+            "{name}: the {} frames with the row, {asked} of the window's drawn by the landing \
+             itself, draw it in one place: its title at {:?}",
+            landed.len(),
+            settled
+                .iter()
+                .map(|frame| frame.parts.iter().find(|(part, _)| part == "pr-203"))
+                .collect::<Vec<_>>()
+        );
+        let row = panel
+            .read_with(cx, |panel, _| {
+                panel.review.buttons.kept(("github-pr", 203u64))
+            })
+            .expect("the row's title");
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let first = landed[0];
+        let part = |frame: &review::BodyFrame| {
+            frame
+                .parts
+                .iter()
+                .find(|(part, _)| part == "pr-203")
+                .map(|(_, bounds)| *bounds)
+                .expect("the row")
+        };
+        assert_eq!(
+            first.focused.as_ref(),
+            Some(&row),
+            "{name}: the row's focus"
+        );
+        assert!(
+            revealed_whole(part(first), first.view, room)
+                && revealed_whole(part(first), first.pulls, room),
+            "{name}: the first frame draws the row {:?} whole in the body {:?} and the list {:?}",
+            part(first),
+            first.view,
+            first.pulls
+        );
+        let notice = whole_in_body(cx, "github-notice", &name);
+        let card = whole_in_body(cx, "github-pr-card-203", &name);
+        let title = whole_in_body(cx, "github-pr-203", &name);
+        assert!(
+            card.top() >= notice.bottom(),
+            "{name}: the row {card:?} below the notice {notice:?}"
+        );
+        assert_ringed_whole(cx, title, &name);
+        assert_eq!(script.requests.lock().unwrap().len(), 5, "{name}");
+    }
+
+    #[gpui::test]
+    async fn a_creation_lands_in_one_frame_at_13_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_creation_lands_in_one_frame(cx, 13).await;
+    }
+
+    #[gpui::test]
+    async fn a_creation_lands_in_one_frame_at_18_pt_in_a_half_tile(cx: &mut TestAppContext) {
+        assert_a_creation_lands_in_one_frame(cx, 18).await;
     }
 
     /// The open panel with its local reads drained.
