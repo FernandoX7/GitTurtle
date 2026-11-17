@@ -28,7 +28,7 @@ The site checker validates internal links and fragments, public file hygiene, sc
 
 The homepage tour shows History first. Clicking a tab or using Left, Right, Home or End selects a screenshot and its guide. Direct fragment links such as `/#panel-stage` open the corresponding panel. With JavaScript disabled, all three figures and article links appear in order. Reduced motion uses immediate anchor scrolling. Installation commands are selectable text, with an optional copy button on compatible browsers.
 
-Each indexable page has its own canonical URL, title, description and social sharing metadata. The homepage identifies GitTurtle as the site name with WebSite JSON-LD and describes the Git client with SoftwareApplication data. Guide breadcrumbs are ordinary links and carry matching BreadcrumbList data. The sitemap uses the public domain. Visitors and search crawlers can read the complete instructions in the original HTML. The static checks catch crawler-specific rules that would block Googlebot, Bingbot or OAI-SearchBot from a canonical page.
+Each indexable page has its own canonical URL, title, description and social sharing metadata. The homepage identifies GitTurtle as the site name with WebSite JSON-LD and describes the Git client with SoftwareApplication data. Guide breadcrumbs are ordinary links and carry matching BreadcrumbList data. The sitemap uses the public domain. Visitors and search crawlers can read the complete instructions in the original HTML. The static checks catch crawler-specific rules that would block Googlebot, Bingbot, DuckDuckBot, DuckAssistBot, Yahoo Slurp or OAI-SearchBot from a canonical page.
 
 ## Content and release truth
 
