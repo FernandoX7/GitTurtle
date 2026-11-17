@@ -2873,7 +2873,7 @@ report_clipboard() {
 }
 
 check_hands() {
-  local copy paste before new
+  local copy paste copy_keys paste_keys before new
   HANDS_DONE=0 HANDS_ABSENT=no
   section l hands "the owner's two minutes"
   skip_gate || return
@@ -2913,9 +2913,17 @@ check_hands() {
   say ""
   say "Four things for you to do in the GitTurtle window that just opened. Step 1"
   say "replaces what your clipboard holds with a commit's hash."
-  ask 1 hands-copy "Click a commit in History, then press ${copy:-Omarchy's copy binding} (Omarchy's Universal copy)." \
+  # What a prompt names where a binding was not found, set here and not inside
+  # the prompts: bash reads an apostrophe in the word of "${name:-word}" as the
+  # start of a quoted stretch, and with one in each prompt the first prompt ran on
+  # into the second, so the paste was never asked for (found by the first run with
+  # a person at the prompts, 2026-11-17).
+  copy_keys=$copy paste_keys=$paste
+  [[ -n $copy_keys ]] || copy_keys="Omarchy's copy binding"
+  [[ -n $paste_keys ]] || paste_keys="Omarchy's paste binding"
+  ask 1 hands-copy "Click a commit in History, then press $copy_keys (Omarchy's Universal copy)." \
     "Did GitTurtle say that it copied?" && report_clipboard
-  ask 2 hands-paste "Click History's search field, then press ${paste:-Omarchy's paste binding} (Omarchy's Universal paste)." \
+  ask 2 hands-paste "Click History's search field, then press $paste_keys (Omarchy's Universal paste)." \
     "Is the commit's hash in the search field?"
   before=$(hypr_json clients | jq -c '[.[].address]' 2>/dev/null)
   # No picture while the picker shows: it lists the owner's folders.
