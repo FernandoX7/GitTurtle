@@ -1,0 +1,31 @@
+{
+  "checked_utc": "2026-11-18T01:13:42+00:00",
+  "origin": "https://gitturtle.com",
+  "sitemap": "https://gitturtle.com/sitemap.xml",
+  "indexable_pages": 17,
+  "docs_routes": 8,
+  "install_routes": 4,
+  "maximum_anchor_clicks_from_home": 2,
+  "user_agents": [
+    "Googlebot",
+    "bingbot",
+    "Slurp",
+    "DuckDuckBot",
+    "OAI-SearchBot",
+    "Twitterbot"
+  ],
+  "canonical_and_indexing_directives_checked": true,
+  "open_graph_and_x_metadata_checked": true,
+  "unique_descriptions": 17,
+  "robots_sha256": "e919a653bd573c5790916f8eb8084461349fb64144aeeefbba6b8eb059bb1a49",
+  "sitemap_sha256": "1f22236ce8bebd7d0aec893dca544c89c5a563a9f495fec21ba0d30b18c81b4b",
+  "card": {
+    "url": "https://gitturtle.com/assets/gitturtle-social.png",
+    "mime_type": "image/png",
+    "width": 1200,
+    "height": 630,
+    "bytes": 295959,
+    "sha256": "cd8e0958362781d06cbbae80b81a37c7874cb0f229196c54d02db16d6cacd476"
+  },
+  "method": "Direct HTTP GET with the named user-agent strings. Parsed initial HTML and followed ordinary links without JavaScript. No search engine indexing or third-party unfurl was observed."
+}
