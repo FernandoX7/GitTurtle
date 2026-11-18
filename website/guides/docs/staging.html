@@ -1,0 +1,18 @@
+<!-- title: Stage and commit -->
+<!-- description: Build a commit from whole files, individual hunks, or selected lines, then review the exact staged snapshot. -->
+<h2 id="select">Choose what to stage</h2>
+<p>Open <strong>Working Changes</strong>. The unstaged list shows changes in your working files. The staged list shows what the next commit will contain. A file appears in both when you edit it again after staging it.</p>
+<ol>
+  <li>Select an unstaged file to inspect its diff. To stage the whole file, use the file’s stage action. Command-click on macOS or Ctrl-click on Linux toggles individual files. Shift-click extends the range.</li>
+  <li>To include one group of related lines, choose <strong>Stage hunk</strong>. For finer control, check the changed lines you want, then choose <strong>Stage N lines</strong>. With the keyboard, move the caret or select lines with Shift and the arrows, press Space, then Tab to the action.</li>
+  <li>Select the file in the staged list to inspect the result. Use <strong>Unstage</strong> to return a file, hunk or eligible lines to the unstaged side. The working file keeps its edits.</li>
+</ol>
+<figure><a class="screenshot-link" data-screenshot="Stage" href="/assets/changes.png"><img src="/assets/changes.png" width="2960" height="1946" alt="Working Changes showing selectable lines, a Stage hunk control, staged files and a commit message." loading="lazy"><span class="expand-shot">Full size</span></a><figcaption>The working-file diff and staged list let you check exactly what will enter the commit.</figcaption></figure>
+<p>Partial staging needs the original text patch. If you hid whitespace or expanded review context, choose <strong>Reset review</strong> to restore it. Binary files, renames, filtered files and mode changes use whole-file staging. Filtering the file list disables all-files actions.</p>
+<h2 id="commit">Commit the staged snapshot</h2>
+<p>Enter a commit title and an optional description. Check the staged file count, then choose <strong>Commit</strong>. Unstaged edits stay in the working tree. A failed commit retains your draft for this worktree. If Git reports an identity, signing or hook failure, resolve that message and review the staged files before trying again.</p>
+<h2 id="remotes">Send your branch to a remote</h2>
+<p>Use the current-branch menu to switch or create a branch. <strong>Targets</strong> shows the selected remote and destination branch. <strong>Fetch</strong> updates remote-tracking refs, <strong>Pull</strong> accepts fast-forward changes, and <strong>Push</strong> publishes your current local branch to the chosen destination. Its first successful push sets the upstream. Each operation starts from your explicit action.</p>
+<h2 id="housekeeping">Ignore or discard a change</h2>
+<p>To ignore an untracked item, open its row menu and choose <strong>Ignore…</strong>. Check the proposed rule and destination. A shared <code>.gitignore</code> edit stays unstaged. A local exclude applies to your checkout. To remove edits, <strong>Discard changes…</strong> reviews the affected path and whether staged, unstaged or both sets of changes would disappear. Git cannot recover discarded uncommitted content.</p>
+<p><a href="/docs/worktrees-and-recovery/">Save work for later or recover a commit →</a></p>

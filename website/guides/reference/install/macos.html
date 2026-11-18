@@ -1,0 +1,22 @@
+<!-- title: Install on macOS -->
+<!-- description: Build an Apple Silicon app with Xcode and open your first repository in GitTurtle. -->
+<h2 id="tools">Prepare your Mac</h2>
+<p>Use an Apple Silicon Mac, Python 3.11 or later, Git, <a href="https://rustup.rs/">Rust through rustup</a> and full Xcode 26 or later. Open Xcode once to finish setup. In Xcode’s settings, select its Command Line Tools and install the Metal Toolchain component.</p>
+<pre><code>uname -m
+python3 --version
+xcodebuild -version
+xcrun metal --version</code></pre>
+<p>The first command should print <code>arm64</code>. The packager builds for Apple Silicon only.</p>
+<h2 id="clone">Clone the project</h2>
+<pre><code>git clone https://github.com/FernandoX7/GitTurtle.git
+cd GitTurtle
+rustup show active-toolchain</code></pre>
+<p>Run these commands from your development folder. Inside the clone, rustup selects the project’s Rust 1.99.0 toolchain. Keep the checkout and its lockfile together.</p>
+<h2 id="build">Build and open the app</h2>
+<pre><code>./scripts/package-macos.sh
+open dist/GitTurtle.app</code></pre>
+<p>The packager compiles the release executable, adds the app icon and license files, then signs the bundle locally. This development app uses an ad-hoc signature and has no notarization. In Projects, open a local Git repository or linked worktree.</p>
+<h2 id="verify">Check the build</h2>
+<pre><code>codesign --verify --deep --strict dist/GitTurtle.app
+dist/GitTurtle.app/Contents/MacOS/gitturtle --build-info</code></pre>
+<p>If Metal cannot be found, finish installing the Metal Toolchain in the selected Xcode and check <code>xcrun metal --version</code> again. Continue to <a href="/docs/first-repository/">your first repository</a>, <a href="/support/">get help</a> or <a href="/install/">choose another platform</a>.</p>

@@ -66,7 +66,7 @@ The scoped website CI job runs the local static checks and JavaScript syntax
 validation when website files change. It has read-only repository permissions,
 pinned Actions and no Cloudflare credentials. Deployments remain explicit.
 
-1. Run `python3 website/check.py` and `node --check website/public/site.js`.
+1. Run the [local website checks](README.md#preview-and-validate-locally).
 2. Review the affected page in a browser, including mobile and keyboard behavior.
 3. Commit the reviewed files and deploy through the [recorded Pages procedure](README.md#publish-an-update).
 4. Run `python3 website/smoke.py` against the canonical domain. This makes bounded,

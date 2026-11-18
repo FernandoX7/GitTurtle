@@ -1,0 +1,18 @@
+<!-- title: GitHub pull requests -->
+<!-- description: Connect your account, inspect changed files, and collect review comments before submitting them. -->
+<h2 id="connect">Connect GitHub.com</h2>
+<p>Open <strong>Pull requests</strong> in the repository header. Opening the panel reads your local remotes and saved drafts. To connect, use <strong>Copy sign-in command</strong> and run the command in a terminal with GitHub CLI installed.</p>
+<pre><code>gh auth login --hostname github.com --web --skip-ssh-key</code></pre>
+<p>Complete the browser sign-in, then choose <strong>Connect GitHub CLI account</strong> in GitTurtle. The authorization is stored in macOS Keychain or the Linux desktop keyring. On Omarchy 4.5, a live check covered connecting the account, opening a pull request, disconnecting and reconnecting through the desktop keyring.</p>
+<h2 id="inspect">Inspect a pull request</h2>
+<p>Check the GitHub owner and repository, then choose <strong>Refresh PRs</strong>. Select a pull request to load its overview, head and base, checks, files and conversations. <strong>Files</strong> shows the changed-file list. Select a file to inspect GitHub’s patch. A missing or truncated patch can limit which lines accept a comment.</p>
+<h2 id="review">Collect and send a review</h2>
+<ol>
+  <li>Click a changed line. For a supported range on the same side, Shift-click or use Shift with the arrow keys. Choose <strong>Comment on selection</strong> or press Enter.</li>
+  <li>Write your feedback and choose <strong>Add to review</strong>. Repeat on other files. The collected comments stay local and retain their original positions.</li>
+  <li>In <strong>Review</strong>, check the comments and choose <strong>Comment</strong>, <strong>Approve</strong> or <strong>Request changes</strong>. A change request needs a summary. Review the destination account, repository, pull request and revision identities before <strong>Send to GitHub</strong>.</li>
+</ol>
+<p>If the head moves, inspect the new revision and reconsider the saved positions. GitTurtle retains the original draft. If a send times out with an uncertain result, check the pull request for your review before submitting again.</p>
+<h2 id="create">Create a pull request</h2>
+<p><a href="/docs/staging/#remotes">Push the head branch</a> first. In the new pull request form, select the published head and destination base, enter a title and description, and choose Draft or Ready. <strong>Review outbound action…</strong> resolves both branches. Read the confirmation and choose <strong>Send to GitHub</strong>. A successful create shows the pull request number. If GitHub reports an existing pull request for the head, open the matching one or refresh the list.</p>
+<p>Creation supports a fork head written as <code>owner:branch</code> when the fork and destination share the repository name. GitHub decides whether the connected account can submit a given action.</p>

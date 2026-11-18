@@ -1,0 +1,22 @@
+<!-- title: Install on Arch and Omarchy -->
+<!-- description: Build GitTurtle for your x86-64 or AArch64 Linux machine and install it under your own account. -->
+<h2 id="tools">Install the build tools</h2>
+<p>On Omarchy, the desktop already supplies the graphics, font and windowing libraries. Add the tools used by GitTurtle’s build and packager.</p>
+<pre><code>sudo pacman -S --needed rustup python-pillow cmake</code></pre>
+<p>On another Arch installation, also install the following packages, the Vulkan driver for your GPU and a FileChooser portal backend for your desktop. For example, GNOME uses <code>xdg-desktop-portal-gnome</code>.</p>
+<pre><code>sudo pacman -S --needed git base-devel clang pkgconf desktop-file-utils \
+  fontconfig wayland libxkbcommon-x11 libx11 libxcb openssl zstd \
+  vulkan-icd-loader dav1d xdg-desktop-portal</code></pre>
+<h2 id="clone">Clone and build</h2>
+<pre><code>git clone https://github.com/FernandoX7/GitTurtle.git
+cd GitTurtle
+rustup show active-toolchain
+./scripts/package-linux.sh</code></pre>
+<p>The checkout selects Rust 1.99.0. The packager builds the optimized app for the architecture of this machine. Keep <code>dav1d</code> installed after the build because the executable links to its shared library.</p>
+<h2 id="install">Install and launch</h2>
+<pre><code>python3 dist/gitturtle-linux-$(uname -m)/install.py
+"$HOME/.local/bin/gitturtle" --build-info</code></pre>
+<p>Run the installer as your regular user. It checks the bundle and installs the app, icons and launcher. Open <strong>GitTurtle</strong> in the applications menu, then open a local repository. You can also pass its path to <code>~/.local/bin/gitturtle</code>.</p>
+<h2 id="desktop">On your Omarchy desktop</h2>
+<p>The first launch follows the desktop’s theme and monospace font. Tile or float the native Wayland window in Hyprland. Press <kbd>Ctrl</kbd> + <kbd>Q</kbd> to quit. <a href="/docs/omarchy-and-themes/">Explore Omarchy integration</a> or check <a href="/releases/#coverage">tested platforms</a>.</p>
+<p>For a missing library or file picker, see <a href="/support/#linux">Linux troubleshooting</a>. Other systems have their own <a href="/install/">installation guides</a>.</p>
