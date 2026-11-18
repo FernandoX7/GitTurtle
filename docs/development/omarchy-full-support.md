@@ -1005,6 +1005,12 @@ cover current upstream x86-64 Omarchy.
    [product rules](../../AGENTS.md) forbid today. Owner decision, 2026-10-26: updates
    and update checks are a later feature, after the app itself is done; they are not
    part of this plan.
+   Owner decision, 2026-11-18, which supersedes that one for the first release: the
+   first public release waits until automatic updating is built in, on Linux and on
+   macOS, so that the first build anyone downloads already updates itself. No tag and
+   no publication before then. It gets its own plan, written after the CI/CD
+   clean-up, and that plan decides how the product rule on network actions without
+   user interaction is amended, which is the owner's to approve.
 5. **Current upstream verification.** On x86-64 Omarchy v4.0.6 and the 4.5 release
    candidate:
    - install;
