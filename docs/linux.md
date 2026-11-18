@@ -251,9 +251,16 @@ creating, switching and deleting a branch, and fetch, pull and push over
 [Git writes record](validation.md#september-30-git-writes-and-network-actions-on-omarchy).
 More than one monitor and a physical HiDPI panel have no recorded check yet; see
 the [validation record](validation.md#september-27-omarchy-and-hyprland).
-Omarchy 4.5 on x86-64 has no recorded check yet;
+Omarchy 4.5 on x86-64 was checked on 2026-11-17 with the CI-built archive, on
+an AMD laptop at 1,366 × 768: installation, the `gitturtle-bin` package build,
+a first launch, 23 stock themes live, the desktop font, tiled, floating and
+half-width windows, scale 2, and by hand Super+C, Super+V and the folder
+picker; see the
+[x86-64 record](validation.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop).
+That panel takes no fractional scale, so 1.25 and 1.5 have no record on
+Omarchy 4.5 for x86-64.
 [Omarchy on Apple Silicon](#omarchy-on-apple-silicon-aarch64) says what has
-run on Omarchy 4.5, and
+run on Omarchy 4.5 there, and
 [Check a build on an Omarchy machine](#check-a-build-on-an-omarchy-machine)
 is the one command that makes that check.
 
@@ -501,7 +508,8 @@ before the archive is checked. It never runs as root and makes no network
 request. Its one use of sudo is the question Omarchy's own command asks,
 `sudo -n -l`, which elevates nothing, runs no command and never prompts, to
 learn whether that sudo rule exists; the plan says when it was asked. Besides
-the changes above it writes only under its results directory, and it leaves an
+the changes above and, with `--hands`, the clipboard, it writes only under its
+results directory, and it leaves an
 installed GitTurtle and its settings alone: the installer gets a disposable
 home and the app a new `XDG_CONFIG_HOME`. It ends only processes it started:
 the app it started is ended before another is started, and all of them are
@@ -527,10 +535,19 @@ any other name stops the run before anything runs (exit 2). It is for a run in
 stages, or a second run of only what failed. `--hands` adds
 four prompts at the end for Omarchy's copy and paste bindings and the folder
 picker; that part runs beside your terminal, on the workspace you started
-from. Each prompt takes a picture when you press Enter, except the third,
-which takes none because the folder picker lists your folders; a prompt left
-unanswered, or without its picture, is reported as not covered. `--help` has
-the rest. No x86-64 run is recorded yet.
+from. It replaces what your clipboard holds and does not put it back: the
+script first puts a line of its own there, offered as sensitive so that
+Omarchy's clipboard history leaves it out; the first prompt asks no question
+because the clipboard answers it; the hash you copy is in that history like
+any copy of yours; and a line still there at the end is cleared. Each prompt
+takes a picture when you press Enter, except the third, which takes none
+because the folder picker lists your folders, and the second, which is
+pictured only while the clipboard holds a demo commit's hash or the script's
+own line, as the last then is too, because the search field still shows the
+paste; a prompt left unanswered, or without its picture, is reported as not
+covered. `--help` has
+the rest. The first x86-64 run is the
+[November 17 record](validation.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop).
 
 ### Omarchy on Apple Silicon (AArch64)
 

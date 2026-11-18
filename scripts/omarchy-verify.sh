@@ -166,7 +166,8 @@ it, and its .manifest.json and ci-provenance.json are read when they do.
                          (see below)
   --yes                  do not wait for Enter before starting
   --hands                end with four prompts for you: Omarchy's copy and paste
-                         bindings and the folder picker (about two minutes)
+                         bindings and the folder picker (about two minutes); it
+                         replaces what your clipboard holds (see Clipboard)
   --font NAME            the font the font check sets (default: the first other
                          family that omarchy-font-list names)
   --keep-work            keep DIR/work (the extraction, the disposable home, the demo
@@ -199,8 +200,9 @@ refused to start or was given an option or a --skip name it does not know.
   inactive  a terminal takes the focus while GitTurtle is pictured inactive
   rest      CPU time over 30 s and threads; closed through Hyprland; gone within
             2 s; no core dump and no crash line in the user journal
-  hands     with --hands: the copy and paste bindings, the folder picker, Cancel
-            (prompt 3 takes no picture: the folder picker lists your folders)
+  hands     with --hands: the copy binding, which the clipboard answers for (see
+            Clipboard), the paste binding, the folder picker, Cancel (prompt 3
+            takes no picture: the folder picker lists your folders)
 
 The desktop part (launch to hands) moves to a workspace that holds no window, opens
 GitTurtle and one terminal window there, and changes, with Omarchy's and Hyprland's
@@ -262,6 +264,37 @@ compared by size and checksum. Where the first two are the same, the check ends
 believes it was on; it also says whether the third is the same file as the
 first. The checks after the font check picture the window on the view that check
 left it on, and each says which.
+Clipboard: only --hands touches it. What it held before is not put back and is
+never written down: the report says about the clipboard only what this paragraph
+names. Before its first prompt the script puts a line of its own there
+("gitturtle-omarchy-check: nothing has been copied yet") and reads it back. That
+line is offered as sensitive (wl-copy --sensitive), so Omarchy's clipboard
+history leaves it out, and it is never offered in any other way: where wl-copy
+does not take the option, the line is not put there. The hash you copy in step
+1 is in that history like any copy of yours. The first prompt asks you to copy
+a commit and asks no question: once you press Enter and the picture is taken,
+the clipboard answers. The full hash of a commit of the demo repository is the
+copy, reported with that commit's subject line; the script's own line still
+there means that nothing was copied; anything else is a problem too. Only that
+much of what the clipboard holds is ever written down.
+Where the line could not be put there and read back, the clipboard is not known
+to work: the prompt is still asked, and a hash found afterwards proves nothing
+(the demo repository's hashes are the same on every run, so it may be an earlier
+copy) and neither does other text, so both are reported as not covered; only the
+script's own line, found there after all, still means that nothing was copied.
+Where wl-copy or wl-paste is not installed the clipboard cannot answer: the
+prompt is still asked and reported as not covered.
+The second prompt pastes what the clipboard holds into History's search field,
+so its picture is taken only while the clipboard holds the full hash of a commit
+of the demo repository or the script's own line. With anything else there, with
+nothing that reads as text, or without wl-paste, that picture is withheld: the
+report says so and never what was there, the question is still asked, and the
+prompt is reported as not covered. The last prompt's picture is then withheld
+too, in the same way and for the same reason: the search field may still show
+what was pasted.
+When the hands check ends, after a stop too, a clipboard that still holds the
+script's line is cleared and one that holds anything else is left alone; after a
+kill the script could not catch, copying anything replaces the line.
 A kill the script cannot catch (kill -9) or a power loss leaves the desktop as the
 step in progress had it. Before the first change the script prints where the
 starting state is written (records/desktop-start.txt, and work/restore under the
@@ -855,7 +888,12 @@ show_plan_and_wait() {
     else
       say "  - GitTurtle rests for $REST_SECONDS s and is closed."
     fi
-    say "Everything is put back as it was found: workspace, theme and wallpaper, the"
+    if [[ $HANDS == no ]] || skip_named hands; then
+      say "Everything is put back as it was found: workspace, theme and wallpaper, the"
+    else
+      say "What your clipboard holds is not put back: the prompts at the end (--hands) replace it."
+      say "Everything else is put back as it was found: workspace, theme and wallpaper, the"
+    fi
     say "toggles, font and the files omarchy-font-set rewrites, scale, tiling, focus,"
     say "notifications and idle. A picture of GitTurtle's own window is taken at each"
     say "step, never of the screen, and only while nothing else overlaps the window, the"
@@ -2823,11 +2861,14 @@ report_crashes() {
 binding_keys() {
   sed -n "s/^o\\.bind(\"\\([^\"]*\\)\", \"$1\".*/\\1/p" "$OMARCHY_PATH/default/hypr/bindings/clipboard.lua" 2>/dev/null | head -n 1
 }
-# One prompt: what to do, Enter, a picture unless PICTURE is "-", then y or n.
-# A prompt counts as done only with its answer and, where it takes one, its picture;
-# otherwise it is a part the check did not cover (HANDS_DONE stays as it was).
-ask() { # NUMBER PICTURE DO QUESTION
-  local answer="" pictured=yes
+# The first half of every prompt: what to do, Enter, then a picture unless
+# PICTURE is "-". ALLOWED, where a prompt gives one, is asked after the Enter
+# whether the picture may be taken. Status 0 with the Enter and the picture, 2
+# with the Enter but without the picture, 3 with the Enter where ALLOWED withheld
+# the picture, and 1 when the prompt was not asked or no Enter came, after which
+# no later prompt is asked.
+await_enter() { # NUMBER PICTURE DO [ALLOWED]
+  local enter=""
   if [[ $HANDS_ABSENT == yes ]]; then
     uncovered "hands $1: not asked, the prompt before it went unanswered"
     return 1
@@ -2835,13 +2876,26 @@ ask() { # NUMBER PICTURE DO QUESTION
   say ""
   say "[$1/4] $3"
   printf '      Press Enter here when that is done: '
-  if ! read -r -u 3 -t "$ANSWER_WAIT" answer; then
+  if ! read -r -u 3 -t "$ANSWER_WAIT" enter; then
     HANDS_ABSENT=yes
     uncovered "hands $1: no Enter within $ANSWER_WAIT s"
     return 1
   fi
-  [[ $2 == - ]] || picture "$2" || pictured=no
-  answer=""
+  [[ $2 != - ]] || return 0
+  [[ -z ${4:-} ]] || "$4" || return 3
+  picture "$2" || return 2
+}
+# One prompt: what to do, Enter, a picture unless PICTURE is "-", then y or n.
+# A prompt counts as done only with its answer and, where it takes one, its picture;
+# otherwise it is a part the check did not cover (HANDS_DONE stays as it was).
+ask() { # NUMBER PICTURE DO QUESTION [ALLOWED]
+  local answer="" unpictured=""
+  await_enter "$1" "$2" "$3" "${5:-}"
+  case $? in
+    1) return 1 ;;
+    2) unpictured="its picture could not be taken" ;;
+    3) unpictured="its picture was withheld, for the reason reported above" ;;
+  esac
   while [[ $answer != y && $answer != n ]]; do
     printf '      %s [y/n]: ' "$4"
     read -r -u 3 -t "$ANSWER_WAIT" answer || {
@@ -2853,28 +2907,160 @@ ask() { # NUMBER PICTURE DO QUESTION
   report "hands $1: $3 | $4 $answer"
   if [[ $answer != y ]]; then
     problem "hands $1: answered n: $4"
-  elif [[ $pictured == no ]]; then
-    uncovered "hands $1: answered y, but its picture could not be taken"
+  elif [[ -n $unpictured ]]; then
+    uncovered "hands $1: answered y, but $unpictured"
     return 1
   fi
   HANDS_DONE=$((HANDS_DONE + 1))
 }
-# Says only whether the clipboard holds a commit of the demo repository; nothing
-# else that it may hold is ever written down.
-report_clipboard() {
-  local text
-  have wl-paste || return 0
-  text=$(timeout 3 wl-paste --no-newline 2>/dev/null | head -c 64)
-  if [[ $text =~ ^[0-9a-f]{40}$ ]] && git -C "$DEMO" cat-file -e "$text^{commit}" 2>/dev/null; then
-    report "hands 1: the clipboard holds the full hash of a commit of the demo repository"
-  else
-    report "hands 1: the clipboard does NOT hold the full hash of a commit of the demo repository"
+
+# --- the clipboard: it answers prompt 1, which asks the person no question
+# GitTurtle shows a person nothing when a commit is copied from a list with the
+# keyboard, so "did it say that it copied?" has one true answer, no, on a copy
+# that worked; and a hash on the clipboard proves no copy by itself, because the
+# demo repository's hashes are the same on every run (both found by the first
+# runs with a person at the prompts, 2026-11-17). So before prompt 1 the check
+# puts this line on the clipboard: it says what it is to anyone who pastes it, it
+# can never be read as a hash, and a hash found in its place after the prompt
+# was copied at that prompt.
+readonly CLIPBOARD_MARKER="gitturtle-omarchy-check: nothing has been copied yet"
+# The start of what the clipboard holds as text: compared, and never written down.
+clipboard_text() { timeout 3 wl-paste --no-newline 2>/dev/null | head -c 64 | tr -d '\0'; }
+# wl-copy leaves a process behind that serves the clipboard until something else
+# is copied. It gets nothing of this script's to hold open, neither its output
+# nor the terminal of the answers, and a time limit, as wl-paste has.
+# Omarchy's shell writes every copy into its clipboard history, a file that
+# clearing the clipboard does not take it out of, and leaves out only a copy that
+# is offered as sensitive. So the marker is offered with --sensitive, always: where
+# wl-copy does not take the option the marker is not set, and nothing is copied
+# without it. The hash the person copies at prompt 1 is their copy, made by the
+# app, and is in that history like any other copy of theirs.
+set_clipboard() { timeout 3 wl-copy "$@" </dev/null >/dev/null 2>&1 3<&-; }
+# Puts the marker on the clipboard and reads it back: status 0 when it is there,
+# 1 when it could not be put there or did not read back, and 2, with nothing run,
+# when wl-copy or wl-paste is not installed.
+mark_clipboard() {
+  have wl-copy && have wl-paste || return 2
+  set_clipboard --sensitive -- "$CLIPBOARD_MARKER"
+  [[ $(clipboard_text) == "$CLIPBOARD_MARKER" ]]
+}
+# The restore of mark_clipboard, for every way the hands check can end: a
+# clipboard that still holds the marker is cleared, and one that holds anything
+# else, the copied hash or what the owner has copied since, is left as it is.
+# What the clipboard held before the check is never written down and is not put
+# back; where the marker could be set, it was not even read.
+clear_clipboard_marker() {
+  have wl-copy && have wl-paste || return 0
+  if [[ $(clipboard_text) != "$CLIPBOARD_MARKER" ]]; then
+    report "restore clipboard: it does not hold this check's own line, and is left as it is"
+    return 0
   fi
+  set_clipboard --clear
+  if [[ $(clipboard_text) == "$CLIPBOARD_MARKER" ]]; then
+    restore_failed "the clipboard: it still holds this check's own line, which copying anything replaces"
+  else
+    report "restore clipboard: this check's own line was cleared from it"
+  fi
+}
+# Git on the demo repository, with no setting of the owner's and no lock taken.
+demo_git() { env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 git -C "$DEMO" "$@"; }
+# True when TEXT is the full hash of a commit of the demo repository.
+demo_commit() { [[ $1 =~ ^[0-9a-f]{40}$ ]] && demo_git cat-file -e "$1^{commit}" 2>/dev/null; }
+# Prompt 2's ALLOWED. The prompt pastes what the clipboard holds into History's
+# search field, and its picture is packed into the results the owner sends back.
+# Where the copy of prompt 1 did not happen, that is whatever the clipboard held,
+# the owner's own text. So the picture is taken only while the clipboard holds
+# what this check knows: the full hash of a commit of the demo repository, or the
+# marker. With anything else there, with nothing that reads as text, or without
+# wl-paste, the picture is withheld and the report says so, never what was
+# there: what is read here is compared and never written down.
+paste_may_be_pictured() {
+  local text=""
+  ! have wl-paste || text=$(clipboard_text)
+  if [[ $text == "$CLIPBOARD_MARKER" ]] || demo_commit "$text"; then
+    return 0
+  fi
+  PASTE_WITHHELD=yes
+  if [[ -n $text ]]; then
+    report "hands 2: its picture was withheld: the clipboard holds something this check did not put there, which the paste would show"
+  else
+    report "hands 2: its picture was withheld: the clipboard could not be read as text, so what the paste would show is not known to be this check's"
+  fi
+  return 1
+}
+# Prompt 4's ALLOWED. What was pasted at prompt 2 stays in History's search field:
+# GitTurtle empties it only on Escape or Clear search, and a cancelled folder
+# picker changes nothing, so prompt 4 pictures the same text. Where prompt 2's
+# picture was withheld (PASTE_WITHHELD, which check_hands starts at no), this one
+# is too. The clipboard is not read again: what matters is what was pasted then,
+# not what the clipboard holds by now.
+search_field_may_be_pictured() {
+  [[ $PASTE_WITHHELD == yes ]] || return 0
+  report "hands 4: its picture was withheld: History's search field may still show what was pasted at prompt 2"
+  return 1
+}
+# Prompt 1's answer, read from the clipboard after the prompt's Enter and picture.
+# Of what the clipboard holds, only this is ever written down: whether it is the
+# full hash of a commit of the demo repository, whether it is the marker, and for
+# a commit its subject line, which is the demo's own text and names the row to
+# look for in the picture. Nothing else that it may hold is written anywhere.
+# The copy counts as done (HANDS_DONE) only for such a hash found after the
+# marker was known to be in place (MARKED yes), and only with its picture. The
+# marker still there is a problem however it got there; anything else is a
+# problem only with MARKED yes, and otherwise a part the check did not cover.
+report_clipboard() { # DO MARKED PICTURED
+  local text
+  if [[ $2 == absent ]]; then
+    report "hands 1: $1 | the clipboard was not read"
+    uncovered "hands 1: wl-copy or wl-paste is not installed, so nothing tells whether a commit was copied"
+    return 1
+  fi
+  text=$(clipboard_text)
+  if [[ $text == "$CLIPBOARD_MARKER" ]]; then
+    report "hands 1: $1 | the clipboard still holds this check's own line"
+    problem "hands 1: nothing was copied: the clipboard still holds the line this check put on it before the prompt"
+    return 1
+  fi
+  if ! demo_commit "$text"; then
+    if [[ $2 == yes ]]; then
+      report "hands 1: $1 | the clipboard holds neither a commit of the demo repository nor this check's own line"
+      problem "hands 1: the clipboard holds neither the full hash of a commit of the demo repository nor this check's own line"
+    else
+      # The marker was not known to be in place: a clipboard that did not take a
+      # line and give it back is not known to work, and what a tool failed to do
+      # is not reported as the app's.
+      report "hands 1: $1 | the clipboard read as neither a commit of the demo repository nor this check's own line"
+      uncovered "hands 1: the clipboard read as neither the full hash of a commit of the demo repository nor this check's own line, but that line could not be put on it and read back before the prompt, so the clipboard is not known to work here"
+    fi
+    return 1
+  fi
+  report "hands 1: $1 | the clipboard holds the full hash of a commit of the demo repository: \"$(demo_git log -1 --format=%s "$text" 2>/dev/null)\""
+  if [[ $2 != yes ]]; then
+    uncovered "hands 1: that hash may be from a copy made before the prompt: this check's own line could not be put on the clipboard first"
+    return 1
+  fi
+  if [[ $3 != yes ]]; then
+    uncovered "hands 1: a commit was copied, but its picture could not be taken"
+    return 1
+  fi
+  HANDS_DONE=$((HANDS_DONE + 1))
+}
+# Prompt 1: what to do, Enter and the picture, as every prompt has them; then no
+# question, because the clipboard answers. MARKED is what mark_clipboard found:
+# yes, no or absent.
+ask_copy() { # PICTURE DO MARKED
+  local pictured=yes
+  await_enter 1 "$1" "$2"
+  case $? in
+    1) return 1 ;;
+    2) pictured=no ;;
+  esac
+  report_clipboard "$2" "$3" "$pictured"
 }
 
 check_hands() {
-  local copy paste before new
-  HANDS_DONE=0 HANDS_ABSENT=no
+  local copy paste copy_keys paste_keys before new marked
+  HANDS_DONE=0 HANDS_ABSENT=no PASTE_WITHHELD=no
   section l hands "the owner's two minutes"
   skip_gate || return
   if [[ $HANDS == no ]]; then
@@ -2910,13 +3096,50 @@ check_hands() {
   paste=$(binding_keys "Universal paste")
   report "bindings, from $OMARCHY_PATH/default/hypr/bindings/clipboard.lua: copy \"${copy:-not found}\", paste \"${paste:-not found}\""
   report "hands: GitTurtle is open beside this terminal, on the workspace the run started from; a picture is taken only while no other window overlaps GitTurtle's"
+  # The marker goes on the clipboard before prompt 1 is printed, and its restore
+  # is registered before that, as every change's is.
+  register_restore clear_clipboard_marker
+  mark_clipboard
+  case $? in
+    0)
+      marked=yes
+      report "hands: the clipboard holds a line of this check's own, \"$CLIPBOARD_MARKER\", so a hash found on it after prompt 1 was copied at that prompt"
+      ;;
+    1)
+      marked=no
+      report "hands: this check's own line could not be put on the clipboard and read back, so a hash found on it after prompt 1 may be from an earlier copy"
+      ;;
+    *)
+      marked=absent
+      report "hands: wl-copy or wl-paste is not installed, so the clipboard cannot answer prompt 1"
+      ;;
+  esac
   say ""
-  say "Four things for you to do in the GitTurtle window that just opened. Step 1"
-  say "replaces what your clipboard holds with a commit's hash."
-  ask 1 hands-copy "Click a commit in History, then press ${copy:-Omarchy's copy binding} (Omarchy's Universal copy)." \
-    "Did GitTurtle say that it copied?" && report_clipboard
-  ask 2 hands-paste "Click History's search field, then press ${paste:-Omarchy's paste binding} (Omarchy's Universal paste)." \
-    "Is the commit's hash in the search field?"
+  if [[ $marked == yes ]]; then
+    say "Four things for you to do in the GitTurtle window that just opened. What your"
+    say "clipboard held is gone: this check has just put a line of its own there,"
+    say "\"$CLIPBOARD_MARKER\". Step 1 puts a commit's"
+    say "hash in its place, and the check then reads the clipboard to see which of the"
+    say "two it holds; it asks you nothing about that step. If its own line is still"
+    say "there when the check ends, the clipboard is cleared. That line was offered as"
+    say "sensitive, so Omarchy's clipboard history leaves it out; the hash you copy in"
+    say "step 1 is in that history like any copy of yours."
+  else
+    say "Four things for you to do in the GitTurtle window that just opened. Step 1"
+    say "replaces what your clipboard holds with a commit's hash, which is in Omarchy's"
+    say "clipboard history like any copy of yours."
+  fi
+  # What a prompt names where a binding was not found, set here and not inside
+  # the prompts: bash reads an apostrophe in the word of "${name:-word}" as the
+  # start of a quoted stretch, and with one in each prompt the first prompt ran on
+  # into the second, so the paste was never asked for (found by the first run with
+  # a person at the prompts, 2026-11-17).
+  copy_keys=$copy paste_keys=$paste
+  [[ -n $copy_keys ]] || copy_keys="Omarchy's copy binding"
+  [[ -n $paste_keys ]] || paste_keys="Omarchy's paste binding"
+  ask_copy hands-copy "Click a commit in History, then press $copy_keys (Omarchy's Universal copy)." "$marked"
+  ask 2 hands-paste "Click History's search field, then press $paste_keys (Omarchy's Universal paste)." \
+    "Is the commit's hash in the search field?" paste_may_be_pictured
   before=$(hypr_json clients | jq -c '[.[].address]' 2>/dev/null)
   # No picture while the picker shows: it lists the owner's folders.
   ask 3 - "Press Ctrl+O in GitTurtle (Open Repository) and leave the folder picker open." \
@@ -2924,11 +3147,12 @@ check_hands() {
   new=$(hypr_json clients | jq -r --argjson before "${before:-[]}" '[.[] | select(.address as $a | all($before[]; . != $a)) | .class] | join(", ")' 2>/dev/null)
   report "hands 3: windows opened since the prompt, by class: ${new:-none}"
   ask 4 hands-after-cancel "Press Cancel in the folder picker." \
-    "Is GitTurtle as it was before Ctrl+O (same repository, same view)?"
+    "Is GitTurtle as it was before Ctrl+O (same repository, same view)?" search_field_may_be_pictured
+  run_restore clear_clipboard_marker
   run_restore stop_app
-  # Nothing answered and nothing failed: the check did not happen.
+  # No prompt covered and nothing failed: the check did not happen.
   if ((HANDS_DONE == 0 && ${#PROBLEMS[@]} == 0)); then
-    skipped "none of the four prompts was answered with its picture (${PARTIALS[0]:-no answer})"
+    skipped "none of the four prompts was covered (${PARTIALS[0]:-no answer})"
     return
   fi
   result
