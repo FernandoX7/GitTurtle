@@ -1213,8 +1213,15 @@ Formatting has no compilation cache or native setup.
 ### Tool choice and compatible reuse
 
 The action pins
-[Swatinem/rust-cache 2.9.2](https://github.com/Swatinem/rust-cache/tree/6323deb102c322ba6fcbdcafc7e3dddab59af2b6)
-to `6323deb102c322ba6fcbdcafc7e3dddab59af2b6`, inspected September 15, 2026.
+[Swatinem/rust-cache 2.9.3](https://github.com/Swatinem/rust-cache/tree/d1527c8f67ef9af357290475d4af4b0fab8f12e0)
+to `d1527c8f67ef9af357290475d4af4b0fab8f12e0`. Version 2.9.2 (`6323deb102c322ba6fcbdcafc7e3dddab59af2b6`) was inspected on
+September 15, 2026, and the move to 2.9.3 on November 18, 2026: between the two
+commits `src/workspace.ts` and `src/save.ts` are unchanged, `src/config.ts` differs
+by one log level, and `src/cleanup.ts` awaits two nested target clean-ups and lets
+the week-old sweep, which runs only after a partial match that this action discards,
+pass every entry instead of stopping at the first. The upstream key hashes are
+unchanged; this action's own files are hashed into the key, so the first `main` run
+after the move seeds every lane cold.
 Its Node 24 implementation uses the GitHub cache service and removes nondependency
 outputs before saving. No sccache, paid runner, toolchain change or product profile
 optimization is introduced. The established action disables Cargo incremental
@@ -1224,10 +1231,10 @@ and codegen settings remain those in `Cargo.toml`.
 #### Vendored path packages
 
 The pinned implementation's
-[package selection](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/workspace.ts)
+[package selection](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/workspace.ts)
 keeps outputs only for packages whose manifest lies outside the configured
 workspace root, plus the declared members when `cache-workspace-crates` is true
-([save.ts](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/save.ts)).
+([save.ts](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/save.ts)).
 The four vendored GPUI/Mermaid patches are neither: they sit beneath the root, are
 excluded from the workspace and enter through `[patch.crates-io]`, so with the root
 at `.` they were pruned on every save whatever that flag said. They then rebuilt on
@@ -1278,7 +1285,7 @@ vendored outputs were cached. The restore record then shows
 cleanup and eviction regardless of the input, because only Quality's successful
 pushes to `main` register a save.
 
-[Upstream key construction](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/config.ts)
+[Upstream key construction](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/config.ts)
 separates OS/architecture, installed Rust compiler release/host/commit identities,
 and Cargo/Rust/native compiler flags. The local compatibility prefix additionally
 hashes:
@@ -1388,7 +1395,7 @@ run after the change seeds all four lanes cold. The AArch64 Linux release leg ad
 against the quota.
 
 The helper projects only the extracted registry package directories that pinned
-[rust-cache registry cleanup](https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/cleanup.ts)
+[rust-cache registry cleanup](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/cleanup.ts)
 removes. It preserves current `*-sys` source directories because native build
 scripts can depend on their timestamps, and counts all Git databases and checkouts.
 The [Cargo cache layout](https://doc.rust-lang.org/cargo/guide/cargo-home.html)
