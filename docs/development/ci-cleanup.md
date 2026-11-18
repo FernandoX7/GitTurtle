@@ -13,8 +13,12 @@ Two rules outrank speed, in the owner's words:
   check that needs a retry has a bug; find it.
 
 Each change is one small pull request with before and after numbers from real runs, and
-each workflow change gets a security review. Anything that needs an account, a secret or
-a bigger bill is on [the owner's list](#the-owners-list) with its monthly cost.
+each workflow change gets a security review. Anything that needs an account or a secret
+is on [the owner's list](#the-owners-list).
+
+The owner decided on 2026-11-18 that nothing is bought: this is an open-source project,
+CI runs on what GitHub gives a public repository for free, and the work is to make the
+project use that well. No paid runner, runner vendor or storage is part of this plan.
 
 ## Where the time is
 
@@ -63,12 +67,10 @@ Read from primary sources on 2026-11-18
   stays the full suite, macOS included.
 - Standard runners have 4 processors on Linux and 3 on macOS. The account runs at most
   5 macOS jobs at once across all its repositories; a full run starts 4.
-- GitHub's larger runners need an organization on a paid plan. Of the runner vendors,
-  the one the example names takes organizations only; a user account can use Namespace
-  (macOS at $0.06 a minute for 6 processors) or RunsOn (Linux only, in the owner's AWS
-  account).
-- The cache holds 8.48 of its 10 GB, so another cache family does not fit without
-  buying storage.
+- GitHub's larger runners and every runner vendor cost money, and the vendor the
+  example names takes organizations only. None is used: the plan stays on the free
+  standard runners.
+- The cache holds 8.48 of its free 10 GB, so another cache family does not fit.
 - A cancelled run leaves a failed gate on its commit, so cancellation stays off `main`.
 - nextest's `--partition slice:m/n` deals tests round-robin; nextest cannot split by
   recorded duration, and simulated from the logs it does not need to: the round-robin
@@ -83,8 +85,9 @@ runners. The targets, in order:
 1. On free runners with this account: a full pull-request run under 22 minutes at the
    median and 30 at p95 (from 42 and 54).
 2. After the tests' own set-up cost is cut: under 15 minutes at the median.
-3. With the owner's list (an organization's merge queue, more macOS capacity): feedback
-   on a pull request under 10 minutes, with the full suite in the queue before `main`.
+3. Only if the repository ever moves to a free organization, whose merge queue costs
+   nothing: feedback on a pull request under 10 minutes, with the full suite in the queue
+   before `main`.
 
 A documentation-only pull request takes 69 s today when it changes no image; it stays
 under two minutes.
@@ -97,7 +100,7 @@ under two minutes.
 | 2 | `Development tooling · macos-15`: find why its unit-test step takes 345 s against 176 s on Ubuntu, and bring the job under 5 minutes | Cut off at its 10-minute limit in 6 of 150 first attempts; it also holds a macOS lane for 9 minutes | Not started |
 | 3 | Remove the reasons for today's retries: the nextest download (failed 4 times in 150 runs; fetched on every run), the artifact download in `Rust release` (retried in 3 of 60 jobs), package installation from a mirror that was down; move the nextest pin from 0.9.146 to 0.9.152 with it | By the second rule each is a bug to find | Not started |
 | 4 | Cut what a GUI test does before it tests: the `git` processes and threads of opening a repository, and the cost of the long walks | The typical test takes twice as long on macOS as on Linux; process and thread creation is the candidate, to be measured on a hosted macOS runner first | Not started; product code, so implementer rounds with reviews |
-| 5 | A third macOS shard once change 2 frees a lane, or one build feeding several shards if a measurement shows it wins | 654 s of tests in the slowest of three shards against 959 s of two | After 1 and 2 |
+| 5 | A third macOS shard once change 2 frees a lane, or one build feeding several shards if a measurement shows it wins and it fits the free cache and artifact limits | 654 s of tests in the slowest of three shards against 959 s of two | After 1 and 2 |
 | 6 | Cache hits: measure the hit rate over more than the 10 sampled runs (68 %, 54 of 80 restores), then seed what misses; the Arch key moves with Arch's packages | A miss costs 10 to 12 minutes of compiling | Not started |
 | 7 | Cancel a superseded manual run on the same branch | 106 of the 150 runs were manual and never cancelled; never on `main` | Not started |
 | 8 | A budget for every job: its time limit set from the measured p95 with a stated margin, so growth fails a run instead of passing unseen | The suite's time nearly tripled in two weeks | After 1 to 5 |
@@ -117,12 +120,15 @@ Measured and decided against:
 
 ## The owner's list
 
-| Item | Why | Monthly cost | Recommendation |
+| Item | Why | Monthly cost | State |
 | --- | --- | --- | --- |
-| Give the development host's GitHub token the `workflow` scope (`gh auth refresh -h github.com -s workflow`) | GitHub refuses a push that changes a workflow file without it; every change above that touches `.github/workflows/` waits on it | $0 | Needed now |
-| Move the repository to a free organization | The only way to a merge queue, which would let a pull request run a narrower selection and the queue the full suite, and end the update-and-rerun cycle when several pull requests are open; it also makes the organization-only runner vendors installable | $0; the two owner-name conditions under `.github/`, the documentation's and the website's links and the package's source URL change with it, and caches seed again | Decide before the first release, while no release asset or package points at the current address; changes 1 to 11 do not depend on it |
-| Paid macOS runners (Namespace, 6 processors at $0.06 a minute) | Twice the processors of the free runner for the job that sets the wall-clock | About $1.30 to $1.50 a full run by estimate, so about $130 to $225 at 100 to 150 full runs a month; the vendor's app needs repository administration write | Not now; revisit if target 2 is missed |
-| More cache storage ($0.07 a GB a month) | Only if one build ever feeds several shards or a second cache family is adopted | $0.70 for 10 GB more | Not now |
+| Give the development host's GitHub token the `workflow` scope (`gh auth refresh -h github.com -s workflow`) | GitHub refuses a push that changes a workflow file without it; every change above that touches `.github/workflows/` waits on it | $0 | Done by the owner on 2026-11-18 |
+| Move the repository to a free organization | The only way to a merge queue, which would let a pull request run a narrower selection and the queue the full suite, and end the update-and-rerun cycle when several pull requests are open; it also makes the organization-only runner vendors installable | $0; the two owner-name conditions under `.github/`, the documentation's and the website's links and the package's source URL change with it, and caches seed again | Open, the owner's to decide; best decided before the first release, while no release asset or package points at the current address; changes 1 to 11 do not depend on it |
+
+Not on the list, by the owner's decision of 2026-11-18: paid macOS runners (a vendor's 6
+processor runner at $0.06 a minute would have been about $130 to $225 a month by
+estimate) and bought cache storage ($0.07 a GB a month). The research notes keep the
+prices as facts; the plan does not use them.
 
 ## Totals
 
@@ -131,4 +137,4 @@ Measured and decided against:
 | Full pull-request run, wall-clock, median / p95 | 42 / 54 min | to be measured |
 | Runner time per full run, median | 146 min (63 macOS) | to be measured |
 | Runs a month | about 107 (150 in 42 days) | |
-| Cost a month | $0 | $0 unless an item of the owner's list is taken |
+| Cost a month | $0 | $0 |
