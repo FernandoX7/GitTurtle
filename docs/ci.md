@@ -100,7 +100,7 @@ The actual platform work is named `Rust tests · <platform> · <shard>/2`,
 `Rust Clippy · <platform>` and `Rust release · <platform>`. The test platforms are
 `macos-15`, `ubuntu-24.04` and `archlinux`, each in [two shards](#test-shards)
 (until November 3, 2026 tests and Clippy were one `Rust tests and Clippy · <platform>`
-job, and until November 18, 2026 each platform's tests were one `Rust tests · <platform>`
+job, and until November 19, 2026 each platform's tests were one `Rust tests · <platform>`
 job). `Rust formatting` checks the workspace once on Ubuntu. The aggregate cannot pass a product change unless
 the three platform matrices, the Arch Linux matrix, formatting and other required lanes
 succeed; documentation changes may pass after
@@ -604,7 +604,7 @@ may stop before artifact upload; do not claim a missing report was retained.
 
 ### Test shards
 
-Since November 18, 2026 each platform's tests run in two jobs. `rust-debug`'s
+Since November 19, 2026 each platform's tests run in two jobs. `rust-debug`'s
 matrix is its two platforms times two shards (`Rust tests · macos-15 · 1/2`,
 `Rust tests · macos-15 · 2/2`, `Rust tests · ubuntu-24.04 · 1/2` and
 `Rust tests · ubuntu-24.04 · 2/2`), and `rust-arch` is a matrix of its two
