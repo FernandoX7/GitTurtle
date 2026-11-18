@@ -497,10 +497,14 @@ These run every test in one go. One [shard](#test-shards)'s share is the first
 command with `--partition slice:1/2` or `--partition slice:2/2` added.
 
 To check that two runs executed the same tests, download each Rust test job's
-log (`gh api repos/FernandoX7/GitTurtle/actions/jobs/<job-id>/logs`) and compare them:
+log (`gh api repos/FernandoX7/GitTurtle/actions/jobs/<job-id>/logs`) and compare them,
+one platform at a time. Each side takes one log or several taken together, so a
+platform's two [shards](#test-shards) compare with an unsharded run or with another
+run's shards:
 
 ```sh
 python3 scripts/ci/executed_tests.py compare --before cargo-test-job.log --after nextest-job.log
+python3 scripts/ci/executed_tests.py compare --before unsharded-job.log --after shard-1-job.log shard-2-job.log
 ```
 
 [`executed_tests.py`](../scripts/ci/executed_tests.py) reads libtest `Running` and
@@ -508,7 +512,15 @@ python3 scripts/ci/executed_tests.py compare --before cargo-test-job.log --after
 `PASS`/`FAIL`/`SKIP` lines. It keys each test by target kind and Cargo crate name
 (`lib:gitturtle_core history::…`, `bin:gitturtle …`, `test:worktrees_reflog …`,
 `doc:gitturtle_core …`), prints the executed and ignored counts, and lists every
-test executed or ignored on one side only. It exits non-zero when they differ, and
+test executed or ignored on one side only. Several logs of one side are united: a
+test counts as executed when any of them executed it and as ignored only when none
+did, because a shard's log marks the other shard's tests as skipped. The report then
+also gives each log's own counts. A test that no shard ran is listed under "executed
+before, not after". A test that more than one log of a side executed is listed with
+those logs under "executed in more than one after log" (or "before log") and is an
+error even when the united sets are equal, since a partition runs each test once; so
+pass each job's log as its own file, and only once. It exits non-zero on any listed
+difference and prints `identical` otherwise, and
 `list` prints the extracted set. Test output that interrupts a libtest result line
 can hide that test from the extraction; investigate any listed difference in the
 log before calling the sets different. The dated

@@ -54,6 +54,39 @@ DOCTESTS = """\
 test crates/git-core/src/lib.rs - paths::Path (line 12) ... ok
 """
 
+# The NEXTEST run's tests with the shard of `--partition slice:m/2` that runs
+# each; 0 is the test marked `#[ignore]`, which no shard runs.
+SHARDED = [
+    ("gitturtle::bin/gitturtle activity::tests::retains_nothing", 1),
+    ("gitturtle::bin/gitturtle panics::tests::rejects", 2),
+    ("gitturtle::bin/gitturtle github::transport::tests::installed_cli", 0),
+    ("gitturtle-core history::tests::pages", 1),
+    ("gitturtle-core::worktrees_reflog worktree_removal_refuses_stale_identity", 2),
+    ("gitturtle-preview mermaid::tests::no_disk_cache", 1),
+]
+REJECTS = "bin:gitturtle panics::tests::rejects"
+PAGES = "lib:gitturtle_core history::tests::pages"
+INSTALLED_CLI = "bin:gitturtle github::transport::tests::installed_cli"
+
+
+def shard_log(shard, tests=None):
+    """One shard's job log: every test of the list is there, as its result or as a SKIP line.
+
+    Shard 1's job also runs the doctests. A test's owner is a shard number or a
+    collection of them.
+    """
+    prefix = f"Rust tests · ubuntu-24.04 · {shard}/2\tLocked workspace tests with nextest\t2026-11-18T10:00:01.0000000Z [ci]"
+    lines = []
+    for test, owner in SHARDED if tests is None else tests:
+        mine = shard in (owner if isinstance(owner, tuple) else (owner,))
+        lines.append(f"{prefix}         {'PASS [   0.012s] (1/3)' if mine else 'SKIP [         ] (─────)'} {test}\n")
+    return "".join(lines) + (DOCTESTS if shard == 1 else "")
+
+
+def owned(changes):
+    """SHARDED with some tests' owners replaced, by the test's name."""
+    return [(test, changes.get(test.split()[-1], owner)) for test, owner in SHARDED]
+
 
 class ExtractionTests(unittest.TestCase):
     def test_libtest_log_keys_each_binary_and_separates_ignored_tests(self):
@@ -103,6 +136,94 @@ class ExtractionTests(unittest.TestCase):
                 status = executed_tests.main(["compare", "--before", str(paths["before"]), "--after", str(paths["before"])])
             self.assertEqual(status, 0)
             self.assertTrue(output.getvalue().endswith("identical\n"))
+
+
+class ShardTests(unittest.TestCase):
+    """One unsharded "before" log against the logs of a run's two shards, taken together."""
+
+    def compare(self, shards, *, before=NEXTEST + DOCTESTS, json_output=True):
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            paths = []
+            for name, text in {"before": before, **{f"shard-{number}": text for number, text in shards.items()}}.items():
+                paths.append(Path(directory) / f"{name}.log")
+                paths[-1].write_text(text, encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = executed_tests.main(["compare", "--before", str(paths[0]), "--after", *map(str, paths[1:]),
+                                              *(["--json"] if json_output else [])])
+            text = output.getvalue().replace(f"{directory}/", "")
+            return status, (json.loads(text) if json_output else text)
+
+    def assertNoDifference(self, result, *, but=()):
+        for key in executed_tests.DIFFERENCES:
+            if key not in but:
+                self.assertFalse(result[key], key)
+
+    def test_two_shards_taken_together_equal_the_unsharded_run(self):
+        shards = {1: shard_log(1), 2: shard_log(2)}
+        status, result = self.compare(shards)
+        self.assertEqual(status, 0)
+        self.assertNoDifference(result)
+        self.assertEqual(result["after"]["executed"], result["before"]["executed"])
+        self.assertEqual((result["after"]["executed"], result["after"]["ignored"]), (6, 1))
+        # Each log's own counts: shard 1 ran three tests and the doctest and
+        # lists the other three as skipped; shard 2 ran two and lists four.
+        self.assertEqual([(log["log"], log["executed"], log["skipped_or_ignored"]) for log in result["after"]["logs"]],
+                         [("shard-1.log", 4, 3), ("shard-2.log", 2, 4)])
+        # The libtest log of the same tests compares equal too.
+        self.assertEqual(self.compare(shards, before=CARGO_TEST)[0], 0)
+        status, text = self.compare(shards, json_output=False)
+        self.assertEqual(status, 0)
+        self.assertEqual(text, "before: 6 executed, 1 ignored\n"
+                               "after: 6 executed, 1 ignored (2 logs taken together)\n"
+                               "  shard-1.log: 4 executed, 3 skipped or ignored\n"
+                               "  shard-2.log: 2 executed, 4 skipped or ignored\n"
+                               "identical\n")
+
+    def test_a_test_no_shard_ran_is_reported_as_lost(self):
+        # The partition gave `rejects` to shard 2, and shard 2 skipped it too.
+        status, result = self.compare({1: shard_log(1), 2: shard_log(2, owned({"panics::tests::rejects": 1}))})
+        self.assertEqual(status, 1)
+        self.assertEqual(result["executed_only_before"], [REJECTS])
+        self.assertEqual(result["ignored_only_after"], [REJECTS])
+        self.assertNoDifference(result, but=("executed_only_before", "ignored_only_after"))
+        # A shard whose log is left out loses that shard's tests.
+        status, result = self.compare({1: shard_log(1)})
+        self.assertEqual(status, 1)
+        self.assertEqual(result["executed_only_before"],
+                         [REJECTS, "test:worktrees_reflog worktree_removal_refuses_stale_identity"])
+        status, text = self.compare({1: shard_log(1), 2: shard_log(2, owned({"panics::tests::rejects": 1}))},
+                                    json_output=False)
+        self.assertEqual(status, 1)
+        self.assertIn(f"executed before, not after (1):\n  {REJECTS}\n", text)
+        self.assertIn(f"ignored after, not before (1):\n  {REJECTS}\n", text)
+        self.assertTrue(text.endswith("different\n"))
+
+    def test_a_test_two_shards_ran_is_an_error_though_the_sets_are_equal(self):
+        both = owned({"history::tests::pages": (1, 2)})
+        shards = {1: shard_log(1, both), 2: shard_log(2, both)}
+        status, result = self.compare(shards)
+        self.assertEqual(status, 1)
+        self.assertEqual(result["executed_in_several_after"], {PAGES: ["shard-1.log", "shard-2.log"]})
+        self.assertNoDifference(result, but=("executed_in_several_after",))
+        self.assertEqual(result["after"]["executed"], 6)
+        status, text = self.compare(shards, json_output=False)
+        self.assertEqual(status, 1)
+        self.assertIn(f"executed in more than one after log (1):\n  {PAGES}: shard-1.log, shard-2.log\ndifferent\n", text)
+
+    def test_an_ignored_test_is_one_that_no_shard_ran(self):
+        logs = [(f"shard-{number}", executed_tests.extract(shard_log(number).splitlines())) for number in (1, 2)]
+        # Each shard's own log marks the other shard's tests as skipped as well.
+        self.assertIn(REJECTS, logs[0][1][1])
+        self.assertIn(PAGES, logs[1][1][1])
+        (executed, ignored), repeated = executed_tests.unite(logs)
+        self.assertEqual(ignored, {INSTALLED_CLI})
+        self.assertEqual((len(executed), repeated), (6, {}))
+        # A test the unsharded run ignored and a shard ran is a difference on both counts.
+        status, result = self.compare({1: shard_log(1), 2: shard_log(2, owned({"github::transport::tests::installed_cli": 2}))})
+        self.assertEqual(status, 1)
+        self.assertEqual((result["ignored_only_before"], result["executed_only_after"]), ([INSTALLED_CLI], [INSTALLED_CLI]))
+        self.assertNoDifference(result, but=("ignored_only_before", "executed_only_after"))
 
 
 if __name__ == "__main__":

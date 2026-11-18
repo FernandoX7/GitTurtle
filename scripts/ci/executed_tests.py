@@ -5,6 +5,13 @@ Accepts raw job logs (`gh api .../actions/jobs/<id>/logs`), `gh run view --log`
 output, or a diagnostics `tests.log`. Tests are keyed `<kind>:<target> <name>`,
 where kind is lib, bin, test, bench, example or doc and the target uses Cargo's
 crate spelling (`-` becomes `_`), so both runners' reports compare directly.
+
+Each side of `compare` takes one log or several taken together, one per job: the
+shards of a partitioned run (`cargo nextest run --partition slice:m/n`) are
+united before the comparison. A shard's log lists the other shards' tests as
+skipped, so a test counts as ignored only when no log of its side executed it,
+and a test that more than one log of a side executed is reported as an error:
+a partition runs each test once.
 """
 
 import argparse
@@ -72,6 +79,22 @@ def read(path):
         return extract(stream)
 
 
+def unite(logs):
+    """Take the logs of one run together: [(label, (executed, ignored))] in, one pair of sets out.
+
+    Returns the united (executed, ignored) and, for each test that more than one
+    log executed, the labels of those logs.
+    """
+    executed, ignored, ran_in = set(), set(), {}
+    for label, (run, skipped) in logs:
+        executed |= run
+        ignored |= skipped
+        for key in run:
+            ran_in.setdefault(key, []).append(label)
+    repeated = {key: ran_in[key] for key in sorted(ran_in) if len(ran_in[key]) > 1}
+    return (executed, ignored - executed), repeated
+
+
 def compare(before, after):
     (run_before, skip_before), (run_after, skip_after) = before, after
     return {
@@ -84,44 +107,73 @@ def compare(before, after):
     }
 
 
+def compare_logs(before, after):
+    """Compare a reference run's logs with a candidate run's, each side taken together."""
+    (united_before, repeated_before), (united_after, repeated_after) = unite(before), unite(after)
+    result = compare(united_before, united_after)
+    for side, logs, repeated in (("before", before, repeated_before), ("after", after, repeated_after)):
+        result[side]["logs"] = [{"log": label, "executed": len(run), "skipped_or_ignored": len(skipped)}
+                                for label, (run, skipped) in logs]
+        result[f"executed_in_several_{side}"] = repeated
+    return result
+
+
+# What each difference means, in the order it is reported.
+DIFFERENCES = {
+    "executed_only_before": "executed before, not after",
+    "executed_only_after": "executed after, not before",
+    "ignored_only_before": "ignored before, not after",
+    "ignored_only_after": "ignored after, not before",
+    "executed_in_several_before": "executed in more than one before log",
+    "executed_in_several_after": "executed in more than one after log",
+}
+
+
+def report(result):
+    """The comparison as text and whether the sides differ: counts, each difference by name, the verdict."""
+    lines = []
+    for side in ("before", "after"):
+        logs = result[side]["logs"]
+        together = f" ({len(logs)} logs taken together)" if len(logs) > 1 else ""
+        lines.append(f"{side}: {result[side]['executed']} executed, {result[side]['ignored']} ignored{together}")
+        if len(logs) > 1:
+            lines += [f"  {log['log']}: {log['executed']} executed, {log['skipped_or_ignored']} skipped or ignored"
+                      for log in logs]
+    differences = [key for key in DIFFERENCES if result[key]]
+    for key in differences:
+        lines.append(f"{DIFFERENCES[key]} ({len(result[key])}):")
+        if isinstance(result[key], dict):
+            lines += [f"  {test}: {', '.join(logs)}" for test, logs in result[key].items()]
+        else:
+            lines += [f"  {test}" for test in result[key]]
+    lines.append("different" if differences else "identical")
+    return "\n".join(lines) + "\n", bool(differences)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="print the executed and ignored tests found in logs")
     listing.add_argument("logs", nargs="+")
     difference = commands.add_parser("compare", help="report the symmetric difference; exit 1 when not identical")
-    difference.add_argument("--before", nargs="+", required=True, help="logs of the reference run")
-    difference.add_argument("--after", nargs="+", required=True, help="logs of the candidate run")
+    difference.add_argument("--before", nargs="+", required=True,
+                            help="logs of the reference run, taken together (one per job or shard)")
+    difference.add_argument("--after", nargs="+", required=True,
+                            help="logs of the candidate run, taken together (one per job or shard)")
     difference.add_argument("--json", action="store_true", help="print the full result as JSON")
     args = parser.parse_args(argv)
 
-    def union(paths):
-        executed, ignored = set(), set()
-        for path in paths:
-            run, skipped = read(path)
-            executed |= run
-            ignored |= skipped
-        return executed, ignored - executed
-
     if args.command == "list":
-        executed, ignored = union(args.logs)
+        (executed, ignored), _ = unite([(path, read(path)) for path in args.logs])
         for key in sorted(executed):
             print(f"executed {key}")
         for key in sorted(ignored):
             print(f"ignored {key}")
         return 0
-    result = compare(union(args.before), union(args.after))
-    differences = [key for key in result if key.endswith(("_before", "_after")) and result[key]]
-    if args.json:
-        print(json.dumps(result, indent=2))
-    else:
-        for side in ("before", "after"):
-            print(f"{side}: {result[side]['executed']} executed, {result[side]['ignored']} ignored")
-        for key in differences:
-            print(f"{key.replace('_', ' ')} ({len(result[key])}):")
-            print("".join(f"  {item}\n" for item in result[key]), end="")
-        print("identical" if not differences else "different")
-    return 1 if differences else 0
+    result = compare_logs(*([(path, read(path)) for path in paths] for paths in (args.before, args.after)))
+    text, different = report(result)
+    print(json.dumps(result, indent=2) if args.json else text.rstrip("\n"))
+    return 1 if different else 0
 
 
 if __name__ == "__main__":
