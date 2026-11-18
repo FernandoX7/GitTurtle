@@ -406,6 +406,17 @@ class ReconciliationTests(Comparison):
             self.assertEqual(result["unreconciled"][0],
                              f"shard-2.log: {lines}: a log holds one run, from its Starting line to its Summary line")
 
+    def test_a_count_too_long_to_be_a_count_is_refused_without_an_error(self):
+        run = ("[ci]     Starting 1 test across 1 binary\n" + self.FORGED_REJECTS
+               + "[ci]      Summary [   0.012s] 1 test run: 1 passed, 0 skipped\n")
+        self.assertEqual(extract(run)["problems"], [])
+        long = "9" * 5000
+        for old, new in (("Starting 1 test", f"Starting {long} tests"), ("] 1 test run", f"] {long} tests run"),
+                         ("1 passed", f"{long} passed"), ("0 skipped", f"{long} skipped")):
+            self.assertIn(old, run)
+            problems = extract(run.replace(old, new))["problems"]
+            self.assertTrue(any(problem.startswith("a nextest line this tool cannot read: ") for problem in problems), old)
+
     def test_a_run_that_did_not_finish_or_a_log_without_a_run_is_refused(self):
         cut = shard_log(2).split("[ci]      Summary")[0]
         result = self.assertUnreconciled({"shard-1": shard_log(1), "shard-2": cut}, [

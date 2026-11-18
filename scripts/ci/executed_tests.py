@@ -58,13 +58,15 @@ NEXTEST_RESULT = re.compile(r"^\s*(?P<status>[A-Z][A-Z0-9 +/-]*?) \[[^\]]*\] (?:
 NEXTEST_PLACE = re.compile(r"\s*\d+/\d+")
 # The loose forms find every line that claims to open or close a run; the
 # strict forms read the figures of the shapes observed.
+# A count has at most nine digits: a longer one is no count of tests, and
+# Python refuses to convert a number of thousands of digits.
 NEXTEST_STARTING = re.compile(r"^\s*Starting \d+ tests? across ")
-NEXTEST_STARTING_FIGURES = re.compile(r"^\s*Starting (?P<tests>\d+) tests? across \d+ (?:binary|binaries)"
-                                      r"(?: \((?P<skipped>\d+) tests? skipped\))?\s*$")
+NEXTEST_STARTING_FIGURES = re.compile(r"^\s*Starting (?P<tests>\d{1,9}) tests? across \d+ (?:binary|binaries)"
+                                      r"(?: \((?P<skipped>\d{1,9}) tests? skipped\))?\s*$")
 NEXTEST_SUMMARY = re.compile(r"^\s*Summary \[")
-NEXTEST_SUMMARY_FIGURES = re.compile(r"^\s*Summary \[[^\]]*\] (?P<run>\d+) tests? run: (?P<figures>\S.*?)\s*$")
+NEXTEST_SUMMARY_FIGURES = re.compile(r"^\s*Summary \[[^\]]*\] (?P<run>\d{1,9}) tests? run: (?P<figures>\S.*?)\s*$")
 # `3612 passed (2 slow), 1 failed, 27 skipped`
-NEXTEST_FIGURE = re.compile(r"(?P<count>\d+) (?P<what>[a-z]+(?: [a-z]+)*)(?: \([^()]*\))?(?:, |$)")
+NEXTEST_FIGURE = re.compile(r"(?P<count>\d{1,9}) (?P<what>[a-z]+(?: [a-z]+)*)(?: \([^()]*\))?(?:, |$)")
 KINDS = ("bin", "bench", "example", "test")
 
 

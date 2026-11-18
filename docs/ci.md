@@ -542,8 +542,13 @@ a `SLOW` progress line does not and is not a result, and the failures nextest
 repeats after the Summary line are not counted again. A result line that is
 missing, repeated or printed by a test, a second Starting or Summary line, a run
 without a Summary line and a log with no test run each leave the log unreconciled:
-the report names the log and gives both numbers, so a hidden or forged line cannot
-make two different runs compare equal. These are cargo-nextest 0.9.146's shapes,
+the report names the log and gives both numbers, so a hidden line or a forged line
+alone cannot make two different runs compare equal. Both together still can: a real
+result the tool does not count, with a forged one printed in its place, keeps every
+figure. Printing cannot remove a real result line, so that takes a test name the
+pattern cannot read or a write into nextest's own stream; the comparison is evidence
+about a run that is not trying to deceive it. A count of more than nine digits is
+refused as unreadable. These are cargo-nextest 0.9.146's shapes,
 taken from three runs of `gitturtle-preview` (unsharded, `slice:1/2` and
 `slice:2/2`) and the retained hosted logs. A Summary line in another shape is
 refused rather than guessed, and so is a log whose `PASS` and `FAIL` lines are not
