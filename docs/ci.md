@@ -643,10 +643,14 @@ the built tests at run time. The same page says "By default, each job has to do
 its own build before starting a test run", and no archive passes between these
 jobs: each shard builds every test binary of the workspace. Every shard runs the
 checkout, the packed refs, the cache restore, the nextest installation, its
-slice of the tests, the summary and the diagnostics upload. What must happen
-once per platform happens in shard 1 alone (`if: matrix.shard == 1`): the
-doctest step, the libdav1d link and initializer records (on Ubuntu and Arch) and
-the setup action's `finish` phase. Shard 2 skips the `finish` phase, the only
+slice of the tests, the summary and the diagnostics upload. Every Linux shard,
+on Ubuntu and on Arch, also prints the libdav1d link and initializer records:
+each shard's runner or container installs its own library, the two Arch
+containers upgrade separately, and the helper tests run in whichever shard the
+slice puts them, so each shard's log carries the records of the library its own
+tests met. What must happen once per platform happens in shard 1 alone
+(`if: matrix.shard == 1`): the doctest step and the setup action's `finish`
+phase. Shard 2 skips the `finish` phase, the only
 place the action registers a save, and the restore in its setup phase passes
 `save-if: false`, so like the Clippy job it can never save. Each
 platform's debug entry keeps exactly one writer, whose target directory holds
@@ -677,8 +681,8 @@ gate exactly as a failed test job did. Neither job has `continue-on-error`,
 `include` or `exclude`, and `fail-fast: false` lets the other shards finish and
 keep their diagnostics. The policy tests in
 [`test_nextest.py`](../scripts/ci/tests/test_nextest.py) hold those, the six leg
-names, the partition's form and total, what shard 1 alone runs, the artifact
-name and the 60-minute limit. The
+names, the partition's form and total, what shard 1 alone runs, the libdav1d
+records in every Linux shard, the artifact name and the 60-minute limit. The
 [release preflight](releases.md#source-package-and-privilege-boundaries) requires
 the four macOS and Ubuntu shards by name.
 

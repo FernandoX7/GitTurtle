@@ -277,20 +277,23 @@ class WorkflowPolicyTests(unittest.TestCase):
                 self.assertIn("\n      fail-fast: false\n", strategy)
                 self.assertIn(f"\n      max-parallel: {len(legs)}\n", strategy)
 
-    def test_only_shard_1_runs_the_doctests_the_libdav1d_records_and_the_cache_save(self):
+    def test_shard_1_alone_runs_the_doctests_and_the_cache_save_and_every_linux_shard_the_libdav1d_records(self):
         # A condition without a status function also requires every earlier
         # step to have succeeded, so the save still follows shard 1's tests.
         once = {"Locked workspace doctests": "matrix.shard == 1",
                 "Prepare bounded successful-main debug cache save": "matrix.shard == 1"}
         always = {"Summarize CI measurements": "always()",
                   "Preserve CI measurements and sanitized diagnostics": "always()"}
-        records = {"rust-debug": "runner.os == 'Linux' && matrix.shard == 1", "rust-arch": "matrix.shard == 1"}
+        # Each shard's runner or container installs its own libdav1d, and the
+        # helper tests run in whichever shard the slice puts them: a shard
+        # condition would leave a log without the records of the library its
+        # tests met. Only the macOS legs skip the step; the Arch job has none.
+        records = {"rust-debug": {"Print the libdav1d link and initializers": "runner.os == 'Linux'"}, "rust-arch": {}}
         for name in TEST_LEGS:
             with self.subTest(job=name):
                 job, steps = quality_job_steps(name)
                 # Every other step, the tests among them, runs in every shard.
-                self.assertEqual(step_conditions(steps),
-                                 {"Print the libdav1d link and initializers": records[name], **once, **always})
+                self.assertEqual(step_conditions(steps), {**records[name], **once, **always})
                 index = step_index(steps, {"records": "readelf -d -W", "doctests": "--name doctests ",
                                            "finish": "phase: finish"})
                 self.assertEqual([steps[position].split("\n", 1)[0] for position in index.values()],

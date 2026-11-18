@@ -188,8 +188,8 @@ jobs:
       # shared proc-macro dependency. Only doctest names contain "(line ".
       # The partition chooses among the built tests at run time, so every shard
       # builds the same targets. What must happen once per platform happens in
-      # shard 1 alone: the doctests, the libdav1d records and the finish phase,
-      # which leaves each platform's debug cache entry its single writer.
+      # shard 1 alone: the doctests and the finish phase, which leaves each
+      # platform's debug cache entry its single writer.
       - name: Locked workspace tests with nextest
         env:
           SHARD: ${{ matrix.shard }}
@@ -202,7 +202,10 @@ jobs:
         # libdav1d (NEEDED, every dav1d_* undefined), and libdav1d's DT_INIT
         # and .init_array entries with a few instructions at each. It only
         # reads ELF files; a missing pkg-config skips the library's records.
-        if: runner.os == 'Linux' && matrix.shard == 1
+        # Every Linux shard prints them: each shard's runner installs its own
+        # library and the helper tests run in whichever shard the slice puts
+        # them, so each log carries the records of the library its tests met.
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           for tool in readelf objdump; do
@@ -616,8 +619,9 @@ jobs:
           SHARDS: ${{ matrix.shards }}
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings --partition "slice:$SHARD/$SHARDS"
       - name: Print the libdav1d link and initializers
-        # The same records as in rust-debug, for Arch's libdav1d.
-        if: matrix.shard == 1
+        # The same records as in rust-debug, for Arch's libdav1d, in every
+        # shard: the two containers upgrade separately, so each prints the
+        # library its own tests met.
         run: |
           set -euo pipefail
           for tool in readelf objdump; do
