@@ -552,7 +552,11 @@ its passed and failed figures.
 `compare` prints the counts, what does not reconcile and every difference, then
 `identical`, `different` or `unreconciled`, and exits 0, 1 or 3; an unreconciled
 log exits 3 whatever the comparison says. `list` prints one line for each executed
-or ignored result. Two limits remain. Under a redacted name the tool knows how many
+or ignored result. Test names and unread lines come from logs that a pull request's
+test output can shape, so the text output escapes every character outside printable
+text (control characters, the ESC or CSI that starts a terminal sequence, invisible
+formatting characters, and the backslash so an escape stays distinct), as `--json`
+does. Two limits remain. Under a redacted name the tool knows how many
 results ran, not which: a split that ran one of those tests twice and another not
 at all has the same numbers. And libtest lines (the doctests) have no totals to
 reconcile with; test output that interrupts a libtest result line can hide that

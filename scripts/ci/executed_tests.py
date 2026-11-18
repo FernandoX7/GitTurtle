@@ -27,7 +27,9 @@ log unreconciled instead of making two different runs compare equal. Lines
 after the Summary line repeat the failures and are not counted.
 
 `compare` exits 0 when the sides are identical, 1 when they differ and 3 when a
-log does not reconcile, whatever the comparison then says.
+log does not reconcile, whatever the comparison then says. Its text report and
+`list` escape every character outside printable text, as `--json` does: the
+names come from logs that test output can shape.
 """
 
 import argparse
@@ -276,6 +278,18 @@ def per_log(counts):
     return f" ({', '.join(f'{label} {count}' for label, count in counts.items())})" if len(counts) > 1 else ""
 
 
+def printable(line):
+    """One line for a terminal: every character outside printable text, and the backslash, as an escape.
+
+    Test names and unread lines come from logs that a pull request's test
+    output can shape. C0 and C1 controls (the ESC and the CSI or OSC that start
+    a terminal sequence among them), DEL, line breaks and invisible formatting
+    characters print as `\\x1b`, `\\x9b`, `\\u202e`, as `--json` escapes them.
+    """
+    return "".join(character if character.isprintable() and character != "\\"
+                   else character.encode("unicode_escape").decode("ascii") for character in line)
+
+
 def report(result):
     """The comparison as text and its exit status: counts, what does not reconcile, each difference, the verdict."""
     lines = []
@@ -307,7 +321,8 @@ def report(result):
                 lines.append(f"  {test}: {entry['before']} before{per_log(entry.get('before_logs', {}))}, "
                              f"{entry['after']} after{per_log(entry.get('after_logs', {}))}")
     lines.append("unreconciled" if result["unreconciled"] else "different" if different else "identical")
-    return "\n".join(lines) + "\n", 3 if result["unreconciled"] else 1 if different else 0
+    # The only line breaks are the ones written here.
+    return "\n".join(map(printable, lines)) + "\n", 3 if result["unreconciled"] else 1 if different else 0
 
 
 def main(argv=None):
@@ -329,10 +344,10 @@ def main(argv=None):
         side = unite(logs)
         for state in ("executed", "ignored"):
             for key in sorted(side[state]):
-                print("\n".join([f"{state} {key}"] * side[state][key]))
+                print("\n".join([printable(f"{state} {key}")] * side[state][key]))
         problems = [f"{label}: {problem}" for label, log in logs for problem in log["problems"]] + side["problems"]
         for problem in problems:
-            print(f"unreconciled: {problem}", file=sys.stderr)
+            print(printable(f"unreconciled: {problem}"), file=sys.stderr)
         return 3 if problems else 0
     result = compare_logs(*([(path, read(path)) for path in paths] for paths in (args.before, args.after)))
     text, status = report(result)

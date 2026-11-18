@@ -601,5 +601,50 @@ class RedactedNameTests(Comparison):
         self.assertEqual(result["ignored_less_after"], {REDACTED: {"before": 1, "after": 0}})
 
 
+class TerminalTests(Comparison):
+    """Names and unread lines come from logs a pull request's test output can shape; the text report prints no control."""
+
+    # OSC 52 sets the clipboard of a terminal that reads it; then an 8-bit CSI,
+    # DEL, a right-to-left override and a backslash that must stay told apart.
+    OSC_52 = "\x1b]52;c;cm0gLXJmIH4=\x07"
+    HOSTILE = f"gitturtle-core history::{OSC_52}pages\x9b2J\x7f\u202e\\x1b"
+    ESCAPED = "lib:gitturtle_core history::\\x1b]52;c;cm0gLXJmIH4=\\x07pages\\x9b2J\\x7f\\u202e\\\\x1b"
+
+    def assertPrintable(self, text):
+        self.assertEqual([character for character in text if not character.isprintable()], ["\n"] * text.count("\n"))
+
+    def test_the_text_report_escapes_an_osc_52_sequence_in_a_result_line(self):
+        after = nextest_log([(self.HOSTILE, 1), (RETAINS, 1)])
+        self.assertIn(self.OSC_52, after)
+        status, text = self.compare({"after": after}, before=nextest_log([(RETAINS, 1)]), json_output=False)
+        self.assertEqual((status, text), (1, "before: 1 executed, 0 ignored\nafter: 2 executed, 0 ignored\n"
+                                             "nextest tests run: 1 before, 2 after: 1 more after\n"
+                                             "executed more often after than before (run more than once, or new) (1):\n"
+                                             f"  {self.ESCAPED}: 0 before, 1 after\ndifferent\n"))
+        self.assertPrintable(text)
+        # `--json` already escaped them, and keeps the name itself.
+        status, result = self.compare({"after": after}, before=nextest_log([(RETAINS, 1)]))
+        self.assertEqual(list(result["executed_more_after"]), [executed_tests.nextest_key("gitturtle-core") + " " + self.HOSTILE.split(" ", 1)[1]])
+
+    def test_an_unread_line_and_a_listing_are_escaped_too(self):
+        # A Summary line the tool cannot read is quoted in the report.
+        unread = nextest_log([(RETAINS, 1)]).replace("0 skipped\n", f"0 skipped{self.OSC_52}\n")
+        status, text = self.compare({"after": unread}, before=nextest_log([(RETAINS, 1)]), json_output=False)
+        self.assertEqual(status, 3)
+        self.assertIn("after.log: a nextest line this tool cannot read: Summary [   0.031s] 1 test run: 1 passed, "
+                      "0 skipped\\x1b]52;c;cm0gLXJmIH4=\\x07\n", text)
+        self.assertPrintable(text)
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            path = Path(directory) / "job.log"
+            path.write_text(nextest_log([(self.HOSTILE, 1), (RETAINS, 0)]).replace("1 skipped\n", f"1 skipped{self.OSC_52}\n"), encoding="utf-8")
+            output, errors = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                status = executed_tests.main(["list", str(path)])
+            self.assertEqual((status, output.getvalue()), (3, f"executed {self.ESCAPED}\nignored bin:gitturtle activity::tests::retains_nothing\n"))
+            self.assertIn("job.log: a nextest line this tool cannot read: Summary [   0.031s] 1 test run: 1 passed, "
+                          "1 skipped\\x1b]52;c;cm0gLXJmIH4=\\x07\n", errors.getvalue())
+            self.assertPrintable(errors.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
