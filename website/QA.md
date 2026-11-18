@@ -101,3 +101,115 @@ shell and terminates option parsing before URL data. Its complete live HTTP/TLS
 check passed again after this refinement; the evidence records the current
 helper hash and unchanged deployed asset identity. Hosted security analysis is
 tracked on the pull request separately from the live checks.
+
+## November 16, 2026 content refresh
+
+The page was brought up to date with the application the repository README describes: the same design, more of the app. It now runs hero, speed, a six-tab tour, themes, Omarchy, how it works, Get started and open source, with ten of the README's pictures copied byte for byte ([provenance](README.md#screenshot-provenance-and-replacement)). This revision is not deployed: publishing, the smoke check and the deployment record are the owner's steps.
+
+Headless Chromium 153.0.8010.36 on Arch Linux ARM rendered the page from its local files over a DevTools pipe, with no window and with host resolution disabled. The page made sixteen requests, all for its own files, and none to another origin.
+
+| Check | Observed result |
+| --- | --- |
+| Full page at 1440, 1000, 700 and 380 pixels | Every frame inspected: nothing cut, overlapping or misaligned; Manrope loaded; every rendered picture loaded at its declared aspect ratio. |
+| Horizontal overflow at fourteen widths from 320 to 1920 pixels | None: the document and every element stayed inside the viewport. |
+| Six tour tabs at 1440 and 380 pixels | Each tab's picture and caption inspected. The caption block keeps one height across the six tabs at 1440, 1000, 700 and 380. |
+| Tabs by keyboard | Home, five presses of Right, a wrap in each direction and End selected and focused the expected tab, showed only its panel and kept one tab sequentially focusable; Tab then moved into the visible panel. |
+| Reduced motion, emulated | Scroll behavior computed as `auto` and the button and link transitions as `0s`; without the emulation, `smooth` and `0.18s`. |
+| Scripts disabled, at 1440 and 380 pixels | The tab buttons stay hidden and all six pictures, captions and full-size links appear in document order. |
+| Custom 404 at 1440 and 380 pixels | Inspected from a copy with its root-relative URLs made relative, since a file cannot resolve them; no console message. |
+
+From a file, Chromium refuses the font preload's `crossorigin` request and logs two errors and two warnings for each load of the page; the font itself loads through the stylesheet, and the 404 page, which has no preload, logs nothing. The page was not observed over HTTP in this round, so the console over HTTPS, the response headers and the content security policy against the new markup remain to be checked at deployment. The markup has no inline style or script. 200% browser zoom, a physical phone, a screen reader and forced colors were not exercised. The frames were reviewed locally and are not in the repository.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `public/index.html` | 28,861 | `ca59da727800ccba68700ef50d55c546d1f4d2afd751a1039c530173510b00af` |
+| `public/styles.css` | 16,164 | `bf4c86520f896add7730e69f53f832be2ec0fcf59c5b1175883b884c2ac0fbeb` |
+| `public/site.js` | 1,693 | `13334bb59acf3a0c743da306974e20753bd46e34dcf6aa053df7933b9d5c35e3` |
+| `public/404.html` | 705 | `8825cb47ad0a13243824fb07a9c9cd2c293fed0c840d460b84896d703b684bb0` |
+
+The script is unchanged from the September record. The first view requests 612,660 bytes: the page, stylesheet, script, font, icon and the History picture. Every other picture loads lazily, and a tab's picture only when the tab is first shown; with all of them the page weighs 5,778,296 bytes. The largest response is `omarchy-themes.png` at 948,008 bytes, under the 2 MiB that `smoke.py` allows.
+
+## November 16, 2026 design and copy follow-up
+
+A second pass the same day followed a design and copy review of the refresh. The speed figures now say what was measured and on what in one sentence each, with their labels inside their headings. The Omarchy section opens with the desktop picture beside its lead, carries four points instead of six, and shows its theme sheet on a mat in the site's deep green with the 23 themes named in the caption. The details heading stays in view beside its list, each picture link is named by its picture's alt text, and the turtle is a smaller file. This revision is not deployed either.
+
+The desktop picture is the one app capture the site scales down ([the rule and its record](README.md#screenshot-provenance-and-replacement)). At 2,208 pixels wide it weighed 1.73 MB, over the 1.5 MB allowed for it, so the site carries it at 1,728 × 1,692 and 1,177,156 bytes. It was judged at full size in frames rendered at one and at two device pixels per pixel in a 1440-pixel window, where it is 703 pixels wide: the app's and the terminal's text is small and crisp in both, and the two half-size desktops stay legible as pictures rather than as text.
+
+The same headless Chromium 153.0.8010.36 rendered the page from its local files over a DevTools pipe, with no window, host resolution disabled and the user's browser flags left out. Every request in the run, 458 across all loads, was for the site's own files.
+
+| Check | Observed result |
+| --- | --- |
+| Full page at 1440, 1000, 700 and 380 pixels | Every frame inspected: nothing cut, overlapping or misaligned; Manrope loaded; every rendered picture loaded at its declared size. |
+| Horizontal overflow at fourteen widths from 320 to 1920 pixels | None. |
+| A single word alone on a last line, at 1440, 1000, 700 and 380 pixels | None in any headline, paragraph or caption, the six tab captions included. Two were found and fixed at 380: the tour's headline and the hero's caption. |
+| Theme names at 380 pixels | Both sheets' captions are whole and name every theme in text. |
+| Six tour tabs at 1440 and 380 pixels, by keyboard | As in the first pass: Home, five presses of Right, a wrap each way and End selected and focused the expected tab and showed only its panel; the caption block keeps one height. |
+| Picture links | Chromium's accessibility tree names each of the eleven by its picture's alt text followed by "View full size", which is visually hidden text; no picture link has an `aria-label`. |
+| Speed headings | Each is one heading in the accessibility tree, such as "WINDOW UP: 115 ms". The colon is in the text and drawn at no size. |
+| Details heading at 1440 pixels | Stays 40 pixels from the top while its list scrolls past; ordinary at 700 pixels, where the columns stack. Emulated reduced motion leaves it in place, with scroll behavior `auto` and transitions `0s`. |
+| Inline code | 11.44 pixels in 13-pixel text, 0.88 of its size. |
+| The sheet's mat | Computes to `color-mix` of `--deep` at 70% with black, the same green as the section behind it, darker. |
+| Scripts disabled, at 1440 and 380 pixels | The tab buttons stay hidden and all six pictures, captions and links appear in order. |
+| Custom 404 at 1440 and 380 pixels | Inspected from a copy with its root-relative URLs made relative; no console message. |
+
+Manrope's Latin subset has no non-breaking hyphen: Chromium drew U+2011 from a fallback font, so "ad-hoc" is kept on one line with `white-space: nowrap` instead. The limits of the first pass stand: the page was not observed over HTTP, so the console over HTTPS, the response headers and the content security policy against this markup remain to be checked at deployment, and from a file the font preload logs the same errors as before. The accessible names were read from Chromium's accessibility tree, not heard in a screen reader. 200% browser zoom, a physical phone, a screen reader and forced colors were not exercised. The frames were reviewed locally and are not in the repository.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `public/index.html` | 29,346 | `1c7963d56640a7e4582fbadde19a137b9f8aa7e6ce29f8b4ed960dd55751f279` |
+| `public/styles.css` | 17,373 | `dbb524707416d81ef1c585561ca988d8c32afde3e7dd42391ac870391cf4462e` |
+| `public/site.js` | 1,693 | `13334bb59acf3a0c743da306974e20753bd46e34dcf6aa053df7933b9d5c35e3` |
+| `public/404.html` | 705 | `9c8136d61e8e2438c5ab9553dda1b5b0b5d2a2b03d76b59731cbbe91c7cf9ed8` |
+
+The script is unchanged. The first view requests 614,354 bytes: the page, stylesheet, script, font, icon and the History picture. With every picture the page weighs 6,249,996 bytes in seventeen files: the desktop picture adds 1,177,156 bytes and the turtle falls from 942,906 to 235,756. The largest response is now `omarchy-desktop.png`, under the 2 MiB that `smoke.py` allows.
+
+## November 16, 2026 production deployment
+
+The owner asked for the refreshed site to be published on November 16, 2026, and signed the upload tool in to Cloudflare for it. The files uploaded are `website/public/` of `main` at `86ed3d8f04bb901fade372182df91546574b06af`, from a clean checkout of that commit, after `node --check website/public/site.js` and `python3 website/check.py` passed there.
+
+- **Deployment:** Wrangler 4.131.2, `pages deploy public --project-name gitturtle --branch main` with that commit's hash: 21 files, 15 uploaded and 6 already present, then `_headers`. Production deployment `cdbe8670-ab65-4aa2-8f29-42fa433dbc65`, `https://cdbe8670.gitturtle.pages.dev`, completed at 23:26 UTC.
+- **Smoke check:** `python3 smoke.py` against `https://gitturtle.com` passed: ten HTTP requests and one verified TLS connection (the certificate expires on February 11, 2027; the homepage, the redirect to HTTPS, the custom 404, the stylesheet, script, font and screenshot with their headers and cache rules, and three revalidations answered 304). [The output](evidence/2026-11-16-production-smoke.txt) and [the manifest](evidence/2026-11-16-production.json) of the 22 uploaded files with their SHA-256 values are kept.
+- **Live bytes:** the homepage served at the canonical domain and at the deployment's own address equals the committed `index.html` byte for byte (29,356 bytes) when fetched without a browser's `Accept` header; the stylesheet, the script, the History picture and the Omarchy desktop picture equal the uploaded files.
+- **Rendered:** the live page was drawn in a headless Chromium at 1,440 and 380 pixels wide: the font, the hero picture, the measured figures and the tour's heading as in the reviewed frames.
+- **Before it:** the no-script page was looked at whole (the hero, the figures, all six tour panels stacked with their captions, the themes), as the design review asked.
+
+**One observation, not caused by the upload:** for a request that asks for HTML as a browser does, the canonical domain's response carries one more tag before `</body>`, Cloudflare's Web Analytics beacon (`static.cloudflareinsights.com/beacon.min.js`), added by the zone and not present in the uploaded file or at the `pages.dev` address. The site's own policy (`script-src 'self'`, `connect-src 'none'`) refuses that script, so it does not run and nothing is collected, but a browser's console records the refusal on every visit. The site's documents say it carries no analytics script. Whether to switch the zone's injection off, or to adopt analytics deliberately (which would change the policy and those documents), is the owner's decision.
+
+**Resolved on November 16, 2026:** the owner switched the zone's Web Analytics automatic setup to Disable in the Cloudflare dashboard. At 00:42 UTC on November 17, two requests that ask for HTML as a browser does returned the canonical domain's homepage byte for byte equal to the committed `index.html` (29,356 bytes), with no `cloudflareinsights` or `beacon.min.js` in it. The site carries no analytics script, as its documents say, and a browser's console no longer records a refused script.
+
+The page still says that no download is published; the lines marked `data-release` change with the first release.
+
+## November 17, 2026 local preview of the product tour and guides
+
+The preview served the static files over local HTTP. It covers the homepage, seven product guides, the documentation index, installation overview, three platform guides, performance, releases, support and legal notices.
+
+| Check | Observed result |
+| --- | --- |
+| Chromium 157.0.8103.79, all 17 indexable pages | Twelve viewport widths from 320 to 1920 CSS pixels showed no horizontal overflow or overlapping header links. Each page had one h1 and the expected production canonical. Under the site's configured content security policy, the tested pages logged no errors and issued only same-origin requests. |
+| Tour, navigation and installation | Left, Right, Home and End selected and focused the expected tabs, including wraparound. The visible panel decoded its screenshot. The Compare link opened the comparison section of its guide. The Stage fragment, Arch/Omarchy install path, custom 404 home link and reduced-motion scrolling worked. |
+| JavaScript disabled | All three screenshots, captions and guide links were visible. The macOS install commands were readable after following the homepage and platform links. |
+| Copy controls | With the clipboard stubbed in Chromium, a click copied the complete command block. A rejected request produced selectable-text instructions. |
+| Automated accessibility | axe-core's WCAG 2.0 and 2.1 A/AA rules reported zero violations across all 17 pages at 390 and 1440 CSS pixels. |
+| WebKit 26.5 on macOS | At 390 × 844 and 1440 × 900, the tour, guide navigation, macOS installation path and Home breadcrumb worked. History, Compare and Stage decoded as 1200-pixel WebPs at phone width and 2960-pixel PNGs at desktop width. Every full-size link returned the original PNG. |
+| Static publication checks | Guide regeneration matched the published HTML. Each indexable URL was reachable from the homepage within two ordinary links. The sitemap included all 17 canonical URLs. GitHub anchors resolved to the repository root. |
+
+The three narrow-screen tour images total 543,648 bytes, compared with 1,360,788 bytes for their full-size PNGs. The homepage requests the selected view first. Those figures measure transfer size.
+
+These are local browser and static-file checks. They cover emulated phone viewports. Physical devices, assistive-technology sessions, hosted responses for this revision and search inclusion were outside this preview.
+
+### Full-size screenshots
+
+The ten screenshot links on the homepage and four guides use a native modal dialog. Chromium 157 and WebKit 27.2 at 1440 × 900 and 390 × 844 returned to the original screenshot, selected tour tab and exact starting scroll offset after dismissal. Escape, Close and the backdrop dismissed the viewer. Tab and Shift+Tab cycled its controls. Actual size showed the 2960-pixel-wide original and supported two-axis panning via keyboard and emulated touch. The same images opened directly with scripts disabled. The Chromium checks also exercised a failed download and recovery and found zero axe WCAG 2.0/2.1 A/AA violations in the open viewer.
+
+### Search crawlers and link previews
+
+All 17 preview URLs returned HTTP 200 with their canonical URL and content in the original HTML when requested locally with Googlebot, bingbot, DuckDuckBot, Slurp and OAI-SearchBot user agents. Each page supplies a distinct sharing title and description. Open Graph and X point to a 1200 × 630 PNG (295,959 bytes), and the centered square and 2:1 crops at 300 pixels wide preserve the wordmark, headline and entire app window. This checks the responses and artwork supplied to link unfurlers. Search inclusion, provider caching and how individual apps display a live share are external to the local preview.
+
+## November 17, 2026 production deployment
+
+[PR #213](https://github.com/FernandoX7/GitTurtle/pull/213) passed its 22 checks and squash-merged as `d72dfab5d6da84557ecf8a63612ec2751a0dc3ad`. The merged public directory matched the reviewed Git tree. Wrangler 4.131.2 deployed it from a clean checkout to the production branch of Cloudflare Pages project `gitturtle`. It uploaded 34 new files, reused 16 and applied the response headers. The [production deployment](https://3932cdbc.gitturtle.pages.dev) has ID `3932cdbc-a435-49ba-8729-e62ed7f39ca9`. The [manifest](evidence/2026-11-17-production.json) records the deployed revision and all 51 input files.
+
+- **Public site.** The homepage, docs and installation indexes, Arch and Omarchy guide, social PNG, sitemap, stylesheet and script matched the release files on both the deployment hostname and gitturtle.com. The canonical domain passed the HTTPS redirect, certificate, custom 404, headers and cache checks. [Production smoke output](evidence/2026-11-17-production-smoke.txt)
+- **Share previews.** Bluesky’s card extractor and Microlink fetched the ordinary homepage URL and returned the new title, full description and branded image. Bluesky’s image proxy served the same 295,959-byte, 1200 × 630 PNG as the release, verified by SHA-256.
+- **Crawlers.** All 17 sitemap pages returned HTTP 200. The eight documentation routes and four installation routes were reachable from the homepage within two ordinary HTML links. Requests using Googlebot, bingbot, DuckDuckBot, Yahoo Slurp, OAI-SearchBot and Twitterbot user-agent strings received the public sitemap, pages and card. Canonical URLs and indexing directives were checked in the actual responses. Search engine inclusion and rankings are separate observations. [Production crawl results](evidence/2026-11-17-production-crawl.json)
+- **Browser.** In Chromium 157 at widths of 1440 and 390 pixels, the Compare screenshot opened at its original resolution, zoomed and returned keyboard focus on dismissal. Following the diff guide and the macOS install path reached the expected pages. After font and stylesheet loading there was no horizontal overflow, console error, failed HTTP response or external origin in either journey.

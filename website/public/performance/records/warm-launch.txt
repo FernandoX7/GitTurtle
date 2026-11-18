@@ -1,0 +1,16 @@
+Warm launch on Omarchy Linux — 27 October 2026
+
+Machine: Apple M2 Pro, Asahi Omarchy 4.0.4-mac.1, Hyprland 0.56.2.
+Session: native Wayland, scale 2, Tokyo Night.
+Interval: executable start to compositor mapping the first window.
+Sampling: base and candidate alternated, nine warm launches of each.
+Configuration: fresh application settings for each launch, same demo repository.
+
+Recorded release results                     Median   Min   Max
+Base                                           107     97   129 ms
+Candidate with bundled interface font faces    115    103   135 ms
+
+The project published these summary values. Individual launch durations
+were not included in the launch record.
+
+Source: docs/validation.md, “October 27 the Linux interface draws its real weights”.

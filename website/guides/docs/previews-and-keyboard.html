@@ -1,0 +1,19 @@
+<!-- title: Previews and keyboard shortcuts -->
+<!-- description: Find a tracked file, inspect its contents, and compare changes to images, documents and models. -->
+<h2 id="keyboard">Find a command or file</h2>
+<div class="guide-table"><table><thead><tr><th scope="col">Action</th><th scope="col">macOS</th><th scope="col">Linux</th></tr></thead>
+<tbody><tr><th scope="row">Find a tracked file</th><td>Command-P</td><td>Ctrl+P</td></tr><tr><th scope="row">Search commands</th><td>Command-Shift-P</td><td>Ctrl+Shift+P</td></tr><tr><th scope="row">Show keyboard shortcuts</th><td>Command-?</td><td>Ctrl+?</td></tr></tbody></table></div>
+<p>In <strong>Quick Open File…</strong>, choose the current worktree or a revision, type part of the path, and press Return on a match. A revision search pins the resolved commit. Escape leaves the current view in place. The <strong>Command Palette</strong> searches actions by name and explains when an action is unavailable. Linux also has a <strong>Menu</strong> at the top left, accessible with F10.</p>
+<h2 id="images">Compare two images</h2>
+<p>Open an image from a commit’s changed-file list. <strong>Side by side</strong> preserves the original dimension relationship. <strong>Overlay</strong> varies the After image’s opacity. <strong>Wipe</strong> puts Before on the left and After on the right of a draggable divider. Pan or zoom to inspect the same area on both sides.</p>
+<figure><a class="screenshot-link" data-screenshot="Image comparison" href="/assets/image-compare.png"><img src="/assets/image-compare.png" width="2960" height="1946" alt="GitTurtle comparing the red and violet versions of an image side by side." loading="lazy"><span class="expand-shot">Full size</span></a><figcaption>Image comparison shows both revisions at a shared scale. Open the capture for full size.</figcaption></figure>
+<p>A 100% zoom label refers to the decoded comparison preview, whose longest edge is bounded at 1,600 pixels. Look at the source dimensions when you need the original size. GIF supports bounded playback and frame stepping.</p>
+<h2 id="documents">Inspect documents and models</h2>
+<ul>
+  <li><strong>Markdown and Mermaid.</strong> Choose the rendered view for headings, lists, tables, supported diagrams and local images from the captured revision. Use Source or Diff to review the exact stored text.</li>
+  <li><strong>PDF.</strong> Move between pages to inspect rendered content and available extracted text. Image-only pages can lack extractable text.</li>
+  <li><strong>3D.</strong> Orbit, pan or zoom the supported geometry. Link both cameras to compare versions at the same position, or unlink to inspect one side. STL, OBJ, FBX, GLB and selected 3MF and STEP content have bounded support. Unsupported geometry or resources are identified in the preview.</li>
+  <li><strong>Other formats.</strong> Many archive, media and office formats show metadata. When available, the platform’s explicit preview action opens a captured copy in an external viewer.</li>
+</ul>
+<h2 id="lfs">Preview an LFS file</h2>
+<p>GitTurtle uses verified local Git LFS objects when available. If only a pointer is present, inspect the object ID and size. You can review a download for that single object if you have Git LFS installed and a configured source. Browsing alone does not fetch it. The download is capped at 32 MiB and verified against its SHA-256 identity.</p>

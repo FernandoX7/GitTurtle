@@ -40,6 +40,12 @@ A future renewal cannot be claimed tested at initial installation.
   connections, framing, forms and base-URL injection. `X-Frame-Options: DENY`
   also covers older clients. MIME sniffing is disabled, referrers are restricted,
   and camera, microphone and geolocation are disabled.
+- The zone's **Web Analytics automatic setup is set to Disable** (Analytics & Logs,
+  Web Analytics, Manage site). Cloudflare enables it by default for a proxied
+  site and then adds its beacon script to HTML served to browsers. The CSP
+  refuses that script, so nothing was collected while it was on, but every
+  visit logged the refusal. Keep it disabled; adopting analytics would be a
+  deliberate change to the CSP and to the statements here and in the README.
 - Cloudflare Browser Cache TTL respects existing headers (value `0`), replacing
   the initial four-hour override. HTML, CSS, JavaScript and stable image URLs
   require revalidation. Cloudflare's
@@ -60,7 +66,7 @@ The scoped website CI job runs the local static checks and JavaScript syntax
 validation when website files change. It has read-only repository permissions,
 pinned Actions and no Cloudflare credentials. Deployments remain explicit.
 
-1. Run `python3 website/check.py` and `node --check website/public/site.js`.
+1. Run the [local website checks](README.md#preview-and-validate-locally).
 2. Review the affected page in a browser, including mobile and keyboard behavior.
 3. Commit the reviewed files and deploy through the [recorded Pages procedure](README.md#publish-an-update).
 4. Run `python3 website/smoke.py` against the canonical domain. This makes bounded,

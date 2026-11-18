@@ -4,116 +4,192 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f8f3">
-  <meta name="description" content="A fast, open source Git client for browsing history, reviewing changes, and managing worktrees. Built for macOS and Linux. Available as a source preview.">
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="GitTurtle | Fast, Open Source Git Client">
-  <meta property="og:description" content="A fast, open source Git client built for big projects and busy worktrees. Browse history, review changes, and keep your work moving.">
-  <meta property="og:url" content="https://gitturtle.com/">
-  <meta property="og:image" content="https://gitturtle.com/assets/history.png">
-  <meta property="og:image:alt" content="GitTurtle's native history view with branches, a commit graph, and a changed-file inspector">
-  <meta name="twitter:card" content="summary_large_image">
+  <title>GitTurtle | Fast, Open Source Git GUI for macOS and Linux</title>
+  <meta name="description" content="Trace a bug to its commit and stage just the fix. GitTurtle is a fast, open source Git client for macOS and Linux with first-class Omarchy support.">
   <link rel="canonical" href="https://gitturtle.com/">
-  <link rel="icon" type="image/png" href="assets/app-icon.png">
-  <link rel="preload" href="fonts/manrope-latin.a30ddcd34970.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="styles.css?v=2">
-  <script src="site.js" defer></script>
-  <title>GitTurtle | Fast, Open Source Git Client</title>
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="GitTurtle">
+  <meta property="og:title" content="GitTurtle — A fast, native Git client for macOS and Linux">
+  <meta property="og:description" content="Find the commit that introduced a bug, see exactly what changed, and stage just the fix. Free and open source, with first-class Omarchy support.">
+  <meta property="og:url" content="https://gitturtle.com/">
+  <meta property="og:image" content="https://gitturtle.com/assets/gitturtle-social.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The GitTurtle turtle icon and “A calmer home for your Git” above the native History view and its branch graph.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="GitTurtle — A fast, native Git client for macOS and Linux">
+  <meta name="twitter:description" content="Find the commit that introduced a bug, see exactly what changed, and stage just the fix. Free and open source, with first-class Omarchy support.">
+  <meta name="twitter:image" content="https://gitturtle.com/assets/gitturtle-social.png">
+  <meta name="twitter:image:alt" content="The GitTurtle turtle icon and “A calmer home for your Git” above the native History view and its branch graph.">
+  <link rel="icon" type="image/png" href="/assets/app-icon.png">
+  <link rel="preload" href="/fonts/manrope-latin.a30ddcd34970.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css?v=5">
+  <script src="/site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "GitTurtle",
+    "url": "https://gitturtle.com/",
+    "about": {"@id": "https://gitturtle.com/#software"}
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "@id": "https://gitturtle.com/#software",
+    "name": "GitTurtle",
+    "url": "https://gitturtle.com/",
+    "description": "A fast, native, open source Git client for macOS and Linux with first-class Omarchy support.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": ["macOS", "Linux"],
+    "isAccessibleForFree": true,
+    "license": "https://gitturtle.com/legal/",
+    "installUrl": "https://gitturtle.com/install/",
+    "softwareHelp": "https://gitturtle.com/docs/",
+    "image": "https://gitturtle.com/assets/app-icon.png",
+    "screenshot": "https://gitturtle.com/assets/history.png",
+    "sameAs": "https://github.com/FernandoX7/GitTurtle"
+  }
+  </script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header wrap">
-    <a class="brand" href="#" aria-label="GitTurtle home"><img src="assets/app-icon.png" width="40" height="40" alt=""><span>GitTurtle</span></a>
+    <a class="brand" href="/" aria-label="GitTurtle home"><img src="/assets/app-icon.png" width="40" height="40" alt=""><span>GitTurtle</span></a>
     <nav aria-label="Main navigation">
-      <a href="#experience">The experience</a>
-      <a href="https://github.com/FernandoX7/GitTurtle/blob/main/docs/user-guide.md">Docs <span aria-hidden="true">↗</span></a>
-      <a class="nav-cta" href="#get-started">Get started <span aria-hidden="true">↗</span></a>
+      <a href="#experience">Tour</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://github.com/FernandoX7/GitTurtle">GitHub <span aria-hidden="true">↗</span></a>
+      <a class="nav-cta" href="/install/">Get GitTurtle <span aria-hidden="true">→</span></a>
     </nav>
   </header>
 
   <main id="main">
     <section class="hero wrap" aria-labelledby="hero-title">
-      <div class="eyebrow">A native Git client. An early preview.</div>
       <h1 id="hero-title">A calmer home<br>for your <span class="mint-word">Git.</span></h1>
-      <p class="hero-intro">A fast, open source Git client for big projects and busy worktrees. <br>Open your history. Get to the changes. Keep moving.</p>
+      <p class="hero-intro">A fast, native Git client for macOS and Linux.</p>
       <div class="hero-actions">
-        <a class="button button-dark" href="#get-started">Build the preview <span aria-hidden="true">↗</span></a>
-        <a class="text-link" href="#experience">Take a look around <span aria-hidden="true">↓</span></a>
-      </div>
-      <p class="platform-line"><span>macOS</span><span aria-hidden="true">·</span><span>Linux</span><span class="platform-divider" aria-hidden="true"></span><span>Free and open source</span></p>
-
-      <figure class="hero-product">
-        <div class="product-mat">
-          <div class="mat-heading"><span>YOUR REPOSITORY, IN PERSPECTIVE</span><span class="mat-detail">01 / HISTORY</span></div>
-          <a class="screenshot-link" href="assets/history.png" aria-label="Open the full GitTurtle history screenshot"><img class="app-shot" src="assets/history.png" width="1480" height="800" alt="GitTurtle showing the Aurora demo repository: local branches on the left, a connected commit graph in the center, and selected commit details and changed files on the right." fetchpriority="high"></a>
-        </div>
-        <figcaption><span>Real app. Real Git. A disposable demo repository.</span><a href="assets/history.png">View full size <span aria-hidden="true">↗</span></a></figcaption>
-      </figure>
-    </section>
-
-    <section class="intro-section wrap" aria-labelledby="intro-title">
-      <p class="section-label">BUILT FOR BIGGER PROJECTS</p>
-      <div class="intro-heading"><h2 id="intro-title">More worktrees.<br>Less waiting.</h2><p>GitTurtle started with Fernando’s own projects: 60 GB across many worktrees. Waiting for repositories to load and commits to open kept breaking his flow. He built GitTurtle to make those everyday moments feel quick again.</p></div>
-      <div class="benefit-grid">
-        <article><span class="step-number">01 <span aria-hidden="true">/</span></span><h3>Find your place</h3><p>Explore the graph, filter branches, and search local history. Select a commit to see exactly which files changed.</p></article>
-        <article><span class="step-number">02 <span aria-hidden="true">/</span></span><h3>Review with context</h3><p>Read unified or split diffs. Compare images visually. Go back to the history you were reading when you’re done.</p></article>
-        <article><span class="step-number">03 <span aria-hidden="true">/</span></span><h3>Make it a commit</h3><p>Stage files, hunks, or changed lines. Write your message with a separate draft for each worktree.</p></article>
+        <a class="button button-dark" href="/install/">Build from source <span aria-hidden="true">→</span></a>
+        <a class="text-link" href="#experience">Take the tour <span aria-hidden="true">↓</span></a>
       </div>
     </section>
 
-    <section class="experience-section" id="experience" aria-labelledby="experience-title">
-      <div class="wrap">
-        <div class="experience-heading"><div><p class="section-label">A CLOSER LOOK</p><h2 id="experience-title">From the big picture<br>to the smallest change.</h2></div><p>Three moments in the native app. <br>Choose a view to explore.</p></div>
-        <div class="walkthrough" data-walkthrough>
-          <div class="tour-tabs" aria-label="Explore GitTurtle views">
-            <button class="tour-tab" type="button" id="tab-history" data-panel="panel-history"><span class="tour-number">01</span><span>Browse history</span><span class="tab-arrow" aria-hidden="true">↗</span></button>
-            <button class="tour-tab is-active" type="button" id="tab-compare" data-panel="panel-compare"><span class="tour-number">02</span><span>Review changes</span><span class="tab-arrow" aria-hidden="true">↗</span></button>
-            <button class="tour-tab" type="button" id="tab-changes" data-panel="panel-changes"><span class="tour-number">03</span><span>Prepare a commit</span><span class="tab-arrow" aria-hidden="true">↗</span></button>
-          </div>
-          <div class="tour-panel" id="panel-history" aria-labelledby="tab-history">
-            <a class="screenshot-link" href="assets/history.png" aria-label="Open full-size history view"><img class="app-shot" src="assets/history.png" width="1480" height="800" alt="History in GitTurtle, with a branch graph and the selected commit’s seven changed files." loading="lazy"></a>
-            <div class="tour-caption"><h3>The whole story, one commit at a time.</h3><p>Choose a commit, inspect its files, then open a file to compare. Your history context stays close.</p><a href="assets/history.png">View full size <span aria-hidden="true">↗</span></a></div>
-          </div>
-          <div class="tour-panel" id="panel-compare" aria-labelledby="tab-compare">
-            <a class="screenshot-link" href="assets/compare.png" aria-label="Open full-size change review"><img class="app-shot" src="assets/compare.png" width="1480" height="800" alt="GitTurtle’s Split view shows the TypeScript file before and after the selected commit, with changed text highlighted and the commit details and file list alongside." loading="lazy"></a>
-            <div class="tour-caption"><h3>Make sense of what changed.</h3><p>Compare Before and After side by side, with changed text highlighted. Switch to Diff for a unified patch, or inspect either version on its own.</p><a href="assets/compare.png">View full size <span aria-hidden="true">↗</span></a></div>
-          </div>
-          <div class="tour-panel" id="panel-changes" aria-labelledby="tab-changes">
-            <a class="screenshot-link" href="assets/changes.png" aria-label="Open full-size working changes view"><img class="app-shot" src="assets/changes.png" width="1480" height="800" alt="GitTurtle’s Working Changes view: an unstaged App.tsx edit in the unified diff, staged notes/preview-check.md in the file list, and a commit composer titled Document the preview workflow with Commit 1 file available." loading="lazy"></a>
-            <div class="tour-caption"><h3>A place for your next commit.</h3><p>Review the edits still in progress alongside the files you’ve staged. Compose a commit from the staged changes; each worktree keeps its own draft.</p><a href="assets/changes.png">View full size <span aria-hidden="true">↗</span></a></div>
+    <section class="product-section wrap" id="experience" aria-labelledby="tour-title">
+      <div class="walkthrough" data-walkthrough>
+        <div class="tour-toolbar">
+          <h2 id="tour-title">Product tour</h2>
+          <div class="tour-tabs" aria-label="Git workflow">
+            <button type="button" id="tab-history" data-panel="panel-history">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="5" r="2.2"/><circle cx="7" cy="19" r="2.2"/><circle cx="17" cy="6" r="2.2"/><path d="M7 7.2v9.6M17 8v2a5 5 0 0 1-5 5H7"/></svg>History
+            </button>
+            <button type="button" id="tab-compare" data-panel="panel-compare">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M6 8h3m6 0h3M6 12h3m6 0h3"/></svg>Compare
+            </button>
+            <button type="button" id="tab-stage" data-panel="panel-stage">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg>Stage
+            </button>
           </div>
         </div>
-        <p class="screenshot-note">Actual development builds; sample repositories and authors. <a href="https://github.com/FernandoX7/GitTurtle/tree/main/docs/benchmarks/native-preview-20260914">Screenshot and validation notes <span aria-hidden="true">↗</span></a></p>
+        <figure class="tour-panel" id="panel-history">
+          <a class="screenshot-link" data-screenshot="History" href="/assets/history.png">
+            <picture>
+              <source media="(max-width: 710px)" type="image/webp" srcset="/assets/tour-history.webp">
+              <img class="app-shot" src="/assets/history.png" width="2960" height="1946" fetchpriority="high" alt="History in the Aurora repository, with branches, a commit graph, and the seven files changed by the selected commit.">
+            </picture>
+            <span class="expand-shot">Full size</span>
+          </a>
+          <figcaption class="tour-caption">
+            <div><h3>Follow a branch through time.</h3><p>Select a commit to see the files it changed. Open a file when you want the diff.</p></div>
+            <a href="/docs/history-and-diffs/">Explore history <span aria-hidden="true">→</span></a>
+          </figcaption>
+        </figure>
+        <figure class="tour-panel" id="panel-compare">
+          <a class="screenshot-link" data-screenshot="Compare" href="/assets/compare.png">
+            <picture>
+              <source media="(max-width: 710px)" type="image/webp" srcset="/assets/tour-compare.webp">
+              <img class="app-shot" src="/assets/compare.png" width="2960" height="1946" loading="lazy" alt="A split diff of src/App.tsx showing the old and new code beside the selected commit’s changed files.">
+            </picture>
+            <span class="expand-shot">Full size</span>
+          </a>
+          <figcaption class="tour-caption">
+            <div><h3>See both sides of a change.</h3><p>Switch between a unified and split diff. Follow the highlights to the words that changed.</p></div>
+            <a href="/docs/history-and-diffs/#compare">Read the diff guide <span aria-hidden="true">→</span></a>
+          </figcaption>
+        </figure>
+        <figure class="tour-panel" id="panel-stage">
+          <a class="screenshot-link" data-screenshot="Stage" href="/assets/changes.png">
+            <picture>
+              <source media="(max-width: 710px)" type="image/webp" srcset="/assets/tour-stage.webp">
+              <img class="app-shot" src="/assets/changes.png" width="2960" height="1946" loading="lazy" alt="The Changes view with per-line checkboxes, Stage hunk controls, separate staged and unstaged files, and a commit draft.">
+            </picture>
+            <span class="expand-shot">Full size</span>
+          </a>
+          <figcaption class="tour-caption">
+            <div><h3>Stage just the lines you mean to commit.</h3><p>Choose whole files, hunks, or individual lines. Each worktree keeps its own commit draft.</p></div>
+            <a href="/docs/staging/">Build a commit <span aria-hidden="true">→</span></a>
+          </figcaption>
+        </figure>
+      </div>
+      <div class="feature-links">
+        <a href="/docs/worktrees-and-recovery/"><strong>Worktrees &amp; workspaces <span aria-hidden="true">→</span></strong><span>Keep a separate tab and commit draft for each worktree.</span></a>
+        <a href="/docs/previews-and-keyboard/"><strong>Rich file previews <span aria-hidden="true">→</span></strong><span>Compare images, PDFs, Markdown, and 3D models.</span></a>
+        <a href="/docs/github/"><strong>Pull request review <span aria-hidden="true">→</span></strong><span>Inspect files, comment on lines, and save review drafts.</span></a>
       </div>
     </section>
 
-    <section class="details-section wrap" aria-labelledby="details-title">
-      <div class="details-heading"><p class="section-label">THOUGHTFUL BY NATURE</p><h2 id="details-title">Your tools should<br>feel like your tools.</h2><a class="text-link" href="https://github.com/FernandoX7/GitTurtle/blob/main/docs/user-guide.md">Explore the user guide <span aria-hidden="true">↗</span></a></div>
-      <div class="detail-list">
-        <article><span class="detail-icon" aria-hidden="true">⌘</span><div><h3>At home on your desktop</h3><p>Made for your desktop, with keyboard navigation, light and dark themes, and comfortable text sizes you can adjust.</p></div></article>
-        <article><svg class="detail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 7h6l2 2h10v11H3zM3 7V4h7l2 2h8v3"/></svg><div><h3>Keep your projects close</h3><p>Move between repository and worktree tabs. Save workspaces and return to the projects you’re working on.</p></div></article>
-        <article><svg class="detail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="m8 12 3 3 5-6"/></svg><div><h3>Your Git, at your direction</h3><p>Browsing reads local history. Staging, commits, fetch, pull, and push happen through your explicit actions.</p></div></article>
+    <section class="performance wrap" id="speed" aria-labelledby="speed-title">
+      <p class="section-label">Performance</p>
+      <div class="split-heading">
+        <h2 id="speed-title">More worktrees.<br>Less waiting.</h2>
+        <div><p>GitTurtle started with Fernando’s own projects: 60 GB across many worktrees. Waiting for repositories to load and commits to open kept breaking his flow. He built GitTurtle to make those everyday moments feel quick again.</p><a class="text-link" href="/performance/">See the measurements <span aria-hidden="true">→</span></a></div>
+      </div>
+      <div class="metrics">
+        <article><h3>Window on screen</h3><p class="measurement">115 <span>ms</span></p><p>Median of nine warm launches on an Apple M2 Pro running Linux.</p></article>
+        <article><h3>Changed files ready</h3><p class="measurement">21 <span>ms</span></p><p>Median from selecting a commit to its file list, on an Apple M4 Max.</p></article>
+        <article><h3>Text diff ready</h3><p class="measurement">5 <span>ms</span></p><p>Median from opening a history file to its text diff on the same M4 Max.</p></article>
+      </div>
+      <p class="measurement-note">Recorded in release builds. File-list and diff timings use a 653-commit test repository and exclude input delivery and display presentation.</p>
+    </section>
+
+    <section class="omarchy-section" id="omarchy" aria-labelledby="omarchy-title">
+      <div class="desktop-feature wrap">
+        <div class="desktop-copy">
+          <p class="section-label">First-class Omarchy support</p>
+          <h2 id="omarchy-title">Your desktop.<br>Your colors.</h2>
+          <p>Change your Omarchy theme and GitTurtle follows in the open window. It picks up your monospace font, works tiled or floating on Wayland, and opens your repository in your preferred editor or terminal.</p>
+          <a class="text-link" href="/docs/omarchy-and-themes/">Explore Omarchy support <span aria-hidden="true">→</span></a>
+          <p class="theme-note" id="themes">On any desktop, choose from <a href="/docs/omarchy-and-themes/">20 built-in themes</a> or make your own.</p>
+        </div>
+        <figure class="desktop-shot">
+          <a class="screenshot-link" data-screenshot="Omarchy desktop" href="/assets/omarchy-desktop.png">
+            <img src="/assets/omarchy-desktop.png" width="1728" height="1692" loading="lazy" alt="GitTurtle tiled beside a terminal on Omarchy in Tokyo Night, Catppuccin Latte and Gruvbox.">
+            <span class="expand-shot">Full size</span>
+          </a>
+          <figcaption>GitTurtle on Omarchy 4.5 with Tokyo Night, Catppuccin Latte, and Gruvbox.</figcaption>
+        </figure>
       </div>
     </section>
 
-    <section class="get-started-section wrap" id="get-started" aria-labelledby="get-started-title">
-      <div class="install-intro"><p class="section-label">COME TAKE A LOOK</p><h2 id="get-started-title">Good things<br>start with a commit.</h2><p>GitTurtle is an early preview, available to build from source. Try it, tell us what feels good, and help shape what comes next.</p><div class="release-status"><span>No published binary downloads yet.<br><a href="https://github.com/FernandoX7/GitTurtle/releases">Follow releases on GitHub <span aria-hidden="true">↗</span></a></span></div></div>
-      <div class="install-options">
-        <article class="install-option"><div class="install-title"><h3>macOS</h3><span>Source preview</span></div><p>Build a local app bundle with Rust, Git, and Xcode 26 or later. Local bundles are ad-hoc signed and aren’t notarized.</p><a class="button button-outline" href="https://github.com/FernandoX7/GitTurtle/blob/main/docs/user-guide.md#package-locally-on-macos">macOS build guide <span aria-hidden="true">↗</span></a></article>
-        <article class="install-option"><div class="install-title"><h3>Linux</h3><span>Source preview</span></div><p>Start with Ubuntu 24.04 x86-64 build instructions. Requires a Wayland or X11 desktop and working graphics drivers.</p><a class="button button-outline" href="https://github.com/FernandoX7/GitTurtle/blob/main/docs/linux.md#build-from-source-on-ubuntu-2404">Linux build guide <span aria-hidden="true">↗</span></a></article>
-        <p class="support-note">Platform coverage is still growing. <a href="https://github.com/FernandoX7/GitTurtle/blob/main/docs/linux.md#platform-limits">Check the current limits</a> and <a href="https://github.com/FernandoX7/GitTurtle/blob/main/docs/validation.md">validation record</a> before relying on the preview.</p>
+    <section class="install-section wrap" id="get-started" aria-labelledby="install-title">
+      <div class="install-intro">
+        <p class="section-label">Get GitTurtle</p>
+        <h2 id="install-title">Build for<br>your desktop.</h2>
+        <p>GitTurtle is open source under the MIT license. You can build it today. Pick a platform for the tools, commands, and first-launch steps.</p>
+        <a class="text-link" href="/install/">All installation guides <span aria-hidden="true">→</span></a>
       </div>
-    </section>
-
-    <section class="community-section wrap" aria-labelledby="community-title">
-      <img class="community-turtle" src="assets/turtle.png" width="180" height="180" alt="GitTurtle’s mint turtle mascot" loading="lazy">
-      <div class="community-copy"><p class="section-label">SMALL TURTLE. SHARED JOURNEY.</p><h2 id="community-title">Open source.<br>Open to you.</h2><p>Free to use, inspect, and improve. GitTurtle is open source under the MIT license. Bring an idea, report a bug, or help shape what comes next.</p><div class="community-actions"><a class="button button-dark" href="https://github.com/sponsors/FernandoX7"><span aria-hidden="true">♡</span> Sponsor GitTurtle <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/FernandoX7/GitTurtle">Explore on GitHub <span aria-hidden="true">↗</span></a></div></div>
+      <div class="platforms">
+        <a href="/install/macos/"><div><h3>macOS</h3><p>Apple Silicon</p></div><span aria-hidden="true">→</span></a>
+        <a href="/install/arch-omarchy/"><div><h3>Arch &amp; Omarchy</h3><p>x86-64 and AArch64</p></div><span aria-hidden="true">→</span></a>
+        <a href="/install/ubuntu/"><div><h3>Ubuntu 24.04</h3><p>x86-64</p></div><span aria-hidden="true">→</span></a>
+      </div>
     </section>
   </main>
-
   <footer class="site-footer wrap">
-    <div><a class="brand" href="#" aria-label="GitTurtle home"><img src="assets/app-icon.png" width="32" height="32" alt=""><span>GitTurtle</span></a><p>A native home for your Git.</p></div>
-    <nav aria-label="Footer navigation"><a href="https://github.com/FernandoX7/GitTurtle/blob/main/docs/user-guide.md">Documentation</a><a href="https://github.com/FernandoX7/GitTurtle/blob/main/SUPPORT.md">Get help</a><a href="https://github.com/FernandoX7/GitTurtle/issues/new/choose">Report a bug</a><a href="https://github.com/sponsors/FernandoX7">Sponsor</a></nav>
-    <div class="footer-base"><span>Built with care by <a href="https://github.com/FernandoX7">FernandoX7</a>.</span><span>Early preview <span aria-hidden="true">·</span> <a href="https://github.com/FernandoX7/GitTurtle/blob/main/LICENSE">MIT license</a> <span aria-hidden="true">·</span> <a href="https://github.com/FernandoX7/GitTurtle/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a></span></div>
+    <a class="brand" href="/" aria-label="GitTurtle home"><img src="/assets/app-icon.png" width="32" height="32" alt=""><span>GitTurtle</span></a>
+    <nav aria-label="Footer navigation"><a href="/docs/">Documentation</a><a href="/install/">Installation</a><a href="/releases/">Release status</a><a href="/support/">Support</a><a href="/legal/">License &amp; notices</a></nav>
   </footer>
 </body>
 </html>

@@ -98,6 +98,27 @@ toolkit's macOS stack, which the [Linux notes](linux.md) say not to upgrade
 independently of the toolkit, so it is retained until a toolkit update replaces
 those crates. Rust 1.99.0 still compiles it.
 
+**Update, November 17, 2026 (cargo-audit 0.22.2 and cargo-deny 0.20.2, RustSec
+database commit `233155b4025b854c68a4b199c0e32d7fd53291a2`, 1,527 advisories,
+updated that day).** One new maintenance advisory matches the locked graph,
+`RUSTSEC-2026-0543`: chrono is unmaintained, in every version, with no patched
+one (the advisory is dated 2026-09-14 and received its ID on 2026-11-17). No
+vulnerability matches, and the advisory names none. chrono 0.4.45 is
+the first such crate that a workspace member depends on directly: the app uses
+it for dates in `crates/app/src/main.rs` and `crates/app/src/activity.rs`, and
+the toolkit's gpui-base, gpui-component, gpui-pre, gpui-pre-scheduler and
+gpui-pre-zlog depend on it too.
+So `cargo deny` reports it under `unmaintained = "workspace"`, which would turn
+the scheduled advisories run red, and the gate's audit stage denies it as a
+warning. Owner decision, 2026-11-17: accept it by ID, under the October 2 rule,
+in [`deny.toml`](../deny.toml) with its reason and in
+[`.cargo/audit.toml`](../.cargo/audit.toml) with its path, each to be read
+again by 2026-12-17, so that any other new advisory still turns both checks
+red. Replacing the app's own use with a maintained crate comes after the first
+release; the vendored toolkit crates are not workspace members, so their use
+then becomes a transitive one that is retained with the toolkit, as the
+entries above are, and the `deny.toml` entry goes.
+
 ## Source and native boundaries
 
 The workspace has no custom build scripts. The local GPUI component build script

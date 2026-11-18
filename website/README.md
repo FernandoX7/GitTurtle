@@ -1,62 +1,78 @@
 # GitTurtle website
 
-A standalone static marketing site for `gitturtle.com`. The deployable directory is `website/public/`. HTML, CSS, and a small optional script provide a manual, keyboard-operable screenshot walkthrough. There is no package manager, build step, native dependency, application server, analytics script, form, or runtime third-party request.
+GitTurtle’s homepage, product documentation and installation guides ship together as static HTML. Cloudflare Pages serves the committed files in `website/public/`. The site uses self-hosted Manrope, native application screenshots and two small optional scripts.
 
 ## Preview and validate locally
 
-From the repository root:
+From the repository root, start a server and open [the local preview](http://127.0.0.1:4173/).
 
 ```sh
 python3 -m http.server 4173 --bind 127.0.0.1 --directory website/public
 ```
 
-Open `http://127.0.0.1:4173`. Stop with Ctrl+C. Check syntax and local asset/anchor links with:
+Edit the homepage in `website/public/index.html`. Edit guide content in `website/guides/` and run `python3 website/build_guides.py` to regenerate the published HTML. When adding or removing routes, refresh the sitemap with `python3 website/check.py --write-sitemap`. See the [guide authoring notes and product sources](guides/README.md).
+
+Run the same checks as the website CI job.
 
 ```sh
-node --check website/public/site.js
+python3 website/build_guides.py --check
+python3 website/test_check.py
 python3 website/check.py
+node --check website/public/site.js
+node --check website/public/guide.js
 ```
 
-The initial review verified the rendered site at 1440, 1024, 390 and 320 pixels with no horizontal overflow. Left/End/Tab navigation retained the expected keyboard focus; activating Prepare a commit selected the panel and its images loaded. The browser reported no console warnings or errors. Actual reduced-motion emulation, 200% zoom and JavaScript-disabled runtime checks were unavailable in the current browser capability; their fallback behavior was reviewed in source only. See [the website QA record](QA.md) for the executed scope and limits.
+The site checker validates internal links and fragments, public file hygiene, screenshot provenance, GitHub destinations, per-page metadata, structured data, crawler rules and sitemap coverage. The [QA record](QA.md) covers browser testing. The local Python server serves `404.html` directly and ignores Cloudflare’s `_headers` rules. See [hosting and deployment checks](OPERATIONS.md) for production behavior.
 
-### Motion and JavaScript fallback
+### Navigation, motion and search
 
-Source inspection confirms these behaviors; it does not substitute for browser emulation:
+The homepage tour shows History first. Clicking a tab or using Left, Right, Home or End selects a screenshot and its guide. Direct fragment links such as `/#panel-stage` open the corresponding panel. With JavaScript disabled, all three figures and article links appear in order. Full size opens a native image dialog. Choose Actual size to read the original pixels and pan, or Fit to window to see the full image. Closing the dialog returns to the screenshot. Without JavaScript the link opens the original PNG. Reduced motion uses immediate anchor scrolling. Installation commands are selectable text, with an optional copy button on compatible browsers.
 
-- Normal motion is limited to smooth in-page anchor scrolling and 180 ms button/link hover transitions, including a two-pixel hover offset. The walkthrough has no autoplay, timer, scrolling animation, or animated panel transition.
-- With `prefers-reduced-motion: reduce`, anchor scrolling becomes immediate, animations and transitions are disabled (including pseudo-elements), and button/link hover translations are removed. The turtle's fixed rotation remains a static composition. The skip link still appears immediately when focused.
-- Without JavaScript, the tour buttons remain hidden and all three screenshots, captions, and full-size links appear in document order. Navigation, source-install links and the rest of the page remain ordinary HTML. No panel starts with a `hidden` attribute.
-- With JavaScript, the walkthrough initially selects Review changes. The script adds tab/tablist/tabpanel semantics, makes only the selected tab sequentially focusable, and shows its panel. Left/Right wrap and select; Home/End select the first/last tab. Click and native button Enter/Space activation select a view. The selected panel and its image link remain keyboard-accessible. Selection has no network side effects.
+Each indexable page has its own canonical URL, title, description and social sharing metadata. The homepage identifies GitTurtle as the site name with WebSite JSON-LD and describes the Git client with SoftwareApplication data. Guide breadcrumbs are ordinary links and carry matching BreadcrumbList data. The sitemap uses the public domain. Visitors and search crawlers can read the complete instructions in the original HTML. The static checks catch crawler-specific rules that would block Googlebot, Bingbot, DuckDuckBot, DuckAssistBot, Yahoo Slurp or OAI-SearchBot from a canonical page.
 
-`check.py` first rejects hidden files, symlinks and common private or development outputs in the upload directory. It then checks HTML recursively, CSS `url()` assets, same-page and cross-page fragment IDs, duplicate IDs, explicit button types, image alt attributes, provenance hashes, Pages-header syntax, content fingerprints for immutable URLs, and the custom 404's root-relative references and `noindex`. This file guard does not replace reviewing public content for sensitive information. It makes no network requests and does not render CSS, execute JavaScript, test deployed responses or replace accessibility checks. `smoke.py` checks the deployed HTTP/TLS behavior with bounded read-only requests.
+### Social sharing card
 
-The local Python preview server does not interpret Cloudflare's `_headers` file or automatically use the custom `404.html` for missing paths. Both were verified on the published Pages deployment; see [the publication QA record](QA.md#publication-verification).
-
-The production response policies, managed certificate renewal, TLS settings, cache behavior and post-deployment checks are documented in [OPERATIONS.md](OPERATIONS.md).
+The homepage and guides point Open Graph and X to the same [1200 × 630 PNG](public/assets/gitturtle-social.png). Each guide shares its own title and description. The [card artwork](share-card.html) combines the app icon, the full History capture and the bundled Manrope font. To update it, open the artwork locally in Chromium, set the viewport to 1200 × 630 at device scale 1 and capture the viewport once the images and font have loaded. Update the source and image hashes in `asset-provenance.json`. Check the wordmark, headline and application window in wide and square crops.
 
 ## Content and release truth
 
-The GitHub Releases API returned an empty array on 2026-09-14. The public [Releases page](https://github.com/FernandoX7/GitTurtle/releases) also reported no releases. Therefore the site offers **source build guides**, not download buttons. Never change a CTA to Download until the target public release asset exists, its platform/architecture and signature status are verified, and installation guidance matches it. No hosted endpoint is queried automatically by the website.
+The site's GitHub links open the project repository. The guide articles, platform installation instructions, release status, benchmark records and notices have first-party destinations. Product guides are curated from the [repository sources](guides/README.md#content-sources). Update the relevant articles when a release changes a workflow or system requirement.
 
-macOS and Linux are described as source previews. Linux's initial build target is Ubuntu 24.04 x86-64, not a promise of distribution-wide support. Local macOS bundles are ad-hoc signed and not notarized. Platform limits and the validation record remain one click away. Site claims come from the current repository README and user guide; no benchmark, endorsement, testimonial or release date has been invented. The performance positioning and 60 GB worktree origin story come from the owner’s experience; 60 GB is not advertised as a capacity limit or a measured cross-client benchmark.
+The November 17, 2026 release check found no published downloads. The acquisition path currently offers builds from source for Apple Silicon Macs, Arch and Omarchy on x86-64 and AArch64, and Ubuntu 24.04 on x86-64. The [release page source](guides/reference/releases.html) records what visitors can install. When a verified release becomes available, update the homepage, installation overview, affected platform guides and release status together. Verify the actual artifact, architecture and signing status before advertising a download.
+
+The performance page identifies the source build, hardware, sample size and timing boundaries of the homepage measurements. Its underlying records live in `public/performance/records/`. The 60 GB worktree story describes the owner’s experience.
 
 ### Screenshot provenance and replacement
 
-History, Split and Working Changes use unaltered client-area captures of native preview source `013e3348a29735617982bfd217551fdf91e4c694` in a disposable Aurora fixture.
+All product images come from the repository captures in `docs/screenshots/readme/`. Ten full-size PNGs are byte-for-byte copies. The desktop sheet and the three mobile tour previews are full-frame reductions. They are unaltered native captures of `gitturtle-025eaf4`, a clean release build of `025eaf40bf3b1f565b4488bd4434e2e3b1c6c141`, on an M2 Pro MacBook Pro running Omarchy 4.5.0-3 (Hyprland 0.56.2 on native Wayland, at scale 2). They show a disposable demo repository whose people, addresses and paths are invented. [The November 16 record](../docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45) holds the build, the method, the fixture, each picture's state and hash, and the privacy check.
 
-| Website asset | Capture | Exercised application identity |
+| Website asset | README picture | Shown state |
 | --- | --- | --- |
-| `public/assets/history.png` | `final-history.png` | Source `013e3348a29735617982bfd217551fdf91e4c694`; release binary SHA-256 `164a93b7100ad9be311645f680bb6c7d76ebb6dde8cfea520a6c7e41d098e47c`; Ubuntu 24.04 virtual X11/Xvfb with Openbox, default Midnight theme; 1480 × 800. |
-| `public/assets/compare.png` | `final-split.png` | Same captured executable/environment as History; actual Split view with Before and After source and highlighted changes; 1480 × 800. |
-| `public/assets/changes.png` | `final-working.png` | Same captured executable/environment as History. Shows an unstaged `App.tsx` edit, staged `notes/preview-check.md`, and the composer title `Document the preview workflow` with Commit 1 file available; 1480 × 800. |
+| `public/assets/history.png` | `history.png` | History in the Omarchy theme following Tokyo Night, project list on, a commit selected with its seven changed files; 2960 × 1946. |
+| `public/assets/compare.png` | `compare.png` | Compare, the split view of `src/App.tsx` in the selected commit; 2960 × 1946. |
+| `public/assets/changes.png` | `changes.png` | Changes, the unstaged diff of `src/App.tsx` with two hunks, two files staged and a message typed; 2960 × 1946. |
+| `public/assets/file-history.png` | `file-history.png` | File history of `src/theme.css`, revision 2 of 5; 2960 × 1946. |
+| `public/assets/image-compare.png` | `image-compare.png` | Compare of a PNG, Side by side at Fit; 2960 × 1946. |
+| `public/assets/keyboard-shortcuts.png` | `keyboard-shortcuts.png` | Keyboard Shortcuts over History, 64 shortcuts listed; 2960 × 1946. |
+| `public/assets/settings-themes.png` | `settings-themes.png` | Settings, the Omarchy card selected and following Tokyo Night; 2960 × 1946. |
+| `public/assets/theme-editor.png` | `theme-editor.png` | The theme editor, an unsaved theme based on Midnight with its accent changed; 2960 × 1946. |
+| `public/assets/themes-builtin.png` | `themes-builtin.png` | A sheet: the History frame in eight built-in themes, four dark and four light; 1836 × 694. |
+| `public/assets/omarchy-themes.png` | `omarchy-themes.png` | A sheet: the History frame under 23 stock Omarchy themes, eighteen dark and five light; 1836 × 1002. |
+| `public/assets/omarchy-desktop.png` | `omarchy-desktop.png`, scaled down | A sheet: the whole monitor with the app tiled beside a terminal on Tokyo Night, and on Catppuccin Latte and Gruvbox at half size; 1728 × 1692, from 3456 × 3383. |
 
-All native inputs for the captured executable were committed; its source tree was marked modified because of untracked docs/site work. These images were captured in a virtual X11 desktop, not on the physical desktop. They establish the displayed application state, not scrolling smoothness or macOS coverage. The coordinator records native evidence in [the current preview evidence directory](../docs/benchmarks/native-preview-20260914). `asset-provenance.json` records the copied bytes, image hashes, source commit and binary identity.
+The eight 2960 × 1946 pictures are single grabs of the app's window. The three sheets are composed from frames taken the same way and are not single grabs: the two theme sheets reduce each frame to a labeled tile on a transparent background, and the desktop sheet holds whole-monitor frames. All eleven come from Linux on Wayland: none is a macOS or X11 capture. They establish the displayed application state, not speed. `asset-provenance.json` records each picture's source path, bytes, SHA-256 and evidence; `check.py` compares the hashes, and a scaled-down picture's source hash too.
 
-The final installed native source is `417b5e8d0c739ca3746d2cab379db58efa4d8ea9`. Its later change filters unrelated sibling events from recovery sentinel watches in `local_refresh.rs`; it does not change the displayed UI. The website screenshots remain captures of `013e3348…` and are not represented as captures of `417b5e8…`.
+On screens up to 710 CSS pixels wide, browsers that support WebP load 1200 × 789 previews of History, Compare and Stage. Each image still links to its full-size PNG.
 
-All initial bootstrap images have been replaced. For later image updates, retain real fixture content and app pixels, update this table, the provenance hashes, HTML image dimensions/alt text and tour captions, and the visible screenshot-evidence link. No app UI has been generated, composited or painted over. A short real recording may be added with visible playback controls, no autoplay, and a still-image fallback.
+The README's `omarchy-desktop.png` is 2,405,054 bytes, more than the 2 MiB (2,097,152 bytes) that `smoke.py` allows one response, so the site carries the whole picture scaled to half size, 1,728 pixels wide, with ImageMagick's Lanczos filter and its alpha channel kept: 1,177,156 bytes. A 2,208-pixel copy weighed 1.73 MB, over the 1.5 MB allowed for this picture.
 
-The app icon and turtle use existing project artwork from `assets/branding/app-icon.png` and `assets/AppIcon.icon/Assets/turtle.png`. Manrope Latin is self-hosted from Google Fonts (variable 400–800); its original SIL Open Font License is retained in `public/fonts/OFL.txt`. Typeface source: [Google Fonts Manrope](https://github.com/google/fonts/tree/main/ofl/manrope). No image-generation tool was used to alter product evidence.
+Two of the README's pictures are not on the site: `command-palette.png` and `markdown.png` are not used by the page.
+
+The first three pictures the site shipped, captures of preview source `013e3348a29735617982bfd217551fdf91e4c694` from September 14, 2026, were replaced on November 16, 2026. Their record remains in [the September preview evidence directory](../docs/benchmarks/native-preview-20260914).
+
+For later picture updates, copy the README's picture byte for byte. An app capture may be scaled down as a whole, never cropped, retouched or recolored, and the derivative's provenance entry names its source file, the source's sha256 and the method. Give each `img` its true `width` and `height` and a real alt text, and update this table, the provenance entries, the captions and the visible evidence link together. A short real recording may be added with visible playback controls, no autoplay, and a still-image fallback.
+
+The app icon and turtle use existing project artwork from `assets/branding/app-icon.png` and `assets/AppIcon.icon/Assets/turtle.png`. The turtle is artwork, not an app capture: the site's copy is the 1254 × 1254 original (942,906 bytes) scaled to 540 pixels wide (235,756 bytes), and its provenance entry names the source's hash and the method. Manrope Latin is self-hosted from Google Fonts (variable 400–800); its original SIL Open Font License is retained in `public/fonts/OFL.txt`. Typeface source: [Google Fonts Manrope](https://github.com/google/fonts/tree/main/ofl/manrope). No image-generation tool was used to alter product evidence.
 
 ## Cloudflare Pages deployment
 
@@ -72,8 +88,8 @@ The owner approved publication on September 14, 2026. Cloudflare Pages hosts the
 | Initial deployed source | `0db617969b94c565ec1f89d94a03055e705c1efb`, exact `website/public/` bytes |
 | Production branch label | `main` |
 | Upload tool | Wrangler `4.131.2` |
-| Current production deployment | `10a8ce6a-295e-44e4-a979-374420029a8b` |
-| Current deployed source | `88b21e38f1282b0b228710bc0b240958f95cf21e` |
+| Current production deployment | `3932cdbc-a435-49ba-8729-e62ed7f39ca9` (November 17, 2026, `https://3932cdbc.gitturtle.pages.dev`) |
+| Current deployed source | `d72dfab5d6da84557ecf8a63612ec2751a0dc3ad` |
 
 Publication created the Pages project and custom-domain binding, then added one proxied CNAME: `gitturtle.com` → `gitturtle.pages.dev`, automatic TTL. Cloudflare reports the domain, verification and certificate validation active. Both public DNS resolvers checked resolve the apex; domain TLS and file-byte checks passed against those resolved addresses. DNS propagation temporarily limited local browser verification, so browser checks used the working Pages hostname.
 
@@ -81,11 +97,9 @@ The native and website source commits were pushed after merging the remote's wor
 
 ### Publish an update
 
-Review the local page and run the focused website checks before an explicit deployment. From a clean, committed checkout, with Node.js 22 or newer and a Cloudflare login authorized for Pages:
+Review the local page and run the [focused website checks](#preview-and-validate-locally) before an explicit deployment. From a clean, committed checkout, with Node.js 22 or newer and a Cloudflare login authorized for Pages:
 
 ```sh
-node --check website/public/site.js
-python3 website/check.py
 cd website
 npx --yes wrangler@4.131.2 login --scopes account:read user:read pages:write
 npx --yes wrangler@4.131.2 pages deploy public --project-name gitturtle --branch main --commit-hash "$(git rev-parse HEAD)" --commit-dirty=false

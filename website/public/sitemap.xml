@@ -1,2 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://gitturtle.com/</loc></url></urlset>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://gitturtle.com/</loc></url>
+  <url><loc>https://gitturtle.com/docs/</loc></url>
+  <url><loc>https://gitturtle.com/docs/first-repository/</loc></url>
+  <url><loc>https://gitturtle.com/docs/github/</loc></url>
+  <url><loc>https://gitturtle.com/docs/history-and-diffs/</loc></url>
+  <url><loc>https://gitturtle.com/docs/omarchy-and-themes/</loc></url>
+  <url><loc>https://gitturtle.com/docs/previews-and-keyboard/</loc></url>
+  <url><loc>https://gitturtle.com/docs/staging/</loc></url>
+  <url><loc>https://gitturtle.com/docs/worktrees-and-recovery/</loc></url>
+  <url><loc>https://gitturtle.com/install/</loc></url>
+  <url><loc>https://gitturtle.com/install/arch-omarchy/</loc></url>
+  <url><loc>https://gitturtle.com/install/macos/</loc></url>
+  <url><loc>https://gitturtle.com/install/ubuntu/</loc></url>
+  <url><loc>https://gitturtle.com/legal/</loc></url>
+  <url><loc>https://gitturtle.com/performance/</loc></url>
+  <url><loc>https://gitturtle.com/releases/</loc></url>
+  <url><loc>https://gitturtle.com/support/</loc></url>
+</urlset>

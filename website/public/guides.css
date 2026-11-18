@@ -1,0 +1,69 @@
+.guide-layout {
+  display: grid;
+  grid-template-columns: minmax(150px, 215px) minmax(0, 740px);
+  gap: clamp(36px, 5vw, 88px);
+  justify-content: center;
+  align-items: start;
+  padding-block: clamp(42px, 6vw, 86px) clamp(64px, 9vw, 128px);
+}
+.guide-copy { min-width: 0; grid-column: 2; grid-row: 1; font-size: 1rem; line-height: 1.75; overflow-wrap: anywhere; }
+.guide-aside { grid-column: 1; grid-row: 1; }
+.guide-aside nav { display: grid; border-left: 1px solid var(--line); }
+.guide-aside h2 { margin: 0 0 10px 16px; font-size: .82rem; line-height: 1.5; font-weight: 780; letter-spacing: 0; }
+.guide-aside a { padding: 8px 15px; color: var(--muted); font-size: .85rem; line-height: 1.35; text-decoration: none; }
+.guide-aside a:hover { color: var(--ink); text-decoration: underline; }
+.guide-aside a[aria-current="page"] { border-inline-start: 3px solid var(--accent); margin-inline-start: -1px; padding-inline-start: 13px; background: var(--mint); color: var(--ink); font-weight: 750; }
+.guide-copy .guide-intro { margin: 0 0 32px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+.guide-intro h1 { max-width: 19ch; margin: 0; color: var(--ink); font-size: clamp(2.45rem, 5.3vw, 4.25rem); font-weight: 650; line-height: 1.07; letter-spacing: -.065em; text-align: start; text-wrap: balance; }
+.guide-intro p { margin: 16px 0 0; max-width: 58ch; color: var(--muted); font-size: clamp(1.03rem, 1.6vw, 1.18rem); line-height: 1.65; }
+.guide-copy h2 { margin: 2.3rem 0 .65rem; font-size: clamp(1.5rem, 2.8vw, 2rem); line-height: 1.2; font-weight: 700; letter-spacing: -.045em; }
+.guide-copy h3 { margin: 1.5rem 0 .4rem; font-size: 1.2rem; line-height: 1.35; letter-spacing: -.025em; }
+.guide-copy .guide-intro + h2 { margin-top: 0; }
+.guide-copy > p, .guide-copy ul, .guide-copy ol, .guide-copy dl { margin: .75em 0 1.1em; }
+.guide-copy ul, .guide-copy ol { padding-inline-start: 1.5em; }
+.guide-copy li { margin-block: .55em; padding-inline-start: .15em; }
+.guide-copy li::marker { color: var(--accent); font-weight: 700; }
+.guide-copy dt { margin-top: 1em; }
+.guide-copy dd { margin: .25em 0 .7em; }
+.guide-copy p a, .guide-copy li a, .guide-copy dd a, .guide-copy figcaption a { color: var(--accent); text-decoration: underline; text-underline-offset: .16em; }
+.guide-copy code { padding: .08em .25em; border-radius: 4px; background: #e7efe8; font-size: .87em; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: normal; overflow-wrap: anywhere; }
+.guide-copy pre { margin: .85rem 0 1.3rem; padding: 16px 20px; border-radius: 8px; background: var(--deep); color: #e6f6e8; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+.guide-copy pre code { display: block; padding: 0; color: inherit; background: transparent; font-size: .87rem; white-space: inherit; }
+.guide-copy table { width: 100%; border-collapse: collapse; text-align: start; font-size: .9rem; line-height: 1.5; }
+.guide-copy td, .guide-copy th { border-bottom: 1px solid var(--line); padding: .65em .55em; text-align: start; }
+.guide-copy thead, .guide-copy .note { background: #e6efe8; }
+.guide-copy caption { padding: .75em 0; text-align: start; font-weight: 700; }
+.guide-copy figure { margin: 1.75rem 0; }
+.guide-copy figure a { display: block; border-radius: 8px; }
+.guide-copy figure img { display: block; width: 100%; height: auto; border-radius: 8px; }
+.guide-copy figcaption { margin: 8px 0; font-size: .84rem; line-height: 1.55; color: var(--muted); }
+.guide-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(235px, 100%), 1fr)); gap: 12px; margin: 16px 0 24px; }
+.guide-pairs { grid-template-columns: repeat(auto-fit, minmax(min(100%, 255px), 1fr)); }
+.guide-card { display: flex; flex-direction: column; justify-content: space-between; padding: 18px 20px; border-radius: 8px; border: 1px solid var(--line); background: #fcfdf9; text-decoration: none; }
+.guide-card strong { font-size: 1.05rem; line-height: 1.4; letter-spacing: -.025em; }
+.guide-card span { display: block; margin-top: 5px; color: var(--muted); font-size: .9rem; line-height: 1.55; }
+.guide-card:hover { border-color: var(--accent); }
+.guide-card:hover strong { text-decoration: underline; }
+.guide-copy .note { padding: 12px 18px; border-inline-start: 3px solid var(--accent); }
+.guide-start { display: flex; align-items: center; gap: 12px 24px; flex-wrap: wrap; }
+.guide-start a:first-child { border-radius: 7px; padding: 9px 15px; background: var(--ink); color: white; font-weight: 700; text-decoration: none; }
+.guide-start a:first-child:hover { text-decoration: underline; }
+@media (max-width: 760px) {
+  .guide-layout { display: flex; flex-direction: column; gap: 40px; }
+  .guide-copy, .guide-aside { width: 100%; }
+  .guide-copy { font-size: .98rem; }
+  .guide-aside nav { grid-template-columns: repeat(2, minmax(0, 1fr)); border-left: 0; border-top: 1px solid var(--line); padding-top: 18px; }
+  .guide-aside h2 { grid-column: 1 / -1; margin-left: 0; }
+  .guide-aside a { padding: 8px; }
+  .guide-intro h1 { letter-spacing: -.055em; }
+}
+.guide-crumbs ol { display: flex; align-items: center; flex-wrap: wrap; margin: 0 0 20px; padding: 0; list-style: none; gap: .3em; }
+.guide-crumbs li { display: inline-flex; align-items: center; margin: 0; padding: 0; font-size: .82rem; }
+.guide-crumbs li + li::before { content: ''; display: block; width: .4em; height: .4em; margin-inline: .4em .7em; border: solid #869c8c; border-width: 1px 1px 0 0; transform: rotate(45deg); }
+.guide-copy .guide-crumbs a { display: inline-block; padding-block: 3px; color: var(--muted); }
+.guide-copy .guide-crumbs a[aria-current="page"] { color: var(--ink); text-decoration: none; }
+.command-tools { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin: .85rem 0 0; padding: 6px 10px; border-radius: 8px 8px 0 0; background: var(--deep); color: #d0e8d5; font-size: .81rem; }
+.command-tools button { flex: none; cursor: pointer; color: inherit; background: transparent; border: 1px solid #779386; border-radius: 4px; padding: 4px 12px; font: inherit; }
+.command-tools button:hover { color: white; border-color: white; }
+.command-tools button:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+.guide-copy .command-tools + pre { margin-top: 0; padding-top: 6px; border-radius: 0 0 8px 8px; }
