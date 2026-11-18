@@ -32,7 +32,9 @@ MAC, LINUX_X86, LINUX_ARM, LINUX_TARGETS = release.MAC, release.LINUX_X86, relea
 SHA = "a" * 40
 TAG = "b" * 40
 LOCK = "c" * 64
-REQUIRED = ["Quality gate", "Rust formatting", "Rust tests · macos-15", "Rust tests · ubuntu-24.04",
+REQUIRED = ["Quality gate", "Rust formatting",
+            "Rust tests · macos-15 · 1/2", "Rust tests · macos-15 · 2/2",
+            "Rust tests · ubuntu-24.04 · 1/2", "Rust tests · ubuntu-24.04 · 2/2",
             "Rust Clippy · macos-15", "Rust Clippy · ubuntu-24.04",
             "Rust release · macos-26", "Rust release · ubuntu-24.04", "Rust release · ubuntu-24.04-arm"]
 ARM_RELEASE_JOB = "Rust release · ubuntu-24.04-arm"
@@ -739,16 +741,44 @@ class Trust(unittest.TestCase):
             name = re.search(r"^    name: (.+)$", block, re.M)
             if not name:
                 continue
-            listed = re.search(r"^        os: \[(.*)\]$", block, re.M)
-            runners = ([runner.strip() for runner in listed.group(1).split(",")] if listed
-                       else re.findall(r"^          - os: (\S+)$", block, re.M))
-            if "${{ matrix.os }}" in name.group(1):
-                self.assertTrue(runners, name.group(1))
-                produced.update(name.group(1).replace("${{ matrix.os }}", runner) for runner in runners)
-            else:
-                produced.add(name.group(1))
+            # Every matrix axis in the name, each an inline list or, for the
+            # release legs, one `include` entry per value.
+            names = [name.group(1)]
+            for axis in dict.fromkeys(re.findall(r"\$\{\{ matrix\.([a-z-]+) \}\}", name.group(1))):
+                listed = re.search(rf"^        {axis}: \[(.*)\]$", block, re.M)
+                values = ([value.strip() for value in listed.group(1).split(",")] if listed
+                          else re.findall(rf"^          - {axis}: (\S+)$", block, re.M))
+                self.assertTrue(values, name.group(1))
+                names = [item.replace(f"${{{{ matrix.{axis} }}}}", value) for item in names for value in values]
+            self.assertNotIn("${{", "".join(names))
+            produced.update(names)
         required = set(github.quality_evidence(FakeGitHub(), SHA, 45)["required_jobs"])
         self.assertLessEqual(required, produced)
+        # Both shards of each required platform, so no release counts half a suite.
+        tests = sorted(name for name in produced if name.startswith("Rust tests · ") and "archlinux" not in name)
+        self.assertEqual(tests, sorted(name for name in required if name.startswith("Rust tests · ")))
+        self.assertEqual(len(tests), 4)
+
+    def test_every_test_shard_is_required_and_no_unsharded_job_stands_in_for_one(self):
+        shards = [name for name in REQUIRED if name.startswith("Rust tests · ")]
+        self.assertEqual(shards, ["Rust tests · macos-15 · 1/2", "Rust tests · macos-15 · 2/2",
+                                  "Rust tests · ubuntu-24.04 · 1/2", "Rust tests · ubuntu-24.04 · 2/2"])
+        for shard in shards:
+            for variant in ("missing", "duplicate", "unsharded", "skipped", "failure", "cancelled"):
+                with self.subTest(shard=shard, variant=variant):
+                    api = FakeGitHub()
+                    job = next(item for item in api.jobs if item["name"] == shard)
+                    if variant == "missing":
+                        api.jobs.remove(job)
+                    elif variant == "duplicate":
+                        api.jobs.append(copy.deepcopy(job))
+                    elif variant == "unsharded":
+                        # The name every run from before the split gave the whole platform's job.
+                        job["name"] = shard.rsplit(" · ", 1)[0]
+                    else:
+                        job["conclusion"] = variant
+                    with self.assertRaisesRegex(github.Error, re.escape(shard)):
+                        github.quality_evidence(api, SHA, 45)
 
     def test_macos26_package_job_cannot_be_replaced_by_old_or_unsuccessful_checks(self):
         for variant in ("old-runner", "missing", "duplicate", "skipped", "failure", "cancelled"):
