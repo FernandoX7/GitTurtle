@@ -2,19 +2,36 @@
 """Compare the tests two Rust CI job logs executed: libtest (`cargo test`) or nextest (stdlib only).
 
 Accepts raw job logs (`gh api .../actions/jobs/<id>/logs`), `gh run view --log`
-output, or a diagnostics `tests.log`. Tests are keyed `<kind>:<target> <name>`,
-where kind is lib, bin, test, bench, example or doc and the target uses Cargo's
-crate spelling (`-` becomes `_`), so both runners' reports compare directly.
+output for one job, or a diagnostics `tests.log`. Tests are keyed
+`<kind>:<target> <name>`, where kind is lib, bin, test, bench, example or doc and
+the target uses Cargo's crate spelling (`-` becomes `_`), so both runners'
+reports compare directly.
 
-Each side of `compare` takes one log or several taken together, one per job: the
-shards of a partitioned run (`cargo nextest run --partition slice:m/n`) are
-united before the comparison. A shard's log lists the other shards' tests as
-skipped, so a test counts as ignored only when no log of its side executed it,
-and a test that more than one log of a side executed is reported as an error:
-a partition runs each test once.
+Results are counted, not only named. The hosted wrapper (`metrics.py measure`)
+redacts text shaped like a credential, so every test of a module such as
+`secret_service` prints under one name: a key therefore has a number of executed
+and a number of ignored results, and two sides are equal only when every key's
+numbers are.
+
+Each side of `compare` takes one job's log or several taken together: the shards
+of one partitioned run (`cargo nextest run --partition slice:m/n`) on one
+platform, one attempt each. A shard's log lists every test, the other shards'
+as `SKIP`, so the shards' executed counts add and a key's ignored count is what
+the shards list less what they executed.
+
+Each log is first reconciled with nextest's own totals: it holds one run, from
+its `Starting` line to its `Summary` line, and the result lines counted between
+them must equal the Summary line's tests run, passed, failed and skipped. A
+result line that is missing, repeated or printed by a test therefore makes the
+log unreconciled instead of making two different runs compare equal. Lines
+after the Summary line repeat the failures and are not counted.
+
+`compare` exits 0 when the sides are identical, 1 when they differ and 3 when a
+log does not reconcile, whatever the comparison then says.
 """
 
 import argparse
+from collections import Counter
 import json
 import re
 import sys
@@ -24,10 +41,28 @@ PREFIX = re.compile(r"^(?:[^\t\n]*\t){0,2}\ufeff?(?:\d{4}-\d\d-\d\dT\d\d:\d\d:\d
 LIBTEST_BINARY = re.compile(r"^\s*Running (?P<unit>unittests )?(?P<source>\S+) \((?P<executable>[^)]*)\)\s*$")
 LIBTEST_DOCS = re.compile(r"^\s*Doc-tests (?P<crate>\S+)\s*$")
 LIBTEST_RESULT = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<result>ok|ignored|FAILED)(?:,.*)?$")
-# `PASS [   0.012s] (  1/100) gitturtle-core path::to::test`; SKIP lines leave the
-# duration blank and pad the counter with box-drawing characters.
-NEXTEST_RESULT = re.compile(r"^\s*(?P<status>[A-Z][A-Z0-9 +/-]*?) \[[^\]]*\] (?:\[[^\]]*\] )?(?:\([^)]*\) )?"
+# nextest 0.9.146, as three runs of `gitturtle-preview` and the hosted logs print it:
+#     Starting 96 tests across 1 binary (97 tests skipped)
+#         PASS [   0.010s] ( 1/96) gitturtle-preview animation::tests::spent_budget
+#         SKIP [         ] (─────) gitturtle-preview animation::tests::caps_frames
+#         SLOW [> 60.000s] (─────────) gitturtle::bin/gitturtle views::tests::slow
+#      Summary [   3.263s] 96 tests run: 96 passed, 97 skipped
+# A finished test's line carries its place in the run, `(n/N)`. A test outside
+# the shard's slice prints the same SKIP line as one marked `#[ignore]`, and a
+# progress line such as SLOW is ruled like a SKIP line: its test prints its
+# result later.
+NEXTEST_RESULT = re.compile(r"^\s*(?P<status>[A-Z][A-Z0-9 +/-]*?) \[[^\]]*\] (?:\[[^\]]*\] )?(?:\((?P<place>[^)]*)\) )?"
                             r"(?P<binary>[A-Za-z0-9_.:/-]+) (?P<name>\S+)\s*$")
+NEXTEST_PLACE = re.compile(r"\s*\d+/\d+")
+# The loose forms find every line that claims to open or close a run; the
+# strict forms read the figures of the shapes observed.
+NEXTEST_STARTING = re.compile(r"^\s*Starting \d+ tests? across ")
+NEXTEST_STARTING_FIGURES = re.compile(r"^\s*Starting (?P<tests>\d+) tests? across \d+ (?:binary|binaries)"
+                                      r"(?: \((?P<skipped>\d+) tests? skipped\))?\s*$")
+NEXTEST_SUMMARY = re.compile(r"^\s*Summary \[")
+NEXTEST_SUMMARY_FIGURES = re.compile(r"^\s*Summary \[[^\]]*\] (?P<run>\d+) tests? run: (?P<figures>\S.*?)\s*$")
+# `3612 passed (2 slow), 1 failed, 27 skipped`
+NEXTEST_FIGURE = re.compile(r"(?P<count>\d+) (?P<what>[a-z]+(?: [a-z]+)*)(?: \([^()]*\))?(?:, |$)")
 KINDS = ("bin", "bench", "example", "test")
 
 
@@ -52,26 +87,103 @@ def nextest_key(binary):
     return f"{kind}:{crate(name)}" if name and kind in KINDS else f"test:{crate(target)}"
 
 
+def summary_figures(line):
+    """The figures of a nextest Summary line, or None for a shape this tool has not been taught."""
+    if not (match := NEXTEST_SUMMARY_FIGURES.match(line)):
+        return None
+    figures, position = {}, 0
+    while position < len(match["figures"]):
+        figure = NEXTEST_FIGURE.match(match["figures"], position)
+        if not figure or figure["what"] in figures:
+            return None
+        figures[figure["what"]] = int(figure["count"])
+        position = figure.end()
+    return {"tests_run": int(match["run"]), **{what: figures.pop(what, 0) for what in ("passed", "failed", "skipped")},
+            "other": figures}
+
+
+def more_or_fewer(found, stated):
+    return f"{abs(found - stated)} {'more' if found > stated else 'fewer'}"
+
+
+def reconcile(statuses, skipped, starting, summary, runs, headers):
+    """What keeps one log's counted result lines from being its runner's own totals."""
+    if runs["misplaced"] or (runs["started"], runs["finished"]) not in ((0, 0), (1, 1)):
+        return [f"{runs['started']} Starting and {runs['finished']} Summary lines of nextest"
+                + (", a Summary line outside a run" if runs["misplaced"] else "")
+                + ": a log holds one run, from its Starting line to its Summary line"]
+    if not runs["started"]:
+        return [] if headers else ["neither a nextest run nor a libtest header: the log holds no test run"]
+    if starting is None or summary is None:
+        return [f"a nextest line this tool cannot read: {runs['unread'][0].strip()}"]
+    others = ", ".join(f"{status} {count}" for status, count in sorted(statuses.items()) if status not in ("PASS", "FAIL"))
+    others = f"; other statuses: {others}" if others else ""
+    problems = []
+    for found, lines, figure, stated, note in (
+        (sum(statuses.values()), "result lines of finished tests", "tests run", summary["tests_run"], ""),
+        (statuses["PASS"], "PASS lines", "passed", summary["passed"], others),
+        (statuses["FAIL"], "FAIL lines", "failed", summary["failed"], others),
+        (skipped, "SKIP lines", "skipped", summary["skipped"], ""),
+    ):
+        if found != stated:
+            problems.append(f"{lines}: {found}, {figure} in its Summary line: {stated} ({more_or_fewer(found, stated)}){note}")
+    for figure, stated, name in (("tests", summary["tests_run"], "tests run"), ("skipped", summary["skipped"], "skipped")):
+        if starting[figure] != stated:
+            problems.append(f"{figure} in its Starting line: {starting[figure]}, {name} in its Summary line: {stated}")
+    return problems
+
+
 def extract(lines):
-    """Return ({executed test keys}, {ignored or skipped test keys}) from one log."""
-    executed, ignored = set(), set()
-    binary = "unknown:"
+    """Count one log's results and reconcile them with the log's own totals.
+
+    `ran` and `skipped` count nextest's result lines per key inside the log's
+    run; `libtest_ran` and `libtest_ignored` are libtest's tests, each once,
+    because a second line for a test is the output of a test that ran its own
+    binary again. `nextest` holds the Summary line's figures, None without a
+    readable run, and `problems` what does not reconcile.
+    """
+    ran, skipped, statuses = Counter(), Counter(), Counter()
+    libtest_ran, libtest_ignored = set(), set()
+    binary, headers, running, starting, summary = "unknown:", 0, False, None, None
+    runs = {"started": 0, "finished": 0, "misplaced": False, "unread": []}
     for raw in lines:
         line = PREFIX.sub("", ANSI.sub("", raw.rstrip("\r\n")), count=1)
-        if match := LIBTEST_BINARY.match(line):
-            binary = libtest_key(match["unit"], match["source"], match["executable"])
+        if NEXTEST_STARTING.match(line):
+            runs["started"] += 1
+            running = True
+            if match := NEXTEST_STARTING_FIGURES.match(line):
+                starting = {"tests": int(match["tests"]), "skipped": int(match["skipped"] or 0)}
+            else:
+                runs["unread"].append(line)
+        elif NEXTEST_SUMMARY.match(line):
+            runs["finished"] += 1
+            runs["misplaced"] |= not running
+            running = False
+            summary = summary_figures(line)
+            if summary is None:
+                runs["unread"].append(line)
+        elif match := LIBTEST_BINARY.match(line):
+            binary, headers = libtest_key(match["unit"], match["source"], match["executable"]), headers + 1
         elif match := LIBTEST_DOCS.match(line):
-            binary = f"doc:{crate(match['crate'])}"
+            binary, headers = f"doc:{crate(match['crate'])}", headers + 1
         elif match := LIBTEST_RESULT.match(line):
             name = match["name"]
             if not binary.startswith("doc:"):
                 name = name.removesuffix(" - should panic")
-            (ignored if match["result"] == "ignored" else executed).add(f"{binary} {name}")
-        elif (match := NEXTEST_RESULT.match(line)) and not match["status"].startswith("SETUP"):
+            (libtest_ignored if match["result"] == "ignored" else libtest_ran).add(f"{binary} {name}")
+        elif running and (match := NEXTEST_RESULT.match(line)) and not match["status"].startswith("SETUP"):
             key = f"{nextest_key(match['binary'])} {match['name']}"
-            (ignored if match["status"] == "SKIP" else executed).add(key)
-    # A test that also printed a result line in another state still executed.
-    return executed, ignored - executed
+            if match["place"] is not None and NEXTEST_PLACE.fullmatch(match["place"]):
+                ran[key] += 1
+                statuses[match["status"]] += 1
+            elif match["status"] == "SKIP":
+                skipped[key] += 1
+    problems = reconcile(statuses, sum(skipped.values()), starting, summary, runs, headers)
+    return {"ran": ran, "skipped": skipped, "libtest_ran": libtest_ran,
+            # A test that also printed a result line in another state still executed.
+            "libtest_ignored": libtest_ignored - libtest_ran,
+            "nextest": summary if starting is not None and runs["started"] == runs["finished"] == 1 else None,
+            "problems": problems}
 
 
 def read(path):
@@ -79,58 +191,93 @@ def read(path):
         return extract(stream)
 
 
+def executed_in(log, key):
+    return log["ran"][key] + (key in log["libtest_ran"])
+
+
 def unite(logs):
-    """Take the logs of one run together: [(label, (executed, ignored))] in, one pair of sets out.
+    """Take the logs of one side together: [(label, log)] in, the side's counts per key out.
 
-    Returns the united (executed, ignored) and, for each test that more than one
-    log executed, the labels of those logs.
+    The executed counts add. A key's ignored count is what the logs with a
+    nextest run list for it (each lists every test, as its result or as SKIP)
+    less what they executed, plus libtest's ignored tests. `repeated` holds the
+    keys executed more often than listed, which a partition never does, and
+    `problems` says when the logs do not list the same tests.
     """
-    executed, ignored, ran_in = set(), set(), {}
-    for label, (run, skipped) in logs:
-        executed |= run
-        ignored |= skipped
-        for key in run:
-            ran_in.setdefault(key, []).append(label)
-    repeated = {key: ran_in[key] for key in sorted(ran_in) if len(ran_in[key]) > 1}
-    return (executed, ignored - executed), repeated
-
-
-def compare(before, after):
-    (run_before, skip_before), (run_after, skip_after) = before, after
-    return {
-        "before": {"executed": len(run_before), "ignored": len(skip_before)},
-        "after": {"executed": len(run_after), "ignored": len(skip_after)},
-        "executed_only_before": sorted(run_before - run_after),
-        "executed_only_after": sorted(run_after - run_before),
-        "ignored_only_before": sorted(skip_before - skip_after),
-        "ignored_only_after": sorted(skip_after - skip_before),
-    }
+    executed, ignored, repeated, uneven = Counter(), Counter(), {}, {}
+    for _, log in logs:
+        executed.update(log["ran"])
+        executed.update(dict.fromkeys(log["libtest_ran"], 1))
+        ignored.update(dict.fromkeys(log["libtest_ignored"], 1))
+    shards = [(label, log) for label, log in logs if log["ran"] or log["skipped"]]
+    for key in sorted(set().union(*(log["ran"].keys() | log["skipped"].keys() for _, log in shards))):
+        listed = {label: log["ran"][key] + log["skipped"][key] for label, log in shards}
+        ran = sum(log["ran"][key] for _, log in shards)
+        if len(set(listed.values())) > 1:
+            uneven[key] = listed
+        if ran > max(listed.values()):
+            repeated[key] = {"listed": max(listed.values()), "executed": ran,
+                             "logs": {label: log["ran"][key] for label, log in shards}}
+        elif ran < max(listed.values()):
+            ignored[key] += max(listed.values()) - ran
+    problems = []
+    if uneven:
+        key, listed = next(iter(uneven.items()))
+        problems.append("the logs do not list the same tests, so they are not the shards of one run on one platform: "
+                        f"{len(uneven)} {'key differs' if len(uneven) == 1 else 'keys differ'}, first {key}{per_log(listed)}")
+    runs = [log["nextest"]["tests_run"] for _, log in logs if log["nextest"]]
+    return {"executed": executed, "ignored": ignored, "repeated": repeated, "problems": problems,
+            "tests_run": sum(runs) if runs else None}
 
 
 def compare_logs(before, after):
     """Compare a reference run's logs with a candidate run's, each side taken together."""
-    (united_before, repeated_before), (united_after, repeated_after) = unite(before), unite(after)
-    result = compare(united_before, united_after)
-    for side, logs, repeated in (("before", before, repeated_before), ("after", after, repeated_after)):
-        result[side]["logs"] = [{"log": label, "executed": len(run), "skipped_or_ignored": len(skipped)}
-                                for label, (run, skipped) in logs]
-        result[f"executed_in_several_{side}"] = repeated
+    logs = {"before": before, "after": after}
+    sides = {side: unite(logs[side]) for side in logs}
+    result = {"unreconciled": []}
+    for side in logs:
+        result[side] = {
+            "executed": sum(sides[side]["executed"].values()), "ignored": sum(sides[side]["ignored"].values()),
+            "tests_run": sides[side]["tests_run"],
+            "logs": [{"log": label, "executed": sum(log["ran"].values()) + len(log["libtest_ran"]),
+                      "skipped_or_ignored": sum(log["skipped"].values()) + len(log["libtest_ignored"]),
+                      "nextest": log["nextest"]} for label, log in logs[side]],
+        }
+        result["unreconciled"] += [f"{label}: {problem}" for label, log in logs[side] for problem in log["problems"]]
+        result["unreconciled"] += [f"{side}: {problem}" for problem in sides[side]["problems"]]
+    for key in DIFFERENCES:
+        result[key] = {}
+    for state in ("executed", "ignored"):
+        counts = {side: sides[side][state] for side in logs}
+        for key in sorted(counts["before"].keys() | counts["after"].keys()):
+            if counts["before"][key] == counts["after"][key]:
+                continue
+            entry = {side: counts[side][key] for side in logs}
+            if state == "executed":
+                entry |= {f"{side}_logs": {label: executed_in(log, key) for label, log in logs[side]} for side in logs}
+            result[f"{state}_{'less' if entry['after'] < entry['before'] else 'more'}_after"][key] = entry
+    for side in logs:
+        result[f"executed_more_than_listed_{side}"] = sides[side]["repeated"]
     return result
 
 
 # What each difference means, in the order it is reported.
 DIFFERENCES = {
-    "executed_only_before": "executed before, not after",
-    "executed_only_after": "executed after, not before",
-    "ignored_only_before": "ignored before, not after",
-    "ignored_only_after": "ignored after, not before",
-    "executed_in_several_before": "executed in more than one before log",
-    "executed_in_several_after": "executed in more than one after log",
+    "executed_less_after": "executed less often after than before (lost)",
+    "executed_more_after": "executed more often after than before (run more than once, or new)",
+    "ignored_less_after": "ignored less often after than before",
+    "ignored_more_after": "ignored more often after than before",
+    "executed_more_than_listed_before": "executed more often than the before logs list it (run more than once)",
+    "executed_more_than_listed_after": "executed more often than the after logs list it (run more than once)",
 }
 
 
+def per_log(counts):
+    return f" ({', '.join(f'{label} {count}' for label, count in counts.items())})" if len(counts) > 1 else ""
+
+
 def report(result):
-    """The comparison as text and whether the sides differ: counts, each difference by name, the verdict."""
+    """The comparison as text and its exit status: counts, what does not reconcile, each difference, the verdict."""
     lines = []
     for side in ("before", "after"):
         logs = result[side]["logs"]
@@ -139,23 +286,37 @@ def report(result):
         if len(logs) > 1:
             lines += [f"  {log['log']}: {log['executed']} executed, {log['skipped_or_ignored']} skipped or ignored"
                       for log in logs]
+    runs = {side: result[side]["tests_run"] for side in ("before", "after")}
     differences = [key for key in DIFFERENCES if result[key]]
+    if None not in runs.values():
+        totals = {side: per_log({log["log"]: log["nextest"]["tests_run"] for log in result[side]["logs"] if log["nextest"]})
+                  for side in runs}
+        differ = "" if runs["before"] == runs["after"] else f": {more_or_fewer(runs['after'], runs['before'])} after"
+        lines.append(f"nextest tests run: {runs['before']} before{totals['before']}, "
+                     f"{runs['after']} after{totals['after']}{differ}")
+    different = bool(differences) or (None not in runs.values() and runs["before"] != runs["after"])
+    if result["unreconciled"]:
+        lines.append(f"not reconciled with the runner's own totals ({len(result['unreconciled'])}):")
+        lines += [f"  {problem}" for problem in result["unreconciled"]]
     for key in differences:
         lines.append(f"{DIFFERENCES[key]} ({len(result[key])}):")
-        if isinstance(result[key], dict):
-            lines += [f"  {test}: {', '.join(logs)}" for test, logs in result[key].items()]
-        else:
-            lines += [f"  {test}" for test in result[key]]
-    lines.append("different" if differences else "identical")
-    return "\n".join(lines) + "\n", bool(differences)
+        for test, entry in result[key].items():
+            if "listed" in entry:
+                lines.append(f"  {test}: listed {entry['listed']}, executed {entry['executed']}{per_log(entry['logs'])}")
+            else:
+                lines.append(f"  {test}: {entry['before']} before{per_log(entry.get('before_logs', {}))}, "
+                             f"{entry['after']} after{per_log(entry.get('after_logs', {}))}")
+    lines.append("unreconciled" if result["unreconciled"] else "different" if different else "identical")
+    return "\n".join(lines) + "\n", 3 if result["unreconciled"] else 1 if different else 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    listing = commands.add_parser("list", help="print the executed and ignored tests found in logs")
+    listing = commands.add_parser("list", help="print each executed and ignored result found in one side's logs")
     listing.add_argument("logs", nargs="+")
-    difference = commands.add_parser("compare", help="report the symmetric difference; exit 1 when not identical")
+    difference = commands.add_parser(
+        "compare", help="report the differences by count; exit 1 when not identical, 3 when a log does not reconcile")
     difference.add_argument("--before", nargs="+", required=True,
                             help="logs of the reference run, taken together (one per job or shard)")
     difference.add_argument("--after", nargs="+", required=True,
@@ -164,16 +325,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "list":
-        (executed, ignored), _ = unite([(path, read(path)) for path in args.logs])
-        for key in sorted(executed):
-            print(f"executed {key}")
-        for key in sorted(ignored):
-            print(f"ignored {key}")
-        return 0
+        logs = [(path, read(path)) for path in args.logs]
+        side = unite(logs)
+        for state in ("executed", "ignored"):
+            for key in sorted(side[state]):
+                print("\n".join([f"{state} {key}"] * side[state][key]))
+        problems = [f"{label}: {problem}" for label, log in logs for problem in log["problems"]] + side["problems"]
+        for problem in problems:
+            print(f"unreconciled: {problem}", file=sys.stderr)
+        return 3 if problems else 0
     result = compare_logs(*([(path, read(path)) for path in paths] for paths in (args.before, args.after)))
-    text, different = report(result)
+    text, status = report(result)
     print(json.dumps(result, indent=2) if args.json else text.rstrip("\n"))
-    return 1 if different else 0
+    return status
 
 
 if __name__ == "__main__":
