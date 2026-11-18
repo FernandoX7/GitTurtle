@@ -1,0 +1,23 @@
+<!-- title: How fast is GitTurtle? -->
+<!-- description: Time to the first window, a selected commit’s changed files and a prepared diff, measured in release builds on real hardware. -->
+<h2 id="launch">115 ms to the first window</h2>
+<p>On an Apple M2 Pro running Omarchy Linux and Hyprland on Wayland, the median of nine warm launches was <strong>115 ms</strong>. The timer started when the executable ran and stopped when the compositor mapped its window. The fastest launch took 103 ms and the slowest took 135 ms.</p>
+<p>The October 27, 2026 Linux interface-font check alternated two release builds against the same demo repository. Each launch started with fresh app settings and a warm system cache. A cold launch, or time to load every part of a repository, measures a different operation.</p>
+<h2 id="everyday">From a commit to a diff</h2>
+<table><caption>Native history interactions, in milliseconds</caption><thead><tr><th scope="col">Operation</th><th scope="col">Median</th><th scope="col">95th percentile</th></tr></thead><tbody>
+<tr><th scope="row">Select commit → changed files ready</th><td>21.2</td><td>45.2</td></tr>
+<tr><th scope="row">Open text file → history diff ready</th><td>4.9</td><td>7.4</td></tr>
+</tbody></table>
+<p>The September 8, 2026 run used a release app at commit <code>f68bd20</code> on an Apple M4 Max with 128 GiB RAM and macOS 26.6.2. The fixture had 653 commits. Each row covers twenty deliberate selections, ten steps down and ten back. Revisiting a file could reuse its cached preview.</p>
+<p>Timing started in the input handler and finished when the prepared result reached the app. Input delivery, display presentation and completed GPU work fall outside this interval. The median is the middle of the samples. The 95th percentile gives a sense of the slower selections.</p>
+<h2 id="long-history">Paging and scrolling long histories</h2>
+<ul><li><strong>0.525 ms per subsequent page.</strong> In a 120,000-commit linear history, a warm backend benchmark loaded each further 500-commit page in a median of 0.525 ms, with a 95th percentile of 0.568 ms. The first 500 took 429 ms. This September 10 run on an M4 Max visited 100,000 commits per pass and excluded drawing the rows.</li>
+<li><strong>8.15 ms of UI-thread CPU per wheel notch.</strong> In a 1,480 × 800 History window on an M2 Pro running Omarchy, the October 27 release build <code>0aca11e</code> scrolled a 3,000-commit fixture backed by memory. Across six launches, the 95th percentile was 13.17 ms. This measures CPU work for a scroll step. It is a different quantity from a frame’s time on screen.</li></ul>
+<h2 id="records">Measurement records</h2>
+<p>Read the launch summary or download the samples for the other three measurements. Each CSV contains the recorded values in collection order.</p>
+<ul>
+<li><a href="/performance/records/warm-launch.txt">Warm-launch timing summary (text)</a> includes the base and candidate medians and ranges from the October 27 interface-font check.</li>
+<li><a href="/performance/records/history-and-diff.csv">Commit selection and text-diff timings (CSV)</a> pairs the two September 8 navigation sequences by selection number, with 20 elapsed times for each operation.</li>
+<li><a href="/performance/records/linear-history-pages.csv">500-commit page timings (CSV)</a> gives all 600 incremental page reads from the September 10 linear-history benchmark. Filter out offset zero to reproduce the subsequent-page result.</li>
+<li><a href="/performance/records/history-scroll.csv">UI-thread CPU time per wheel notch (CSV)</a> gives all 720 measured notches from the six wide-window launches of <code>0aca11e</code> in the October 27 quiet-host run.</li>
+</ul>

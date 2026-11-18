@@ -178,3 +178,38 @@ The owner asked for the refreshed site to be published on November 16, 2026, and
 **Resolved on November 16, 2026:** the owner switched the zone's Web Analytics automatic setup to Disable in the Cloudflare dashboard. At 00:42 UTC on November 17, two requests that ask for HTML as a browser does returned the canonical domain's homepage byte for byte equal to the committed `index.html` (29,356 bytes), with no `cloudflareinsights` or `beacon.min.js` in it. The site carries no analytics script, as its documents say, and a browser's console no longer records a refused script.
 
 The page still says that no download is published; the lines marked `data-release` change with the first release.
+
+## November 17, 2026 local preview of the product tour and guides
+
+The preview served the static files over local HTTP. It covers the homepage, seven product guides, the documentation index, installation overview, three platform guides, performance, releases, support and legal notices.
+
+| Check | Observed result |
+| --- | --- |
+| Chromium 157.0.8103.79, all 17 indexable pages | Twelve viewport widths from 320 to 1920 CSS pixels showed no horizontal overflow or overlapping header links. Each page had one h1 and the expected production canonical. Under the site's configured content security policy, the tested pages logged no errors and issued only same-origin requests. |
+| Tour, navigation and installation | Left, Right, Home and End selected and focused the expected tabs, including wraparound. The visible panel decoded its screenshot. The Compare link opened the comparison section of its guide. The Stage fragment, Arch/Omarchy install path, custom 404 home link and reduced-motion scrolling worked. |
+| JavaScript disabled | All three screenshots, captions and guide links were visible. The macOS install commands were readable after following the homepage and platform links. |
+| Copy controls | With the clipboard stubbed in Chromium, a click copied the complete command block. A rejected request produced selectable-text instructions. |
+| Automated accessibility | axe-core's WCAG 2.0 and 2.1 A/AA rules reported zero violations across all 17 pages at 390 and 1440 CSS pixels. |
+| WebKit 26.5 on macOS | At 390 × 844 and 1440 × 900, the tour, guide navigation, macOS installation path and Home breadcrumb worked. History, Compare and Stage decoded as 1200-pixel WebPs at phone width and 2960-pixel PNGs at desktop width. Every full-size link returned the original PNG. |
+| Static publication checks | Guide regeneration matched the published HTML. Each indexable URL was reachable from the homepage within two ordinary links. The sitemap included all 17 canonical URLs. GitHub anchors resolved to the repository root. |
+
+The three narrow-screen tour images total 543,648 bytes, compared with 1,360,788 bytes for their full-size PNGs. The homepage requests the selected view first. Those figures measure transfer size.
+
+These are local browser and static-file checks. They cover emulated phone viewports. Physical devices, assistive-technology sessions, hosted responses for this revision and search inclusion were outside this preview.
+
+### Full-size screenshots
+
+The ten screenshot links on the homepage and four guides use a native modal dialog. Chromium 157 and WebKit 27.2 at 1440 × 900 and 390 × 844 returned to the original screenshot, selected tour tab and exact starting scroll offset after dismissal. Escape, Close and the backdrop dismissed the viewer. Tab and Shift+Tab cycled its controls. Actual size showed the 2960-pixel-wide original and supported two-axis panning via keyboard and emulated touch. The same images opened directly with scripts disabled. The Chromium checks also exercised a failed download and recovery and found zero axe WCAG 2.0/2.1 A/AA violations in the open viewer.
+
+### Search crawlers and link previews
+
+All 17 preview URLs returned HTTP 200 with their canonical URL and content in the original HTML when requested locally with Googlebot, bingbot, DuckDuckBot, Slurp and OAI-SearchBot user agents. Each page supplies a distinct sharing title and description. Open Graph and X point to a 1200 × 630 PNG (295,959 bytes), and the centered square and 2:1 crops at 300 pixels wide preserve the wordmark, headline and entire app window. This checks the responses and artwork supplied to link unfurlers. Search inclusion, provider caching and how individual apps display a live share are external to the local preview.
+
+## November 17, 2026 production deployment
+
+[PR #213](https://github.com/FernandoX7/GitTurtle/pull/213) passed its 22 checks and squash-merged as `d72dfab5d6da84557ecf8a63612ec2751a0dc3ad`. The merged public directory matched the reviewed Git tree. Wrangler 4.131.2 deployed it from a clean checkout to the production branch of Cloudflare Pages project `gitturtle`. It uploaded 34 new files, reused 16 and applied the response headers. The [production deployment](https://3932cdbc.gitturtle.pages.dev) has ID `3932cdbc-a435-49ba-8729-e62ed7f39ca9`. The [manifest](evidence/2026-11-17-production.json) records the deployed revision and all 51 input files.
+
+- **Public site.** The homepage, docs and installation indexes, Arch and Omarchy guide, social PNG, sitemap, stylesheet and script matched the release files on both the deployment hostname and gitturtle.com. The canonical domain passed the HTTPS redirect, certificate, custom 404, headers and cache checks. [Production smoke output](evidence/2026-11-17-production-smoke.txt)
+- **Share previews.** Bluesky’s card extractor and Microlink fetched the ordinary homepage URL and returned the new title, full description and branded image. Bluesky’s image proxy served the same 295,959-byte, 1200 × 630 PNG as the release, verified by SHA-256.
+- **Crawlers.** All 17 sitemap pages returned HTTP 200. The eight documentation routes and four installation routes were reachable from the homepage within two ordinary HTML links. Requests using Googlebot, bingbot, DuckDuckBot, Yahoo Slurp, OAI-SearchBot and Twitterbot user-agent strings received the public sitemap, pages and card. Canonical URLs and indexing directives were checked in the actual responses. Search engine inclusion and rankings are separate observations. [Production crawl results](evidence/2026-11-17-production-crawl.json)
+- **Browser.** In Chromium 157 at widths of 1440 and 390 pixels, the Compare screenshot opened at its original resolution, zoomed and returned keyboard focus on dismissal. Following the diff guide and the macOS install path reached the expected pages. After font and stylesheet loading there was no horizontal overflow, console error, failed HTTP response or external origin in either journey.
