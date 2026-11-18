@@ -294,8 +294,8 @@ After classification, the selected jobs have no build dependencies on each other
   `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
   --partition slice:<shard>/2`: every shard builds the whole workspace's tests
   and runs its half of them (see [Test shards](#test-shards)). Shard 1 alone
-  then runs `cargo test --locked --workspace --timings -- "(line "` and saves
-  the debug cache on a successful push to `main`.
+  then runs `cargo test --locked --workspace --timings -- "(line "` and, on a
+  push to `main`, saves the debug cache once its own steps have succeeded.
   nextest builds the same targets as Cargo's default
   [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html) and
   runs its unit and integration tests; the doctest step runs the rest of that
@@ -498,9 +498,9 @@ command with `--partition slice:1/2` or `--partition slice:2/2` added.
 
 To check that two runs executed the same tests, download each Rust test job's
 log (`gh api repos/FernandoX7/GitTurtle/actions/jobs/<job-id>/logs`) and compare them,
-one platform at a time. Each side takes one log or several taken together, so a
-platform's two [shards](#test-shards) compare with an unsharded run or with another
-run's shards:
+one platform and one attempt at a time. Each side takes one job's log or several
+taken together, so a platform's two [shards](#test-shards) compare with an unsharded
+run or with another run's shards:
 
 ```sh
 python3 scripts/ci/executed_tests.py compare --before cargo-test-job.log --after nextest-job.log
@@ -508,22 +508,56 @@ python3 scripts/ci/executed_tests.py compare --before unsharded-job.log --after 
 ```
 
 [`executed_tests.py`](../scripts/ci/executed_tests.py) reads libtest `Running` and
-`Doc-tests` headers with their `test … ok|ignored|FAILED` lines, and nextest
-`PASS`/`FAIL`/`SKIP` lines. It keys each test by target kind and Cargo crate name
+`Doc-tests` headers with their `test … ok|ignored|FAILED` lines, and the result
+lines of a nextest run. It keys each test by target kind and Cargo crate name
 (`lib:gitturtle_core history::…`, `bin:gitturtle …`, `test:worktrees_reflog …`,
-`doc:gitturtle_core …`), prints the executed and ignored counts, and lists every
-test executed or ignored on one side only. Several logs of one side are united: a
-test counts as executed when any of them executed it and as ignored only when none
-did, because a shard's log marks the other shard's tests as skipped. The report then
-also gives each log's own counts. A test that no shard ran is listed under "executed
-before, not after". A test that more than one log of a side executed is listed with
-those logs under "executed in more than one after log" (or "before log") and is an
-error even when the united sets are equal, since a partition runs each test once; so
-pass each job's log as its own file, and only once. It exits non-zero on any listed
-difference and prints `identical` otherwise, and
-`list` prints the extracted set. Test output that interrupts a libtest result line
-can hide that test from the extraction; investigate any listed difference in the
-log before calling the sets different. The dated
+`doc:gitturtle_core …`).
+
+It compares counts, not only names, because a name in a hosted log need not be
+one test. The wrapper's
+[credential redaction](#workflow-summaries-and-retained-diagnostics) cuts a line
+at a key such as `secret` followed by a colon, so every test of
+`github::transport::secret_service` prints as
+`github::transport::secret_service=[redacted]`: on Linux 28 results under one
+name, 23 run and 5 ignored, in a log whose 3,613 tests have 3,591 names. Each key
+therefore has a number of executed and a number of ignored results, and two sides
+are equal only when every key's numbers are. Several logs of one side are the
+shards of one run on one platform, one attempt each, so pass each job's log as its
+own file, and only once. Their executed counts add. A key's ignored count is what
+the shards list for it less what they executed, because a shard's log prints every
+test and marks the other shard's with the same `SKIP` line as an ignored one. A key
+executed less often after than before is listed as lost, and one executed more
+often as run more than once, each with both numbers and every log's share. A key
+the shards executed more often than they list it is an error on its own side, since
+a partition runs each test once, and shards that do not list the same tests are
+refused as not one run's.
+
+Before its verdict the tool reconciles every log with nextest's own totals. A log
+holds one run, from its `Starting … tests across … binaries (… tests skipped)` line
+to its `Summary [ … ] N tests run: … passed, … failed, … skipped` line, and the
+result lines counted between them must equal the Summary line's tests run, passed,
+failed and skipped. The two sides' tests run, summed over each side's logs, must be
+equal too. A finished test's line carries its place in the run, such as `(  9/192)`;
+a `SLOW` progress line does not and is not a result, and the failures nextest
+repeats after the Summary line are not counted again. A result line that is
+missing, repeated or printed by a test, a second Starting or Summary line, a run
+without a Summary line and a log with no test run each leave the log unreconciled:
+the report names the log and gives both numbers, so a hidden or forged line cannot
+make two different runs compare equal. These are cargo-nextest 0.9.146's shapes,
+taken from three runs of `gitturtle-preview` (unsharded, `slice:1/2` and
+`slice:2/2`) and the retained hosted logs. A Summary line in another shape is
+refused rather than guessed, and so is a log whose `PASS` and `FAIL` lines are not
+its passed and failed figures.
+
+`compare` prints the counts, what does not reconcile and every difference, then
+`identical`, `different` or `unreconciled`, and exits 0, 1 or 3; an unreconciled
+log exits 3 whatever the comparison says. `list` prints one line for each executed
+or ignored result. Two limits remain. Under a redacted name the tool knows how many
+results ran, not which: a split that ran one of those tests twice and another not
+at all has the same numbers. And libtest lines (the doctests) have no totals to
+reconcile with; test output that interrupts a libtest result line can hide that
+test, so investigate any listed difference in the log before calling the sets
+different. The dated
 [nextest record](benchmarks/2026-09-27-ci-nextest-tests.md) holds the hosted
 before/after durations and the test-list comparison.
 
@@ -804,8 +838,8 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
 
 Every run still upgrades to that day's packages first, behind the unchanged
 signature check, so between two `main` pushes a pull request whose keyed packages
-moved in Arch restores nothing and builds cold; the next successful `main` push
-seeds the new key. In the [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md):
+moved in Arch restores nothing and builds cold; the next `main` push whose first
+shard succeeds seeds the new key. In the [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md):
 - The cold job took 927 to 974 s.
 - The first `main` push saved the entry in 22 s after an 11 s bound, 4.73 GB of logical payload with no dependency evicted.
 - On the first warm product pull request the job took 182 s. The restore took 26 s, 873 of 912 units were fresh, and only the three workspace members compiled. That was 103 s less than the slowest warm `Rust tests and Clippy` job of the same run.
@@ -813,8 +847,8 @@ seeds the new key. In the [hosted record](benchmarks/2026-09-29-ci-arch-warm-cac
 **Budget.** The Arch payload is held to the `debug` limit (7 GiB of logical bytes
 before registration) by the same helper and upstream cleanup as the Ubuntu debug
 lane. Its first archive is 1,083,913,297 bytes (1.08 GB), against about 1.42 GB for
-the Ubuntu debug lane. Only a successful push to `main` registers a
-save, and only when no entry has that exact key, so the lane adds one entry per
+the Ubuntu debug lane. Only the first shard of a push to `main` registers a
+save, after its own steps succeeded and only when no entry has that exact key, so the lane adds one entry per
 new key that `main` builds: a keyed package update or a keyed source change. GitHub removes an entry 7 days after its last
 access and, once the repository is over its 10 GB limit, evicts by last access. An
 Arch entry superseded by a package update is no longer restored, so it goes before
@@ -1414,8 +1448,8 @@ any vendored output restored from a Quality-seeded entry is dirty, and Cargo
 compiles the GPUI/Mermaid patches from the tagged checkout, as it did before
 vendored outputs were cached. The restore record then shows
 `vendor_mtimes: disabled`. The finish helper exempts vendored packages from
-cleanup and eviction regardless of the input, because only Quality's successful
-pushes to `main` register a save.
+cleanup and eviction regardless of the input, because only Quality's pushes to
+`main` register a save.
 
 [Upstream key construction](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/config.ts)
 separates OS/architecture, installed Rust compiler release/host/commit identities,
@@ -1464,10 +1498,18 @@ Cargo binaries, configuration and credential files are excluded. Checkout keeps
 native prerequisites remain in place. No cache is a trusted release input; release
 builds do not opt into [vendored reuse](#vendored-path-packages).
 
-Setup always restores with saving disabled. Only a successful **push to
-`FernandoX7/GitTurtle`'s `main`** can register the finish save; PRs, fork PRs and
-manual runs are read-only consumers, and so are the Clippy jobs on every event.
-Failed/cancelled validation cannot save.
+Setup always restores with saving disabled. Only the `finish` phase registers a
+save, and only on a **push to `FernandoX7/GitTurtle`'s `main`**; PRs, fork PRs and
+manual runs are read-only consumers. On every event so are the jobs that have no
+`finish` phase: the Clippy jobs and the second [test shard](#test-shards) of each
+platform. Each debug entry therefore has one writer, the first shard of its
+platform's tests, and each release entry its release job. A job saves only after
+its own earlier steps succeeded, so a job whose validation failed or was cancelled
+cannot save. The save does not wait for the run's other jobs: on `main` the first
+shard saves when its own slice of the tests and the doctests passed, even if a
+test in the second shard, Clippy or a release build failed. The entry holds
+dependency outputs keyed by their inputs, not results, and the run as a whole
+still fails.
 A main job's finish action checks for the existing exact key without downloading
 again and registers upstream's normal post-job save only when its payload budget
 passes. An existing exact entry is immutable and needs no duplicate save.
