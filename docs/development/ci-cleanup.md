@@ -134,7 +134,7 @@ prices as facts; the plan does not use them.
 
 | | Before (2026-11-17) | After |
 | --- | --- | --- |
-| Full pull-request run, wall-clock, median / p95 | 42 / 54 min | 28 min 44 s in the first sharded run (2026-11-19, the Ubuntu cache missing); the median over more runs is still to be measured |
+| Full pull-request run, wall-clock, median / p95 | 42 / 54 min | 28 min 44 s and 29 min 11 s in the first two sharded runs (2026-11-19, with the Ubuntu cache missing in three of four shards); the median over more runs is still to be measured |
 | Runner time per full run, median | 146 min (63 macOS) | 185 min (71 macOS) in the first sharded run, against 205 min (74 macOS) for the unsharded run of the same day |
 | Runs a month | about 107 (150 in 42 days) | |
 | Cost a month | $0 | $0 |
