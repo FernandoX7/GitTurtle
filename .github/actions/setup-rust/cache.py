@@ -64,10 +64,15 @@ ARCH_RUNTIME_PACKAGES = ("shared-mime-info", "vulkan-headers", "vulkan-icd-loade
 # install step's refusal of every such variable. Keep both tuples in step with
 # the action's install list (a test compares them).
 UBUNTU_BUILD_PACKAGES = (
-    "build-essential", "clang", "cmake", "pkg-config",
+    "build-essential", "clang", "pkg-config",
     "libfontconfig-dev", "libwayland-dev", "libxkbcommon-x11-dev", "libx11-xcb-dev",
     "libssl-dev", "libzstd-dev", "libvulkan-dev", "libdav1d-dev",
 )
+# apt's cmake is neither installed nor a root: every hosted image selects its
+# own CMake under /usr/local, which the tool part keys. The closure therefore
+# keys no dpkg CMake, so a snapshot that holds a package of this name, on any
+# architecture and in any state, takes the complete inventory.
+UBUNTU_UNKEYED_PACKAGES = ("cmake",)
 # Run by the checkout, the tests or the packaging checks and never read into a
 # cached dependency output: git is run only by crates/app/build.rs, a member
 # whose output is never in an entry.
@@ -88,9 +93,11 @@ DPKG_DEPENDENCY = re.compile(rf"({DPKG_NAME})(?::[a-z0-9-]+)?(?: \((?:<<|<=|=|>=
 DPKG_PROVIDED = re.compile(rf"({DPKG_NAME})(?: \(= {DPKG_VERSION.pattern}\))?")
 # The names a build script or the cc and cmake crates run bare, and the linker,
 # the assembler and the make that gcc and CMake take from PATH in their turn.
-# Versions alone do not say which binary PATH and the alternatives select: the
-# hosted image carries a CMake under /usr/local that is no dpkg package. cmake3
-# is the cmake crate's other name for it and may be absent.
+# Versions alone do not say which binary PATH and the alternatives select. The
+# hosted image's CMake under /usr/local is no dpkg package and the action
+# installs none, so this is all that keys it, and an image without one fails
+# the step by name. cmake3 is the cmake crate's other name for it and may be
+# absent.
 UBUNTU_TOOLS = ("cc", "c++", "ar", "ld", "as", "make", "pkg-config", "clang", "cmake")
 UBUNTU_OPTIONAL_TOOLS = ("cmake3",)
 # pkg-config directories whose files belong to dpkg packages; a .pc file in any
@@ -111,14 +118,75 @@ UBUNTU_LOCAL_DIRECTORIES = ("/usr/local/include", "/usr/local/lib")
 # closure is then not all a build reads. A test holds this tuple equal to the
 # unsupplied names of the lock's probers.
 UBUNTU_UNSUPPLIED_PROBES = ("aws-lc", "libcrypto-awslc")
-# Environment that changes what rustc, build scripts or cc emit. Paths the
-# action fixes itself (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
-FLAG_NAMES = {"AR", "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "LIBRARY_PATH",
-              "RUSTC", "RUSTC_WRAPPER", "RUSTC_BOOTSTRAP", "RUSTFLAGS", "RUSTDOCFLAGS",
-              "CARGO_ENCODED_RUSTFLAGS", "CARGO_INCREMENTAL", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"}
-FLAG_PREFIXES = ("AR_", "CC_", "CXX_", "CFLAGS_", "CXXFLAGS_", "CMAKE", "PKG_CONFIG",
+# Variables that send pkg-config to directories of the job's own choosing: the
+# pkg-config crate hands the tool the first set form of each (FLAG_TARGETED's
+# forms) under the plain name. The .pc files of the directories the first two
+# name are keyed by content. Any of the three that is set also sends the key to
+# the complete inventory: a digest keys a .pc file's text, not the headers and
+# libraries it leads to. PKG_CONFIG_TOP_BUILD_DIR only fills a variable of a
+# .pc file and stays keyed by value, in the flags identity.
+PKG_CONFIG_DIRECTORIES = ("PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR")
+PKG_CONFIG_SYSROOT = "PKG_CONFIG_SYSROOT_DIR"
+# Environment that changes what rustc, build scripts, the compilers or the cc,
+# cmake and pkg-config crates emit. Each selected variable is hashed by name
+# and value, and the step prints the names alone. Paths the action fixes itself
+# (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
+#
+# Cargo reruns a build script only for variables the script declared with
+# rerun-if-env-changed. ring 0.17.14 archives with cc's metadata off and the
+# cmake crate declares nothing, so for what they read this identity is all that
+# keeps a restored object from being used under another setting. The read set
+# is that of the locked cc 1.4.5, cmake 0.1.58 and pkg-config 0.3.34, taken
+# from their sources; a test pins the three versions to this list.
+#
+# Each of the three looks a FLAG_TARGETED name up as <VAR>_<target>, as
+# <VAR>_<target with underscores>, as HOST_<VAR> or TARGET_<VAR>, and as <VAR>
+# (cc: Build::target_envs; cmake: getenv_target_os; pkg-config:
+# targeted_env_var). The first two forms are keyed by the prefix <VAR>_, the
+# others as exact names: never by a bare HOST_ or TARGET_ prefix, under which a
+# runner's own variables would split the key between images.
+FLAG_TARGETED = (
+    "AR", "ARFLAGS", "CC", "CFLAGS", "CXX", "CXXFLAGS", "CXXSTDLIB", "NVCC", "RANLIB", "RANLIBFLAGS",
+    "CMAKE", "CMAKE_GENERATOR", "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE", "EMCMAKE", "EMMAKE",
+    "PKG_CONFIG", "PKG_CONFIG_ALLOW_CROSS", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_PATH", "PKG_CONFIG_SYSROOT_DIR",
+)
+# Then the names each reads in one form (cc's own CC_ settings are under the
+# CC_ prefix and pkg-config's under PKG_CONFIG), what the compilers and the
+# linker read themselves and nothing declares (CPATH, C_INCLUDE_PATH,
+# CPLUS_INCLUDE_PATH, LIBRARY_PATH), and rustc's and Cargo's own settings.
+#
+# Out, by decision: what Cargo sets itself for every build script, so that the
+# job's value never reaches one (TARGET, HOST, OUT_DIR, OPT_LEVEL, DEBUG,
+# PROFILE, NUM_JOBS, CARGO_MANIFEST_DIR, CARGO_MAKEFLAGS, CARGO_PKG_NAME); PATH,
+# whose selected tools the native identity keys; what cc reads for MSVC targets
+# alone; and the variables a build script declares itself, for which Cargo
+# reruns it: AWS_LC_SYS_*, bindgen's LIBCLANG_PATH and BINDGEN_EXTRA_CLANG_ARGS,
+# a name it hands to cc's flags_from_environment, and SYSTEM_DEPS_*, which the
+# install step refuses anyway.
+FLAG_NAMES = {"CPPFLAGS", "LDFLAGS", "LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
+              "RUSTC", "RUSTC_WRAPPER", "RUSTC_BOOTSTRAP", "RUSTC_LINKER", "RUSTFLAGS", "RUSTDOCFLAGS",
+              "CARGO_ENCODED_RUSTFLAGS", "CARGO_INCREMENTAL", "CARGO_TRIM_PATHS_REMAP", "CARGO_TRIM_PATHS_SCOPE",
+              "CARGO_CFG_TARGET_ABI", "CARGO_CFG_TARGET_ARCH", "CARGO_CFG_TARGET_ENV", "CARGO_CFG_TARGET_FEATURE",
+              "CARGO_CFG_TARGET_OS", "CARGO_CFG_TARGET_VENDOR",
+              "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET", "TVOS_DEPLOYMENT_TARGET",
+              "WATCHOS_DEPLOYMENT_TARGET", "XROS_DEPLOYMENT_TARGET",
+              "CRATE_CC_NO_DEFAULTS", "CROSS_COMPILE", "PAUTHTEST_RESOURCE_DIR", "PAUTHTEST_SYSROOT",
+              "WASI_SDK_PATH", "WASI_SYSROOT", "WASM_MUSL_SYSROOT", "SYSROOT",
+              *(kind + name for name in FLAG_TARGETED for kind in ("", "HOST_", "TARGET_"))}
+FLAG_PREFIXES = (*(name + "_" for name in FLAG_TARGETED), "CMAKE", "PKG_CONFIG",
                  "CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_TARGET_")
+# The forms built around a caller's name: the cmake crate's DEP_<dependency>_ROOT
+# and the pkg-config crate's <LIBRARY>_NO_PKG_CONFIG, <LIBRARY>_STATIC and
+# <LIBRARY>_DYNAMIC. A build script's own name of such a form
+# (AWS_LC_SYS_STATIC) is keyed with them: one name too many never makes a key stale.
+FLAG_FORMS = re.compile(r"DEP_.+_ROOT|.+_(?:NO_PKG_CONFIG|STATIC|DYNAMIC)")
 FLAG_EXCLUDED = {"CARGO_TARGET_DIR"}
+# The identity prepare keyed, kept beside the job for the finish phase: the
+# comparison names what changed from it. Its verdict is the one word that
+# lets the bound phase save; everything else refuses.
+IDENTITY_STATE = "gitturtle-cache-identity.json"
+IDENTITY_UNCHANGED = "unchanged"
+IDENTITY_REFUSAL = "cache identity changed or was not confirmed since setup"
 TRIPLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 
@@ -242,7 +310,7 @@ def ubuntu_closure(lines):
     snapshot. Any other abnormality raises InventoryFallback, a reached package
     in another state included (unpacked, half installed, or removed with its
     configuration left): a dependency is never skipped and the closure is never
-    partial.
+    partial. So does a package of UBUNTU_UNKEYED_PACKAGES, in any state.
     """
     # The roots are checked first, on a reading that refuses no line, so a line
     # the closure cannot be trusted on never turns a missing root into a fallback.
@@ -267,6 +335,9 @@ def ubuntu_closure(lines):
             if not provided:
                 raise InventoryFallback(f"{identity} provides a name outside dpkg's grammar: {term.strip(' ')!r}")
             providers.setdefault(provided.group(1), []).append(identity)
+    for name in UBUNTU_UNKEYED_PACKAGES:
+        if name in by_name:
+            raise InventoryFallback(f"the snapshot holds {', '.join(by_name[name])}, which no build package keys")
     closure = {}
     pending = [identity for root in UBUNTU_BUILD_PACKAGES for identity in by_name[root]]
     while pending:
@@ -286,13 +357,14 @@ def ubuntu_closure(lines):
     return sorted(f"{identity}={version}" for identity, version in closure.items())
 
 
-def ubuntu_packages(snapshot, resolved=()):
+def ubuntu_packages(snapshot, resolved=(), directed=()):
     """One dpkg snapshot as (mode, keyed lines, keyed installed, installed, other lines, fallback cause).
 
     `closure` keys `name:arch=version` of the closure and nothing else from the
     inventory. `inventory` is the fallback: every line of the snapshot with its
     package, architecture, version and status. `resolved` names the
-    UBUNTU_UNSUPPLIED_PROBES that pkg-config resolves: any of them is a cause.
+    UBUNTU_UNSUPPLIED_PROBES that pkg-config resolves and `directed` the set
+    variables that send pkg-config elsewhere: any of them is a cause.
     """
     lines = snapshot.split("\n")
     if lines[-1] == "":
@@ -300,8 +372,13 @@ def ubuntu_packages(snapshot, resolved=()):
     installed = sum(line.split("\t")[2:3] == [DPKG_INSTALLED] for line in lines)
     try:
         keyed = ubuntu_closure(lines)
+        causes = []
+        if directed:
+            causes.append(f"the environment sets {', '.join(directed)}, and a digest keys a .pc file's text, not what it leads to")
         if resolved:
-            raise InventoryFallback(f"pkg-config resolves {', '.join(resolved)}, which no build package ships")
+            causes.append(f"pkg-config resolves {', '.join(resolved)}, which no build package ships")
+        if causes:
+            raise InventoryFallback("; ".join(causes))
         return "closure", keyed, len(keyed), installed, 0, None
     except InventoryFallback as fallback:
         keyed = []
@@ -333,9 +410,19 @@ def unreadable(error):
     return f"unreadable {errno.errorcode.get(error.errno, error.errno)}"
 
 
-def pkg_config_view(pkg_config):
-    """pkg-config's search order, and the .pc files in its directories that no dpkg package owns.
+def variable_forms(environ, bases):
+    """The set variables of `environ` that are a keyed form of one of `bases`, as sorted (name, value) pairs."""
+    return sorted((name, value) for name, value in environ.items() if value and any(
+        name in (base, "HOST_" + base, "TARGET_" + base) or name.startswith(base + "_") for base in bases))
 
+
+def pkg_config_view(pkg_config, environ):
+    """What pkg-config can find outside dpkg's files: (built-in path, its .pc files, the variables' .pc files).
+
+    The built-in path is `pc_path`; of its directories, those no dpkg package
+    owns are listed. Then every directory a set form of PKG_CONFIG_DIRECTORIES
+    names, under its variable. The three are not one search order:
+    PKG_CONFIG_LIBDIR replaces the built-in path, and `pc_path` still prints it.
     Each file is keyed by a digest of its content. Only a directory that does
     not exist is empty; one that cannot be listed is keyed as unreadable.
     """
@@ -347,15 +434,21 @@ def pkg_config_view(pkg_config):
         real = os.path.realpath(directory)
         if any(real == root or real.startswith(root + "/") for root in DPKG_PC_ROOTS):
             continue
-        try:
-            names = sorted(name for name in os.listdir(directory) if name.endswith(".pc"))
-        except FileNotFoundError:
-            names = []
-        except OSError as error:
-            files[directory] = unreadable(error)
-            continue
-        files[directory] = [[name, pc_digest(os.path.join(directory, name))] for name in names]
-    return order, files
+        files[directory] = pc_listing(directory)
+    added = {name: {directory: pc_listing(directory) for directory in filter(None, value.split(os.pathsep))}
+             for name, value in variable_forms(environ, PKG_CONFIG_DIRECTORIES)}
+    return order, files, added
+
+
+def pc_listing(directory):
+    """The .pc files of one directory, each with a digest of its content, or how the directory could not be listed."""
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".pc"))
+    except FileNotFoundError:
+        names = []
+    except OSError as error:
+        return unreadable(error)
+    return [[name, pc_digest(os.path.join(directory, name))] for name in names]
 
 
 def pc_digest(path):
@@ -442,7 +535,7 @@ def shown(text):
                    for character in text).replace("##[", "#\\x23[")
 
 
-def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
+def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local, pc_added=None, directed=()):
     """The Ubuntu native digest and the log lines that show the values in it.
 
     The digest's input starts with the mode, so a fallback key can never equal
@@ -450,12 +543,16 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
     two hosted runs can be compared line by line. Two things are shown without
     being hashed: each tool's other matches on PATH and the count of installed
     packages. Of a tool's version output, all of it hashed, the line shows a
-    short digest and the first line.
+    short digest and the first line. `pc_added` and `directed` are what the
+    PKG_CONFIG variables add, and with none set neither the digest's input nor
+    a line differs from a key without them.
     """
     mode, keyed, count, installed, others, cause = ubuntu_packages(
-        snapshot, [name for name, version in probes.items() if version is not None])
+        snapshot, [name for name, version in probes.items() if version is not None], directed)
     hashed = {"packages": keyed, "pc_path": pc_path, "pc_files": pc_files, "probes": probes, "local": local,
               "tools": {name: tool and {"path": tool["path"], "version": tool["version"]} for name, tool in tools.items()}}
+    if pc_added:
+        hashed["pc_added"] = pc_added
     native = digest(mode.encode() + b"\n" + json.dumps(hashed, sort_keys=True).encode())
     lines = []
     if cause:
@@ -474,6 +571,10 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
     for directory, found in pc_files.items():
         listing = found if isinstance(found, str) else ", ".join(f"{name} {state}" for name, state in found) or "none"
         lines.append(f"Keyed pkg-config files in {shown(directory)}: {shown(listing)}")
+    for variable, directories in (pc_added or {}).items():
+        for directory, found in directories.items():
+            listing = found if isinstance(found, str) else ", ".join(f"{name} {state}" for name, state in found) or "none"
+            lines.append(f"Keyed pkg-config files in {shown(directory)}, which {shown(variable)} names: {shown(listing)}")
     for name, version in probes.items():
         lines.append(f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {shown(version)}"))
     for directory, found in local.items():
@@ -484,16 +585,17 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
 
 
 def native_identity(platform):
+    """The platform's native digest and the lines that show what is in it; nothing is printed here."""
     if platform == "Linux":
         snapshot = run(DPKG_SNAPSHOT).decode("utf-8", "surrogateescape")
         tools = {name: tool_identity(name) for name in UBUNTU_TOOLS}
         tools.update((name, tool_identity(name, required=False)) for name in UBUNTU_OPTIONAL_TOOLS)
         pkg_config = tools["pkg-config"]["run"]
         probes = {name: pkg_config_probe(pkg_config, name) for name in UBUNTU_UNSUPPLIED_PROBES}
-        native, lines = ubuntu_identity(snapshot, tools, *pkg_config_view(pkg_config), probes,
-                                        local_listing(UBUNTU_LOCAL_DIRECTORIES))
-        print("\n".join(lines))
-        return native
+        pc_path, pc_files, pc_added = pkg_config_view(pkg_config, os.environ)
+        directed = [name for name, _ in variable_forms(os.environ, (*PKG_CONFIG_DIRECTORIES, PKG_CONFIG_SYSROOT))]
+        return ubuntu_identity(snapshot, tools, pc_path, pc_files, probes,
+                               local_listing(UBUNTU_LOCAL_DIRECTORIES), pc_added, directed)
     if platform == "macOS":
         commands = [["xcodebuild", "-version"], ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
                     ["xcrun", "--sdk", "macosx", "--show-sdk-build-version"],
@@ -505,10 +607,9 @@ def native_identity(platform):
     else:
         raise ValueError("Rust cache supports only the native Quality platforms")
     outputs = [run(command) for command in commands]
-    if platform == "archlinux":
-        # The day's rolling versions this key was built against, for comparing runs.
-        print("Keyed Arch packages:", " ".join(outputs[0].decode("utf-8", "replace").split()))
-    return digest(b"\0".join(outputs))
+    # The day's rolling versions this key was built against, for comparing runs.
+    lines = ["Keyed Arch packages: " + " ".join(outputs[0].decode("utf-8", "replace").split())] if platform == "archlinux" else []
+    return digest(b"\0".join(outputs)), lines
 
 
 def toolchain_identity():
@@ -524,12 +625,16 @@ def toolchain_identity():
     return {"rustc": digest(output), "target": hosts[0]}
 
 
+def keyed_flags(environ):
+    """The set variables of the environment that are flags, as sorted (name, value) pairs."""
+    return sorted((name, value) for name, value in environ.items()
+                  if value and name not in FLAG_EXCLUDED
+                  and (name in FLAG_NAMES or name.startswith(FLAG_PREFIXES) or FLAG_FORMS.fullmatch(name)))
+
+
 def flags_identity(environ):
     """Compiler, linker and Cargo profile settings from the environment, by name."""
-    selected = sorted((name, value) for name, value in environ.items()
-                      if value and name not in FLAG_EXCLUDED
-                      and (name in FLAG_NAMES or name.startswith(FLAG_PREFIXES)))
-    return digest(json.dumps(selected).encode())
+    return digest(json.dumps(keyed_flags(environ)).encode())
 
 
 def run_as(account):
@@ -867,27 +972,77 @@ def record(name, elapsed, *, cache=None, details=None):
     (directory / f"{name}.json").write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def prepare():
+def cache_identity():
+    """The cache key and its five parts, from the environment and the machine as they are now.
+
+    No side effect: nothing is created, rewound, exported or printed, so
+    prepare and the finish phase's comparison compute the identity alike.
+    CARGO_INCREMENTAL is keyed by its effective value: prepare exports 0 when
+    the job set none, as the restore action does after it, so the variable is
+    the same in both phases by construction and needs no exemption.
+    """
     profile = os.environ["CACHE_PROFILE"]
     if profile not in PROFILES:
         raise ValueError("unsupported cache profile")
+    container = os.environ.get("CACHE_CONTAINER", "")
+    if container not in {"", "archlinux"}:
+        raise ValueError("unsupported cache container")
+    root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    inputs = keyed_inputs(root)
+    flags = keyed_flags({**os.environ, "CARGO_INCREMENTAL": os.environ.get("CARGO_INCREMENTAL") or "0"})
+    native, lines = native_identity(container or os.environ["RUNNER_OS"])
+    parts = {"profile": profile, "source": source_identity(root, inputs), "native": native,
+             "toolchain": toolchain_identity(), "flags": digest(json.dumps(flags).encode())}
+    key = "-".join(filter(None, (profile, container, digest(json.dumps(parts, sort_keys=True).encode()))))
+    return {"key": key, "parts": parts, "native_lines": lines, "flags": flags, "inputs": inputs}
+
+
+def compared():
+    """Whether the identity is still the one setup keyed: (verdict, lines to print).
+
+    The verdict compares the recomputed key with the CI_RUST_CACHE_KEY the save
+    step reads. What prepare kept only names the difference: the parts, the
+    native part's differing keyed lines, and the flags by name, never by value.
+    A missing key or state raises, which the caller turns into a refusal.
+    """
+    expected = os.environ["CI_RUST_CACHE_KEY"]
+    state = json.loads((Path(os.environ["RUNNER_TEMP"]) / IDENTITY_STATE).read_text(encoding="utf-8"))
+    kept = {"parts": dict(state["parts"]), "native_lines": [str(line) for line in state["native_lines"]],
+            "flags": {str(name): str(value) for name, value in state["flags"].items()}}
+    current = cache_identity()
+    if current["key"] == expected:
+        return IDENTITY_UNCHANGED, [f"Cache identity unchanged since setup: {shown(current['key'])}"]
+    parts = [name for name in current["parts"] if kept["parts"].get(name) != current["parts"][name]] or ["key"]
+    lines = [f"::warning::Cache identity changed since setup, so this job saves no cache entry: {shown(', '.join(parts))}"]
+    if "native" in parts:
+        before, after = kept["native_lines"], current["native_lines"]
+        lines += [f"- {shown(line)}" for line in before if line not in after]
+        lines += [f"+ {shown(line)}" for line in after if line not in before]
+    if "flags" in parts:
+        flags = {name: digest(value.encode("utf-8", "surrogateescape")) for name, value in current["flags"]}
+        differing = sorted(name for name in {*kept["flags"], *flags} if kept["flags"].get(name) != flags.get(name))
+        lines.append(f"Flag variables that differ: {shown(', '.join(differing))}")
+    return "changed", lines
+
+
+def prepare():
     vendor_reuse = os.environ.get("CACHE_VENDOR_REUSE", "false")
     if vendor_reuse not in {"true", "false"}:
         raise ValueError("unsupported vendor reuse setting")
     root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
     temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+    identity = cache_identity()
+    profile, inputs = identity["parts"]["profile"], identity["inputs"]
     cargo = temp / "gitturtle-cargo"
     cargo.mkdir(exist_ok=True)
     if cargo.is_symlink() or (root / "target").is_symlink():
         raise ValueError("symlinked cache roots refused")
-    container = os.environ.get("CACHE_CONTAINER", "")
-    if container not in {"", "archlinux"}:
-        raise ValueError("unsupported cache container")
-    inputs = keyed_inputs(root)
-    identity = digest(json.dumps({"profile": profile, "source": source_identity(root, inputs),
-                                 "native": native_identity(container or os.environ["RUNNER_OS"]),
-                                 "toolchain": toolchain_identity(), "flags": flags_identity(os.environ)},
-                                 sort_keys=True).encode())
+    # The names alone: a value can hold a path or a token.
+    print("\n".join([*identity["native_lines"],
+                     "Keyed flag variables: " + shown(", ".join(name for name, _ in identity["flags"]))]))
+    (temp / IDENTITY_STATE).write_text(json.dumps({
+        "key": identity["key"], "parts": identity["parts"], "native_lines": identity["native_lines"],
+        "flags": {name: digest(value.encode("utf-8", "surrogateescape")) for name, value in identity["flags"]}}), encoding="utf-8")
     if vendor_reuse == "false":
         # Release builds must not link vendored objects from an earlier run:
         # checkout times leave any restored vendored output dirty, so Cargo
@@ -902,11 +1057,15 @@ def prepare():
             vendor_mtimes = "refused"
     # The container name keeps its entries apart from the Ubuntu job's in the
     # cache list; both run on Linux x64 runners.
-    output_file("GITHUB_ENV", {"CI_RUST_CACHE_KEY": "-".join(filter(None, (profile, container, identity))),
-                              "CI_RUST_CACHE_PROFILE": profile,
-                              "CI_RUST_CACHE_VENDOR_MTIMES": vendor_mtimes,
-                              "CI_RUST_CACHE_LOCK": digest((root / "Cargo.lock").read_bytes()),
-                              "CARGO_HOME": cargo, "CARGO_TARGET_DIR": root / "target"})
+    exported = {"CI_RUST_CACHE_KEY": identity["key"],
+                "CI_RUST_CACHE_PROFILE": profile,
+                "CI_RUST_CACHE_VENDOR_MTIMES": vendor_mtimes,
+                "CI_RUST_CACHE_LOCK": digest((root / "Cargo.lock").read_bytes()),
+                "CARGO_HOME": cargo, "CARGO_TARGET_DIR": root / "target"}
+    if not os.environ.get("CARGO_INCREMENTAL"):
+        # The value the identity keyed, exported before the restore action exports the same.
+        exported["CARGO_INCREMENTAL"] = "0"
+    output_file("GITHUB_ENV", exported)
 
 
 def restored():
@@ -929,12 +1088,35 @@ def restored():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("prepare", "start", "restored", "bound"))
+    parser.add_argument("phase", choices=("prepare", "start", "restored", "compare", "bound"))
     args = parser.parse_args()
     account = os.environ.get("CACHE_RUN_AS")
-    if account and args.phase != "bound":
+    if account and args.phase not in {"compare", "bound"}:
         run_as(account)
-    if args.phase == "prepare":
+    if args.phase == "compare":
+        # On every event, after validation passed: nothing here fails the job.
+        # Whatever goes wrong refuses the save and is never read as unchanged.
+        try:
+            if account:
+                run_as(account)
+            verdict, lines = compared()
+        except Exception as error:  # noqa: BLE001
+            verdict = "unconfirmed"
+            lines = ["::warning::Cache identity could not be compared with setup, so this job saves no cache entry: "
+                     + shown(type(error).__name__)]
+        try:
+            # The verdict before its line: "unchanged" is printed only once the bound phase can read it.
+            output_file("GITHUB_OUTPUT", {"identity": verdict})
+        except Exception:  # noqa: BLE001
+            # No verdict reaches the bound phase, which then refuses, so nothing here may say unchanged.
+            lines = [*(lines if verdict != IDENTITY_UNCHANGED else []),
+                     "::warning::Cache identity verdict could not be recorded, so this job saves no cache entry"]
+        try:
+            print("\n".join(lines))
+        except Exception:  # noqa: BLE001
+            # A line that cannot be printed fails no job either.
+            pass
+    elif args.phase == "prepare":
         prepare()
     elif args.phase == "start":
         (Path(os.environ["RUNNER_TEMP"]) / "gitturtle-cache-start").write_text(str(time.monotonic()))
@@ -948,7 +1130,10 @@ def main():
         snapshots = []
         diagnostics = {}
         target = os.environ.get("CACHE_TARGET", "")
+        confirmed = os.environ.get("CACHE_IDENTITY") == IDENTITY_UNCHANGED
         try:
+            if not confirmed:
+                raise ValueError(IDENTITY_REFUSAL)
             # Inside the guard: after validation passed, an account failure
             # only refuses the save.
             if account:
@@ -960,9 +1145,9 @@ def main():
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             # Cache failure cannot turn already-passed validation into a failure;
             # retain a fixed diagnostic without leaking Cargo output or paths.
-            result = {"save": False, "reason": "cache budget preparation unavailable", "snapshots": snapshots,
-                      "limit_bytes": diagnostics.get("limit_bytes"),
-                      "failure_stage": diagnostics.get("stage", "unavailable"),
+            result = {"save": False, "reason": "cache budget preparation unavailable" if confirmed else IDENTITY_REFUSAL,
+                      "snapshots": snapshots, "limit_bytes": diagnostics.get("limit_bytes"),
+                      "failure_stage": diagnostics.get("stage", "unavailable" if confirmed else "identity"),
                       "stage_seconds": diagnostics.get("stage_seconds", []),
                       "evicted_packages": diagnostics.get("evicted_packages", [])}
         output_file("GITHUB_OUTPUT", {"save": str(result["save"]).lower()})

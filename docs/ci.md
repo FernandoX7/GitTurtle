@@ -1484,8 +1484,9 @@ hashes:
   edit. Ordinary application Rust source edits reuse compatible dependency caches.
 - The platform's native inputs. On Ubuntu: the version of every installed package
   in the dependency closure of the build packages the action installs, the file
-  and version behind each build tool name on `PATH`, pkg-config's search order
-  with the `.pc` files outside dpkg's directories, what it resolves two names no
+  and version behind each build tool name on `PATH`, pkg-config's built-in path
+  with the `.pc` files outside dpkg's directories, the `.pc` files of the
+  directories a `PKG_CONFIG` variable names, what it resolves two names no
   build package ships to, and the top-level names of `/usr/local/include` and
   `/usr/local/lib` ([Ubuntu native key](#ubuntu-native-key)); the rest of the hosted image's
   inventory is not keyed. On macOS: the Xcode version, SDK version/build, selected
@@ -1493,13 +1494,8 @@ hashes:
   Arch container keys its listed packages' pacman versions
   ([Arch cache](#arch-linux-container-job)). Each covers native ABI/SDK changes.
 - The active compiler's full `rustc -vV` and the target triple it reports as
-  `host` (each keyed job compiles for its host), and the build flags set in the
-  environment by name: `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTDOCFLAGS`,
-  `RUSTC`, `RUSTC_WRAPPER`, `RUSTC_BOOTSTRAP`, `CARGO_INCREMENTAL`, `CC`, `CXX`,
-  `AR`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `LIBRARY_PATH`, `SDKROOT`,
-  `MACOSX_DEPLOYMENT_TARGET`, and any `CARGO_BUILD_*`, `CARGO_PROFILE_*`,
-  `CARGO_TARGET_*` (except `CARGO_TARGET_DIR`), `CMAKE*`, `PKG_CONFIG*` and
-  per-target `CC_*`, `CXX_*`, `AR_*`, `CFLAGS_*` or `CXXFLAGS_*` variable. Upstream's
+  `host` (each keyed job compiles for its host), and the build settings in the
+  environment, by name and value ([flags identity](#flags-identity)). Upstream's
   own key hashes the same compiler and much of the same environment; these are
   in the local key too, so the helper's tests can show each one invalidates.
 
@@ -1513,6 +1509,81 @@ Any edit to the setup action already changes the key because its files are hashe
 the prefix moved from `v1` to `v2` with vendored reuse so the two generations are
 distinguishable in the cache list.
 
+#### Flags identity
+
+The flags identity hashes the name and value of every set, non-empty environment
+variable that changes what rustc, a build script, a compiler or the `cc`, `cmake`
+and `pkg-config` crates emit. The step prints the selected names on one line
+(`Keyed flag variables: …`; `CARGO_INCREMENTAL` is always among them, as
+`prepare` keys its effective value). A flag's value is never printed and never
+kept: a value can hold a path or a token. The directories that a
+`PKG_CONFIG_PATH` or `PKG_CONFIG_LIBDIR` variable names are not held back with
+it. By the rule that lists them under the
+[Ubuntu native key](#ubuntu-native-key), they are listed in the log, kept in
+the record of the [comparison at finish](#identity-comparison-at-finish) and
+printed again in a difference.
+
+**Why the three crates' whole read set.** Cargo reruns a build script only for
+the variables the script declared with `rerun-if-env-changed`. `ring` 0.17.14
+archives with cc's metadata off, so nothing declares what cc reads for the
+archiver, and the `cmake` crate declares nothing at all. For those the flags
+identity is the only thing that keeps a restored object from being used under
+another setting. The set is read from the sources of the locked `cc` 1.4.5,
+`cmake` 0.1.58 and `pkg-config` 0.3.34. A test pins those three versions in
+`Cargo.lock` to the reviewed list and fails, naming the functions to read again,
+when one moves or a second version is locked.
+
+- *Names looked up in four forms.* cc: `AR`, `ARFLAGS`, `CC`, `CFLAGS`, `CXX`,
+  `CXXFLAGS`, `CXXSTDLIB`, `NVCC`, `RANLIB`, `RANLIBFLAGS`. cmake: `CMAKE`,
+  `CMAKE_GENERATOR`, `CMAKE_PREFIX_PATH`, `CMAKE_TOOLCHAIN_FILE`, `EMCMAKE`,
+  `EMMAKE`. pkg-config: `PKG_CONFIG`, `PKG_CONFIG_ALLOW_CROSS`,
+  `PKG_CONFIG_LIBDIR`, `PKG_CONFIG_PATH`, `PKG_CONFIG_SYSROOT_DIR`. Each crate
+  asks for `<VAR>_<target>`, `<VAR>_<target with underscores>`, `HOST_<VAR>` or
+  `TARGET_<VAR>`, and `<VAR>`. The first two are keyed by the prefix `<VAR>_`;
+  `<VAR>`, `HOST_<VAR>` and `TARGET_<VAR>` are keyed as exact names. No bare
+  `HOST_` or `TARGET_` prefix is keyed: `HOSTNAME`, or a variable a runner sets
+  under such a prefix, would split the key between images again.
+- *Names read in one form.* cc: `CRATE_CC_NO_DEFAULTS`, `CROSS_COMPILE`,
+  `SDKROOT`, the `MACOSX_`, `IPHONEOS_`, `TVOS_`, `WATCHOS_` and
+  `XROS_DEPLOYMENT_TARGET` names, `WASI_SDK_PATH`, `WASI_SYSROOT`,
+  `WASM_MUSL_SYSROOT`, `PAUTHTEST_SYSROOT`, `PAUTHTEST_RESOURCE_DIR`,
+  `RUSTC_LINKER`, `CARGO_TRIM_PATHS_SCOPE`, `CARGO_TRIM_PATHS_REMAP`, the
+  `CARGO_CFG_TARGET_` names `ABI`, `ARCH`, `ENV`, `FEATURE`, `OS` and `VENDOR`,
+  and its own `CC_*` settings. pkg-config: `SYSROOT` and every other
+  `PKG_CONFIG*` name. Every `CMAKE*` name is keyed as before.
+- *Forms built around a caller's name.* The cmake crate's
+  `DEP_<dependency>_ROOT`, and the pkg-config crate's `<LIBRARY>_NO_PKG_CONFIG`,
+  `<LIBRARY>_STATIC` and `<LIBRARY>_DYNAMIC`.
+- *What the compilers and the linker read themselves*, and nothing declares:
+  `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` and `LIBRARY_PATH`; and
+  `CPPFLAGS` and `LDFLAGS`.
+- *rustc's and Cargo's settings.* `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
+  `RUSTDOCFLAGS`, `RUSTC`, `RUSTC_WRAPPER`, `RUSTC_BOOTSTRAP`,
+  `CARGO_INCREMENTAL`, and any `CARGO_BUILD_*`, `CARGO_PROFILE_*` or
+  `CARGO_TARGET_*` variable except `CARGO_TARGET_DIR`.
+
+**Out, by decision.** What Cargo sets itself for every build script, so that the
+job's value never reaches one: `TARGET`, `HOST`, `OUT_DIR`, `OPT_LEVEL`, `DEBUG`,
+`PROFILE`, `NUM_JOBS`, `CARGO_MANIFEST_DIR`, `CARGO_MAKEFLAGS` and
+`CARGO_PKG_NAME`. `PATH`, whose value changes from step to step: the Ubuntu
+native key holds the file behind each build tool name instead. What cc reads for
+MSVC targets alone. And the variables a build script declares itself, for which
+Cargo reruns it: `AWS_LC_SYS_*`, bindgen's `LIBCLANG_PATH` and
+`BINDGEN_EXTRA_CLANG_ARGS`, a name a script hands to cc's
+`flags_from_environment`, and `SYSTEM_DEPS_*`, which the install step refuses
+anyway. A name of that kind that has one of pkg-config's forms, such as
+`AWS_LC_SYS_STATIC`, is keyed with the form: one name too many never makes a key
+stale.
+
+The tests hold real build-script outputs of a release build on aarch64 Linux
+(`ring`, `freetype-sys` and `dav1d-sys` whole, and the declarations of
+`aws-lc-sys`) under
+[`scripts/ci/tests/fixtures/build-script-outputs`](../scripts/ci/tests/fixtures/build-script-outputs):
+every `rerun-if-env-changed` name in them that cc or pkg-config reads for the
+script changes the digest, and what is left out is exactly the scripts' own
+declarations and Cargo's variables. `ring`'s output shows the gap the identity
+closes: it declares the `CC` and `CFLAGS` forms and none of the archiver's.
+
 #### Ubuntu native key
 
 Since November 19, 2026 the Ubuntu lanes key the packages a build reads instead of
@@ -1523,10 +1594,12 @@ Pre-Depends, Depends and Provides of every package; nothing queries dpkg a secon
 time) and hashes these parts.
 
 - *Packages.* `name:arch=version` of every installed package in the dependency
-  closure of the twelve packages a build compiles with, probes or links
-  (`UBUNTU_BUILD_PACKAGES`: `build-essential clang cmake pkg-config
+  closure of the eleven packages a build compiles with, probes or links
+  (`UBUNTU_BUILD_PACKAGES`: `build-essential clang pkg-config
   libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev
   libzstd-dev libvulkan-dev libdav1d-dev`), and nothing else from the inventory.
+  apt's `cmake` is not one of them and the action does not install it (*No CMake
+  from apt*, below).
   The closure follows Pre-Depends and Depends, not Recommends or Suggests (the
   action installs with `--no-install-recommends`). A name resolves on every
   architecture and through every package that Provides it, and every alternative
@@ -1544,8 +1617,10 @@ time) and hashes these parts.
   bare; gcc takes the linker and the assembler from `PATH` in its turn, and
   CMake's Makefile generator runs `make`. `cmake3`, the cmake crate's other
   name, is keyed as absent or by the same two values. A required name that does
-  not resolve fails the step.
-- *pkg-config's view.* The search order (`pkg-config --variable pc_path
+  not resolve fails the step. `cmake` is the image's own: the action installs
+  none, so this part is all that keys it, and an image with no CMake on `PATH`
+  fails the step by name (`build tool cmake is not on PATH`).
+- *pkg-config's view.* The built-in path (`pkg-config --variable pc_path
   pkg-config`) and, for each directory on it outside `/usr/lib` and `/usr/share`,
   the name of each `.pc` file with a digest of its content: a size would survive
   an edit of `Version: 1.2.3` to `1.2.4`. A clean image has none; a `.pc` under
@@ -1554,13 +1629,26 @@ time) and hashes these parts.
   to another place is listed, and `/usr/lib64` is not `/usr/lib`. A directory
   that is there and cannot be listed, like a file that cannot be read, is keyed
   and printed as unreadable with its errno, never as empty; only a directory
-  that does not exist is empty. `PKG_CONFIG*` variables stay in the flags
-  identity above, by value only: a directory that `PKG_CONFIG_PATH`,
-  `PKG_CONFIG_LIBDIR` or a target-suffixed form of either adds is not listed,
-  so a `.pc` file placed there later would not change the key. The pkg-config
-  crate's `HOST_PKG_CONFIG_*` and `TARGET_PKG_CONFIG_*` forms are in neither:
-  the flags identity keys names that begin with `PKG_CONFIG`. No workflow sets
-  any of them.
+  that does not exist is empty.
+- *The directories a `PKG_CONFIG` variable names.* Every directory in a set,
+  non-empty `PKG_CONFIG_PATH` or `PKG_CONFIG_LIBDIR`, in any form the pkg-config
+  crate maps to them (`<VAR>`, `HOST_<VAR>`, `TARGET_<VAR>` and the
+  target-suffixed `<VAR>_…`), is listed under its variable's name by the same
+  rule: each `.pc` file with a digest of its content, a directory that does not
+  exist as empty, one that cannot be listed as unreadable. These directories
+  are listed whether or not dpkg owns them. The lists are not one search
+  order: `PKG_CONFIG_LIBDIR` replaces the built-in path while `pc_path` still
+  prints it, and the pkg-config crate hands the tool only the first set form of
+  each variable. The built-in path and each variable's directories are
+  therefore keyed side by side, and no order between them is claimed. A set form of either variable, or
+  of `PKG_CONFIG_SYSROOT_DIR`, also sends the key to the complete inventory
+  (the fallback below), like an unsupplied name that resolves: a digest keys a
+  `.pc` file's text, not the headers and libraries it leads to. The warning
+  names the variable and never its value. `PKG_CONFIG_TOP_BUILD_DIR` only fills
+  a variable of a `.pc` file and is keyed by value alone, in the
+  [flags identity](#flags-identity), where the values of all of these are
+  keyed too. With none of them set, which is every lane today, the mode, the
+  printed lines and the digest's input are those of a key without this part.
 - *Names no build package ships.* `aws-lc-sys` 0.45.0 asks pkg-config for
   `openssl`, `aws-lc`, `libcrypto` and `libcrypto-awslc` and links a system
   AWS-LC when one of them resolves to one. `libssl-dev` ships the first and the
@@ -1602,15 +1690,18 @@ differed only through packages the action does not install.
 
 **Why a closure.** A build of the workspace's tests was traced with `strace`
 (`cargo test --no-run` in an `ubuntu:24.04` arm64 container holding the action's
-install list). It read files of 75 packages. 71 lie in the closure, which holds
-195 of that container's 278 packages. The other four are `dash` (`/bin/sh`),
-`git`, `libc-bin` (`/etc/ld.so.conf`) and `openssl` (`/usr/lib/ssl/cert.pem`). A
+install list of November 18, 2026, which still named `cmake`). It read files of
+75 packages. 71 lie in the closure, which held 195 of that container's 278
+packages and, without apt's `cmake`, holds 160 of 271. The other four are `dash`
+(`/bin/sh`), `git`, `libc-bin` (`/etc/ld.so.conf`) and `openssl` (`/usr/lib/ssl/cert.pem`). A
 written list like [Arch's](#arch-linux-container-job) would silently lose
 Ubuntu's version- and architecture-named toolchain packages, such as
 `gcc-13-aarch64-linux-gnu` and `libstdc++-13-dev`; the closure reaches them, and
-it keeps `linux-libc-dev`, whose headers `libc6-dev` includes. The container's
-snapshot is the tests'
-[fixture](../scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv).
+it keeps `linux-libc-dev`, whose headers `libc6-dev` includes. The tests'
+[fixture](../scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv) is the
+snapshot of such a container with today's install list, taken on November 19,
+2026: the earlier one without `cmake`, `cmake-data`, `libarchive13t64`,
+`libcurl4t64`, `libjsoncpp25`, `librhash0` and `libuv1t64`.
 
 **What the narrower key gives up.** The image's other packages, over a thousand
 (1,055 of the 1,252 on the AWS x64 image of the first hosted run): a
@@ -1624,6 +1715,46 @@ what the two directories hold. The hosted image carries a CMake under
 `/usr/local` that is no dpkg package, and a version alone does not say which
 binary `PATH` and the alternatives select.
 
+**No CMake from apt.** The action installs no CMake, and `cmake` is not a build
+package; the tool `cmake` stays a required keyed tool, by the file `PATH`
+selects and the digest of its `--version` output. The install step used to fetch
+19.2 MB on x64, 13.4 MB of it apt's `cmake` 3.28.3 and `cmake-data`, while in
+every hosted log that prints the keyed tools (x64 on both clouds, and arm64) the
+build selected the image's own `/usr/local/bin/cmake` 3.31.6, first on `PATH`:
+apt's `/usr/bin/cmake` was installed and never run. From the evening of November
+18, 2026 the runners' mirrors served at 30 to 600 kB/s and the step took up to
+twelve minutes. The image's CMake is a Kitware release that the image build
+installs under `/usr/local`; the published software lists for x64 and arm64 name
+"CMake 3.31.6", and the image's toolset pins that version with a review date of
+December 1, 2026
+([research note](development/2026-11-19-ci-ubuntu-apt-step.md)). The AWS-hosted
+image versions have no published list, so for them the selected CMake rests on
+the hosted logs. Kitware's 3.31.6 binaries for both architectures load only the
+C library's own libraries (`libdl`, `librt`, `libpthread`, `libm`, `libc` and
+the loader, read from the release archives' dynamic sections), and `libc6` is
+in the closure.
+
+Nothing installs a CMake as a fallback or on a condition: the installed set, and
+with it the keyed roots, would then depend on the image. An image without a CMake
+fails the key step by name instead of building differently. `aws-lc-sys` 0.45.0
+is the only locked crate that can run cmake, and it chooses its builder by
+variables, features and the target, never by whether `cmake` exists, so the
+tool's presence is no input of its own. A dpkg package named `cmake` in the
+snapshot, on any architecture and in any state, sends the key to the complete
+inventory (the fallback below): the closure no longer keys that package's
+version, so an image or a step that brings apt's CMake back is never keyed by
+the closure alone.
+
+The rule gives up the 35 packages that were keyed only through apt's `cmake`:
+`cmake` and `cmake-data` themselves, and what they depend on (among them
+libarchive, libcurl with its TLS, Kerberos and LDAP libraries, libuv, jsoncpp,
+rhash, `procps` and `libsystemd0`). The traced build read none of them. Seven left the
+container with apt's `cmake`; the other 28 are still installed there and are now
+outside the closure. The CMake that runs is keyed as before, by its real path
+and its version output, with no package version behind it. No hosted run of this
+rule is recorded here: the first hosted run below predates it, and its counts
+include the packages keyed through apt's `cmake`.
+
 **Fallback.** A build package that is not installed fails the step, as `pacman
 -Q` does on Arch, whatever else is wrong with the snapshot: the build packages
 are checked before any line is refused. Every other abnormality sends the key
@@ -1631,8 +1762,11 @@ to the complete inventory, never to a partial closure and never past a skipped
 dependency: a snapshot line without six fields, a dependency or provided name
 outside dpkg's grammar, a group of alternatives that nothing installed
 satisfies, a package the closure reaches in another state than `ii ` (unpacked,
-half installed, or removed with its configuration left), or an unsupplied
-pkg-config name that resolves. The fallback hashes every line's package,
+half installed, or removed with its configuration left), a dpkg package named
+`cmake` in any state, a set `PKG_CONFIG_PATH`, `PKG_CONFIG_LIBDIR` or
+`PKG_CONFIG_SYSROOT_DIR` in any keyed form, or an unsupplied pkg-config name
+that resolves. The
+fallback hashes every line's package,
 architecture, version and status, and the step prints a `::warning::` that names
 the first cause. The digest's input starts with the mode (`closure` or
 `inventory`), so a fallback key can never equal a closure key. Failing there
@@ -1651,8 +1785,10 @@ the fallback is one entry per image again, slower and never stale.
    reads the lockfile and requires that set to equal the keys of a table, filled
    from each build script. A row gives the pkg-config names the script asks for
    on Linux, each with the build package that ships its `.pc` file or marked
-   unsupplied, and the build packages behind what it runs; or the reason it asks
-   for nothing there. A new one fails the test until it is mapped, and the
+   unsupplied, the build packages behind what it runs, and any command it runs
+   that no build package ships, which must be a required keyed tool (`cmake`, for
+   `aws-lc-sys`); or the reason it asks for nothing there. A new one fails the test
+   until it is mapped, and the
    package it probes is added to the action's install list and to
    `UBUNTU_BUILD_PACKAGES` if it is new. The table is by name and version as
    `Cargo.lock` writes them (`aws-lc-sys 0.45.0`), one row for each locked
@@ -1683,7 +1819,8 @@ step runs, or inside another action, is not seen.
 mode; `Keyed Ubuntu packages: <n> of <m> installed`; inside a collapsed group,
 each keyed `name:arch=version` on its own line, sorted; for each tool its real
 path, every match on `PATH` in order, a short digest of its whole version output
-and that output's first line; the `pc_path` and the `.pc` files; what pkg-config
+and that output's first line; the `pc_path` and the `.pc` files, those of a
+`PKG_CONFIG` variable's directories with the variable's name; what pkg-config
 answers for each unsupplied name (`Keyed pkg-config probe aws-lc: absent`, or
 its version); the top level of the two `/usr/local` directories; and the native
 digest. The lines are built from the hashed values themselves, with two things
@@ -1711,6 +1848,73 @@ of 1,254 packages and computed its own digest. Every lane missed in that run, as
 the helper had changed; hits, and the images of a later release, are recorded
 after `main` has saved the new keys.
 
+#### Identity comparison at finish
+
+`prepare` computes the key once, at setup. Nothing used to check at the end of a
+job that the machine was still the one that was keyed: a step that installed a
+package or a tool between the two phases would have saved outputs built against
+the later state under the earlier key, and only tests that read the workflows'
+text forbid such steps. The finish phase therefore computes the identity again,
+and a changed one refuses the save.
+
+- *One function, twice.* `cache_identity` computes the five parts (`profile`,
+  `source`, `native`, `toolchain`, `flags`) and the key with no side effect: it
+  creates no directory, rewinds no timestamp, exports nothing and prints
+  nothing. `prepare` calls it, exports the key, and keeps the parts, the native
+  part's keyed lines and a digest of each flag's value in
+  `gitturtle-cache-identity.json` under the runner's temporary directory. The
+  finish phase's `Compare cache identity with setup` step calls it again, as
+  the build account, with the profile, container and account that setup had.
+- *The verdict.* The recomputed key is compared with the `CI_RUST_CACHE_KEY`
+  the save step reads. What `prepare` kept only names a difference; it never
+  decides.
+- *Stable by construction.* The restore action exports `CARGO_INCREMENTAL=0`
+  after `prepare` on the five lanes that set none (the Arch job sets it for the
+  whole job), so the flags differed between the phases. `prepare` keys the
+  variable's effective value and exports `CARGO_INCREMENTAL=0` itself when the
+  job set none. No variable is exempted. No lane sets `CARGO_INCREMENTAL` to
+  anything but 0. A lane that did would either keep its value through both
+  phases and save as usual or, if the restore action's export replaced it,
+  have its save refused, with the warning and a line that names the variable:
+  slower, never stale. Whether a value exported through `GITHUB_ENV` replaces
+  one set in a job's `env:` has not been verified.
+- *Every event.* The step has no event, ref or repository condition: pull
+  requests, manual runs and the release workflow's build job compare too, and
+  save nothing. A pull request's own run thereby shows on each lane that the
+  identity is stable between the phases before `main` depends on it.
+- *What it prints.* Unchanged: one line, `Cache identity unchanged since setup:
+  <key>`. Changed: one `::warning::` that names the parts that differ; for the
+  native part the keyed lines that differ, setup's after `- ` and this phase's
+  after `+ `; for the flags the names of the variables that differ, never a
+  value. Every value is escaped as the key step's lines are. The verdict is
+  written to the step's output before any line is printed, so the positive
+  line appears only on a lane whose bound phase can read `unchanged`. A
+  verdict that cannot be written prints no positive line and one `::warning::`
+  with a fixed text instead, after the lines of a changed identity if there
+  are any.
+- *Never a failed job.* Validation has passed when the step runs. An
+  exception, a missing `CI_RUST_CACHE_KEY`, a missing or unreadable record, an
+  account that cannot be taken and a verdict that cannot be written each
+  refuse the save, with a warning where one can be printed and exit status 0.
+  None of them is read as unchanged.
+- *The bound phase* refuses, with `save=false` and the fixed reason `cache
+  identity changed or was not confirmed since setup`, unless the comparison's
+  verdict is `unchanged`. The save step's condition is as it was.
+
+A refused save is slower and never stale: the next run of that key finds no
+entry, or the one an earlier run saved, and compiles what is missing. Nothing
+built against one state is stored under the key of another.
+
+**Acceptance.** This part ships only if the pull request's own hosted run
+prints the positive line on all six lanes that save: Ubuntu debug, Ubuntu
+release on x64 and on arm64, macOS debug, macOS release and Arch debug. No
+hosted result is recorded here. The tests build each lane's two environments
+from the logs of hosted run `44457231193`, from the variables the runner printed
+for the prepare step and for the finish phase's first step, and assume that the
+runner's own process environment, which a log does not print, holds no flag
+variable in either phase; the `Keyed flag variables` line shows that on a hosted
+run.
+
 ### Trust, failure and storage bounds
 
 Cargo cache storage is isolated under the fresh runner's temporary directory.
@@ -1733,8 +1937,9 @@ test in the second shard, Clippy or a release build failed. The entry holds
 dependency outputs keyed by their inputs, not results, and the run as a whole
 still fails.
 A main job's finish action checks for the existing exact key without downloading
-again and registers upstream's normal post-job save only when its payload budget
-passes. An existing exact entry is immutable and needs no duplicate save.
+again and registers upstream's normal post-job save only when its
+[identity comparison](#identity-comparison-at-finish) said unchanged and its
+payload budget passes. An existing exact entry is immutable and needs no duplicate save.
 
 The restore action's `cache-hit` means exact match only. A miss, partial match,
 service/extraction error or missing/failed action result discards the restored
