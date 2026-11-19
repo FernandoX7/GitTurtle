@@ -529,6 +529,23 @@ archive is ever used; in the security consult's words, "an entry writer already
 runs code through unverified `target/` outputs, so gains nothing; nor does
 pull-request code under GitHub's cache scoping".
 
+**When a cached file is refused.** Nothing saves over a refused file, by design,
+so a rerun does not clear the failure: every test shard that restores that entry
+fails at its install step, shard 1, the entry's writer, among them (Clippy
+restores the entry too and installs nothing), and a job that failed saves
+nothing. There are two ways out. A maintainer deletes the entry by its key, as a
+deliberate act: `DELETE /repos/{owner}/{repo}/actions/caches?key=<key>` in
+GitHub's REST API (a classic token needs the `repo` scope), with the full key as
+the repository's cache list shows it: the action's prefix, the helper's key and
+rust-cache's suffix. The lanes of that key are then cold, each test shard fetches
+the archive once, and the next `main` run saves a new entry. Or a file under
+`.github/actions/setup-rust/` changes, which re-keys every entry and makes every
+lane cold once. A refused file also says something about the entry. The
+installer stores an archive only after its digest matched, under a temporary
+name and by rename, so no save of the helper's put that file there: something
+else wrote into the directory before the entry was saved, or wrote the entry
+itself. Look at the entry before deleting it.
+
 **The key.** The debug profile's identity has a sixth part, `tools`: the pinned
 version and each archive's name and SHA-256, read from the two literals in
 `tools.py` without running it. On each platform the test shards and the Clippy
