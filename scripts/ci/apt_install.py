@@ -35,7 +35,8 @@ SOURCE_OPTION = "Dir::Etc::sourcelist="
 PARTS_OPTION = "Dir::Etc::sourceparts=-"
 LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 HOSTNAME = re.compile(rf"(?=.{{1,253}}\Z){LABEL}(?:\.{LABEL})*")
-PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]*")
+# No final hyphen: apt-get reads `name-` as "remove name".
+PACKAGE = re.compile(r"[a-z0-9](?:[a-z0-9+.-]*[a-z0-9+.])?")
 # A deb822 field: a name of printable ASCII without a colon, then its value.
 FIELD = re.compile(r"([!-9;-~]+):(.*)")
 NETWORK_URI = re.compile(r"(?:mirror\+https?|mirror|https?)://([^/?#]*)")
@@ -114,7 +115,10 @@ def uri_host(uri, path):
         return None
     network = NETWORK_URI.match(uri)
     if not network:
-        raise AptError(f"{shown(path)} names a source whose host this step cannot read: {shown(uri)}")
+        # The scheme alone: a URI can carry a user and a password.
+        scheme = re.match(r"[A-Za-z][A-Za-z0-9+.-]*(?=:)", uri)
+        kind = f"its scheme is {scheme.group(0)}" if scheme else "it has no scheme"
+        raise AptError(f"{shown(path)} names a source whose host this step cannot read: {kind}")
     # user:password@host:port
     host = re.sub(r":[0-9]*\Z", "", network.group(1).rpartition("@")[2])
     if not HOSTNAME.fullmatch(host):

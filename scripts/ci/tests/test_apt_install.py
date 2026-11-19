@@ -156,18 +156,54 @@ class SourceHosts(HelperFixture):
         self.assertEqual(self.failure(commands), f"the mirror list {self.mirrors} is missing; no other source is read in its place")
         self.assertEqual(commands.ran, [])
 
+    def test_a_source_file_or_mirror_list_over_the_size_bound_fails_by_name_and_is_never_parsed_cut_short(self):
+        bound = apt_install.MAX_SOURCE_BYTES
+        # A valid mirror list padded with a comment to one byte over the bound: read cut
+        # short it would still parse, so only the size check can refuse it.
+        padded = X64_MIRRORS + "#" * (bound + 1 - len(X64_MIRRORS.encode()))
+        self.x64(padded)
+        self.assertEqual(self.mirrors.stat().st_size, bound + 1)
+        commands = Commands()
+        self.assertEqual(self.failure(commands), f"the mirror list {self.mirrors} is larger than {bound} bytes")
+        self.assertEqual(commands.ran, [])
+        # Exactly the bound is read whole.
+        self.mirrors.write_text(padded[:-1])
+        self.assertEqual(len(apt_install.read_bounded(self.mirrors, "the mirror list")), bound)
+        # The selected source file has the same bound.
+        self.source.write_text(ARM64_SOURCES + "#" * (bound + 1 - len(ARM64_SOURCES.encode())))
+        self.assertEqual(self.failure(commands), f"the selected source file {self.source} is larger than {bound} bytes")
+        self.assertEqual(commands.ran, [])
+
     def test_a_source_whose_hosts_cannot_be_read_fails_by_name(self):
-        cases = {"URIs: ftp://ports.ubuntu.com/ubuntu-ports/": "names a source whose host this step cannot read: ftp://ports.ubuntu.com/ubuntu-ports/",
+        cases = {"URIs: ftp://ports.ubuntu.com/ubuntu-ports/": f"{self.source} names a source whose host this step cannot read: its scheme is ftp",
+                 # Only the scheme is printed: a URI can carry a user and a password.
+                 "URIs: s3://KEY:SECRET@bucket/ubuntu/": f"{self.source} names a source whose host this step cannot read: its scheme is s3",
+                 "URIs: ?KEY:SECRET@bucket": f"{self.source} names a source whose host this step cannot read: it has no scheme",
                  "deb http://ports.ubuntu.com/ubuntu-ports/ noble main": f"line 2 of {self.source} is not a field of a deb822 source file"}
         for line, expected in cases.items():
             with self.subTest(line=line):
                 self.source.write_text(f"Types: deb\n{line}\nSuites: noble\n")
                 commands = Commands()
-                self.assertIn(expected, self.failure(commands))
+                message = self.failure(commands)
+                self.assertIn(expected, message)
+                self.assertNotIn("SECRET", message)
                 self.assertEqual(commands.ran, [])
         # A list names mirrors, never another list.
         self.x64(f"mirror+file:{self.mirrors}\tpriority:1\n")
-        self.assertIn("names a source whose host this step cannot read: mirror+file:", self.failure(Commands()))
+        self.assertIn("names a source whose host this step cannot read: its scheme is mirror+file", self.failure(Commands()))
+
+    def test_a_word_apt_would_read_as_more_than_a_package_to_install_is_refused(self):
+        # apt-get reads `name-` as "remove name"; an option or a path is no name either.
+        for word in ("git-", "-o", "--allow-unauthenticated", "Dir::Etc::sourceparts=/tmp", "a b", "/tmp/x.deb", "pkg=1.0", ""):
+            with self.subTest(word=word):
+                self.x64()
+                commands = Commands()
+                status, lines = self.step(commands, packages=("pkg-config", word))
+                self.assertEqual(status, 1, lines)
+                self.assertEqual(sum(line.startswith("::error::not a package name: ") for line in lines), 1, lines)
+                self.assertEqual(commands.ran, [])
+        for word in ("g++", "libstdc++-14-dev", "python3.12", "a"):
+            self.assertTrue(apt_install.PACKAGE.fullmatch(word), word)
 
 
 class Lookup(HelperFixture):
