@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,74 @@ SPEC = importlib.util.spec_from_file_location("rust_cache", ROOT / ".github/acti
 cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
 SPEC_TOOLCHAIN = cache.toolchain_identity
+# `dpkg-query` in an ubuntu:24.04 arm64 container holding exactly the setup
+# action's install list, taken on 2026-11-19 with cache.DPKG_SNAPSHOT's format:
+# package:architecture, version, status, Pre-Depends, Depends and Provides,
+# tab-separated. A build of the workspace's tests traced there read files of
+# 75 packages, 71 of them in the closure this key takes.
+UBUNTU_SNAPSHOT = (ROOT / "scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv").read_text()
+# What build scripts and the cc and cmake crates run bare; cmake3 is optional.
+TOOL_NAMES = ("cc", "c++", "ar", "pkg-config", "clang", "cmake")
+# Tool answers for the tests that start no process.
+UBUNTU_TOOLS ={**{name: {"run": f"/usr/bin/{name}", "path": f"/usr/bin/{name}-13", "matches": [f"/usr/bin/{name}"],
+                          "version": f"{name} 13.0\n"} for name in TOOL_NAMES}, "cmake3": None}
+
+
+def snapshot_rows(text=UBUNTU_SNAPSHOT):
+    """A snapshot as {package:architecture: [version, status, Pre-Depends, Depends, Provides]}."""
+    return {fields[0]: fields[1:] for fields in (line.split("\t") for line in text.splitlines())}
+
+
+def snapshot_text(rows):
+    return "".join("\t".join((identity, *fields)) + "\n" for identity, fields in rows.items())
+
+
+class UbuntuRunner:
+    """A PATH of stand-ins for everything the Ubuntu key runs.
+
+    `dpkg-query` answers with a snapshot file and records its arguments; each
+    tool is a link in a PATH directory to its own real file, as the image's
+    alternatives are, and answers `--version` from a file of its own.
+    """
+
+    def __init__(self, base, snapshot=UBUNTU_SNAPSHOT):
+        self.bin, self.real, self.state, self.pc = (base / name for name in ("bin", "real", "state", "pkgconfig"))
+        for directory in (self.bin, self.real, self.state, self.pc):
+            directory.mkdir(parents=True)
+        self.snapshot = self.state / "snapshot"
+        self.snapshot.write_text(snapshot)
+        self.queries = self.state / "queries"
+        self.pc_path = self.state / "pc_path"
+        self.pc_path.write_text(f"{self.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig\n")
+        self.script(self.bin / "dpkg-query", f"printf '%s\\n' \"$@\" >> {shlex.quote(str(self.queries))}\n"
+                                           f"exec /bin/cat {shlex.quote(str(self.snapshot))}")
+        for name in TOOL_NAMES:
+            self.tool(name)
+
+    def script(self, path, body):
+        path.write_text(f"#!/bin/sh\n{body}\n")
+        path.chmod(0o755)
+
+    def tool(self, name, *, directory=None, variant="13", version=None):
+        """Put `name` on PATH as a link to the real file `name-variant`; returns that file."""
+        answer = self.state / f"{name}-{variant}.version"
+        answer.write_text(version or f"{name} (Ubuntu) {variant}.0\nconfigured for the fixture\n")
+        real = self.real / f"{name}-{variant}"
+        self.script(real, f'case "$*" in\n  --version) exec /bin/cat {shlex.quote(str(answer))} ;;\n'
+                          f'  "--variable pc_path pkg-config") exec /bin/cat {shlex.quote(str(self.pc_path))} ;;\nesac\nexit 64')
+        link = (directory or self.bin) / name
+        link.unlink(missing_ok=True)
+        link.symlink_to(real)
+        return real
+
+    def environment(self, *earlier):
+        return patch.dict(os.environ, {"PATH": os.pathsep.join(str(directory) for directory in (*earlier, self.bin))})
+
+    def native(self, *earlier):
+        """The native digest and the lines the step prints, with `earlier` directories first on PATH."""
+        with self.environment(*earlier), patch("builtins.print") as shown:
+            native = cache.native_identity("Linux")
+        return native, shown.call_args.args[0].split("\n")
 
 
 class FakeClock:
@@ -367,14 +436,38 @@ class CacheFixture(unittest.TestCase):
                 cache.prepare()
 
     def test_native_versions_are_part_of_compatibility(self):
-        for platform in ("Linux", "macOS"):
-            with self.subTest(platform=platform):
-                with patch.object(cache, "run", return_value=b"old native inputs"):
-                    old = cache.native_identity(platform)
-                with patch.object(cache, "run", return_value=b"updated native inputs"):
-                    self.assertNotEqual(old, cache.native_identity(platform))
+        # Linux has its own tests below (UbuntuPackages, UbuntuNativeIdentity).
+        with patch.object(cache, "run", return_value=b"old native inputs"):
+            old = cache.native_identity("macOS")
+        with patch.object(cache, "run", return_value=b"updated native inputs"):
+            self.assertNotEqual(old, cache.native_identity("macOS"))
         with self.assertRaises(ValueError):
             cache.native_identity("Windows")
+
+    def test_prepared_ubuntu_key_follows_the_closure_and_not_the_rest_of_the_image(self):
+        self.init_git()
+        runner = UbuntuRunner(self.base / "ubuntu")
+        (runner.bin / "git").symlink_to(shutil.which("git"))
+        rows = snapshot_rows()
+
+        def key():
+            runner.snapshot.write_text(snapshot_text(rows))
+            with runner.environment(), patch("builtins.print"), \
+                    patch.dict(os.environ, {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux", "CACHE_VENDOR_REUSE": "true"}):
+                cache.prepare()
+            lines = Path(self.env["GITHUB_ENV"]).read_text().splitlines()
+            Path(self.env["GITHUB_ENV"]).write_text("")
+            return dict(line.split("=", 1) for line in lines)["CI_RUST_CACHE_KEY"]
+
+        baseline = key()
+        self.assertRegex(baseline, r"^debug-[0-9a-f]{64}$")
+        # The other cloud's image: the same build packages beside another inventory.
+        rows["git:arm64"][0] += "+other"
+        rows["azure-cli:all"] = ["2.79.0-1~noble", "ii ", "", "python3:any", ""]
+        del rows["xdg-utils:all"]
+        self.assertEqual(key(), baseline)
+        rows["libc6-dev:arm64"][0] += "+updated"
+        self.assertNotEqual(key(), baseline)
 
     def test_profiles_have_distinct_identity_and_private_paths(self):
         self.init_git()
@@ -1036,6 +1129,386 @@ class CacheFixture(unittest.TestCase):
         # before Cargo could compare the rewound times.
         self.file(self.root / "vendor/tool/data/answer.txt", b"43")
         self.assertNotEqual(cache.source_identity(self.root), key)
+
+
+class UbuntuPackages(unittest.TestCase):
+    """The package part of the Ubuntu key, on the real snapshot and edits of it."""
+
+    def setUp(self):
+        self.rows = snapshot_rows()
+
+    def packages(self):
+        return cache.ubuntu_packages(snapshot_text(self.rows))
+
+    def keyed(self):
+        mode, keyed, *_ = self.packages()
+        self.assertEqual(mode, "closure")
+        return keyed
+
+    def key(self, text=None, **changed):
+        inputs = {"tools": UBUNTU_TOOLS, "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, **changed}
+        return cache.ubuntu_identity(snapshot_text(self.rows) if text is None else text, **inputs)[0]
+
+    def depend(self, identity, term):
+        """One more Depends group on a real package."""
+        self.rows[identity][3] = ", ".join(filter(None, (self.rows[identity][3], term)))
+
+    def test_closure_of_the_real_snapshot_is_what_a_traced_build_read_and_no_tool(self):
+        mode, keyed, count, installed, others, cause = self.packages()
+        self.assertEqual((mode, count, installed, others, cause), ("closure", 195, 278, 0, None))
+        self.assertEqual(keyed, sorted(keyed))
+        self.assertLessEqual(set(keyed), {f"{identity}={fields[0]}" for identity, fields in self.rows.items()})
+        names = {line.split(":", 1)[0] for line in keyed}
+        self.assertLessEqual(set(cache.UBUNTU_BUILD_PACKAGES), names)
+        # Version- and architecture-named toolchain packages no list would name,
+        # and the kernel headers libc6-dev includes.
+        self.assertLessEqual({"gcc-13", "gcc-13-aarch64-linux-gnu", "cpp-13", "g++-13", "binutils-aarch64-linux-gnu",
+                              "libc6", "libc6-dev", "linux-libc-dev", "libgcc-13-dev", "libstdc++-13-dev", "pkgconf-bin",
+                              "libclang-common-18-dev", "libllvm18", "cmake-data", "libdav1d7", "libssl3t64"}, names)
+        # The four packages the traced build read outside the closure, and the
+        # action's tools: none reaches a cached dependency output.
+        self.assertFalse(names & {"dash", "git", "libc-bin", "openssl", "openssh-client", "ca-certificates",
+                                  "python3-pil", "desktop-file-utils", "xdg-utils"})
+
+    def test_any_one_keyed_package_version_changes_the_key(self):
+        baseline = self.key()
+        keys = {baseline}
+        for line in self.keyed():
+            identity = line.split("=", 1)[0]
+            with self.subTest(package=identity):
+                original = self.rows[identity][0]
+                self.rows[identity][0] = original + "+1"
+                keys.add(self.key())
+                self.rows[identity][0] = original
+        self.assertEqual(len(keys), 196)
+        self.assertEqual(self.key(), baseline)
+
+    def test_packages_outside_the_closure_never_change_the_key(self):
+        baseline = self.key()
+        outside = sorted(set(self.rows) - {line.split("=", 1)[0] for line in self.keyed()})
+        self.assertEqual(len(outside), 83)
+        for identity in outside:
+            with self.subTest(package=identity):
+                fields = self.rows[identity]
+                self.rows[identity] = [fields[0] + "+1", *fields[1:]]
+                self.assertEqual(self.key(), baseline)
+                self.rows[identity] = [fields[0], "rc ", *fields[2:]]
+                self.assertEqual(self.key(), baseline)
+                del self.rows[identity]
+                self.assertEqual(self.key(), baseline)
+                self.rows[identity] = fields
+        # The rest of a hosted image, with its own dependencies on keyed packages.
+        self.rows["azure-cli:all"] = ["2.79.0-1~noble", "ii ", "", "python3:any, libc6 (>= 2.38)", "az"]
+        self.rows["firefox:amd64"] = ["1:1snap1-0ubuntu5", "ii ", "debconf", "snapd | zlib1g", ""]
+        self.assertEqual(self.key(), baseline)
+        self.assertEqual(self.packages()[2:4], (195, 280))
+
+    def test_new_dependency_edge_brings_its_package_into_the_key(self):
+        baseline = self.key()
+        self.rows["libprobe1:arm64"] = ["1.0-1", "ii ", "", "libprobe-data", ""]
+        self.rows["libprobe-data:all"] = ["1.0-1", "ii ", "", "", ""]
+        self.assertEqual(self.key(), baseline)
+        self.depend("libssl-dev:arm64", "libprobe1 (= 1.0-1)")
+        edged = self.key()
+        self.assertNotEqual(edged, baseline)
+        self.assertLessEqual({"libprobe1:arm64=1.0-1", "libprobe-data:all=1.0-1"}, set(self.keyed()))
+        self.assertEqual(len(self.keyed()), 197)
+        # Reached through a Pre-Depends edge as well, and keyed by version from then on.
+        self.rows["libssl-dev:arm64"][3] = self.rows["libssl-dev:arm64"][3].replace(", libprobe1 (= 1.0-1)", "")
+        self.assertEqual(self.key(), baseline)
+        self.rows["libssl-dev:arm64"][2] = "libprobe1"
+        self.assertEqual(self.key(), edged)
+        self.rows["libprobe-data:all"][0] = "1.0-2"
+        self.assertNotIn(self.key(), {baseline, edged})
+
+    def test_dependency_spellings_of_the_real_snapshot_all_resolve(self):
+        keyed = set(self.keyed())
+        # `perl:any` (dpkg-dev) and `python3:any` (libvulkan-dev).
+        self.assertIn("dpkg-dev:all", {line.split("=")[0] for line in keyed})
+        self.assertLessEqual({"perl:arm64=" + self.rows["perl:arm64"][0], "python3:arm64=" + self.rows["python3:arm64"][0]}, keyed)
+        # `libc6-dev | libc-dev` (build-essential): one alternative by name, the
+        # other through the versioned `Provides: libc-dev (= 2.39-0ubuntu8.12)`.
+        self.assertIn("libc-dev (= 2.39-0ubuntu8.12)", self.rows["libc6-dev:arm64"][4])
+        self.assertIn("libc6-dev:arm64=2.39-0ubuntu8.12", keyed)
+        # A group with one installed alternative of eight (fontconfig-config).
+        self.assertIn("fonts-dejavu-core | fonts-liberation |", self.rows["fontconfig-config:arm64"][3])
+        self.assertIn("fonts-dejavu-core:all=2.37-8", keyed)
+        spellings = {
+            "qualifier": ("libprobe1:any (>= 1.0)", {"libprobe1:arm64": ""}),
+            "versioned Provides": ("libprobe-abi", {"libprobe1:arm64": "libprobe (= 1.0-1), libprobe-abi (= 3)"}),
+            "plain Provides": ("libprobe-abi (>> 2)", {"libprobe1:arm64": "libprobe-abi"}),
+            "two installed alternatives, both followed": ("libprobe1 | libprobe2 (<< 9)", {"libprobe1:arm64": "", "libprobe2:arm64": ""}),
+            "one installed alternative of two": ("libprobe-absent (<= 2) | libprobe1", {"libprobe1:arm64": ""}),
+            "one name on two architectures": ("libprobe1", {"libprobe1:arm64": "", "libprobe1:armhf": ""}),
+            "a name and a provider of it": ("libprobe1", {"libprobe1:arm64": "", "libprobe-ng:arm64": "libprobe1 (= 1.0-1)"}),
+        }
+        for label, (term, added) in spellings.items():
+            with self.subTest(spelling=label):
+                self.rows = snapshot_rows()
+                for identity, provides in added.items():
+                    self.rows[identity] = ["1.0-1", "ii ", "", "", provides]
+                self.assertEqual(set(self.keyed()), keyed)
+                self.depend("libdav1d-dev:arm64", term)
+                self.assertEqual(set(self.keyed()) - keyed, {f"{identity}=1.0-1" for identity in added})
+
+    def test_root_that_is_missing_or_not_installed_fails_the_step(self):
+        for root in cache.UBUNTU_BUILD_PACKAGES:
+            identity = f"{root}:arm64"
+            for label, edit in (("missing", lambda: self.rows.pop(identity)),
+                                ("removed, configuration left", lambda: self.rows[identity].__setitem__(1, "rc ")),
+                                ("unpacked only", lambda: self.rows[identity].__setitem__(1, "iU "))):
+                with self.subTest(root=root, state=label):
+                    self.rows = snapshot_rows()
+                    edit()
+                    with self.assertRaisesRegex(ValueError, f"^Ubuntu build package {re.escape(root)} is not installed$"):
+                        self.key()
+        # Another package that merely provides the name is not the root.
+        self.rows = snapshot_rows()
+        del self.rows["pkg-config:arm64"]
+        self.assertIn("pkg-config (= 1.8.1-2build1)", self.rows["pkgconf:arm64"][4])
+        with self.assertRaises(ValueError):
+            self.key()
+        with self.assertRaises(ValueError):
+            self.key(text="")
+
+    def fallbacks(self):
+        """Every cause that sends the key to the inventory: label -> (snapshot, the cause the warning names)."""
+        def edited(edit):
+            self.rows = snapshot_rows()
+            edit()
+            return snapshot_text(self.rows)
+
+        whole = snapshot_text(snapshot_rows())
+        return {
+            "a line without six fields": (edited(lambda: self.rows["zlib1g:arm64"].pop()), "snapshot line 277 has 5 fields, not six"),
+            "a line with a seventh field": (edited(lambda: self.rows["adduser:all"].append("extra")), "snapshot line 1 has 7 fields, not six"),
+            "an empty line": (whole.replace("\n", "\n\n", 1), "snapshot line 2 has 1 fields, not six"),
+            "a package listed twice": (whole + whole.splitlines()[0] + "\n", "snapshot line 279 does not name one package and its version"),
+            "a dependency outside the grammar": (edited(lambda: self.depend("libssl-dev:arm64", "libprobe1 [amd64]")),
+                                                 "libssl-dev:arm64 has a dependency outside dpkg's grammar: 'libprobe1 [amd64]'"),
+            "a substitution left in a dependency": (edited(lambda: self.depend("cmake:arm64", "${shlibs:Depends}")),
+                                                    "cmake:arm64 has a dependency outside dpkg's grammar: '${shlibs:Depends}'"),
+            "an empty dependency group": (edited(lambda: self.rows["clang:arm64"].__setitem__(3, "clang-18 (>= 18~),")),
+                                          "clang:arm64 has a dependency outside dpkg's grammar: ''"),
+            "a provided name outside the grammar": (edited(lambda: self.rows["git:arm64"].__setitem__(4, "git-core | git-all")),
+                                                    "git:arm64 provides a name outside dpkg's grammar: 'git-core | git-all'"),
+            "a group in which no alternative resolves": (edited(lambda: self.depend("libssl-dev:arm64", "libprobe1 | libprobe2")),
+                                                         "nothing installed satisfies 'libprobe1 | libprobe2' of libssl-dev:arm64"),
+            "a dependency whose package was removed": (edited(lambda: self.rows.pop("libdav1d7:arm64")),
+                                                       "nothing installed satisfies 'libdav1d7' of libdav1d-dev:arm64"),
+            "a closure member that is only unpacked": (edited(lambda: self.rows["libssl3t64:arm64"].__setitem__(1, "iU ")),
+                                                       "libssl3t64:arm64 is in dpkg state 'iU ', not installed"),
+            "an alternative whose configuration is left": (
+                edited(lambda: (self.rows.__setitem__("libprobe1:arm64", ["1.0-1", "rc ", "", "", ""]),
+                                self.depend("libssl-dev:arm64", "libssl3t64 | libprobe1"))),
+                "libprobe1:arm64 is in dpkg state 'rc ', not installed"),
+            "a second architecture that is half installed": (
+                edited(lambda: self.rows.__setitem__("clang:armhf", ["1:18.0-59~exp2", "iH ", "", "", ""])),
+                "clang:armhf is in dpkg state 'iH ', not installed"),
+        }
+
+    def test_every_abnormal_snapshot_falls_back_to_the_whole_inventory_and_says_why(self):
+        closure = self.key()
+        for label, (text, cause) in self.fallbacks().items():
+            with self.subTest(cause=label):
+                mode, keyed, count, installed, others, named = cache.ubuntu_packages(text)
+                self.assertEqual((mode, named), ("inventory", cause))
+                # Never a partial closure: every line of the snapshot is keyed.
+                lines = text.split("\n")[:-1]
+                self.assertEqual(len(keyed), len(lines))
+                self.assertEqual(count + others, len(lines))
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {})
+                self.assertEqual(shown[:2], [f"::warning::Ubuntu cache key fell back to the complete package inventory: {cause}",
+                                             "Ubuntu native key mode: inventory"])
+                self.assertNotEqual(key, closure)
+                # Any package's version changes the fallback key, in the closure or
+                # not: every line for the four causes a real image could show, a
+                # sample of them for the rest.
+                every = label in {"a line without six fields", "a dependency outside the grammar",
+                                  "a group in which no alternative resolves", "a closure member that is only unpacked"}
+                for index, line in list(enumerate(lines))[::1 if every else 23]:
+                    fields = line.split("\t")
+                    if len(fields) > 1:
+                        fields[1] += "+1"
+                        changed = "".join(row + "\n" for row in (*lines[:index], "\t".join(fields), *lines[index + 1:]))
+                        self.assertNotEqual(self.key(text=changed), key, line)
+
+    def test_fallback_keys_status_and_can_never_equal_a_closure_key(self):
+        # A snapshot of the closure alone: both modes then key the same lines.
+        keyed = self.keyed()
+        self.rows = {identity: fields for identity, fields in self.rows.items() if f"{identity}={fields[0]}" in keyed}
+        self.assertEqual(len(self.rows), 195)
+        closure = self.key()
+        self.assertEqual(self.keyed(), keyed)
+        self.depend("libssl-dev:arm64", "libprobe1 [amd64]")
+        mode, inventory, *_ = self.packages()
+        self.assertEqual((mode, inventory), ("inventory", keyed))
+        fallback = self.key()
+        self.assertNotEqual(fallback, closure)
+        # The fallback keys every line's status too.
+        self.rows["perl:arm64"][1] = "hi "
+        held = self.packages()
+        self.assertIn(f"perl:arm64={self.rows['perl:arm64'][0]} [hi ]", held[1])
+        self.assertEqual(held[2:5], (194, 194, 1))
+        self.assertNotEqual(self.key(), fallback)
+        # A line that names no package is keyed whole.
+        text = snapshot_text(self.rows) + "garbage\n"
+        self.assertIn("unparsed: garbage", cache.ubuntu_packages(text)[1])
+        self.assertNotEqual(self.key(text=text), self.key())
+
+    def test_tools_and_pkg_config_view_are_part_of_the_key(self):
+        baseline = self.key()
+        keys = {baseline}
+        for name in TOOL_NAMES:
+            for field, value in (("path", f"/usr/local/bin/{name}"), ("version", f"{name} 13.1\n")):
+                with self.subTest(tool=name, changed=field):
+                    keys.add(self.key(tools={**UBUNTU_TOOLS, name: {**UBUNTU_TOOLS[name], field: value}}))
+        keys.add(self.key(tools={**UBUNTU_TOOLS, "cmake3": {**UBUNTU_TOOLS["cmake"], "matches": ["/usr/bin/cmake3"]}}))
+        keys.add(self.key(pc_path="/usr/local/lib/pkgconfig:/usr/lib/pkgconfig"))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": []}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", 291]]}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", 292]]}))
+        self.assertEqual(len(keys), 1 + 2 * len(TOOL_NAMES) + 5)
+
+    def test_install_line_names_only_build_packages_and_tools(self):
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        command = re.search(r"sudo apt-get install ((?:[^\n]*\\\n)+[^\n]*)\n", text).group(1)
+        installed = [word for word in command.replace("\\", " ").split() if not word.startswith("-")]
+        self.assertEqual(len(installed), len(set(installed)))
+        self.assertEqual(text.count("apt-get install"), 1)
+        build, tools = set(cache.UBUNTU_BUILD_PACKAGES), set(cache.UBUNTU_TOOL_PACKAGES)
+        # Every installed name is in exactly one of the two lists, and a root
+        # the action does not install would fail the step.
+        self.assertFalse(build & tools)
+        self.assertEqual(set(installed), build | tools)
+        self.assertIn("--no-install-recommends", command.split())
+        self.assertEqual(len(cache.UBUNTU_BUILD_PACKAGES), 12)
+
+
+class UbuntuNativeIdentity(unittest.TestCase):
+    """`native_identity("Linux")` against stand-in commands on PATH."""
+
+    def setUp(self):
+        (ROOT / ".local").mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local")
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.runner = UbuntuRunner(self.base)
+
+    def test_one_snapshot_feeds_the_key_and_every_printed_line_is_a_hashed_value(self):
+        native, lines = self.runner.native()
+        # One query, in the format every part reads.
+        self.assertEqual(self.runner.queries.read_text().splitlines(), [
+            "-W", r"-f=${Package}:${Architecture}\t${Version}\t${db:Status-Abbrev}\t${Pre-Depends}\t${Depends}\t${Provides}\n"])
+        start, end = lines.index("::group::Keyed Ubuntu packages"), lines.index("::endgroup::")
+        self.assertEqual(lines[:start], ["Ubuntu native key mode: closure", "Keyed Ubuntu packages: 195 of 278 installed"])
+        keyed = lines[start + 1:end]
+        self.assertEqual(keyed, cache.ubuntu_packages(UBUNTU_SNAPSHOT)[1])
+        self.assertEqual((len(keyed), keyed[0], keyed[-1]), (195, "binutils-aarch64-linux-gnu:arm64=2.42-4ubuntu2.10", "zlib1g:arm64=1:1.3.dfsg-3.1ubuntu2.3"))
+        tools = {}
+        expected = []
+        for name in TOOL_NAMES:
+            real = os.path.realpath(self.runner.real / f"{name}-13")
+            version = f"{name} (Ubuntu) 13.0\nconfigured for the fixture\n"
+            tools[name] = {"path": real, "version": version}
+            expected.append(f"Keyed tool {name}: {real}; on PATH: {self.runner.bin / name}; "
+                            f"version {cache.digest(version.encode())[:12]}: {name} (Ubuntu) 13.0")
+        tools["cmake3"] = None
+        pc_path = f"{self.runner.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig"
+        self.assertEqual(lines[end + 1:], [*expected, "Keyed tool cmake3: absent", f"Keyed pkg-config pc_path: {pc_path}",
+                                           f"Keyed pkg-config files in {self.runner.pc}: none", f"Ubuntu native digest: {native}"])
+        # The digest is the mode, then exactly the values the lines show.
+        hashed = {"packages": keyed, "tools": tools, "pc_path": pc_path, "pc_files": {str(self.runner.pc): []}}
+        self.assertEqual(native, cache.digest(b"closure\n" + json.dumps(hashed, sort_keys=True).encode()))
+        self.assertEqual(self.runner.native()[0], native)
+        self.assertEqual(len(self.runner.queries.read_text().splitlines()), 4)
+
+    def test_each_tool_is_keyed_by_the_file_path_selects_and_by_its_version(self):
+        baseline, _ = self.runner.native()
+        keys = {baseline}
+        for name in TOOL_NAMES:
+            with self.subTest(tool=name):
+                # Another real file behind the same name, saying the same thing.
+                self.runner.tool(name, variant="14", version=f"{name} (Ubuntu) 13.0\nconfigured for the fixture\n")
+                keys.add(self.runner.native()[0])
+                self.runner.tool(name, version=f"{name} (Ubuntu) 13.0\nconfigured otherwise\n")
+                keys.add(self.runner.native()[0])
+                self.runner.tool(name)
+                self.assertEqual(self.runner.native()[0], baseline)
+                (self.runner.bin / name).unlink()
+                with self.assertRaisesRegex(ValueError, f"^build tool {re.escape(name)} is not on PATH$"):
+                    self.runner.native()
+                self.runner.tool(name)
+        self.assertEqual(len(keys), 1 + 2 * len(TOOL_NAMES))
+        # cmake3 may be absent; once it resolves, its file and version are keyed.
+        self.runner.tool("cmake3")
+        appeared, lines = self.runner.native()
+        self.assertNotIn(appeared, keys)
+        version = cache.digest(b"cmake3 (Ubuntu) 13.0\nconfigured for the fixture\n")[:12]
+        self.assertIn(f"Keyed tool cmake3: {os.path.realpath(self.runner.real / 'cmake3-13')}; on PATH: {self.runner.bin / 'cmake3'}; "
+                      f"version {version}: cmake3 (Ubuntu) 13.0", lines)
+        self.runner.tool("cmake3", version="cmake3 version 3.31.6\n")
+        self.assertNotIn(self.runner.native()[0], {*keys, appeared})
+
+    def test_path_order_selects_the_tool_and_every_match_is_shown(self):
+        baseline, _ = self.runner.native()
+        local = self.base / "local"
+        local.mkdir()
+        # The hosted image's CMake under /usr/local, which no dpkg package owns.
+        real = self.runner.tool("cmake", directory=local, variant="3.31.6", version="cmake version 3.31.6\n")
+        self.runner.tool("cmake")
+        first, lines = self.runner.native(local)
+        self.assertNotEqual(first, baseline)
+        version = cache.digest(b"cmake version 3.31.6\n")[:12]
+        self.assertIn(f"Keyed tool cmake: {os.path.realpath(real)}; on PATH: {local / 'cmake'}, {self.runner.bin / 'cmake'}; "
+                      f"version {version}: cmake version 3.31.6", lines)
+        # Later on PATH it is shown and not run, so the key is the dpkg CMake's.
+        with patch.dict(os.environ, {"PATH": os.pathsep.join((str(self.runner.bin), str(local)))}), patch("builtins.print") as shown:
+            self.assertEqual(cache.native_identity("Linux"), baseline)
+        self.assertIn(f"on PATH: {self.runner.bin / 'cmake'}, {local / 'cmake'};", shown.call_args.args[0])
+
+    def test_pc_file_outside_the_dpkg_directories_changes_the_key(self):
+        baseline, lines = self.runner.native()
+        self.assertEqual([line for line in lines if line.startswith("Keyed pkg-config files in ")],
+                         [f"Keyed pkg-config files in {self.runner.pc}: none"])
+        # Only .pc files count, by name and size.
+        (self.runner.pc / "notes.txt").write_text("not a module")
+        self.assertEqual(self.runner.native()[0], baseline)
+        (self.runner.pc / "openssl.pc").write_text("Name: OpenSSL\n")
+        shadowed, lines = self.runner.native()
+        self.assertNotEqual(shadowed, baseline)
+        self.assertIn(f"Keyed pkg-config files in {self.runner.pc}: openssl.pc 14", lines)
+        (self.runner.pc / "openssl.pc").write_text("Name: OpenSSL\nVersion: 4\n")
+        (self.runner.pc / "dav1d.pc").symlink_to("missing.pc")
+        grown, lines = self.runner.native()
+        self.assertNotIn(grown, {baseline, shadowed})
+        self.assertIn(f"Keyed pkg-config files in {self.runner.pc}: dav1d.pc -1, openssl.pc 25", lines)
+        # The search order is keyed, and a directory dpkg owns is not listed.
+        other = self.base / "elsewhere"
+        self.runner.pc_path.write_text(f"/usr/lib/pkgconfig:/usr/share/pkgconfig:{self.runner.pc}:{other}\n")
+        reordered, lines = self.runner.native()
+        self.assertNotIn(reordered, {baseline, shadowed, grown})
+        self.assertEqual([line.split(":")[0] for line in lines if line.startswith("Keyed pkg-config files in ")],
+                         [f"Keyed pkg-config files in {self.runner.pc}", f"Keyed pkg-config files in {other}"])
+
+    def test_abnormal_snapshot_warns_first_and_keys_the_whole_inventory(self):
+        closure, _ = self.runner.native()
+        rows = snapshot_rows()
+        rows["libssl3t64:arm64"][1] = "iU "
+        self.runner.snapshot.write_text(snapshot_text(rows))
+        native, lines = self.runner.native()
+        self.assertNotEqual(native, closure)
+        self.assertEqual(lines[:4], [
+            "::warning::Ubuntu cache key fell back to the complete package inventory: libssl3t64:arm64 is in dpkg state 'iU ', not installed",
+            "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 277 of 277 installed, and 1 other snapshot lines",
+            "::group::Keyed Ubuntu packages"])
+        self.assertEqual(lines.index("::endgroup::"), 4 + 278)
+        self.assertIn("libssl3t64:arm64=3.0.13-0ubuntu3.16 [iU ]", lines)
+        self.assertIn("git:arm64=" + rows["git:arm64"][0], lines)
+        # A snapshot that cannot be taken fails the step, as a failing command always did.
+        self.runner.script(self.runner.bin / "dpkg-query", "exit 2")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.runner.native()
 
 
 if __name__ == "__main__":

@@ -49,6 +49,51 @@ ARCH_NATIVE_PACKAGES = (
 # zstd) or as the MIME database the tests' GIO reads (shared-mime-info): no
 # build script probes them and nothing links them at build time.
 ARCH_RUNTIME_PACKAGES = ("shared-mime-info", "vulkan-headers", "vulkan-icd-loader", "zstd")
+# The Ubuntu lanes' inputs to compiled output, by dpkg package: what a build
+# compiles with, probes or links. They are the roots of the keyed dependency
+# closure (ubuntu_packages), which reaches Ubuntu's version- and
+# architecture-named toolchain packages without naming them. The hosted image's
+# other packages, about 2,000, stay out of the key: the label is served by two
+# clouds with different inventories, and a key over all of it gave one commit
+# two entries. Two preconditions hold that width. A locked dependency that
+# probes for a library, header or tool must find it in these packages, not in
+# another package of the image. And dav1d-sys must link libdav1d-dev: its build
+# script can instead clone and build dav1d with git, meson and ninja, none of
+# them keyed, when a SYSTEM_DEPS_ variable asks for it, so the key relies on the
+# install step's refusal of every such variable. Keep both tuples in step with
+# the action's install list (a test compares them).
+UBUNTU_BUILD_PACKAGES = (
+    "build-essential", "clang", "cmake", "pkg-config",
+    "libfontconfig-dev", "libwayland-dev", "libxkbcommon-x11-dev", "libx11-xcb-dev",
+    "libssl-dev", "libzstd-dev", "libvulkan-dev", "libdav1d-dev",
+)
+# Run by the checkout, the tests or the packaging checks and never read into a
+# cached dependency output: git is run only by crates/app/build.rs, a member
+# whose output is never in an entry.
+UBUNTU_TOOL_PACKAGES = ("git", "openssh-client", "ca-certificates", "python3", "python3-pil",
+                        "desktop-file-utils", "xdg-utils")
+# The one dpkg query behind the closure, the hash, the printed list and the
+# fallback: no second query can see a different state.
+DPKG_SNAPSHOT = ["dpkg-query", "-W", "-f=${Package}:${Architecture}\\t${Version}\\t${db:Status-Abbrev}"
+                 "\\t${Pre-Depends}\\t${Depends}\\t${Provides}\\n"]
+DPKG_INSTALLED = "ii "
+# dpkg's own spelling of a binary relation: a name, an optional qualifier
+# (`perl:any`) and an optional version constraint. Anything else is not guessed
+# at; it sends the key to the complete inventory.
+DPKG_NAME = r"[a-z0-9][a-z0-9+.-]+"
+DPKG_VERSION = re.compile(r"[A-Za-z0-9.+~:-]+")
+DPKG_PACKAGE = re.compile(rf"({DPKG_NAME}):[a-z0-9-]+")
+DPKG_DEPENDENCY = re.compile(rf"({DPKG_NAME})(?::[a-z0-9-]+)?(?: \((?:<<|<=|=|>=|>>) {DPKG_VERSION.pattern}\))?")
+DPKG_PROVIDED = re.compile(rf"({DPKG_NAME})(?: \(= {DPKG_VERSION.pattern}\))?")
+# The names a build script or the cc and cmake crates run bare. Versions alone
+# do not say which binary PATH and the alternatives select: the hosted image
+# carries a CMake under /usr/local that is no dpkg package. cmake3 is the cmake
+# crate's other name for it and may be absent.
+UBUNTU_TOOLS = ("cc", "c++", "ar", "pkg-config", "clang", "cmake")
+UBUNTU_OPTIONAL_TOOLS = ("cmake3",)
+# pkg-config directories whose files belong to dpkg packages; a .pc file in any
+# other directory of the search order could shadow a keyed library's.
+DPKG_PC_ROOTS = ("/usr/lib", "/usr/share")
 # Environment that changes what rustc, build scripts or cc emit. Paths the
 # action fixes itself (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
 FLAG_NAMES = {"AR", "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "LIBRARY_PATH",
@@ -150,13 +195,185 @@ def normalize_vendor_mtimes(root, inputs):
     return len(paths)
 
 
+class InventoryFallback(Exception):
+    """A snapshot the closure cannot be trusted on; its message names the cause."""
+
+
+def relation_groups(field, owner):
+    """A Pre-Depends or Depends field as groups of alternative package names."""
+    groups = []
+    for group in field.split(",") if field else ():
+        names = []
+        for term in group.split("|"):
+            match = DPKG_DEPENDENCY.fullmatch(term.strip(" "))
+            if not match:
+                raise InventoryFallback(f"{owner} has a dependency outside dpkg's grammar: {term.strip(' ')!r}")
+            names.append(match.group(1))
+        groups.append(names)
+    return groups
+
+
+def ubuntu_closure(lines):
+    """Installed packages a build can read: UBUNTU_BUILD_PACKAGES and all they depend on.
+
+    Follows Pre-Depends and Depends, never Recommends or Suggests (the action
+    installs without them). A name resolves to every package of that name on
+    any architecture and to every package that Provides it, and every
+    alternative that resolves is followed, so the result is a superset of what
+    apt needed. Only state `ii ` is installed. A root with no installed package
+    raises, as `pacman -Q` fails on Arch. Any other abnormality raises
+    InventoryFallback, a reached package in another state included (unpacked,
+    half installed, or removed with its configuration left): a dependency is
+    never skipped and the closure is never partial.
+    """
+    packages, by_name, providers = {}, {}, {}
+    for number, line in enumerate(lines, 1):
+        fields = line.split("\t")
+        if len(fields) != 6:
+            raise InventoryFallback(f"snapshot line {number} has {len(fields)} fields, not six")
+        identity, version, status, pre_depends, depends, provides = fields
+        match = DPKG_PACKAGE.fullmatch(identity)
+        if not match or not DPKG_VERSION.fullmatch(version) or identity in packages:
+            raise InventoryFallback(f"snapshot line {number} does not name one package and its version")
+        packages[identity] = (version, status, (pre_depends, depends))
+        by_name.setdefault(match.group(1), []).append(identity)
+        for term in provides.split(",") if provides else ():
+            provided = DPKG_PROVIDED.fullmatch(term.strip(" "))
+            if not provided:
+                raise InventoryFallback(f"{identity} provides a name outside dpkg's grammar: {term.strip(' ')!r}")
+            providers.setdefault(provided.group(1), []).append(identity)
+    for root in UBUNTU_BUILD_PACKAGES:
+        if not any(packages[identity][1] == DPKG_INSTALLED for identity in by_name.get(root, ())):
+            raise ValueError(f"Ubuntu build package {root} is not installed")
+    closure = {}
+    pending = [identity for root in UBUNTU_BUILD_PACKAGES for identity in by_name[root]]
+    while pending:
+        identity = pending.pop()
+        if identity in closure:
+            continue
+        version, status, relations = packages[identity]
+        if status != DPKG_INSTALLED:
+            raise InventoryFallback(f"{identity} is in dpkg state {status!r}, not installed")
+        closure[identity] = version
+        for field in relations:
+            for names in relation_groups(field, identity):
+                resolved = [found for name in names for found in (*by_name.get(name, ()), *providers.get(name, ()))]
+                if not resolved:
+                    raise InventoryFallback(f"nothing installed satisfies {' | '.join(names)!r} of {identity}")
+                pending.extend(resolved)
+    return sorted(f"{identity}={version}" for identity, version in closure.items())
+
+
+def ubuntu_packages(snapshot):
+    """One dpkg snapshot as (mode, keyed lines, keyed installed, installed, other lines, fallback cause).
+
+    `closure` keys `name:arch=version` of the closure and nothing else from the
+    inventory. `inventory` is the fallback: every line of the snapshot with its
+    package, architecture, version and status.
+    """
+    lines = snapshot.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    installed = sum(line.split("\t")[2:3] == [DPKG_INSTALLED] for line in lines)
+    try:
+        keyed = ubuntu_closure(lines)
+        return "closure", keyed, len(keyed), installed, 0, None
+    except InventoryFallback as fallback:
+        keyed = []
+        for line in lines:
+            fields = line.split("\t")
+            if len(fields) >= 3 and DPKG_PACKAGE.fullmatch(fields[0]) and DPKG_VERSION.fullmatch(fields[1]):
+                keyed.append(f"{fields[0]}={fields[1]}" + ("" if fields[2] == DPKG_INSTALLED else f" [{fields[2]}]"))
+            else:
+                keyed.append("unparsed: " + line)
+        return "inventory", sorted(keyed), installed, installed, len(lines) - installed, str(fallback)
+
+
+def tool_identity(name, *, required=True):
+    """Which binary a bare `name` runs for a build script, and what it says it is."""
+    path = shutil.which(name)
+    if path is None:
+        if required:
+            raise ValueError(f"build tool {name} is not on PATH")
+        return None
+    # Every match in PATH order, as `type -a` shows it: printed, not hashed.
+    matches = [found for directory in os.environ.get("PATH", "").split(os.pathsep)
+               if (found := shutil.which(name, path=directory))]
+    return {"run": path, "path": os.path.realpath(path), "matches": list(dict.fromkeys([path, *matches])),
+            "version": run([path, "--version"]).decode("utf-8", "surrogateescape")}
+
+
+def pkg_config_view(pkg_config):
+    """pkg-config's search order, and the .pc files in its directories that no dpkg package owns."""
+    order = run([pkg_config, "--variable", "pc_path", "pkg-config"]).decode("utf-8", "surrogateescape").strip()
+    files = {}
+    for directory in filter(None, order.split(":")):
+        real = os.path.realpath(directory)
+        if any(real == root or real.startswith(root + "/") for root in DPKG_PC_ROOTS):
+            continue
+        try:
+            names = sorted(name for name in os.listdir(directory) if name.endswith(".pc"))
+        except OSError:
+            names = []
+        files[directory] = [[name, pc_size(os.path.join(directory, name))] for name in names]
+    return order, files
+
+
+def pc_size(path):
+    try:
+        return os.stat(path).st_size
+    except OSError:
+        # A dangling link still occupies the name pkg-config looks up.
+        return -1
+
+
+def shown(text):
+    """Command output as one printable log line."""
+    return "".join(character if " " <= character <= "~" else character.encode("unicode_escape").decode("ascii")
+                   for character in text)
+
+
+def ubuntu_identity(snapshot, tools, pc_path, pc_files):
+    """The Ubuntu native digest and the log lines that show every value in it.
+
+    The digest's input starts with the mode, so a fallback key can never equal
+    a closure key. The lines are built from the hashed values themselves, so
+    two hosted runs can be compared line by line.
+    """
+    mode, keyed, count, installed, others, cause = ubuntu_packages(snapshot)
+    hashed = {"packages": keyed, "pc_path": pc_path, "pc_files": pc_files,
+              "tools": {name: tool and {"path": tool["path"], "version": tool["version"]} for name, tool in tools.items()}}
+    native = digest(mode.encode() + b"\n" + json.dumps(hashed, sort_keys=True).encode())
+    lines = []
+    if cause:
+        lines.append(f"::warning::Ubuntu cache key fell back to the complete package inventory: {shown(cause)}")
+    lines += [f"Ubuntu native key mode: {mode}",
+              f"Keyed Ubuntu packages: {count} of {installed} installed" + (f", and {others} other snapshot lines" if others else ""),
+              "::group::Keyed Ubuntu packages", *map(shown, keyed), "::endgroup::"]
+    for name, tool in tools.items():
+        if tool is None:
+            lines.append(f"Keyed tool {name}: absent")
+            continue
+        first = tool["version"].split("\n", 1)[0]
+        lines.append(f"Keyed tool {name}: {shown(tool['path'])}; on PATH: {shown(', '.join(tool['matches']))}; "
+                     f"version {digest(tool['version'].encode('utf-8', 'surrogateescape'))[:12]}: {shown(first)}")
+    lines.append(f"Keyed pkg-config pc_path: {shown(pc_path)}")
+    for directory, found in pc_files.items():
+        listing = ", ".join(f"{name} {size}" for name, size in found) or "none"
+        lines.append(f"Keyed pkg-config files in {shown(directory)}: {shown(listing)}")
+    lines.append(f"Ubuntu native digest: {native}")
+    return native, lines
+
+
 def native_identity(platform):
     if platform == "Linux":
-        # The complete installed package inventory includes transitive ABI inputs,
-        # not just the names of explicitly requested development packages.
-        commands = [["dpkg-query", "-W", "-f=${Package}:${Architecture}=${Version}\\n"],
-                    ["clang", "--version"], ["cmake", "--version"], ["pkg-config", "--version"]]
-    elif platform == "macOS":
+        snapshot = run(DPKG_SNAPSHOT).decode("utf-8", "surrogateescape")
+        tools = {name: tool_identity(name) for name in UBUNTU_TOOLS}
+        tools.update((name, tool_identity(name, required=False)) for name in UBUNTU_OPTIONAL_TOOLS)
+        native, lines = ubuntu_identity(snapshot, tools, *pkg_config_view(tools["pkg-config"]["run"]))
+        print("\n".join(lines))
+        return native
+    if platform == "macOS":
         commands = [["xcodebuild", "-version"], ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
                     ["xcrun", "--sdk", "macosx", "--show-sdk-build-version"],
                     ["xcrun", "clang", "--version"], ["sw_vers", "-buildVersion"]]

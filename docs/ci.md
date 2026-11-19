@@ -671,8 +671,9 @@ their inputs, not test results, and the run as a whole still fails.
 **The cache key** does not see the shard. [`cache.py`](../.github/actions/setup-rust/cache.py)
 keys an entry on the profile, the container name, the tracked build inputs
 (`vendor/`, the setup action, manifests, the lockfile, build scripts, the
-toolchain file and Cargo configuration), the native package inventory, `rustc
--vV` and the compiler-flag environment. The job's name, its matrix and the
+toolchain file and Cargo configuration), the platform's native inputs (on Ubuntu
+the packages a build reads, not the image's inventory: [Ubuntu native
+key](#ubuntu-native-key)), `rustc -vV` and the compiler-flag environment. The job's name, its matrix and the
 workflow file are not among them, and rust-cache takes that key as its
 `shared-key` in place of its job-based one. The shard number reaches only the
 tests step's own environment (`SHARD` and `SHARDS`). Both shards of a platform
@@ -867,7 +868,7 @@ access and, once the repository is over its 10 GB limit, evicts by last access. 
 Arch entry superseded by a package update is no longer restored, so it goes before
 the Ubuntu and macOS entries that every product run restores. The repository was
 already over the limit before the first Arch entry: at 22:48 UTC on September 29,
-2026, it held 11 entries, 11.36 GB. The four other lanes' keys also move with the
+2026, it held 11 entries, 11.36 GB. The four other lanes' keys then also moved with the
 runners' native inventories, and in five hours `main` saved 11 of their entries
 with no keyed source change (the record has the list). By 00:14 UTC on September 30,
 GitHub had evicted only the seven oldest entries, last accessed by 20:19, and the
@@ -875,8 +876,11 @@ Ubuntu, macOS and Arch entries that current runs restore all survived. They tota
 7.47 GB, counting two Ubuntu keys, because two runner images were in service. The
 other 4.11 GB, the four lanes' entries from before #92, were superseded and go first.
 A third Ubuntu image (2.28 GB more) and a macOS rollout (1.83 GB) at the same time
-would pass the limit and evict entries still in use. Keying the Ubuntu lanes on a
-package list like Arch's would stop the per-image entries.
+would pass the limit and evict entries still in use. Since November 19, 2026 the
+Ubuntu lanes no longer key the image's inventory: like this lane they key only the
+packages a build reads, found as a dependency closure instead of a written list
+([Ubuntu native key](#ubuntu-native-key)), so two images that install the same build
+packages share one entry.
 
 **Cost.** Before the cache, every run was cold: an image pull (about 308 MB
 compressed), the package upgrade and install, the toolchain download, a full debug
@@ -1476,11 +1480,14 @@ hashes:
   `build.rs` files, root Cargo configuration, the setup action and every tracked
   vendor file. A vendor C/Rust source edit invalidates without needing a manifest
   edit. Ordinary application Rust source edits reuse compatible dependency caches.
-- Linux's installed package/version/architecture inventory, Clang, CMake and
-  pkg-config versions, or macOS's Xcode version, SDK version/build, selected Clang
-  and OS build. This includes native ABI/SDK changes and conservative hosted-image
-  updates. The Arch container keys only its listed packages' pacman versions
-  instead ([Arch cache](#arch-linux-container-job)).
+- The platform's native inputs. On Ubuntu: the version of every installed package
+  in the dependency closure of the build packages the action installs, the file
+  and version behind each build tool name on `PATH`, and pkg-config's search order
+  ([Ubuntu native key](#ubuntu-native-key)); the rest of the hosted image's
+  inventory is not keyed. On macOS: the Xcode version, SDK version/build, selected
+  Clang and OS build, so a hosted-image update there still gives a new key. The
+  Arch container keys its listed packages' pacman versions
+  ([Arch cache](#arch-linux-container-job)). Each covers native ABI/SDK changes.
 - The active compiler's full `rustc -vV` and the target triple it reports as
   `host` (each keyed job compiles for its host), and the build flags set in the
   environment by name: `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTDOCFLAGS`,
@@ -1501,6 +1508,118 @@ reviewable way to isolate a cold experiment without deleting another job's cache
 Any edit to the setup action already changes the key because its files are hashed;
 the prefix moved from `v1` to `v2` with vendored reuse so the two generations are
 distinguishable in the cache list.
+
+#### Ubuntu native key
+
+Since November 19, 2026 the Ubuntu lanes key the packages a build reads instead of
+the hosted image's whole package inventory. The
+[helper](../.github/actions/setup-rust/cache.py) takes one `dpkg-query` snapshot
+after the action's install step (package, architecture, version, status,
+Pre-Depends, Depends and Provides of every package; nothing queries dpkg a second
+time) and hashes three things.
+
+- *Packages.* `name:arch=version` of every installed package in the dependency
+  closure of the twelve packages a build compiles with, probes or links
+  (`UBUNTU_BUILD_PACKAGES`: `build-essential clang cmake pkg-config
+  libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev
+  libzstd-dev libvulkan-dev libdav1d-dev`), and nothing else from the inventory.
+  The closure follows Pre-Depends and Depends, not Recommends or Suggests (the
+  action installs with `--no-install-recommends`). A name resolves on every
+  architecture and through every package that Provides it, and every alternative
+  that resolves is followed, so the result is a superset of what apt needed. Only
+  a package in dpkg state `ii ` counts as installed. The action's seven other
+  packages (`UBUNTU_TOOL_PACKAGES`: `git openssh-client ca-certificates python3
+  python3-pil desktop-file-utils xdg-utils`) are run by the checkout, the tests or
+  the packaging checks and are never read into a cached dependency output: `git`
+  is run only by `crates/app/build.rs`, a member whose output is never in an
+  entry. A test compares both lists with the action's install line, so a package
+  added to the action but to neither list fails.
+- *Tools.* For each of `cc`, `c++`, `ar`, `pkg-config`, `clang` and `cmake`: the
+  real file the name resolves to on `PATH` and its `--version` output. `cmake3`,
+  the cmake crate's other name, is keyed as absent or by the same two values. A
+  required name that does not resolve fails the step.
+- *pkg-config's view.* The search order (`pkg-config --variable pc_path
+  pkg-config`) and, for each directory on it outside `/usr/lib` and `/usr/share`,
+  the names and sizes of its `.pc` files. A clean image has none; a `.pc` under
+  `/usr/local` would shadow a keyed library's. `PKG_CONFIG*` variables stay in the
+  flags identity above.
+
+**Why.** GitHub serves the `ubuntu-24.04` label from two clouds at once. In 64
+retained job logs, image versions 20261111.370.1 and 20261116.376.1 report
+"Cloud: Azure" and 20261111.127.1 and 20261116.133.1 report "Cloud: AWS". Each
+cloud has its own image build and inventory, so with the inventory in the key one
+commit computed two Ubuntu keys, and four during a weekly rollout. Of 47 Ubuntu
+jobs that computed a key, 19 found no cache, and a miss costs a test shard about
+28 minutes against about 13. The cache held three Ubuntu debug entries of 1.1 GB
+each against the 10 GB limit for everything, and a fourth key had none. On all
+four images the action's `apt-get` step printed identical lines, so the keys
+differed only through packages the action does not install.
+
+**Why a closure.** A build of the workspace's tests was traced with `strace`
+(`cargo test --no-run` in an `ubuntu:24.04` arm64 container holding the action's
+install list). It read files of 75 packages. 71 lie in the closure, which holds
+195 of that container's 278 packages. The other four are `dash` (`/bin/sh`),
+`git`, `libc-bin` (`/etc/ld.so.conf`) and `openssl` (`/usr/lib/ssl/cert.pem`). A
+written list like [Arch's](#arch-linux-container-job) would silently lose
+Ubuntu's version- and architecture-named toolchain packages, such as
+`gcc-13-aarch64-linux-gnu` and `libstdc++-13-dev`; the closure reaches them, and
+it keeps `linux-libc-dev`, whose headers `libc6-dev` includes. The container's
+snapshot is the tests'
+[fixture](../scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv).
+
+**What the narrower key gives up.** The image's other packages, about 2,000: a
+build script that found a library, header or tool the action does not install
+would no longer change the key (the first precondition below). And the state
+outside dpkg that the old key followed only by accident, because a new image
+changed some package: `PATH` order, `/usr/local` and the alternatives. The tool
+and pkg-config parts key that state directly for the build tools and for
+pkg-config. The hosted image carries a CMake under `/usr/local` that is no dpkg
+package, and a version alone does not say which binary `PATH` and the
+alternatives select.
+
+**Fallback.** A build package that is not installed fails the step, as `pacman
+-Q` does on Arch. Every other abnormality sends the key to the complete
+inventory, never to a partial closure and never past a skipped dependency: a
+snapshot line without six fields, a dependency or provided name outside dpkg's
+grammar, a group of alternatives that nothing installed satisfies, or a package
+the closure reaches in another state than `ii ` (unpacked, half installed, or
+removed with its configuration left). The fallback hashes every line's package,
+architecture, version and status, and the step prints a `::warning::` that names
+the first cause. The digest's input starts with the mode (`closure` or
+`inventory`), so a fallback key can never equal a closure key. Failing there
+would let an optional cache block a release, and skipping would be a stale key;
+the fallback is one entry per image again, slower and never stale.
+
+**Preconditions.** The width holds only while two things stay true.
+
+1. Every locked dependency whose build script probes for a library, header or
+   tool finds it in the build packages. The image holds about 2,000 packages the
+   action never installs, and a dependency added later could probe one of them
+   without the install line changing. Today the users of `pkg-config`,
+   `system-deps`, `cmake` and `bindgen` in `Cargo.lock` are `aws-lc-sys`,
+   `dav1d-sys`, `freetype-sys`, `gpui-pre`, `gpui-pre-media`, `khronos-egl`,
+   `system-deps`, `wayland-sys`, `x11` and `yeslogic-fontconfig-sys`. A new one
+   must be mapped to the build package that supplies what it probes, and that
+   package added to the action's install list and to `UBUNTU_BUILD_PACKAGES` if
+   it is new.
+2. `dav1d-sys` links the system `libdav1d-dev`. Its build script can instead
+   clone and build dav1d with git, meson and ninja, none of them keyed, when a
+   `SYSTEM_DEPS_` variable asks for it. The action's install step refuses every
+   such variable, and the key relies on that refusal.
+
+The snapshot is also the state the build sees only while no job that uses the
+action installs packages in its own later steps; none does.
+
+**What the step prints**, so two hosted runs can be compared line by line: the
+mode; `Keyed Ubuntu packages: <n> of <m> installed`; inside a collapsed group,
+each keyed `name:arch=version` on its own line, sorted; for each tool its real
+path, every match on `PATH` in order, a short digest of its whole version output
+and that output's first line; the `pc_path` and the `.pc` files; and the native
+digest. Each line is built from the hashed values themselves.
+
+The action's files are hashed into the key, so this change makes every lane cold
+once. No hosted run has computed the new key yet: the hosted keys of the two
+clouds are recorded here after the first runs.
 
 ### Trust, failure and storage bounds
 

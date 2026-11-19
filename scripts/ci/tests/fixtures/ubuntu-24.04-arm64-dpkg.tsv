@@ -1,0 +1,278 @@
+adduser:all	3.137ubuntu1	ii 		passwd	
+apt:arm64	2.8.3	ii 		base-passwd (>= 3.6.1) | adduser, gpgv, libapt-pkg6.0t64 (>= 2.8.3), ubuntu-keyring, libc6 (>= 2.38), libgcc-s1 (>= 3.3.1), libgnutls30t64 (>= 3.8.1), libseccomp2 (>= 2.4.2), libstdc++6 (>= 13.1), libsystemd0	apt-transport-https (= 2.8.3)
+base-files:arm64	13ubuntu10.5	ii 	awk	libc6 (>= 2.34), libcrypt1 (>= 1:4.4.10-10ubuntu3)	base, usr-is-merged
+base-passwd:arm64	3.6.3build1	ii 		libc6 (>= 2.34), libdebconfclient0 (>= 0.145), libselinux1 (>= 3.1~)	
+bash:arm64	5.2.21-2ubuntu4	ii 	libc6 (>= 2.38), libtinfo6 (>= 6)	base-files (>= 2.1.12), debianutils (>= 5.6-0.1)	
+binutils:arm64	2.42-4ubuntu2.10	ii 		binutils-common (= 2.42-4ubuntu2.10), libbinutils (= 2.42-4ubuntu2.10), binutils-aarch64-linux-gnu (= 2.42-4ubuntu2.10)	binutils-gold, elf-binutils
+binutils-aarch64-linux-gnu:arm64	2.42-4ubuntu2.10	ii 		binutils-common (= 2.42-4ubuntu2.10), libbinutils (= 2.42-4ubuntu2.10), libc6 (>= 2.38), libctf-nobfd0 (>= 2.36), libctf0 (>= 2.36), libgcc-s1 (>= 4.2), libgprofng0 (>= 2.41), libjansson4 (>= 2.14), libsframe1 (>= 2.41), libstdc++6 (>= 13.1), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	
+binutils-common:arm64	2.42-4ubuntu2.10	ii 			
+bsdutils:arm64	1:2.39.3-9ubuntu6.6	ii 	libc6 (>= 2.38), libsystemd0		
+build-essential:arm64	12.10ubuntu1	ii 		libc6-dev | libc-dev, gcc (>= 4:12.3), g++ (>= 4:12.3), make, dpkg-dev (>= 1.17.11)	
+bzip2:arm64	1.0.8-5.1ubuntu0.1	ii 		libbz2-1.0 (= 1.0.8-5.1ubuntu0.1), libc6 (>= 2.34)	
+ca-certificates:all	20260816ubuntu0.24.04.2	ii 		openssl (>= 1.1.1), debconf (>= 0.5) | debconf-2.0	
+clang:arm64	1:18.0-59~exp2	ii 		clang-18 (>= 18~)	
+clang-18:arm64	1:18.1.3-1ubuntu1	ii 		libc6 (>= 2.34), libclang-cpp18 (>= 1:18.1.3), libllvm18 (= 1:18.1.3-1ubuntu1), libstdc++6 (>= 11), libstdc++-13-dev, libgcc-13-dev, libobjc-13-dev, libclang-common-18-dev (= 1:18.1.3-1ubuntu1), llvm-18-linker-tools (= 1:18.1.3-1ubuntu1), libclang1-18 (= 1:18.1.3-1ubuntu1), libc6-dev, binutils	c++-compiler, c-compiler, objc-compiler
+cmake:arm64	3.28.3-1build7	ii 		libarchive13t64 (>= 3.3.3), libc6 (>= 2.38), libcurl4t64 (>= 7.16.2), libexpat1 (>= 2.0.1), libgcc-s1 (>= 3.0), libjsoncpp25 (>= 1.9.5), librhash0 (>= 1.2.6), libstdc++6 (>= 13.1), libuv1t64 (>= 1.38.0), zlib1g (>= 1:1.1.4), cmake-data (= 3.28.3-1build7), procps	
+cmake-data:all	3.28.3-1build7	ii 			
+coreutils:arm64	9.4-3ubuntu6.3	ii 	libacl1 (>= 2.2.23), libattr1 (>= 1:2.4.48), libc6 (>= 2.38), libgmp10 (>= 2:6.3.0+dfsg), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.0)		
+cpp:arm64	4:13.2.0-7ubuntu1	ii 		cpp-13 (>= 13.2.0-11~), cpp-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1)	
+cpp-13:arm64	13.3.0-6ubuntu2~24.04.1	ii 		gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), cpp-13-aarch64-linux-gnu (= 13.3.0-6ubuntu2~24.04.1)	
+cpp-13-aarch64-linux-gnu:arm64	13.3.0-6ubuntu2~24.04.1	ii 		gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), libc6 (>= 2.38), libgmp10 (>= 2:6.3.0+dfsg), libisl23 (>= 0.15), libmpc3 (>= 1.1.0), libmpfr6 (>= 3.1.3), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	
+cpp-aarch64-linux-gnu:arm64	4:13.2.0-7ubuntu1	ii 		cpp-13-aarch64-linux-gnu (>= 13.2.0-11~)	
+dash:arm64	0.5.12-6ubuntu5	ii 	libc6 (>= 2.38)	debianutils (>= 5.6-0.1), dpkg (>= 1.19.1)	
+debconf:all	1.5.86ubuntu1	ii 			debconf-2.0
+debianutils:arm64	5.17build1	ii 	libc6 (>= 2.38)		
+desktop-file-utils:arm64	0.27-2build1	ii 		libc6 (>= 2.34), libglib2.0-0t64 (>= 2.50.0)	
+diffutils:arm64	1:3.10-1ubuntu0.1	ii 	libc6 (>= 2.38)		
+dpkg:arm64	1.22.6ubuntu6.6	ii 	libbz2-1.0, libc6 (>= 2.38), liblzma5 (>= 5.4.0), libmd0 (>= 0.0.0), libselinux1 (>= 3.1~), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	tar (>= 1.28-1)	
+dpkg-dev:all	1.22.6ubuntu6.6	ii 		perl:any, libdpkg-perl (= 1.22.6ubuntu6.6), tar (>= 1.28-1), bzip2, xz-utils (>= 5.4.0), patch (>= 2.7), make, binutils, lto-disabled-list	dpkg-build-api (= 0), dpkg-build-api (= 1)
+e2fsprogs:arm64	1.47.0-2.4~exp1ubuntu4.1	ii 	libblkid1 (>= 2.36), libc6 (>= 2.38), libcom-err2 (>= 1.43.9), libext2fs2t64 (= 1.47.0-2.4~exp1ubuntu4.1), libss2 (>= 1.38), libuuid1 (>= 2.16)	logsave	
+findutils:arm64	4.9.0-5build1	ii 	libc6 (>= 2.38), libselinux1 (>= 3.1~)		
+fontconfig-config:arm64	2.15.0-1.1ubuntu2	ii 		fonts-dejavu-core | fonts-liberation | fonts-croscore | fonts-freefont-otf | fonts-freefont-ttf | fonts-urw-base35 | fonts-texgyre | fonts-noto-core	
+fonts-dejavu-core:all	2.37-8	ii 		fonts-dejavu-mono	
+fonts-dejavu-mono:all	2.37-8	ii 			
+g++:arm64	4:13.2.0-7ubuntu1	ii 		cpp (= 4:13.2.0-7ubuntu1), cpp-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1), gcc (= 4:13.2.0-7ubuntu1), g++-13 (>= 13.2.0-11~), g++-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1), gcc-13 (>= 13.2.0-11~)	c++-compiler
+g++-13:arm64	13.3.0-6ubuntu2~24.04.1	ii 		g++-13-aarch64-linux-gnu (= 13.3.0-6ubuntu2~24.04.1), gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), gcc-13 (= 13.3.0-6ubuntu2~24.04.1)	c++-compiler, c++abi2-dev
+g++-13-aarch64-linux-gnu:arm64	13.3.0-6ubuntu2~24.04.1	ii 		gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), gcc-13-aarch64-linux-gnu (= 13.3.0-6ubuntu2~24.04.1), libstdc++-13-dev (= 13.3.0-6ubuntu2~24.04.1), libc6 (>= 2.38), libgmp10 (>= 2:6.3.0+dfsg), libisl23 (>= 0.15), libmpc3 (>= 1.1.0), libmpfr6 (>= 3.1.3), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	c++-compiler-aarch64-linux-gnu
+g++-aarch64-linux-gnu:arm64	4:13.2.0-7ubuntu1	ii 		cpp-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1), gcc-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1), g++-13-aarch64-linux-gnu (>= 13.2.0-11~)	
+gcc:arm64	4:13.2.0-7ubuntu1	ii 		cpp (= 4:13.2.0-7ubuntu1), cpp-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1), gcc-13 (>= 13.2.0-11~), gcc-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1)	c-compiler
+gcc-13:arm64	13.3.0-6ubuntu2~24.04.1	ii 		gcc-13-aarch64-linux-gnu (= 13.3.0-6ubuntu2~24.04.1), gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), cpp-13 (= 13.3.0-6ubuntu2~24.04.1), binutils (>= 2.39)	c-compiler
+gcc-13-aarch64-linux-gnu:arm64	13.3.0-6ubuntu2~24.04.1	ii 		cpp-13-aarch64-linux-gnu (= 13.3.0-6ubuntu2~24.04.1), gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), libcc1-0 (>= 13.3.0-6ubuntu2~24.04.1), binutils-aarch64-linux-gnu (>= 2.39), libgcc-13-dev (= 13.3.0-6ubuntu2~24.04.1), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgmp10 (>= 2:6.3.0+dfsg), libisl23 (>= 0.15), libmpc3 (>= 1.1.0), libmpfr6 (>= 3.1.3), libstdc++6 (>= 5), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	c-compiler-aarch64-linux-gnu
+gcc-13-base:arm64	13.3.0-6ubuntu2~24.04.1	ii 			
+gcc-14-base:arm64	14.2.0-4ubuntu2~24.04.1	ii 			
+gcc-aarch64-linux-gnu:arm64	4:13.2.0-7ubuntu1	ii 		cpp-aarch64-linux-gnu (= 4:13.2.0-7ubuntu1), gcc-13-aarch64-linux-gnu (>= 13.2.0-11~)	
+git:arm64	1:2.43.0-1ubuntu7.4	ii 		libc6 (>= 2.38), libcurl3t64-gnutls (>= 7.63.0), libexpat1 (>= 2.0.1), libpcre2-8-0 (>= 10.34), zlib1g (>= 1:1.2.2), perl, liberror-perl, git-man (>> 1:2.43.0), git-man (<< 1:2.43.0-.)	git-completion, git-core
+git-man:all	1:2.43.0-1ubuntu7.4	ii 			
+gpgv:arm64	2.4.4-2ubuntu17.6	ii 		libassuan0 (>= 2.5.0), libbz2-1.0, libc6 (>= 2.38), libgcrypt20 (>= 1.10.0), libgpg-error0 (>= 1.46), libnpth0t64 (>= 0.90), zlib1g (>= 1:1.1.4)	
+grep:arm64	3.11-4build1	ii 	libc6 (>= 2.38), libpcre2-8-0 (>= 10.32)		rgrep
+gzip:arm64	1.12-1ubuntu3.2	ii 	libc6 (>= 2.38)	dpkg (>= 1.15.4) | install-info	
+hostname:arm64	3.23+nmu2ubuntu2	ii 	libc6 (>= 2.34)		
+init-system-helpers:all	1.66ubuntu1	ii 			
+libacl1:arm64	2.3.2-1build1.1	ii 		libc6 (>= 2.38)	
+libapt-pkg6.0t64:arm64	2.8.3	ii 		libbz2-1.0, libc6 (>= 2.38), libgcc-s1 (>= 3.3.1), libgcrypt20 (>= 1.10.0), liblz4-1 (>= 0.0~r127), liblzma5 (>= 5.1.1alpha+20120614), libstdc++6 (>= 13.1), libsystemd0 (>= 221), libudev1 (>= 183), libxxhash0 (>= 0.7.1), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.2.2.3)	libapt-pkg (= 2.8.3), libapt-pkg6.0 (= 2.8.3)
+libarchive13t64:arm64	3.7.2-2ubuntu0.9	ii 		libacl1 (>= 2.2.23), libbz2-1.0, libc6 (>= 2.38), liblz4-1 (>= 0.0~r130), liblzma5 (>= 5.2.2), libnettle8t64, libxml2 (>= 2.7.4), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	libarchive13 (= 3.7.2-2ubuntu0.9)
+libasan8:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.34), libgcc-s1 (>= 3.3)	
+libassuan0:arm64	2.5.6-1build1	ii 		libc6 (>= 2.38), libgpg-error0 (>= 1.33)	
+libatomic1:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.17)	
+libattr1:arm64	1:2.5.2-1ubuntu0.1	ii 		libc6 (>= 2.17)	
+libaudit-common:all	1:3.1.2-2.1ubuntu0.1	ii 			
+libaudit1:arm64	1:3.1.2-2.1ubuntu0.1	ii 		libaudit-common (>= 1:3.1.2-2.1ubuntu0.1), libc6 (>= 2.38), libcap-ng0 (>= 0.7.9)	
+libbinutils:arm64	2.42-4ubuntu2.10	ii 		libc6 (>= 2.38), libsframe1, libzstd1 (>= 1.5.5), zlib1g (>= 1:1.2.0), binutils-common (= 2.42-4ubuntu2.10)	
+libblkid1:arm64	2.39.3-9ubuntu6.6	ii 		libc6 (>= 2.38)	
+libbrotli-dev:arm64	1.1.0-2ubuntu0.1	ii 		libbrotli1 (= 1.1.0-2ubuntu0.1)	
+libbrotli1:arm64	1.1.0-2ubuntu0.1	ii 		libc6 (>= 2.29)	
+libbsd0:arm64	0.12.1-1build1.1	ii 		libc6 (>= 2.38), libmd0 (>= 1.0.3-2)	
+libbz2-1.0:arm64	1.0.8-5.1ubuntu0.1	ii 		libc6 (>= 2.17)	
+libbz2-dev:arm64	1.0.8-5.1ubuntu0.1	ii 		libbz2-1.0 (= 1.0.8-5.1ubuntu0.1), libc6-dev | libc-dev	
+libc-bin:arm64	2.39-0ubuntu8.12	ii 		libc6 (>> 2.39), libc6 (<< 2.40)	
+libc-dev-bin:arm64	2.39-0ubuntu8.12	ii 		libc6 (>> 2.39), libc6 (<< 2.40)	
+libc6:arm64	2.39-0ubuntu8.12	ii 		libgcc-s1	libc6-lse
+libc6-dev:arm64	2.39-0ubuntu8.12	ii 		libc6 (= 2.39-0ubuntu8.12), libc-dev-bin (= 2.39-0ubuntu8.12), linux-libc-dev, libcrypt-dev, rpcsvc-proto	libc-dev (= 2.39-0ubuntu8.12)
+libcap-ng0:arm64	0.8.4-2build2	ii 		libc6 (>= 2.38)	
+libcap2:arm64	1:2.66-5ubuntu2.4	ii 		libc6 (>= 2.38)	
+libcbor0.10:arm64	0.10.2-1.2ubuntu2	ii 		libc6 (>= 2.17)	
+libcc1-0:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.17), libgcc-s1 (>= 3.0), libstdc++6 (>= 5.2)	
+libclang-common-18-dev:arm64	1:18.1.3-1ubuntu1	ii 			
+libclang-cpp18:arm64	1:18.1.3-1ubuntu1	ii 		libc6 (>= 2.38), libgcc-s1 (>= 4.2), libllvm18 (= 1:18.1.3-1ubuntu1), libstdc++6 (>= 12)	
+libclang1-18:arm64	1:18.1.3-1ubuntu1	ii 		libc6 (>= 2.38), libllvm18, libstdc++6 (>= 11)	
+libcom-err2:arm64	1.47.0-2.4~exp1ubuntu4.1	ii 		libc6 (>= 2.38)	libcom-err2t64 (= 1.47.0-2.4~exp1ubuntu4.1), libcomerr2 (= 1.47.0-2.4~exp1ubuntu4.1)
+libcrypt-dev:arm64	1:4.4.36-4build1	ii 		libcrypt1 (= 1:4.4.36-4build1)	libcrypt1-dev
+libcrypt1:arm64	1:4.4.36-4build1	ii 		libc6 (>= 2.38)	
+libctf-nobfd0:arm64	2.42-4ubuntu2.10	ii 		libc6 (>= 2.17), zlib1g (>= 1:1.2.0)	
+libctf0:arm64	2.42-4ubuntu2.10	ii 		libbinutils (= 2.42-4ubuntu2.10), libc6 (>= 2.33), zlib1g (>= 1:1.2.0)	
+libcurl3t64-gnutls:arm64	8.5.0-2ubuntu10.16	ii 		libbrotli1 (>= 0.6.0), libc6 (>= 2.36), libgnutls30t64 (>= 3.8.2), libgssapi-krb5-2 (>= 1.17), libidn2-0 (>= 2.0.0), libldap2 (>= 2.6.2), libnettle8t64, libnghttp2-14 (>= 1.50.0), libpsl5t64 (>= 0.16.0), librtmp1 (>= 2.3), libssh-4 (>= 0.9.0), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	libcurl3-gnutls (= 8.5.0-2ubuntu10.16)
+libcurl4t64:arm64	8.5.0-2ubuntu10.16	ii 		libbrotli1 (>= 0.6.0), libc6 (>= 2.34), libgssapi-krb5-2 (>= 1.17), libidn2-0 (>= 2.0.0), libldap2 (>= 2.6.2), libnghttp2-14 (>= 1.50.0), libpsl5t64 (>= 0.16.0), librtmp1 (>= 2.3), libssh-4 (>= 0.9.0), libssl3t64 (>= 3.0.0), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	libcurl4 (= 8.5.0-2ubuntu10.16)
+libdav1d-dev:arm64	1.4.1-1build1	ii 		libdav1d7 (= 1.4.1-1build1)	
+libdav1d7:arm64	1.4.1-1build1	ii 		libc6 (>= 2.34)	
+libdb5.3t64:arm64	5.3.28+dfsg2-7	ii 		libc6 (>= 2.38)	libdb5.3 (= 5.3.28+dfsg2-7)
+libdebconfclient0:arm64	0.271ubuntu3	ii 		libc6 (>= 2.38)	
+libdeflate0:arm64	1.19-1build1.1	ii 		libc6 (>= 2.17)	
+libdpkg-perl:all	1.22.6ubuntu6.6	ii 		perl:any, dpkg (>= 1.18.11)	
+libedit2:arm64	3.1-20230828-1build1	ii 		libbsd0 (>= 0.1.3), libc6 (>= 2.38), libtinfo6 (>= 6)	
+liberror-perl:all	0.17029-2	ii 		perl:any	
+libexpat1:arm64	2.6.1-2ubuntu0.6	ii 		libc6 (>= 2.38)	
+libexpat1-dev:arm64	2.6.1-2ubuntu0.6	ii 		libexpat1 (= 2.6.1-2ubuntu0.6), libc6-dev | libc-dev	libexpat-dev
+libext2fs2t64:arm64	1.47.0-2.4~exp1ubuntu4.1	ii 		libc6 (>= 2.38)	e2fslibs (= 1.47.0-2.4~exp1ubuntu4.1), libext2fs2 (= 1.47.0-2.4~exp1ubuntu4.1)
+libffi-dev:arm64	3.4.6-1build1	ii 		libffi8 (= 3.4.6-1build1)	
+libffi8:arm64	3.4.6-1build1	ii 		libc6 (>= 2.34)	libffi8ubuntu1 (= 3.4.6-1build1)
+libfido2-1:arm64	1.14.0-1build3	ii 		libc6 (>= 2.38), libcbor0.10 (>= 0.10.2), libssl3t64 (>= 3.0.0), libudev1 (>= 183), zlib1g (>= 1:1.1.4)	
+libfontconfig-dev:arm64	2.15.0-1.1ubuntu2	ii 		libfontconfig1 (= 2.15.0-1.1ubuntu2), libexpat1-dev, libfreetype-dev (>= 2.8.1), uuid-dev, pkgconf	libfontconfig1-dev (= 2.15.0-1.1ubuntu2)
+libfontconfig1:arm64	2.15.0-1.1ubuntu2	ii 		libc6 (>= 2.38), libexpat1 (>= 2.0.1), libfreetype6 (>= 2.9.1), fontconfig-config (>= 2.15.0-1.1ubuntu2)	libfontconfig
+libfreetype-dev:arm64	2.13.2+dfsg-1ubuntu0.2	ii 		libfreetype6 (= 2.13.2+dfsg-1ubuntu0.2), libbrotli-dev, libbz2-dev, libc6-dev | libc-dev, libpng-dev, zlib1g-dev | libz-dev	libfreetype6-dev (= 2.13.2+dfsg-1ubuntu0.2)
+libfreetype6:arm64	2.13.2+dfsg-1ubuntu0.2	ii 		libbrotli1 (>= 0.6.0), libbz2-1.0, libc6 (>= 2.33), libpng16-16t64 (>= 1.6.2), zlib1g (>= 1:1.1.4)	
+libfribidi0:arm64	1.0.13-3build1	ii 		libc6 (>= 2.17)	
+libgc1:arm64	1:8.2.6-1build1	ii 		libc6 (>= 2.38), libstdc++6 (>= 4.1.1)	
+libgcc-13-dev:arm64	13.3.0-6ubuntu2~24.04.1	ii 		gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), libgcc-s1 (>= 13.3.0-6ubuntu2~24.04.1), libgomp1 (>= 13.3.0-6ubuntu2~24.04.1), libitm1 (>= 13.3.0-6ubuntu2~24.04.1), libatomic1 (>= 13.3.0-6ubuntu2~24.04.1), libasan8 (>= 13.3.0-6ubuntu2~24.04.1), liblsan0 (>= 13.3.0-6ubuntu2~24.04.1), libtsan2 (>= 13.3.0-6ubuntu2~24.04.1), libubsan1 (>= 13.3.0-6ubuntu2~24.04.1), libhwasan0 (>= 13.3.0-6ubuntu2~24.04.1)	
+libgcc-s1:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.35)	libgcc1 (= 1:14.2.0-4ubuntu2~24.04.1)
+libgcrypt20:arm64	1.10.3-2ubuntu0.2	ii 		libc6 (>= 2.38), libgpg-error0 (>= 1.27)	
+libgdbm-compat4t64:arm64	1.23-5.1build1	ii 		libc6 (>= 2.33), libgdbm6t64 (>= 1.16)	libgdbm-compat4 (= 1.23-5.1build1)
+libgdbm6t64:arm64	1.23-5.1build1	ii 		libc6 (>= 2.34)	libgdbm6 (= 1.23-5.1build1)
+libglib2.0-0t64:arm64	2.80.0-6ubuntu3.10	ii 		libc6 (>= 2.38), libffi8 (>= 3.4), libmount1 (>= 2.26.2), libpcre2-8-0 (>= 10.22), libselinux1 (>= 3.1~), zlib1g (>= 1:1.2.2)	libgio-2.0-0 (= 2.80.0-6ubuntu3.10), libglib-2.0-0 (= 2.80.0-6ubuntu3.10), libglib2.0-0 (= 2.80.0-6ubuntu3.10), libgmodule-2.0-0 (= 2.80.0-6ubuntu3.10), libgobject-2.0-0 (= 2.80.0-6ubuntu3.10), libgthread-2.0-0 (= 2.80.0-6ubuntu3.10)
+libgmp10:arm64	2:6.3.0+dfsg-2ubuntu6.1	ii 		libc6 (>= 2.38)	
+libgnutls30t64:arm64	3.8.3-1.1ubuntu3.6	ii 		libc6 (>= 2.38), libgmp10 (>= 2:6.3.0+dfsg), libhogweed6t64 (>= 3.6), libidn2-0 (>= 2.0.0), libnettle8t64 (>= 3.9~), libp11-kit0 (>= 0.25.1), libtasn1-6 (>= 4.14), libunistring5 (>= 1.1)	libgnutls30 (= 3.8.3-1.1ubuntu3.6)
+libgomp1:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.38)	
+libgpg-error0:arm64	1.47-3build2.1	ii 		libc6 (>= 2.38)	
+libgprofng0:arm64	2.42-4ubuntu2.10	ii 		libbinutils (= 2.42-4ubuntu2.10), libc6 (>= 2.38), libgcc-s1 (>= 3.3.1), libstdc++6 (>= 13.1), zlib1g (>= 1:1.1.4)	
+libgraphite2-3:arm64	1.3.14-2ubuntu0.24.04.1	ii 		libc6 (>= 2.17)	libgraphite2-2.0.0
+libgssapi-krb5-2:arm64	1.20.1-6ubuntu2.10	ii 		libkrb5-3 (= 1.20.1-6ubuntu2.10), libc6 (>= 2.38), libcom-err2 (>= 1.43.9), libk5crypto3 (>= 1.20), libkrb5support0 (= 1.20.1-6ubuntu2.10)	
+libharfbuzz0b:arm64	8.3.0-2build2	ii 		libc6 (>= 2.38), libfreetype6 (>= 2.11.1), libglib2.0-0t64 (>= 2.32.0), libgraphite2-3 (>= 1.2.2)	
+libhogweed6t64:arm64	3.9.1-2.2build1.1	ii 		libc6 (>= 2.17), libgmp10 (>= 2:6.3.0+dfsg), libnettle8t64	libhogweed6 (= 3.9.1-2.2build1.1)
+libhwasan0:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.34), libgcc-s1 (>= 3.3)	
+libicu74:arm64	74.2-1ubuntu3.1	ii 		libc6 (>= 2.38), libgcc-s1 (>= 3.3.1), libstdc++6 (>= 13.1)	
+libidn2-0:arm64	2.3.7-2build1.1	ii 		libc6 (>= 2.17), libunistring5 (>= 1.1)	
+libimagequant0:arm64	2.18.0-1build1	ii 		libc6 (>= 2.29), libgomp1 (>= 4.9)	
+libisl23:arm64	0.26-3build1.1	ii 		libc6 (>= 2.17), libgmp10 (>= 2:6.3.0+dfsg)	
+libitm1:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.34)	
+libjansson4:arm64	2.14-2build2	ii 		libc6 (>= 2.38)	
+libjbig0:arm64	2.1-6.1ubuntu2	ii 		libc6 (>= 2.17)	
+libjpeg-turbo8:arm64	2.1.5-2ubuntu2	ii 		libc6 (>= 2.17)	
+libjpeg8:arm64	8c-2ubuntu11	ii 		libjpeg-turbo8 (>= 1.1.90+svn722-1ubuntu6)	
+libjsoncpp25:arm64	1.9.5-6build1	ii 		libc6 (>= 2.17), libgcc-s1 (>= 3.3.1), libstdc++6 (>= 13.1)	
+libk5crypto3:arm64	1.20.1-6ubuntu2.10	ii 		libc6 (>= 2.38), libkrb5support0 (= 1.20.1-6ubuntu2.10)	
+libkeyutils1:arm64	1.6.3-3build1	ii 		libc6 (>= 2.17)	
+libkrb5-3:arm64	1.20.1-6ubuntu2.10	ii 		libkrb5support0 (= 1.20.1-6ubuntu2.10), libc6 (>= 2.38), libcom-err2 (>= 1.43.9), libk5crypto3 (>= 1.20), libkeyutils1 (>= 1.5.9), libssl3t64 (>= 3.0.0)	
+libkrb5support0:arm64	1.20.1-6ubuntu2.10	ii 		libc6 (>= 2.38)	
+liblcms2-2:arm64	2.14-2ubuntu0.1	ii 		libc6 (>= 2.29)	
+libldap2:arm64	2.6.10+dfsg-0ubuntu0.24.04.1	ii 		libc6 (>= 2.38), libgnutls30t64 (>= 3.8.2), libsasl2-2 (>= 2.1.28+dfsg1)	
+liblerc4:arm64	4.0.0+ds-4ubuntu2	ii 		libc6 (>= 2.29), libgcc-s1 (>= 3.3.1), libstdc++6 (>= 11)	
+libllvm18:arm64	1:18.1.3-1ubuntu1	ii 		libc6 (>= 2.38), libedit2 (>= 2.11-20080614-0), libffi8 (>= 3.4), libgcc-s1 (>= 4.2), libstdc++6 (>= 12), libtinfo6 (>= 6), libxml2 (>= 2.7.4), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.2.0)	
+liblsan0:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.34), libgcc-s1 (>= 3.3)	
+liblz4-1:arm64	1.9.4-1build1.1	ii 		libc6 (>= 2.17)	
+liblzma5:arm64	5.6.1+really5.4.5-1ubuntu0.4	ii 		libc6 (>= 2.34)	
+libmd0:arm64	1.1.0-2build1.1	ii 		libc6 (>= 2.33)	
+libmount1:arm64	2.39.3-9ubuntu6.6	ii 		libblkid1 (>= 2.17.2), libc6 (>= 2.38), libselinux1 (>= 3.1~)	
+libmpc3:arm64	1.3.1-1build1.1	ii 		libc6 (>= 2.17), libgmp10 (>= 2:6.3.0+dfsg), libmpfr6 (>= 4.0.0)	
+libmpfr6:arm64	4.2.1-1build1.1	ii 		libc6 (>= 2.17), libgmp10 (>= 2:6.3.0+dfsg)	
+libncursesw6:arm64	6.4+20240113-1ubuntu2.2	ii 		libtinfo6 (= 6.4+20240113-1ubuntu2.2), libc6 (>= 2.34)	
+libnettle8t64:arm64	3.9.1-2.2build1.1	ii 		libc6 (>= 2.17)	libnettle8 (= 3.9.1-2.2build1.1)
+libnghttp2-14:arm64	1.59.0-1ubuntu0.4	ii 		libc6 (>= 2.17)	
+libnpth0t64:arm64	1.6-3.1build1	ii 		libc6 (>= 2.34)	libnpth0 (= 1.6-3.1build1)
+libobjc-13-dev:arm64	13.3.0-6ubuntu2~24.04.1	ii 		gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), libgcc-13-dev (= 13.3.0-6ubuntu2~24.04.1), libobjc4 (>= 13.3.0-6ubuntu2~24.04.1)	
+libobjc4:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.38), libgc1 (>= 1:7.2d), libgcc-s1 (>= 3.0)	
+libopenjp2-7:arm64	2.5.0-2ubuntu0.5	ii 		libc6 (>= 2.34)	
+libp11-kit0:arm64	0.25.3-4ubuntu2.2	ii 		libc6 (>= 2.38), libffi8 (>= 3.4)	
+libpam-modules:arm64	1.5.3-5ubuntu5.7	ii 	libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libcrypt1 (>= 1:4.3.0), libdb5.3t64, libpam0g (>= 1.4.1), libselinux1 (>= 3.1~), libsystemd0, debconf (>= 0.5) | debconf-2.0, libpam-modules-bin (= 1.5.3-5ubuntu5.7)		libpam-mkhomedir, libpam-motd, libpam-umask
+libpam-modules-bin:arm64	1.5.3-5ubuntu5.7	ii 		libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libcrypt1 (>= 1:4.3.0), libpam0g (>= 0.99.7.1), libselinux1 (>= 3.1~), libsystemd0 (>= 254)	
+libpam-runtime:all	1.5.3-5ubuntu5.7	ii 		debconf (>= 0.5) | debconf-2.0, debconf (>= 1.5.19) | cdebconf, libpam-modules (>= 1.0.1-6)	
+libpam0g:arm64	1.5.3-5ubuntu5.7	ii 		libaudit1 (>= 1:2.2.1), libc6 (>= 2.34), debconf (>= 0.5) | debconf-2.0	
+libpcre2-8-0:arm64	10.42-4ubuntu2.1	ii 		libc6 (>= 2.34)	
+libperl5.38t64:arm64	5.38.2-3.2ubuntu0.7	ii 		libbz2-1.0, libc6 (>= 2.38), libcrypt1 (>= 1:4.1.0), libdb5.3t64, libgdbm-compat4t64 (>= 1.18-3), libgdbm6t64 (>= 1.21), zlib1g (>= 1:1.2.3.3), perl-modules-5.38 (>= 5.38.2-3.2ubuntu0.7)	libperl5.38 (= 5.38.2-3.2ubuntu0.7)
+libpkgconf3:arm64	1.8.1-2build1	ii 		libc6 (>= 2.38)	
+libpng-dev:arm64	1.6.43-5ubuntu0.7	ii 		libpng16-16t64 (= 1.6.43-5ubuntu0.7), zlib1g-dev	
+libpng16-16t64:arm64	1.6.43-5ubuntu0.7	ii 		libc6 (>= 2.29), zlib1g (>= 1:1.2.3.4)	libpng16-16 (= 1.6.43-5ubuntu0.7)
+libproc2-0:arm64	2:4.0.4-4ubuntu3.3	ii 		libc6 (>= 2.38), libsystemd0 (>= 209)	
+libpsl5t64:arm64	0.21.2-1.1build1	ii 		libidn2-0 (>= 0.16), libc6 (>= 2.33), libunistring5 (>= 1.1)	libpsl5 (= 0.21.2-1.1build1)
+libpthread-stubs0-dev:arm64	0.4-1build3	ii 			
+libpython3-stdlib:arm64	3.12.3-0ubuntu2.1	ii 		libpython3.12-stdlib (>= 3.12.3-0~)	
+libpython3.12-minimal:arm64	3.12.3-1ubuntu0.17	ii 		libc6 (>= 2.17), libssl3t64 (>= 3.0.0)	
+libpython3.12-stdlib:arm64	3.12.3-1ubuntu0.17	ii 		libpython3.12-minimal (= 3.12.3-1ubuntu0.17), media-types | mime-support, netbase, tzdata, libbz2-1.0, libc6 (>= 2.38), libcrypt1 (>= 1:4.1.0), libdb5.3t64, libffi8 (>= 3.4), liblzma5 (>= 5.1.1alpha+20120614), libncursesw6 (>= 6.1), libreadline8t64 (>= 7.0~beta), libsqlite3-0 (>= 3.36.0), libtinfo6 (>= 6)	
+libraqm0:arm64	0.10.1-1build1	ii 		libc6 (>= 2.17), libfreetype6 (>= 2.11.0), libfribidi0 (>= 1.0.0), libharfbuzz0b (>= 5.2)	
+libreadline8t64:arm64	8.2-4build1	ii 		readline-common, libc6 (>= 2.38), libtinfo6 (>= 6)	libreadline8 (= 8.2-4build1)
+librhash0:arm64	1.4.3-3build1	ii 		libc6 (>= 2.34)	
+librtmp1:arm64	2.4+20151223.gitfa8646d.1-2build7	ii 		libc6 (>= 2.34), libgmp10 (>= 2:6.3.0+dfsg), libgnutls30t64 (>= 3.8.1), libhogweed6t64, libnettle8t64, zlib1g (>= 1:1.1.4)	
+libsasl2-2:arm64	2.1.28+dfsg1-5ubuntu3.1	ii 		libsasl2-modules-db (>= 2.1.28+dfsg1-5ubuntu3.1), libc6 (>= 2.38), libssl3t64 (>= 3.0.0)	
+libsasl2-modules-db:arm64	2.1.28+dfsg1-5ubuntu3.1	ii 		libc6 (>= 2.17), libdb5.3t64	
+libseccomp2:arm64	2.5.5-1ubuntu3.1	ii 		libc6 (>= 2.17)	
+libselinux1:arm64	3.5-2ubuntu2.1	ii 		libc6 (>= 2.38), libpcre2-8-0 (>= 10.22)	
+libsemanage-common:all	3.5-1build5	ii 			
+libsemanage2:arm64	3.5-1build5	ii 		libsemanage-common (>= 3.5-1build5), libaudit1 (>= 1:2.2.1), libbz2-1.0, libc6 (>= 2.38), libselinux1 (>= 3.5), libsepol2 (>= 3.5)	
+libsepol2:arm64	3.5-2build1	ii 		libc6 (>= 2.38)	
+libsframe1:arm64	2.42-4ubuntu2.10	ii 		libc6 (>= 2.17)	
+libsharpyuv0:arm64	1.3.2-0.4build3	ii 		libc6 (>= 2.29)	
+libsmartcols1:arm64	2.39.3-9ubuntu6.6	ii 		libc6 (>= 2.38)	
+libsqlite3-0:arm64	3.45.1-1ubuntu2.9	ii 		libc6 (>= 2.38)	
+libss2:arm64	1.47.0-2.4~exp1ubuntu4.1	ii 		libcom-err2, libc6 (>= 2.34)	libss2t64 (= 1.47.0-2.4~exp1ubuntu4.1)
+libssh-4:arm64	0.10.6-2ubuntu0.5	ii 		libc6 (>= 2.33), libgssapi-krb5-2 (>= 1.17), libssl3t64 (>= 3.0.0), zlib1g (>= 1:1.1.4)	
+libssl-dev:arm64	3.0.13-0ubuntu3.16	ii 		libssl3t64 (= 3.0.13-0ubuntu3.16)	
+libssl3t64:arm64	3.0.13-0ubuntu3.16	ii 		libc6 (>= 2.38)	libssl3 (= 3.0.13-0ubuntu3.16)
+libstdc++-13-dev:arm64	13.3.0-6ubuntu2~24.04.1	ii 		gcc-13-base (= 13.3.0-6ubuntu2~24.04.1), libgcc-13-dev (= 13.3.0-6ubuntu2~24.04.1), libstdc++6 (>= 13.3.0-6ubuntu2~24.04.1), libc6-dev (>= 2.13-0ubuntu6)	libstdc++-dev
+libstdc++6:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.38), libgcc-s1 (>= 4.5)	
+libsystemd0:arm64	255.4-1ubuntu8.18	ii 		libc6 (>= 2.38), libcap2 (>= 1:2.10), libgcrypt20 (>= 1.10.0), liblz4-1 (>= 0.0~r122), liblzma5 (>= 5.1.1alpha+20120614), libzstd1 (>= 1.5.5)	
+libtasn1-6:arm64	4.19.0-3ubuntu0.24.04.2	ii 		libc6 (>= 2.38)	
+libtiff6:arm64	4.5.1+git230720-4ubuntu2.5	ii 		libc6 (>= 2.33), libdeflate0 (>= 1.0), libjbig0 (>= 2.0), libjpeg8 (>= 8c), liblerc4 (>= 3.0), liblzma5 (>= 5.1.1alpha+20120614), libwebp7 (>= 1.3.2), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)	
+libtinfo6:arm64	6.4+20240113-1ubuntu2.2	ii 		libc6 (>= 2.34)	
+libtsan2:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.34), libgcc-s1 (>= 3.3)	
+libubsan1:arm64	14.2.0-4ubuntu2~24.04.1	ii 		gcc-14-base (= 14.2.0-4ubuntu2~24.04.1), libc6 (>= 2.34), libgcc-s1 (>= 3.3), libstdc++6 (>= 4.1.1)	
+libudev1:arm64	255.4-1ubuntu8.18	ii 		libc6 (>= 2.38), libcap2 (>= 1:2.10)	
+libunistring5:arm64	1.1-2build1.1	ii 		libc6 (>= 2.34)	
+libuuid1:arm64	2.39.3-9ubuntu6.6	ii 		libc6 (>= 2.38)	libuuid1t64 (= 2.39.3-9ubuntu6.6)
+libuv1t64:arm64	1.48.0-1.1build1	ii 		libc6 (>= 2.38)	libuv1 (= 1.48.0-1.1build1)
+libvulkan-dev:arm64	1.3.275.0-1build1	ii 		libvulkan1 (= 1.3.275.0-1build1), python3:any	
+libvulkan1:arm64	1.3.275.0-1build1	ii 		libc6 (>= 2.38)	
+libwayland-bin:arm64	1.22.0-2.1build1	ii 		libc6 (>= 2.34), libexpat1 (>= 2.0.1), libxml2 (>= 2.7.4)	
+libwayland-client0:arm64	1.22.0-2.1build1	ii 		libc6 (>= 2.38), libffi8 (>= 3.4)	
+libwayland-cursor0:arm64	1.22.0-2.1build1	ii 		libc6 (>= 2.28), libwayland-client0 (>= 1.20.0)	
+libwayland-dev:arm64	1.22.0-2.1build1	ii 		libwayland-client0 (= 1.22.0-2.1build1), libwayland-server0 (= 1.22.0-2.1build1), libwayland-cursor0 (= 1.22.0-2.1build1), libwayland-egl1 (= 1.22.0-2.1build1), libwayland-bin (= 1.22.0-2.1build1), libffi-dev	
+libwayland-egl1:arm64	1.22.0-2.1build1	ii 		libc6 (>= 2.17)	libwayland-egl1-mesa
+libwayland-server0:arm64	1.22.0-2.1build1	ii 		libc6 (>= 2.38), libffi8 (>= 3.4)	
+libwebp7:arm64	1.3.2-0.4build3	ii 		libc6 (>= 2.34), libsharpyuv0 (>= 1.3.2)	
+libwebpdemux2:arm64	1.3.2-0.4build3	ii 		libc6 (>= 2.17), libwebp7 (>= 1.3.2)	
+libwebpmux3:arm64	1.3.2-0.4build3	ii 		libc6 (>= 2.29), libwebp7 (>= 1.3.2)	
+libx11-6:arm64	2:1.8.7-1ubuntu0.1	ii 		libc6 (>= 2.38), libxcb1 (>= 1.11.1), libx11-data	
+libx11-data:all	2:1.8.7-1ubuntu0.1	ii 			
+libx11-dev:arm64	2:1.8.7-1ubuntu0.1	ii 		libx11-6 (= 2:1.8.7-1ubuntu0.1), libxau-dev, libxdmcp-dev, x11proto-dev (>= 2019.2-1), xtrans-dev, libxcb1-dev	
+libx11-xcb-dev:arm64	2:1.8.7-1ubuntu0.1	ii 		libx11-xcb1 (= 2:1.8.7-1ubuntu0.1), libxcb1-dev, libx11-dev	
+libx11-xcb1:arm64	2:1.8.7-1ubuntu0.1	ii 		libx11-6 (= 2:1.8.7-1ubuntu0.1)	
+libxau-dev:arm64	1:1.0.9-1build6	ii 		libxau6 (= 1:1.0.9-1build6), x11proto-dev	
+libxau6:arm64	1:1.0.9-1build6	ii 		libc6 (>= 2.33)	
+libxcb-xkb-dev:arm64	1.15-1ubuntu2	ii 		libxcb-xkb1 (= 1.15-1ubuntu2), libxcb1-dev	
+libxcb-xkb1:arm64	1.15-1ubuntu2	ii 		libc6 (>= 2.17), libxcb1	
+libxcb1:arm64	1.15-1ubuntu2	ii 		libc6 (>= 2.38), libxau6 (>= 1:1.0.9), libxdmcp6	
+libxcb1-dev:arm64	1.15-1ubuntu2	ii 		libxcb1 (= 1.15-1ubuntu2), libpthread-stubs0-dev, libxau-dev (>= 1:1.0.0-1), libxdmcp-dev (>= 1:1.0.0-1)	
+libxdmcp-dev:arm64	1:1.1.3-0ubuntu6	ii 		libxdmcp6 (= 1:1.1.3-0ubuntu6), x11proto-core-dev	
+libxdmcp6:arm64	1:1.1.3-0ubuntu6	ii 		libbsd0 (>= 0.2.0), libc6 (>= 2.17)	
+libxkbcommon-dev:arm64	1.6.0-1build1	ii 		libxkbcommon0 (= 1.6.0-1build1)	
+libxkbcommon-x11-0:arm64	1.6.0-1build1	ii 		libxkbcommon0 (= 1.6.0-1build1), libc6 (>= 2.17), libxcb-xkb1, libxcb1 (>= 1.6)	
+libxkbcommon-x11-dev:arm64	1.6.0-1build1	ii 		libxkbcommon-x11-0 (= 1.6.0-1build1), libxkbcommon-dev (= 1.6.0-1build1), libxcb1-dev, libxcb-xkb-dev	
+libxkbcommon0:arm64	1.6.0-1build1	ii 		xkb-data, libc6 (>= 2.38)	
+libxml2:arm64	2.9.14+dfsg-1.3ubuntu3.10	ii 		libc6 (>= 2.38), libicu74 (>= 74.1-1~), liblzma5 (>= 5.1.1alpha+20120614), zlib1g (>= 1:1.2.3.3)	
+libxxhash0:arm64	0.8.2-2build1	ii 		libc6 (>= 2.17)	
+libzstd-dev:arm64	1.5.5+dfsg2-2build1.1	ii 		libzstd1 (= 1.5.5+dfsg2-2build1.1)	
+libzstd1:arm64	1.5.5+dfsg2-2build1.1	ii 		libc6 (>= 2.34)	
+linux-libc-dev:arm64	6.8.0-149.149	ii 			aufs-dev, linux-kernel-headers
+llvm-18-linker-tools:arm64	1:18.1.3-1ubuntu1	ii 		libc6 (>= 2.38), libllvm18, libstdc++6 (>= 11)	
+login:arm64	1:4.13+dfsg1-4ubuntu3.2	ii 	libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libcrypt1 (>= 1:4.1.0), libpam0g (>= 0.99.7.1), libpam-runtime, libpam-modules		
+logsave:arm64	1.47.0-2.4~exp1ubuntu4.1	ii 		libc6 (>= 2.34)	
+lto-disabled-list:all	47	ii 			
+make:arm64	4.3-4.1build2	ii 		libc6 (>= 2.38)	
+mawk:arm64	1.3.4.20240123-1build1	ii 		libc6 (>= 2.38)	awk
+media-types:all	10.1.0	ii 			
+mount:arm64	2.39.3-9ubuntu6.6	ii 	libblkid1 (>= 2.17.2), libc6 (>= 2.38), libmount1 (>= 2.39.1), libselinux1 (>= 3.1~), libsmartcols1 (>= 2.33)		
+ncurses-base:all	6.4+20240113-1ubuntu2.2	ii 			ncurses-runtime
+ncurses-bin:arm64	6.4+20240113-1ubuntu2.2	ii 	libc6 (>= 2.34), libtinfo6 (>= 6.4+20230603)		
+netbase:all	6.4	ii 			
+openssh-client:arm64	1:9.6p1-3ubuntu13.20	ii 		adduser, passwd, libc6 (>= 2.38), libedit2 (>= 2.11-20080614-0), libfido2-1 (>= 1.8.0), libgssapi-krb5-2 (>= 1.17), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.13), zlib1g (>= 1:1.1.4)	ssh-client
+openssl:arm64	3.0.13-0ubuntu3.16	ii 		libc6 (>= 2.34), libssl3t64 (>= 3.0.9)	
+passwd:arm64	1:4.13+dfsg1-4ubuntu3.2	ii 		libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libcrypt1 (>= 1:4.1.0), libpam0g (>= 0.99.7.1), libselinux1 (>= 3.1~), libsemanage2 (>= 2.0.32), libpam-modules	
+patch:arm64	2.7.6-7build3	ii 		libc6 (>= 2.38)	
+perl:arm64	5.38.2-3.2ubuntu0.7	ii 	dpkg (>= 1.17.17)	perl-base (= 5.38.2-3.2ubuntu0.7), perl-modules-5.38 (>= 5.38.2-3.2ubuntu0.7), libperl5.38t64 (= 5.38.2-3.2ubuntu0.7)	libansicolor-perl (= 5.01), libarchive-tar-perl (= 2.40), libattribute-handlers-perl (= 1.03), libautodie-perl (= 2.36), libcompress-raw-bzip2-perl (= 2.204.001), libcompress-raw-zlib-perl (= 2.204.001), libcompress-zlib-perl (= 2.204), libcpan-meta-perl (= 2.150010), libcpan-meta-requirements-perl (= 2.140), libcpan-meta-yaml-perl (= 0.018), libdigest-md5-perl (= 2.58.01), libdigest-perl (= 1.20), libdigest-sha-perl (= 6.04), libencode-perl (= 3.19), libexperimental-perl (= 0.031), libextutils-cbuilder-perl (= 0.280238), libextutils-command-perl (= 7.70), libextutils-install-perl (= 2.22), libextutils-parsexs-perl (= 3.510000), libfile-spec-perl (= 3.8800), libhttp-tiny-perl (= 0.086), libi18n-langtags-perl (= 0.45), libio-compress-base-perl (= 2.204), libio-compress-bzip2-perl (= 2.204), libio-compress-perl (= 2.204), libio-compress-zlib-perl (= 2.204), libio-zlib-perl (= 1.14), libjson-pp-perl (= 4.16000), liblocale-maketext-perl (= 1.33), liblocale-maketext-simple-perl (= 0.21.01), libmath-bigint-perl (= 1.999837), libmath-complex-perl (= 1.6200), libmime-base64-perl (= 3.16.01), libmodule-corelist-perl (= 5.20231129), libmodule-load-conditional-perl (= 0.74), libmodule-load-perl (= 0.36), libmodule-metadata-perl (= 1.000037), libnet-perl (= 1:3.15), libnet-ping-perl (= 2.76), libparams-check-perl (= 0.38), libparent-perl (= 0.241), libparse-cpan-meta-perl (= 2.150010), libperl-ostype-perl (= 1.010), libpod-escapes-perl (= 1.07), libpod-simple-perl (= 3.43), libstorable-perl (= 3.32), libsys-syslog-perl (= 0.36), libtest-harness-perl (= 3.44), libtest-simple-perl (= 1.302194), libtest-tester-perl (= 1.302194), libtest-use-ok-perl (= 1.302194), libtext-balanced-perl (= 2.06), libthread-queue-perl (= 3.14), libthreads-perl (= 2.36), libthreads-shared-perl (= 1.68), libtime-hires-perl (= 1.9775), libtime-local-perl (= 1.3000), libtime-piece-perl (= 1.3401.01), libunicode-collate-perl (= 1.31), libversion-perl (= 1:0.9929), libversion-requirements-perl, podlators-perl (= 5.01)
+perl-base:arm64	5.38.2-3.2ubuntu0.7	ii 	libc6 (>= 2.38), libcrypt1 (>= 1:4.1.0), dpkg (>= 1.17.17)		libfile-path-perl (= 2.18), libfile-temp-perl (= 0.2311), libio-socket-ip-perl (= 0.41), libscalar-list-utils-perl (= 1:1.63), libsocket-perl (= 2.036), libxsloader-perl (= 0.32), perlapi-5.38.2
+perl-modules-5.38:all	5.38.2-3.2ubuntu0.7	ii 	dpkg (>= 1.17.17)	perl-base (>= 5.38.2-1)	perl-modules
+pkg-config:arm64	1.8.1-2build1	ii 		pkgconf (>= 1.8.0-7~)	
+pkgconf:arm64	1.8.1-2build1	ii 		pkgconf-bin	pkg-config (= 1.8.1-2build1)
+pkgconf-bin:arm64	1.8.1-2build1	ii 		libc6 (>= 2.34), libpkgconf3 (>= 1.8.0)	
+procps:arm64	2:4.0.4-4ubuntu3.3	ii 		libc6 (>= 2.38), libncursesw6 (>= 6), libproc2-0 (>= 2:4.0.4), libsystemd0 (>= 254), libtinfo6 (>= 6), init-system-helpers (>= 1.29~)	watch
+python3:arm64	3.12.3-0ubuntu2.1	ii 	python3-minimal (= 3.12.3-0ubuntu2.1)	python3.12 (>= 3.12.3-0~), libpython3-stdlib (= 3.12.3-0ubuntu2.1)	python3-profiler, python3-supported-max (= 3.12), python3-supported-min (= 3.12)
+python3-minimal:arm64	3.12.3-0ubuntu2.1	ii 	python3.12-minimal (>= 3.12.3-0~)	dpkg (>= 1.13.20)	
+python3-pil:arm64	10.2.0-1ubuntu1.5	ii 		python3 (<< 3.13), python3 (>= 3.12~), python3:any, media-types | python3-pil.imagetk, libc6 (>= 2.17), libfreetype6 (>= 2.10.1), libimagequant0 (>= 2.11.10), libjpeg8 (>= 8c), liblcms2-2 (>= 2.7), libopenjp2-7 (>= 2.4.0), libraqm0 (>= 0.7.0), libtiff6 (>= 4.0.3), libwebp7 (>= 1.3.2), libwebpdemux2 (>= 1.3.2), libwebpmux3 (>= 1.3.2), libxcb1, zlib1g (>= 1:1.1.4)	python3-pillow
+python3.12:arm64	3.12.3-1ubuntu0.17	ii 		python3.12-minimal (= 3.12.3-1ubuntu0.17), libpython3.12-stdlib (= 3.12.3-1ubuntu0.17), media-types | mime-support, tzdata	
+python3.12-minimal:arm64	3.12.3-1ubuntu0.17	ii 	libc6 (>= 2.38)	libpython3.12-minimal (= 3.12.3-1ubuntu0.17), libexpat1 (>= 2.6.0), zlib1g (>= 1:1.2.0)	
+readline-common:all	8.2-4build1	ii 			
+rpcsvc-proto:arm64	1.4.2-0ubuntu7	ii 		libc6 (>= 2.38)	
+sed:arm64	4.9-2ubuntu0.24.04.1	ii 	libacl1 (>= 2.2.23), libc6 (>= 2.38), libselinux1 (>= 3.1~)		
+sensible-utils:all	0.0.22	ii 			
+sysvinit-utils:arm64	3.08-6ubuntu3	ii 		libc6 (>= 2.38)	lsb-base (= 11.1.0)
+tar:arm64	1.35+dfsg-3ubuntu0.4	ii 	libacl1 (>= 2.2.23), libc6 (>= 2.38), libselinux1 (>= 3.1~)		
+tzdata:all	2026e-0ubuntu0.24.04.1	ii 		debconf (>= 0.5) | debconf-2.0	tzdata-trixie
+ubuntu-keyring:all	2023.11.28.1	ii 			
+unminimize:arm64	0.2.1	ii 			
+util-linux:arm64	2.39.3-9ubuntu6.6	ii 	libblkid1 (>= 2.37.2), libc6 (>= 2.38), libcap-ng0 (>= 0.7.9), libcrypt1 (>= 1:4.1.0), libmount1 (>= 2.39.1), libpam0g (>= 0.99.7.1), libselinux1 (>= 3.1~), libsmartcols1 (>= 2.38), libsystemd0, libtinfo6 (>= 6), libudev1 (>= 183), libuuid1 (>= 2.16), zlib1g (>= 1:1.1.4)		hardlink
+uuid-dev:arm64	2.39.3-9ubuntu6.6	ii 		libc6-dev | libc-dev, libuuid1 (= 2.39.3-9ubuntu6.6)	
+x11proto-dev:all	2023.2-1	ii 		xorg-sgml-doctools (>= 1:1.5)	x11proto-core-dev (= 2023.2-1), x11proto-dri2-dev (= 2023.2-1), x11proto-fonts-dev (= 2023.2-1), x11proto-gl-dev (= 2023.2-1), x11proto-input-dev (= 2023.2-1), x11proto-kb-dev (= 2023.2-1), x11proto-present-dev (= 2023.2-1), x11proto-randr-dev (= 2023.2-1), x11proto-record-dev (= 2023.2-1), x11proto-render-dev (= 2023.2-1), x11proto-scrnsaver-dev (= 2023.2-1), x11proto-video-dev (= 2023.2-1), x11proto-xext-dev (= 2023.2-1), x11proto-xf86dga-dev (= 2023.2-1), x11proto-xf86dri-dev (= 2023.2-1), x11proto-xf86vidmode-dev (= 2023.2-1), x11proto-xinerama-dev (= 2023.2-1)
+xdg-utils:all	1.1.3-4.1ubuntu3	ii 			
+xkb-data:all	2.41-2ubuntu1.1	ii 			
+xorg-sgml-doctools:all	1:1.11-1.1	ii 			
+xtrans-dev:all	1.4.0-1	ii 			
+xz-utils:arm64	5.6.1+really5.4.5-1ubuntu0.4	ii 		libc6 (>= 2.34), liblzma5 (>= 5.4.0)	lzma
+zlib1g:arm64	1:1.3.dfsg-3.1ubuntu2.3	ii 		libc6 (>= 2.17)	libz1
+zlib1g-dev:arm64	1:1.3.dfsg-3.1ubuntu2.3	ii 		zlib1g (= 1:1.3.dfsg-3.1ubuntu2.3), libc6-dev | libc-dev	libz-dev
