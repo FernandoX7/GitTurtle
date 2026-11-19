@@ -135,6 +135,21 @@ FIXTURES = {
                 Path(os.environ["TOOLING_SUITES_TEST_MARK"]).write_text("ended after the failure", encoding="utf-8")
     """,
     "empty/test_none.py": "import unittest\n",
+    # One passing test that prints lines like unittest's summary: before the real one a count of
+    # 5,000 digits, one of ten and one with more after it; and at exit, where output left in a
+    # buffer is written, the summary of a run of nothing.
+    "digits/test_digits.py": """
+        import atexit
+        import unittest
+
+
+        class Digits(unittest.TestCase):
+            def test_prints_summaries_that_are_not_unittests(self):
+                print("Ran " + "9" * 5000 + " tests in 0.001s", flush=True)
+                print("Ran 1234567890 tests in 0.001s", flush=True)
+                print("Ran 7 tests in 0.001s, said a test", flush=True)
+                atexit.register(print, "Ran 0 tests in 0.000s")
+    """,
     # Prints one line and then does not return: only a signal ends it before the test that runs it has failed.
     "hanging/test_hang.py": """
         import time
@@ -542,6 +557,49 @@ class OutputTests(Fixtures):
         self.assertEqual(suites.named("m.C.test_##[endgroup]\N{LINE SEPARATOR}::endgroup::\nx\x1b[0m\x00y /home/someone/z", metrics),
                          "m.C.test_#\\x23[endgroup] ::endgroup:: xy [path]")
 
+    def test_summary_lines_that_a_test_prints_neither_stop_the_replay_nor_pass_for_unittests(self):
+        status, lines, _, _ = drive([self.suite("digits"), self.suite("passing")])
+        self.assertEqual(status, 0, lines[-8:])
+        digits = group_lines(lines, "digits")
+        for line in ("[ci] Ran " + "9" * 5000 + " tests in 0.001s", "[ci] Ran 1234567890 tests in 0.001s",
+                     "[ci] Ran 7 tests in 0.001s, said a test"):
+            self.assertIn(line, digits)
+        # unittest's own summary is not the last one here: the one printed at exit comes after it.
+        (own,) = [index for index, line in enumerate(digits) if re.fullmatch(r"\[ci\] Ran 1 test in \d+\.\d{3}s", line)]
+        self.assertLess(own, digits.index("[ci] Ran 0 tests in 0.000s"))
+        self.assertEqual([re.sub(r"\d+\.\d s", "N s", line) for line in lines[-5:]],
+                         ["tooling-suites: digits: exit 0, N s, 1 tests", "tooling-suites: passing: exit 0, N s, 2 tests",
+                          "tooling-suites: 2 processes side by side took N s", "tooling-suites: all 2 processes passed", ""])
+
+    def test_only_unittests_whole_summary_line_with_a_bounded_count_is_a_count(self):
+        for line, count in (("[ci] Ran 3 tests in 0.001s", "3"), ("[ci] Ran 1 test in 12.345s", "1"),
+                            ("[ci] Ran 999999999 tests in 0.000s", "999999999")):
+            self.assertEqual(suites.RAN.fullmatch(line).group(1), count)
+        for line in ("[ci] Ran 3 tests in 0.001s and more", "[ci] it Ran 3 tests in 0.001s", "[ci] Ran 1234567890 tests in 0.001s",
+                     "[ci] Ran 3 tests in 1s", "[ci] Ran  tests in 0.001s", "Ran 3 tests in 0.001s"):
+            self.assertIsNone(suites.RAN.fullmatch(line), line)
+
+    def test_output_that_cannot_be_printed_fails_the_step_and_stops_no_other_replay(self):
+        quote = suites.quote
+
+        def unprintable(raw, metrics):
+            if b"the passing suite says one" in raw:
+                raise ValueError("a line the replay cannot take")
+            return quote(raw, metrics)
+
+        with mock.patch.object(suites, "quote", unprintable):
+            status, lines, _, _ = drive([self.suite("passing"), self.suite("failing")])
+        self.assertEqual(status, 1)
+        # The group of the output that failed is closed, and the next process's output is whole.
+        self.assertEqual([line for line in lines if line.startswith("::")],
+                         ["::group::passing", "::endgroup::", "::group::failing", "::endgroup::"])
+        self.assertIn("the failing suite fails here", "\n".join(group_lines(lines, "failing")))
+        self.assertEqual([re.sub(r"\d+\.\d s", "N s", line) for line in lines[-6:]],
+                         ["tooling-suites: passing: exit 0, N s, 2 tests", "tooling-suites: failing: exit 1, N s, 1 tests",
+                          "tooling-suites: 2 processes side by side took N s",
+                          "tooling-suites: FAILED: failing exited 1",
+                          "tooling-suites: FAILED: the output of passing could not be printed whole (ValueError)", ""])
+
     def test_a_suite_that_runs_no_test_fails_the_step(self):
         status, lines, records, _ = drive([self.suite("passing"), self.suite("empty")])
         self.assertEqual(status, 1)
@@ -693,7 +751,7 @@ class DeadlineTests(Fixtures):
 
         item = types.SimpleNamespace(name="stays", capture=Untouched(), waiter=types.SimpleNamespace(is_alive=lambda: True))
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertIsNone(suites.replay(item, suites.collector()))
+            self.assertEqual(suites.replay(item, suites.collector()), (None, None))
         self.assertEqual(output.getvalue().split("\n"),
                          ["::group::stays", "tooling-suites: stays could not be ended, so its output is not printed", "::endgroup::", ""])
 

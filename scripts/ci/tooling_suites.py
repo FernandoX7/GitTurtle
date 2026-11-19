@@ -74,8 +74,9 @@ GRACE = 10.0
 PREFIX = "[ci] "
 # Characters that end a line for some readers of a log, though not for this driver.
 SEPARATORS = str.maketrans({"\N{LINE SEPARATOR}": " ", "\N{PARAGRAPH SEPARATOR}": " ", "\x85": " "})
-# unittest's own last word on a run, as the collector prints it.
-RAN = re.compile(r"\[ci\] Ran (\d+) tests? in \d")
+# unittest's summary of a run, the whole line as it prints it, behind the collector's prefix. The
+# count is bounded because the line is the tests' text: thousands of digits are no count.
+RAN = re.compile(r"\[ci\] Ran (\d{1,9}) tests? in \d+\.\d{3}s")
 
 # One process of the step: its measurement name, its command, and for an agent-loop group the
 # file it records its test ids in.
@@ -350,26 +351,41 @@ def quote(raw, metrics):
 
 
 def replay(item, metrics):
-    """Print one process's output whole in a log group; return the test count of unittest's last summary in it."""
-    ran = None
+    """Print one process's output whole in a log group.
+
+    Returns the largest test count that a unittest summary line in it reports, or None when it
+    has none, and the kind of error that kept the output from being printed whole, or None. The
+    summary is looked for in every line and not taken to be the last: what a test left in a
+    buffer is written at exit, after unittest's own summary, and can hold a summary of another
+    run. The largest count is at least unittest's own, so a process that ran a test is never
+    taken for one that ran none.
+    """
+    ran = problem = None
     print(f"::group::{item.name}")
-    if item.waiter.is_alive():
-        # The capture shares its file position with the collector: reading it under a live
-        # collector would move the collector's writes. Not reached unless SIGKILL failed.
-        say(f"{item.name} could not be ended, so its output is not printed")
-    else:
-        item.capture.seek(0)
-        # Split at line feeds only, as the collector wrote them; `quote` takes every other separator
-        # out of the line, so none of them can start a line that would stand in the log without the prefix.
-        for raw in item.capture:
-            line = quote(raw, metrics)
-            match = RAN.match(line)
-            if match:
-                ran = int(match.group(1))
-            print(line)
-        item.capture.close()
-    print("::endgroup::", flush=True)
-    return ran
+    try:
+        if item.waiter.is_alive():
+            # The capture shares its file position with the collector: reading it under a live
+            # collector would move the collector's writes. Not reached unless SIGKILL failed.
+            say(f"{item.name} could not be ended, so its output is not printed")
+        else:
+            item.capture.seek(0)
+            # Split at line feeds only, as the collector wrote them; `quote` takes every other separator
+            # out of the line, so none of them can start a line that would stand in the log without the prefix.
+            for raw in item.capture:
+                line = quote(raw, metrics)
+                match = RAN.fullmatch(line)
+                if match:
+                    ran = max(ran or 0, int(match.group(1)))
+                print(line)
+    except Exception as error:
+        # Whatever a process printed, the others' output and the last lines still reach the log.
+        # The error's kind is named, not its message, which could quote the output.
+        problem = type(error).__name__
+    finally:
+        if not item.waiter.is_alive():
+            item.capture.close()
+        print("::endgroup::", flush=True)
+    return ran, problem
 
 
 def measured(job, directory):
@@ -387,7 +403,8 @@ def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT, deadline=DEADLINE, g
     until = begun + deadline
     running, passed = side_by_side([measured(job, directory) for job in jobs], cwd, beat, until, grace, clock)
     whole = clock() - begun
-    counts = [replay(item, metrics) for item in running]
+    replays = [replay(item, metrics) for item in running]
+    counts = [count for count, _ in replays]
     groups = {job.name: read_record(job.record) for job in jobs if job.record is not None}
     discovered, problems, attempted = None, [], False
     if groups and not passed and not any(item.cut for item in running):
@@ -414,6 +431,8 @@ def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT, deadline=DEADLINE, g
         elif item.exit != 0:
             failures.append(f"{item.name} exited {item.exit}")
     failures += [f"{item.name} ran no test" for item, count in zip(running[:len(jobs)], counts) if not count and not item.cut]
+    failures += [f"the output of {item.name} could not be printed whole ({problem})"
+                 for item, (_, problem) in zip(running, replays) if problem]
     failures += [f"the driver was sent {signal.Signals(signum).name} and passed it on" for signum in dict.fromkeys(passed)]
     if groups and not attempted:
         say("the proof that the groups hold every test once was not attempted: the step had already failed")
