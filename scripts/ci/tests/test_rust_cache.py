@@ -21,11 +21,13 @@ SPEC = importlib.util.spec_from_file_location("rust_cache", ROOT / ".github/acti
 cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
 SPEC_TOOLCHAIN = cache.toolchain_identity
-# `dpkg-query` in an ubuntu:24.04 arm64 container holding exactly the setup
-# action's install list, taken on 2026-11-19 with cache.DPKG_SNAPSHOT's format:
-# package:architecture, version, status, Pre-Depends, Depends and Provides,
-# tab-separated. A build of the workspace's tests traced there read files of
-# 75 packages, 71 of them in the closure this key takes.
+# `dpkg-query` in a disposable ubuntu:24.04 arm64 container holding exactly the
+# setup action's install list, which names no cmake, taken on 2026-11-19 with
+# cache.DPKG_SNAPSHOT's format: package:architecture, version, status,
+# Pre-Depends, Depends and Provides, tab-separated; 271 packages. A build of
+# the workspace's tests, traced a day earlier in the same container with apt's
+# cmake still installed, read files of 75 packages, 71 of them in the closure
+# this key takes and none among the 35 that only apt's cmake brought into it.
 UBUNTU_SNAPSHOT = (ROOT / "scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv").read_text()
 # What build scripts and the cc and cmake crates run bare, and the linker, the
 # assembler and the make that gcc and CMake run in their turn; cmake3 is optional.
@@ -50,7 +52,10 @@ UNSUPPLIED = "no build package ships it"
 # cache.UBUNTU_BUILD_PACKAGES that ships its .pc file (as a pair with the
 # dependency of that package the file is in, when it is not the build package's
 # own) or UNSUPPLIED; then the build packages behind the commands and compilers
-# it runs. A package that asks for nothing on Linux has the reason instead. The
+# it runs; then, for a command no build package ships, its name, which must be
+# a required tool of cache.UBUNTU_TOOLS: keyed by the file PATH selects and its
+# version, and failing the step when absent. A package that asks for nothing on
+# Linux has the reason instead. The
 # Ubuntu key holds those packages' closure and not the hosted image's other
 # packages, over a thousand, so a prober may find nothing outside it. The .pc owners are
 # those of the traced container's dpkg file lists. A row is one locked version:
@@ -60,8 +65,11 @@ UBUNTU_PROBERS = {
     # AWS-LC, which it takes only from headers that define OPENSSL_IS_AWSLC;
     # libssl-dev's do not. It then compiles its own sources with cc, or with
     # cmake3 or cmake when asked, and loads libclang only with its bindgen feature.
+    # It is the only locked crate that can run cmake, and builder/main.rs chooses
+    # its builder by variables, features and target, never by whether cmake is
+    # there. The action installs no CMake: the image's own is the keyed tool.
     "aws-lc-sys 0.45.0": ({"openssl": "libssl-dev", "aws-lc": UNSUPPLIED, "libcrypto": "libssl-dev",
-                           "libcrypto-awslc": UNSUPPLIED}, ("pkg-config", "build-essential", "cmake", "clang")),
+                           "libcrypto-awslc": UNSUPPLIED}, ("pkg-config", "build-essential", "clang"), ("cmake",)),
     # system-deps for the dav1d of its manifest, 1.3.0 or later. Its other path,
     # a clone built with meson and ninja, needs a SYSTEM_DEPS_ variable, which
     # the install step refuses.
@@ -115,6 +123,13 @@ def snapshot_rows(text=UBUNTU_SNAPSHOT):
 
 def snapshot_text(rows):
     return "".join("\t".join((identity, *fields)) + "\n" for identity, fields in rows.items())
+
+
+# apt's cmake as the container's snapshot had it on 2026-11-18, while the action
+# still installed it: version, status, Pre-Depends, Depends and Provides.
+APT_CMAKE = ("3.28.3-1build7", "ii ", "", "libarchive13t64 (>= 3.3.3), libc6 (>= 2.38), libcurl4t64 (>= 7.16.2), "
+             "libexpat1 (>= 2.0.1), libgcc-s1 (>= 3.0), libjsoncpp25 (>= 1.9.5), librhash0 (>= 1.2.6), "
+             "libstdc++6 (>= 13.1), libuv1t64 (>= 1.38.0), zlib1g (>= 1:1.1.4), cmake-data (= 3.28.3-1build7), procps", "")
 
 
 class UbuntuRunner:
@@ -1253,7 +1268,7 @@ class UbuntuPackages(unittest.TestCase):
 
     def test_closure_of_the_real_snapshot_is_what_a_traced_build_read_and_no_tool(self):
         mode, keyed, count, installed, others, cause = self.packages()
-        self.assertEqual((mode, count, installed, others, cause), ("closure", 195, 278, 0, None))
+        self.assertEqual((mode, count, installed, others, cause), ("closure", 160, 271, 0, None))
         self.assertEqual(keyed, sorted(keyed))
         self.assertLessEqual(set(keyed), {f"{identity}={fields[0]}" for identity, fields in self.rows.items()})
         names = {line.split(":", 1)[0] for line in keyed}
@@ -1262,7 +1277,9 @@ class UbuntuPackages(unittest.TestCase):
         # and the kernel headers libc6-dev includes.
         self.assertLessEqual({"gcc-13", "gcc-13-aarch64-linux-gnu", "cpp-13", "g++-13", "binutils-aarch64-linux-gnu",
                               "libc6", "libc6-dev", "linux-libc-dev", "libgcc-13-dev", "libstdc++-13-dev", "pkgconf-bin",
-                              "libclang-common-18-dev", "libllvm18", "cmake-data", "libdav1d7", "libssl3t64"}, names)
+                              "libclang-common-18-dev", "libllvm18", "libdav1d7", "libssl3t64"}, names)
+        # No CMake is a dpkg package here: the image's own is keyed as a tool.
+        self.assertEqual([identity for identity in self.rows if identity.startswith("cmake")], [])
         # The four packages the traced build read outside the closure, and the
         # action's tools: none reaches a cached dependency output.
         self.assertFalse(names & {"dash", "git", "libc-bin", "openssl", "openssh-client", "ca-certificates",
@@ -1278,13 +1295,13 @@ class UbuntuPackages(unittest.TestCase):
                 self.rows[identity][0] = original + "+1"
                 keys.add(self.key())
                 self.rows[identity][0] = original
-        self.assertEqual(len(keys), 196)
+        self.assertEqual(len(keys), 161)
         self.assertEqual(self.key(), baseline)
 
     def test_packages_outside_the_closure_never_change_the_key(self):
         baseline = self.key()
         outside = sorted(set(self.rows) - {line.split("=", 1)[0] for line in self.keyed()})
-        self.assertEqual(len(outside), 83)
+        self.assertEqual(len(outside), 111)
         for identity in outside:
             with self.subTest(package=identity):
                 fields = self.rows[identity]
@@ -1299,7 +1316,7 @@ class UbuntuPackages(unittest.TestCase):
         self.rows["azure-cli:all"] = ["2.79.0-1~noble", "ii ", "", "python3:any, libc6 (>= 2.38)", "az"]
         self.rows["firefox:amd64"] = ["1:1snap1-0ubuntu5", "ii ", "debconf", "snapd | zlib1g", ""]
         self.assertEqual(self.key(), baseline)
-        self.assertEqual(self.packages()[2:4], (195, 280))
+        self.assertEqual(self.packages()[2:4], (160, 273))
 
     def test_new_dependency_edge_brings_its_package_into_the_key(self):
         baseline = self.key()
@@ -1310,7 +1327,7 @@ class UbuntuPackages(unittest.TestCase):
         edged = self.key()
         self.assertNotEqual(edged, baseline)
         self.assertLessEqual({"libprobe1:arm64=1.0-1", "libprobe-data:all=1.0-1"}, set(self.keyed()))
-        self.assertEqual(len(self.keyed()), 197)
+        self.assertEqual(len(self.keyed()), 162)
         # Reached through a Pre-Depends edge as well, and keyed by version from then on.
         self.rows["libssl-dev:arm64"][3] = self.rows["libssl-dev:arm64"][3].replace(", libprobe1 (= 1.0-1)", "")
         self.assertEqual(self.key(), baseline)
@@ -1380,22 +1397,26 @@ class UbuntuPackages(unittest.TestCase):
                 self.rows = snapshot_rows()
                 damage()
                 self.assertEqual(self.packages()[0], "inventory")
-                del self.rows["cmake:arm64"]
-                with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+                del self.rows["clang:arm64"]
+                with self.assertRaisesRegex(ValueError, "^Ubuntu build package clang is not installed$"):
                     self.key()
         whole = snapshot_text(snapshot_rows())
         self.assertEqual(cache.ubuntu_packages(whole + "garbage\n")[0], "inventory")
-        cmake = next(line for line in whole.splitlines(keepends=True) if line.startswith("cmake:arm64\t"))
-        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
-            self.key(text=whole.replace(cmake, "") + "garbage\n")
+        clang = next(line for line in whole.splitlines(keepends=True) if line.startswith("clang:arm64\t"))
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package clang is not installed$"):
+            self.key(text=whole.replace(clang, "") + "garbage\n")
         # A root's own line that no longer says `ii ` does not count as installed.
-        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
-            self.key(text=whole.replace(cmake, "cmake:arm64\t3.28.3-1build7\n"))
-        # Nor does an unsupplied name that resolves turn the failure into a fallback.
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package clang is not installed$"):
+            self.key(text=whole.replace(clang, "clang:arm64\t1:18.0-59~exp2\n"))
+        # Nor does an unsupplied name that resolves turn the failure into a fallback,
+        # nor a dpkg CMake beside the missing root.
         self.rows = snapshot_rows()
-        del self.rows["cmake:arm64"]
-        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+        del self.rows["clang:arm64"]
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package clang is not installed$"):
             self.key(probes={"aws-lc": "1.61.0", "libcrypto-awslc": None})
+        self.rows["cmake:arm64"] = list(APT_CMAKE)
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package clang is not installed$"):
+            self.key()
 
     def test_unsupplied_pkg_config_name_that_resolves_takes_the_whole_inventory_and_is_named(self):
         closure = self.key()
@@ -1411,9 +1432,9 @@ class UbuntuPackages(unittest.TestCase):
                 self.assertEqual(shown[:3], [
                     "::warning::Ubuntu cache key fell back to the complete package inventory: "
                     f"pkg-config resolves {named}, which no build package ships",
-                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
+                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 271 of 271 installed"])
                 # Every line of the snapshot, and each name's answer.
-                self.assertEqual(shown.index("::endgroup::") - shown.index("::group::Keyed Ubuntu packages"), 279)
+                self.assertEqual(shown.index("::endgroup::") - shown.index("::group::Keyed Ubuntu packages"), 272)
                 self.assertEqual(shown[-5:-3], [f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {version}")
                                                 for name, version in probes.items()])
                 keys.add(key)
@@ -1437,14 +1458,14 @@ class UbuntuPackages(unittest.TestCase):
 
         whole = snapshot_text(snapshot_rows())
         return {
-            "a line without six fields": (edited(lambda: self.rows["zlib1g:arm64"].pop()), "snapshot line 277 has 5 fields, not six"),
+            "a line without six fields": (edited(lambda: self.rows["zlib1g:arm64"].pop()), "snapshot line 270 has 5 fields, not six"),
             "a line with a seventh field": (edited(lambda: self.rows["adduser:all"].append("extra")), "snapshot line 1 has 7 fields, not six"),
             "an empty line": (whole.replace("\n", "\n\n", 1), "snapshot line 2 has 1 fields, not six"),
-            "a package listed twice": (whole + whole.splitlines()[0] + "\n", "snapshot line 279 does not name one package and its version"),
+            "a package listed twice": (whole + whole.splitlines()[0] + "\n", "snapshot line 272 does not name one package and its version"),
             "a dependency outside the grammar": (edited(lambda: self.depend("libssl-dev:arm64", "libprobe1 [amd64]")),
                                                  "libssl-dev:arm64 has a dependency outside dpkg's grammar: 'libprobe1 [amd64]'"),
-            "a substitution left in a dependency": (edited(lambda: self.depend("cmake:arm64", "${shlibs:Depends}")),
-                                                    "cmake:arm64 has a dependency outside dpkg's grammar: '${shlibs:Depends}'"),
+            "a substitution left in a dependency": (edited(lambda: self.depend("libzstd-dev:arm64", "${shlibs:Depends}")),
+                                                    "libzstd-dev:arm64 has a dependency outside dpkg's grammar: '${shlibs:Depends}'"),
             "an empty dependency group": (edited(lambda: self.rows["clang:arm64"].__setitem__(3, "clang-18 (>= 18~),")),
                                           "clang:arm64 has a dependency outside dpkg's grammar: ''"),
             "a provided name outside the grammar": (edited(lambda: self.rows["git:arm64"].__setitem__(4, "git-core | git-all")),
@@ -1462,6 +1483,19 @@ class UbuntuPackages(unittest.TestCase):
             "a second architecture that is half installed": (
                 edited(lambda: self.rows.__setitem__("clang:armhf", ["1:18.0-59~exp2", "iH ", "", "", ""])),
                 "clang:armhf is in dpkg state 'iH ', not installed"),
+            # apt's cmake is not a root, so the closure would not key it: its line as the
+            # earlier container had it, on another architecture, and removed with its configuration left.
+            "a dpkg CMake": (edited(lambda: self.rows.__setitem__("cmake:arm64", list(APT_CMAKE))),
+                             "the snapshot holds cmake:arm64, which no build package keys"),
+            "a dpkg CMake of another architecture": (
+                edited(lambda: self.rows.__setitem__("cmake:armhf", ["3.28.3-1build7", "ii ", "", "", ""])),
+                "the snapshot holds cmake:armhf, which no build package keys"),
+            "a dpkg CMake whose configuration is left": (
+                edited(lambda: self.rows.__setitem__("cmake:arm64", ["3.28.3-1build7", "rc ", "", "", ""])),
+                "the snapshot holds cmake:arm64, which no build package keys"),
+            "two dpkg CMakes": (
+                edited(lambda: self.rows.update({"cmake:arm64": list(APT_CMAKE), "cmake:armhf": ["3.28.3-1build7", "iU ", "", "", ""]})),
+                "the snapshot holds cmake:arm64, cmake:armhf, which no build package keys"),
         }
 
     def test_every_abnormal_snapshot_falls_back_to_the_whole_inventory_and_says_why(self):
@@ -1482,7 +1516,8 @@ class UbuntuPackages(unittest.TestCase):
                 # not: every line for the four causes a real image could show, a
                 # sample of them for the rest.
                 every = label in {"a line without six fields", "a dependency outside the grammar",
-                                  "a group in which no alternative resolves", "a closure member that is only unpacked"}
+                                  "a group in which no alternative resolves", "a closure member that is only unpacked",
+                                  "a dpkg CMake"}
                 for index, line in list(enumerate(lines))[::1 if every else 23]:
                     fields = line.split("\t")
                     if len(fields) > 1:
@@ -1494,7 +1529,7 @@ class UbuntuPackages(unittest.TestCase):
         # A snapshot of the closure alone: both modes then key the same lines.
         keyed = self.keyed()
         self.rows = {identity: fields for identity, fields in self.rows.items() if f"{identity}={fields[0]}" in keyed}
-        self.assertEqual(len(self.rows), 195)
+        self.assertEqual(len(self.rows), 160)
         closure = self.key()
         self.assertEqual(self.keyed(), keyed)
         self.depend("libssl-dev:arm64", "libprobe1 [amd64]")
@@ -1506,7 +1541,7 @@ class UbuntuPackages(unittest.TestCase):
         self.rows["perl:arm64"][1] = "hi "
         held = self.packages()
         self.assertIn(f"perl:arm64={self.rows['perl:arm64'][0]} [hi ]", held[1])
-        self.assertEqual(held[2:5], (194, 194, 1))
+        self.assertEqual(held[2:5], (159, 159, 1))
         self.assertNotEqual(self.key(), fallback)
         # A line that names no package is keyed whole.
         text = snapshot_text(self.rows) + "garbage\n"
@@ -1548,8 +1583,8 @@ class UbuntuPackages(unittest.TestCase):
                  for name, tool in UBUNTU_TOOLS.items()}
         _, lines = cache.ubuntu_identity(text, tools, hostile, {hostile: [[hostile, hostile]], "/opt": hostile},
                                          {"aws-lc": hostile, "libcrypto-awslc": None}, {hostile: [hostile], "/usr/local/lib": hostile})
-        # Nothing a value holds starts a line: the fixed lines around 280 keyed ones, and a line for each other value.
-        self.assertEqual(len(lines), 4 + 280 + 1 + len(UBUNTU_TOOLS) + 1 + 2 + 2 + 2 + 1)
+        # Nothing a value holds starts a line: the fixed lines around 273 keyed ones, and a line for each other value.
+        self.assertEqual(len(lines), 4 + 273 + 1 + len(UBUNTU_TOOLS) + 1 + 2 + 2 + 2 + 1)
         self.assertEqual([line for line in lines if "##[" in line or "\n" in line or "\r" in line], [])
         self.assertEqual([line.split(" ")[0] for line in lines if line.lstrip().startswith("::")],
                          ["::warning::Ubuntu", "::group::Keyed", "::endgroup::"])
@@ -1578,7 +1613,39 @@ class UbuntuPackages(unittest.TestCase):
         self.assertFalse(build & tools)
         self.assertEqual(set(installed), build | tools)
         self.assertIn("--no-install-recommends", command.split())
-        self.assertEqual(len(cache.UBUNTU_BUILD_PACKAGES), 12)
+        self.assertEqual(len(cache.UBUNTU_BUILD_PACKAGES), 11)
+        # No CMake is installed, by apt or by anything else the action could run
+        # on a condition: the installed set must not depend on the image. The
+        # image's own stays a required keyed tool, so one without it fails by name.
+        self.assertNotIn("cmake", text.lower())
+        self.assertNotIn("cmake", build | tools)
+        self.assertIn("cmake", cache.UBUNTU_TOOLS)
+        self.assertEqual((cache.UBUNTU_OPTIONAL_TOOLS, cache.UBUNTU_UNKEYED_PACKAGES), (("cmake3",), ("cmake",)))
+
+    def test_dpkg_cmake_takes_the_whole_inventory_because_the_closure_no_longer_keys_it(self):
+        closure = self.key()
+        self.assertEqual(self.packages()[:3], ("closure", self.keyed(), 160))
+        # apt's cmake back, as the earlier container had it, with the package only it needs.
+        self.rows["cmake:arm64"] = list(APT_CMAKE)
+        self.rows["cmake-data:all"] = ["3.28.3-1build7", "ii ", "", "", ""]
+        mode, keyed, count, installed, others, cause = self.packages()
+        self.assertEqual((mode, count, installed, others), ("inventory", 273, 273, 0))
+        self.assertEqual(cause, "the snapshot holds cmake:arm64, which no build package keys")
+        key, shown = cache.ubuntu_identity(snapshot_text(self.rows), UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES, UBUNTU_LOCAL)
+        self.assertEqual(shown[:3], [f"::warning::Ubuntu cache key fell back to the complete package inventory: {cause}",
+                                     "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 273 of 273 installed"])
+        self.assertNotEqual(key, closure)
+        # Its version is then keyed, as every other line's is; in the closure mode nothing would hold it.
+        self.assertIn("cmake:arm64=3.28.3-1build7", keyed)
+        self.rows["cmake:arm64"][0] = "3.28.3-1build8"
+        self.assertNotEqual(self.key(), key)
+        # Any state counts, and a package that only has cmake in its name does not.
+        self.rows["cmake:arm64"][1] = "rc "
+        self.assertEqual(self.packages()[5], cause)
+        del self.rows["cmake:arm64"]
+        self.assertEqual((self.packages()[0], self.key()), ("closure", closure))
+        self.rows["cmake-extras:all"] = ["1.7-1", "ii ", "", "", "cmake-modules"]
+        self.assertEqual((self.packages()[0], self.key()), ("closure", closure))
 
 
 class UbuntuNativeIdentity(unittest.TestCase):
@@ -1597,10 +1664,10 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.assertEqual(self.runner.queries.read_text().splitlines(), [
             "-W", r"-f=${Package}:${Architecture}\t${Version}\t${db:Status-Abbrev}\t${Pre-Depends}\t${Depends}\t${Provides}\n"])
         start, end = lines.index("::group::Keyed Ubuntu packages"), lines.index("::endgroup::")
-        self.assertEqual(lines[:start], ["Ubuntu native key mode: closure", "Keyed Ubuntu packages: 195 of 278 installed"])
+        self.assertEqual(lines[:start], ["Ubuntu native key mode: closure", "Keyed Ubuntu packages: 160 of 271 installed"])
         keyed = lines[start + 1:end]
         self.assertEqual(keyed, cache.ubuntu_packages(UBUNTU_SNAPSHOT)[1])
-        self.assertEqual((len(keyed), keyed[0], keyed[-1]), (195, "binutils-aarch64-linux-gnu:arm64=2.42-4ubuntu2.10", "zlib1g:arm64=1:1.3.dfsg-3.1ubuntu2.3"))
+        self.assertEqual((len(keyed), keyed[0], keyed[-1]), (160, "binutils-aarch64-linux-gnu:arm64=2.42-4ubuntu2.10", "zlib1g:arm64=1:1.3.dfsg-3.1ubuntu2.3"))
         tools = {}
         expected = []
         for name in TOOL_NAMES:
@@ -1663,7 +1730,7 @@ class UbuntuNativeIdentity(unittest.TestCase):
         version = cache.digest(b"cmake version 3.31.6\n")[:12]
         self.assertIn(f"Keyed tool cmake: {os.path.realpath(real)}; on PATH: {local / 'cmake'}, {self.runner.bin / 'cmake'}; "
                       f"version {version}: cmake version 3.31.6", lines)
-        # Later on PATH it is shown and not run, so the key is the dpkg CMake's.
+        # Later on PATH it is shown and not run, so the key is the first CMake's.
         later, lines = self.runner.native(later=(local,))
         self.assertEqual(later, baseline)
         self.assertIn(f"on PATH: {self.runner.bin / 'cmake'}, {local / 'cmake'};", "\n".join(lines))
@@ -1799,7 +1866,7 @@ class UbuntuNativeIdentity(unittest.TestCase):
                 self.assertEqual(lines[:3], [
                     "::warning::Ubuntu cache key fell back to the complete package inventory: "
                     f"pkg-config resolves {name}, which no build package ships",
-                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
+                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 271 of 271 installed"])
                 self.assertIn(f"Keyed pkg-config probe {name}: version {version}", lines[-5:-3])
                 keys.add(native)
                 self.runner.probe(name, None)
@@ -1891,9 +1958,9 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.assertNotEqual(native, closure)
         self.assertEqual(lines[:4], [
             "::warning::Ubuntu cache key fell back to the complete package inventory: libssl3t64:arm64 is in dpkg state 'iU ', not installed",
-            "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 277 of 277 installed, and 1 other snapshot lines",
+            "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 270 of 270 installed, and 1 other snapshot lines",
             "::group::Keyed Ubuntu packages"])
-        self.assertEqual(lines.index("::endgroup::"), 4 + 278)
+        self.assertEqual(lines.index("::endgroup::"), 4 + 271)
         self.assertIn("libssl3t64:arm64=3.0.13-0ubuntu3.16 [iU ]", lines)
         self.assertIn("git:arm64=" + rows["git:arm64"][0], lines)
         # A snapshot that cannot be taken fails the step, as a failing command always did.
@@ -1911,7 +1978,8 @@ class UbuntuKeyPreconditions(unittest.TestCase):
             "The locked packages that depend on pkg-config, system-deps, cmake or bindgen changed, by name or by version. "
             "The Ubuntu cache key holds only the closure of cache.UBUNTU_BUILD_PACKAGES, so read the build script of the "
             "new package or version and give it a row in UBUNTU_PROBERS: the pkg-config names it asks for on Linux, each "
-            "with the build package that ships its .pc file or UNSUPPLIED, and the build packages behind what it runs; "
+            "with the build package that ships its .pc file or UNSUPPLIED, the build packages behind what it runs and "
+            "any command no build package ships, which must be a required tool of cache.UBUNTU_TOOLS; "
             "or the reason it asks for nothing there. A row is for one locked version because an update can ask for new "
             "names: aws-lc-sys's aws-lc and libcrypto-awslc arrived that way, unseen. If it probes a package the setup "
             "action does not install, add that package to the action's install list and to cache.UBUNTU_BUILD_PACKAGES; "
@@ -1919,7 +1987,7 @@ class UbuntuKeyPreconditions(unittest.TestCase):
             "is gone."))
         build, rows = set(cache.UBUNTU_BUILD_PACKAGES), snapshot_rows()
         closure = {line.split(":", 1)[0] for line in cache.ubuntu_packages(UBUNTU_SNAPSHOT)[1]}
-        unsupplied = set()
+        unsupplied, ran = set(), set()
         for prober, asked in UBUNTU_PROBERS.items():
             with self.subTest(prober=prober):
                 # Cargo's own spelling of a locked name and version, a pre-release or build suffix included.
@@ -1927,10 +1995,17 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                 if isinstance(asked, str):
                     self.assertRegex(asked, r"\w+ \w+ \w+")
                     continue
-                modules, packages = asked
+                modules, packages, *commands = asked
                 self.assertTrue(modules)
                 self.assertIn("pkg-config", packages)
                 self.assertLessEqual(set(packages), build)
+                # A command no build package ships is run from the image: it must be a
+                # required keyed tool, which fails the step when the image has none.
+                for command in (name for names in commands for name in names):
+                    ran.add(command)
+                    self.assertNotIn(command, build)
+                    self.assertIn(command, cache.UBUNTU_TOOLS, f"{prober} runs {command}, which nothing keys")
+                    self.assertNotIn(command, cache.UBUNTU_OPTIONAL_TOOLS)
                 for module, supplier in modules.items():
                     if supplier == UNSUPPLIED:
                         unsupplied.add(module)
@@ -1943,6 +2018,10 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                     self.assertIn(owner, closure, module)
         # In both directions: a name the table marks is keyed, and the key asks for no name the table does not mark.
         self.assertEqual(sorted(unsupplied), sorted(cache.UBUNTU_UNSUPPLIED_PROBES))
+        # aws-lc-sys is the one locked crate that can run cmake, and its row says so:
+        # the name is keyed as a build package or as a required tool, never by neither.
+        self.assertEqual((ran, UBUNTU_PROBERS["aws-lc-sys 0.45.0"][2]), ({"cmake"}, ("cmake",)))
+        self.assertTrue("cmake" in build or "cmake" in cache.UBUNTU_TOOLS)
         # A row is one locked version: an update has none until its build script is read again,
         # and neither has a second version locked beside the first.
         name, version = next(prober for prober, asked in UBUNTU_PROBERS.items()

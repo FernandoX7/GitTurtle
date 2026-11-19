@@ -1523,10 +1523,12 @@ Pre-Depends, Depends and Provides of every package; nothing queries dpkg a secon
 time) and hashes these parts.
 
 - *Packages.* `name:arch=version` of every installed package in the dependency
-  closure of the twelve packages a build compiles with, probes or links
-  (`UBUNTU_BUILD_PACKAGES`: `build-essential clang cmake pkg-config
+  closure of the eleven packages a build compiles with, probes or links
+  (`UBUNTU_BUILD_PACKAGES`: `build-essential clang pkg-config
   libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev
   libzstd-dev libvulkan-dev libdav1d-dev`), and nothing else from the inventory.
+  apt's `cmake` is not one of them and the action does not install it (*No CMake
+  from apt*, below).
   The closure follows Pre-Depends and Depends, not Recommends or Suggests (the
   action installs with `--no-install-recommends`). A name resolves on every
   architecture and through every package that Provides it, and every alternative
@@ -1544,7 +1546,9 @@ time) and hashes these parts.
   bare; gcc takes the linker and the assembler from `PATH` in its turn, and
   CMake's Makefile generator runs `make`. `cmake3`, the cmake crate's other
   name, is keyed as absent or by the same two values. A required name that does
-  not resolve fails the step.
+  not resolve fails the step. `cmake` is the image's own: the action installs
+  none, so this part is all that keys it, and an image with no CMake on `PATH`
+  fails the step by name (`build tool cmake is not on PATH`).
 - *pkg-config's view.* The search order (`pkg-config --variable pc_path
   pkg-config`) and, for each directory on it outside `/usr/lib` and `/usr/share`,
   the name of each `.pc` file with a digest of its content: a size would survive
@@ -1602,15 +1606,18 @@ differed only through packages the action does not install.
 
 **Why a closure.** A build of the workspace's tests was traced with `strace`
 (`cargo test --no-run` in an `ubuntu:24.04` arm64 container holding the action's
-install list). It read files of 75 packages. 71 lie in the closure, which holds
-195 of that container's 278 packages. The other four are `dash` (`/bin/sh`),
-`git`, `libc-bin` (`/etc/ld.so.conf`) and `openssl` (`/usr/lib/ssl/cert.pem`). A
+install list of November 18, 2026, which still named `cmake`). It read files of
+75 packages. 71 lie in the closure, which held 195 of that container's 278
+packages and, without apt's `cmake`, holds 160 of 271. The other four are `dash`
+(`/bin/sh`), `git`, `libc-bin` (`/etc/ld.so.conf`) and `openssl` (`/usr/lib/ssl/cert.pem`). A
 written list like [Arch's](#arch-linux-container-job) would silently lose
 Ubuntu's version- and architecture-named toolchain packages, such as
 `gcc-13-aarch64-linux-gnu` and `libstdc++-13-dev`; the closure reaches them, and
-it keeps `linux-libc-dev`, whose headers `libc6-dev` includes. The container's
-snapshot is the tests'
-[fixture](../scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv).
+it keeps `linux-libc-dev`, whose headers `libc6-dev` includes. The tests'
+[fixture](../scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv) is the
+snapshot of such a container with today's install list, taken on November 19,
+2026: the earlier one without `cmake`, `cmake-data`, `libarchive13t64`,
+`libcurl4t64`, `libjsoncpp25`, `librhash0` and `libuv1t64`.
 
 **What the narrower key gives up.** The image's other packages, over a thousand
 (1,055 of the 1,252 on the AWS x64 image of the first hosted run): a
@@ -1624,6 +1631,46 @@ what the two directories hold. The hosted image carries a CMake under
 `/usr/local` that is no dpkg package, and a version alone does not say which
 binary `PATH` and the alternatives select.
 
+**No CMake from apt.** The action installs no CMake, and `cmake` is not a build
+package; the tool `cmake` stays a required keyed tool, by the file `PATH`
+selects and the digest of its `--version` output. The install step used to fetch
+19.2 MB on x64, 13.4 MB of it apt's `cmake` 3.28.3 and `cmake-data`, while in
+every hosted log that prints the keyed tools (x64 on both clouds, and arm64) the
+build selected the image's own `/usr/local/bin/cmake` 3.31.6, first on `PATH`:
+apt's `/usr/bin/cmake` was installed and never run. From the evening of November
+18, 2026 the runners' mirrors served at 30 to 600 kB/s and the step took up to
+twelve minutes. The image's CMake is a Kitware release that the image build
+installs under `/usr/local`; the published software lists for x64 and arm64 name
+"CMake 3.31.6", and the image's toolset pins that version with a review date of
+December 1, 2026
+([research note](development/2026-11-19-ci-ubuntu-apt-step.md)). The AWS-hosted
+image versions have no published list, so for them the selected CMake rests on
+the hosted logs. Kitware's 3.31.6 binaries for both architectures load only the
+C library's own libraries (`libdl`, `librt`, `libpthread`, `libm`, `libc` and
+the loader, read from the release archives' dynamic sections), and `libc6` is
+in the closure.
+
+Nothing installs a CMake as a fallback or on a condition: the installed set, and
+with it the keyed roots, would then depend on the image. An image without a CMake
+fails the key step by name instead of building differently. `aws-lc-sys` 0.45.0
+is the only locked crate that can run cmake, and it chooses its builder by
+variables, features and the target, never by whether `cmake` exists, so the
+tool's presence is no input of its own. A dpkg package named `cmake` in the
+snapshot, on any architecture and in any state, sends the key to the complete
+inventory (the fallback below): the closure no longer keys that package's
+version, so an image or a step that brings apt's CMake back is never keyed by
+the closure alone.
+
+The rule gives up the 35 packages that were keyed only through apt's `cmake`:
+`cmake` and `cmake-data` themselves, and what they depend on (among them
+libarchive, libcurl with its TLS, Kerberos and LDAP libraries, libuv, jsoncpp,
+rhash, `procps` and `libsystemd0`). The traced build read none of them. Seven left the
+container with apt's `cmake`; the other 28 are still installed there and are now
+outside the closure. The CMake that runs is keyed as before, by its real path
+and its version output, with no package version behind it. No hosted run of this
+rule is recorded here: the first hosted run below predates it, and its counts
+include the packages keyed through apt's `cmake`.
+
 **Fallback.** A build package that is not installed fails the step, as `pacman
 -Q` does on Arch, whatever else is wrong with the snapshot: the build packages
 are checked before any line is refused. Every other abnormality sends the key
@@ -1631,8 +1678,9 @@ to the complete inventory, never to a partial closure and never past a skipped
 dependency: a snapshot line without six fields, a dependency or provided name
 outside dpkg's grammar, a group of alternatives that nothing installed
 satisfies, a package the closure reaches in another state than `ii ` (unpacked,
-half installed, or removed with its configuration left), or an unsupplied
-pkg-config name that resolves. The fallback hashes every line's package,
+half installed, or removed with its configuration left), a dpkg package named
+`cmake` in any state, or an unsupplied pkg-config name that resolves. The
+fallback hashes every line's package,
 architecture, version and status, and the step prints a `::warning::` that names
 the first cause. The digest's input starts with the mode (`closure` or
 `inventory`), so a fallback key can never equal a closure key. Failing there
@@ -1651,8 +1699,10 @@ the fallback is one entry per image again, slower and never stale.
    reads the lockfile and requires that set to equal the keys of a table, filled
    from each build script. A row gives the pkg-config names the script asks for
    on Linux, each with the build package that ships its `.pc` file or marked
-   unsupplied, and the build packages behind what it runs; or the reason it asks
-   for nothing there. A new one fails the test until it is mapped, and the
+   unsupplied, the build packages behind what it runs, and any command it runs
+   that no build package ships, which must be a required keyed tool (`cmake`, for
+   `aws-lc-sys`); or the reason it asks for nothing there. A new one fails the test
+   until it is mapped, and the
    package it probes is added to the action's install list and to
    `UBUNTU_BUILD_PACKAGES` if it is new. The table is by name and version as
    `Cargo.lock` writes them (`aws-lc-sys 0.45.0`), one row for each locked

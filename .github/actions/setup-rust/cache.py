@@ -64,10 +64,15 @@ ARCH_RUNTIME_PACKAGES = ("shared-mime-info", "vulkan-headers", "vulkan-icd-loade
 # install step's refusal of every such variable. Keep both tuples in step with
 # the action's install list (a test compares them).
 UBUNTU_BUILD_PACKAGES = (
-    "build-essential", "clang", "cmake", "pkg-config",
+    "build-essential", "clang", "pkg-config",
     "libfontconfig-dev", "libwayland-dev", "libxkbcommon-x11-dev", "libx11-xcb-dev",
     "libssl-dev", "libzstd-dev", "libvulkan-dev", "libdav1d-dev",
 )
+# apt's cmake is neither installed nor a root: every hosted image selects its
+# own CMake under /usr/local, which the tool part keys. The closure therefore
+# keys no dpkg CMake, so a snapshot that holds a package of this name, on any
+# architecture and in any state, takes the complete inventory.
+UBUNTU_UNKEYED_PACKAGES = ("cmake",)
 # Run by the checkout, the tests or the packaging checks and never read into a
 # cached dependency output: git is run only by crates/app/build.rs, a member
 # whose output is never in an entry.
@@ -88,9 +93,11 @@ DPKG_DEPENDENCY = re.compile(rf"({DPKG_NAME})(?::[a-z0-9-]+)?(?: \((?:<<|<=|=|>=
 DPKG_PROVIDED = re.compile(rf"({DPKG_NAME})(?: \(= {DPKG_VERSION.pattern}\))?")
 # The names a build script or the cc and cmake crates run bare, and the linker,
 # the assembler and the make that gcc and CMake take from PATH in their turn.
-# Versions alone do not say which binary PATH and the alternatives select: the
-# hosted image carries a CMake under /usr/local that is no dpkg package. cmake3
-# is the cmake crate's other name for it and may be absent.
+# Versions alone do not say which binary PATH and the alternatives select. The
+# hosted image's CMake under /usr/local is no dpkg package and the action
+# installs none, so this is all that keys it, and an image without one fails
+# the step by name. cmake3 is the cmake crate's other name for it and may be
+# absent.
 UBUNTU_TOOLS = ("cc", "c++", "ar", "ld", "as", "make", "pkg-config", "clang", "cmake")
 UBUNTU_OPTIONAL_TOOLS = ("cmake3",)
 # pkg-config directories whose files belong to dpkg packages; a .pc file in any
@@ -242,7 +249,7 @@ def ubuntu_closure(lines):
     snapshot. Any other abnormality raises InventoryFallback, a reached package
     in another state included (unpacked, half installed, or removed with its
     configuration left): a dependency is never skipped and the closure is never
-    partial.
+    partial. So does a package of UBUNTU_UNKEYED_PACKAGES, in any state.
     """
     # The roots are checked first, on a reading that refuses no line, so a line
     # the closure cannot be trusted on never turns a missing root into a fallback.
@@ -267,6 +274,9 @@ def ubuntu_closure(lines):
             if not provided:
                 raise InventoryFallback(f"{identity} provides a name outside dpkg's grammar: {term.strip(' ')!r}")
             providers.setdefault(provided.group(1), []).append(identity)
+    for name in UBUNTU_UNKEYED_PACKAGES:
+        if name in by_name:
+            raise InventoryFallback(f"the snapshot holds {', '.join(by_name[name])}, which no build package keys")
     closure = {}
     pending = [identity for root in UBUNTU_BUILD_PACKAGES for identity in by_name[root]]
     while pending:
