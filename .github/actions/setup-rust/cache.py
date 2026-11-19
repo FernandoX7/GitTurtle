@@ -701,6 +701,16 @@ def only_toolchain(listing, active):
         raise ValueError(f"rustup must list the active Rust toolchain {active} alone; it lists: {', '.join(names) or 'none'}")
 
 
+def rustup(root, *arguments):
+    """What a rustup command prints, run in the checkout, where rust-toolchain.toml selects the toolchain."""
+    return run(["rustup", *arguments], cwd=root).decode("utf-8", "surrogateescape")
+
+
+def selected_toolchain(root):
+    """The checkout's active toolchain, which must be the one its rust-toolchain.toml selects."""
+    return active_toolchain(rustup(root, "show", "active-toolchain"), (root / "rust-toolchain.toml").read_text(encoding="utf-8"))
+
+
 def toolchains():
     """Uninstall every toolchain but the active one, then fail unless rustup lists it alone.
 
@@ -713,17 +723,35 @@ def toolchains():
     container = os.environ.get("CACHE_CONTAINER", "")
     if container not in {"", "archlinux"}:
         raise ValueError("unsupported cache container")
-
-    def rustup(*arguments):
-        return run(["rustup", *arguments], cwd=root).decode("utf-8", "surrogateescape")
-
-    active = active_toolchain(rustup("show", "active-toolchain"), (root / "rust-toolchain.toml").read_text(encoding="utf-8"))
+    active = selected_toolchain(root)
     if not container:
-        for name in other_toolchains(rustup("toolchain", "list", "--quiet"), active):
-            rustup("toolchain", "uninstall", name)
+        for name in other_toolchains(rustup(root, "toolchain", "list", "--quiet"), active):
+            rustup(root, "toolchain", "uninstall", name)
             print(f"Uninstalled Rust toolchain {name}, {time.monotonic() - started:.1f} s into the step")
-    only_toolchain(rustup("toolchain", "list", "--quiet"), active)
+    only_toolchain(rustup(root, "toolchain", "list", "--quiet"), active)
     print(f"rustup lists the active Rust toolchain alone: {active} ({time.monotonic() - started:.1f} s)")
+
+
+def toolchains_since_setup(root):
+    """None while rustup still lists the pinned toolchain alone, else the refusing verdict and its one warning.
+
+    The save step is a second run of the pinned rust-cache, which hashes the
+    list again. A toolchain that came back since setup (a `rustc` run outside
+    the checkout downloads the default one) would store the entry under a
+    suffix no setup phase computes, so the finish phase asks what setup asked,
+    with the same functions. It only reads: nothing is uninstalled once the
+    job's steps have run. A list that differs is named, as setup names it; a
+    rustup that cannot be run or does not answer is never read as unchanged.
+    """
+    try:
+        active = selected_toolchain(root)
+        only_toolchain(rustup(root, "toolchain", "list", "--quiet"), active)
+    except ValueError as error:
+        return "changed", "::warning::Rust toolchains changed since setup, so this job saves no cache entry: " + shown(str(error))
+    except (OSError, subprocess.SubprocessError) as error:
+        return "unconfirmed", ("::warning::Rust toolchains could not be read from rustup, so this job saves no cache entry: "
+                               + shown(type(error).__name__))
+    return None
 
 
 def tool_pins(source):
@@ -1135,14 +1163,19 @@ def compared():
     step reads. What prepare kept only names the difference: the parts, the
     native part's differing keyed lines, and the flags by name, never by value.
     A missing key or state raises, which the caller turns into a refusal.
+    Unchanged also takes rustup listing the pinned toolchain alone, as it did
+    at setup: the save step keys that list, which is no part of this key.
     """
     expected = os.environ["CI_RUST_CACHE_KEY"]
     state = json.loads((Path(os.environ["RUNNER_TEMP"]) / IDENTITY_STATE).read_text(encoding="utf-8"))
     kept = {"parts": dict(state["parts"]), "native_lines": [str(line) for line in state["native_lines"]],
             "flags": {str(name): str(value) for name, value in state["flags"].items()}}
     current = cache_identity()
+    listed = toolchains_since_setup(Path(os.environ["GITHUB_WORKSPACE"]).resolve())
     if current["key"] == expected:
-        return IDENTITY_UNCHANGED, [f"Cache identity unchanged since setup: {shown(current['key'])}"]
+        if listed is None:
+            return IDENTITY_UNCHANGED, [f"Cache identity unchanged since setup: {shown(current['key'])}"]
+        return listed[0], [listed[1]]
     parts = [name for name in current["parts"] if kept["parts"].get(name) != current["parts"][name]] or ["key"]
     lines = [f"::warning::Cache identity changed since setup, so this job saves no cache entry: {shown(', '.join(parts))}"]
     if "native" in parts:
@@ -1153,7 +1186,7 @@ def compared():
         flags = {name: digest(value.encode("utf-8", "surrogateescape")) for name, value in current["flags"]}
         differing = sorted(name for name in {*kept["flags"], *flags} if kept["flags"].get(name) != flags.get(name))
         lines.append(f"Flag variables that differ: {shown(', '.join(differing))}")
-    return "changed", lines
+    return "changed", lines + ([listed[1]] if listed else [])
 
 
 def prepare():

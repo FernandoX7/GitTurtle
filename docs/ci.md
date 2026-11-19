@@ -2202,7 +2202,29 @@ makes rustup download that toolchain again, and the list then holds two. With
 rustup 1.29.3 in a local container each of the three began that download. No step
 of `quality.yml` or `release.yml` after the setup phase runs a Rust tool outside
 the checkout or names a toolchain, and the scripts they call run Cargo in the
-repository root. Nothing checks the list again at finish.
+repository root.
+
+**The list at finish.** The save step is a second run of the pinned rust-cache,
+which hashes the list again, while the helper's key holds only the active
+compiler. A toolchain that came back between the phases would store the entry
+under a suffix no setup phase computes, with the
+[comparison](#identity-comparison-at-finish) printing its positive line. So the
+comparison step asks rustup what the setup phase asked, with the same functions
+and as the same account: the active toolchain must be the one
+`rust-toolchain.toml` selects, and `rustup toolchain list --quiet` must hold it
+alone. When it does not, the verdict is `changed`, the save is refused and one
+`::warning::` names what rustup lists (`Rust toolchains changed since setup, so
+this job saves no cache entry: …`), after the key's own warning when the key
+changed too. A rustup that cannot be run, fails or does not answer within the
+helper's 120 s a command gives the verdict `unconfirmed` and one warning with the
+error's class. Neither is read as unchanged, and neither fails the job. The
+finish phase only reads: it uninstalls nothing, so the cost of a toolchain that
+came back is that job's save and never a wrong entry. No hosted run has executed
+the check. Its acceptance is the comparison's positive line on all six saving
+lanes in the pull request's own run, as for the comparison itself. The two
+warnings have only their tests behind them, and one local run of the check
+against rustup 1.29.3 on a host that listed `stable` beside the pinned toolchain,
+which gave `changed` and named both.
 
 **Acceptance, still open.** One rust-cache suffix a platform on two image
 releases that differ only in their own Rust. No hosted run has executed the step:

@@ -202,6 +202,9 @@ for _system, _prepare, _finish in LANES.values():
     _finish.update({"CACHE_PHASE": "finish", "CACHE_VENDOR_REUSE": "false", "CACHE_ON_FAILURE": "false", "CARGO_INCREMENTAL": "0"})
 
 
+# What the finish phase asks rustup, in the checkout: setup's two reads, and nothing that changes a toolchain.
+RUSTUP_READS = [["rustup", "show", "active-toolchain"], ["rustup", "toolchain", "list", "--quiet"]]
+
 PROBER_ROW = re.compile(r"[A-Za-z0-9_-]+ \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
 
 
@@ -361,6 +364,8 @@ class CacheFixture(unittest.TestCase):
             self.file(self.root / name, name.encode())
         # The debug identity reads the cargo-nextest pin from the checkout's installer.
         self.file(self.root / cache.TOOL_INSTALLER, (ROOT / cache.TOOL_INSTALLER).read_bytes())
+        # The finish phase asks rustup for the toolchain this file selects.
+        self.file(self.root / "rust-toolchain.toml", b'[toolchain]\nchannel = "1.99.0"\n')
         subprocess.run(["git", "-C", str(self.root), "add", "--all"], check=True)
 
     def test_source_only_edits_reuse_but_real_build_inputs_invalidate(self):
@@ -737,17 +742,23 @@ class CacheFixture(unittest.TestCase):
             runner, path = None, os.environ["PATH"]
         real, answers = cache.run, {("pacman", "-Q"): b"gcc 15.2.1-1\n", ("xcodebuild", "-version"): b"Xcode 26.3\n",
                                     ("xcrun", "--sdk"): b"26.3\n", ("xcrun", "clang"): b"clang 21\n", ("sw_vers", "-buildVersion"): b"25D125\n"}
+        # As the setup phase left it on every lane: the pinned toolchain, alone.
+        rustup = FakeRustup([PinnedToolchainAlone.PINNED], PinnedToolchainAlone.PINNED)
 
         def answer(command, **kwargs):
+            if command[0] == "rustup":
+                return rustup(command, **kwargs)
             return answers[tuple(command[:2])] if tuple(command[:2]) in answers else real(command, **kwargs)
 
-        return {"system": system, "prepare": prepare, "finish": finish, "runner": runner, "rows": rows, "path": path, "answer": answer}
+        return {"system": system, "prepare": prepare, "finish": finish, "runner": runner, "rows": rows, "path": path, "answer": answer,
+                "rustup": rustup}
 
     def phases(self, lane, *, between=lambda: None, finish=None, compare=None, state=lambda path: None, account=None):
         """prepare in the lane's prepare-time environment, then the comparison and bound in its finish-time one.
 
-        Returns what the three wrote: prepare's exports and its lines (`prepared`), the comparison's lines and its output,
-        bound's output and result, and under `recorded` what the comparison's output file held as each of its lines was printed.
+        Returns what the three wrote: prepare's exports and its lines (`prepared`), the comparison's lines, its output and
+        its exit status, bound's output and result, and under `recorded` what the comparison's output file held as each of
+        its lines was printed.
         """
         base = {**self.env, "PATH": lane["path"], "RUNNER_OS": lane["system"]}
         del base["CACHE_IDENTITY"], base["CARGO_HOME"], base["CARGO_TARGET_DIR"]
@@ -781,7 +792,7 @@ class CacheFixture(unittest.TestCase):
             output, recorded = Path(self.env["GITHUB_OUTPUT"]), []
             with patch.dict(os.environ, compared, clear=True), patch("sys.argv", ["cache.py", "compare"]), \
                     patch("builtins.print", side_effect=lambda *_: recorded.append(output.read_text() if output.is_file() else None)) as shown:
-                cache.main()
+                status = cache.main()
             lines = [line for call in shown.call_args_list for line in " ".join(map(str, call.args)).split("\n")]
             # The comparison exports nothing, rewinds nothing and creates nothing.
             self.assertEqual(dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines()), exports)
@@ -793,7 +804,7 @@ class CacheFixture(unittest.TestCase):
             with patch.dict(os.environ, {**environment, "CACHE_IDENTITY": written.get("identity", "")}, clear=True), \
                     patch("sys.argv", ["cache.py", "bound"]), patch("builtins.print"):
                 cache.main()
-        return {"exports": exports, "prepared": prepared, "lines": lines, "identity": written, "recorded": recorded,
+        return {"exports": exports, "prepared": prepared, "lines": lines, "identity": written, "recorded": recorded, "status": status,
                 "save": Path(self.env["GITHUB_OUTPUT"]).read_text(),
                 "result": record.call_args.kwargs["details"], "bound": bound, "account": become}
 
@@ -820,6 +831,9 @@ class CacheFixture(unittest.TestCase):
                 self.assertEqual(outcome["recorded"], ["identity=unchanged\n"])
                 self.assertEqual((outcome["save"], outcome["result"]), ("save=true\n", {"save": True, "reason": "within budget"}))
                 outcome["bound"].assert_called_once()
+                # rustup still lists the pinned toolchain alone. It was asked in the checkout and only asked.
+                self.assertEqual(lane["rustup"].commands, [(command, self.root.resolve()) for command in RUSTUP_READS])
+                self.assertEqual(outcome["status"], 0)
                 # prepare exports the CARGO_INCREMENTAL it keyed where the job set none: the five lanes but Arch.
                 self.assertEqual(outcome["exports"].get("CARGO_INCREMENTAL"), None if "CARGO_INCREMENTAL" in lane["prepare"] else "0")
                 self.assertEqual("CARGO_INCREMENTAL" in lane["prepare"], name == "Arch debug")
@@ -969,6 +983,75 @@ class CacheFixture(unittest.TestCase):
                         del os.environ["CACHE_IDENTITY"]
                     cache.main()
                 self.refused({"save": Path(self.env["GITHUB_OUTPUT"]).read_text(), "result": record.call_args.kwargs["details"], "bound": bound})
+
+    def test_a_toolchain_list_that_changed_since_setup_refuses_the_save_with_one_warning_that_names_it(self):
+        self.init_git()
+        pinned, image = PinnedToolchainAlone.PINNED, PinnedToolchainAlone.IMAGE
+        warning = "::warning::Rust toolchains changed since setup, so this job saves no cache entry: "
+        alone = f"rustup must list the active Rust toolchain {pinned} alone; it lists: "
+        # A `rustc` run outside the checkout after setup downloads the image's default again. The helper's key is still
+        # the one setup exported, and the save step's own run of rust-cache would hash two toolchains into its suffix.
+        for name in LANES:
+            with self.subTest(lane=name):
+                lane = self.lane(name)
+                outcome = self.phases(lane, between=lambda: lane["rustup"].installed.insert(0, image))
+                self.assertEqual(outcome["lines"], [warning + alone + f"{image}, {pinned}"])
+                self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "changed"}, 0))
+                self.refused(outcome)
+                # The finish phase only reads: both toolchains are still there, and no command but the two reads ran.
+                self.assertEqual(lane["rustup"].commands, [(command, self.root.resolve()) for command in RUSTUP_READS])
+                self.assertEqual(lane["rustup"].installed, [image, pinned])
+        # Whatever is not the pinned toolchain alone, each named as the setup phase names it. A name is escaped as the
+        # key step's lines are, so one that rustup should never print cannot start a workflow command.
+        selected = f"the active Rust toolchain {image} is not the 1.99.0 that rust-toolchain.toml selects"
+        for label, change, said in (
+                ("another toolchain in its place", lambda rustup: rustup.installed.__setitem__(0, image), alone + image),
+                ("none listed", lambda rustup: rustup.installed.clear(), alone + "none"),
+                ("another one selected", lambda rustup: setattr(rustup, "active", image), selected),
+                ("no active toolchain", lambda rustup: setattr(rustup, "active", ""), "rustup names no supported active Rust toolchain"),
+                ("an unsupported name", lambda rustup: rustup.installed.append("##[error]stop\u00e9"),
+                 "rustup lists a toolchain whose name is not supported: '#\\x23[error]stop\\xe9'")):
+            with self.subTest(listing=label):
+                lane = self.lane("Ubuntu debug")
+                outcome = self.phases(lane, between=lambda: change(lane["rustup"]))
+                self.assertEqual(outcome["lines"], [warning + said])
+                self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "changed"}, 0))
+                self.refused(outcome)
+        # A key that changed as well keeps its own warning and lines; the toolchains follow in theirs.
+        lane = self.lane("Ubuntu debug")
+        outcome = self.phases(lane, between=lambda: lane["rustup"].installed.insert(0, image), compare={"RUSTFLAGS": "-g"})
+        self.assertEqual(outcome["lines"], ["::warning::Cache identity changed since setup, so this job saves no cache entry: flags",
+                                            "Flag variables that differ: RUSTFLAGS", warning + alone + f"{image}, {pinned}"])
+        self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "changed"}, 0))
+        self.refused(outcome)
+
+    def test_a_rustup_that_cannot_answer_at_finish_refuses_the_save_and_never_fails_the_job(self):
+        self.init_git()
+        warning = "::warning::Rust toolchains could not be read from rustup, so this job saves no cache entry: {}"
+        failures = {"it exits with a failure": subprocess.CalledProcessError(1, ["rustup"]),
+                    "it does not answer in time": subprocess.TimeoutExpired(["rustup"], 120),
+                    "it is not on PATH": FileNotFoundError(2, "No such file or directory", "rustup"),
+                    "it cannot be executed": PermissionError(13, "Permission denied", "rustup")}
+        for label, error in failures.items():
+            # Either of the two reads: the active toolchain's name, then the list.
+            for read in ("show", "toolchain"):
+                with self.subTest(failure=label, read=read):
+                    lane = self.lane("Ubuntu debug")
+                    outcome = self.phases(lane, between=lambda: lane["rustup"].errors.update({read: error}))
+                    # The key is the one setup exported, and without the list that is still not "unchanged".
+                    self.assertEqual(outcome["lines"], [warning.format(type(error).__name__)])
+                    self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "unconfirmed"}, 0))
+                    self.refused(outcome)
+        # On the Arch lane the build account asks, as it did at setup: it is taken before either read, and when it
+        # cannot be taken rustup is never run.
+        lane, taken = self.lane("Arch debug"), []
+        outcome = self.phases(lane, account=lambda name: taken.append((name, len(lane["rustup"].commands))))
+        self.assertEqual(taken, [("builder", 0), ("builder", 0), ("builder", 2)])
+        self.assertEqual(outcome["identity"], {"identity": "unchanged"})
+        lane = self.lane("Arch debug")
+        outcome = self.phases(lane, account=[None, ValueError("cache helper is not running as its account"), None])
+        self.assertEqual((lane["rustup"].commands, outcome["identity"], outcome["status"]), ([], {"identity": "unconfirmed"}, 0))
+        self.refused(outcome)
 
     def test_finish_compares_the_identity_on_every_event_before_the_bound_step(self):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
@@ -1835,9 +1918,13 @@ class FakeRustup:
 
     def __init__(self, installed, active, *, uninstalls=True):
         self.installed, self.active, self.uninstalls, self.commands = list(installed), active, uninstalls, []
+        # What a subcommand (`show` or `toolchain`) raises in place of its answer.
+        self.errors = {}
 
     def __call__(self, command, *, cwd=None, timeout=120):
         self.commands.append((command, cwd))
+        if command[1] in self.errors:
+            raise self.errors[command[1]]
         if command == ["rustup", "show", "active-toolchain"]:
             return f"{self.active} (overridden by '{cwd}/rust-toolchain.toml')\n".encode()
         if command == ["rustup", "toolchain", "list", "--quiet"]:
