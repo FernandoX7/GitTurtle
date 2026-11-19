@@ -139,10 +139,12 @@ FLAG_OTHERS = ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH", 
 FLAG_CARGO_SETS = ("TARGET", "HOST", "OUT_DIR", "OPT_LEVEL", "DEBUG", "PROFILE", "NUM_JOBS", "CARGO_MANIFEST_DIR",
                    "CARGO_MAKEFLAGS", "CARGO_PKG_NAME", "PATH")
 # Real build-script outputs of a release build of this workspace on aarch64
-# Linux (target/release/build/<crate>-<hash>/output, 2026-11-15), the home
-# prefix replaced: ring and freetype-sys and dav1d-sys whole, and of
-# aws-lc-sys, which prints 7,879 lines, its 116 distinct
-# rerun-if-env-changed lines in their first order.
+# Linux (target/release/build/<crate>-<hash>/output, 2026-11-15): ring and
+# freetype-sys and dav1d-sys whole, and of aws-lc-sys, which prints 7,879
+# lines, its 116 distinct rerun-if-env-changed lines in their first order.
+# The home prefix is replaced, and the build's own target directory, which
+# ring prints in its link-search line, is written /home/builder/project/target;
+# no test reads either path.
 BUILD_OUTPUTS = ROOT / "scripts/ci/tests/fixtures/build-script-outputs"
 # What those scripts declare themselves, or Cargo sets for every build script:
 # out of the identity by decision. Everything else they declare is read by cc,
@@ -735,8 +737,8 @@ class CacheFixture(unittest.TestCase):
     def phases(self, lane, *, between=lambda: None, finish=None, compare=None, state=lambda path: None, account=None):
         """prepare in the lane's prepare-time environment, then the comparison and bound in its finish-time one.
 
-        Returns what the three wrote: prepare's exports, the comparison's lines and its output, bound's output and result,
-        and under `recorded` what the comparison's output file held as each of its lines was printed.
+        Returns what the three wrote: prepare's exports and its lines (`prepared`), the comparison's lines and its output,
+        bound's output and result, and under `recorded` what the comparison's output file held as each of its lines was printed.
         """
         base = {**self.env, "PATH": lane["path"], "RUNNER_OS": lane["system"]}
         del base["CACHE_IDENTITY"], base["CARGO_HOME"], base["CARGO_TARGET_DIR"]
@@ -750,9 +752,10 @@ class CacheFixture(unittest.TestCase):
             if lane["runner"]:
                 lane["runner"].snapshot.write_text(snapshot_text(lane["rows"]))
             with patch.dict(os.environ, {**base, **lane["prepare"]}, clear=True), patch("sys.argv", ["cache.py", "prepare"]), \
-                    patch("builtins.print"):
+                    patch("builtins.print") as keyed:
                 before = cache.cache_identity()["key"]
                 cache.main()
+            prepared = [line for call in keyed.call_args_list for line in " ".join(map(str, call.args)).split("\n")]
             exports = dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines())
             self.assertEqual(exports["CI_RUST_CACHE_KEY"], before)
             between()
@@ -781,7 +784,8 @@ class CacheFixture(unittest.TestCase):
             with patch.dict(os.environ, {**environment, "CACHE_IDENTITY": written.get("identity", "")}, clear=True), \
                     patch("sys.argv", ["cache.py", "bound"]), patch("builtins.print"):
                 cache.main()
-        return {"exports": exports, "lines": lines, "identity": written, "recorded": recorded, "save": Path(self.env["GITHUB_OUTPUT"]).read_text(),
+        return {"exports": exports, "prepared": prepared, "lines": lines, "identity": written, "recorded": recorded,
+                "save": Path(self.env["GITHUB_OUTPUT"]).read_text(),
                 "result": record.call_args.kwargs["details"], "bound": bound, "account": become}
 
     def refused(self, outcome):
@@ -873,6 +877,27 @@ class CacheFixture(unittest.TestCase):
         outcome = self.phases(lane, between=lambda: self.file(self.root / "Cargo.lock", b"changed"), compare={"RUSTFLAGS": "-g"})
         self.assertEqual(outcome["lines"], [warning.format("source, flags"), "Flag variables that differ: RUSTFLAGS"])
         self.refused(outcome)
+
+    def test_kept_record_and_the_lines_of_both_phases_never_hold_a_flag_value(self):
+        self.init_git()
+        secret = "s3cret-value"
+        record = self.runner / cache.IDENTITY_STATE
+        # One flag stays as setup keyed it and a later step changes the other: the record setup keeps and
+        # the lines of either verdict name a flag and never hold what it was set to, at setup or at finish.
+        for verdict, compare, said in (
+                ("unchanged", {}, "Cache identity unchanged since setup: "),
+                ("changed", {"CC": f"/opt/{secret}/later/cc"}, "Flag variables that differ: CC")):
+            with self.subTest(verdict=verdict):
+                lane = self.lane("Ubuntu debug")
+                lane["prepare"] = {**lane["prepare"], "RUSTFLAGS": f"--cfg {secret}", "CC": f"/opt/{secret}/cc"}
+                outcome = self.phases(lane, compare=compare)
+                self.assertEqual(outcome["identity"], {"identity": verdict})
+                # Both phases did name them, and the record holds one entry for each.
+                self.assertIn("Keyed flag variables: CARGO_INCREMENTAL, CC, RUSTFLAGS", outcome["prepared"])
+                self.assertTrue(outcome["lines"][-1].startswith(said), outcome["lines"])
+                self.assertEqual(sorted(json.loads(record.read_text())["flags"]), ["CARGO_INCREMENTAL", "CC", "RUSTFLAGS"])
+                for written in (record.read_text(), "\n".join(outcome["prepared"]), "\n".join(outcome["lines"])):
+                    self.assertNotIn(secret, written)
 
     def test_comparison_that_cannot_be_made_refuses_the_save_and_never_fails_the_job(self):
         self.init_git()
@@ -2304,10 +2329,12 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.assertEqual(len(fallbacks), 8 + 1)
         native, lines = self.runner.native(variables={"PKG_CONFIG_PATH": str(directory), "PKG_CONFIG_SYSROOT_DIR": "/sysroot"})
         self.assertEqual(lines[0], warning.format("PKG_CONFIG_PATH, PKG_CONFIG_SYSROOT_DIR"))
-        # Nothing changes when none is set, or when one is set and empty, or for a variable that is keyed by value only.
+        # Nothing changes when none is set, or when one is set and empty, or for a variable that is keyed by value only,
+        # or for a name that merely begins or ends like a directory variable's: only `_` and a target extend one.
         for variables in ({}, {"PKG_CONFIG_PATH": "", "PKG_CONFIG_LIBDIR": "", "PKG_CONFIG_SYSROOT_DIR": ""},
                           {"PKG_CONFIG_TOP_BUILD_DIR": str(directory)}, {"PKG_CONFIG_ALLOW_CROSS": "1", "PKG_CONFIG_ALL_STATIC": "1"},
-                          {"XPKG_CONFIG_PATH": str(directory), "HOST_PKG_CONFIG_PATHS": str(directory)}):
+                          {"XPKG_CONFIG_PATH": str(directory), "HOST_PKG_CONFIG_PATHS": str(directory)},
+                          {"PKG_CONFIG_PATHS": str(directory)}, {"PKG_CONFIG_LIBDIRX": str(directory)}):
             with self.subTest(variables=variables):
                 self.assertEqual(self.runner.native(variables=variables), (closure, clean))
         # Those are keyed by value in the flags identity, the directory variables too.
