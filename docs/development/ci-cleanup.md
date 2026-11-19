@@ -70,7 +70,14 @@ Read from primary sources on 2026-11-18
 - GitHub's larger runners and every runner vendor cost money, and the vendor the
   example names takes organizations only. None is used: the plan stays on the free
   standard runners.
-- The cache holds 8.48 of its free 10 GB, so another cache family does not fit.
+- The cache is full: 10.25 GB against its free 10 GB on 2026-11-19, three Ubuntu debug
+  entries of 1.1 GB each among them, so another cache family does not fit and the least
+  recently used entries are evicted.
+- The label `ubuntu-24.04` is served from two clouds at once. In 64 retained job logs the
+  runner's header says Azure for image versions 20261111.370.1 and 20261116.376.1 and AWS
+  for 20261111.127.1 and 20261116.133.1; only the Azure builds are published with a
+  software list. Each build has its own package inventory, and during a weekly rollout
+  four are in use.
 - A cancelled run leaves a failed gate on its commit, so cancellation stays off `main`.
 - nextest's `--partition slice:m/n` deals tests round-robin; nextest cannot split by
   recorded duration, and simulated from the logs it does not need to: the round-robin
@@ -101,10 +108,10 @@ under two minutes.
 | 3 | Remove the reasons for today's retries: the nextest download (failed 4 times in 150 runs; fetched on every run), the artifact download in `Rust release` (retried in 3 of 60 jobs), package installation from a mirror that was down; move the nextest pin from 0.9.146 to 0.9.152 with it | By the second rule each is a bug to find | Not started |
 | 4 | Cut what a GUI test does before it tests: the `git` processes and threads of opening a repository, and the cost of the long walks | The typical test takes twice as long on macOS as on Linux; process and thread creation is the candidate, to be measured on a hosted macOS runner first. Five or six tests a job ran over 60 s in `main`'s run of 2026-11-18 against nextest's 120 s limit, so on a slow runner the long walks are a failure waiting to happen | Not started; product code, so implementer rounds with reviews |
 | 5 | A third macOS shard once change 2 frees a lane, or one build feeding several shards if a measurement shows it wins and it fits the free cache and artifact limits | 654 s of tests in the slowest of three shards against 959 s of two | After 1 and 2 |
-| 6 | Cache hits, the Ubuntu key first: key the Ubuntu lanes on the native packages that reach compiled output, as the Arch lane does, instead of the runner image's whole package inventory; then measure the hit rate over more than the 10 sampled runs (68 %, 54 of 80 restores) | On 2026-11-18 three runner image versions computed three Ubuntu keys within six hours, so `main`'s job and both shards of #217 missed an entry saved an hour earlier; a miss cost each Ubuntu shard about 15 minutes of compiling and made Ubuntu the last job to finish; each entry for a passing image holds 1.1 GB of the 10 GB cache | **Next**, ahead of change 2 since #217's run |
+| 6 | Cache hits, the Ubuntu key first: key the Ubuntu lanes on the packages a build reads (the dependency closure of the action's build packages, the selected build tools, pkg-config's view, the two pkg-config names nothing supplies and a tripwire on `/usr/local`) instead of the runner image's whole package inventory; then measure the hit rate over more than the 10 sampled runs (68 %, 54 of 80 restores); then, with the helper's next change, recompute the key at the end of a job and refuse the save when it changed, and key the build crates' `HOST_*` and `TARGET_*` variables | The label `ubuntu-24.04` is served from two clouds with different inventories: of 47 Ubuntu jobs that computed a key (2026-11-16 to 2026-11-19), 19 found no cache; in the first three sharded runs five of six Ubuntu test shards built everything (1,499 to 1,712 s against 1,150 s for the one that hit); three Ubuntu debug entries of 1.1 GB each sat in a 10 GB cache. A traced build read files of 75 packages, 71 of them in the closure, which holds 195 | **The key is done**, merged as #219 on 2026-11-19 after a security review decided the rule. In its two runs the x64 jobs on the AWS image (1,252 packages) and on the Azure image (1,248) computed one key, 197 packages of it, each in the closure mode; with the inventory those two images had computed two. Every lane was cold once. **The measurement is open**: the hit rate, an Ubuntu shard's time on a hit and the cache's size, on the runs after `main` has saved the new keys |
 | 7 | Cancel a superseded manual run on the same branch | 106 of the 150 runs were manual and never cancelled; never on `main` | Not started |
 | 8 | A budget for every job: its time limit set from the measured p95 with a stated margin, so growth fails a run instead of passing unseen | The suite's time nearly tripled in two weeks | After 1 to 5 |
-| 9 | Setup seconds: package installation, the toolchain inside the formatting step, the nextest download, checkout | 54 to 76 s a Rust job; small beside the tests | After the above |
+| 9 | Setup seconds, package installation on Ubuntu first; then the toolchain inside the formatting step, the nextest download, checkout | The action's `apt-get` step takes 12 to 22 s on Azure runners and 95 to 386 s on AWS runners (14 Ubuntu job logs of the four sharded runs, 2026-11-18 and 2026-11-19): the AWS runners download 19.2 MB from an EC2 mirror at about 100 kB/s, and 13.4 MB of that is apt's CMake, which the build does not run on a hosted image (the image's own CMake is first on `PATH`). Elsewhere setup is 54 to 76 s a Rust job | Not started; next after change 6's measurement, ahead of change 2, since an Ubuntu shard on AWS loses up to six minutes to it |
 | 10 | Start the eight Image privacy jobs only when the routing job finds an added or changed image | About 20 s each in every run, eight queue slots | Not started |
 | 11 | Local, under 9 seconds: a pre-push hook for formatting, spelling, the guidance check and, for workflow changes, actionlint; and cargo-nextest installed so the local gate runs what CI runs | cargo-nextest is missing on the development host, so the gate falls back to `cargo test` | Not started |
 
@@ -134,7 +141,7 @@ prices as facts; the plan does not use them.
 
 | | Before (2026-11-17) | After |
 | --- | --- | --- |
-| Full pull-request run, wall-clock, median / p95 | 42 / 54 min | 28 min 44 s and 29 min 11 s in the first two sharded runs (2026-11-19, with the Ubuntu cache missing in three of four shards); the median over more runs is still to be measured |
-| Runner time per full run, median | 146 min (63 macOS) | 185 min (71 macOS) in the first sharded run, against 205 min (74 macOS) for the unsharded run of the same day |
+| Full pull-request run, wall-clock, median / p95 | 42 / 54 min | 28 min 44 s, 29 min 11 s and 29 min 42 s in the first three sharded runs (2026-11-19, with the Ubuntu cache missing in five of six shards); the median over more runs is still to be measured |
+| Runner time per full run, median | 146 min (63 macOS) | 185, 173 and 190 min (71, 74 and 79 macOS) in the first three sharded runs, against 205 min (74 macOS) for the unsharded run of the same day |
 | Runs a month | about 107 (150 in 42 days) | |
 | Cost a month | $0 | $0 |
