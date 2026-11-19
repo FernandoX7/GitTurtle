@@ -1751,9 +1751,9 @@ libarchive, libcurl with its TLS, Kerberos and LDAP libraries, libuv, jsoncpp,
 rhash, `procps` and `libsystemd0`). The traced build read none of them. Seven left the
 container with apt's `cmake`; the other 28 are still installed there and are now
 outside the closure. The CMake that runs is keyed as before, by its real path
-and its version output, with no package version behind it. No hosted run of this
-rule is recorded here: the first hosted run below predates it, and its counts
-include the packages keyed through apt's `cmake`.
+and its version output, with no package version behind it. The first hosted run
+below predates this rule, and its counts include the packages keyed through apt's
+`cmake`; the runs with the rule are under *Hosted runs without apt's CMake*.
 
 **Fallback.** A build package that is not installed fails the step, as `pacman
 -Q` does on Arch, whatever else is wrong with the snapshot: the build packages
@@ -1861,6 +1861,26 @@ such an image. So a weekly rollout that moves a keyed package gives two keys whi
 it lasts, one per state of that package, where the inventory gave one per image
 build.
 
+**Hosted runs without apt's CMake.** Run `44508754249`, that change's own
+pull-request run on November 19, 2026, computed the key in five Ubuntu jobs, each
+in the closure mode with no warning. On x64 162 packages were keyed where 197
+were: the three jobs on images of the 20261111 release, on both clouds, computed
+one native digest, and the job on the AWS image of the 20261116 release another
+that differs by the three C library lines. The arm64 job keyed 160 of 1,250
+packages. The install fetched 5.7 MB on x64 and 5.5 MB on arm64 where it fetched
+19.2 and 18.1 MB, 32 packages where 36 were (33 where 37 on arm64), and set up no
+`cmake`. `main`'s push run on the merge, `44515423271`, saved the x64 debug and
+release entries from images of the 20261111 release (an Azure runner and an AWS
+runner) and the arm64 entry from 20261116.188.1. The manually dispatched run
+`44567826647` then restored every key that had an entry: on x64 across the clouds
+in both directions (Clippy on AWS and a test shard on Azure took the entry an
+Azure runner had saved, the release job on Azure the one an AWS runner had saved),
+and on arm64. Its other test shard drew the AWS image of the 20261116 release,
+whose debug key nothing had saved, and missed. The mirrors were no faster in those
+three runs: the AWS runners' mirror served the install at 20 to 130 kB/s, and the step
+took 79 to 327 s there (six jobs) against 242 to 718 s in the three runs before
+the change, 13 to 59 s on the Azure x64 runners and 24 to 26 s on arm64.
+
 #### Identity comparison at finish
 
 `prepare` computes the key once, at setup. Nothing used to check at the end of a
@@ -1920,13 +1940,24 @@ built against one state is stored under the key of another.
 
 **Acceptance.** This part ships only if the pull request's own hosted run
 prints the positive line on all six lanes that save: Ubuntu debug, Ubuntu
-release on x64 and on arm64, macOS debug, macOS release and Arch debug. No
-hosted result is recorded here. The tests build each lane's two environments
+release on x64 and on arm64, macOS debug, macOS release and Arch debug. The
+hosted result follows. The tests build each lane's two environments
 from the logs of hosted run `44457231193`, from the variables the runner printed
 for the prepare step and for the finish phase's first step, and assume that the
 runner's own process environment, which a log does not print, holds no flag
 variable in either phase; the `Keyed flag variables` line shows that on a hosted
 run.
+
+**Hosted result.** The pull request's own run, `44508754249` on November 19,
+2026, printed the positive line on all six lanes, each with the key its prepare
+step had computed, and `Keyed flag variables: CARGO_INCREMENTAL` with no other
+name in all ten Rust job logs read. In `main`'s push run on the merge,
+`44515423271`, every lane was cold: the six lanes printed the positive line again,
+the bound step after it reported `"save": true` in each, and the cache then listed
+six entries under those keys. The manually dispatched run `44567826647` printed
+the line on the same six lanes after restoring them (a dispatched run saves
+nothing). No run has printed the warning, so the refusal itself has only its tests
+behind it.
 
 ### Trust, failure and storage bounds
 
