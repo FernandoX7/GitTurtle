@@ -1482,7 +1482,8 @@ hashes:
   edit. Ordinary application Rust source edits reuse compatible dependency caches.
 - The platform's native inputs. On Ubuntu: the version of every installed package
   in the dependency closure of the build packages the action installs, the file
-  and version behind each build tool name on `PATH`, and pkg-config's search order
+  and version behind each build tool name on `PATH`, pkg-config's search order,
+  and what it resolves two names no build package ships to
   ([Ubuntu native key](#ubuntu-native-key)); the rest of the hosted image's
   inventory is not keyed. On macOS: the Xcode version, SDK version/build, selected
   Clang and OS build, so a hosted-image update there still gives a new key. The
@@ -1516,7 +1517,7 @@ the hosted image's whole package inventory. The
 [helper](../.github/actions/setup-rust/cache.py) takes one `dpkg-query` snapshot
 after the action's install step (package, architecture, version, status,
 Pre-Depends, Depends and Provides of every package; nothing queries dpkg a second
-time) and hashes three things.
+time) and hashes these parts.
 
 - *Packages.* `name:arch=version` of every installed package in the dependency
   closure of the twelve packages a build compiles with, probes or links
@@ -1543,6 +1544,17 @@ time) and hashes three things.
   the names and sizes of its `.pc` files. A clean image has none; a `.pc` under
   `/usr/local` would shadow a keyed library's. `PKG_CONFIG*` variables stay in the
   flags identity above.
+- *Names no build package ships.* `aws-lc-sys` 0.45.0 asks pkg-config for
+  `openssl`, `aws-lc`, `libcrypto` and `libcrypto-awslc` and links a system
+  AWS-LC when one of them resolves to one. `libssl-dev` ships the first and the
+  third. No build package ships `aws-lc` or `libcrypto-awslc`, and pkgconf
+  answers a name it has no file for from any `.pc` whose `Provides:` names it,
+  so the two could resolve on one image and not on the next, and Cargo would
+  not rerun the build script. For each of them (`UBUNTU_UNSUPPLIED_PROBES`) the
+  helper asks the selected pkg-config `--modversion <name>` and keys the
+  answer: absent when the command exits with a failure status, the version
+  otherwise. A name that resolves also sends the key to the complete inventory
+  (the fallback below), because the closure is then not all a build reads.
 
 **Why.** GitHub serves the `ubuntu-24.04` label from two clouds at once. In 64
 retained job logs, image versions 20261111.370.1 and 20261116.376.1 report
@@ -1578,12 +1590,15 @@ package, and a version alone does not say which binary `PATH` and the
 alternatives select.
 
 **Fallback.** A build package that is not installed fails the step, as `pacman
--Q` does on Arch. Every other abnormality sends the key to the complete
-inventory, never to a partial closure and never past a skipped dependency: a
+-Q` does on Arch, whatever else is wrong with the snapshot: the build packages
+are checked before any line is refused. Every other abnormality sends the key
+to the complete inventory, never to a partial closure and never past a skipped
+dependency: a
 snapshot line without six fields, a dependency or provided name outside dpkg's
-grammar, a group of alternatives that nothing installed satisfies, or a package
+grammar, a group of alternatives that nothing installed satisfies, a package
 the closure reaches in another state than `ii ` (unpacked, half installed, or
-removed with its configuration left). The fallback hashes every line's package,
+removed with its configuration left), or an unsupplied pkg-config name that
+resolves. The fallback hashes every line's package,
 architecture, version and status, and the step prints a `::warning::` that names
 the first cause. The digest's input starts with the mode (`closure` or
 `inventory`), so a fallback key can never equal a closure key. Failing there
@@ -1600,12 +1615,17 @@ the fallback is one entry per image again, slower and never stale.
    `dav1d-sys`, `freetype-sys`, `gpui-pre`, `gpui-pre-media`, `khronos-egl`,
    `system-deps`, `wayland-sys`, `x11` and `yeslogic-fontconfig-sys`. A test
    reads the lockfile and requires that set to equal the keys of a table, filled
-   from each build script, that maps a user to the build packages supplying what
-   it probes on Linux or to the reason it probes nothing there. A new one fails
-   the test until it is mapped, and the package it probes is added to the
-   action's install list and to `UBUNTU_BUILD_PACKAGES` if it is new. The table
-   is by name: read the build script again when one of these packages is
-   updated.
+   from each build script. A row gives the pkg-config names the script asks for
+   on Linux, each with the build package that ships its `.pc` file or marked
+   unsupplied, and the build packages behind what it runs; or the reason it asks
+   for nothing there. A new one fails the test until it is mapped, and the
+   package it probes is added to the action's install list and to
+   `UBUNTU_BUILD_PACKAGES` if it is new. The table is by name and version as
+   `Cargo.lock` writes them (`aws-lc-sys 0.45.0`), one row for each locked
+   version, so an update fails the test until its build script has been read
+   again: `aws-lc` and `libcrypto-awslc` arrived with an update, unseen. The
+   test also requires the names the table marks unsupplied to equal
+   `UBUNTU_UNSUPPLIED_PROBES` exactly, so none is asked for without being keyed.
 2. `dav1d-sys` links the system `libdav1d-dev`. Its build script can instead
    clone and build dav1d with git, meson and ninja, none of them keyed, when a
    `SYSTEM_DEPS_` variable asks for it. The action's install step refuses every
@@ -1621,8 +1641,10 @@ action installs packages in its own steps. A test refuses `apt-get`, `apt` and
 mode; `Keyed Ubuntu packages: <n> of <m> installed`; inside a collapsed group,
 each keyed `name:arch=version` on its own line, sorted; for each tool its real
 path, every match on `PATH` in order, a short digest of its whole version output
-and that output's first line; the `pc_path` and the `.pc` files; and the native
-digest. Each line is built from the hashed values themselves.
+and that output's first line; the `pc_path` and the `.pc` files; what pkg-config
+answers for each unsupplied name (`Keyed pkg-config probe aws-lc: absent`, or
+its version); and the native digest. Each line is built from the hashed values
+themselves.
 
 The action's files are hashed into the key, so this change makes every lane cold
 once. No hosted run has computed the new key yet: the hosted keys of the two

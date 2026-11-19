@@ -30,44 +30,61 @@ TOOL_NAMES = ("cc", "c++", "ar", "pkg-config", "clang", "cmake")
 # Tool answers for the tests that start no process.
 UBUNTU_TOOLS ={**{name: {"run": f"/usr/bin/{name}", "path": f"/usr/bin/{name}-13", "matches": [f"/usr/bin/{name}"],
                           "version": f"{name} 13.0\n"} for name in TOOL_NAMES}, "cmake3": None}
+# pkg-config's answers on an image where neither unsupplied name resolves.
+UBUNTU_PROBES = {"aws-lc": None, "libcrypto-awslc": None}
 
 
 # Crates through which a build script looks for something on the system.
 PROBING_CRATES = {"pkg-config", "system-deps", "cmake", "bindgen"}
-# Every locked package that depends on one of them, with what its build script
-# (read in the Cargo registry and under vendor/) probes for on Linux: the
-# packages of cache.UBUNTU_BUILD_PACKAGES that supply it, or the reason it
-# probes nothing there. The Ubuntu key holds those packages' closure and not the
-# hosted image's other 2,000 packages, so a prober may find nothing outside it.
+# A pkg-config name that no build package ships. cache.UBUNTU_UNSUPPLIED_PROBES
+# must hold exactly these names: the key then holds what each resolves to.
+UNSUPPLIED = "no build package ships it"
+# Every locked package that depends on one of them, as `name version`, with
+# what that version's build script (read in the Cargo registry) asks for on
+# Linux: the pkg-config names, each with the package of
+# cache.UBUNTU_BUILD_PACKAGES that ships its .pc file (as a pair with the
+# dependency of that package the file is in, when it is not the build package's
+# own) or UNSUPPLIED; then the build packages behind the commands and compilers
+# it runs. A package that asks for nothing on Linux has the reason instead. The
+# Ubuntu key holds those packages' closure and not the hosted image's other
+# 2,000 packages, so a prober may find nothing outside it. The .pc owners are
+# those of the traced container's dpkg file lists. A row is one locked version:
+# an update gets a new row only once its build script has been read again.
 UBUNTU_PROBERS = {
-    # pkg-config for openssl, aws-lc, libcrypto and libcrypto-awslc, to adopt a
-    # system AWS-LC only when its headers define OPENSSL_IS_AWSLC, which
+    # builder/system_detect.rs: the four names, in this order, to adopt a system
+    # AWS-LC, which it takes only from headers that define OPENSSL_IS_AWSLC;
     # libssl-dev's do not. It then compiles its own sources with cc, or with
     # cmake3 or cmake when asked, and loads libclang only with its bindgen feature.
-    "aws-lc-sys": ("pkg-config", "libssl-dev", "build-essential", "cmake", "clang"),
-    # system-deps for dav1d 1.3.0 or later. Its other path, a clone built with
-    # meson and ninja, needs a SYSTEM_DEPS_ variable, which the install step refuses.
-    "dav1d-sys": ("pkg-config", "libdav1d-dev"),
-    # pkg-config for freetype2 (libfreetype-dev, which libfontconfig-dev depends
-    # on); without it, it compiles its bundled copy with c++.
-    "freetype-sys": ("pkg-config", "libfontconfig-dev", "build-essential"),
-    "gpui-pre": "bindgen is its build dependency on macOS only, and its build script acts on Windows only",
-    "gpui-pre-media": "its build script runs bindgen on macOS only; elsewhere its main is empty",
-    "khronos-egl": "it probes egl only with its static feature, which wgpu-hal asks for on emscripten only",
-    "system-deps": "a library for build scripts: it probes what its user's manifest names, here dav1d-sys's",
-    # pkg-config for wayland-client, -cursor, -egl and -server by feature, and
-    # nothing once a user turns its dlopen feature on.
-    "wayland-sys": ("pkg-config", "libwayland-dev"),
-    # pkg-config for x11, its xlib feature: libx11-dev, which libx11-xcb-dev depends on.
-    "x11": ("pkg-config", "libx11-xcb-dev"),
-    # pkg-config for fontconfig, unless its dlopen feature is on.
-    "yeslogic-fontconfig-sys": ("pkg-config", "libfontconfig-dev"),
+    "aws-lc-sys 0.45.0": ({"openssl": "libssl-dev", "aws-lc": UNSUPPLIED, "libcrypto": "libssl-dev",
+                           "libcrypto-awslc": UNSUPPLIED}, ("pkg-config", "build-essential", "cmake", "clang")),
+    # system-deps for the dav1d of its manifest, 1.3.0 or later. Its other path,
+    # a clone built with meson and ninja, needs a SYSTEM_DEPS_ variable, which
+    # the install step refuses.
+    "dav1d-sys 0.8.3": ({"dav1d": "libdav1d-dev"}, ("pkg-config",)),
+    # freetype2 at 24.3.18 or later; without it, it compiles its bundled copy with c++.
+    "freetype-sys 0.20.1": ({"freetype2": ("libfontconfig-dev", "libfreetype-dev")}, ("pkg-config", "build-essential")),
+    "gpui-pre 0.3.4": "bindgen is its build dependency on macOS only, and its build script acts on Windows only",
+    "gpui-pre-media 0.3.4": "its build script runs bindgen on macOS only; elsewhere its main is empty",
+    "khronos-egl 6.0.0": "it asks for egl only with its static feature and without no-pkg-config; wgpu-hal turns on "
+                         "dynamic here, and static together with no-pkg-config on emscripten",
+    "system-deps 7.0.8": "a library for build scripts: it probes what its user's manifest names, here dav1d-sys's",
+    # One name for each of its client, cursor, egl and server features, and
+    # nothing at all with its dlopen feature, which wgpu-hal turns on.
+    "wayland-sys 0.31.11": ({"wayland-client": "libwayland-dev", "wayland-cursor": "libwayland-dev",
+                             "wayland-egl": "libwayland-dev", "wayland-server": "libwayland-dev"}, ("pkg-config",)),
+    # One name for each feature. Its users in the lock turn on xlib alone (xcb,
+    # for its xlib_xcb feature; its other user, the screen capture crate, names
+    # none), which asks for x11. A feature turned on later asks for a name of
+    # its own and leaves this version as it is: read the features with the row.
+    "x11 2.21.0": ({"x11": ("libx11-xcb-dev", "libx11-dev")}, ("pkg-config",)),
+    # fontconfig, unless its dlopen feature or RUST_FONTCONFIG_DLOPEN is on.
+    "yeslogic-fontconfig-sys 6.0.1": ({"fontconfig": "libfontconfig-dev"}, ("pkg-config",)),
 }
 
 
 def lock_probers(lock):
-    """Names of the locked packages that depend on a probing crate."""
-    return {package["name"] for package in tomllib.loads(lock)["package"]
+    """The locked packages that depend on a probing crate, as `name version`."""
+    return {f"{package['name']} {package['version']}" for package in tomllib.loads(lock)["package"]
             if PROBING_CRATES & {dependency.split(" ")[0] for dependency in package.get("dependencies", ())}}
 
 
@@ -97,7 +114,9 @@ class UbuntuRunner:
 
     `dpkg-query` answers with a snapshot file and records its arguments; each
     tool is a link in a PATH directory to its own real file, as the image's
-    alternatives are, and answers `--version` from a file of its own.
+    alternatives are, and answers `--version` from a file of its own. As
+    pkg-config a tool also answers `--modversion`: it records who was asked for
+    what and finds no module, until `probe` gives it something to do for a name.
     """
 
     def __init__(self, base, snapshot=UBUNTU_SNAPSHOT):
@@ -107,6 +126,7 @@ class UbuntuRunner:
         self.snapshot = self.state / "snapshot"
         self.snapshot.write_text(snapshot)
         self.queries = self.state / "queries"
+        self.probes = self.state / "probes"
         self.pc_path = self.state / "pc_path"
         self.pc_path.write_text(f"{self.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig\n")
         self.script(self.bin / "dpkg-query", f"printf '%s\\n' \"$@\" >> {shlex.quote(str(self.queries))}\n"
@@ -123,12 +143,23 @@ class UbuntuRunner:
         answer = self.state / f"{name}-{variant}.version"
         answer.write_text(version or f"{name} (Ubuntu) {variant}.0\nconfigured for the fixture\n")
         real = self.real / f"{name}-{variant}"
+        module = shlex.quote(str(self.state / "modversion-")) + '"$2"'
         self.script(real, f'case "$*" in\n  --version) exec /bin/cat {shlex.quote(str(answer))} ;;\n'
-                          f'  "--variable pc_path pkg-config") exec /bin/cat {shlex.quote(str(self.pc_path))} ;;\nesac\nexit 64')
+                          f'  "--variable pc_path pkg-config") exec /bin/cat {shlex.quote(str(self.pc_path))} ;;\n'
+                          f'  "--modversion "*)\n    printf \'%s\\n\' "$0 $*" >> {shlex.quote(str(self.probes))}\n'
+                          f'    [ "$#" -eq 2 ] && [ -f {module} ] || {{ echo "Package $2 was not found" >&2; exit 1; }}\n'
+                          f'    . {module}\n    exit 0 ;;\nesac\nexit 64')
         link = (directory or self.bin) / name
         link.unlink(missing_ok=True)
         link.symlink_to(real)
         return real
+
+    def probe(self, name, action):
+        """What every stand-in pkg-config does when asked `--modversion name`, as shell; None finds no module again."""
+        answer = self.state / f"modversion-{name}"
+        answer.unlink(missing_ok=True)
+        if action is not None:
+            answer.write_text(action + "\n")
 
     def environment(self, *earlier):
         return patch.dict(os.environ, {"PATH": os.pathsep.join(str(directory) for directory in (*earlier, self.bin))})
@@ -1199,7 +1230,7 @@ class UbuntuPackages(unittest.TestCase):
         return keyed
 
     def key(self, text=None, **changed):
-        inputs = {"tools": UBUNTU_TOOLS, "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, **changed}
+        inputs = {"tools": UBUNTU_TOOLS, "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, "probes": UBUNTU_PROBES, **changed}
         return cache.ubuntu_identity(snapshot_text(self.rows) if text is None else text, **inputs)[0]
 
     def depend(self, identity, term):
@@ -1324,6 +1355,65 @@ class UbuntuPackages(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.key(text="")
 
+    def test_missing_root_fails_the_step_whatever_else_is_wrong_with_the_snapshot(self):
+        # Each abnormality alone is a fallback; beside a missing root it must not hide the failure.
+        damages = {"a malformed line before the root's": lambda: self.rows["adduser:all"].append("extra"),
+                   "a malformed line after the root's": lambda: self.rows["zlib1g:arm64"].pop(),
+                   "a dependency outside the grammar": lambda: self.depend("libssl-dev:arm64", "libprobe1 [amd64]"),
+                   "a closure member that is only unpacked": lambda: self.rows["libssl3t64:arm64"].__setitem__(1, "iU ")}
+        for label, damage in damages.items():
+            with self.subTest(damage=label):
+                self.rows = snapshot_rows()
+                damage()
+                self.assertEqual(self.packages()[0], "inventory")
+                del self.rows["cmake:arm64"]
+                with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+                    self.key()
+        whole = snapshot_text(snapshot_rows())
+        self.assertEqual(cache.ubuntu_packages(whole + "garbage\n")[0], "inventory")
+        cmake = next(line for line in whole.splitlines(keepends=True) if line.startswith("cmake:arm64\t"))
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+            self.key(text=whole.replace(cmake, "") + "garbage\n")
+        # A root's own line that no longer says `ii ` does not count as installed.
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+            self.key(text=whole.replace(cmake, "cmake:arm64\t3.28.3-1build7\n"))
+        # Nor does an unsupplied name that resolves turn the failure into a fallback.
+        self.rows = snapshot_rows()
+        del self.rows["cmake:arm64"]
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+            self.key(probes={"aws-lc": "1.61.0", "libcrypto-awslc": None})
+
+    def test_unsupplied_pkg_config_name_that_resolves_takes_the_whole_inventory_and_is_named(self):
+        closure = self.key()
+        text = snapshot_text(self.rows)
+        keys = {closure}
+        for probes, named in (({"aws-lc": "1.61.0", "libcrypto-awslc": None}, "aws-lc"),
+                              ({"aws-lc": "1.61.1", "libcrypto-awslc": None}, "aws-lc"),
+                              ({"aws-lc": "", "libcrypto-awslc": None}, "aws-lc"),
+                              ({"aws-lc": None, "libcrypto-awslc": "1.61.0"}, "libcrypto-awslc"),
+                              ({"aws-lc": "1.61.0", "libcrypto-awslc": "1.61.0"}, "aws-lc, libcrypto-awslc")):
+            with self.subTest(probes=probes):
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, probes)
+                self.assertEqual(shown[:3], [
+                    "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                    f"pkg-config resolves {named}, which no build package ships",
+                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
+                # Every line of the snapshot, and each name's answer.
+                self.assertEqual(shown.index("::endgroup::") - shown.index("::group::Keyed Ubuntu packages"), 279)
+                self.assertEqual(shown[-3:-1], [f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {version}")
+                                                for name, version in probes.items()])
+                keys.add(key)
+        self.assertEqual(len(keys), 6)
+        # The closure is then not all a build reads: a package outside it is keyed too.
+        resolved = {"aws-lc": "1.61.0", "libcrypto-awslc": None}
+        self.rows["git:arm64"][0] += "+1"
+        self.assertEqual(self.key(), closure)
+        self.assertNotIn(self.key(probes=resolved), keys)
+        # The snapshot's own abnormality stays the first cause.
+        self.depend("libssl-dev:arm64", "libprobe1 [amd64]")
+        self.assertEqual(cache.ubuntu_packages(snapshot_text(self.rows), ["aws-lc"])[5],
+                         "libssl-dev:arm64 has a dependency outside dpkg's grammar: 'libprobe1 [amd64]'")
+
     def fallbacks(self):
         """Every cause that sends the key to the inventory: label -> (snapshot, the cause the warning names)."""
         def edited(edit):
@@ -1370,7 +1460,7 @@ class UbuntuPackages(unittest.TestCase):
                 lines = text.split("\n")[:-1]
                 self.assertEqual(len(keyed), len(lines))
                 self.assertEqual(count + others, len(lines))
-                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {})
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES)
                 self.assertEqual(shown[:2], [f"::warning::Ubuntu cache key fell back to the complete package inventory: {cause}",
                                              "Ubuntu native key mode: inventory"])
                 self.assertNotEqual(key, closure)
@@ -1469,9 +1559,12 @@ class UbuntuNativeIdentity(unittest.TestCase):
         tools["cmake3"] = None
         pc_path = f"{self.runner.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig"
         self.assertEqual(lines[end + 1:], [*expected, "Keyed tool cmake3: absent", f"Keyed pkg-config pc_path: {pc_path}",
-                                           f"Keyed pkg-config files in {self.runner.pc}: none", f"Ubuntu native digest: {native}"])
+                                           f"Keyed pkg-config files in {self.runner.pc}: none",
+                                           "Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent",
+                                           f"Ubuntu native digest: {native}"])
         # The digest is the mode, then exactly the values the lines show.
-        hashed = {"packages": keyed, "tools": tools, "pc_path": pc_path, "pc_files": {str(self.runner.pc): []}}
+        hashed = {"packages": keyed, "tools": tools, "pc_path": pc_path, "pc_files": {str(self.runner.pc): []},
+                  "probes": {"aws-lc": None, "libcrypto-awslc": None}}
         self.assertEqual(native, cache.digest(b"closure\n" + json.dumps(hashed, sort_keys=True).encode()))
         self.assertEqual(self.runner.native()[0], native)
         self.assertEqual(len(self.runner.queries.read_text().splitlines()), 4)
@@ -1544,6 +1637,46 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.assertEqual([line.split(":")[0] for line in lines if line.startswith("Keyed pkg-config files in ")],
                          [f"Keyed pkg-config files in {self.runner.pc}", f"Keyed pkg-config files in {other}"])
 
+    def test_each_unsupplied_name_is_asked_of_the_selected_pkg_config_and_its_answer_is_keyed(self):
+        closure, lines = self.runner.native()
+        asked = [f"{self.runner.bin / 'pkg-config'} --modversion {name}" for name in ("aws-lc", "libcrypto-awslc")]
+        self.assertEqual(self.runner.probes.read_text().splitlines(), asked)
+        self.assertEqual(lines[0], "Ubuntu native key mode: closure")
+        self.assertEqual(lines[-3:-1], ["Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent"])
+        # Any failure status says the name does not resolve; pkgconf's is 1.
+        self.runner.probe("libcrypto-awslc", "exit 3")
+        self.assertEqual(self.runner.native()[0], closure)
+        self.runner.probe("libcrypto-awslc", None)
+        keys = {closure}
+        for name in ("aws-lc", "libcrypto-awslc"):
+            for version in ("1.61.0", "1.61.1"):
+                with self.subTest(resolves=name, version=version):
+                    self.runner.probe(name, f"echo {version}")
+                    native, lines = self.runner.native()
+                    self.assertEqual(lines[:3], [
+                        "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                        f"pkg-config resolves {name}, which no build package ships",
+                        "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
+                    self.assertIn(f"Keyed pkg-config probe {name}: version {version}", lines[-3:-1])
+                    keys.add(native)
+            self.runner.probe(name, None)
+        self.assertEqual(len(keys), 5)
+        self.assertEqual(self.runner.native()[0], closure)
+        # The pkg-config that PATH selects is the one asked.
+        local = self.base / "local"
+        local.mkdir()
+        self.runner.tool("pkg-config", directory=local, variant="2")
+        self.runner.tool("pkg-config")
+        self.runner.probes.unlink()
+        self.runner.native(local)
+        self.assertEqual(self.runner.probes.read_text().splitlines(),
+                         [line.replace(str(self.runner.bin), str(local)) for line in asked])
+        # A pkg-config that is killed gave no answer: the step fails, as for any other command.
+        self.runner.probe("aws-lc", "kill -KILL $$")
+        with self.assertRaises(subprocess.CalledProcessError) as killed:
+            self.runner.native()
+        self.assertEqual((killed.exception.returncode, killed.exception.cmd[1:]), (-9, ["--modversion", "aws-lc"]))
+
     def test_abnormal_snapshot_warns_first_and_keys_the_whole_inventory(self):
         closure, _ = self.runner.native()
         rows = snapshot_rows()
@@ -1570,29 +1703,57 @@ class UbuntuKeyPreconditions(unittest.TestCase):
     def test_every_locked_prober_is_mapped_to_keyed_build_packages(self):
         lock = (ROOT / "Cargo.lock").read_text()
         self.assertEqual(lock_probers(lock), set(UBUNTU_PROBERS), (
-            "The locked packages that depend on pkg-config, system-deps, cmake or bindgen changed. The Ubuntu cache key "
-            "holds only the closure of cache.UBUNTU_BUILD_PACKAGES, so read the new package's build script and map it in "
-            "UBUNTU_PROBERS to the build packages that supply what it probes on Linux, or to the reason it probes nothing "
-            "there. If it probes a package the setup action does not install, add that package to the action's install "
-            "list and to cache.UBUNTU_BUILD_PACKAGES. Remove a package that is gone."))
-        for name, supplied in UBUNTU_PROBERS.items():
-            with self.subTest(prober=name):
-                if isinstance(supplied, str):
-                    self.assertRegex(supplied, r"\w+ \w+ \w+")
-                else:
-                    self.assertTrue(supplied)
-                    self.assertLessEqual(set(supplied), set(cache.UBUNTU_BUILD_PACKAGES))
+            "The locked packages that depend on pkg-config, system-deps, cmake or bindgen changed, by name or by version. "
+            "The Ubuntu cache key holds only the closure of cache.UBUNTU_BUILD_PACKAGES, so read the build script of the "
+            "new package or version and give it a row in UBUNTU_PROBERS: the pkg-config names it asks for on Linux, each "
+            "with the build package that ships its .pc file or UNSUPPLIED, and the build packages behind what it runs; "
+            "or the reason it asks for nothing there. A row is for one locked version because an update can ask for new "
+            "names: aws-lc-sys's aws-lc and libcrypto-awslc arrived that way, unseen. If it probes a package the setup "
+            "action does not install, add that package to the action's install list and to cache.UBUNTU_BUILD_PACKAGES; "
+            "add a name no package ships to cache.UBUNTU_UNSUPPLIED_PROBES. Remove the row of a package or version that "
+            "is gone."))
+        build, rows = set(cache.UBUNTU_BUILD_PACKAGES), snapshot_rows()
+        closure = {line.split(":", 1)[0] for line in cache.ubuntu_packages(UBUNTU_SNAPSHOT)[1]}
+        unsupplied = set()
+        for prober, asked in UBUNTU_PROBERS.items():
+            with self.subTest(prober=prober):
+                self.assertRegex(prober, r"^[a-z0-9-]+ \d+\.\d+\.\d+$")
+                if isinstance(asked, str):
+                    self.assertRegex(asked, r"\w+ \w+ \w+")
+                    continue
+                modules, packages = asked
+                self.assertTrue(modules)
+                self.assertIn("pkg-config", packages)
+                self.assertLessEqual(set(packages), build)
+                for module, supplier in modules.items():
+                    if supplier == UNSUPPLIED:
+                        unsupplied.add(module)
+                        continue
+                    package, owner = supplier if isinstance(supplier, tuple) else (supplier, supplier)
+                    self.assertIn(package, build, module)
+                    # A .pc file in a dependency of the build package: the edge is in the real snapshot.
+                    depends = {name for names in cache.relation_groups(rows[f"{package}:arm64"][3], package) for name in names}
+                    self.assertIn(owner, {package, *depends}, module)
+                    self.assertIn(owner, closure, module)
+        # In both directions: a name the table marks is keyed, and the key asks for no name the table does not mark.
+        self.assertEqual(sorted(unsupplied), sorted(cache.UBUNTU_UNSUPPLIED_PROBES))
+        # A row is one locked version: an update has none until its build script is read again,
+        # and neither has a second version locked beside the first.
+        name, version = next(prober for prober, asked in UBUNTU_PROBERS.items()
+                             if not isinstance(asked, str) and UNSUPPLIED in asked[0].values()).split(" ")
+        stanza = f'name = "{name}"\nversion = "{version}"\n'
+        self.assertEqual(lock.count(stanza), 1)
+        updated = lock_probers(lock.replace(stanza, f'name = "{name}"\nversion = "{version}1"\n'))
+        self.assertEqual((updated - set(UBUNTU_PROBERS), set(UBUNTU_PROBERS) - updated), ({f"{name} {version}1"}, {f"{name} {version}"}))
+        second = f'{lock}\n[[package]]\nname = "{name}"\nversion = "{version}1"\ndependencies = [\n "cc",\n "pkg-config",\n]\n'
+        self.assertEqual(lock_probers(second) - set(UBUNTU_PROBERS), {f"{name} {version}1"})
         # A dependency added later is seen, whichever of the four crates it uses.
         for crate in sorted(PROBING_CRATES):
             with self.subTest(crate=crate):
                 added = f'{lock}\n[[package]]\nname = "libprobe-sys"\nversion = "1.0.0"\ndependencies = [\n "cc",\n "{crate} 0.3.0",\n]\n'
-                self.assertEqual(lock_probers(added) - set(UBUNTU_PROBERS), {"libprobe-sys"})
+                self.assertEqual(lock_probers(added) - set(UBUNTU_PROBERS), {"libprobe-sys 1.0.0"})
         self.assertEqual(lock_probers(f'{lock}\n[[package]]\nname = "libplain"\nversion = "1.0.0"\ndependencies = [\n "cc",\n]\n'),
                          set(UBUNTU_PROBERS))
-        # The two packages the table reaches through a build package's dependency.
-        rows = snapshot_rows()
-        self.assertIn("libfreetype-dev", rows["libfontconfig-dev:arm64"][3])
-        self.assertIn("libx11-dev", rows["libx11-xcb-dev:arm64"][3])
 
     def test_install_step_refuses_every_system_deps_variable_before_it_installs(self):
         # dav1d-sys would otherwise clone and build dav1d with git, meson and

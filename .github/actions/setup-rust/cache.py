@@ -94,6 +94,16 @@ UBUNTU_OPTIONAL_TOOLS = ("cmake3",)
 # pkg-config directories whose files belong to dpkg packages; a .pc file in any
 # other directory of the search order could shadow a keyed library's.
 DPKG_PC_ROOTS = ("/usr/lib", "/usr/share")
+# pkg-config names a locked build script asks for that no build package ships.
+# aws-lc-sys asks for openssl, aws-lc, libcrypto and libcrypto-awslc and links a
+# system AWS-LC when one of them resolves to one; libssl-dev ships the first and
+# the third. pkgconf answers a name it has no file for from any .pc whose
+# Provides names it, so these two could resolve on one image and not on the
+# next, and Cargo would not rerun the build script. What each resolves to is
+# keyed, and one that resolves sends the key to the complete inventory: the
+# closure is then not all a build reads. A test holds this tuple equal to the
+# unsupplied names of the lock's probers.
+UBUNTU_UNSUPPLIED_PROBES = ("aws-lc", "libcrypto-awslc")
 # Environment that changes what rustc, build scripts or cc emit. Paths the
 # action fixes itself (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
 FLAG_NAMES = {"AR", "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "LIBRARY_PATH",
@@ -221,11 +231,19 @@ def ubuntu_closure(lines):
     any architecture and to every package that Provides it, and every
     alternative that resolves is followed, so the result is a superset of what
     apt needed. Only state `ii ` is installed. A root with no installed package
-    raises, as `pacman -Q` fails on Arch. Any other abnormality raises
-    InventoryFallback, a reached package in another state included (unpacked,
-    half installed, or removed with its configuration left): a dependency is
-    never skipped and the closure is never partial.
+    raises, as `pacman -Q` fails on Arch, whatever else is wrong with the
+    snapshot. Any other abnormality raises InventoryFallback, a reached package
+    in another state included (unpacked, half installed, or removed with its
+    configuration left): a dependency is never skipped and the closure is never
+    partial.
     """
+    # The roots are checked first, on a reading that refuses no line, so a line
+    # the closure cannot be trusted on never turns a missing root into a fallback.
+    installed = {match.group(1) for fields in (line.split("\t") for line in lines)
+                 if fields[2:3] == [DPKG_INSTALLED] and (match := DPKG_PACKAGE.fullmatch(fields[0]))}
+    for root in UBUNTU_BUILD_PACKAGES:
+        if root not in installed:
+            raise ValueError(f"Ubuntu build package {root} is not installed")
     packages, by_name, providers = {}, {}, {}
     for number, line in enumerate(lines, 1):
         fields = line.split("\t")
@@ -242,9 +260,6 @@ def ubuntu_closure(lines):
             if not provided:
                 raise InventoryFallback(f"{identity} provides a name outside dpkg's grammar: {term.strip(' ')!r}")
             providers.setdefault(provided.group(1), []).append(identity)
-    for root in UBUNTU_BUILD_PACKAGES:
-        if not any(packages[identity][1] == DPKG_INSTALLED for identity in by_name.get(root, ())):
-            raise ValueError(f"Ubuntu build package {root} is not installed")
     closure = {}
     pending = [identity for root in UBUNTU_BUILD_PACKAGES for identity in by_name[root]]
     while pending:
@@ -264,12 +279,13 @@ def ubuntu_closure(lines):
     return sorted(f"{identity}={version}" for identity, version in closure.items())
 
 
-def ubuntu_packages(snapshot):
+def ubuntu_packages(snapshot, resolved=()):
     """One dpkg snapshot as (mode, keyed lines, keyed installed, installed, other lines, fallback cause).
 
     `closure` keys `name:arch=version` of the closure and nothing else from the
     inventory. `inventory` is the fallback: every line of the snapshot with its
-    package, architecture, version and status.
+    package, architecture, version and status. `resolved` names the
+    UBUNTU_UNSUPPLIED_PROBES that pkg-config resolves: any of them is a cause.
     """
     lines = snapshot.split("\n")
     if lines[-1] == "":
@@ -277,6 +293,8 @@ def ubuntu_packages(snapshot):
     installed = sum(line.split("\t")[2:3] == [DPKG_INSTALLED] for line in lines)
     try:
         keyed = ubuntu_closure(lines)
+        if resolved:
+            raise InventoryFallback(f"pkg-config resolves {', '.join(resolved)}, which no build package ships")
         return "closure", keyed, len(keyed), installed, 0, None
     except InventoryFallback as fallback:
         keyed = []
@@ -319,6 +337,22 @@ def pkg_config_view(pkg_config):
     return order, files
 
 
+def pkg_config_probe(pkg_config, name):
+    """What the selected pkg-config resolves `name` to: its version, or None for nothing.
+
+    pkg-config exits with a failure status for a name it cannot resolve, which
+    is the answer here and no fault. A command that cannot start, is killed or
+    runs out of time still fails the step.
+    """
+    try:
+        output = run([pkg_config, "--modversion", name])
+    except subprocess.CalledProcessError as error:
+        if error.returncode > 0:
+            return None
+        raise
+    return output.decode("utf-8", "surrogateescape").removesuffix("\n")
+
+
 def pc_size(path):
     try:
         return os.stat(path).st_size
@@ -333,15 +367,16 @@ def shown(text):
                    for character in text)
 
 
-def ubuntu_identity(snapshot, tools, pc_path, pc_files):
+def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes):
     """The Ubuntu native digest and the log lines that show every value in it.
 
     The digest's input starts with the mode, so a fallback key can never equal
     a closure key. The lines are built from the hashed values themselves, so
     two hosted runs can be compared line by line.
     """
-    mode, keyed, count, installed, others, cause = ubuntu_packages(snapshot)
-    hashed = {"packages": keyed, "pc_path": pc_path, "pc_files": pc_files,
+    mode, keyed, count, installed, others, cause = ubuntu_packages(
+        snapshot, [name for name, version in probes.items() if version is not None])
+    hashed = {"packages": keyed, "pc_path": pc_path, "pc_files": pc_files, "probes": probes,
               "tools": {name: tool and {"path": tool["path"], "version": tool["version"]} for name, tool in tools.items()}}
     native = digest(mode.encode() + b"\n" + json.dumps(hashed, sort_keys=True).encode())
     lines = []
@@ -361,6 +396,8 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files):
     for directory, found in pc_files.items():
         listing = ", ".join(f"{name} {size}" for name, size in found) or "none"
         lines.append(f"Keyed pkg-config files in {shown(directory)}: {shown(listing)}")
+    for name, version in probes.items():
+        lines.append(f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {shown(version)}"))
     lines.append(f"Ubuntu native digest: {native}")
     return native, lines
 
@@ -370,7 +407,9 @@ def native_identity(platform):
         snapshot = run(DPKG_SNAPSHOT).decode("utf-8", "surrogateescape")
         tools = {name: tool_identity(name) for name in UBUNTU_TOOLS}
         tools.update((name, tool_identity(name, required=False)) for name in UBUNTU_OPTIONAL_TOOLS)
-        native, lines = ubuntu_identity(snapshot, tools, *pkg_config_view(tools["pkg-config"]["run"]))
+        pkg_config = tools["pkg-config"]["run"]
+        probes = {name: pkg_config_probe(pkg_config, name) for name in UBUNTU_UNSUPPLIED_PROBES}
+        native, lines = ubuntu_identity(snapshot, tools, *pkg_config_view(pkg_config), probes)
         print("\n".join(lines))
         return native
     if platform == "macOS":
