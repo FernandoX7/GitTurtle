@@ -735,7 +735,8 @@ class CacheFixture(unittest.TestCase):
     def phases(self, lane, *, between=lambda: None, finish=None, compare=None, state=lambda path: None, account=None):
         """prepare in the lane's prepare-time environment, then the comparison and bound in its finish-time one.
 
-        Returns what the three wrote: prepare's exports, the comparison's lines and its output, bound's output and result.
+        Returns what the three wrote: prepare's exports, the comparison's lines and its output, bound's output and result,
+        and under `recorded` what the comparison's output file held as each of its lines was printed.
         """
         base = {**self.env, "PATH": lane["path"], "RUNNER_OS": lane["system"]}
         del base["CACHE_IDENTITY"], base["CARGO_HOME"], base["CARGO_TARGET_DIR"]
@@ -765,14 +766,14 @@ class CacheFixture(unittest.TestCase):
             checkout, tree = source.stat().st_mtime_ns, sorted(self.base.rglob("*"))
             # `compare` changes the comparison step's variables alone; None takes one away.
             compared = {name: value for name, value in {**environment, **(compare or {})}.items() if value is not None}
+            output, recorded = Path(self.env["GITHUB_OUTPUT"]), []
             with patch.dict(os.environ, compared, clear=True), patch("sys.argv", ["cache.py", "compare"]), \
-                    patch("builtins.print") as shown:
+                    patch("builtins.print", side_effect=lambda *_: recorded.append(output.read_text() if output.is_file() else None)) as shown:
                 cache.main()
             lines = [line for call in shown.call_args_list for line in " ".join(map(str, call.args)).split("\n")]
             # The comparison exports nothing, rewinds nothing and creates nothing.
             self.assertEqual(dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines()), exports)
             self.assertEqual((source.stat().st_mtime_ns, sorted(self.base.rglob("*"))), (checkout, tree))
-            output = Path(self.env["GITHUB_OUTPUT"])
             written = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.is_file() else {}
             if output.is_dir():
                 output.rmdir()
@@ -780,7 +781,7 @@ class CacheFixture(unittest.TestCase):
             with patch.dict(os.environ, {**environment, "CACHE_IDENTITY": written.get("identity", "")}, clear=True), \
                     patch("sys.argv", ["cache.py", "bound"]), patch("builtins.print"):
                 cache.main()
-        return {"exports": exports, "lines": lines, "identity": written, "save": Path(self.env["GITHUB_OUTPUT"]).read_text(),
+        return {"exports": exports, "lines": lines, "identity": written, "recorded": recorded, "save": Path(self.env["GITHUB_OUTPUT"]).read_text(),
                 "result": record.call_args.kwargs["details"], "bound": bound, "account": become}
 
     def refused(self, outcome):
@@ -802,6 +803,8 @@ class CacheFixture(unittest.TestCase):
                 # One positive line that names the key, no warning, and the save goes ahead.
                 self.assertEqual(outcome["lines"], [f"Cache identity unchanged since setup: {key}"])
                 self.assertEqual(outcome["identity"], {"identity": "unchanged"})
+                # The bound phase could already read the verdict when the line was printed: the line never runs ahead of it.
+                self.assertEqual(outcome["recorded"], ["identity=unchanged\n"])
                 self.assertEqual((outcome["save"], outcome["result"]), ("save=true\n", {"save": True, "reason": "within budget"}))
                 outcome["bound"].assert_called_once()
                 # prepare exports the CARGO_INCREMENTAL it keyed where the job set none: the five lanes but Arch.
@@ -903,11 +906,24 @@ class CacheFixture(unittest.TestCase):
             outcome = self.phases(lane, account=[None, ValueError("cache helper is not running as its account"), None])
             self.assertEqual((outcome["lines"], outcome["identity"]), ([warning.format("ValueError")], {"identity": "unconfirmed"}))
             self.refused(outcome)
-        # No verdict at all (the output file cannot be written, or the step never ran) refuses too.
-        lane = self.lane("macOS debug")
+        # No verdict at all (the output file cannot be written, or the step never ran) refuses too. A verdict that
+        # was not recorded is never announced: no "unchanged" line, and one warning with a fixed text in its place.
+        unrecorded = "::warning::Cache identity verdict could not be recorded, so this job saves no cache entry"
+
+        def unwritable(path):
+            Path(self.env["GITHUB_OUTPUT"]).unlink()
+            Path(self.env["GITHUB_OUTPUT"]).mkdir()
+
         with self.subTest(failure="the verdict cannot be written"):
-            outcome = self.phases(lane, state=lambda path: (Path(self.env["GITHUB_OUTPUT"]).unlink(), Path(self.env["GITHUB_OUTPUT"]).mkdir()))
-            self.assertEqual(outcome["identity"], {})
+            outcome = self.phases(self.lane("macOS debug"), state=unwritable)
+            self.assertEqual((outcome["lines"], outcome["identity"]), ([unrecorded], {}))
+            self.refused(outcome)
+        # A changed identity keeps its own lines, which already say that nothing is saved, before that warning.
+        with self.subTest(failure="the verdict of a changed identity cannot be written"):
+            outcome = self.phases(self.lane("macOS debug"), state=unwritable, compare={"RUSTFLAGS": "-g"})
+            self.assertEqual((outcome["lines"], outcome["identity"]), (
+                ["::warning::Cache identity changed since setup, so this job saves no cache entry: flags",
+                 "Flag variables that differ: RUSTFLAGS", unrecorded], {}))
             self.refused(outcome)
         for verdict in (None, "", "changed", "unconfirmed", "true", "Unchanged", "unchanged "):
             with self.subTest(verdict=verdict):

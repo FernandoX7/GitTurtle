@@ -1877,7 +1877,12 @@ and a changed one refuses the save.
   <key>`. Changed: one `::warning::` that names the parts that differ; for the
   native part the keyed lines that differ, setup's after `- ` and this phase's
   after `+ `; for the flags the names of the variables that differ, never a
-  value. Every value is escaped as the key step's lines are.
+  value. Every value is escaped as the key step's lines are. The verdict is
+  written to the step's output before any line is printed, so the positive
+  line appears only on a lane whose bound phase can read `unchanged`. A
+  verdict that cannot be written prints no positive line and one `::warning::`
+  with a fixed text instead, after the lines of a changed identity if there
+  are any.
 - *Never a failed job.* Validation has passed when the step runs. An
   exception, a missing `CI_RUST_CACHE_KEY`, a missing or unreadable record, an
   account that cannot be taken and a verdict that cannot be written each

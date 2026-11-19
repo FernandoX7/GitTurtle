@@ -1105,10 +1105,16 @@ def main():
             lines = ["::warning::Cache identity could not be compared with setup, so this job saves no cache entry: "
                      + shown(type(error).__name__)]
         try:
-            print("\n".join(lines))
+            # The verdict before its line: "unchanged" is printed only once the bound phase can read it.
             output_file("GITHUB_OUTPUT", {"identity": verdict})
         except Exception:  # noqa: BLE001
-            # No verdict reaches the bound phase, which then refuses.
+            # No verdict reaches the bound phase, which then refuses, so nothing here may say unchanged.
+            lines = [*(lines if verdict != IDENTITY_UNCHANGED else []),
+                     "::warning::Cache identity verdict could not be recorded, so this job saves no cache entry"]
+        try:
+            print("\n".join(lines))
+        except Exception:  # noqa: BLE001
+            # A line that cannot be printed fails no job either.
             pass
     elif args.phase == "prepare":
         prepare()
