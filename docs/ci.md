@@ -173,7 +173,8 @@ lists the PNG, JPEG, GIF and WebP files the event adds or changes, using the
 classifier's verified comparisons (the merge-base to the PR head and the base to
 the merge commit; a main push's before/after) with deletions excluded. When the
 optional `NATIVE_QA_PRIVACY_TEMPLATES` repository secret is present, the job
-installs Pillow from the Ubuntu archive and runs the
+installs Pillow from the Ubuntu archive when the image lacks it, through the
+[package helper](#package-installation-on-ubuntu), and runs the
 [native-QA scan](../scripts/native_qa/README.md#automated-scans) with
 `--redacted`, which prints each image's path and `clean` or `MATCH` only. Every
 frame of an animated GIF, WebP or PNG is scanned; an image with more than 64
@@ -2010,8 +2011,10 @@ the fallback is one entry per image again, slower and never stale.
    installed.
 
 The snapshot is also the state the build sees only while no job that uses the
-action installs packages in its own steps. A test refuses `apt-get`, `apt` and
-`dpkg -i` in every such job of `quality.yml` and `release.yml`. That test has a
+action installs packages in its own steps. A test refuses `apt-get`, `apt`,
+`dpkg -i` and the package helper (`apt_install.py`, see
+[Package installation on Ubuntu](#package-installation-on-ubuntu)) in every such
+job of `quality.yml` and `release.yml`. That test has a
 limit too: it reads the workflows' text, so an installation inside a script a
 step runs, or inside another action, is not seen.
 
@@ -2199,6 +2202,111 @@ repository root. Nothing checks the list again at finish.
 releases that differ only in their own Rust. No hosted run has executed the step:
 the uninstall and the check ran against rustup 1.29.3 in a local container, on a
 `RUSTUP_HOME` that listed a default beside the pinned toolchain.
+
+#### Package installation on Ubuntu
+
+On November 11, 2026 the hosted x64 runners could not resolve their cloud
+mirror's name. `sudo apt-get update` spent 203 to 207 s on it, printed warnings
+and exited 0, and `sudo apt-get install` then failed for 25 minutes, one lookup
+every 20 s. A failed index was a warning, and nothing bounded either command but
+the job's own limit of 45 or 60 minutes. With the rule below that case ends by
+name. When no listed name resolves, the step fails at the lookup, before apt and
+after at most 5 s a name. Otherwise one warning names the cloud mirror, and
+`apt-get update` then succeeds through another mirror, exits 100 for an index it
+could not fetch, or is ended by its 300 s deadline; in the last two cases
+`install` does not run.
+
+**Rule.** The action's install step and the `Image privacy` job install through
+[`scripts/ci/apt_install.py`](../scripts/ci/apt_install.py). A step's text keeps
+the selection and the package names; the helper does the rest, each thing once:
+
+1. *One selection.* `-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources
+   -o Dir::Etc::sourceparts=-` is written once in the step and handed to both apt
+   commands, so `update` and `install` read the image's own, unmodified Ubuntu
+   source file and no other. The helper accepts those two options and nothing
+   else, and only package names after them. A missing file fails the step by
+   name; it never falls back to every listed source. The image also lists
+   `packages.microsoft.com` and other sources no build here uses, and with every
+   source listed the stricter `update` below would fail whenever one of them is
+   down.
+2. *A bounded lookup.* The hosts are those apt reads on that runner: the URIs of
+   the file's enabled paragraphs and, where one names a `mirror+file:` list (the
+   x64 image), the mirrors of that list; the arm64 image names `ports.ubuntu.com`
+   in the file itself. Every name must match a hostname pattern before any
+   command runs, and a file that holds one outside it fails the step, an IPv6
+   literal included. Each name is then one argument of `getent ahosts` under
+   `timeout`, 5 s a name; the names, the bound and each answer are printed. When
+   none resolves, the step fails and names them before apt runs. When some do
+   not, one `::warning::` names those and the step goes on: the mirrors serve one
+   signed archive, so a host is a matter of availability, not of trust.
+3. *`apt-get update --error-on=any`*, which exits 100 for an index it could not
+   fetch, where the plain command warns and exits 0.
+4. *`apt-get install -y --no-install-recommends`* of the step's names.
+
+**Deadlines.** Each of the two apt commands runs as
+`sudo timeout --kill-after=10 <seconds> apt-get …`: 300 s for `update`, 900 s for
+`install`. Both are constants of the helper. No option of its command line, no
+input of the action and no environment variable sets one; a reproduction lowers
+them through the helper's function arguments, which refuse a wider value.
+`timeout` stands on the root side because apt runs as root: it sends TERM to apt
+and its process group at the deadline and KILL 10 s later. When a deadline ends a
+command the step fails, and below what apt had printed stands one line that
+names the phase, the bound and the hosts with which of them had resolved.
+Nothing is run again. In 110 hosted Ubuntu job logs of November 16 to 19, 2026,
+`update`'s own fetch took 2 s at the median, 18 s at p95 and 49 s at most, and
+`install`'s fetch 5 s at the median, 292 s at p95 and 640 s at most: that maximum
+was 19.2 MB from a mirror serving about 30 kB/s, and with the 5.7 MB the step
+fetches since apt's CMake left it the slowest was about 290 s.
+
+**The hang the deadline answers.** In a disposable `ubuntu:24.04` container
+(arm64, apt 2.8.3) with the hosted x64 image's apt settings (`Acquire::Retries
+"1"`, 15 s timeouts) and its `mirror+file` layout, a first mirror whose name does
+not resolve, or one that resolves and never answers (`192.0.2.1`), makes
+`apt-get update` print its first index lines and then sleep. Every apt process
+was asleep at 285 s, and `timeout 300` ended the command with status 124, for
+the plain command and for `--error-on=any` alike. So the plain command the step
+ran before this rule hangs the same way, and neither `--error-on=any` nor the
+lookup ends it. With every host dead the command ends in 1 s, with status 0
+plain and 100 with `--error-on=any`. The hang was reproduced in that container
+and never seen on a hosted runner; "the first host does not resolve" is
+therefore a warning and not a failure, and the deadline stands behind it.
+
+**The step in that container.** The step's own script ran as an unprivileged
+account with `sudo`, in one fresh container a case. The three failing cases ran
+with the deadlines lowered to 30 s and 120 s through the helper's function
+arguments; the healthy one kept 300 s and 900 s.
+
+| Case | The step |
+| --- | --- |
+| Healthy | Exit 0 in under a minute: `update` 3 s, `install` of the step's 18 names 40 and 50 s in two runs. |
+| Every host dead | Exit 1 in under a second, at the lookup and before apt: `none of the hosts /etc/apt/sources.list.d/ubuntu.sources names resolved within 5 s`, then the three names. |
+| First dead, second alive | The warning that names the first, then at 30 s `apt-get update did not end within its 30 s deadline and was stopped; hosts: dead-mirror.invalid (did not resolve), ports.ubuntu.com (resolved)`; exit 1. |
+| First silent, second alive | No warning, since an address needs no lookup; the same line at 30 s with both hosts resolved; exit 1. |
+
+After each of them `ps` listed no process of apt and none of the step's
+`sudo timeout`. A root command
+that ignores TERM was ended by KILL 10 s after its deadline: `sudo` then ends by
+that signal, and the helper names the deadline. With the deadline on the
+unprivileged side (`timeout … sudo …`) the same command stayed behind as a root
+process.
+
+**No package changes.** In 65 retained hosted logs whose step installed packages
+(24 on Azure-hosted x64, 29 on AWS-hosted x64 and 12 on arm64) all 2,252 package
+lines name an Ubuntu archive host (`azure.archive.ubuntu.com`,
+`us-east-2.ec2.archive.ubuntu.com`, `archive.ubuntu.com` or `ports.ubuntu.com`),
+so reading the Ubuntu source file alone takes no package away. No signature
+check changes, no file under `/etc/apt` is written, no package is added or
+removed, and the step still runs before the key is computed. The helper lives
+outside the action's folder because every file in that folder is hashed into
+every Rust cache key: the step's text changes the keys once, and a later
+correction of the helper does not.
+
+**Acceptance, still open.** No hosted run has executed the helper. An image's
+`Ubuntu native digest` line must be unchanged by it: `2432e09588b4` on the x64
+20261111 images, `2371b93bc9b8` on 20261116.133.1 and `3de5484704a9` on arm64
+20261116.188.1. The container was arm64 and its living mirror spoke HTTP, so x64
+and the image's HTTPS mirrors are not covered, and a name that resolves slowly
+cannot be made locally.
 
 ### Trust, failure and storage bounds
 

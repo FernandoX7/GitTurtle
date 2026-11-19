@@ -218,9 +218,9 @@ def setup_jobs(workflow):
 
 
 def later_installs(workflow):
-    """(job, line) for every apt or dpkg installation written in a job that uses the setup action."""
+    """(job, line) for every apt or dpkg installation, or call of the package helper, written in a job that uses the setup action."""
     return [(name, line.strip()) for name, job in setup_jobs(workflow).items() for line in job.splitlines()
-            if re.search(r"(?<![\w-])(?:apt(?:-get)?|dpkg\s+(?:-i|--install))(?![\w-])", line)]
+            if re.search(r"(?<![\w-])(?:apt(?:-get)?|apt_install\.py|dpkg\s+(?:-i|--install))(?![\w-])", line)]
 
 
 def snapshot_rows(text=UBUNTU_SNAPSHOT):
@@ -2420,16 +2420,18 @@ class UbuntuPackages(unittest.TestCase):
 
     def test_install_line_names_only_build_packages_and_tools(self):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
-        command = re.search(r"sudo apt-get install ((?:[^\n]*\\\n)+[^\n]*)\n", text).group(1)
-        installed = [word for word in command.replace("\\", " ").split() if not word.startswith("-")]
+        # The step hands the names to the package helper after `--`.
+        command = re.search(r"python3 scripts/ci/apt_install\.py ((?:[^\n]*\\\n)+[^\n]*)\n", text).group(1)
+        installed = command.replace("\\", " ").split(" -- ", 1)[1].split()
         self.assertEqual(len(installed), len(set(installed)))
-        self.assertEqual(text.count("apt-get install"), 1)
+        self.assertEqual(text.count("apt_install.py"), 1)
         build, tools = set(cache.UBUNTU_BUILD_PACKAGES), set(cache.UBUNTU_TOOL_PACKAGES)
         # Every installed name is in exactly one of the two lists, and a root
         # the action does not install would fail the step.
         self.assertFalse(build & tools)
         self.assertEqual(set(installed), build | tools)
-        self.assertIn("--no-install-recommends", command.split())
+        # The helper owns the install command; its own tests hold the whole line.
+        self.assertIn('"--no-install-recommends"', (ROOT / "scripts/ci/apt_install.py").read_text())
         self.assertEqual(len(cache.UBUNTU_BUILD_PACKAGES), 11)
         # No CMake is installed, by apt or by anything else the action could run
         # on a condition: the installed set must not depend on the image. The
@@ -3088,7 +3090,7 @@ class UbuntuKeyPreconditions(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local") as temp:
             base = Path(temp)
             calls = base / "calls"
-            for name in ("sudo", "pkg-config"):
+            for name in ("python3", "sudo", "pkg-config"):
                 (base / name).write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> {shlex.quote(str(calls))}\n")
                 (base / name).chmod(0o755)
             environment = {name: value for name, value in os.environ.items() if not name.startswith("SYSTEM_DEPS_")}
@@ -3096,9 +3098,13 @@ class UbuntuKeyPreconditions(unittest.TestCase):
             allowed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
             self.assertEqual(allowed.returncode, 0, allowed.stderr)
             ran = calls.read_text().splitlines()
-            self.assertEqual(ran[0], "sudo apt-get update")
-            self.assertEqual(ran[1].split()[:5], ["sudo", "apt-get", "install", "-y", "--no-install-recommends"])
-            self.assertEqual(set(ran[1].split()[5:]), {*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES})
+            # The step installs through the package helper alone: one call, the
+            # image's Ubuntu source file as the selection, then the names.
+            self.assertEqual([line.split()[0] for line in ran], ["python3", "pkg-config", "pkg-config", "pkg-config"])
+            self.assertEqual(ran[0].split()[:7], ["python3", "scripts/ci/apt_install.py",
+                                                  "-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources",
+                                                  "-o", "Dir::Etc::sourceparts=-", "--"])
+            self.assertEqual(set(ran[0].split()[7:]), {*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES})
             calls.unlink()
             for name, value in (("SYSTEM_DEPS_DAV1D_BUILD_INTERNAL", "always"), ("SYSTEM_DEPS_LINK", "static"), ("SYSTEM_DEPS_X", "")):
                 with self.subTest(variable=name):
@@ -3116,7 +3122,7 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                 self.assertEqual(later_installs(text), [], "a job that uses the setup action installs packages itself: "
                                  "the Ubuntu cache key would no longer describe what the build reads")
         # The scan sees an installation: Quality has one, in a job without the action.
-        self.assertIn("sudo apt-get install", workflows["quality.yml"])
+        self.assertIn("python3 scripts/ci/apt_install.py", workflows["quality.yml"])
         sample = textwrap.dedent("""\
             name: Sample
             jobs:
@@ -3138,12 +3144,14 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                     with:
                       profile: debug
                   - run: /usr/bin/apt-get -y install ninja-build
+                  - run: python3 scripts/ci/apt_install.py -o Dir::Etc::sourceparts=- -- nasm
             """)
         self.assertEqual(sorted(setup_jobs(sample)), ["build", "test"])
         self.assertEqual(later_installs(sample), [
             ("build", "- run: sudo apt-get install -y --no-install-recommends libpng-dev"), ("build", "sudo apt install nasm"),
             ("build", "sudo dpkg -i tool.deb"), ("build", "sudo dpkg --install other.deb"),
-            ("test", "- run: /usr/bin/apt-get -y install ninja-build")])
+            ("test", "- run: /usr/bin/apt-get -y install ninja-build"),
+            ("test", "- run: python3 scripts/ci/apt_install.py -o Dir::Etc::sourceparts=- -- nasm")])
 
 
 if __name__ == "__main__":

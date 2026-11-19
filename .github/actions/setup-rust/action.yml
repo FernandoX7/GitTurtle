@@ -55,8 +55,11 @@ runs:
           echo "::error::SYSTEM_DEPS_ variables must not reach the build: $(tr '\n' ' ' <<<"$names")"
           exit 1
         fi
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
+        # The helper looks up the hosts of the image's own Ubuntu source file,
+        # then runs `apt-get update --error-on=any` and `apt-get install` as
+        # root with this one selection, each once and under its own deadline.
+        python3 scripts/ci/apt_install.py \
+          -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -- \
           build-essential clang pkg-config git openssh-client ca-certificates \
           libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
           libssl-dev libzstd-dev libvulkan-dev libdav1d-dev \
