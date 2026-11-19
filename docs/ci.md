@@ -2087,6 +2087,46 @@ the line on the same six lanes after restoring them (a dispatched run saves
 nothing). No run has printed the warning, so the refusal itself has only its tests
 behind it.
 
+#### The image's own Rust
+
+The pinned rust-cache appends a suffix of its own to the key this action hands it,
+and hashes into it `rustc -vV` and the same output of every toolchain that
+`rustup toolchain list --quiet` names (`getRustVersions` in its `src/config.ts`).
+A hosted image ships a default Rust that no build here runs, beside the 1.99.0
+that `rust-toolchain.toml` selects: 1.99.1 on older images, 1.100.0 on the newest
+macOS and Ubuntu ones. In Quality run `44608780306` (November 19, 2026)
+`Rust Clippy · macos-15` on image 20261118.0550.1 computed the same helper key
+as the test shards on 20261104.0514.1 and another rust-cache suffix (`6129b690`
+against `941ba66b`), and built cold.
+
+**Rule.** In the setup phase, after the pinned toolchain is installed and before
+the key is computed, the helper's `toolchains` phase uninstalls every listed
+toolchain but the active one (`rustup toolchain uninstall`, one name a command)
+and prints each name with the seconds. Then, on every job, the step fails by name
+unless rustup lists the active toolchain and no other. The active toolchain must
+be the one `rust-toolchain.toml` selects, so a `RUSTUP_TOOLCHAIN` that names
+another fails the step before anything is uninstalled. A name is checked against
+a pattern before it reaches a command line. The Arch container job uninstalls
+nothing: its fresh `RUSTUP_HOME` holds only the toolchain the job installed, and
+the check keeps that true. How the pinned toolchain is installed does not change,
+and neither does any input of the restore action: `add-rust-environment-hash-key`
+stays on, since turning it off would drop the environment and lockfile hashes
+with the toolchains. The helper's own `toolchain` part still keys the active
+compiler's whole `rustc -vV` and its host triple.
+
+**What it gives up.** After the step the image's default is gone: a `rustc` or
+`cargo` run outside the checkout, or one that names a toolchain (`rustc +stable`),
+makes rustup download that toolchain again, and the list then holds two. With
+rustup 1.29.3 in a local container each of the three began that download. No step
+of `quality.yml` or `release.yml` after the setup phase runs a Rust tool outside
+the checkout or names a toolchain, and the scripts they call run Cargo in the
+repository root. Nothing checks the list again at finish.
+
+**Acceptance, still open.** One rust-cache suffix a platform on two image
+releases that differ only in their own Rust. No hosted run has executed the step:
+the uninstall and the check ran against rustup 1.29.3 in a local container, on a
+`RUSTUP_HOME` that listed a default beside the pinned toolchain.
+
 ### Trust, failure and storage bounds
 
 Cargo cache storage is isolated under the fresh runner's temporary directory.

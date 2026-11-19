@@ -189,6 +189,15 @@ IDENTITY_UNCHANGED = "unchanged"
 IDENTITY_REFUSAL = "cache identity changed or was not confirmed since setup"
 TRIPLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+# The pinned rust-cache hashes `rustc -vV` of every toolchain that `rustup
+# toolchain list` names into its part of the key. A hosted image ships a
+# default Rust of its own, which no build here runs and which differs between
+# image releases, so one platform on two images had two keys and built cold.
+# The setup phase therefore leaves rustup the active toolchain alone. A name is
+# checked against this pattern before it reaches a command line, where it is
+# one argument that cannot be read as an option.
+TOOLCHAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+TOOLCHAIN_CHANNEL = re.compile(r'^channel[ \t]*=[ \t]*"([^"\n]*)"[ \t]*(?:#.*)?$', re.MULTILINE)
 
 
 def profile_limit(profile):
@@ -623,6 +632,82 @@ def toolchain_identity():
     if len(hosts) != 1 or not TRIPLE.fullmatch(hosts[0]):
         raise ValueError("rustc reported no single host target")
     return {"rustc": digest(output), "target": hosts[0]}
+
+
+def listed_toolchains(listing):
+    """The toolchain names of a `rustup toolchain list` text, one a line, in its order.
+
+    A line's first word is the name, with or without rustup's `(active)` and
+    `(default)` notes. A name outside TOOLCHAIN raises: it is never guessed at.
+    """
+    names = []
+    for line in listing.splitlines():
+        words = line.split()
+        if not words:
+            continue
+        if not TOOLCHAIN.fullmatch(words[0]):
+            raise ValueError(f"rustup lists a toolchain whose name is not supported: {words[0]!r}")
+        names.append(words[0])
+    return names
+
+
+def active_toolchain(active, pinned):
+    """The active toolchain's name, which must be the one rust-toolchain.toml selects.
+
+    `active` is the output of `rustup show active-toolchain` in the checkout,
+    whose first word is the name, and `pinned` the text of rust-toolchain.toml.
+    rustup names the toolchain after the file's channel and the host, so
+    another name says something else selected it (RUSTUP_TOOLCHAIN does).
+    """
+    words = active.split()
+    if not words or not TOOLCHAIN.fullmatch(words[0]):
+        raise ValueError("rustup names no supported active Rust toolchain")
+    channels = TOOLCHAIN_CHANNEL.findall(pinned)
+    if len(channels) != 1 or not TOOLCHAIN.fullmatch(channels[0]):
+        raise ValueError("rust-toolchain.toml names no single supported channel")
+    if words[0] != channels[0] and not words[0].startswith(channels[0] + "-"):
+        raise ValueError(f"the active Rust toolchain {words[0]} is not the {channels[0]} that rust-toolchain.toml selects")
+    return words[0]
+
+
+def other_toolchains(listing, active):
+    """The listed toolchains that are not the active one: what the setup phase uninstalls."""
+    names = listed_toolchains(listing)
+    if active not in names:
+        raise ValueError(f"rustup does not list the active Rust toolchain {active}; it lists: {', '.join(names) or 'none'}")
+    return [name for name in names if name != active]
+
+
+def only_toolchain(listing, active):
+    """Raise, naming what is listed, unless rustup lists the active toolchain and no other."""
+    names = listed_toolchains(listing)
+    if names != [active]:
+        raise ValueError(f"rustup must list the active Rust toolchain {active} alone; it lists: {', '.join(names) or 'none'}")
+
+
+def toolchains():
+    """Uninstall every toolchain but the active one, then fail unless rustup lists it alone.
+
+    The listing is the command the pinned rust-cache hashes. A container job
+    uninstalls nothing: its account's RUSTUP_HOME holds only the toolchain the
+    job installed from rust-toolchain.toml, and the check keeps that true.
+    """
+    started = time.monotonic()
+    root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    container = os.environ.get("CACHE_CONTAINER", "")
+    if container not in {"", "archlinux"}:
+        raise ValueError("unsupported cache container")
+
+    def rustup(*arguments):
+        return run(["rustup", *arguments], cwd=root).decode("utf-8", "surrogateescape")
+
+    active = active_toolchain(rustup("show", "active-toolchain"), (root / "rust-toolchain.toml").read_text(encoding="utf-8"))
+    if not container:
+        for name in other_toolchains(rustup("toolchain", "list", "--quiet"), active):
+            rustup("toolchain", "uninstall", name)
+            print(f"Uninstalled Rust toolchain {name}, {time.monotonic() - started:.1f} s into the step")
+    only_toolchain(rustup("toolchain", "list", "--quiet"), active)
+    print(f"rustup lists the active Rust toolchain alone: {active} ({time.monotonic() - started:.1f} s)")
 
 
 def keyed_flags(environ):
@@ -1088,7 +1173,7 @@ def restored():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("prepare", "start", "restored", "compare", "bound"))
+    parser.add_argument("phase", choices=("toolchains", "prepare", "start", "restored", "compare", "bound"))
     args = parser.parse_args()
     account = os.environ.get("CACHE_RUN_AS")
     if account and args.phase not in {"compare", "bound"}:
@@ -1116,6 +1201,13 @@ def main():
         except Exception:  # noqa: BLE001
             # A line that cannot be printed fails no job either.
             pass
+    elif args.phase == "toolchains":
+        try:
+            toolchains()
+        except ValueError as error:
+            # By name, as an annotation: the message holds what rustup lists.
+            print(f"::error::{shown(str(error))}")
+            return 1
     elif args.phase == "prepare":
         prepare()
     elif args.phase == "start":
@@ -1153,7 +1245,8 @@ def main():
         output_file("GITHUB_OUTPUT", {"save": str(result["save"]).lower()})
         record("rust-cache-budget", time.monotonic() - start, details=result)
         print(json.dumps(result, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

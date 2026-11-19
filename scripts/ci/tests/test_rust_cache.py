@@ -634,7 +634,7 @@ class CacheFixture(unittest.TestCase):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
         steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
         helper = [step for step in steps if "cache.py " in step]
-        self.assertEqual(len(helper), 5)
+        self.assertEqual(len(helper), 6)
         for step in helper:
             with self.subTest(step=step.splitlines()[0]):
                 self.assertIn("CACHE_RUN_AS: ${{ inputs.run-as }}", step)
@@ -1655,6 +1655,190 @@ class CacheFixture(unittest.TestCase):
         # before Cargo could compare the rewound times.
         self.file(self.root / "vendor/tool/data/answer.txt", b"43")
         self.assertNotEqual(cache.source_identity(self.root), key)
+
+
+class FakeRustup:
+    """rustup as the toolchains phase runs it: a list of installed names, the active one and every command."""
+
+    def __init__(self, installed, active, *, uninstalls=True):
+        self.installed, self.active, self.uninstalls, self.commands = list(installed), active, uninstalls, []
+
+    def __call__(self, command, *, cwd=None, timeout=120):
+        self.commands.append((command, cwd))
+        if command == ["rustup", "show", "active-toolchain"]:
+            return f"{self.active} (overridden by '{cwd}/rust-toolchain.toml')\n".encode()
+        if command == ["rustup", "toolchain", "list", "--quiet"]:
+            return "".join(f"{name}\n" for name in self.installed).encode()
+        if command[:3] == ["rustup", "toolchain", "uninstall"] and len(command) == 4:
+            if self.uninstalls:
+                self.installed.remove(command[3])
+            return b""
+        raise AssertionError(f"unexpected command {command}")
+
+    def uninstalled(self):
+        return [command[3:] for command, _ in self.commands if command[:3] == ["rustup", "toolchain", "uninstall"]]
+
+
+class PinnedToolchainAlone(unittest.TestCase):
+    """rust-cache keys every toolchain rustup lists, so setup leaves the active one alone."""
+
+    PINNED = "1.99.0-x86_64-unknown-linux-gnu"
+    IMAGE = "stable-x86_64-unknown-linux-gnu"
+
+    def setUp(self):
+        (ROOT / ".local").mkdir(exist_ok=True)
+        temp = tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.99.0"\nprofile = "minimal"\n')
+
+    def phase(self, rustup, container=""):
+        """The phase's printed lines; whatever it raises passes through."""
+        with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(self.root), "CACHE_CONTAINER": container}), \
+                patch.object(cache, "run", side_effect=rustup), patch("builtins.print") as printed:
+            cache.toolchains()
+        return [" ".join(map(str, call.args)) for call in printed.call_args_list]
+
+    def test_every_listed_toolchain_but_the_active_one_is_removed(self):
+        for listing, removed in (
+                (f"{self.IMAGE}\n{self.PINNED}\n", [self.IMAGE]),
+                # rustup's own notes beside a name, when the listing is not the quiet one.
+                (f"{self.IMAGE} (default)\n{self.PINNED} (active)\n", [self.IMAGE]),
+                (f"{self.PINNED}\n1.100.0-x86_64-unknown-linux-gnu\n\nnightly-2026-11-01-x86_64-unknown-linux-gnu\n",
+                 ["1.100.0-x86_64-unknown-linux-gnu", "nightly-2026-11-01-x86_64-unknown-linux-gnu"]),
+                (f"{self.PINNED}\n", [])):
+            with self.subTest(listing=listing):
+                self.assertEqual(cache.other_toolchains(listing, self.PINNED), removed)
+        # Nothing is chosen for removal when the active one is not there to be kept.
+        for listing in ("", "no installed toolchains\n", f"{self.IMAGE}\n"):
+            with self.subTest(listing=listing), self.assertRaisesRegex(ValueError, f"does not list the active Rust toolchain {self.PINNED}"):
+                cache.other_toolchains(listing, self.PINNED)
+
+    def test_a_list_that_holds_another_toolchain_or_lacks_the_active_one_fails_by_name(self):
+        cache.only_toolchain(f"{self.PINNED}\n", self.PINNED)
+        cache.only_toolchain(f"{self.PINNED} (active, default)\n", self.PINNED)
+        for listing, named in ((f"{self.IMAGE}\n{self.PINNED}\n", f"{self.IMAGE}, {self.PINNED}"),
+                               (f"{self.PINNED}\n{self.PINNED}\n", f"{self.PINNED}, {self.PINNED}"),
+                               (f"{self.IMAGE}\n", self.IMAGE), ("", "none")):
+            with self.subTest(listing=listing):
+                with self.assertRaises(ValueError) as refused:
+                    cache.only_toolchain(listing, self.PINNED)
+                self.assertEqual(str(refused.exception),
+                                 f"rustup must list the active Rust toolchain {self.PINNED} alone; it lists: {named}")
+
+    def test_a_name_is_validated_before_any_reaches_a_command_line(self):
+        for name in ("--force", "-V", "stable;id", "$(id)", "a/b", "../x", "stable'", "é", "a" * 129):
+            with self.subTest(name=name):
+                rustup = FakeRustup([self.IMAGE, name, self.PINNED], self.PINNED)
+                with self.assertRaisesRegex(ValueError, "name is not supported"):
+                    self.phase(rustup)
+                # Not even the valid name listed before it was uninstalled.
+                self.assertEqual(rustup.uninstalled(), [])
+                with self.assertRaisesRegex(ValueError, "no supported active Rust toolchain"):
+                    cache.active_toolchain(f"{name} (default)\n", 'channel = "1.99.0"\n')
+
+    def test_the_active_toolchain_is_the_one_the_checkout_pins(self):
+        pinned = (ROOT / "rust-toolchain.toml").read_text()
+        channel = tomllib.loads(pinned)["toolchain"]["channel"]
+        for host in ("x86_64-unknown-linux-gnu", "aarch64-apple-darwin"):
+            name = f"{channel}-{host}"
+            self.assertEqual(cache.active_toolchain(f"{name} (overridden by '/w/rust-toolchain.toml')\n", pinned), name)
+        self.assertEqual(cache.active_toolchain(f"{channel}\nactive because: overridden by '/w/rust-toolchain.toml'\n", pinned), channel)
+        for active in (f"stable-x86_64-unknown-linux-gnu (overridden by environment variable RUSTUP_TOOLCHAIN)\n",
+                       f"{channel}1-x86_64-unknown-linux-gnu (default)\n", f"1{channel}-x86_64-unknown-linux-gnu\n"):
+            with self.subTest(active=active), self.assertRaisesRegex(ValueError, f"is not the {re.escape(channel)} that rust-toolchain.toml selects"):
+                cache.active_toolchain(active, pinned)
+        for active in ("", "\n"):
+            with self.subTest(active=active), self.assertRaisesRegex(ValueError, "no supported active Rust toolchain"):
+                cache.active_toolchain(active, pinned)
+        for text in ("[toolchain]\n", '[toolchain]\nchannel = "1.99.0"\nchannel = "stable"\n', '[toolchain]\nchannel = "--x"\n',
+                     "[toolchain]\nchannel = '1.99.0'\n"):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "no single supported channel"):
+                cache.active_toolchain(f"{self.PINNED}\n", text)
+
+    def test_setup_uninstalls_each_other_toolchain_as_one_argument_and_then_requires_the_active_one_alone(self):
+        rustup = FakeRustup([self.IMAGE, self.PINNED, "1.100.0-x86_64-unknown-linux-gnu"], self.PINNED)
+        lines = self.phase(rustup)
+        listing = ["rustup", "toolchain", "list", "--quiet"]
+        self.assertEqual([command for command, _ in rustup.commands], [
+            ["rustup", "show", "active-toolchain"], listing,
+            ["rustup", "toolchain", "uninstall", self.IMAGE],
+            ["rustup", "toolchain", "uninstall", "1.100.0-x86_64-unknown-linux-gnu"], listing])
+        # In the checkout, where rust-toolchain.toml selects the toolchain.
+        self.assertEqual({cwd for _, cwd in rustup.commands}, {self.root})
+        self.assertEqual(rustup.installed, [self.PINNED])
+        seconds = r"\d+\.\d s"
+        self.assertRegex(lines[0], rf"^Uninstalled Rust toolchain {re.escape(self.IMAGE)}, {seconds} into the step$")
+        self.assertRegex(lines[1], rf"^Uninstalled Rust toolchain 1\.100\.0-x86_64-unknown-linux-gnu, {seconds} into the step$")
+        self.assertRegex(lines[2], rf"^rustup lists the active Rust toolchain alone: {re.escape(self.PINNED)} \({seconds}\)$")
+        self.assertEqual(len(lines), 3)
+        # The pinned toolchain alone, as on the second job of a runner: nothing to uninstall.
+        alone = FakeRustup([self.PINNED], self.PINNED)
+        self.assertEqual(len(self.phase(alone)), 1)
+        self.assertEqual(alone.uninstalled(), [])
+        # An uninstall that left the toolchain listed is not taken on trust.
+        kept = FakeRustup([self.IMAGE, self.PINNED], self.PINNED, uninstalls=False)
+        with self.assertRaisesRegex(ValueError, f"alone; it lists: {self.IMAGE}, {self.PINNED}$"):
+            self.phase(kept)
+        # Something else selected the active toolchain: nothing is uninstalled for it.
+        overridden = FakeRustup([self.IMAGE, self.PINNED], self.IMAGE)
+        with self.assertRaisesRegex(ValueError, "is not the 1.99.0 that rust-toolchain.toml selects"):
+            self.phase(overridden)
+        self.assertEqual(overridden.uninstalled(), [])
+
+    def test_a_container_job_uninstalls_nothing_and_still_requires_the_active_toolchain_alone(self):
+        alone = FakeRustup([self.PINNED], self.PINNED)
+        self.assertRegex(self.phase(alone, "archlinux")[0], "^rustup lists the active Rust toolchain alone: ")
+        second = FakeRustup([self.IMAGE, self.PINNED], self.PINNED)
+        with self.assertRaisesRegex(ValueError, f"alone; it lists: {self.IMAGE}, {self.PINNED}$"):
+            self.phase(second, "archlinux")
+        self.assertEqual((alone.uninstalled(), second.uninstalled()), ([], []))
+        with self.assertRaisesRegex(ValueError, "unsupported cache container"):
+            self.phase(FakeRustup([self.PINNED], self.PINNED), "alpine")
+
+    def test_the_phase_fails_its_step_with_one_annotation_that_names_the_toolchains(self):
+        rustup = FakeRustup([self.IMAGE, self.PINNED], self.PINNED, uninstalls=False)
+        environment = {"GITHUB_WORKSPACE": str(self.root), "CACHE_CONTAINER": "", "CACHE_RUN_AS": ""}
+        with patch.dict(os.environ, environment), patch.object(cache, "run", side_effect=rustup), \
+                patch("sys.argv", ["cache.py", "toolchains"]), patch("builtins.print") as printed:
+            status = cache.main()
+        self.assertEqual(status, 1)
+        self.assertEqual([call.args for call in printed.call_args_list][-1], (
+            f"::error::rustup must list the active Rust toolchain {self.PINNED} alone; it lists: {self.IMAGE}, {self.PINNED}",))
+        with patch.dict(os.environ, environment), patch.object(cache, "run", side_effect=FakeRustup([self.PINNED], self.PINNED)), \
+                patch("sys.argv", ["cache.py", "toolchains"]), patch("builtins.print"):
+            self.assertEqual(cache.main(), 0)
+
+    def test_the_step_runs_on_every_job_after_the_toolchain_is_installed_and_before_the_key(self):
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
+        index = {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in {
+            "install": "rustup show active-toolchain", "alone": "cache.py toolchains", "key": "cache.py prepare",
+            "restore": "id: restore"}.items()}
+        self.assertEqual(sorted(index, key=index.get), list(index))
+        self.assertEqual(index["alone"], index["install"] + 1)
+        step = steps[index["alone"]].split("\n    #")[0]
+        # The container job included: the condition names the phase alone.
+        self.assertEqual(re.findall(r"^      if: (.*)$", step, re.M), ["inputs.phase == 'setup'"])
+        self.assertIn("        CACHE_CONTAINER: ${{ inputs.container }}\n", step)
+        self.assertIn("        CACHE_RUN_AS: ${{ inputs.run-as }}\n", step)
+        self.assertEqual(text.count("cache.py toolchains"), 1)
+
+    def test_no_other_input_of_the_restore_action_changed(self):
+        # The toolchains leave the key by leaving rustup, not by an input:
+        # turning the environment hash off would drop the lockfile hashes too.
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("uses: Swatinem/rust-cache@")[1:]
+        shared = {"prefix-key": "gitturtle-rust-v2", "shared-key": "${{ env.CI_RUST_CACHE_KEY }}",
+                  "workspaces": "crates -> ../target", "cache-bin": "false", "cache-workspace-crates": "false",
+                  "cache-all-crates": "false", "cache-on-failure": "false",
+                  "env-vars": "SDKROOT MACOSX_DEPLOYMENT_TARGET PKG_CONFIG LIBRARY_PATH LDFLAGS AR",
+                  "cmd-format": "${{ inputs.run-as != '' && format('setpriv --reuid={0} --regid={0} --init-groups -- {{0}}', "
+                                "inputs.run-as) || '{0}' }}"}
+        options = [dict(line.strip().split(": ", 1) for line in step.split("\n    #")[0].split("\n    - name: ")[0].splitlines()
+                        if line.startswith("        ") and ": " in line and not line.strip().startswith("#")) for step in steps]
+        self.assertEqual(options, [{**shared, "save-if": "false"}, {**shared, "lookup-only": "true", "save-if": "true"}])
+        self.assertTrue(all(step.startswith("d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3\n") for step in steps))
 
 
 class UbuntuPackages(unittest.TestCase):

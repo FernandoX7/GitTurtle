@@ -72,6 +72,19 @@ runs:
         rustup show active-toolchain
         rustc --version
         cargo --version
+    # The restore action hashes the compiler version of every toolchain rustup
+    # lists into its key, and a hosted image's own default Rust, which no step
+    # here runs, differs between image releases. Every listed toolchain but the
+    # active one is uninstalled. A container job's account holds the pinned
+    # toolchain alone, so nothing is uninstalled there. On every job the step
+    # fails unless rustup lists the active toolchain and no other.
+    - name: Leave rustup the pinned toolchain alone
+      if: inputs.phase == 'setup'
+      shell: bash
+      env:
+        CACHE_CONTAINER: ${{ inputs.container }}
+        CACHE_RUN_AS: ${{ inputs.run-as }}
+      run: python3 .github/actions/setup-rust/cache.py toolchains
     - name: Prepare cache identity and isolated Cargo storage
       if: inputs.phase == 'setup'
       shell: bash
