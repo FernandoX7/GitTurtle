@@ -2333,7 +2333,7 @@ arguments; the healthy one kept 300 s and 900 s.
 | Healthy | Exit 0 in under a minute: `update` 3 s, `install` of the step's 18 names 40 and 50 s in two runs. |
 | Every host dead | Exit 1 in under a second, at the lookup and before apt: `none of the hosts /etc/apt/sources.list.d/ubuntu.sources names resolved within 5 s`, then the three names. |
 | First dead, second alive | The warning that names the first, then at 30 s `apt-get update did not end within its 30 s deadline and was stopped; hosts: dead-mirror.invalid (did not resolve), ports.ubuntu.com (resolved)`; exit 1. |
-| First silent, second alive | No warning, since an address needs no lookup; the same line at 30 s with both hosts resolved; exit 1. |
+| First silent, second alive | No warning: the address passes the hostname pattern and its lookup answers at once; the same line at 30 s with both hosts resolved; exit 1. |
 
 After each of them `ps` listed no process of apt and none of the step's
 `sudo timeout`. A root command
