@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import types
 import unittest
@@ -26,8 +27,8 @@ SPEC.loader.exec_module(suites)
 
 STEP = 'python3 scripts/ci/tooling_suites.py run --directory "$RUNNER_TEMP/ci-metrics"'
 # Small suites for the driver to run. What a test depends on is waited for as an event, with a
-# deadline far beyond any runner's. The two fixed pauses are margins: one in which a wrong driver
-# would show itself, one in which the collector takes its signals.
+# deadline far beyond any runner's. The one fixed pause, in the slow suite, is not waited on by any
+# test of a right driver: it is the time in which a wrong one would show itself.
 FIXTURES = {
     # A package the groups are dealt from: seven tests, sorted a1 a2 a3 a4 b1 b2 b3.
     "dealt/pkg/__init__.py": "",
@@ -456,10 +457,11 @@ class DriverTests(Fixtures):
             self.assertNotIn("the failing suite fails here", "\n".join(group_lines(self.lines, name)))
         # Nothing of a process is printed before the last one ended: the groups follow every heartbeat.
         first_group = self.lines.index("::group::slow")
-        beats = [index for index, line in enumerate(self.lines) if re.match(r"tooling-suites: \+\d+ s: ", line)]
-        self.assertTrue(beats)
-        self.assertLess(max(beats), first_group)
-        self.assertRegex(self.lines[beats[0]], r"^tooling-suites: \+\d+ s: slow (running \(\d+ bytes of output\)|exit 0 after )")
+        # That one is printed at all is not asked here, where it would depend on how long the run
+        # took; the deadline tests cannot end without one.
+        for beat in (index for index, line in enumerate(self.lines) if re.match(r"tooling-suites: \+\d+ s: ", line)):
+            self.assertLess(beat, first_group)
+            self.assertRegex(self.lines[beat], r"^tooling-suites: \+\d+ s: slow (running \(\d+ bytes of output\)|exit 0 after )")
 
     def test_each_process_keeps_the_collectors_log_and_record_and_the_log_holds_the_same_lines(self):
         self.assertEqual(sorted(path.name for path in self.metrics.iterdir() if path != self.mark),
@@ -547,42 +549,64 @@ class OutputTests(Fixtures):
         self.assertIn("tooling-suites: FAILED: empty ran no test", lines)
         self.assertRegex("\n".join(lines), r"\ntooling-suites: empty: exit \d, \d+\.\d s, 0 tests\n")
 
-    def test_an_interrupted_driver_ends_what_it_started_and_still_reports(self):
-        with tempfile.TemporaryDirectory() as directory:
-            started = Path(directory) / "started"
-            # The half second before it says so is for the collector, which takes its signals a
-            # few statements after it has started its command.
-            waiting = ("import os, pathlib, sys, time; time.sleep(0.5); "
-                       "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(300)")
-            program = textwrap.dedent("""
-                import importlib.util, pathlib, sys
-                spec = importlib.util.spec_from_file_location("driver", sys.argv[1])
-                driver = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(driver)
-                job = driver.Job("waiting", (sys.executable, "-c", sys.argv[3], sys.argv[4]), None)
-                sys.exit(driver.run(pathlib.Path(sys.argv[2]), [job], None, cwd=sys.argv[2]))
-            """)
-            driver = subprocess.Popen([sys.executable, "-B", "-c", program, str(DRIVER), directory, waiting, str(started)],
-                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            try:
-                deadline = time.monotonic() + 120
-                while not (started.exists() and started.read_text(encoding="utf-8")):
-                    self.assertIsNone(driver.poll(), "the driver ended before its process started")
-                    self.assertLess(time.monotonic(), deadline)
-                    time.sleep(0.02)
-                driver.send_signal(signal.SIGTERM)
-                output, _ = driver.communicate(timeout=120)
-            finally:
-                if driver.poll() is None:
-                    driver.kill()
-                    driver.wait()
-                if started.exists() and started.read_text(encoding="utf-8"):
-                    with contextlib.suppress(ProcessLookupError):
-                        os.kill(int(started.read_text(encoding="utf-8")), signal.SIGKILL)
-            # The collector reports its command's end by SIGTERM as 143; the driver waited for it and reported.
-            self.assertEqual(driver.returncode, 1, output)
-            self.assertIn("\ntooling-suites: FAILED: waiting exited 143\n", output)
-            self.assertEqual(json.loads((Path(directory) / "waiting.json").read_text(encoding="utf-8"))["exit_code"], -15)
+    def test_an_interrupted_driver_ends_what_it_started_reports_and_attempts_no_proof(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        started = directory / "started"
+        # The command says that it is there and waits; only a signal ends it within the test's time.
+        waiting = ("import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+                   "print('the command is waiting', flush=True); time.sleep(120)")
+        program = textwrap.dedent("""
+            import importlib.util, pathlib, sys
+            spec = importlib.util.spec_from_file_location("driver", sys.argv[1])
+            driver = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(driver)
+            directory = pathlib.Path(sys.argv[2])
+            jobs, listing = driver.plan(directory, discovery=("-s", "pkg", "-t", ".", "-p", "test_*.py"), count=1, suites=())
+            jobs.append(driver.Job("waiting", (sys.executable, "-c", sys.argv[3], sys.argv[4]), None))
+            sys.exit(driver.run(directory / "metrics", jobs, listing, cwd=sys.argv[5], beat=0.05))
+        """)
+        driver = subprocess.Popen(
+            [sys.executable, "-B", "-c", program, str(DRIVER), str(directory), waiting, str(started), str(self.fixtures / "dealt")],
+            env={**os.environ, "TOOLING_SUITES_TEST_EVENTS": str(directory / "events")},
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # A driver that never gets there must not hold the test: ended, its output ends too.
+        watchdog = threading.Timer(120, driver.kill)
+        watchdog.start()
+        seen = []
+        try:
+            # The collector takes its signals before it reads its command's output (`measure` in
+            # metrics.py), and the driver's heartbeat counts bytes in the command's capture only
+            # after the collector has written a line there. From that line on a signal is passed
+            # on, however slowly anything here is scheduled.
+            for line in driver.stdout:
+                seen.append(line)
+                if re.search(r"; waiting running \([1-9]\d* bytes of output\)$", line.rstrip("\n")):
+                    break
+            else:
+                self.fail("the driver ended before its command's output was in the capture:\n" + "".join(seen))
+            driver.send_signal(signal.SIGTERM)
+            seen.append(driver.stdout.read())
+            driver.wait(timeout=120)
+        finally:
+            watchdog.cancel()
+            if driver.poll() is None:
+                driver.kill()
+                driver.wait()
+            driver.stdout.close()
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(started.read_text(encoding="utf-8")), signal.SIGKILL)
+        output = "".join(seen)
+        lines = output.split("\n")
+        # The collector reports its command's end by SIGTERM as 143; the driver waited for it and reported.
+        self.assertEqual(driver.returncode, 1, output)
+        self.assertIn("[ci] the command is waiting", lines)
+        self.assertIn("tooling-suites: FAILED: waiting exited 143", lines)
+        self.assertIn("tooling-suites: FAILED: the driver was sent SIGTERM and passed it on", lines)
+        self.assertEqual(json.loads((directory / "metrics" / "waiting.json").read_text(encoding="utf-8"))["exit_code"], -15)
+        # The step had failed, so the groups were not compared with a discovery, and none was started.
+        self.assertIn(DeadlineTests.NOT_ATTEMPTED, lines)
+        self.assertFalse((directory / "discovery.json").exists() or (directory / "agent-tooling-discovery.json").exists())
+
 
 
 class DeadlineTests(Fixtures):
