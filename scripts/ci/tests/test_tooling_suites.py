@@ -337,8 +337,8 @@ class GroupRunTests(Fixtures):
                          [["pkg.test_fine.Fine.test_passes"], ["unittest.loader._FailedTest.pkg.test_unloadable"]])
         self.assertEqual({name: record["exit_code"] for name, record in records.items()},
                          {"agent-tooling-1-of-2": 0, "agent-tooling-2-of-2": 1})
-        self.assertEqual([line for line in lines if "FAILED" in line and line.startswith("tooling-suites: ")],
-                         ["tooling-suites: FAILED: agent-tooling-2-of-2 exited 1"])
+        self.assertEqual(lines[-3:], ["tooling-suites: the 2 agent-loop groups hold the 2 discovered tests, each once (1 + 1)",
+                                      "tooling-suites: FAILED: agent-tooling-2-of-2 exited 1", ""])
         self.assertIn("a_module_that_does_not_exist_anywhere", "\n".join(group_lines(lines, "agent-tooling-2-of-2")))
 
     def test_a_group_refuses_a_place_it_does_not_have(self):

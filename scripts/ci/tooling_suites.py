@@ -329,6 +329,10 @@ def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT):
     for item, count in zip(running, counts):
         say(f"{item.name}: exit {item.exit}, {item.seconds:.1f} s, {'no' if count is None else count} tests")
     say(f"{len(running)} processes side by side took {whole:.1f} s")
+    if groups and not problems:
+        # Said whether or not a process failed: a failed test is then known not to be a lost one.
+        shares = " + ".join(str(len(held)) for held in groups.values())
+        say(f"the {len(groups)} agent-loop groups hold the {len(discovered)} discovered tests, each once ({shares})")
     for reason, identifier in problems:
         # A test id is the tests' text, not the driver's: sanitized, and last on its line.
         say(f"PROOF FAILED: {reason}" + ("" if identifier is None else ": " + " ".join(metrics.sanitize(identifier).split())))
@@ -336,9 +340,6 @@ def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT):
         say(f"FAILED: {failure}")
     if failures or problems:
         return 1
-    if groups:
-        shares = " + ".join(str(len(held)) for held in groups.values())
-        say(f"the {len(groups)} agent-loop groups hold the {len(discovered)} discovered tests, each once ({shares})")
     say(f"all {len(running)} processes passed")
     return 0
 
