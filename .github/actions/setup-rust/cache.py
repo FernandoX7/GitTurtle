@@ -118,13 +118,59 @@ UBUNTU_LOCAL_DIRECTORIES = ("/usr/local/include", "/usr/local/lib")
 # closure is then not all a build reads. A test holds this tuple equal to the
 # unsupplied names of the lock's probers.
 UBUNTU_UNSUPPLIED_PROBES = ("aws-lc", "libcrypto-awslc")
-# Environment that changes what rustc, build scripts or cc emit. Paths the
-# action fixes itself (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
-FLAG_NAMES = {"AR", "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "LIBRARY_PATH",
-              "RUSTC", "RUSTC_WRAPPER", "RUSTC_BOOTSTRAP", "RUSTFLAGS", "RUSTDOCFLAGS",
-              "CARGO_ENCODED_RUSTFLAGS", "CARGO_INCREMENTAL", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"}
-FLAG_PREFIXES = ("AR_", "CC_", "CXX_", "CFLAGS_", "CXXFLAGS_", "CMAKE", "PKG_CONFIG",
+# Environment that changes what rustc, build scripts, the compilers or the cc,
+# cmake and pkg-config crates emit. Each selected variable is hashed by name
+# and value, and the step prints the names alone. Paths the action fixes itself
+# (CARGO_HOME, CARGO_TARGET_DIR) are not flags.
+#
+# Cargo reruns a build script only for variables the script declared with
+# rerun-if-env-changed. ring 0.17.14 archives with cc's metadata off and the
+# cmake crate declares nothing, so for what they read this identity is all that
+# keeps a restored object from being used under another setting. The read set
+# is that of the locked cc 1.4.5, cmake 0.1.58 and pkg-config 0.3.34, taken
+# from their sources; a test pins the three versions to this list.
+#
+# Each of the three looks a FLAG_TARGETED name up as <VAR>_<target>, as
+# <VAR>_<target with underscores>, as HOST_<VAR> or TARGET_<VAR>, and as <VAR>
+# (cc: Build::target_envs; cmake: getenv_target_os; pkg-config:
+# targeted_env_var). The first two forms are keyed by the prefix <VAR>_, the
+# others as exact names: never by a bare HOST_ or TARGET_ prefix, under which a
+# runner's own variables would split the key between images.
+FLAG_TARGETED = (
+    "AR", "ARFLAGS", "CC", "CFLAGS", "CXX", "CXXFLAGS", "CXXSTDLIB", "NVCC", "RANLIB", "RANLIBFLAGS",
+    "CMAKE", "CMAKE_GENERATOR", "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE", "EMCMAKE", "EMMAKE",
+    "PKG_CONFIG", "PKG_CONFIG_ALLOW_CROSS", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_PATH", "PKG_CONFIG_SYSROOT_DIR",
+)
+# Then the names each reads in one form (cc's own CC_ settings are under the
+# CC_ prefix and pkg-config's under PKG_CONFIG), what the compilers and the
+# linker read themselves and nothing declares (CPATH, C_INCLUDE_PATH,
+# CPLUS_INCLUDE_PATH, LIBRARY_PATH), and rustc's and Cargo's own settings.
+#
+# Out, by decision: what Cargo sets itself for every build script, so that the
+# job's value never reaches one (TARGET, HOST, OUT_DIR, OPT_LEVEL, DEBUG,
+# PROFILE, NUM_JOBS, CARGO_MANIFEST_DIR, CARGO_MAKEFLAGS, CARGO_PKG_NAME); PATH,
+# whose selected tools the native identity keys; what cc reads for MSVC targets
+# alone; and the variables a build script declares itself, for which Cargo
+# reruns it: AWS_LC_SYS_*, bindgen's LIBCLANG_PATH and BINDGEN_EXTRA_CLANG_ARGS,
+# a name it hands to cc's flags_from_environment, and SYSTEM_DEPS_*, which the
+# install step refuses anyway.
+FLAG_NAMES = {"CPPFLAGS", "LDFLAGS", "LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
+              "RUSTC", "RUSTC_WRAPPER", "RUSTC_BOOTSTRAP", "RUSTC_LINKER", "RUSTFLAGS", "RUSTDOCFLAGS",
+              "CARGO_ENCODED_RUSTFLAGS", "CARGO_INCREMENTAL", "CARGO_TRIM_PATHS_REMAP", "CARGO_TRIM_PATHS_SCOPE",
+              "CARGO_CFG_TARGET_ABI", "CARGO_CFG_TARGET_ARCH", "CARGO_CFG_TARGET_ENV", "CARGO_CFG_TARGET_FEATURE",
+              "CARGO_CFG_TARGET_OS", "CARGO_CFG_TARGET_VENDOR",
+              "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET", "TVOS_DEPLOYMENT_TARGET",
+              "WATCHOS_DEPLOYMENT_TARGET", "XROS_DEPLOYMENT_TARGET",
+              "CRATE_CC_NO_DEFAULTS", "CROSS_COMPILE", "PAUTHTEST_RESOURCE_DIR", "PAUTHTEST_SYSROOT",
+              "WASI_SDK_PATH", "WASI_SYSROOT", "WASM_MUSL_SYSROOT", "SYSROOT",
+              *(kind + name for name in FLAG_TARGETED for kind in ("", "HOST_", "TARGET_"))}
+FLAG_PREFIXES = (*(name + "_" for name in FLAG_TARGETED), "CMAKE", "PKG_CONFIG",
                  "CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_TARGET_")
+# The forms built around a caller's name: the cmake crate's DEP_<dependency>_ROOT
+# and the pkg-config crate's <LIBRARY>_NO_PKG_CONFIG, <LIBRARY>_STATIC and
+# <LIBRARY>_DYNAMIC. A build script's own name of such a form
+# (AWS_LC_SYS_STATIC) is keyed with them: one name too many never makes a key stale.
+FLAG_FORMS = re.compile(r"DEP_.+_ROOT|.+_(?:NO_PKG_CONFIG|STATIC|DYNAMIC)")
 FLAG_EXCLUDED = {"CARGO_TARGET_DIR"}
 TRIPLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
@@ -534,12 +580,16 @@ def toolchain_identity():
     return {"rustc": digest(output), "target": hosts[0]}
 
 
+def keyed_flags(environ):
+    """The set variables of the environment that are flags, as sorted (name, value) pairs."""
+    return sorted((name, value) for name, value in environ.items()
+                  if value and name not in FLAG_EXCLUDED
+                  and (name in FLAG_NAMES or name.startswith(FLAG_PREFIXES) or FLAG_FORMS.fullmatch(name)))
+
+
 def flags_identity(environ):
     """Compiler, linker and Cargo profile settings from the environment, by name."""
-    selected = sorted((name, value) for name, value in environ.items()
-                      if value and name not in FLAG_EXCLUDED
-                      and (name in FLAG_NAMES or name.startswith(FLAG_PREFIXES)))
-    return digest(json.dumps(selected).encode())
+    return digest(json.dumps(keyed_flags(environ)).encode())
 
 
 def run_as(account):
@@ -898,6 +948,8 @@ def prepare():
                                  "native": native_identity(container or os.environ["RUNNER_OS"]),
                                  "toolchain": toolchain_identity(), "flags": flags_identity(os.environ)},
                                  sort_keys=True).encode())
+    # The names alone: a value can hold a path or a token.
+    print("Keyed flag variables: " + (shown(", ".join(name for name, _ in keyed_flags(os.environ))) or "none"))
     if vendor_reuse == "false":
         # Release builds must not link vendored objects from an earlier run:
         # checkout times leave any restored vendored output dirty, so Cargo

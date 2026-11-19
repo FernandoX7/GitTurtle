@@ -95,6 +95,75 @@ UBUNTU_PROBERS = {
 }
 
 
+# The locked versions whose sources the flags identity's read set was taken from.
+FLAG_CRATES = {"cc": "1.4.5", "cmake": "0.1.58", "pkg-config": "0.3.34"}
+# The names each of them looks up as <VAR>_<target>, <VAR>_<target with
+# underscores>, HOST_<VAR> or TARGET_<VAR>, and <VAR>, with the line of src/lib.rs
+# that asks for each.
+FLAG_TARGETED = {
+    # Build::target_envs builds the four forms (4296 to 4307).
+    "cc": {"AR": 3707, "ARFLAGS": 3690, "CC": 3268, "CFLAGS": 2137, "CXX": 3266, "CXXFLAGS": 2137, "CXXSTDLIB": 3630,
+           "NVCC": 3409, "RANLIB": 3748, "RANLIBFLAGS": 3737},
+    # getenv_target_os (947 to 960).
+    "cmake": {"CMAKE": 901, "CMAKE_GENERATOR": 513, "CMAKE_PREFIX_PATH": 572, "CMAKE_TOOLCHAIN_FILE": 451,
+              "EMCMAKE": 913, "EMMAKE": 926},
+    # targeted_env_var (659 to 680).
+    "pkg-config": {"PKG_CONFIG": 694, "PKG_CONFIG_ALLOW_CROSS": 640, "PKG_CONFIG_LIBDIR": 738, "PKG_CONFIG_PATH": 735,
+                   "PKG_CONFIG_SYSROOT_DIR": 741},
+}
+# The names read in one form. cc: src/lib.rs unless another file is named;
+# CC_ENABLE_DEBUG_OUTPUT is command_helpers.rs:48, RUSTC target/llvm.rs:279 and
+# target/parser.rs:581, the CARGO_CFG_TARGET_ names target/parser.rs:60 to 67
+# and lib.rs:2225. pkg-config: src/lib.rs.
+FLAG_SINGLE = {
+    "cc": {"CRATE_CC_NO_DEFAULTS": 2110, "CC_KNOWN_WRAPPER_CUSTOM": 3595, "CROSS_COMPILE": 3929, "CC_SHELL_ESCAPED_FLAGS": 4202,
+           "CC_FORCE_DISABLE": 4353, "SDKROOT": 4369, "MACOSX_DEPLOYMENT_TARGET": 4526, "IPHONEOS_DEPLOYMENT_TARGET": 4538,
+           "WATCHOS_DEPLOYMENT_TARGET": 4543, "TVOS_DEPLOYMENT_TARGET": 4547, "XROS_DEPLOYMENT_TARGET": 4551,
+           "WASM_MUSL_SYSROOT": 4568, "WASI_SYSROOT": 4579, "WASI_SDK_PATH": 4670, "PAUTHTEST_SYSROOT": 4683,
+           "PAUTHTEST_RESOURCE_DIR": 4698, "CC_ENABLE_DEBUG_OUTPUT": 48, "RUSTC": 279, "CARGO_ENCODED_RUSTFLAGS": 2777,
+           "CARGO_TRIM_PATHS_SCOPE": 2797, "CARGO_TRIM_PATHS_REMAP": 2800, "RUSTC_WRAPPER": 3540, "RUSTC_LINKER": 3935,
+           "CARGO_CFG_TARGET_FEATURE": 2225, "CARGO_CFG_TARGET_ARCH": 60, "CARGO_CFG_TARGET_VENDOR": 61,
+           "CARGO_CFG_TARGET_OS": 62, "CARGO_CFG_TARGET_ENV": 63, "CARGO_CFG_TARGET_ABI": 67},
+    "pkg-config": {"PKG_CONFIG_PATH_FOR_TARGET": 380, "PKG_CONFIG_ALL_STATIC": 784, "PKG_CONFIG_ALL_DYNAMIC": 786, "SYSROOT": 898},
+}
+# The forms built around a caller's name: cmake's DEP_<dependency>_ROOT (567) and
+# pkg-config's <LIBRARY>_NO_PKG_CONFIG (597), <LIBRARY>_STATIC (780) and <LIBRARY>_DYNAMIC (782).
+FLAG_CALLER_FORMS = ("DEP_AWS_LC_ROOT", "OPENSSL_NO_PKG_CONFIG", "FREETYPE2_STATIC", "FREETYPE2_DYNAMIC")
+# What the compilers and the linker read themselves, and rustc's and Cargo's own settings.
+FLAG_OTHERS = ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH", "CPPFLAGS", "LDFLAGS", "RUSTC_BOOTSTRAP",
+               "RUSTFLAGS", "RUSTDOCFLAGS", "CARGO_INCREMENTAL")
+# Read by the three crates and out of the identity all the same: Cargo sets
+# each for every build script, so the job's value never reaches one; and PATH,
+# whose selected tools the native identity keys.
+FLAG_CARGO_SETS = ("TARGET", "HOST", "OUT_DIR", "OPT_LEVEL", "DEBUG", "PROFILE", "NUM_JOBS", "CARGO_MANIFEST_DIR",
+                   "CARGO_MAKEFLAGS", "CARGO_PKG_NAME", "PATH")
+# Real build-script outputs of a release build of this workspace on aarch64
+# Linux (target/release/build/<crate>-<hash>/output, 2026-11-15), the home
+# prefix replaced: ring and freetype-sys and dav1d-sys whole, and of
+# aws-lc-sys, which prints 7,879 lines, its 116 distinct
+# rerun-if-env-changed lines in their first order.
+BUILD_OUTPUTS = ROOT / "scripts/ci/tests/fixtures/build-script-outputs"
+# What those scripts declare themselves, or Cargo sets for every build script:
+# out of the identity by decision. Everything else they declare is read by cc,
+# cmake or pkg-config for them.
+OWN_DECLARATION = re.compile(
+    r"AWS_LC_SYS_.+|SYSTEM_DEPS_.+|OPENSSL_(?:DIR|INCLUDE_DIR|LIB_DIR)(?:_aarch64_unknown_linux_gnu)?"
+    r"|HOST_(?:CC|CFLAGS|CXX)_aarch64_unknown_linux_gnu|RING_PREGENERATE_ASM|RUST_FONTCONFIG_DLOPEN"
+    r"|CARGO_FEATURE_SSL|CARGO_PKG_(?:NAME|VERSION_(?:MAJOR|MINOR|PATCH|PRE))|CARGO_MANIFEST_(?:DIR|LINKS)"
+    r"|CARGO_CFG_TARGET_ENDIAN|OUT_DIR")
+
+
+def declared(output):
+    """The names a build-script output declares with rerun-if-env-changed, each once, in first order."""
+    return list(dict.fromkeys(re.findall(r"^cargo:rerun-if-env-changed=(.+)$", (BUILD_OUTPUTS / output).read_text(), re.MULTILINE)))
+
+
+def locked_versions(lock, names):
+    """Every locked version of each named package, as {name: [versions]}."""
+    return {name: sorted(package["version"] for package in tomllib.loads(lock)["package"] if package["name"] == name)
+            for name in names}
+
+
 PROBER_ROW = re.compile(r"[A-Za-z0-9_-]+ \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
 
 
@@ -269,7 +338,7 @@ class CacheFixture(unittest.TestCase):
         settings = {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux"}
         if vendor_reuse is not None:
             settings["CACHE_VENDOR_REUSE"] = vendor_reuse
-        with patch.dict(os.environ, settings), patch.object(cache, "native_identity", return_value="native"):
+        with patch.dict(os.environ, settings), patch.object(cache, "native_identity", return_value="native"), patch("builtins.print"):
             if vendor_reuse is None:
                 os.environ.pop("CACHE_VENDOR_REUSE", None)
             cache.prepare()
@@ -581,11 +650,34 @@ class CacheFixture(unittest.TestCase):
         rows["libc6-dev:arm64"][0] += "+updated"
         self.assertNotEqual(key(), baseline)
 
+    def test_prepare_prints_the_flag_names_and_never_a_value(self):
+        self.init_git()
+        secret = "s3cret-value"
+        hostile = "CC_x\n::error::stop"
+        flags = {"CC": f"/opt/{secret}/bin/cc", "HOST_CFLAGS": f"-D{secret}", "OPENSSL_NO_PKG_CONFIG": secret,
+                 "RUSTFLAGS": f"--cfg {secret}", "CPATH": f"/opt/{secret}/include", hostile: secret}
+        others = {"HOSTNAME": secret, "HOST_FOO": secret, "CARGO_TARGET_DIR": str(self.paths[0]), "CFLAGS": ""}
+        clean = {name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ}
+
+        def printed(environ):
+            with patch.dict(os.environ, {**clean, **self.env, "CACHE_PROFILE": "debug", "RUNNER_OS": "Linux", **environ}, clear=True), \
+                    patch.object(cache, "native_identity", return_value="native"), patch("builtins.print") as shown:
+                cache.prepare()
+            Path(self.env["GITHUB_ENV"]).write_text("")
+            return [" ".join(map(str, call.args)) for call in shown.call_args_list]
+
+        lines = printed({**flags, **others})
+        # The selected names, sorted, on one line that no name can break or turn into a command.
+        self.assertEqual(lines, ["Keyed flag variables: CC, CC_x\\n::error::stop, CPATH, HOST_CFLAGS, OPENSSL_NO_PKG_CONFIG, RUSTFLAGS"])
+        self.assertNotIn(secret, "\n".join(lines))
+        self.assertEqual(printed(others), ["Keyed flag variables: none"])
+
     def test_profiles_have_distinct_identity_and_private_paths(self):
         self.init_git()
         identities = []
         for profile in sorted(cache.PROFILES):
-            with patch.dict(os.environ, {"CACHE_PROFILE": profile, "RUNNER_OS": "Linux"}), patch.object(cache, "native_identity", return_value="native"):
+            with patch.dict(os.environ, {"CACHE_PROFILE": profile, "RUNNER_OS": "Linux"}), \
+                    patch.object(cache, "native_identity", return_value="native"), patch("builtins.print"):
                 cache.prepare()
             values = dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines())
             identities.append(values["CI_RUST_CACHE_KEY"])
@@ -1967,6 +2059,111 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.runner.script(self.runner.bin / "dpkg-query", "exit 2")
         with self.assertRaises(subprocess.CalledProcessError):
             self.runner.native()
+
+
+class FlagsIdentity(unittest.TestCase):
+    """The environment part of the key: what cc, cmake, pkg-config and the compilers read, by name."""
+
+    def changes(self, name, value="value"):
+        return cache.flags_identity({name: value}) != cache.flags_identity({})
+
+    def test_every_form_the_three_crates_build_changes_the_digest(self):
+        targeted = [name for names in FLAG_TARGETED.values() for name in names]
+        self.assertEqual(len(targeted), 21)
+        forms = [form for name in targeted for form in (
+            name, f"HOST_{name}", f"TARGET_{name}", f"{name}_x86_64-unknown-linux-gnu", f"{name}_x86_64_unknown_linux_gnu",
+            f"{name}_thumbv8m_main_none_eabi")]
+        forms += [name for names in FLAG_SINGLE.values() for name in names]
+        forms += [*FLAG_CALLER_FORMS, *FLAG_OTHERS]
+        self.assertEqual(len(forms), len(set(forms)))
+        digests = {}
+        for name in forms:
+            with self.subTest(variable=name):
+                self.assertTrue(self.changes(name))
+                digests[name] = cache.flags_identity({name: "value", "HOSTNAME": "runner"})
+                # By value too, and a variable that is set and empty is not set.
+                self.assertNotEqual(cache.flags_identity({name: "other"}), digests[name])
+                self.assertFalse(self.changes(name, ""))
+        # Each by its own name: no two of them share a digest.
+        self.assertEqual(len(set(digests.values())), len(forms))
+        # The compilers' own search paths, which nothing declares.
+        self.assertLessEqual({"CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH"}, cache.FLAG_NAMES)
+
+    def test_names_that_only_begin_like_a_form_leave_the_digest_unchanged(self):
+        # A runner's own variables: the host forms are exact names, never a prefix.
+        for name in ("HOSTNAME", "HOST_FOO", "TARGET_FOO", "HOSTTYPE", "HOST_", "TARGET_", "HOST_CC_x86_64_unknown_linux_gnu",
+                     "TARGET_CFLAGS_x86_64-unknown-linux-gnu", "HOST_PKG_CONFIG_PATH_x86_64_unknown_linux_gnu", "TARGET_DIR",
+                     "HOST_CMAKE_BUILD_PARALLEL_LEVEL", "DEPLOYMENT_BASEPATH", "DEP_ROOT", "STATIC", "DYNAMIC", "NO_PKG_CONFIG",
+                     "ARCH", "CCACHE_DIR", "RANLIBX", "CARGO_TARGET_DIR", "CARGO_HOME", "CARGO_TERM_COLOR"):
+            with self.subTest(variable=name):
+                self.assertFalse(self.changes(name))
+        for name in ("HOST_FOO", "TARGET_FOO"):
+            self.assertFalse(name.startswith(cache.FLAG_PREFIXES))
+            self.assertIsNone(cache.FLAG_FORMS.fullmatch(name))
+        self.assertEqual([prefix for prefix in cache.FLAG_PREFIXES if "HOST_X".startswith(prefix) or "TARGET_X".startswith(prefix)
+                          or prefix.startswith(("HOST", "TARGET"))], [])
+        # Out by decision: what Cargo sets for every build script, PATH, and what a build script declares itself.
+        for name in (*FLAG_CARGO_SETS, "AWS_LC_SYS_CMAKE_BUILDER", "AWS_LC_SYS_NO_ASM", "LIBCLANG_PATH", "BINDGEN_EXTRA_CLANG_ARGS",
+                     "SYSTEM_DEPS_LINK", "SYSTEM_DEPS_DAV1D_BUILD_INTERNAL", "RING_PREGENERATE_ASM"):
+            with self.subTest(variable=name):
+                self.assertFalse(self.changes(name))
+
+    def test_what_real_build_scripts_have_cc_and_pkg_config_read_changes_the_digest(self):
+        # (declared names, those of them in the identity); then the names a script
+        # declares itself that have one of pkg-config's forms and are keyed with them.
+        outputs = {"ring-0.17.14.output": ((23, 13), []), "freetype-sys-0.20.1.output": ((22, 22), []),
+                   "dav1d-sys-0.8.3.output": ((29, 19), ["SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG"]),
+                   "aws-lc-sys-0.45.0.rerun-if-env-changed": ((116, 55), ["AWS_LC_SYS_STATIC"])}
+        self.assertEqual(sorted(path.name for path in BUILD_OUTPUTS.iterdir()), sorted(outputs))
+        for output, (counts, overlap) in outputs.items():
+            with self.subTest(output=output):
+                names = declared(output)
+                keyed = [name for name in names if self.changes(name)]
+                # Nothing cc or pkg-config reads for the script is left out of the identity.
+                self.assertEqual([name for name in names if name not in keyed and not OWN_DECLARATION.fullmatch(name)], [])
+                self.assertEqual(sorted(name for name in keyed if OWN_DECLARATION.fullmatch(name)), overlap)
+                self.assertEqual((len(names), len(keyed)), counts)
+                self.assertNotIn("/home/" + os.environ.get("USER", "runner") + "/", (BUILD_OUTPUTS / output).read_text())
+        # ring archives with cc's metadata off: what cc reads for the archiver is declared by nobody.
+        ring = set(declared("ring-0.17.14.output"))
+        self.assertLessEqual({"CC", "HOST_CC", "CFLAGS", "HOST_CFLAGS", "CC_aarch64-unknown-linux-gnu", "CFLAGS_aarch64_unknown_linux_gnu"}, ring)
+        self.assertFalse(ring & {"AR", "HOST_AR", "ARFLAGS", "HOST_ARFLAGS", "RANLIB", "RANLIBFLAGS"})
+        for name in ("AR", "HOST_AR", "ARFLAGS", "HOST_ARFLAGS", "RANLIB", "RANLIBFLAGS", "AR_aarch64-unknown-linux-gnu"):
+            self.assertTrue(self.changes(name), name)
+
+    def test_read_set_is_that_of_the_locked_cc_cmake_and_pkg_config(self):
+        lock = (ROOT / "Cargo.lock").read_text()
+        self.assertEqual(locked_versions(lock, FLAG_CRATES), {name: [version] for name, version in FLAG_CRATES.items()}, (
+            "Cargo.lock moved cc, cmake or pkg-config, or locks a second version of one. The flags identity keys the "
+            "environment variables these three read, taken from the sources of the versions in FLAG_CRATES, because "
+            "Cargo reruns a build script only for the variables it declared. Read the new version again in the Cargo "
+            "registry: cc's src/lib.rs (Build::target_envs and every caller of get_env, get_env_boolean, "
+            "get_env_overridable, getenv_with_target_prefixes and envflags), src/utilities.rs (the callers of "
+            "cargo_env_var and cargo_env_var_os), src/command_helpers.rs and src/target/; cmake's src/lib.rs "
+            "(getenv_target_os, getenv_os, getenv_unwrap and env::var_os); pkg-config's src/lib.rs (targeted_env_var, "
+            "env_var_os and env::var). Then bring cache.FLAG_TARGETED, cache.FLAG_NAMES and cache.FLAG_FORMS and this "
+            "file's FLAG_TARGETED, FLAG_SINGLE and FLAG_CRATES in step."))
+        # The check sees an update and a second locked version.
+        for name, version in FLAG_CRATES.items():
+            stanza = f'name = "{name}"\nversion = "{version}"\n'
+            self.assertEqual(lock.count(stanza), 1)
+            moved = locked_versions(lock.replace(stanza, f'name = "{name}"\nversion = "{version}1"\n'), FLAG_CRATES)
+            self.assertEqual(moved[name], [f"{version}1"])
+            second = locked_versions(f'{lock}\n[[package]]\nname = "{name}"\nversion = "{version}1"\n', FLAG_CRATES)
+            self.assertEqual(second[name], [version, f"{version}1"])
+        # The reviewed list is the helper's, name for name.
+        targeted = [name for names in FLAG_TARGETED.values() for name in names]
+        self.assertEqual(cache.FLAG_TARGETED, tuple(targeted))
+        single = {name for names in FLAG_SINGLE.values() for name in names}
+        under_prefix = {name for name in single if name.startswith(("CC_", "PKG_CONFIG"))}
+        self.assertEqual(under_prefix, {"CC_KNOWN_WRAPPER_CUSTOM", "CC_SHELL_ESCAPED_FLAGS", "CC_FORCE_DISABLE", "CC_ENABLE_DEBUG_OUTPUT",
+                                        "PKG_CONFIG_PATH_FOR_TARGET", "PKG_CONFIG_ALL_STATIC", "PKG_CONFIG_ALL_DYNAMIC"})
+        self.assertEqual(cache.FLAG_NAMES, {*(single - under_prefix), *FLAG_OTHERS,
+                                            *(kind + name for name in targeted for kind in ("", "HOST_", "TARGET_"))})
+        self.assertEqual(cache.FLAG_PREFIXES, (*(name + "_" for name in targeted), "CMAKE", "PKG_CONFIG",
+                                               "CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_TARGET_"))
+        self.assertEqual(cache.FLAG_FORMS.pattern, r"DEP_.+_ROOT|.+_(?:NO_PKG_CONFIG|STATIC|DYNAMIC)")
+        self.assertEqual(cache.FLAG_EXCLUDED, {"CARGO_TARGET_DIR"})
 
 
 class UbuntuKeyPreconditions(unittest.TestCase):

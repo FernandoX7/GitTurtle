@@ -1493,13 +1493,8 @@ hashes:
   Arch container keys its listed packages' pacman versions
   ([Arch cache](#arch-linux-container-job)). Each covers native ABI/SDK changes.
 - The active compiler's full `rustc -vV` and the target triple it reports as
-  `host` (each keyed job compiles for its host), and the build flags set in the
-  environment by name: `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTDOCFLAGS`,
-  `RUSTC`, `RUSTC_WRAPPER`, `RUSTC_BOOTSTRAP`, `CARGO_INCREMENTAL`, `CC`, `CXX`,
-  `AR`, `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `LIBRARY_PATH`, `SDKROOT`,
-  `MACOSX_DEPLOYMENT_TARGET`, and any `CARGO_BUILD_*`, `CARGO_PROFILE_*`,
-  `CARGO_TARGET_*` (except `CARGO_TARGET_DIR`), `CMAKE*`, `PKG_CONFIG*` and
-  per-target `CC_*`, `CXX_*`, `AR_*`, `CFLAGS_*` or `CXXFLAGS_*` variable. Upstream's
+  `host` (each keyed job compiles for its host), and the build settings in the
+  environment, by name and value ([flags identity](#flags-identity)). Upstream's
   own key hashes the same compiler and much of the same environment; these are
   in the local key too, so the helper's tests can show each one invalidates.
 
@@ -1512,6 +1507,75 @@ reviewable way to isolate a cold experiment without deleting another job's cache
 Any edit to the setup action already changes the key because its files are hashed;
 the prefix moved from `v1` to `v2` with vendored reuse so the two generations are
 distinguishable in the cache list.
+
+#### Flags identity
+
+The flags identity hashes the name and value of every set, non-empty environment
+variable that changes what rustc, a build script, a compiler or the `cc`, `cmake`
+and `pkg-config` crates emit. The step prints the selected names on one line
+(`Keyed flag variables: …`, or `none`) and never a value: a value can hold a path
+or a token.
+
+**Why the three crates' whole read set.** Cargo reruns a build script only for
+the variables the script declared with `rerun-if-env-changed`. `ring` 0.17.14
+archives with cc's metadata off, so nothing declares what cc reads for the
+archiver, and the `cmake` crate declares nothing at all. For those the flags
+identity is the only thing that keeps a restored object from being used under
+another setting. The set is read from the sources of the locked `cc` 1.4.5,
+`cmake` 0.1.58 and `pkg-config` 0.3.34. A test pins those three versions in
+`Cargo.lock` to the reviewed list and fails, naming the functions to read again,
+when one moves or a second version is locked.
+
+- *Names looked up in four forms.* cc: `AR`, `ARFLAGS`, `CC`, `CFLAGS`, `CXX`,
+  `CXXFLAGS`, `CXXSTDLIB`, `NVCC`, `RANLIB`, `RANLIBFLAGS`. cmake: `CMAKE`,
+  `CMAKE_GENERATOR`, `CMAKE_PREFIX_PATH`, `CMAKE_TOOLCHAIN_FILE`, `EMCMAKE`,
+  `EMMAKE`. pkg-config: `PKG_CONFIG`, `PKG_CONFIG_ALLOW_CROSS`,
+  `PKG_CONFIG_LIBDIR`, `PKG_CONFIG_PATH`, `PKG_CONFIG_SYSROOT_DIR`. Each crate
+  asks for `<VAR>_<target>`, `<VAR>_<target with underscores>`, `HOST_<VAR>` or
+  `TARGET_<VAR>`, and `<VAR>`. The first two are keyed by the prefix `<VAR>_`;
+  `<VAR>`, `HOST_<VAR>` and `TARGET_<VAR>` are keyed as exact names. No bare
+  `HOST_` or `TARGET_` prefix is keyed: `HOSTNAME`, or a variable a runner sets
+  under such a prefix, would split the key between images again.
+- *Names read in one form.* cc: `CRATE_CC_NO_DEFAULTS`, `CROSS_COMPILE`,
+  `SDKROOT`, the `MACOSX_`, `IPHONEOS_`, `TVOS_`, `WATCHOS_` and
+  `XROS_DEPLOYMENT_TARGET` names, `WASI_SDK_PATH`, `WASI_SYSROOT`,
+  `WASM_MUSL_SYSROOT`, `PAUTHTEST_SYSROOT`, `PAUTHTEST_RESOURCE_DIR`,
+  `RUSTC_LINKER`, `CARGO_TRIM_PATHS_SCOPE`, `CARGO_TRIM_PATHS_REMAP`, the
+  `CARGO_CFG_TARGET_` names `ABI`, `ARCH`, `ENV`, `FEATURE`, `OS` and `VENDOR`,
+  and its own `CC_*` settings. pkg-config: `SYSROOT` and every other
+  `PKG_CONFIG*` name. Every `CMAKE*` name is keyed as before.
+- *Forms built around a caller's name.* The cmake crate's
+  `DEP_<dependency>_ROOT`, and the pkg-config crate's `<LIBRARY>_NO_PKG_CONFIG`,
+  `<LIBRARY>_STATIC` and `<LIBRARY>_DYNAMIC`.
+- *What the compilers and the linker read themselves*, and nothing declares:
+  `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` and `LIBRARY_PATH`; and
+  `CPPFLAGS` and `LDFLAGS`.
+- *rustc's and Cargo's settings.* `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
+  `RUSTDOCFLAGS`, `RUSTC`, `RUSTC_WRAPPER`, `RUSTC_BOOTSTRAP`,
+  `CARGO_INCREMENTAL`, and any `CARGO_BUILD_*`, `CARGO_PROFILE_*` or
+  `CARGO_TARGET_*` variable except `CARGO_TARGET_DIR`.
+
+**Out, by decision.** What Cargo sets itself for every build script, so that the
+job's value never reaches one: `TARGET`, `HOST`, `OUT_DIR`, `OPT_LEVEL`, `DEBUG`,
+`PROFILE`, `NUM_JOBS`, `CARGO_MANIFEST_DIR`, `CARGO_MAKEFLAGS` and
+`CARGO_PKG_NAME`. `PATH`, whose value changes from step to step: the Ubuntu
+native key holds the file behind each build tool name instead. What cc reads for
+MSVC targets alone. And the variables a build script declares itself, for which
+Cargo reruns it: `AWS_LC_SYS_*`, bindgen's `LIBCLANG_PATH` and
+`BINDGEN_EXTRA_CLANG_ARGS`, a name a script hands to cc's
+`flags_from_environment`, and `SYSTEM_DEPS_*`, which the install step refuses
+anyway. A name of that kind that has one of pkg-config's forms, such as
+`AWS_LC_SYS_STATIC`, is keyed with the form: one name too many never makes a key
+stale.
+
+The tests hold real build-script outputs of a release build on aarch64 Linux
+(`ring`, `freetype-sys` and `dav1d-sys` whole, and the declarations of
+`aws-lc-sys`) under
+[`scripts/ci/tests/fixtures/build-script-outputs`](../scripts/ci/tests/fixtures/build-script-outputs):
+every `rerun-if-env-changed` name in them that cc or pkg-config reads for the
+script changes the digest, and what is left out is exactly the scripts' own
+declarations and Cargo's variables. `ring`'s output shows the gap the identity
+closes: it declares the `CC` and `CFLAGS` forms and none of the archiver's.
 
 #### Ubuntu native key
 
@@ -1562,9 +1626,9 @@ time) and hashes these parts.
   identity above, by value only: a directory that `PKG_CONFIG_PATH`,
   `PKG_CONFIG_LIBDIR` or a target-suffixed form of either adds is not listed,
   so a `.pc` file placed there later would not change the key. The pkg-config
-  crate's `HOST_PKG_CONFIG_*` and `TARGET_PKG_CONFIG_*` forms are in neither:
-  the flags identity keys names that begin with `PKG_CONFIG`. No workflow sets
-  any of them.
+  crate's `HOST_` and `TARGET_` forms of its five names are in the
+  [flags identity](#flags-identity) as exact names, by value too. No workflow
+  sets any of them.
 - *Names no build package ships.* `aws-lc-sys` 0.45.0 asks pkg-config for
   `openssl`, `aws-lc`, `libcrypto` and `libcrypto-awslc` and links a system
   AWS-LC when one of them resolves to one. `libssl-dev` ships the first and the
