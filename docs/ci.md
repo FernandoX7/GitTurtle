@@ -881,7 +881,8 @@ Ubuntu lanes no longer key the image's inventory: like this lane they key only t
 packages a build reads, found as a dependency closure instead of a written list
 ([Ubuntu native key](#ubuntu-native-key)). Two images share one entry only when the
 closure's versions, the build tools, pkg-config's view and the `/usr/local` listing
-also match and neither falls back to the inventory, which no hosted run has shown yet.
+also match and neither falls back to the inventory; the first hosted run showed
+that for the two clouds' images of one release.
 
 **Cost.** Before the cache, every run was cold: an image pull (about 308 MB
 compressed), the package upgrade and install, the toolchain download, a full debug
@@ -1611,7 +1612,8 @@ it keeps `linux-libc-dev`, whose headers `libc6-dev` includes. The container's
 snapshot is the tests'
 [fixture](../scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv).
 
-**What the narrower key gives up.** The image's other packages, about 2,000: a
+**What the narrower key gives up.** The image's other packages, over a thousand
+(1,055 of the 1,252 on the AWS x64 image of the first hosted run): a
 build script that found a library, header or tool the action does not install
 would no longer change the key (the first precondition below). And the state
 outside dpkg that the old key followed only by accident, because a new image
@@ -1640,8 +1642,8 @@ the fallback is one entry per image again, slower and never stale.
 **Preconditions.** The width holds only while two things stay true.
 
 1. Every locked dependency whose build script probes for a library, header or
-   tool finds it in the build packages. The image holds about 2,000 packages the
-   action never installs, and a dependency added later could probe one of them
+   tool finds it in the build packages. The image holds over a thousand packages
+   outside the closure, and a dependency added later could probe one of them
    without the install line changing. Today the users of `pkg-config`,
    `system-deps`, `cmake` and `bindgen` in `Cargo.lock` are `aws-lc-sys`,
    `dav1d-sys`, `freetype-sys`, `gpui-pre`, `gpui-pre-media`, `khronos-egl`,
@@ -1693,9 +1695,21 @@ the runner's older command spelling `##[` broken up (`#\x23[`), so no keyed
 value can start a line of its own or form a workflow command.
 
 The action's files are hashed into the key, so each change to the helper makes
-every lane cold once. No hosted run has computed the new key yet: the hosted
-keys of the two clouds, and whether they are one, are recorded here after the
-first runs.
+every lane cold once.
+
+**First hosted run.** Run `44457231193`, the change's own pull-request run on
+November 19, 2026, computed the key in five Ubuntu jobs, each in the closure mode
+with no warning. The four x64 jobs ran on both clouds, three on AWS (image
+20261111.127.1) and one on Azure (20261111.370.1), and computed one native
+digest: 197 packages keyed, of 1,252 installed on the AWS image and 1,248 on the
+Azure one, `cmake` resolving to the image's own 3.31.6 under `/usr/local/bin`, no
+`.pc` file outside dpkg's directories, both
+unsupplied names absent, and the same entries at the top of `/usr/local/include`
+and `/usr/local/lib`. With the inventory in the key those two images had computed
+two keys from one commit. The arm64 release job (Azure, 20261111.182.1) keyed 195
+of 1,254 packages and computed its own digest. Every lane missed in that run, as
+the helper had changed; hits, and the images of a later release, are recorded
+after `main` has saved the new keys.
 
 ### Trust, failure and storage bounds
 

@@ -54,7 +54,7 @@ ARCH_RUNTIME_PACKAGES = ("shared-mime-info", "vulkan-headers", "vulkan-icd-loade
 # compiles with, probes or links. They are the roots of the keyed dependency
 # closure (ubuntu_packages), which reaches Ubuntu's version- and
 # architecture-named toolchain packages without naming them. The hosted image's
-# other packages, about 2,000, stay out of the key: the label is served by two
+# other packages, over a thousand, stay out of the key: the label is served by two
 # clouds with different inventories, and a key over all of it gave one commit
 # two entries. Two preconditions hold that width. A locked dependency that
 # probes for a library, header or tool must find it in these packages, not in

@@ -52,7 +52,7 @@ UNSUPPLIED = "no build package ships it"
 # own) or UNSUPPLIED; then the build packages behind the commands and compilers
 # it runs. A package that asks for nothing on Linux has the reason instead. The
 # Ubuntu key holds those packages' closure and not the hosted image's other
-# 2,000 packages, so a prober may find nothing outside it. The .pc owners are
+# packages, over a thousand, so a prober may find nothing outside it. The .pc owners are
 # those of the traced container's dpkg file lists. A row is one locked version:
 # an update gets a new row only once its build script has been read again.
 UBUNTU_PROBERS = {
