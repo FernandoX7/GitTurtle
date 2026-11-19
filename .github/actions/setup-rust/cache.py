@@ -181,6 +181,12 @@ FLAG_PREFIXES = (*(name + "_" for name in FLAG_TARGETED), "CMAKE", "PKG_CONFIG",
 # (AWS_LC_SYS_STATIC) is keyed with them: one name too many never makes a key stale.
 FLAG_FORMS = re.compile(r"DEP_.+_ROOT|.+_(?:NO_PKG_CONFIG|STATIC|DYNAMIC)")
 FLAG_EXCLUDED = {"CARGO_TARGET_DIR"}
+# The identity prepare keyed, kept beside the job for the finish phase: the
+# comparison names what changed from it. Its verdict is the one word that
+# lets the bound phase save; everything else refuses.
+IDENTITY_STATE = "gitturtle-cache-identity.json"
+IDENTITY_UNCHANGED = "unchanged"
+IDENTITY_REFUSAL = "cache identity changed or was not confirmed since setup"
 TRIPLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 
@@ -579,6 +585,7 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local, pc_added=
 
 
 def native_identity(platform):
+    """The platform's native digest and the lines that show what is in it; nothing is printed here."""
     if platform == "Linux":
         snapshot = run(DPKG_SNAPSHOT).decode("utf-8", "surrogateescape")
         tools = {name: tool_identity(name) for name in UBUNTU_TOOLS}
@@ -587,10 +594,8 @@ def native_identity(platform):
         probes = {name: pkg_config_probe(pkg_config, name) for name in UBUNTU_UNSUPPLIED_PROBES}
         pc_path, pc_files, pc_added = pkg_config_view(pkg_config, os.environ)
         directed = [name for name, _ in variable_forms(os.environ, (*PKG_CONFIG_DIRECTORIES, PKG_CONFIG_SYSROOT))]
-        native, lines = ubuntu_identity(snapshot, tools, pc_path, pc_files, probes,
-                                        local_listing(UBUNTU_LOCAL_DIRECTORIES), pc_added, directed)
-        print("\n".join(lines))
-        return native
+        return ubuntu_identity(snapshot, tools, pc_path, pc_files, probes,
+                               local_listing(UBUNTU_LOCAL_DIRECTORIES), pc_added, directed)
     if platform == "macOS":
         commands = [["xcodebuild", "-version"], ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
                     ["xcrun", "--sdk", "macosx", "--show-sdk-build-version"],
@@ -602,10 +607,9 @@ def native_identity(platform):
     else:
         raise ValueError("Rust cache supports only the native Quality platforms")
     outputs = [run(command) for command in commands]
-    if platform == "archlinux":
-        # The day's rolling versions this key was built against, for comparing runs.
-        print("Keyed Arch packages:", " ".join(outputs[0].decode("utf-8", "replace").split()))
-    return digest(b"\0".join(outputs))
+    # The day's rolling versions this key was built against, for comparing runs.
+    lines = ["Keyed Arch packages: " + " ".join(outputs[0].decode("utf-8", "replace").split())] if platform == "archlinux" else []
+    return digest(b"\0".join(outputs)), lines
 
 
 def toolchain_identity():
@@ -968,29 +972,77 @@ def record(name, elapsed, *, cache=None, details=None):
     (directory / f"{name}.json").write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def prepare():
+def cache_identity():
+    """The cache key and its five parts, from the environment and the machine as they are now.
+
+    No side effect: nothing is created, rewound, exported or printed, so
+    prepare and the finish phase's comparison compute the identity alike.
+    CARGO_INCREMENTAL is keyed by its effective value: prepare exports 0 when
+    the job set none, as the restore action does after it, so the variable is
+    the same in both phases by construction and needs no exemption.
+    """
     profile = os.environ["CACHE_PROFILE"]
     if profile not in PROFILES:
         raise ValueError("unsupported cache profile")
+    container = os.environ.get("CACHE_CONTAINER", "")
+    if container not in {"", "archlinux"}:
+        raise ValueError("unsupported cache container")
+    root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    inputs = keyed_inputs(root)
+    flags = keyed_flags({**os.environ, "CARGO_INCREMENTAL": os.environ.get("CARGO_INCREMENTAL") or "0"})
+    native, lines = native_identity(container or os.environ["RUNNER_OS"])
+    parts = {"profile": profile, "source": source_identity(root, inputs), "native": native,
+             "toolchain": toolchain_identity(), "flags": digest(json.dumps(flags).encode())}
+    key = "-".join(filter(None, (profile, container, digest(json.dumps(parts, sort_keys=True).encode()))))
+    return {"key": key, "parts": parts, "native_lines": lines, "flags": flags, "inputs": inputs}
+
+
+def compared():
+    """Whether the identity is still the one setup keyed: (verdict, lines to print).
+
+    The verdict compares the recomputed key with the CI_RUST_CACHE_KEY the save
+    step reads. What prepare kept only names the difference: the parts, the
+    native part's differing keyed lines, and the flags by name, never by value.
+    A missing key or state raises, which the caller turns into a refusal.
+    """
+    expected = os.environ["CI_RUST_CACHE_KEY"]
+    state = json.loads((Path(os.environ["RUNNER_TEMP"]) / IDENTITY_STATE).read_text(encoding="utf-8"))
+    kept = {"parts": dict(state["parts"]), "native_lines": [str(line) for line in state["native_lines"]],
+            "flags": {str(name): str(value) for name, value in state["flags"].items()}}
+    current = cache_identity()
+    if current["key"] == expected:
+        return IDENTITY_UNCHANGED, [f"Cache identity unchanged since setup: {shown(current['key'])}"]
+    parts = [name for name in current["parts"] if kept["parts"].get(name) != current["parts"][name]] or ["key"]
+    lines = [f"::warning::Cache identity changed since setup, so this job saves no cache entry: {shown(', '.join(parts))}"]
+    if "native" in parts:
+        before, after = kept["native_lines"], current["native_lines"]
+        lines += [f"- {shown(line)}" for line in before if line not in after]
+        lines += [f"+ {shown(line)}" for line in after if line not in before]
+    if "flags" in parts:
+        flags = {name: digest(value.encode("utf-8", "surrogateescape")) for name, value in current["flags"]}
+        differing = sorted(name for name in {*kept["flags"], *flags} if kept["flags"].get(name) != flags.get(name))
+        lines.append(f"Flag variables that differ: {shown(', '.join(differing))}")
+    return "changed", lines
+
+
+def prepare():
     vendor_reuse = os.environ.get("CACHE_VENDOR_REUSE", "false")
     if vendor_reuse not in {"true", "false"}:
         raise ValueError("unsupported vendor reuse setting")
     root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
     temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+    identity = cache_identity()
+    profile, inputs = identity["parts"]["profile"], identity["inputs"]
     cargo = temp / "gitturtle-cargo"
     cargo.mkdir(exist_ok=True)
     if cargo.is_symlink() or (root / "target").is_symlink():
         raise ValueError("symlinked cache roots refused")
-    container = os.environ.get("CACHE_CONTAINER", "")
-    if container not in {"", "archlinux"}:
-        raise ValueError("unsupported cache container")
-    inputs = keyed_inputs(root)
-    identity = digest(json.dumps({"profile": profile, "source": source_identity(root, inputs),
-                                 "native": native_identity(container or os.environ["RUNNER_OS"]),
-                                 "toolchain": toolchain_identity(), "flags": flags_identity(os.environ)},
-                                 sort_keys=True).encode())
     # The names alone: a value can hold a path or a token.
-    print("Keyed flag variables: " + (shown(", ".join(name for name, _ in keyed_flags(os.environ))) or "none"))
+    print("\n".join([*identity["native_lines"],
+                     "Keyed flag variables: " + shown(", ".join(name for name, _ in identity["flags"]))]))
+    (temp / IDENTITY_STATE).write_text(json.dumps({
+        "key": identity["key"], "parts": identity["parts"], "native_lines": identity["native_lines"],
+        "flags": {name: digest(value.encode("utf-8", "surrogateescape")) for name, value in identity["flags"]}}), encoding="utf-8")
     if vendor_reuse == "false":
         # Release builds must not link vendored objects from an earlier run:
         # checkout times leave any restored vendored output dirty, so Cargo
@@ -1005,11 +1057,15 @@ def prepare():
             vendor_mtimes = "refused"
     # The container name keeps its entries apart from the Ubuntu job's in the
     # cache list; both run on Linux x64 runners.
-    output_file("GITHUB_ENV", {"CI_RUST_CACHE_KEY": "-".join(filter(None, (profile, container, identity))),
-                              "CI_RUST_CACHE_PROFILE": profile,
-                              "CI_RUST_CACHE_VENDOR_MTIMES": vendor_mtimes,
-                              "CI_RUST_CACHE_LOCK": digest((root / "Cargo.lock").read_bytes()),
-                              "CARGO_HOME": cargo, "CARGO_TARGET_DIR": root / "target"})
+    exported = {"CI_RUST_CACHE_KEY": identity["key"],
+                "CI_RUST_CACHE_PROFILE": profile,
+                "CI_RUST_CACHE_VENDOR_MTIMES": vendor_mtimes,
+                "CI_RUST_CACHE_LOCK": digest((root / "Cargo.lock").read_bytes()),
+                "CARGO_HOME": cargo, "CARGO_TARGET_DIR": root / "target"}
+    if not os.environ.get("CARGO_INCREMENTAL"):
+        # The value the identity keyed, exported before the restore action exports the same.
+        exported["CARGO_INCREMENTAL"] = "0"
+    output_file("GITHUB_ENV", exported)
 
 
 def restored():
@@ -1032,12 +1088,29 @@ def restored():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("prepare", "start", "restored", "bound"))
+    parser.add_argument("phase", choices=("prepare", "start", "restored", "compare", "bound"))
     args = parser.parse_args()
     account = os.environ.get("CACHE_RUN_AS")
-    if account and args.phase != "bound":
+    if account and args.phase not in {"compare", "bound"}:
         run_as(account)
-    if args.phase == "prepare":
+    if args.phase == "compare":
+        # On every event, after validation passed: nothing here fails the job.
+        # Whatever goes wrong refuses the save and is never read as unchanged.
+        try:
+            if account:
+                run_as(account)
+            verdict, lines = compared()
+        except Exception as error:  # noqa: BLE001
+            verdict = "unconfirmed"
+            lines = ["::warning::Cache identity could not be compared with setup, so this job saves no cache entry: "
+                     + shown(type(error).__name__)]
+        try:
+            print("\n".join(lines))
+            output_file("GITHUB_OUTPUT", {"identity": verdict})
+        except Exception:  # noqa: BLE001
+            # No verdict reaches the bound phase, which then refuses.
+            pass
+    elif args.phase == "prepare":
         prepare()
     elif args.phase == "start":
         (Path(os.environ["RUNNER_TEMP"]) / "gitturtle-cache-start").write_text(str(time.monotonic()))
@@ -1051,7 +1124,10 @@ def main():
         snapshots = []
         diagnostics = {}
         target = os.environ.get("CACHE_TARGET", "")
+        confirmed = os.environ.get("CACHE_IDENTITY") == IDENTITY_UNCHANGED
         try:
+            if not confirmed:
+                raise ValueError(IDENTITY_REFUSAL)
             # Inside the guard: after validation passed, an account failure
             # only refuses the save.
             if account:
@@ -1063,9 +1139,9 @@ def main():
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             # Cache failure cannot turn already-passed validation into a failure;
             # retain a fixed diagnostic without leaking Cargo output or paths.
-            result = {"save": False, "reason": "cache budget preparation unavailable", "snapshots": snapshots,
-                      "limit_bytes": diagnostics.get("limit_bytes"),
-                      "failure_stage": diagnostics.get("stage", "unavailable"),
+            result = {"save": False, "reason": "cache budget preparation unavailable" if confirmed else IDENTITY_REFUSAL,
+                      "snapshots": snapshots, "limit_bytes": diagnostics.get("limit_bytes"),
+                      "failure_stage": diagnostics.get("stage", "unavailable" if confirmed else "identity"),
                       "stage_seconds": diagnostics.get("stage_seconds", []),
                       "evicted_packages": diagnostics.get("evicted_packages", [])}
         output_file("GITHUB_OUTPUT", {"save": str(result["save"]).lower()})

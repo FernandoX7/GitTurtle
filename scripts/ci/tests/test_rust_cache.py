@@ -14,6 +14,7 @@ import textwrap
 import time
 import tomllib
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -164,6 +165,37 @@ def locked_versions(lock, names):
             for name in names}
 
 
+# The six lanes that save a cache entry, each as (RUNNER_OS, the variables the
+# runner printed for the action's prepare step, those it printed for the finish
+# phase's first step that prepare did not export) in hosted run 44457231193 of
+# 2026-11-19: read from the job logs, a path under the runner's own directories
+# left out. CACHE_ON_FAILURE and, on the five lanes that set none,
+# CARGO_INCREMENTAL are the restore action's exports. Assumed, because a log
+# prints only the variables a workflow, an action or a step set: that the
+# runner's own process environment holds no flag variable in either phase,
+# which this change's `Keyed flag variables` line shows on a hosted run.
+LANES = {
+    "Ubuntu debug": ("Linux", {"CACHE_PROFILE": "debug", "CACHE_VENDOR_REUSE": "true", "CACHE_CONTAINER": "", "CACHE_RUN_AS": ""},
+                     {"CACHE_TARGET": ""}),
+    "Ubuntu release x64": ("Linux", {"CACHE_PROFILE": "release", "CACHE_VENDOR_REUSE": "true", "CACHE_CONTAINER": "", "CACHE_RUN_AS": ""},
+                           {"CACHE_TARGET": "x86_64-unknown-linux-gnu"}),
+    "Ubuntu release arm64": ("Linux", {"CACHE_PROFILE": "release", "CACHE_VENDOR_REUSE": "true", "CACHE_CONTAINER": "", "CACHE_RUN_AS": ""},
+                             {"CACHE_TARGET": "aarch64-unknown-linux-gnu"}),
+    "macOS debug": ("macOS", {"CACHE_PROFILE": "debug", "CACHE_VENDOR_REUSE": "true", "CACHE_CONTAINER": "", "CACHE_RUN_AS": ""},
+                    {"CACHE_TARGET": ""}),
+    "macOS release": ("macOS", {"CACHE_PROFILE": "release", "CACHE_VENDOR_REUSE": "true", "CACHE_CONTAINER": "", "CACHE_RUN_AS": "",
+                                "DEVELOPER_DIR": "/Applications/Xcode_26.3.app/Contents/Developer"},
+                      {"CACHE_TARGET": "aarch64-apple-darwin"}),
+    "Arch debug": ("Linux", {"CACHE_PROFILE": "debug", "CACHE_VENDOR_REUSE": "true", "CACHE_CONTAINER": "archlinux",
+                             "CACHE_RUN_AS": "builder", "CARGO_INCREMENTAL": "0", "LANG": "C.UTF-8"},
+                   {"CACHE_TARGET": ""}),
+}
+for _system, _prepare, _finish in LANES.values():
+    # In every lane's logs alike: the job's own variables, and what the finish phase's steps have beside setup's exports.
+    _prepare.update({"CARGO_TERM_COLOR": "always", "GIT_CONFIG_NOSYSTEM": "1", "RUST_BACKTRACE": "1"})
+    _finish.update({"CACHE_PHASE": "finish", "CACHE_VENDOR_REUSE": "false", "CACHE_ON_FAILURE": "false", "CARGO_INCREMENTAL": "0"})
+
+
 PROBER_ROW = re.compile(r"[A-Za-z0-9_-]+ \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
 
 
@@ -268,8 +300,10 @@ class UbuntuRunner:
     def native(self, *earlier, later=(), variables=None):
         """The native digest and the lines the step prints, with `earlier` directories first on PATH and `later` last."""
         with self.environment(*earlier, later=later, variables=variables), patch("builtins.print") as shown:
-            native = cache.native_identity("Linux")
-        return native, shown.call_args.args[0].split("\n")
+            native, lines = cache.native_identity("Linux")
+        # The identity prints nothing itself: prepare prints its lines, and the comparison only what differs.
+        shown.assert_not_called()
+        return native, lines
 
 
 class FakeClock:
@@ -297,7 +331,9 @@ class CacheFixture(unittest.TestCase):
         self.paths = (self.root / "target", self.cargo / "registry", self.cargo / "git")
         self.env = {"GITHUB_WORKSPACE": str(self.root), "RUNNER_TEMP": str(self.runner),
                     "CARGO_HOME": str(self.cargo), "CARGO_TARGET_DIR": str(self.paths[0]),
-                    "GITHUB_ENV": str(self.runner / "env"), "GITHUB_OUTPUT": str(self.runner / "output")}
+                    "GITHUB_ENV": str(self.runner / "env"), "GITHUB_OUTPUT": str(self.runner / "output"),
+                    # What the finish phase's comparison hands the bound phase when the identity is the one setup keyed.
+                    "CACHE_IDENTITY": "unchanged"}
         self.patch = patch.dict(os.environ, self.env)
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -342,7 +378,7 @@ class CacheFixture(unittest.TestCase):
         settings = {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux"}
         if vendor_reuse is not None:
             settings["CACHE_VENDOR_REUSE"] = vendor_reuse
-        with patch.dict(os.environ, settings), patch.object(cache, "native_identity", return_value="native"), patch("builtins.print"):
+        with patch.dict(os.environ, settings), patch.object(cache, "native_identity", return_value=("native", [])), patch("builtins.print"):
             if vendor_reuse is None:
                 os.environ.pop("CACHE_VENDOR_REUSE", None)
             cache.prepare()
@@ -548,10 +584,10 @@ class CacheFixture(unittest.TestCase):
         self.assertFalse(runtime & set(cache.ARCH_NATIVE_PACKAGES))
         self.assertLessEqual(installed - tools - runtime, set(cache.ARCH_NATIVE_PACKAGES))
         self.assertLessEqual({"gcc", "glibc", "binutils", "clang", "linux-api-headers"}, set(cache.ARCH_NATIVE_PACKAGES))
-        with patch.object(cache, "run", return_value=b"gcc 15.2.1-1\n") as run, patch("builtins.print") as shown:
-            cache.native_identity("archlinux")
+        with patch.object(cache, "run", return_value=b"gcc 15.2.1-1\n") as run:
+            native, lines = cache.native_identity("archlinux")
         self.assertEqual(run.call_args.args[0], ["pacman", "-Q", *sorted(cache.ARCH_NATIVE_PACKAGES)])
-        self.assertEqual(shown.call_args.args, ("Keyed Arch packages:", "gcc 15.2.1-1"))
+        self.assertEqual((native, lines), (cache.digest(b"gcc 15.2.1-1\n"), ["Keyed Arch packages: gcc 15.2.1-1"]))
 
     def test_run_as_becomes_the_account_and_refuses_root_or_a_different_user(self):
         account = type("Entry", (), {"pw_uid": 1001, "pw_gid": 1001})()
@@ -596,7 +632,7 @@ class CacheFixture(unittest.TestCase):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
         steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
         helper = [step for step in steps if "cache.py " in step]
-        self.assertEqual(len(helper), 4)
+        self.assertEqual(len(helper), 5)
         for step in helper:
             with self.subTest(step=step.splitlines()[0]):
                 self.assertIn("CACHE_RUN_AS: ${{ inputs.run-as }}", step)
@@ -616,7 +652,7 @@ class CacheFixture(unittest.TestCase):
         self.assertIn('if [ -n "$CACHE_CONTAINER" ] && [ -z "$CACHE_RUN_AS" ]; then exit 2; fi', validation)
         self.init_git()
         with patch.dict(os.environ, {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux", "CACHE_CONTAINER": "alpine"}), \
-                patch.object(cache, "native_identity", return_value="native"):
+                patch.object(cache, "native_identity", return_value=("native", [])):
             with self.assertRaises(ValueError):
                 cache.prepare()
 
@@ -665,23 +701,264 @@ class CacheFixture(unittest.TestCase):
 
         def printed(environ):
             with patch.dict(os.environ, {**clean, **self.env, "CACHE_PROFILE": "debug", "RUNNER_OS": "Linux", **environ}, clear=True), \
-                    patch.object(cache, "native_identity", return_value="native"), patch("builtins.print") as shown:
+                    patch.object(cache, "native_identity", return_value=("native", [])), patch("builtins.print") as shown:
                 cache.prepare()
             Path(self.env["GITHUB_ENV"]).write_text("")
             return [" ".join(map(str, call.args)) for call in shown.call_args_list]
 
         lines = printed({**flags, **others})
         # The selected names, sorted, on one line that no name can break or turn into a command.
-        self.assertEqual(lines, ["Keyed flag variables: CC, CC_x\\n::error::stop, CPATH, HOST_CFLAGS, OPENSSL_NO_PKG_CONFIG, RUSTFLAGS"])
+        # CARGO_INCREMENTAL is always among them: prepare keys its effective value.
+        self.assertEqual(lines, ["Keyed flag variables: CARGO_INCREMENTAL, CC, CC_x\\n::error::stop, CPATH, HOST_CFLAGS, "
+                                 "OPENSSL_NO_PKG_CONFIG, RUSTFLAGS"])
         self.assertNotIn(secret, "\n".join(lines))
-        self.assertEqual(printed(others), ["Keyed flag variables: none"])
+        self.assertEqual(printed(others), ["Keyed flag variables: CARGO_INCREMENTAL"])
+
+    def lane(self, name):
+        """A lane's runner for `phases`: its operating system's answers, and its two environments from the hosted logs."""
+        system, prepare, finish = LANES[name]
+        rows = snapshot_rows()
+        if system == "Linux" and not prepare.get("CACHE_CONTAINER"):
+            runner = UbuntuRunner(Path(tempfile.mkdtemp(prefix="ubuntu-", dir=self.base)))
+            (runner.bin / "git").symlink_to(shutil.which("git"))
+            path = str(runner.bin)
+        else:
+            runner, path = None, os.environ["PATH"]
+        real, answers = cache.run, {("pacman", "-Q"): b"gcc 15.2.1-1\n", ("xcodebuild", "-version"): b"Xcode 26.3\n",
+                                    ("xcrun", "--sdk"): b"26.3\n", ("xcrun", "clang"): b"clang 21\n", ("sw_vers", "-buildVersion"): b"25D125\n"}
+
+        def answer(command, **kwargs):
+            return answers[tuple(command[:2])] if tuple(command[:2]) in answers else real(command, **kwargs)
+
+        return {"system": system, "prepare": prepare, "finish": finish, "runner": runner, "rows": rows, "path": path, "answer": answer}
+
+    def phases(self, lane, *, between=lambda: None, finish=None, compare=None, state=lambda path: None, account=None):
+        """prepare in the lane's prepare-time environment, then the comparison and bound in its finish-time one.
+
+        Returns what the three wrote: prepare's exports, the comparison's lines and its output, bound's output and result.
+        """
+        base = {**self.env, "PATH": lane["path"], "RUNNER_OS": lane["system"]}
+        del base["CACHE_IDENTITY"], base["CARGO_HOME"], base["CARGO_TARGET_DIR"]
+        for name in ("GITHUB_ENV", "GITHUB_OUTPUT"):
+            Path(self.env[name]).write_text("")
+        local = tuple(str(directory) for directory in lane["runner"].local) if lane["runner"] else cache.UBUNTU_LOCAL_DIRECTORIES
+        become = unittest.mock.Mock(side_effect=account)
+        with patch.object(cache, "run", side_effect=lane["answer"]), patch.object(cache, "UBUNTU_LOCAL_DIRECTORIES", local), \
+                patch.object(cache, "run_as", become), patch.object(cache, "record") as record, \
+                patch.object(cache, "bound_payload", return_value={"save": True, "reason": "within budget"}) as bound:
+            if lane["runner"]:
+                lane["runner"].snapshot.write_text(snapshot_text(lane["rows"]))
+            with patch.dict(os.environ, {**base, **lane["prepare"]}, clear=True), patch("sys.argv", ["cache.py", "prepare"]), \
+                    patch("builtins.print"):
+                before = cache.cache_identity()["key"]
+                cache.main()
+            exports = dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines())
+            self.assertEqual(exports["CI_RUST_CACHE_KEY"], before)
+            between()
+            if lane["runner"]:
+                lane["runner"].snapshot.write_text(snapshot_text(lane["rows"]))
+            # The finish phase's steps see the job's variables, what setup exported, and the action's own for the step.
+            environment = {**base, **lane["prepare"], **exports, **lane["finish"], **(finish or {})}
+            state(self.runner / cache.IDENTITY_STATE)
+            source = self.root / "vendor/tool/src/lib.rs"
+            os.utime(source)
+            checkout, tree = source.stat().st_mtime_ns, sorted(self.base.rglob("*"))
+            # `compare` changes the comparison step's variables alone; None takes one away.
+            compared = {name: value for name, value in {**environment, **(compare or {})}.items() if value is not None}
+            with patch.dict(os.environ, compared, clear=True), patch("sys.argv", ["cache.py", "compare"]), \
+                    patch("builtins.print") as shown:
+                cache.main()
+            lines = [line for call in shown.call_args_list for line in " ".join(map(str, call.args)).split("\n")]
+            # The comparison exports nothing, rewinds nothing and creates nothing.
+            self.assertEqual(dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines()), exports)
+            self.assertEqual((source.stat().st_mtime_ns, sorted(self.base.rglob("*"))), (checkout, tree))
+            output = Path(self.env["GITHUB_OUTPUT"])
+            written = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.is_file() else {}
+            if output.is_dir():
+                output.rmdir()
+            output.write_text("")
+            with patch.dict(os.environ, {**environment, "CACHE_IDENTITY": written.get("identity", "")}, clear=True), \
+                    patch("sys.argv", ["cache.py", "bound"]), patch("builtins.print"):
+                cache.main()
+        return {"exports": exports, "lines": lines, "identity": written, "save": Path(self.env["GITHUB_OUTPUT"]).read_text(),
+                "result": record.call_args.kwargs["details"], "bound": bound, "account": become}
+
+    def refused(self, outcome):
+        """The save was refused with the fixed reason, and the payload was never touched."""
+        self.assertEqual(outcome["save"], "save=false\n")
+        self.assertEqual((outcome["result"]["save"], outcome["result"]["reason"], outcome["result"]["failure_stage"]),
+                         (False, "cache identity changed or was not confirmed since setup", "identity"))
+        outcome["bound"].assert_not_called()
+
+    def test_each_lane_keeps_one_identity_between_setup_and_finish_and_saves(self):
+        self.init_git()
+        self.assertEqual(sorted(LANES), ["Arch debug", "Ubuntu debug", "Ubuntu release arm64", "Ubuntu release x64",
+                                         "macOS debug", "macOS release"])
+        for name in LANES:
+            with self.subTest(lane=name):
+                lane = self.lane(name)
+                outcome = self.phases(lane)
+                key = outcome["exports"]["CI_RUST_CACHE_KEY"]
+                # One positive line that names the key, no warning, and the save goes ahead.
+                self.assertEqual(outcome["lines"], [f"Cache identity unchanged since setup: {key}"])
+                self.assertEqual(outcome["identity"], {"identity": "unchanged"})
+                self.assertEqual((outcome["save"], outcome["result"]), ("save=true\n", {"save": True, "reason": "within budget"}))
+                outcome["bound"].assert_called_once()
+                # prepare exports the CARGO_INCREMENTAL it keyed where the job set none: the five lanes but Arch.
+                self.assertEqual(outcome["exports"].get("CARGO_INCREMENTAL"), None if "CARGO_INCREMENTAL" in lane["prepare"] else "0")
+                self.assertEqual("CARGO_INCREMENTAL" in lane["prepare"], name == "Arch debug")
+                self.assertEqual(lane["finish"]["CARGO_INCREMENTAL"], "0")
+                # The build account computes both, as it runs prepare.
+                account = lane["prepare"].get("CACHE_RUN_AS")
+                self.assertEqual([call.args for call in outcome["account"].call_args_list], [(account,)] * 3 if account else [])
+                # The profile and the container name the entry, as before.
+                prefix = "-".join(filter(None, (lane["prepare"]["CACHE_PROFILE"], lane["prepare"]["CACHE_CONTAINER"])))
+                self.assertRegex(key, rf"^{prefix}-[0-9a-f]{{64}}$")
+
+    def test_each_part_changed_since_setup_refuses_the_save_with_one_warning_that_names_it(self):
+        self.init_git()
+        warning = "::warning::Cache identity changed since setup, so this job saves no cache entry: {}"
+        secret = "s3cret-value"
+
+        def changed(part, expected, **phases):
+            with self.subTest(part=part):
+                lane = self.lane("Ubuntu debug")
+                phases = {name: (value(lane) if callable(value) and name == "between" else value) for name, value in phases.items()}
+                outcome = self.phases(lane, **phases)
+                self.assertEqual(outcome["lines"][0], warning.format(part))
+                self.assertEqual([line for line in outcome["lines"] if line.lstrip().startswith("::")], [warning.format(part)])
+                self.assertEqual(outcome["lines"][1:], expected(outcome) if callable(expected) else expected)
+                self.assertEqual(outcome["identity"], {"identity": "changed"})
+                self.assertNotIn(secret, "\n".join(outcome["lines"]))
+                self.refused(outcome)
+                subprocess.run(["git", "-C", str(self.root), "checkout", "-q", "--", "."], check=True)
+
+        changed("profile", [], compare={"CACHE_PROFILE": "release"})
+        changed("source", [], between=lambda lane: lambda: self.file(self.root / "Cargo.toml", b"changed after setup"))
+        # A package updated by a step after setup: the keyed lines that differ, setup's then this phase's.
+        version = snapshot_rows()["libc6-dev:arm64"][0]
+
+        def native(outcome):
+            digests = [line for line in outcome["lines"] if "Ubuntu native digest: " in line]
+            self.assertEqual([line[:2] for line in digests], ["- ", "+ "])
+            return [f"- libc6-dev:arm64={version}", digests[0], f"+ libc6-dev:arm64={version}+updated", digests[1]]
+
+        changed("native", native, between=lambda lane: lambda: lane["rows"]["libc6-dev:arm64"].__setitem__(0, version + "+updated"))
+        with patch.object(cache, "toolchain_identity", side_effect=[{"rustc": "rustc", "target": "x86_64-unknown-linux-gnu"}] * 2
+                          + [{"rustc": "updated", "target": "x86_64-unknown-linux-gnu"}]):
+            changed("toolchain", [])
+        # A flag by its name, never its value: one that appeared, one that changed and one that went.
+        changed("flags", ["Flag variables that differ: RUSTFLAGS"], compare={"RUSTFLAGS": f"--cfg {secret}"})
+        lane = self.lane("Ubuntu debug")
+        lane["prepare"] = {**lane["prepare"], "CC": f"/opt/{secret}/cc", "HOST_CFLAGS": "-O2"}
+        outcome = self.phases(lane, compare={"CC": "/usr/bin/cc", "HOST_CFLAGS": None, "CFLAGS": secret, "CARGO_INCREMENTAL": "1"})
+        self.assertEqual(outcome["lines"], [warning.format("flags"), "Flag variables that differ: CARGO_INCREMENTAL, CC, CFLAGS, HOST_CFLAGS"])
+        self.refused(outcome)
+        # The verdict is about the key the save step reads: one that a later step replaced is refused
+        # although every part is as setup kept it, and what setup kept only names the difference.
+        outcome = self.phases(self.lane("Ubuntu debug"), compare={"CI_RUST_CACHE_KEY": "debug-" + "0" * 64})
+        self.assertEqual((outcome["lines"], outcome["identity"]), ([warning.format("key")], {"identity": "changed"}))
+        self.refused(outcome)
+
+        def rekeyed(path):
+            path.write_text(json.dumps({**json.loads(path.read_text()), "key": "debug-" + "0" * 64}))
+
+        outcome = self.phases(self.lane("Ubuntu debug"), state=rekeyed)
+        self.assertEqual((outcome["identity"], outcome["save"]), ({"identity": "unchanged"}, "save=true\n"))
+        # Two parts at once are both named, in one warning.
+        lane = self.lane("Ubuntu debug")
+        outcome = self.phases(lane, between=lambda: self.file(self.root / "Cargo.lock", b"changed"), compare={"RUSTFLAGS": "-g"})
+        self.assertEqual(outcome["lines"], [warning.format("source, flags"), "Flag variables that differ: RUSTFLAGS"])
+        self.refused(outcome)
+
+    def test_comparison_that_cannot_be_made_refuses_the_save_and_never_fails_the_job(self):
+        self.init_git()
+        warning = "::warning::Cache identity could not be compared with setup, so this job saves no cache entry: {}"
+        failures = {
+            "the key setup exported is gone": ({"compare": {"CI_RUST_CACHE_KEY": None}}, "KeyError"),
+            "the kept identity is gone": ({"state": lambda path: path.unlink()}, "FileNotFoundError"),
+            "the kept identity is not JSON": ({"state": lambda path: path.write_text("{")}, "JSONDecodeError"),
+            "the kept identity lacks a part": ({"state": lambda path: path.write_text('{"key": "debug-0"}')}, "KeyError"),
+            "the kept identity is another shape": ({"state": lambda path: path.write_text('{"parts": [], "native_lines": 1, "flags": {}}')}, "TypeError"),
+            "the kept identity cannot be read": ({"state": lambda path: (path.unlink(), path.mkdir())}, "IsADirectoryError"),
+            "the runner's temporary directory is gone": ({"compare": {"RUNNER_TEMP": None}}, "KeyError"),
+            "the profile is not one of the action's": ({"compare": {"CACHE_PROFILE": "bench"}}, "ValueError"),
+        }
+        for label, (phases, error) in failures.items():
+            with self.subTest(failure=label):
+                outcome = self.phases(self.lane("Ubuntu debug"), **phases)
+                # The identity itself did not change: without setup's record that is still not "unchanged".
+                self.assertEqual(outcome["lines"], [warning.format(error)])
+                self.assertEqual(outcome["identity"], {"identity": "unconfirmed"})
+                self.refused(outcome)
+                shutil.rmtree(self.runner / cache.IDENTITY_STATE, ignore_errors=True)
+        # A command of the identity that fails, and an account that cannot be taken.
+        lane = self.lane("Ubuntu debug")
+        with self.subTest(failure="dpkg-query fails at finish"):
+            outcome = self.phases(lane, between=lambda: lane["runner"].script(lane["runner"].bin / "dpkg-query", "exit 2"))
+            self.assertEqual((outcome["lines"], outcome["identity"]), ([warning.format("CalledProcessError")], {"identity": "unconfirmed"}))
+            self.refused(outcome)
+        lane = self.lane("Arch debug")
+        with self.subTest(failure="the build account cannot be taken at finish"):
+            outcome = self.phases(lane, account=[None, ValueError("cache helper is not running as its account"), None])
+            self.assertEqual((outcome["lines"], outcome["identity"]), ([warning.format("ValueError")], {"identity": "unconfirmed"}))
+            self.refused(outcome)
+        # No verdict at all (the output file cannot be written, or the step never ran) refuses too.
+        lane = self.lane("macOS debug")
+        with self.subTest(failure="the verdict cannot be written"):
+            outcome = self.phases(lane, state=lambda path: (Path(self.env["GITHUB_OUTPUT"]).unlink(), Path(self.env["GITHUB_OUTPUT"]).mkdir()))
+            self.assertEqual(outcome["identity"], {})
+            self.refused(outcome)
+        for verdict in (None, "", "changed", "unconfirmed", "true", "Unchanged", "unchanged "):
+            with self.subTest(verdict=verdict):
+                Path(self.env["GITHUB_OUTPUT"]).write_text("")
+                settings = {"CACHE_PROFILE": "debug", "CI_RUST_CACHE_PROFILE": "debug", "CACHE_IDENTITY": verdict or ""}
+                with patch.dict(os.environ, settings), patch("sys.argv", ["cache.py", "bound"]), patch.object(cache, "bound_payload") as bound, \
+                        patch.object(cache, "record") as record, patch("builtins.print"):
+                    if verdict is None:
+                        del os.environ["CACHE_IDENTITY"]
+                    cache.main()
+                self.refused({"save": Path(self.env["GITHUB_OUTPUT"]).read_text(), "result": record.call_args.kwargs["details"], "bound": bound})
+
+    def test_finish_compares_the_identity_on_every_event_before_the_bound_step(self):
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
+        index = {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in {
+            "prepare": "cache.py prepare", "compare": "cache.py compare", "bound": "cache.py bound", "save": "save-if: true"}.items()}
+        self.assertEqual(sorted(index, key=index.get), ["prepare", "compare", "bound", "save"])
+        self.assertEqual(index["bound"], index["compare"] + 1)
+
+        def fields(step):
+            lines = steps[index[step]].split("\n")
+            condition = next(line.strip() for line in lines if line.startswith("      if: "))
+            start = lines.index("      env:") + 1 if "      env:" in lines else len(lines)
+            env = dict(line.strip().split(": ", 1) for line in lines[start:] if line.startswith("        "))
+            return condition, env
+
+        main = "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'"
+        # No event, ref or repository condition: pull requests, manual runs and the release workflow's build job compare too.
+        condition, env = fields("compare")
+        self.assertEqual(condition, "if: inputs.phase == 'finish'")
+        self.assertIn("      id: identity\n", steps[index["compare"]])
+        self.assertNotIn("continue-on-error", steps[index["compare"]])
+        # The values setup's prepare step had, the container among them: without it Arch would compute Ubuntu's identity.
+        self.assertEqual(env, {"CACHE_PROFILE": "${{ inputs.profile }}", "CACHE_CONTAINER": "${{ inputs.container }}",
+                               "CACHE_RUN_AS": "${{ inputs.run-as }}"})
+        prepare = fields("prepare")[1]
+        self.assertEqual({name: prepare[name] for name in env}, env)
+        condition, env = fields("bound")
+        self.assertEqual(condition, f"if: inputs.phase == 'finish' && {main}")
+        self.assertEqual(env["CACHE_IDENTITY"], "${{ steps.identity.outputs.identity }}")
+        # The save step's condition is as it was.
+        self.assertEqual(fields("save")[0], f"if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && {main}")
+        self.assertEqual(text.count("GITHUB_ENV"), 0)
 
     def test_profiles_have_distinct_identity_and_private_paths(self):
         self.init_git()
         identities = []
         for profile in sorted(cache.PROFILES):
             with patch.dict(os.environ, {"CACHE_PROFILE": profile, "RUNNER_OS": "Linux"}), \
-                    patch.object(cache, "native_identity", return_value="native"), patch("builtins.print"):
+                    patch.object(cache, "native_identity", return_value=("native", [])), patch("builtins.print"):
                 cache.prepare()
             values = dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines())
             identities.append(values["CI_RUST_CACHE_KEY"])

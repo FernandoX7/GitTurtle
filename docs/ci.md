@@ -1842,6 +1842,65 @@ of 1,254 packages and computed its own digest. Every lane missed in that run, as
 the helper had changed; hits, and the images of a later release, are recorded
 after `main` has saved the new keys.
 
+#### Identity comparison at finish
+
+`prepare` computes the key once, at setup. Nothing used to check at the end of a
+job that the machine was still the one that was keyed: a step that installed a
+package or a tool between the two phases would have saved outputs built against
+the later state under the earlier key, and only tests that read the workflows'
+text forbid such steps. The finish phase therefore computes the identity again,
+and a changed one refuses the save.
+
+- *One function, twice.* `cache_identity` computes the five parts (`profile`,
+  `source`, `native`, `toolchain`, `flags`) and the key with no side effect: it
+  creates no directory, rewinds no timestamp, exports nothing and prints
+  nothing. `prepare` calls it, exports the key, and keeps the parts, the native
+  part's keyed lines and a digest of each flag's value in
+  `gitturtle-cache-identity.json` under the runner's temporary directory. The
+  finish phase's `Compare cache identity with setup` step calls it again, as
+  the build account, with the profile, container and account that setup had.
+- *The verdict.* The recomputed key is compared with the `CI_RUST_CACHE_KEY`
+  the save step reads. What `prepare` kept only names a difference; it never
+  decides.
+- *Stable by construction.* The restore action exports `CARGO_INCREMENTAL=0`
+  after `prepare` on the five lanes that set none (the Arch job sets it for the
+  whole job), so the flags differed between the phases. `prepare` keys the
+  variable's effective value and exports `CARGO_INCREMENTAL=0` itself when the
+  job set none. No variable is exempted. A job that set another value would
+  keep it, the restore action's export would then change the identity, and
+  that lane would save nothing: no lane does.
+- *Every event.* The step has no event, ref or repository condition: pull
+  requests, manual runs and the release workflow's build job compare too, and
+  save nothing. A pull request's own run thereby shows on each lane that the
+  identity is stable between the phases before `main` depends on it.
+- *What it prints.* Unchanged: one line, `Cache identity unchanged since setup:
+  <key>`. Changed: one `::warning::` that names the parts that differ; for the
+  native part the keyed lines that differ, setup's after `- ` and this phase's
+  after `+ `; for the flags the names of the variables that differ, never a
+  value. Every value is escaped as the key step's lines are.
+- *Never a failed job.* Validation has passed when the step runs. An
+  exception, a missing `CI_RUST_CACHE_KEY`, a missing or unreadable record, an
+  account that cannot be taken and a verdict that cannot be written each
+  refuse the save, with a warning where one can be printed and exit status 0.
+  None of them is read as unchanged.
+- *The bound phase* refuses, with `save=false` and the fixed reason `cache
+  identity changed or was not confirmed since setup`, unless the comparison's
+  verdict is `unchanged`. The save step's condition is as it was.
+
+A refused save is slower and never stale: the next run of that key finds no
+entry, or the one an earlier run saved, and compiles what is missing. Nothing
+built against one state is stored under the key of another.
+
+**Acceptance.** This part ships only if the pull request's own hosted run
+prints the positive line on all six lanes that save: Ubuntu debug, Ubuntu
+release on x64 and on arm64, macOS debug, macOS release and Arch debug. No
+hosted result is recorded here. The tests build each lane's two environments
+from the logs of hosted run `44457231193`, from the variables the runner printed
+for the prepare step and for the finish phase's first step, and assume that the
+runner's own process environment, which a log does not print, holds no flag
+variable in either phase; the `Keyed flag variables` line shows that on a hosted
+run.
+
 ### Trust, failure and storage bounds
 
 Cargo cache storage is isolated under the fresh runner's temporary directory.
@@ -1864,8 +1923,9 @@ test in the second shard, Clippy or a release build failed. The entry holds
 dependency outputs keyed by their inputs, not results, and the run as a whole
 still fails.
 A main job's finish action checks for the existing exact key without downloading
-again and registers upstream's normal post-job save only when its payload budget
-passes. An existing exact entry is immutable and needs no duplicate save.
+again and registers upstream's normal post-job save only when its
+[identity comparison](#identity-comparison-at-finish) said unchanged and its
+payload budget passes. An existing exact entry is immutable and needs no duplicate save.
 
 The restore action's `cache-hit` means exact match only. A miss, partial match,
 service/extraction error or missing/failed action result discards the restored

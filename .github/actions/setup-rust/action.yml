@@ -127,6 +127,17 @@ runs:
         CACHE_OUTCOME: ${{ steps.restore.outcome }}
         CACHE_RUN_AS: ${{ inputs.run-as }}
       run: python3 .github/actions/setup-rust/cache.py restored
+    # On every event, pull requests and manual runs included: the identity is
+    # computed again as setup computed it, and one that changed refuses the save.
+    - name: Compare cache identity with setup
+      if: inputs.phase == 'finish'
+      id: identity
+      shell: bash
+      env:
+        CACHE_PROFILE: ${{ inputs.profile }}
+        CACHE_CONTAINER: ${{ inputs.container }}
+        CACHE_RUN_AS: ${{ inputs.run-as }}
+      run: python3 .github/actions/setup-rust/cache.py compare
     - name: Bound dependency cache after successful validation
       if: inputs.phase == 'finish' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
       id: bounded
@@ -135,6 +146,7 @@ runs:
         CACHE_PROFILE: ${{ inputs.profile }}
         CACHE_TARGET: ${{ inputs.target }}
         CACHE_RUN_AS: ${{ inputs.run-as }}
+        CACHE_IDENTITY: ${{ steps.identity.outputs.identity }}
       run: python3 .github/actions/setup-rust/cache.py bound
     - name: Register successful main cache save
       if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
