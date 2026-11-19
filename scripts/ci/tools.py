@@ -18,17 +18,18 @@ import urllib.parse
 import urllib.request
 
 
-# cargo-nextest 0.9.146 (2026-09-21) changes only yanked dependency versions from
-# 0.9.145, whose status-line format scripts/gate.py parses. Digests match the
-# release's published `.sha256` files and GitHub's asset digests; see docs/ci.md.
-NEXTEST_VERSION = "0.9.146"
+# cargo-nextest 0.9.152 (2026-11-13). Its Starting, result and Summary lines have
+# the shapes of 0.9.146's, which scripts/ci/executed_tests.py reads: checked on
+# real output of both. Digests match the release's published `.sha256` assets and
+# GitHub's asset digests; see docs/ci.md. The pin is part of the debug cache key.
+NEXTEST_VERSION = "0.9.152"
 NEXTEST_RELEASE = f"https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-{NEXTEST_VERSION}/"
 NEXTEST_ARCHIVES = {
-    ("Linux", "X64"): ("cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz",
-                       "682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428"),
+    ("Linux", "X64"): ("cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz",
+                       "d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a"),
     # Upstream publishes one universal (arm64 and x86_64) macOS archive.
-    ("macOS", "ARM64"): ("cargo-nextest-0.9.146-universal-apple-darwin.tar.gz",
-                         "39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8"),
+    ("macOS", "ARM64"): ("cargo-nextest-0.9.152-universal-apple-darwin.tar.gz",
+                         "2fadf57df4243e691f088ee3bff4f4ab9af16da0c95a1db84b5cb1685e098a76"),
 }
 NEXTEST_MEMBER = "cargo-nextest"
 MAX_ARCHIVE = 64 << 20

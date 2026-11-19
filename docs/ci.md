@@ -474,19 +474,26 @@ of the debug [cache key](#tool-choice-and-compatible-reuse), so moving the pin
 makes the debug lanes cold once and leaves the release entries alone. The
 archive is about 12 MB (Linux) or 17 MB (macOS).
 
-| Runner | Release archive (cargo-nextest 0.9.146) | SHA-256 |
+| Runner | Release archive (cargo-nextest 0.9.152) | SHA-256 |
 | --- | --- | --- |
-| ubuntu-24.04 (Linux X64) | [`cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz) | `682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428` |
-| macos-15 (macOS ARM64) | [`cargo-nextest-0.9.146-universal-apple-darwin.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz) | `39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8` |
+| ubuntu-24.04 (Linux X64) | [`cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz) | `d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a` |
+| macos-15 (macOS ARM64) | [`cargo-nextest-0.9.152-universal-apple-darwin.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/cargo-nextest-0.9.152-universal-apple-darwin.tar.gz) | `2fadf57df4243e691f088ee3bff4f4ab9af16da0c95a1db84b5cb1685e098a76` |
 
-Version 0.9.146 (September 21, 2026) was the latest release when this was pinned.
-It differs from 0.9.145, whose status-line format `scripts/gate.py` parses, only in
-replacing yanked dependency versions. Both digests matched the release's published
-`.sha256` files, GitHub's recorded asset digests, and a local `sha256sum` of the
-downloaded archives on September 27, 2026. To move the pin, update the version and
-both digests in `tools.py` and this table from the new release's `.sha256` assets,
-check that its output format still matches the gate's parser, and run the CI helper
-tests.
+Version 0.9.152 (November 13, 2026) was the latest release when this was pinned,
+on November 19, 2026; the pin before it was 0.9.146 (September 21, 2026). Both
+digests matched the release's published `.sha256` assets and GitHub's recorded
+asset digests, and the installer itself fetched the Linux archive, matched its
+digest and resolved `cargo-nextest 0.9.152 (26ebeda79 2026-11-13)`. The parsers
+were checked on real output, not on release notes: that executable ran
+`gitturtle-preview` with the `ci` profile, whole and as `--partition slice:1/2`,
+on a Linux arm64 host under x86_64 emulation, and its `Starting`, `PASS`, `SKIP`
+and `Summary` lines have the shapes of the 0.9.146 lines kept in
+`scripts/ci/tests/test_executed_tests.py`. `scripts/ci/executed_tests.py` read
+both runs with nothing unreconciled (192 run and 1 skipped; 96 run and 97
+skipped). The macOS archive was not run. To move the pin, update the version and
+both digests in `tools.py` and this table from the new release's `.sha256`
+assets, run the new executable and compare its lines with those kept in the
+tests, and run the CI helper tests. The move changes the debug cache key.
 
 #### The nextest archive in the debug entry
 
@@ -529,8 +536,8 @@ platform's test job, on `main`. The directory lies inside the `registry` root.
 The pinned rust-cache cleans only `registry/index`, `registry/cache` and
 `registry/src` before a save, and the bound phase prunes only `registry/src` and,
 over the limit, drops `target`, so the directory survives both and its bytes
-count against the 7 GiB debug limit: 12,055,550 bytes in the Ubuntu and the Arch
-entry and 16,790,991 in the macOS entry for 0.9.146, and 8 KiB of entry
+count against the 7 GiB debug limit: 12,393,262 bytes in the Ubuntu and the Arch
+entry and 17,256,724 in the macOS entry for 0.9.152, and 8 KiB of entry
 accounting each. On the Arch lane the restored directory goes to the build
 account with the rest of `CARGO_HOME`. A restore that is no exact hit is
 discarded whole, this directory included, before the installer looks.
@@ -614,7 +621,8 @@ pattern cannot read or a write into nextest's own stream; the comparison is evid
 about a run that is not trying to deceive it. A count of more than nine digits is
 refused as unreadable. These are cargo-nextest 0.9.146's shapes,
 taken from three runs of `gitturtle-preview` (unsharded, `slice:1/2` and
-`slice:2/2`) and the retained hosted logs. A Summary line in another shape is
+`slice:2/2`) and the retained hosted logs; 0.9.152 printed the same shapes in
+two such runs (unsharded and `slice:1/2`). A Summary line in another shape is
 refused rather than guessed, and so is a log whose `PASS` and `FAIL` lines are not
 its passed and failed figures.
 
@@ -705,7 +713,7 @@ with its number and the total from the job's matrix (`shard: [1, 2]` and
 `shards: [2]`, the one place the total is written). Nothing else about selection
 changed: no filter, no package or target selection, the same profile, no
 retries. nextest's [partitioning page](https://nexte.st/docs/ci-features/partitioning/)
-describes `slice:` (added in 0.9.127; the pin is 0.9.146): "nextest lists all
+describes `slice:` (added in 0.9.127; the pin is 0.9.152): "nextest lists all
 tests across all specified binaries, then assigns tests to each bucket in a
 round-robin fashion", and "Sliced partitioning applies after all other test
 filters." Both shards of a platform build the same commit with the same command,
