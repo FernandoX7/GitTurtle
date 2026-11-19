@@ -1364,8 +1364,34 @@ python3 scripts/ci/tooling_suites.py group --index 1 --of 3 --record /tmp/ids.js
   -s scripts/agent_loop -t scripts -p 'test_*.py'
 ```
 
-No hosted run of the new step exists as this is written. The job's own seconds
-before and after are recorded here from the pull request's run.
+The first hosted runs of the new step were the pull request's own, Quality
+[run 44608780306](https://github.com/FernandoX7/GitTurtle/actions/runs/44608780306),
+and `main`'s on its merge,
+[run 44613539074](https://github.com/FernandoX7/GitTurtle/actions/runs/44613539074).
+The first was also the step's first run on macOS and under Python 3.15.2:
+
+| | macos-15 | ubuntu-24.04 |
+| --- | ---: | ---: |
+| The job in the three runs before | 521, 534 and 575 s | 316, 228 and 290 s |
+| The job in the pull request's run | 267 s | 148 s |
+| The new step in it | 244 s | 134 s |
+| The job in `main`'s run on the merge | 201 s | 117 s |
+| The new step in it | 182 s | 107 s |
+
+In the pull request's run the six processes took 243.1, 238.7 and 213.5 s (the
+three agent-loop groups), 96.4 s (native-QA), 42.7 s (operator) and 175.0 s (the
+CI tests) on macOS, and 132.4, 134.0, 114.0, 20.6, 14.5 and 64.6 s on Ubuntu,
+each with exit 0. Both logs print that the three groups hold the 350 discovered
+tests, each once (117 + 117 + 116), and nothing was cut at the deadline. Against
+the last run of the four steps on the same base, every suite ran the tests it
+ran there: 350 agent-loop tests with 1 skipped, 304 native-QA tests with 80
+skipped, 38 operator tests, and the CI tests' 514 on macOS and 532 on Ubuntu
+plus the 33 this change added, with the same 25 and 8 skipped. Side by side a
+suite takes longer by its own clock than alone: on the macOS runner native-QA
+took 94.4 s where it took 55.5 s, and operator 41.8 s where it took 21.7 s,
+since six processes share three processors. In `main`'s run on the merge the six
+processes took 181.8 s side by side on macOS and 106.2 s on Ubuntu, with the
+same counts and the same line about the 350 tests.
 
 ### Later measurements and C1
 
@@ -1853,9 +1879,9 @@ libarchive, libcurl with its TLS, Kerberos and LDAP libraries, libuv, jsoncpp,
 rhash, `procps` and `libsystemd0`). The traced build read none of them. Seven left the
 container with apt's `cmake`; the other 28 are still installed there and are now
 outside the closure. The CMake that runs is keyed as before, by its real path
-and its version output, with no package version behind it. No hosted run of this
-rule is recorded here: the first hosted run below predates it, and its counts
-include the packages keyed through apt's `cmake`.
+and its version output, with no package version behind it. The first hosted run
+below predates this rule, and its counts include the packages keyed through apt's
+`cmake`; the runs with the rule are under *Hosted runs without apt's CMake*.
 
 **Fallback.** A build package that is not installed fails the step, as `pacman
 -Q` does on Arch, whatever else is wrong with the snapshot: the build packages
@@ -1947,8 +1973,41 @@ unsupplied names absent, and the same entries at the top of `/usr/local/include`
 and `/usr/local/lib`. With the inventory in the key those two images had computed
 two keys from one commit. The arm64 release job (Azure, 20261111.182.1) keyed 195
 of 1,254 packages and computed its own digest. Every lane missed in that run, as
-the helper had changed; hits, and the images of a later release, are recorded
-after `main` has saved the new keys.
+the helper had changed.
+
+**Hits across the clouds, and a later image release.** After `main`'s push run
+`44466577349` had saved the new keys from AWS runners, three manually dispatched
+runs on November 19, 2026 (`44472062033`, `44490423215` and `44501533068`)
+restored them. Every x64 job on an image of the 20261111 release hit, on Azure
+(20261111.370.1) and on AWS (20261111.127.1) alike: nine jobs of nine, one native
+digest, the tests and the release job's package checks green. The images of the
+20261116 release carry a newer C library (`libc6`, `libc6-dev` and `libc-dev-bin`
+at 2.39-0ubuntu8.12 against 2.39-0ubuntu8.9). Its Azure build (20261116.376.1) and
+its AWS build (20261116.133.1) computed one new digest between them, and the arm64
+image 20261116.188.1 its own; each misses until a push to `main` has saved from
+such an image. So a weekly rollout that moves a keyed package gives two keys while
+it lasts, one per state of that package, where the inventory gave one per image
+build.
+
+**Hosted runs without apt's CMake.** Run `44508754249`, that change's own
+pull-request run on November 19, 2026, computed the key in five Ubuntu jobs, each
+in the closure mode with no warning. On x64 162 packages were keyed where 197
+were: the three jobs on images of the 20261111 release, on both clouds, computed
+one native digest, and the job on the AWS image of the 20261116 release another
+that differs by the three C library lines. The arm64 job keyed 160 of 1,250
+packages. The install fetched 5.7 MB on x64 and 5.5 MB on arm64 where it fetched
+19.2 and 18.1 MB, 32 packages where 36 were (33 where 37 on arm64), and set up no
+`cmake`. `main`'s push run on the merge, `44515423271`, saved the x64 debug and
+release entries from images of the 20261111 release (an Azure runner and an AWS
+runner) and the arm64 entry from 20261116.188.1. The manually dispatched run
+`44567826647` then restored every key that had an entry: on x64 across the clouds
+in both directions (Clippy on AWS and a test shard on Azure took the entry an
+Azure runner had saved, the release job on Azure the one an AWS runner had saved),
+and on arm64. Its other test shard drew the AWS image of the 20261116 release,
+whose debug key nothing had saved, and missed. The mirrors were no faster in those
+three runs: the AWS runners' mirror served the install at 20 to 130 kB/s, and the step
+took 79 to 327 s there (six jobs) against 242 to 718 s in the three runs before
+the change, 13 to 59 s on the Azure x64 runners and 24 to 26 s on arm64.
 
 #### Identity comparison at finish
 
@@ -2009,13 +2068,24 @@ built against one state is stored under the key of another.
 
 **Acceptance.** This part ships only if the pull request's own hosted run
 prints the positive line on all six lanes that save: Ubuntu debug, Ubuntu
-release on x64 and on arm64, macOS debug, macOS release and Arch debug. No
-hosted result is recorded here. The tests build each lane's two environments
+release on x64 and on arm64, macOS debug, macOS release and Arch debug. The
+hosted result follows. The tests build each lane's two environments
 from the logs of hosted run `44457231193`, from the variables the runner printed
 for the prepare step and for the finish phase's first step, and assume that the
 runner's own process environment, which a log does not print, holds no flag
 variable in either phase; the `Keyed flag variables` line shows that on a hosted
 run.
+
+**Hosted result.** The pull request's own run, `44508754249` on November 19,
+2026, printed the positive line on all six lanes, each with the key its prepare
+step had computed, and `Keyed flag variables: CARGO_INCREMENTAL` with no other
+name in all ten Rust job logs read. In `main`'s push run on the merge,
+`44515423271`, every lane was cold: the six lanes printed the positive line again,
+the bound step after it reported `"save": true` in each, and the cache then listed
+six entries under those keys. The manually dispatched run `44567826647` printed
+the line on the same six lanes after restoring them (a dispatched run saves
+nothing). No run has printed the warning, so the refusal itself has only its tests
+behind it.
 
 ### Trust, failure and storage bounds
 
