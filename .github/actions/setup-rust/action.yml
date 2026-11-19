@@ -145,6 +145,8 @@ runs:
       run: python3 .github/actions/setup-rust/cache.py restored
     # On every event, pull requests and manual runs included: the identity is
     # computed again as setup computed it, and one that changed refuses the save.
+    # So does a toolchain rustup lists now and did not at setup: the save step
+    # hashes that list again, and the helper's key does not hold it.
     - name: Compare cache identity with setup
       if: inputs.phase == 'finish'
       id: identity

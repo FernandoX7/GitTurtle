@@ -2127,7 +2127,10 @@ and a changed one refuses the save.
   the build account, with the profile, container and account that setup had.
 - *The verdict.* The recomputed key is compared with the `CI_RUST_CACHE_KEY`
   the save step reads. What `prepare` kept only names a difference; it never
-  decides.
+  decides. The same step also asks rustup for its list of toolchains again,
+  because the save step hashes that list a second time and the helper's key
+  does not hold it: see [the image's own Rust](#the-images-own-rust), "The
+  list at finish".
 - *Stable by construction.* The restore action exports `CARGO_INCREMENTAL=0`
   after `prepare` on the five lanes that set none (the Arch job sets it for the
   whole job), so the flags differed between the phases. `prepare` keys the
