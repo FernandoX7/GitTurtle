@@ -651,9 +651,12 @@ class CacheFixture(unittest.TestCase):
             "restore": "id: restore", "owner": "chown -R -h -P", "restored": "cache.py restored"}.items()}
         self.assertEqual(sorted(index, key=index.get), list(index))
         self.assertIn("if: inputs.phase == 'setup' && inputs.run-as != ''", steps[index["owner"]])
-        # The container brings its own packages and toolchain.
-        for marker in ("apt-get install", "rustup show active-toolchain"):
-            step = next(step for step in steps if marker in step)
+        # The container brings its own packages and toolchain. The package step
+        # is the one step that calls the package helper, under its own name: a
+        # comment's words do not find it, and neither does a step that lost the call.
+        packages = [step for step in steps if "python3 scripts/ci/apt_install.py " in step]
+        self.assertEqual([step.split("\n", 1)[0] for step in packages], ["Install Linux native build dependencies"])
+        for step in (packages[0], next(step for step in steps if "rustup show active-toolchain" in step)):
             self.assertIn("&& inputs.container == ''", step.split("\n", 2)[1])
         validation = steps[0]
         self.assertIn('case "$CACHE_CONTAINER" in ""|archlinux) ;; *) exit 2 ;; esac', validation)
