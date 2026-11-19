@@ -9,7 +9,9 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -345,6 +347,42 @@ class InstallerTests(unittest.TestCase):
                 self.assertFalse(result.path_file.exists())
                 # Only the regular file within the bound was read as far as its hash.
                 self.assertEqual(hashed.call_count > 1, label == "another digest")
+
+    # The installer as the step runs it, in a process of its own, with a fetch replaced by a refusal.
+    ISOLATED_INSTALL = ("import importlib.util, sys\n"
+                        "spec = importlib.util.spec_from_file_location('ci_tools', sys.argv[1])\n"
+                        "tools = importlib.util.module_from_spec(spec)\n"
+                        "spec.loader.exec_module(tools)\n"
+                        "def refuse(*_, **__):\n"
+                        "    raise SystemExit('a request was made')\n"
+                        "tools.download = refuse\n"
+                        "sys.exit(tools.main(sys.argv[2:]))\n")
+    # Seconds the whole install may take before it counts as blocked; it needs well under one.
+    FIFO_DEADLINE = 30
+
+    def test_a_fifo_under_the_cached_archives_name_fails_by_name_and_never_blocks_the_step(self):
+        # Opened for reading without O_NONBLOCK, a FIFO that nothing writes to blocks until the job's time limit.
+        # The install therefore runs in a process of its own under a deadline: an open that blocks fails this test
+        # when the deadline passes and the process is killed, and can never hang the suite.
+        name = tools.NEXTEST_ARCHIVES[("Linux", "X64")][0]
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            base = Path(directory)
+            cache = base / "cargo/registry/archives"
+            cache.mkdir(parents=True)
+            os.mkfifo(cache / name)
+            before = self.tree(base)
+            command = [sys.executable, "-I", "-B", "-c", self.ISOLATED_INSTALL, str(ROOT / "scripts/ci/tools.py"), "install-nextest",
+                       "--directory", str(base / "bin"), "--path-file", str(base / "github-path"), "--os", "Linux", "--arch", "X64",
+                       "--archive-cache", str(cache)]
+            try:
+                result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=self.FIFO_DEADLINE)
+            except subprocess.TimeoutExpired:
+                self.fail(f"the install was still running after {self.FIFO_DEADLINE} s: opening the FIFO blocked")
+            self.assertEqual((result.returncode, result.stdout, result.stderr),
+                             (1, "", f"error: cached archive {name} is not a regular file\n"))
+            # Left as it is: still the FIFO, with nothing written beside it and no executable unpacked.
+            self.assertTrue(stat.S_ISFIFO(os.lstat(cache / name).st_mode))
+            self.assertEqual(self.tree(base), before)
 
     def test_the_archive_cache_must_be_a_named_directory_of_its_own(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
