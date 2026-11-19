@@ -33,10 +33,17 @@ trusted-ref policy. It never creates or moves a tag.
    bytes. It also checks the remote tag and current main revision. The declared
    Quality run must be a successful `push` or `workflow_dispatch` run from this
    repository at that source. Actual successful jobs must include formatting,
-   both platform test jobs, both platform Clippy jobs, the three release jobs
+   both shards of both platform test jobs (`Rust tests · macos-15 · 1/2`,
+   `Rust tests · macos-15 · 2/2`, `Rust tests · ubuntu-24.04 · 1/2` and
+   `Rust tests · ubuntu-24.04 · 2/2`), both platform Clippy jobs, the three release jobs
    (`Rust release · macos-26`, `Rust release · ubuntu-24.04` and
    `Rust release · ubuntu-24.04-arm`) and the Quality gate, whichever platforms
-   the release selects. A Quality run without the AArch64 Linux release job,
+   the release selects. Each name is required exactly once, so a run that lacks
+   a test shard, or in which one failed, was cancelled or was skipped, is
+   refused. So is every run from before the tests were split into
+   [two shards](ci.md#test-shards), whose test jobs carry the unsharded names.
+   The Arch Linux shards are not named here; the required Quality gate covers
+   them. A Quality run without the AArch64 Linux release job,
    which is every run from before Quality built that target, is refused.
    Skipped product validation is insufficient. A changed Quality attempt
    requires a newly reviewed context.

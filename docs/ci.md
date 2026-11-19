@@ -96,11 +96,13 @@ outputs or unknown classification versions fail. Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
 diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
-The actual platform work is named `Rust tests · <platform>`,
-`Rust Clippy · <platform>`, `Rust release · <platform>` and `Rust tests · archlinux`
-(until November 3, 2026 the first two were one `Rust tests and Clippy · <platform>`
+The actual platform work is named `Rust tests · <platform> · <shard>/2`,
+`Rust Clippy · <platform>` and `Rust release · <platform>`. The test platforms are
+`macos-15`, `ubuntu-24.04` and `archlinux`, each in [two shards](#test-shards)
+(until November 3, 2026 tests and Clippy were one `Rust tests and Clippy · <platform>`
+job, and until November 19, 2026 each platform's tests were one `Rust tests · <platform>`
 job). `Rust formatting` checks the workspace once on Ubuntu. The aggregate cannot pass a product change unless
-the three platform matrices, the Arch Linux job, formatting and other required lanes
+the three platform matrices, the Arch Linux matrix, formatting and other required lanes
 succeed; documentation changes may pass after
 justified skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 silently bypassing a failed dependency.
@@ -286,11 +288,14 @@ After classification, the selected jobs have no build dependencies on each other
 
 - `Rust formatting` checks `cargo fmt --all -- --check` on Ubuntu with the pinned
   workspace toolchain. It installs no native packages and restores no target cache.
-- `Rust tests · macos-15` and `· ubuntu-24.04` each restore the **debug**
-  cache, install the [pinned cargo-nextest](#test-execution-with-nextest), run
-  `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings`, then
-  `cargo test --locked --workspace --timings -- "(line "`, and save the debug
-  cache on a successful push to `main`.
+- `Rust tests · macos-15 · 1/2` and `· 2/2`, and the same two for
+  `ubuntu-24.04`, each restore the **debug** cache, install the
+  [pinned cargo-nextest](#test-execution-with-nextest) and run
+  `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+  --partition slice:<shard>/2`: every shard builds the whole workspace's tests
+  and runs its half of them (see [Test shards](#test-shards)). Shard 1 alone
+  then runs `cargo test --locked --workspace --timings -- "(line "` and, on a
+  push to `main`, saves the debug cache once its own steps have succeeded.
   nextest builds the same targets as Cargo's default
   [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html) and
   runs its unit and integration tests; the doctest step runs the rest of that
@@ -300,7 +305,7 @@ After classification, the selected jobs have no build dependencies on each other
   platforms and trigger. Each restores the same platform's **debug** cache (same
   profile, runner and environment, so the same key) and runs
   `cargo clippy --locked --workspace --all-targets --timings -- -D warnings`. It
-  never saves: it has no `finish` phase, so the test job remains the only writer of
+  never saves: it has no `finish` phase, so shard 1 of the test job remains the only writer of
   that entry (see [Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)).
 - `Rust release · macos-26`, `· ubuntu-24.04` and `· ubuntu-24.04-arm` each restore
   the **release** cache
@@ -320,8 +325,8 @@ After classification, the selected jobs have no build dependencies on each other
   checks continue; other collection or verification errors fail the job. See the
   [artifact runbook](ci-artifacts.md) for exact gates and evidence requirements.
   These checks do not establish an interactive native desktop or notarized build.
-- `Rust tests · archlinux` runs the same nextest and doctest commands as the debug
-  jobs inside a digest-pinned Arch Linux container, against that day's Arch
+- `Rust tests · archlinux · 1/2` and `· 2/2` run the same nextest and doctest commands as the debug
+  jobs, in the same two shards, inside a digest-pinned Arch Linux container, against that day's Arch
   packages, with a Rust cache keyed on the Arch packages that reach compiled
   output. See
   [Arch Linux container job](#arch-linux-container-job).
@@ -343,13 +348,14 @@ The existing change classifier owns selection, the setup action owns each cache'
 lifetime, and the gate owns the final result. No new cross-job build artifact or
 mutable shared target directory is introduced. Debug/release use separate fresh
 runners and matching setup/finish profiles; a finish cannot remove another lane's
-inputs. The Clippy jobs only read the debug entry, so they cannot race the test
-job's save or leave it an entry without the test build.
+inputs. The Clippy jobs and the second test shard only read the debug entry, so they cannot race the
+first shard's save or leave it an entry without the test build.
 Package/artifact consumers must precede finish because its successful-main
 cleanup can remove the application executable. The final gate requires the
-formatter, the test, Clippy and release platform matrices and the Arch Linux job, in addition to
+formatter, the test, Clippy and release platform matrices and the Arch Linux matrix, in addition to
 tooling/Website according to the recorded plan. A successful test matrix cannot
-cover a failed, cancelled, missing or unexpectedly skipped Clippy or release matrix. Removing the transitional mirrors
+cover a failed, cancelled, missing or unexpectedly skipped Clippy or release matrix, and a test matrix
+is successful only when each of its [shards](#test-shards) is. Removing the transitional mirrors
 does not change that dependency or result contract.
 
 ### Why separate test and Clippy jobs
@@ -392,13 +398,15 @@ Release compilation has a distinct profile and can overlap debug work. Clippy
 stayed in the test job until November 2026 to avoid another cold debug dependency
 build and another cache reader/writer family; it now has its own job, which only
 reads the debug entry (see [above](#why-separate-test-and-clippy-jobs)), so there
-is still one debug writer per platform. A failing test stops the test job before
-doctests; the independent Clippy and release jobs retain their diagnostics. There
+is still one debug writer per platform. A failing test fails its shard of the test job, and one in
+shard 1 stops that shard before the doctests; the other shard and the independent Clippy and release
+jobs retain their diagnostics. There
 is no automatic retry. The September 15 fan-out judged the short test phase too
 small to justify nextest, partitions or additional test runners. Later warm runs
 made test execution itself visible (see [Test execution with nextest](#test-execution-with-nextest)), and
-the local gate already ran nextest, so the tests step now uses it; there are still
-no partitions or additional test runners.
+the local gate already ran nextest, so the tests step uses it. By November 2026 the tests
+themselves were the longest part of a run, and each platform's now run in two partitions on
+two runners (see [Test shards](#test-shards)).
 
 ### Test execution with nextest
 
@@ -408,7 +416,8 @@ its own thread pool: in warm main run
 libtest reported 146 s of summed test execution on macOS against 59 s on Linux. The local gate already ran
 [cargo-nextest](https://nexte.st/) with `-P ci`, so CI and local results could
 differ. The tests step now runs `cargo nextest run --locked --workspace -P ci
---no-fail-fast --timings`. nextest builds the same unit, integration and example
+--no-fail-fast --timings`, and since the [shards](#test-shards) also
+`--partition slice:<shard>/2`. nextest builds the same unit, integration and example
 targets as `cargo test` (passing `--locked` and `--timings` through to Cargo), then
 runs each test in its own process across the runner's CPUs. It cannot run
 doctests, so a separate `Locked workspace doctests` step runs `cargo test --locked
@@ -484,40 +493,103 @@ GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null cargo test --locked --workspace -- "(line "
 ```
 
+These run every test in one go. One [shard](#test-shards)'s share is the first
+command with `--partition slice:1/2` or `--partition slice:2/2` added.
+
 To check that two runs executed the same tests, download each Rust test job's
-log (`gh api repos/FernandoX7/GitTurtle/actions/jobs/<job-id>/logs`) and compare them:
+log (`gh api repos/FernandoX7/GitTurtle/actions/jobs/<job-id>/logs`) and compare them,
+one platform and one attempt at a time. Each side takes one job's log or several
+taken together, so a platform's two [shards](#test-shards) compare with an unsharded
+run or with another run's shards:
 
 ```sh
 python3 scripts/ci/executed_tests.py compare --before cargo-test-job.log --after nextest-job.log
+python3 scripts/ci/executed_tests.py compare --before unsharded-job.log --after shard-1-job.log shard-2-job.log
 ```
 
 [`executed_tests.py`](../scripts/ci/executed_tests.py) reads libtest `Running` and
-`Doc-tests` headers with their `test … ok|ignored|FAILED` lines, and nextest
-`PASS`/`FAIL`/`SKIP` lines. It keys each test by target kind and Cargo crate name
+`Doc-tests` headers with their `test … ok|ignored|FAILED` lines, and the result
+lines of a nextest run. It keys each test by target kind and Cargo crate name
 (`lib:gitturtle_core history::…`, `bin:gitturtle …`, `test:worktrees_reflog …`,
-`doc:gitturtle_core …`), prints the executed and ignored counts, and lists every
-test executed or ignored on one side only. It exits non-zero when they differ, and
-`list` prints the extracted set. Test output that interrupts a libtest result line
-can hide that test from the extraction; investigate any listed difference in the
-log before calling the sets different. The dated
+`doc:gitturtle_core …`).
+
+It compares counts, not only names, because a name in a hosted log need not be
+one test. The wrapper's
+[credential redaction](#workflow-summaries-and-retained-diagnostics) cuts a line
+at a key such as `secret` followed by a colon, so every test of
+`github::transport::secret_service` prints as
+`github::transport::secret_service=[redacted]`: on Linux 28 results under one
+name, 23 run and 5 ignored, in a log whose 3,613 tests have 3,591 names. Each key
+therefore has a number of executed and a number of ignored results, and two sides
+are equal only when every key's numbers are. Several logs of one side are the
+shards of one run on one platform, one attempt each, so pass each job's log as its
+own file, and only once. Their executed counts add. A key's ignored count is what
+the shards list for it less what they executed, because a shard's log prints every
+test and marks the other shard's with the same `SKIP` line as an ignored one. A key
+executed less often after than before is listed as lost, and one executed more
+often as run more than once, each with both numbers and every log's share. A key
+the shards executed more often than they list it is an error on its own side, since
+a partition runs each test once, and shards that do not list the same tests are
+refused as not one run's.
+
+Before its verdict the tool reconciles every log with nextest's own totals. A log
+holds one run, from its `Starting … tests across … binaries (… tests skipped)` line
+to its `Summary [ … ] N tests run: … passed, … failed, … skipped` line, and the
+result lines counted between them must equal the Summary line's tests run, passed,
+failed and skipped. The two sides' tests run, summed over each side's logs, must be
+equal too. A finished test's line carries its place in the run, such as `(  9/192)`;
+a `SLOW` progress line does not and is not a result, and the failures nextest
+repeats after the Summary line are not counted again. A result line that is
+missing, repeated or printed by a test, a second Starting or Summary line, a run
+without a Summary line and a log with no test run each leave the log unreconciled:
+the report names the log and gives both numbers, so a hidden line or a forged line
+alone cannot make two different runs compare equal. Both together still can: a real
+result the tool does not count, with a forged one printed in its place, keeps every
+figure. Printing cannot remove a real result line, so that takes a test name the
+pattern cannot read or a write into nextest's own stream; the comparison is evidence
+about a run that is not trying to deceive it. A count of more than nine digits is
+refused as unreadable. These are cargo-nextest 0.9.146's shapes,
+taken from three runs of `gitturtle-preview` (unsharded, `slice:1/2` and
+`slice:2/2`) and the retained hosted logs. A Summary line in another shape is
+refused rather than guessed, and so is a log whose `PASS` and `FAIL` lines are not
+its passed and failed figures.
+
+`compare` prints the counts, what does not reconcile and every difference, then
+`identical`, `different` or `unreconciled`, and exits 0, 1 or 3; an unreconciled
+log exits 3 whatever the comparison says. `list` prints one line for each executed
+or ignored result. Test names and unread lines come from logs that a pull request's
+test output can shape, so the text output escapes every character outside printable
+text (control characters, the ESC or CSI that starts a terminal sequence, invisible
+formatting characters, and the backslash so an escape stays distinct), as `--json`
+does. Two limits remain. Under a redacted name the tool knows how many
+results ran, not which: a split that ran one of those tests twice and another not
+at all has the same numbers. And libtest lines (the doctests) have no totals to
+reconcile with; test output that interrupts a libtest result line can hide that
+test, so investigate any listed difference in the log before calling the sets
+different. The dated
 [nextest record](benchmarks/2026-09-27-ci-nextest-tests.md) holds the hosted
 before/after durations and the test-list comparison.
 
-The test and Clippy matrices have two fixed OS entries and `max-parallel: 2`; the release
-matrix has three (macOS 26, Ubuntu 24.04 and Ubuntu 24.04 on ARM) and `max-parallel: 3`.
+The Clippy matrix has two fixed OS entries and `max-parallel: 2`. The test matrix has
+those two platforms in [two shards](#test-shards) each and `max-parallel: 4`, the Arch
+Linux matrix its two shards and `max-parallel: 2`, and the release
+matrix three legs (macOS 26, Ubuntu 24.04 and Ubuntu 24.04 on ARM) and `max-parallel: 3`.
 All use `fail-fast: false`.
 The test jobs, the [Arch Linux job](#arch-linux-container-job) among them, are
-bounded at 60 minutes, and the Clippy and release jobs at 45. A test job's limit
+bounded at 60 minutes a shard, and the Clippy and release jobs at 45. A test job's limit
 only backs up a hung step, since the profile above terminates any test after
-120 s. The test jobs take about 25 to 31 minutes on a normal runner, and
+120 s. Unsharded, the test jobs took about 25 to 31 minutes on a normal runner, and
 [quality run 41757534359](https://github.com/FernandoX7/GitTurtle/actions/runs/41757534359)
 met a macOS runner 1.8 times slower at the median: at that pace the Arch job's
 28 minutes become about 50, inside 60 and past the earlier 45 (see
-[Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)). A
+[Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)). The
+shards keep that limit: each still builds the whole workspace, and the limit was
+never the tests' own budget. A
 workflow policy test in `scripts/ci/tests/test_nextest.py` holds the Ubuntu and
-macOS test matrix and the Arch Linux job at 60 minutes. With the
-single Arch Linux job, at most eight compilation runners (three on macOS) are
-requested per Quality run, plus the independent inexpensive checks. Formatting is bounded
+macOS test matrix and the Arch Linux matrix at 60 minutes. With two shards on
+each of the three test platforms, at most eleven compilation runners (four on macOS) are
+requested per Quality run, plus the independent inexpensive checks, of which
+development tooling is the fifth macOS job. Formatting is bounded
 at five minutes, policy and the final gate at five, and tooling at ten. The
 [image privacy scan](#shards) adds eight Ubuntu jobs of at most 90 minutes to every
 run. When the plan is `no-images`, `unavailable` or `no-comparison`, each ends after
@@ -530,17 +602,122 @@ Failed commands still retain their exit code, sanitized logs and available Cargo
 build timing reports in the three-day diagnostics artifacts. A cancelled runner
 may stop before artifact upload; do not claim a missing report was retained.
 
+### Test shards
+
+Since November 19, 2026 each platform's tests run in two jobs. `rust-debug`'s
+matrix is its two platforms times two shards (`Rust tests · macos-15 · 1/2`,
+`Rust tests · macos-15 · 2/2`, `Rust tests · ubuntu-24.04 · 1/2` and
+`Rust tests · ubuntu-24.04 · 2/2`), and `rust-arch` is a matrix of its two
+(`Rust tests · archlinux · 1/2` and `Rust tests · archlinux · 2/2`). The job ids,
+and so the gate's `needs`, are unchanged.
+
+**Why.** By November 2026 the tests themselves were the longest part of a run.
+An audit of the last 150 Quality runs on November 17, 2026 found a full
+pull-request run taking 42 minutes at the median and 54 at p95, with
+`Rust tests · macos-15` its critical path in 14 of 14 runs: 2,364 s of running
+at the median, against 1,456 s for `· ubuntu-24.04` and 1,281 s for
+`· archlinux`. In 30 sampled logs nextest's own wall time was 1,976 s on macOS,
+1,291 s on Ubuntu and 1,062 s on Arch, after a first Cargo build of 133 to 252 s
+on a cache hit. The summed per-test seconds divided by that wall time came to
+3.0 on macOS and 4.0 on Linux, the runners' core counts: the tests already use
+every core, so only more runners shorten them.
+
+**Why two.** Simulated from those logs' per-test medians, a round-robin split in
+two leaves the slower shard 959 s of tests on macOS, 653 s on Ubuntu and 568 s
+on Arch. A split balanced by measured duration would give 946, 628 and 546 s, so
+nextest's own partitioning is within 5 % of the best split and needs no duration
+data. On standard runners GitHub runs at most five macOS jobs at once across an
+account's repositories on every plan below Enterprise
+([Actions limits](https://docs.github.com/en/actions/reference/limits)),
+and a full run already started four: development tooling, Clippy and the tests
+on `macos-15`, and the release build on `macos-26`. Two test shards make it
+exactly five; a third would wait in the queue. These figures are measurements of
+the unsharded jobs and a simulation from them. The hosted figures of the shards
+are recorded after their first runs.
+
+**The partition.** Every shard runs the same step, `cargo nextest run --locked
+--workspace -P ci --no-fail-fast --timings --partition "slice:$SHARD/$SHARDS"`,
+with its number and the total from the job's matrix (`shard: [1, 2]` and
+`shards: [2]`, the one place the total is written). Nothing else about selection
+changed: no filter, no package or target selection, the same profile, no
+retries. nextest's [partitioning page](https://nexte.st/docs/ci-features/partitioning/)
+describes `slice:` (added in 0.9.127; the pin is 0.9.146): "nextest lists all
+tests across all specified binaries, then assigns tests to each bucket in a
+round-robin fashion", and "Sliced partitioning applies after all other test
+filters." Both shards of a platform build the same commit with the same command,
+so they list the same tests and each test falls in exactly one of them.
+
+**What a shard builds and what only shard 1 runs.** The partition chooses among
+the built tests at run time. The same page says "By default, each job has to do
+its own build before starting a test run", and no archive passes between these
+jobs: each shard builds every test binary of the workspace. Every shard runs the
+checkout, the packed refs, the cache restore, the nextest installation, its
+slice of the tests, the summary and the diagnostics upload. Every Linux shard,
+on Ubuntu and on Arch, also prints the libdav1d link and initializer records:
+each shard's runner or container installs its own library, the two Arch
+containers upgrade separately, and the helper tests run in whichever shard the
+slice puts them, so each shard's log carries the records of the library its own
+tests met. What must happen once per platform happens in shard 1 alone
+(`if: matrix.shard == 1`): the doctest step and the setup action's `finish`
+phase. Shard 2 skips the `finish` phase, the only
+place the action registers a save, and the restore in its setup phase passes
+`save-if: false`, so like the Clippy job it can never save. Each
+platform's debug entry keeps exactly one writer, whose target directory holds
+what the unsharded job's held: the whole workspace's test build and the doctest
+build. One thing differs: on `main`, shard 1 saves when its own steps succeeded,
+even if a test in shard 2 failed. The entry holds dependency outputs keyed by
+their inputs, not test results, and the run as a whole still fails.
+
+**The cache key** does not see the shard. [`cache.py`](../.github/actions/setup-rust/cache.py)
+keys an entry on the profile, the container name, the tracked build inputs
+(`vendor/`, the setup action, manifests, the lockfile, build scripts, the
+toolchain file and Cargo configuration), the native package inventory, `rustc
+-vV` and the compiler-flag environment. The job's name, its matrix and the
+workflow file are not among them, and rust-cache takes that key as its
+`shared-key` in place of its job-based one. The shard number reaches only the
+tests step's own environment (`SHARD` and `SHARDS`). Both shards of a platform
+therefore compute the key of that platform's Clippy job and restore the entry
+`main` saved. On Arch the two shards upgrade their containers separately: if
+Arch publishes a keyed package between their starts, they build against
+different versions and one misses the cache, and each still runs its own share
+of the same test list.
+
+**Results.** `Quality gate` still needs `rust-debug` and `rust-arch` and reads
+one result for each ([`gate`](../scripts/ci/changes.py)). As for the
+[image privacy shards](#shards), a matrix's result is `success` only when every
+one of its jobs succeeded, so a failed, cancelled or timed-out shard fails the
+gate exactly as a failed test job did. Neither job has `continue-on-error`,
+`include` or `exclude`, and `fail-fast: false` lets the other shards finish and
+keep their diagnostics. The policy tests in
+[`test_nextest.py`](../scripts/ci/tests/test_nextest.py) hold those, the six leg
+names, the partition's form and total, what shard 1 alone runs, the libdav1d
+records in every Linux shard, the artifact name and the 60-minute limit. The
+[release preflight](releases.md#source-package-and-privilege-boundaries) requires
+the four macOS and Ubuntu shards by name.
+
+**Diagnostics.** Two shards of one platform share the job id, the OS and the
+architecture, and the upload action refuses a name already taken in the run, so
+a test job's artifact is named
+`ci-diagnostics-<job>-<OS>-<architecture>-shard-<n>-<run>-<attempt>`. The `tests`
+measurement and log are per shard; the `doctests` measurement and the cache
+budget record are in shard 1's artifact only. A shard's nextest log also lists
+the other shard's tests: "Tests not in the current bucket are marked skipped."
+A `SKIP` line in one shard's log therefore does not by itself mean an ignored
+test.
+
 ### Arch Linux container job
 
-`Rust tests · archlinux` builds the workspace and runs its tests on Arch Linux, a
+`Rust tests · archlinux · 1/2` and `· 2/2` build the workspace and run its tests on Arch Linux, a
 rolling release that picks up new compilers, glibc and native libraries before
-Ubuntu does. It runs on `ubuntu-24.04` inside the official
+Ubuntu does. The job (`rust-arch`) runs on `ubuntu-24.04` inside the official
 `archlinux:base-devel` image whenever the classification requests the product lane,
 and the final gate requires it like the other Rust jobs. It runs the Ubuntu and
-macOS test jobs' commands unchanged: the [pinned cargo-nextest](#test-execution-with-nextest) with
-`cargo nextest run --locked --workspace -P ci --no-fail-fast --timings`, then
-`cargo test --locked --workspace --timings -- "(line "`, after the same
-`git pack-refs --all --no-prune`. Clippy, release compilation and packaging stay on
+macOS test jobs' commands unchanged, in the same [two shards](#test-shards): the
+[pinned cargo-nextest](#test-execution-with-nextest) with
+`cargo nextest run --locked --workspace -P ci --no-fail-fast --timings --partition slice:<shard>/2`, then
+in shard 1 `cargo test --locked --workspace --timings -- "(line "`, after the same
+`git pack-refs --all --no-prune`. Each shard is its own container and upgrades and
+installs its own packages. Clippy, release compilation and packaging stay on
 the Ubuntu and macOS jobs, and no display or desktop session is involved.
 
 Steps, in order:
@@ -581,15 +758,16 @@ Steps, in order:
    same Rust 1.99.0 as the other runners.
 6. Call the [setup action](#bounded-rust-dependency-caching) with `profile: debug`,
    `vendor-reuse: true`, `container: archlinux` and `run-as: builder`, which keys
-   and restores the cache (below), then install nextest and run the tests. After the
-   doctests, the action's `finish` phase bounds the payload and, on a push to
-   `main` only, registers the save.
+   and restores the cache (below), then install nextest and run the shard's tests. In
+   shard 1 only, after the doctests, the action's `finish` phase bounds the payload and,
+   on a push to `main` only, registers the save.
 
 The job keeps the workflow's `contents: read` permission, reads no secret and uses
 only the pinned `actions/checkout` and `actions/upload-artifact` and the setup
 action, whose one third-party action is the pinned `Swatinem/rust-cache`. Its measurements
-and sanitized logs go into the same three-day diagnostics artifact as the other
-jobs (`ci-diagnostics-rust-arch-…`), including a `rust-toolchain` measurement.
+and sanitized logs go into the same three-day diagnostics artifacts as the other
+jobs, one per shard (`ci-diagnostics-rust-arch-Linux-X64-shard-<n>-…`), including a
+`rust-toolchain` measurement.
 
 **Image pin.** The image is pinned by the digest of its multi-platform index,
 `archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50`.
@@ -673,8 +851,8 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
 
 Every run still upgrades to that day's packages first, behind the unchanged
 signature check, so between two `main` pushes a pull request whose keyed packages
-moved in Arch restores nothing and builds cold; the next successful `main` push
-seeds the new key. In the [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md):
+moved in Arch restores nothing and builds cold; the next `main` push whose first
+shard succeeds seeds the new key. In the [hosted record](benchmarks/2026-09-29-ci-arch-warm-cache.md):
 - The cold job took 927 to 974 s.
 - The first `main` push saved the entry in 22 s after an 11 s bound, 4.73 GB of logical payload with no dependency evicted.
 - On the first warm product pull request the job took 182 s. The restore took 26 s, 873 of 912 units were fresh, and only the three workspace members compiled. That was 103 s less than the slowest warm `Rust tests and Clippy` job of the same run.
@@ -682,8 +860,8 @@ seeds the new key. In the [hosted record](benchmarks/2026-09-29-ci-arch-warm-cac
 **Budget.** The Arch payload is held to the `debug` limit (7 GiB of logical bytes
 before registration) by the same helper and upstream cleanup as the Ubuntu debug
 lane. Its first archive is 1,083,913,297 bytes (1.08 GB), against about 1.42 GB for
-the Ubuntu debug lane. Only a successful push to `main` registers a
-save, and only when no entry has that exact key, so the lane adds one entry per
+the Ubuntu debug lane. Only the first shard of a push to `main` registers a
+save, after its own steps succeeded and only when no entry has that exact key, so the lane adds one entry per
 new key that `main` builds: a keyed package update or a keyed source change. GitHub removes an entry 7 days after its last
 access and, once the repository is over its 10 GB limit, evicts by last access. An
 Arch entry superseded by a package update is no longer restored, so it goes before
@@ -1203,10 +1381,11 @@ writes a cache, including the [Arch Linux container job](#arch-linux-container-j
 `setup` phase before validation and its matching `finish` phase **after every
 consumer of `target`**, including package construction and installation checks.
 Finish may remove compiled outputs to bound a successful main cache. Keep future
-binary/artifact consumers before that boundary. The Clippy jobs call `setup` only:
-they restore their platform's debug entry and never save, so the test job stays its
-only writer. The test job always runs locked workspace tests with nextest, then
-doctests; the Clippy job always runs strict all-target Clippy; the separate
+binary/artifact consumers before that boundary. The Clippy jobs and the second
+[test shard](#test-shards) call `setup` only:
+they restore their platform's debug entry and never save, so the test job's first shard stays its
+only writer. Every test shard always runs its slice of the locked workspace tests with nextest, and
+the first then runs the doctests; the Clippy job always runs strict all-target Clippy; the separate
 release job always runs locked optimized compilation, regardless of a cache hit.
 Formatting has no compilation cache or native setup.
 
@@ -1282,8 +1461,8 @@ any vendored output restored from a Quality-seeded entry is dirty, and Cargo
 compiles the GPUI/Mermaid patches from the tagged checkout, as it did before
 vendored outputs were cached. The restore record then shows
 `vendor_mtimes: disabled`. The finish helper exempts vendored packages from
-cleanup and eviction regardless of the input, because only Quality's successful
-pushes to `main` register a save.
+cleanup and eviction regardless of the input, because only Quality's pushes to
+`main` register a save.
 
 [Upstream key construction](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/src/config.ts)
 separates OS/architecture, installed Rust compiler release/host/commit identities,
@@ -1332,10 +1511,18 @@ Cargo binaries, configuration and credential files are excluded. Checkout keeps
 native prerequisites remain in place. No cache is a trusted release input; release
 builds do not opt into [vendored reuse](#vendored-path-packages).
 
-Setup always restores with saving disabled. Only a successful **push to
-`FernandoX7/GitTurtle`'s `main`** can register the finish save; PRs, fork PRs and
-manual runs are read-only consumers, and so are the Clippy jobs on every event.
-Failed/cancelled validation cannot save.
+Setup always restores with saving disabled. Only the `finish` phase registers a
+save, and only on a **push to `FernandoX7/GitTurtle`'s `main`**; PRs, fork PRs and
+manual runs are read-only consumers. On every event so are the jobs that have no
+`finish` phase: the Clippy jobs and the second [test shard](#test-shards) of each
+platform. Each debug entry therefore has one writer, the first shard of its
+platform's tests, and each release entry its release job. A job saves only after
+its own earlier steps succeeded, so a job whose validation failed or was cancelled
+cannot save. The save does not wait for the run's other jobs: on `main` the first
+shard saves when its own slice of the tests and the doctests passed, even if a
+test in the second shard, Clippy or a release build failed. The entry holds
+dependency outputs keyed by their inputs, not results, and the run as a whole
+still fails.
 A main job's finish action checks for the existing exact key without downloading
 again and registers upstream's normal post-job save only when its payload budget
 passes. An existing exact entry is immutable and needs no duplicate save.

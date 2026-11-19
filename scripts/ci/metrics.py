@@ -553,7 +553,7 @@ def job_summary(directory):
     else:
         lines += ["", "Cache restore duration: unavailable; save duration: unavailable; hit/miss: unavailable; size bytes: unavailable (no explicit cache observation)."]
     lines += ["", "Unavailable cache fields are not zero. Restore boundaries belong to their measurement record; save/size may require completed post-job evidence.", "",
-              "Diagnostics artifact: `ci-diagnostics-<job>-<OS>-<architecture>-<run>-<attempt>` (3-day retention). Logs retain up to 1 MiB per command; build timing text up to 2 MiB per command. Missing Cargo markers/artifacts stay unavailable; harness totals exclude startup and doctest compilation.", "",
+              "Diagnostics artifact: `ci-diagnostics-<job>-<OS>-<architecture>-<run>-<attempt>`, with `-shard-<n>` before the run in a test shard (3-day retention). Logs retain up to 1 MiB per command; build timing text up to 2 MiB per command. Missing Cargo markers/artifacts stay unavailable; harness totals exclude startup and doctest compilation.", "",
               "This summary precedes upload and post-job actions; it does not establish their success or duration. Cancellation or runner loss can prevent final diagnostics.", ""]
     return "\n".join(lines)
 

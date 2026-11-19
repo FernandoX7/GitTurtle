@@ -132,19 +132,30 @@ jobs:
   rust-debug:
     needs: changes
     if: needs.changes.outputs.product == 'true'
-    name: Rust tests · ${{ matrix.os }}
+    name: Rust tests · ${{ matrix.os }} · ${{ matrix.shard }}/${{ matrix.shards }}
     runs-on: ${{ matrix.os }}
     # The limit only backs up a hung step: nextest's ci profile terminates any
-    # test after 120 s (terminate-after in .config/nextest.toml). The test
-    # jobs take about 25 to 31 minutes on a normal runner and runners have been
-    # seen 1.8 times slower, which 60 minutes holds and 45 did not (quality run
-    # 41757534359; docs/ci.md#test-execution-with-nextest).
+    # test after 120 s (terminate-after in .config/nextest.toml). Unsharded,
+    # the test jobs took about 25 to 31 minutes on a normal runner and runners
+    # have been seen 1.8 times slower, which 60 minutes holds and 45 did not
+    # (quality run 41757534359; docs/ci.md#test-execution-with-nextest). A
+    # shard builds everything and runs half the tests under the same limit.
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # Every leg at once: two platforms times two shards.
+      max-parallel: 4
       matrix:
         os: [macos-15, ubuntu-24.04]
+        # Each platform's tests run in `shards` jobs. nextest lists the tests
+        # of every binary and deals them to the shards in turn, after its
+        # other filters, so a shard runs only its share and the shards
+        # together run the list (docs/ci.md#test-shards). `shards` is the one
+        # place the total is written; `shard` must list 1 to that total, or
+        # the missing shard's tests would not run (a policy test in
+        # scripts/ci/tests/test_nextest.py holds both).
+        shard: [1, 2]
+        shards: [2]
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -175,8 +186,15 @@ jobs:
       # The doctest step keeps Cargo's default selection so it reuses that
       # build: `--doc` alone drops the bin-only dependencies and rebuilds every
       # shared proc-macro dependency. Only doctest names contain "(line ".
+      # The partition chooses among the built tests at run time, so every shard
+      # builds the same targets. What must happen once per platform happens in
+      # shard 1 alone: the doctests and the finish phase, which leaves each
+      # platform's debug cache entry its single writer.
       - name: Locked workspace tests with nextest
-        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings --partition "slice:$SHARD/$SHARDS"
       - name: Print the libdav1d link and initializers
         # Requirement 15 of the AVIF and JPEG 2000 security review
         # (docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md) on
@@ -184,6 +202,9 @@ jobs:
         # libdav1d (NEEDED, every dav1d_* undefined), and libdav1d's DT_INIT
         # and .init_array entries with a few instructions at each. It only
         # reads ELF files; a missing pkg-config skips the library's records.
+        # Every Linux shard prints them: each shard's runner installs its own
+        # library and the helper tests run in whichever shard the slice puts
+        # them, so each log carries the records of the library its tests met.
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
@@ -228,8 +249,10 @@ jobs:
             LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
           done
       - name: Locked workspace doctests
+        if: matrix.shard == 1
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
       - name: Prepare bounded successful-main debug cache save
+        if: matrix.shard == 1
         uses: ./.github/actions/setup-rust
         with:
           phase: finish
@@ -241,7 +264,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # The shards of a platform share the job id, the OS and the architecture.
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-metrics/
           retention-days: 3
           if-no-files-found: warn
@@ -465,13 +489,22 @@ jobs:
   rust-arch:
     needs: changes
     if: needs.changes.outputs.product == 'true'
-    name: Rust tests · archlinux
+    name: Rust tests · archlinux · ${{ matrix.shard }}/${{ matrix.shards }}
     runs-on: ubuntu-24.04
     # As in rust-debug, the limit only backs up a hung step: nextest's ci
     # profile terminates any test after 120 s (terminate-after in
-    # .config/nextest.toml). This job takes about 28 minutes on a normal
-    # runner; 1.8 times slower is 50, inside 60 and past 45.
+    # .config/nextest.toml). Unsharded, this job took about 28 minutes on a
+    # normal runner; 1.8 times slower is 50, inside 60 and past 45. A shard
+    # builds everything and runs half the tests under the same limit.
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        # As in rust-debug: `shards` is the one place the total is written and
+        # `shard` lists 1 to that total.
+        shard: [1, 2]
+        shards: [2]
     container:
       image: archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
     env:
@@ -578,11 +611,17 @@ jobs:
           run-as: builder
       - name: Install pinned, checksum-verified cargo-nextest
         run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH"
-      # The same two phases as rust-debug, which explains the doctest filter.
+      # The same two phases as rust-debug, which explains the doctest filter,
+      # the partition and what shard 1 alone runs.
       - name: Locked workspace tests with nextest
-        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings --partition "slice:$SHARD/$SHARDS"
       - name: Print the libdav1d link and initializers
-        # The same records as in rust-debug, for Arch's libdav1d.
+        # The same records as in rust-debug, for Arch's libdav1d, in every
+        # shard: the two containers upgrade separately, so each prints the
+        # library its own tests met.
         run: |
           set -euo pipefail
           for tool in readelf objdump; do
@@ -626,8 +665,10 @@ jobs:
             LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
           done
       - name: Locked workspace doctests
+        if: matrix.shard == 1
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
       - name: Prepare bounded successful-main debug cache save
+        if: matrix.shard == 1
         uses: ./.github/actions/setup-rust
         with:
           phase: finish
@@ -641,7 +682,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # The shards of a platform share the job id, the OS and the architecture.
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-metrics/
           retention-days: 3
           if-no-files-found: warn

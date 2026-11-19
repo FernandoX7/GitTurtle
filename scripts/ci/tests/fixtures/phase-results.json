@@ -70,6 +70,49 @@
     "accept": false
   },
   {
+    "name": "rust-debug skipped cannot pass after sibling success",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug": "skipped",
+      "rust-clippy": "success",
+      "rust-release": "success",
+      "rust-arch": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "missing test result cannot pass",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-clippy": "success",
+      "rust-release": "success",
+      "rust-arch": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
+    "name": "per-shard results cannot replace the test matrices' results",
+    "path": "crates/app/src/main.rs",
+    "results": {
+      "rust-format": "success",
+      "rust-debug-1": "success",
+      "rust-debug-2": "success",
+      "rust-clippy": "success",
+      "rust-release": "success",
+      "rust-arch-1": "success",
+      "rust-arch-2": "success",
+      "agent-tooling": "success",
+      "website": "success"
+    },
+    "accept": false
+  },
+  {
     "name": "rust-clippy failure cannot pass after sibling success",
     "path": "crates/app/src/main.rs",
     "results": {
