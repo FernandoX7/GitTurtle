@@ -1598,17 +1598,24 @@ the fallback is one entry per image again, slower and never stale.
    without the install line changing. Today the users of `pkg-config`,
    `system-deps`, `cmake` and `bindgen` in `Cargo.lock` are `aws-lc-sys`,
    `dav1d-sys`, `freetype-sys`, `gpui-pre`, `gpui-pre-media`, `khronos-egl`,
-   `system-deps`, `wayland-sys`, `x11` and `yeslogic-fontconfig-sys`. A new one
-   must be mapped to the build package that supplies what it probes, and that
-   package added to the action's install list and to `UBUNTU_BUILD_PACKAGES` if
-   it is new.
+   `system-deps`, `wayland-sys`, `x11` and `yeslogic-fontconfig-sys`. A test
+   reads the lockfile and requires that set to equal the keys of a table, filled
+   from each build script, that maps a user to the build packages supplying what
+   it probes on Linux or to the reason it probes nothing there. A new one fails
+   the test until it is mapped, and the package it probes is added to the
+   action's install list and to `UBUNTU_BUILD_PACKAGES` if it is new. The table
+   is by name: read the build script again when one of these packages is
+   updated.
 2. `dav1d-sys` links the system `libdav1d-dev`. Its build script can instead
    clone and build dav1d with git, meson and ninja, none of them keyed, when a
    `SYSTEM_DEPS_` variable asks for it. The action's install step refuses every
-   such variable, and the key relies on that refusal.
+   such variable, and the key relies on that refusal. A test runs the step's
+   script with such a variable set and requires it to stop before anything is
+   installed.
 
 The snapshot is also the state the build sees only while no job that uses the
-action installs packages in its own later steps; none does.
+action installs packages in its own steps. A test refuses `apt-get`, `apt` and
+`dpkg -i` in every such job of `quality.yml` and `release.yml`.
 
 **What the step prints**, so two hosted runs can be compared line by line: the
 mode; `Keyed Ubuntu packages: <n> of <m> installed`; inside a collapsed group,

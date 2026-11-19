@@ -8,7 +8,9 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import time
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -28,6 +30,57 @@ TOOL_NAMES = ("cc", "c++", "ar", "pkg-config", "clang", "cmake")
 # Tool answers for the tests that start no process.
 UBUNTU_TOOLS ={**{name: {"run": f"/usr/bin/{name}", "path": f"/usr/bin/{name}-13", "matches": [f"/usr/bin/{name}"],
                           "version": f"{name} 13.0\n"} for name in TOOL_NAMES}, "cmake3": None}
+
+
+# Crates through which a build script looks for something on the system.
+PROBING_CRATES = {"pkg-config", "system-deps", "cmake", "bindgen"}
+# Every locked package that depends on one of them, with what its build script
+# (read in the Cargo registry and under vendor/) probes for on Linux: the
+# packages of cache.UBUNTU_BUILD_PACKAGES that supply it, or the reason it
+# probes nothing there. The Ubuntu key holds those packages' closure and not the
+# hosted image's other 2,000 packages, so a prober may find nothing outside it.
+UBUNTU_PROBERS = {
+    # pkg-config for openssl, aws-lc, libcrypto and libcrypto-awslc, to adopt a
+    # system AWS-LC only when its headers define OPENSSL_IS_AWSLC, which
+    # libssl-dev's do not. It then compiles its own sources with cc, or with
+    # cmake3 or cmake when asked, and loads libclang only with its bindgen feature.
+    "aws-lc-sys": ("pkg-config", "libssl-dev", "build-essential", "cmake", "clang"),
+    # system-deps for dav1d 1.3.0 or later. Its other path, a clone built with
+    # meson and ninja, needs a SYSTEM_DEPS_ variable, which the install step refuses.
+    "dav1d-sys": ("pkg-config", "libdav1d-dev"),
+    # pkg-config for freetype2 (libfreetype-dev, which libfontconfig-dev depends
+    # on); without it, it compiles its bundled copy with c++.
+    "freetype-sys": ("pkg-config", "libfontconfig-dev", "build-essential"),
+    "gpui-pre": "bindgen is its build dependency on macOS only, and its build script acts on Windows only",
+    "gpui-pre-media": "its build script runs bindgen on macOS only; elsewhere its main is empty",
+    "khronos-egl": "it probes egl only with its static feature, which wgpu-hal asks for on emscripten only",
+    "system-deps": "a library for build scripts: it probes what its user's manifest names, here dav1d-sys's",
+    # pkg-config for wayland-client, -cursor, -egl and -server by feature, and
+    # nothing once a user turns its dlopen feature on.
+    "wayland-sys": ("pkg-config", "libwayland-dev"),
+    # pkg-config for x11, its xlib feature: libx11-dev, which libx11-xcb-dev depends on.
+    "x11": ("pkg-config", "libx11-xcb-dev"),
+    # pkg-config for fontconfig, unless its dlopen feature is on.
+    "yeslogic-fontconfig-sys": ("pkg-config", "libfontconfig-dev"),
+}
+
+
+def lock_probers(lock):
+    """Names of the locked packages that depend on a probing crate."""
+    return {package["name"] for package in tomllib.loads(lock)["package"]
+            if PROBING_CRATES & {dependency.split(" ")[0] for dependency in package.get("dependencies", ())}}
+
+
+def setup_jobs(workflow):
+    """The jobs of a workflow that use the setup action, as {name: text}."""
+    jobs = re.split(r"\n(?=  [A-Za-z0-9_-]+:\n)", workflow.split("\njobs:\n", 1)[1])
+    return {job.strip().split(":", 1)[0]: job for job in jobs if "uses: ./.github/actions/setup-rust" in job}
+
+
+def later_installs(workflow):
+    """(job, line) for every apt or dpkg installation written in a job that uses the setup action."""
+    return [(name, line.strip()) for name, job in setup_jobs(workflow).items() for line in job.splitlines()
+            if re.search(r"(?<![\w-])(?:apt(?:-get)?|dpkg\s+(?:-i|--install))(?![\w-])", line)]
 
 
 def snapshot_rows(text=UBUNTU_SNAPSHOT):
@@ -1509,6 +1562,108 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.runner.script(self.runner.bin / "dpkg-query", "exit 2")
         with self.assertRaises(subprocess.CalledProcessError):
             self.runner.native()
+
+
+class UbuntuKeyPreconditions(unittest.TestCase):
+    """What must stay true around the action for the closure to be all a build reads."""
+
+    def test_every_locked_prober_is_mapped_to_keyed_build_packages(self):
+        lock = (ROOT / "Cargo.lock").read_text()
+        self.assertEqual(lock_probers(lock), set(UBUNTU_PROBERS), (
+            "The locked packages that depend on pkg-config, system-deps, cmake or bindgen changed. The Ubuntu cache key "
+            "holds only the closure of cache.UBUNTU_BUILD_PACKAGES, so read the new package's build script and map it in "
+            "UBUNTU_PROBERS to the build packages that supply what it probes on Linux, or to the reason it probes nothing "
+            "there. If it probes a package the setup action does not install, add that package to the action's install "
+            "list and to cache.UBUNTU_BUILD_PACKAGES. Remove a package that is gone."))
+        for name, supplied in UBUNTU_PROBERS.items():
+            with self.subTest(prober=name):
+                if isinstance(supplied, str):
+                    self.assertRegex(supplied, r"\w+ \w+ \w+")
+                else:
+                    self.assertTrue(supplied)
+                    self.assertLessEqual(set(supplied), set(cache.UBUNTU_BUILD_PACKAGES))
+        # A dependency added later is seen, whichever of the four crates it uses.
+        for crate in sorted(PROBING_CRATES):
+            with self.subTest(crate=crate):
+                added = f'{lock}\n[[package]]\nname = "libprobe-sys"\nversion = "1.0.0"\ndependencies = [\n "cc",\n "{crate} 0.3.0",\n]\n'
+                self.assertEqual(lock_probers(added) - set(UBUNTU_PROBERS), {"libprobe-sys"})
+        self.assertEqual(lock_probers(f'{lock}\n[[package]]\nname = "libplain"\nversion = "1.0.0"\ndependencies = [\n "cc",\n]\n'),
+                         set(UBUNTU_PROBERS))
+        # The two packages the table reaches through a build package's dependency.
+        rows = snapshot_rows()
+        self.assertIn("libfreetype-dev", rows["libfontconfig-dev:arm64"][3])
+        self.assertIn("libx11-dev", rows["libx11-xcb-dev:arm64"][3])
+
+    def test_install_step_refuses_every_system_deps_variable_before_it_installs(self):
+        # dav1d-sys would otherwise clone and build dav1d with git, meson and
+        # ninja, none of which the key holds.
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("\n    - name: ")[1:]
+        install = next(index for index, step in enumerate(steps) if "apt-get install" in step)
+        self.assertLess(install, next(index for index, step in enumerate(steps) if "cache.py prepare" in step))
+        body = steps[install].split("      run: |\n", 1)[1].split("\n")
+        script = textwrap.dedent("\n".join(body[:next(index for index, line in enumerate(body)
+                                                       if line.strip() and not line.startswith(" " * 8))]))
+        (ROOT / ".local").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local") as temp:
+            base = Path(temp)
+            calls = base / "calls"
+            for name in ("sudo", "pkg-config"):
+                (base / name).write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> {shlex.quote(str(calls))}\n")
+                (base / name).chmod(0o755)
+            environment = {name: value for name, value in os.environ.items() if not name.startswith("SYSTEM_DEPS_")}
+            environment["PATH"] = f"{base}{os.pathsep}{environment['PATH']}"
+            allowed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            ran = calls.read_text().splitlines()
+            self.assertEqual(ran[0], "sudo apt-get update")
+            self.assertEqual(ran[1].split()[:5], ["sudo", "apt-get", "install", "-y", "--no-install-recommends"])
+            self.assertEqual(set(ran[1].split()[5:]), {*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES})
+            calls.unlink()
+            for name, value in (("SYSTEM_DEPS_DAV1D_BUILD_INTERNAL", "always"), ("SYSTEM_DEPS_LINK", "static"), ("SYSTEM_DEPS_X", "")):
+                with self.subTest(variable=name):
+                    refused = subprocess.run(["bash", "-c", script], env={**environment, name: value}, capture_output=True, text=True)
+                    self.assertEqual(refused.returncode, 1)
+                    self.assertIn(f"::error::SYSTEM_DEPS_ variables must not reach the build: {name}", refused.stdout)
+                    self.assertFalse(calls.exists())
+
+    def test_no_job_installs_packages_after_the_setup_action_took_its_snapshot(self):
+        workflows = {name: (ROOT / ".github/workflows" / name).read_text() for name in ("quality.yml", "release.yml")}
+        self.assertEqual(sorted(setup_jobs(workflows["quality.yml"])), ["rust-arch", "rust-clippy", "rust-debug", "rust-release"])
+        self.assertEqual(sorted(setup_jobs(workflows["release.yml"])), ["build"])
+        for name, text in workflows.items():
+            with self.subTest(workflow=name):
+                self.assertEqual(later_installs(text), [], "a job that uses the setup action installs packages itself: "
+                                 "the Ubuntu cache key would no longer describe what the build reads")
+        # The scan sees an installation: Quality has one, in a job without the action.
+        self.assertIn("sudo apt-get install", workflows["quality.yml"])
+        sample = textwrap.dedent("""\
+            name: Sample
+            jobs:
+              scan:
+                steps:
+                  - run: sudo apt-get install -y python3-pil
+              build:
+                steps:
+                  - uses: ./.github/actions/setup-rust
+                  - run: sudo apt-get install -y --no-install-recommends libpng-dev
+                  - run: |
+                      sudo apt install nasm
+                      sudo dpkg -i tool.deb
+                      sudo dpkg --install other.deb
+                      dpkg-query -W nasm && echo adapt
+              test:
+                steps:
+                  - uses: ./.github/actions/setup-rust
+                    with:
+                      profile: debug
+                  - run: /usr/bin/apt-get -y install ninja-build
+            """)
+        self.assertEqual(sorted(setup_jobs(sample)), ["build", "test"])
+        self.assertEqual(later_installs(sample), [
+            ("build", "- run: sudo apt-get install -y --no-install-recommends libpng-dev"), ("build", "sudo apt install nasm"),
+            ("build", "sudo dpkg -i tool.deb"), ("build", "sudo dpkg --install other.deb"),
+            ("test", "- run: /usr/bin/apt-get -y install ninja-build")])
 
 
 if __name__ == "__main__":
