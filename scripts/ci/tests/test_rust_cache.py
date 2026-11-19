@@ -87,6 +87,9 @@ UBUNTU_PROBERS = {
 }
 
 
+PROBER_ROW = re.compile(r"[A-Za-z0-9_-]+ \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
+
+
 def lock_probers(lock):
     """The locked packages that depend on a probing crate, as `name version`."""
     return {f"{package['name']} {package['version']}" for package in tomllib.loads(lock)["package"]
@@ -1773,13 +1776,21 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.assertEqual(self.runner.probes.read_text().splitlines(), asked)
         self.assertEqual(lines[0], "Ubuntu native key mode: closure")
         self.assertEqual(lines[-5:-3], ["Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent"])
-        # Any failure status says the name does not resolve (pkgconf's is 1); success is its version, whatever it is.
-        for action, answer in (("exit 3", None), ("echo 1.61.0", "1.61.0"), ("printf '1.61.0\\n\\n'", "1.61.0\n"), ("true", "")):
+        # Status 1 is pkg-config's own answer for a name it cannot resolve; success is its version, whatever it is.
+        for action, answer in (("exit 1", None), ("echo 1.61.0", "1.61.0"), ("printf '1.61.0\\n\\n'", "1.61.0\n"), ("true", "")):
             with self.subTest(action=action):
                 self.runner.probe("libcrypto-awslc", action)
                 self.assertEqual(cache.pkg_config_probe(selected, "libcrypto-awslc"), answer)
                 self.assertIsNone(cache.pkg_config_probe(selected, "aws-lc"))
         self.runner.probe("libcrypto-awslc", None)
+        # Any other failure status (a wrapper that cannot run it says 126 or 127) is no answer: the step fails.
+        for status in (2, 126, 127):
+            with self.subTest(status=status):
+                self.runner.probe("aws-lc", f"exit {status}")
+                with self.assertRaises(subprocess.CalledProcessError) as unanswered:
+                    cache.pkg_config_probe(selected, "aws-lc")
+                self.assertEqual(unanswered.exception.returncode, status)
+        self.runner.probe("aws-lc", None)
         keys = {closure}
         for name, version in (("aws-lc", "1.61.0"), ("aws-lc", "1.61.1"), ("libcrypto-awslc", "1.61.0")):
             with self.subTest(resolves=name, version=version):
@@ -1911,7 +1922,8 @@ class UbuntuKeyPreconditions(unittest.TestCase):
         unsupplied = set()
         for prober, asked in UBUNTU_PROBERS.items():
             with self.subTest(prober=prober):
-                self.assertRegex(prober, r"^[a-z0-9-]+ \d+\.\d+\.\d+$")
+                # Cargo's own spelling of a locked name and version, a pre-release or build suffix included.
+                self.assertTrue(PROBER_ROW.fullmatch(prober), prober)
                 if isinstance(asked, str):
                     self.assertRegex(asked, r"\w+ \w+ \w+")
                     continue

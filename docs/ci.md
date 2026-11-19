@@ -1554,7 +1554,12 @@ time) and hashes these parts.
   that is there and cannot be listed, like a file that cannot be read, is keyed
   and printed as unreadable with its errno, never as empty; only a directory
   that does not exist is empty. `PKG_CONFIG*` variables stay in the flags
-  identity above.
+  identity above, by value only: a directory that `PKG_CONFIG_PATH`,
+  `PKG_CONFIG_LIBDIR` or a target-suffixed form of either adds is not listed,
+  so a `.pc` file placed there later would not change the key. The pkg-config
+  crate's `HOST_PKG_CONFIG_*` and `TARGET_PKG_CONFIG_*` forms are in neither:
+  the flags identity keys names that begin with `PKG_CONFIG`. No workflow sets
+  any of them.
 - *Names no build package ships.* `aws-lc-sys` 0.45.0 asks pkg-config for
   `openssl`, `aws-lc`, `libcrypto` and `libcrypto-awslc` and links a system
   AWS-LC when one of them resolves to one. `libssl-dev` ships the first and the
@@ -1563,8 +1568,9 @@ time) and hashes these parts.
   so the two could resolve on one image and not on the next, and Cargo would
   not rerun the build script. For each of them (`UBUNTU_UNSUPPLIED_PROBES`) the
   helper asks the selected pkg-config `--modversion <name>` and keys the
-  answer: absent when the command exits with a failure status, the version
-  otherwise. A name that resolves also sends the key to the complete inventory
+  answer: absent when the command exits with status 1, pkg-config's own answer
+  for a name it cannot resolve, and the version when it succeeds; any other
+  status fails the step. A name that resolves also sends the key to the complete inventory
   (the fallback below), because the closure is then not all a build reads.
 - *The top level of `/usr/local`, as a tripwire.* gcc searches
   `/usr/local/include` before the system headers and the linker searches

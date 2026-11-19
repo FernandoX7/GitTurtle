@@ -417,14 +417,15 @@ def local_entry(path, name):
 def pkg_config_probe(pkg_config, name):
     """What the selected pkg-config resolves `name` to: its version, or None for nothing.
 
-    pkg-config exits with a failure status for a name it cannot resolve, which
-    is the answer here and no fault. A command that cannot start, is killed or
-    runs out of time still fails the step.
+    pkg-config exits with status 1 for a name it cannot resolve, which is the
+    answer here and no fault. Any other status says it could not tell (a
+    wrapper that cannot run it answers 126 or 127): that, like a command that
+    cannot start, is killed or runs out of time, still fails the step.
     """
     try:
         output = run([pkg_config, "--modversion", name])
     except subprocess.CalledProcessError as error:
-        if error.returncode > 0:
+        if error.returncode == 1:
             return None
         raise
     return output.decode("utf-8", "surrogateescape").removesuffix("\n")
