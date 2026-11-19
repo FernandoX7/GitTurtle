@@ -62,7 +62,15 @@ SUITES = (
     ("ci-tests", ("-m", "unittest", "discover", "-s", "scripts/ci/tests", "-p", "test_*.py")),
 )
 HEARTBEAT = 30.0
-GRACE = 5.0
+# Seconds this driver gives the step, counted from its own start. The job's limit of 10 minutes
+# is unchanged and still has the last word: this one is stricter, never wider, and nothing is
+# run again after it. The steps before this one took 8.3 to 29.5 s in 61 retained macOS runs and
+# up to 31 s in one more, so 31 + 510 + 10 s of grace is 551 s, about 49 s inside the job's 600 s.
+# A step cut here still prints what every process had written and names what it cut; a job cut by
+# its own limit shows only the lines printed while it waited.
+DEADLINE = 510.0
+# Seconds between SIGTERM and SIGKILL for a session that is being ended.
+GRACE = 10.0
 PREFIX = "[ci] "
 # Characters that end a line for some readers of a log, though not for this driver.
 SEPARATORS = str.maketrans({"\N{LINE SEPARATOR}": " ", "\N{PARAGRAPH SEPARATOR}": " ", "\x85": " "})
@@ -209,25 +217,55 @@ def signal_session(child, signum):
         pass
 
 
+def end_sessions(items, grace, clock):
+    """End the processes that have no exit status yet; return those that were asked to end.
+
+    SIGTERM goes to each one's session and SIGKILL, `grace` seconds later, to those still there.
+    Both go through `signal_session` only, so to sessions this driver started, and only while
+    `Popen` has not reaped the process: until then its number cannot belong to another one. The
+    waiters are joined before this returns, so that nothing still writes to a capture.
+
+    These are the collectors. A collector passes SIGTERM on to its command's session and waits
+    for it; a command that handles or ignores the signal is still there when its collector is
+    killed, and no session of its own is known here to signal.
+    """
+    asked = [item for item in items if item.child.returncode is None]
+    for item in asked:
+        signal_session(item.child, signal.SIGTERM)
+    patience = clock() + grace
+    for item in asked:
+        item.waiter.join(timeout=max(0.0, patience - clock()))
+    for item in asked:
+        if item.child.returncode is None:
+            signal_session(item.child, signal.SIGKILL)
+    for item in items:
+        # Nothing outlives SIGKILL; the limit only keeps a surprise from holding the step for good.
+        item.waiter.join(timeout=max(grace, 1.0))
+    return asked
+
+
 class Running:
     """One started process: its captured output, and its exit status and seconds once it has ended."""
 
-    def __init__(self, name, argv, cwd):
-        self.name, self.exit, self.seconds = name, None, None
+    def __init__(self, name, argv, cwd, clock):
+        self.name, self.exit, self.seconds, self.cut = name, None, None, False
         # Unnamed, and held by the collector alone. What the collector starts still runs as the
         # same user and can reach the collector's descriptors, so `quote` trusts no line in it.
         self.capture = tempfile.TemporaryFile()
-        started = time.monotonic()
+        self.clock, self.started = clock, clock()
         # Its own session, as `metrics.py measure` starts its command.
         self.child = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=self.capture,
                                       stderr=subprocess.STDOUT, start_new_session=True)
-        self.waiter = threading.Thread(target=self.reap, args=(started,), daemon=True)
+        self.waiter = threading.Thread(target=self.reap, daemon=True)
         self.waiter.start()
 
-    def reap(self, started):
+    def reap(self):
         status = self.child.wait()
-        self.seconds = time.monotonic() - started
+        self.seconds = self.clock() - self.started
         self.exit = status
+
+    def elapsed(self):
+        return self.clock() - self.started if self.seconds is None else self.seconds
 
     def state(self):
         if self.exit is None:
@@ -235,46 +273,51 @@ class Running:
         return f"{self.name} exit {self.exit} after {self.seconds:.1f} s"
 
 
-def side_by_side(commands, cwd, beat=HEARTBEAT):
-    """Start every (name, command) at once and wait until all of them have ended.
+def side_by_side(commands, cwd, beat=HEARTBEAT, until=None, grace=GRACE, clock=time.monotonic):
+    """Start every (name, command) at once and wait until all of them have ended, or until `until`.
 
-    Nothing is ended early: a process that fails leaves the others running. A SIGTERM or SIGINT to
-    this driver is passed to the sessions it started and the wait goes on, as `metrics.py measure`
-    treats its command; any other way out of here ends those sessions first.
+    No process is ended for another's failure: one that fails leaves the others running. A
+    SIGTERM or SIGINT to this driver is passed to the sessions it started and the wait goes on,
+    as `metrics.py measure` treats its command. At `until` on `clock`, what still runs is ended
+    (`end_sessions`) and marked as cut. Any other way out of here ends those sessions first.
+    Returns the processes and the signals that were passed on.
     """
-    running = []
+    running, passed = [], []
 
     def forward(signum, _frame):
+        passed.append(signum)
         for item in running:
-            if item.exit is None:
+            if item.child.returncode is None:
                 signal_session(item.child, signum)
 
     previous = {signum: signal.signal(signum, forward) for signum in (signal.SIGTERM, signal.SIGINT)}
     try:
-        origin = time.monotonic()
+        origin = clock()
         for name, argv in commands:
-            running.append(Running(name, argv, cwd))
+            running.append(Running(name, argv, cwd, clock))
         beat_at = origin + beat
         while alive := [item for item in running if item.waiter.is_alive()]:
-            alive[0].waiter.join(timeout=max(0.0, min(1.0, beat_at - time.monotonic())))
-            if time.monotonic() >= beat_at:
+            now = clock()
+            if until is not None and now >= until:
+                late = [item for item in alive if item.child.returncode is None]
+                if late:
+                    # Said before the wait for them, so that the log has it whatever happens next.
+                    say("the step's deadline has passed: ending " + ", ".join(item.name for item in late))
+                for item in end_sessions(alive, grace, clock):
+                    item.cut = True
+                break
+            alive[0].waiter.join(timeout=max(0.0, min(1.0, beat_at - now, *(() if until is None else (until - now,)))))
+            if clock() >= beat_at:
                 beat_at += beat
                 # The output is printed at the end, so say meanwhile that the step is alive.
-                say(f"+{time.monotonic() - origin:.0f} s: " + "; ".join(item.state() for item in running))
+                say(f"+{clock() - origin:.0f} s: " + "; ".join(item.state() for item in running))
     except BaseException:
-        forward(signal.SIGTERM, None)
-        patience = time.monotonic() + GRACE
-        for item in running:
-            item.waiter.join(timeout=max(0.0, patience - time.monotonic()))
-        forward(signal.SIGKILL, None)
-        for item in running:
-            item.waiter.join(timeout=GRACE)
+        end_sessions(running, grace, clock)
         raise
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
-    return running
-
+    return running, passed
 
 def harmless(text):
     """Text that stays on its line and spells no workflow command.
@@ -310,17 +353,22 @@ def replay(item, metrics):
     """Print one process's output whole in a log group; return the test count of unittest's last summary in it."""
     ran = None
     print(f"::group::{item.name}")
-    item.capture.seek(0)
-    # Split at line feeds only, as the collector wrote them; `quote` takes every other separator
-    # out of the line, so none of them can start a line that would stand in the log without the prefix.
-    for raw in item.capture:
-        line = quote(raw, metrics)
-        match = RAN.match(line)
-        if match:
-            ran = int(match.group(1))
-        print(line)
+    if item.waiter.is_alive():
+        # The capture shares its file position with the collector: reading it under a live
+        # collector would move the collector's writes. Not reached unless SIGKILL failed.
+        say(f"{item.name} could not be ended, so its output is not printed")
+    else:
+        item.capture.seek(0)
+        # Split at line feeds only, as the collector wrote them; `quote` takes every other separator
+        # out of the line, so none of them can start a line that would stand in the log without the prefix.
+        for raw in item.capture:
+            line = quote(raw, metrics)
+            match = RAN.match(line)
+            if match:
+                ran = int(match.group(1))
+            print(line)
+        item.capture.close()
     print("::endgroup::", flush=True)
-    item.capture.close()
     return ran
 
 
@@ -330,31 +378,46 @@ def measured(job, directory):
                       "--", *job.command]
 
 
-def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT):
+def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT, deadline=DEADLINE, grace=GRACE, clock=time.monotonic):
     metrics = collector()
     directory.mkdir(parents=True, exist_ok=True)
     say(f"starting {len(jobs)} processes at once: {', '.join(job.name for job in jobs)}")
-    begun = time.monotonic()
-    running = side_by_side([measured(job, directory) for job in jobs], cwd, beat)
-    whole = time.monotonic() - begun
+    begun = clock()
+    # One deadline for everything this step waits for, the proof's discovery included.
+    until = begun + deadline
+    running, passed = side_by_side([measured(job, directory) for job in jobs], cwd, beat, until, grace, clock)
+    whole = clock() - begun
     counts = [replay(item, metrics) for item in running]
-    failures = [f"{item.name} exited {item.exit}" for item in running if item.exit != 0]
-    failures += [f"{item.name} ran no test" for item, count in zip(running, counts) if not count]
     groups = {job.name: read_record(job.record) for job in jobs if job.record is not None}
-    discovered, problems = None, []
-    if groups:
+    discovered, problems, attempted = None, [], False
+    if groups and not passed and not any(item.cut for item in running):
         # The driver's own discovery, under the collector too; its record stays out of the measurements.
-        (found,) = side_by_side([measured(listing, listing.record.parent)], cwd, beat)
+        (found,), passed = side_by_side([measured(listing, listing.record.parent)], cwd, beat, until, grace, clock)
+        running.append(found)
+        counts.append(None)
         if found.exit != 0:
-            failures.append(f"the driver's own discovery exited {found.exit}")
             replay(found, metrics)
         found.capture.close()
-        discovered = read_record(listing.record)
-        problems = prove(discovered, groups)
-    for item, count in zip(running, counts):
-        say(f"{item.name}: exit {item.exit}, {item.seconds:.1f} s, {'no' if count is None else count} tests")
-    say(f"{len(running)} processes side by side took {whole:.1f} s")
-    if groups and not problems:
+        if found.exit == 0:
+            attempted = True
+            discovered = read_record(listing.record)
+            problems = prove(discovered, groups)
+    for item, count in zip(running[:len(jobs)], counts):
+        say(f"{item.name}: {'cut at the deadline, ' if item.cut else ''}exit {item.exit}, {item.elapsed():.1f} s, "
+            f"{'no' if count is None else count} tests")
+    say(f"{len(jobs)} processes side by side took {whole:.1f} s")
+    failures = []
+    for item in running:
+        if item.cut:
+            # The summary may have no row for it: a collector that had to be killed leaves no record.
+            failures.append(f"{item.name} was cut at the deadline of {deadline:.0f} s, after {item.elapsed():.1f} s")
+        elif item.exit != 0:
+            failures.append(f"{item.name} exited {item.exit}")
+    failures += [f"{item.name} ran no test" for item, count in zip(running[:len(jobs)], counts) if not count and not item.cut]
+    failures += [f"the driver was sent {signal.Signals(signum).name} and passed it on" for signum in dict.fromkeys(passed)]
+    if groups and not attempted:
+        say("the proof that the groups hold every test once was not attempted: the step had already failed")
+    elif groups and not problems:
         # Said whether or not a process failed: a failed test is then known not to be a lost one.
         shares = " + ".join(str(len(held)) for held in groups.values())
         say(f"the {len(groups)} agent-loop groups hold the {len(discovered)} discovered tests, each once ({shares})")
@@ -365,9 +428,8 @@ def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT):
         say(f"FAILED: {failure}")
     if failures or problems:
         return 1
-    say(f"all {len(running)} processes passed")
+    say(f"all {len(jobs)} processes passed")
     return 0
-
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])

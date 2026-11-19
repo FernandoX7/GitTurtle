@@ -13,6 +13,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -133,6 +134,51 @@ FIXTURES = {
                 Path(os.environ["TOOLING_SUITES_TEST_MARK"]).write_text("ended after the failure", encoding="utf-8")
     """,
     "empty/test_none.py": "import unittest\n",
+    # Prints one line and then does not return: only a signal ends it before the test that runs it has failed.
+    "hanging/test_hang.py": """
+        import time
+        import unittest
+
+
+        class Hang(unittest.TestCase):
+            def test_does_not_return(self):
+                print("the hanging suite got this far", flush=True)
+                time.sleep(120)
+    """,
+    # The same, deaf to SIGTERM: it outlives the collector that is killed over it.
+    "deaf/test_deaf.py": """
+        import os
+        from pathlib import Path
+        import signal
+        import time
+        import unittest
+
+
+        class Deaf(unittest.TestCase):
+            def test_ignores_the_request_to_end(self):
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                Path(os.environ["TOOLING_SUITES_TEST_DEAF"]).write_text(str(os.getpid()), encoding="utf-8")
+                print("the deaf suite got this far", flush=True)
+                time.sleep(120)
+    """,
+    # A package whose discovery hangs once its one group has recorded its ids: the group's own
+    # discovery passes, and the driver's discovery for the proof does not end.
+    "stuck/pkg/__init__.py": "",
+    "stuck/pkg/test_stuck.py": """
+        import os
+        from pathlib import Path
+        import time
+        import unittest
+
+        if (Path(os.environ["TOOLING_SUITES_TEST_RECORDS"]) / "group-1.json").exists():
+            print("the discovery got this far", flush=True)
+            time.sleep(120)
+
+
+        class Stuck(unittest.TestCase):
+            def test_passes(self):
+                pass
+    """,
     # Prints what the driver prints, and separators a careless reader would split a line at.
     "noisy/test_noise.py": """
         import sys
@@ -160,12 +206,35 @@ def quality_job(name):
     return job, job.split("\n      - ")[1:]
 
 
-def drive(jobs, listing=None, cwd=None, beat=suites.HEARTBEAT, directory=None):
-    """One run of the driver: its exit status, its printed lines and the collector's records by name."""
+class Leap:
+    """A clock for the driver: the real one until a fact about the run holds, then far past any deadline.
+
+    The fact is read from what the driver itself has printed, the states in its heartbeat. A test
+    so reaches the deadline when the run is where the test needs it, never after a guessed delay.
+    """
+
+    def __init__(self, output, ready):
+        self.output, self.ready, self.ahead = output, re.compile(ready), 0.0
+
+    def __call__(self):
+        if not self.ahead:
+            beats = re.findall(r"^tooling-suites: \+\d+ s: (.*)$", self.output.getvalue(), re.M)
+            if beats and self.ready.fullmatch(beats[-1]):
+                self.ahead = 100_000.0
+        return time.monotonic() + self.ahead
+
+
+def drive(jobs, listing=None, cwd=None, beat=suites.HEARTBEAT, directory=None, ready=None, **limits):
+    """One run of the driver: its exit status, its printed lines and the collector's records by name.
+
+    With `ready`, a pattern for the heartbeat's states, the driver's clock leaps once they match it.
+    """
     with contextlib.ExitStack() as stack:
         directory = Path(directory or stack.enter_context(tempfile.TemporaryDirectory()))
         output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-        status = suites.run(directory, jobs, listing, cwd=cwd or directory, beat=beat)
+        if ready is not None:
+            limits["clock"] = Leap(output, ready)
+        status = suites.run(directory, jobs, listing, cwd=cwd or directory, beat=beat, **limits)
         records = {path.stem: json.loads(path.read_text(encoding="utf-8")) for path in directory.glob("*.json")}
         logs = {path.stem: path.read_text(encoding="utf-8") for path in directory.glob("*.log")}
     # Split at line feeds only, as a log is: other separators are part of the line they are in.
@@ -514,6 +583,95 @@ class OutputTests(Fixtures):
             self.assertEqual(driver.returncode, 1, output)
             self.assertIn("\ntooling-suites: FAILED: waiting exited 143\n", output)
             self.assertEqual(json.loads((Path(directory) / "waiting.json").read_text(encoding="utf-8"))["exit_code"], -15)
+
+
+class DeadlineTests(Fixtures):
+    """The driver's own deadline. Each run reaches it on the driver's clock, at a state its heartbeat has shown."""
+
+    NOT_ATTEMPTED = "tooling-suites: the proof that the groups hold every test once was not attempted: the step had already failed"
+
+    @staticmethod
+    def after(lines, name):
+        """The driver's last lines, after the named group, with every number of seconds as N."""
+        return [re.sub(r"\d+\.\d s", "N s", line) for line in lines[lines.index("::endgroup::", lines.index(f"::group::{name}")) + 1:]]
+
+    def test_a_process_that_hangs_is_cut_replayed_and_named_and_no_proof_is_attempted(self):
+        records = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.dict(os.environ, {"TOOLING_SUITES_TEST_EVENTS": str(records / "events")}))
+        jobs, listing = suites.plan(records, discovery=DEALT, count=2, suites=())
+        jobs.append(self.suite("hanging"))
+        # The deadline comes when both groups have ended and the hanging suite's line is in its capture.
+        status, lines, measured, _ = drive(
+            jobs, listing, self.fixtures / "dealt", beat=0.05, deadline=3600, grace=30,
+            ready=r"agent-tooling-1-of-2 exit 0 after \S+ s; agent-tooling-2-of-2 exit 0 after \S+ s; "
+                  r"hanging running \([1-9]\d* bytes of output\)")
+        self.assertEqual(status, 1, lines)
+        self.assertIn("tooling-suites: the step's deadline has passed: ending hanging", lines)
+        # What it had printed is in the log, as is the output of the processes that ended on their own.
+        self.assertEqual(group_lines(lines, "hanging"), ["[ci] the hanging suite got this far"])
+        self.assertIn("[ci] Ran 4 tests in ", "\n".join(group_lines(lines, "agent-tooling-1-of-2")))
+        self.assertEqual(self.after(lines, "hanging"), [
+            "tooling-suites: agent-tooling-1-of-2: exit 0, N s, 4 tests",
+            "tooling-suites: agent-tooling-2-of-2: exit 0, N s, 3 tests",
+            "tooling-suites: hanging: cut at the deadline, exit 143, N s, no tests",
+            "tooling-suites: 3 processes side by side took N s",
+            self.NOT_ATTEMPTED,
+            "tooling-suites: FAILED: hanging was cut at the deadline of 3600 s, after N s", ""])
+        # No discovery was started: neither its record nor the collector's record of it is there.
+        self.assertEqual(sorted(path.name for path in records.iterdir()), ["events", "group-1.json", "group-2.json"])
+        # Its collector ended when asked and kept its record, with the signal that ended the suite.
+        self.assertEqual(measured["hanging"]["exit_code"], -15)
+
+    def test_a_process_that_ignores_the_request_is_killed_after_the_grace_and_still_replayed(self):
+        mark = Path(self.enterContext(tempfile.TemporaryDirectory())) / "deaf"
+        self.enterContext(mock.patch.dict(os.environ, {"TOOLING_SUITES_TEST_DEAF": str(mark)}))
+
+        def end_the_suite():
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(mark.read_text(encoding="utf-8")), signal.SIGKILL)
+
+        self.addCleanup(end_the_suite)
+        status, lines, measured, _ = drive([self.suite("passing"), self.suite("deaf")], beat=0.05, deadline=3600, grace=0.2,
+                                           ready=r"passing exit 0 after \S+ s; deaf running \([1-9]\d* bytes of output\)")
+        self.assertEqual(status, 1, lines)
+        self.assertEqual(group_lines(lines, "deaf"), ["[ci] the deaf suite got this far"])
+        self.assertIn("[ci] the passing suite says one", group_lines(lines, "passing"))
+        self.assertEqual(self.after(lines, "deaf"), [
+            "tooling-suites: passing: exit 0, N s, 2 tests",
+            "tooling-suites: deaf: cut at the deadline, exit -9, N s, no tests",
+            "tooling-suites: 2 processes side by side took N s",
+            "tooling-suites: FAILED: deaf was cut at the deadline of 3600 s, after N s", ""])
+        # A collector that had to be killed leaves no record, so the job's summary has no row for it.
+        self.assertEqual(sorted(measured), ["passing"])
+        # The deadline ends the collector, not the suite: this one ignored the signal and is still there.
+        os.kill(int(mark.read_text(encoding="utf-8")), 0)
+
+    def test_the_same_deadline_ends_the_proofs_discovery(self):
+        records = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.dict(os.environ, {"TOOLING_SUITES_TEST_RECORDS": str(records)}))
+        jobs, listing = suites.plan(records, discovery=DEALT, count=1, suites=())
+        status, lines, _, _ = drive(jobs, listing, self.fixtures / "stuck", beat=0.05, deadline=3600, grace=30,
+                                    ready=r"agent-tooling-discovery running \([1-9]\d* bytes of output\)")
+        self.assertEqual(status, 1, lines)
+        self.assertIn("tooling-suites: the step's deadline has passed: ending agent-tooling-discovery", lines)
+        self.assertEqual(group_lines(lines, "agent-tooling-discovery"), ["[ci] the discovery got this far"])
+        self.assertEqual(self.after(lines, "agent-tooling-discovery"), [
+            "tooling-suites: agent-tooling-1-of-1: exit 0, N s, 1 tests",
+            "tooling-suites: 1 processes side by side took N s",
+            self.NOT_ATTEMPTED,
+            "tooling-suites: FAILED: agent-tooling-discovery was cut at the deadline of 3600 s, after N s", ""])
+        self.assertFalse(listing.record.exists())
+
+    def test_output_is_not_read_while_its_collector_is_still_there(self):
+        class Untouched:
+            def __getattr__(self, name):
+                raise AssertionError(f"the capture was used: {name}")
+
+        item = types.SimpleNamespace(name="stays", capture=Untouched(), waiter=types.SimpleNamespace(is_alive=lambda: True))
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertIsNone(suites.replay(item, suites.collector()))
+        self.assertEqual(output.getvalue().split("\n"),
+                         ["::group::stays", "tooling-suites: stays could not be ended, so its output is not printed", "::endgroup::", ""])
 
 
 class PlanTests(unittest.TestCase):
