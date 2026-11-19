@@ -22,6 +22,10 @@ SPEC = importlib.util.spec_from_file_location("rust_cache", ROOT / ".github/acti
 cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
 SPEC_TOOLCHAIN = cache.toolchain_identity
+# The installer whose pin the debug identity reads.
+SPEC_TOOLS = importlib.util.spec_from_file_location("ci_tools_for_cache", ROOT / "scripts/ci/tools.py")
+ci_tools = importlib.util.module_from_spec(SPEC_TOOLS)
+SPEC_TOOLS.loader.exec_module(ci_tools)
 # `dpkg-query` in a disposable ubuntu:24.04 arm64 container holding exactly the
 # setup action's install list, which names no cmake, taken on 2026-11-19 with
 # cache.DPKG_SNAPSHOT's format: package:architecture, version, status,
@@ -355,6 +359,8 @@ class CacheFixture(unittest.TestCase):
                      "crates/app/build.rs", "crates/app/Cargo.toml", "vendor/tool/src/lib.rs",
                      "vendor/tool/native/source.c", "vendor/tool/build.rs", ".github/actions/setup-rust/action.yml"):
             self.file(self.root / name, name.encode())
+        # The debug identity reads the cargo-nextest pin from the checkout's installer.
+        self.file(self.root / cache.TOOL_INSTALLER, (ROOT / cache.TOOL_INSTALLER).read_bytes())
         subprocess.run(["git", "-C", str(self.root), "add", "--all"], check=True)
 
     def test_source_only_edits_reuse_but_real_build_inputs_invalidate(self):
@@ -993,6 +999,170 @@ class CacheFixture(unittest.TestCase):
         # The save step's condition is as it was.
         self.assertEqual(fields("save")[0], f"if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && {main}")
         self.assertEqual(text.count("GITHUB_ENV"), 0)
+
+    def profile_exports(self, profile):
+        with patch.dict(os.environ, {"CACHE_PROFILE": profile, "RUNNER_OS": "Linux"}), \
+                patch.object(cache, "native_identity", return_value=("native", [])), patch("builtins.print"):
+            cache.prepare()
+        lines = Path(self.env["GITHUB_ENV"]).read_text().splitlines()
+        Path(self.env["GITHUB_ENV"]).write_text("")
+        return dict(line.split("=", 1) for line in lines)
+
+    def test_the_debug_key_holds_the_nextest_pin_and_no_other_profile_does(self):
+        self.init_git()
+        installer = self.root / cache.TOOL_INSTALLER
+        original = installer.read_text()
+        pins = cache.tool_pins(original)
+        # The installer's own values: the version and, a platform, the archive's name and digest.
+        self.assertEqual(pins, {"nextest": {"version": ci_tools.NEXTEST_VERSION, "archives": sorted(
+            [*platform, *archive] for platform, archive in ci_tools.NEXTEST_ARCHIVES.items())}})
+        (linux, macos) = pins["nextest"]["archives"]
+        self.assertEqual((linux[:2], macos[:2]), (["Linux", "X64"], ["macOS", "ARM64"]))
+
+        def keys():
+            return {profile: self.profile_exports(profile)["CI_RUST_CACHE_KEY"] for profile in sorted(cache.PROFILES)}
+
+        baseline = keys()
+        moved = {"version": original.replace(f'NEXTEST_VERSION = "{pins["nextest"]["version"]}"', 'NEXTEST_VERSION = "0.0.1"'),
+                 "Linux digest": original.replace(linux[3], "0" * 64), "macOS digest": original.replace(macos[3], "f" * 64),
+                 "Linux archive name": original.replace(f'"{linux[2]}"', '"cargo-nextest-renamed.tar.gz"')}
+        debug = {baseline["debug"]}
+        for label, text in moved.items():
+            with self.subTest(moved=label):
+                self.assertNotEqual(text, original)
+                installer.write_text(text)
+                changed = keys()
+                # A pin move is a new debug key, so no restored entry can hold another pin's archive.
+                self.assertNotIn(changed["debug"], debug)
+                debug.add(changed["debug"])
+                # The lanes that install nothing keep their entries.
+                self.assertEqual({profile: key for profile, key in changed.items() if profile != "debug"},
+                                 {profile: key for profile, key in baseline.items() if profile != "debug"})
+        # What is not the pin leaves every key: the installer's code, limits and comments.
+        installer.write_text(original.replace("MAX_EXECUTABLE = 128 << 20", "MAX_EXECUTABLE = 256 << 20") + "\n# a later comment\n")
+        self.assertEqual(keys(), baseline)
+        self.assertEqual(cache.TOOL_PROFILES, {"debug"})
+
+    def test_the_pin_is_read_from_two_literals_without_running_the_installer(self):
+        valid = ('NEXTEST_VERSION = "1.2.3"\nNEXTEST_ARCHIVES = {\n    ("Linux", "X64"): ("cargo-nextest-1.2.3-linux.tar.gz", "' + "a" * 64
+                 + '"),\n}\n')
+        expected = {"nextest": {"version": "1.2.3", "archives": [["Linux", "X64", "cargo-nextest-1.2.3-linux.tar.gz", "a" * 64]]}}
+        self.assertEqual(cache.tool_pins(valid), expected)
+        # Nothing else in the file runs: not an import, not a statement that would stop the step.
+        self.assertEqual(cache.tool_pins("import no_such_module\nraise SystemExit(9)\n" + valid), expected)
+        refused = {
+            "no version": valid.split("\n", 1)[1],
+            "no archives": valid.split("\n", 1)[0] + "\n",
+            "a version that is no release": valid.replace('"1.2.3"\n', '"latest"\n'),
+            "a computed version": valid.replace('"1.2.3"\n', 'f"{1}.2.3"\n'),
+            "the pin assigned twice": valid + 'NEXTEST_VERSION = "1.2.4"\n',
+            "no archive": 'NEXTEST_VERSION = "1.2.3"\nNEXTEST_ARCHIVES = {}\n',
+            "a short digest": valid.replace("a" * 64, "a" * 63),
+            "an upper-case digest": valid.replace("a" * 64, "A" * 64),
+            "an archive name with a path": valid.replace("cargo-nextest-1.2.3-linux.tar.gz", "../archive.tar.gz"),
+            "an archive without a digest": valid.replace(', "' + "a" * 64 + '")', ",)"),
+            "a platform of one part": valid.replace('("Linux", "X64")', '("Linux",)'),
+        }
+        for label, source in refused.items():
+            with self.subTest(source=label):
+                self.assertNotEqual(source, valid)
+                with self.assertRaises(ValueError):
+                    cache.tool_pins(source)
+
+    def test_the_identity_keys_the_pin_and_never_what_the_archive_directory_holds(self):
+        self.init_git()
+        exports = self.profile_exports("debug")
+        directory = self.cargo / "registry" / cache.TOOL_ARCHIVES
+        # Inside the registry root, which the restore action saves whole and whose clean-up visits index, cache and src alone.
+        self.assertEqual(exports["CI_RUST_CACHE_TOOL_ARCHIVES"], str(directory))
+        self.assertEqual(directory.parent, self.paths[1])
+        self.assertNotIn(cache.TOOL_ARCHIVES, {"index", "cache", "src"})
+        # The installer stores the archive between the phases: the key does not move with it.
+        self.file(directory / "cargo-nextest-0.0.0-x86_64-unknown-linux-gnu.tar.gz", b"stored after setup")
+        self.assertEqual(self.profile_exports("debug")["CI_RUST_CACHE_KEY"], exports["CI_RUST_CACHE_KEY"])
+        # Only a profile whose key holds the pin is told of a directory.
+        for profile in sorted(cache.PROFILES - cache.TOOL_PROFILES):
+            with self.subTest(profile=profile):
+                self.assertNotIn("CI_RUST_CACHE_TOOL_ARCHIVES", self.profile_exports(profile))
+
+    def test_a_pin_moved_since_setup_refuses_the_save_and_names_the_tools(self):
+        self.init_git()
+        installer = self.root / cache.TOOL_INSTALLER
+        moved = installer.read_text().replace(f'NEXTEST_VERSION = "{ci_tools.NEXTEST_VERSION}"', 'NEXTEST_VERSION = "0.0.1"')
+        outcome = self.phases(self.lane("Ubuntu debug"), between=lambda: installer.write_text(moved))
+        self.assertEqual(outcome["lines"], ["::warning::Cache identity changed since setup, so this job saves no cache entry: tools"])
+        self.assertEqual(outcome["identity"], {"identity": "changed"})
+        self.refused(outcome)
+        # An installer that can no longer be read refuses too and fails nothing.
+        outcome = self.phases(self.lane("Ubuntu debug"), between=installer.unlink)
+        self.assertEqual(outcome["identity"], {"identity": "unconfirmed"})
+        self.refused(outcome)
+        subprocess.run(["git", "-C", str(self.root), "checkout", "-q", "--", "."], check=True)
+        # A release lane keys no pin and saves as before.
+        outcome = self.phases(self.lane("Ubuntu release x64"), between=lambda: installer.write_text(moved))
+        self.assertEqual((outcome["identity"], outcome["save"]), ({"identity": "unchanged"}, "save=true\n"))
+
+    def test_the_archive_directory_survives_the_bound_phase_as_registry_payload(self):
+        directory = self.paths[1] / cache.TOOL_ARCHIVES
+        archive = self.file(directory / "cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz", b"A" * 1000)
+        source = self.file(self.paths[1] / "src/index.crates.io-abc/dep-1.0.0/src/lib.rs", b"S" * 10)
+        output = self.file(self.paths[0] / "debug/deps/libdep-abcd.rlib", b"D" * 50)
+        packages = [{"name": "dep", "version": "1.0.0", "id": "dep", "source": "registry", "targets": [{"name": "dep", "kind": ["lib"]}]}]
+
+        def execute(command, **_):
+            return json.dumps({"packages": packages}).encode() if command[1] == "metadata" else b""
+
+        snapshots = []
+        result = cache.bound_payload(self.root, self.paths, "debug", execute=execute, snapshots=snapshots)
+        self.assertEqual((result["save"], result["dropped_target"], result["removed_source_directories"]), (True, False, 1))
+        self.assertFalse(source.exists())
+        self.assertEqual(archive.read_bytes(), b"A" * 1000)
+        # Its bytes are counted against the profile's limit: the directory and the file, 4 KiB an entry.
+        self.assertEqual(snapshots[-1]["subtrees"]["registry_other"],
+                         {"logical_bytes": 1000, "entry_overhead_bytes": 2 * 4096, "entries": 2})
+        # A payload over the limit drops the target, never the archive.
+        with patch.dict(cache.PROFILE_LIMITS, {"debug": 1000 + 5 * 4096}):
+            result = cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertEqual((result["save"], result["dropped_target"]), (True, True))
+        self.assertFalse(output.exists())
+        self.assertEqual(archive.read_bytes(), b"A" * 1000)
+        # A link beside it refuses the save rather than entering an entry.
+        (directory / "alias.tar.gz").symlink_to(archive)
+        with self.assertRaisesRegex(ValueError, "nonregular cache payload refused"):
+            cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        # A restore that was no exact hit discards the directory with the rest, before the installer looks.
+        (directory / "alias.tar.gz").unlink()
+        self.restore(hit="false")
+        self.assertFalse(directory.exists())
+
+    def test_only_the_jobs_whose_key_holds_the_pin_install_nextest_from_the_cached_archive(self):
+        workflows = {name: (ROOT / ".github/workflows" / name).read_text() for name in ("quality.yml", "release.yml")}
+        command = ('python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" '
+                   '--path-file "$GITHUB_PATH" --archive-cache "$CI_RUST_CACHE_TOOL_ARCHIVES"')
+        installing = {name: job for name, job in setup_jobs(workflows["quality.yml"]).items() if "install-nextest" in job}
+        self.assertEqual(sorted(installing), ["rust-arch", "rust-debug"])
+        for name, job in installing.items():
+            with self.subTest(job=name):
+                steps = job.split("\n      - ")[1:]
+                (install,) = [step.split("\n      #")[0] for step in steps if "install-nextest" in step]
+                self.assertEqual([line.split(" -- ", 1)[1] for line in re.findall(r"^        run: (.*)$", install, re.M)], [command])
+                # Anonymous, as before: no token, secret or variable of the step's own.
+                for unwanted in ("env:", "secrets.", "github.token", "GITHUB_TOKEN", "if:"):
+                    self.assertNotIn(unwanted, install)
+                # After the setup phase that restores the entry and exports the directory, in a profile that keys the pin.
+                setups = [index for index, step in enumerate(steps) if "uses: ./.github/actions/setup-rust" in step]
+                position = next(index for index, step in enumerate(steps) if "install-nextest" in step)
+                self.assertLess(setups[0], position)
+                self.assertLess(position, setups[1])
+                self.assertEqual(set(re.findall(r"^          profile: (.*)$", job, re.M)), cache.TOOL_PROFILES)
+        # The executable's directory is no cached path: neither the isolated Cargo home nor the target.
+        self.assertNotIn("gitturtle-cargo", command.split("--archive-cache")[0])
+        self.assertNotIn("target", command.split("--archive-cache")[0])
+        self.assertEqual(sum(text.count("install-nextest") for text in workflows.values()), 2)
+        # Clippy restores the same debug entry with the same inputs and installs nothing.
+        clippy = setup_jobs(workflows["quality.yml"])["rust-clippy"]
+        self.assertEqual(set(re.findall(r"^          profile: (.*)$", clippy, re.M)), cache.TOOL_PROFILES)
+        self.assertNotIn("tools.py", clippy)
 
     def test_profiles_have_distinct_identity_and_private_paths(self):
         self.init_git()

@@ -459,17 +459,20 @@ of per-binary times.
 
 The pinned version is installed by
 [`scripts/ci/tools.py install-nextest`](../scripts/ci/tools.py) before the tests
-step, measured as `nextest-install`. It downloads the official release archive
-over HTTPS, verifies its SHA-256 against the digest committed in that script before
-reading it, extracts only the regular `cargo-nextest` file into
-`$RUNNER_TEMP/cargo-nextest`, checks that `cargo nextest --version` resolves to the
-pinned release, and only then adds the directory to `GITHUB_PATH`. A transport
-failure is retried twice; a checksum, archive or version mismatch fails the step.
-The step needs no token or permission beyond the workflow's `contents: read`, and
-no third-party install action is used. It lives outside the Rust setup action, whose
-files are hashed into the [cache key](#tool-choice-and-compatible-reuse), so
-changing the pin does not invalidate the Rust caches. The archive is fetched on
-each run rather than cached: about 12 MB (Linux) or 17 MB (macOS).
+step, measured as `nextest-install`. It takes the official release archive from
+the restored debug cache entry or, when the entry holds none, downloads it over
+HTTPS in one anonymous attempt
+([below](#the-nextest-archive-in-the-debug-entry)). Either way it verifies the
+SHA-256 against the digest committed in that script before reading the archive,
+extracts only the regular `cargo-nextest` file into `$RUNNER_TEMP/cargo-nextest`,
+checks that `cargo nextest --version` resolves to the pinned release, and only
+then adds the directory to `GITHUB_PATH`. Nothing is retried: a failed request
+fails the step, and so does a checksum, archive or version mismatch. The step
+needs no token or permission beyond the workflow's `contents: read`, and no
+third-party install action is used. The pin's version and both digests are part
+of the debug [cache key](#tool-choice-and-compatible-reuse), so moving the pin
+makes the debug lanes cold once and leaves the release entries alone. The
+archive is about 12 MB (Linux) or 17 MB (macOS).
 
 | Runner | Release archive (cargo-nextest 0.9.146) | SHA-256 |
 | --- | --- | --- |
@@ -484,6 +487,67 @@ downloaded archives on September 27, 2026. To move the pin, update the version a
 both digests in `tools.py` and this table from the new release's `.sha256` assets,
 check that its output format still matches the gate's parser, and run the CI helper
 tests.
+
+#### The nextest archive in the debug entry
+
+Until this change every test job fetched the pinned archive anonymously, in up
+to three attempts. The request failed four times in 150 runs, each with HTTP 504
+after all three attempts: three inside GitHub's incident of November 9, 2026
+(05:59 to 09:09 UTC) and one on November 5, for which no incident was published.
+The fault behind the retry was a network request in every test job.
+
+**Rule.** `install-nextest --archive-cache` first looks for the pinned archive in
+`$CARGO_HOME/registry/gitturtle-tool-archives`, which the Rust dependency cache
+restores and saves with Cargo's registry. On a hit it makes no request. On a miss
+it makes one anonymous request and stores the archive there once its digest
+matched, under a temporary name and by rename. The line the step prints ends in
+`archive from: cache` or `archive from: fetch`. The cache holds the archive and
+never the executable, which is unpacked into `$RUNNER_TEMP/cargo-nextest`, outside
+every cached path.
+
+**The cache is not trusted.** The cached file is opened without following a
+link, in a directory opened the same way. It must be a regular file no larger
+than the 64 MiB archive limit, and it is hashed against the pinned SHA-256 before
+anything parses it. A link, a directory, an oversized file or another digest
+fails the step by name and stays as it is: a fetch never replaces it. Someone
+who can write a cache entry therefore gains nothing new, since only the pinned
+archive is ever used; in the security consult's words, "an entry writer already
+runs code through unverified `target/` outputs, so gains nothing; nor does
+pull-request code under GitHub's cache scoping".
+
+**The key.** The debug profile's identity has a sixth part, `tools`: the pinned
+version and each archive's name and SHA-256, read from the two literals in
+`tools.py` without running it. On each platform the test shards and the Clippy
+job, which installs nothing, use the debug profile with the same inputs and so
+compute one key; the release lanes key no pin and are told of no directory. A
+pin move is a new debug key, so a restored entry never holds another pin's
+archive. The identity keys the pin and never what the directory holds, so it is
+the same at setup and at [finish](#identity-comparison-at-finish).
+
+**Writers and bytes.** The entries have the writers they had: shard 1 of each
+platform's test job, on `main`. The directory lies inside the `registry` root.
+The pinned rust-cache cleans only `registry/index`, `registry/cache` and
+`registry/src` before a save, and the bound phase prunes only `registry/src` and,
+over the limit, drops `target`, so the directory survives both and its bytes
+count against the 7 GiB debug limit: 12,055,550 bytes in the Ubuntu and the Arch
+entry and 16,790,991 in the macOS entry for 0.9.146, and 8 KiB of entry
+accounting each. On the Arch lane the restored directory goes to the build
+account with the rest of `CARGO_HOME`. A restore that is no exact hit is
+discarded whole, this directory included, before the installer looks.
+
+**Failure line.** A failed request names the host of the hop that failed and
+the HTTP status or the error's class, as in
+`tool download failed: HTTP 504 from release-assets.githubusercontent.com`. The
+release redirects to a signed asset URL: Python's `HTTPError` text names no host
+and its `url` carries the signed query, so neither is printed.
+
+**Why not the job's token.** GitHub's final text for the November 9 incident
+counts authenticated requests that timed out too, so a token would put a
+credential into the install steps without removing the failure.
+
+**Not shown yet.** No hosted run has executed this path. The first `main` run
+after the change seeds each debug entry with one fetch a platform; a later run
+that prints `archive from: cache` in every test shard is the acceptance.
 
 Reproduce the CI test phase locally with the same isolation as the job:
 
@@ -2019,7 +2083,8 @@ text forbid such steps. The finish phase therefore computes the identity again,
 and a changed one refuses the save.
 
 - *One function, twice.* `cache_identity` computes the five parts (`profile`,
-  `source`, `native`, `toolchain`, `flags`) and the key with no side effect: it
+  `source`, `native`, `toolchain`, `flags`), for the debug profile a sixth
+  ([`tools`](#the-nextest-archive-in-the-debug-entry)), and the key with no side effect: it
   creates no directory, rewinds no timestamp, exports nothing and prints
   nothing. `prepare` calls it, exports the key, and keeps the parts, the native
   part's keyed lines and a digest of each flag's value in

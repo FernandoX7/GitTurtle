@@ -171,9 +171,11 @@ jobs:
         with:
           profile: debug
           vendor-reuse: true
-      # Outside setup-rust, so the pin does not change the Rust cache key.
+      # The pin is part of the debug cache key, and its release archive rides
+      # in that entry: a restored job verifies it and makes no request
+      # (docs/ci.md#the-nextest-archive-in-the-debug-entry).
       - name: Install pinned, checksum-verified cargo-nextest
-        run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH"
+        run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH" --archive-cache "$CI_RUST_CACHE_TOOL_ARCHIVES"
       # These phases share one cold debug build. nextest builds and runs the
       # same unit and integration tests as `cargo test` with the ci profile in
       # .config/nextest.toml; it cannot run doctests, so Cargo runs them next.
@@ -604,7 +606,7 @@ jobs:
           container: archlinux
           run-as: builder
       - name: Install pinned, checksum-verified cargo-nextest
-        run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH"
+        run: python3 scripts/ci/metrics.py measure --name nextest-install --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" --path-file "$GITHUB_PATH" --archive-cache "$CI_RUST_CACHE_TOOL_ARCHIVES"
       # The same two phases as rust-debug, which explains the doctest filter,
       # the partition and what shard 1 alone runs.
       - name: Locked workspace tests with nextest

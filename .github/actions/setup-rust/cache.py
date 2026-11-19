@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Lifecycle of an optional, bounded cache on fresh GitHub-hosted Rust runners."""
 import argparse
+import ast
 from contextlib import contextmanager
 import errno
 import hashlib
@@ -198,6 +199,21 @@ ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 # one argument that cannot be read as an option.
 TOOLCHAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 TOOLCHAIN_CHANNEL = re.compile(r'^channel[ \t]*=[ \t]*"([^"\n]*)"[ \t]*(?:#.*)?$', re.MULTILINE)
+# The test jobs' pinned cargo-nextest archive rides in the entry they restore, so
+# a restored job makes no request for it. It lives beside Cargo's own registry
+# directories: the pinned rust-cache saves `registry` whole and cleans only its
+# `index`, `cache` and `src`, and the bound phase prunes only `src`. The cache
+# holds the release archive, never the executable, and the installer hashes it
+# against the pin before anything reads it (scripts/ci/tools.py). The profiles
+# whose lanes install it key the pin, read from the installer's own literals,
+# so a pin move is a new key and never a mismatch in a restored entry. The
+# identity keys the pin and never what the directory holds.
+TOOL_ARCHIVES = "gitturtle-tool-archives"
+TOOL_PROFILES = {"debug"}
+TOOL_INSTALLER = "scripts/ci/tools.py"
+TOOL_VERSION = re.compile(r"\d+\.\d+\.\d+")
+TOOL_ARCHIVE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+TOOL_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 def profile_limit(profile):
@@ -710,6 +726,32 @@ def toolchains():
     print(f"rustup lists the active Rust toolchain alone: {active} ({time.monotonic() - started:.1f} s)")
 
 
+def tool_pins(source):
+    """The cargo-nextest pin of the installer's source text: its version and every archive's name and digest.
+
+    Read from the two literal assignments without running the file, so the
+    identity has no side effect. Anything but one valid literal of each raises.
+    """
+    found = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("NEXTEST_VERSION", "NEXTEST_ARCHIVES"):
+            if node.targets[0].id in found:
+                raise ValueError("the cargo-nextest pin is assigned twice")
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    version, archives = found.get("NEXTEST_VERSION"), found.get("NEXTEST_ARCHIVES")
+    if not isinstance(version, str) or not TOOL_VERSION.fullmatch(version) or not isinstance(archives, dict) or not archives:
+        raise ValueError("the cargo-nextest pin is not one version and its archives")
+    pinned = []
+    for platform, archive in archives.items():
+        if not (isinstance(platform, tuple) and len(platform) == 2 and all(isinstance(part, str) for part in platform)
+                and isinstance(archive, tuple) and len(archive) == 2 and all(isinstance(part, str) for part in archive)
+                and TOOL_ARCHIVE.fullmatch(archive[0]) and TOOL_DIGEST.fullmatch(archive[1])):
+            raise ValueError("the cargo-nextest pin has an archive without a name and a SHA-256")
+        pinned.append([*platform, *archive])
+    return {"nextest": {"version": version, "archives": sorted(pinned)}}
+
+
 def keyed_flags(environ):
     """The set variables of the environment that are flags, as sorted (name, value) pairs."""
     return sorted((name, value) for name, value in environ.items()
@@ -1058,13 +1100,15 @@ def record(name, elapsed, *, cache=None, details=None):
 
 
 def cache_identity():
-    """The cache key and its five parts, from the environment and the machine as they are now.
+    """The cache key and its parts, from the environment and the machine as they are now.
 
     No side effect: nothing is created, rewound, exported or printed, so
     prepare and the finish phase's comparison compute the identity alike.
     CARGO_INCREMENTAL is keyed by its effective value: prepare exports 0 when
     the job set none, as the restore action does after it, so the variable is
-    the same in both phases by construction and needs no exemption.
+    the same in both phases by construction and needs no exemption. A profile
+    of TOOL_PROFILES has a sixth part, the pinned tools, whatever the job goes
+    on to install: Clippy restores the entry the test job saves.
     """
     profile = os.environ["CACHE_PROFILE"]
     if profile not in PROFILES:
@@ -1078,6 +1122,8 @@ def cache_identity():
     native, lines = native_identity(container or os.environ["RUNNER_OS"])
     parts = {"profile": profile, "source": source_identity(root, inputs), "native": native,
              "toolchain": toolchain_identity(), "flags": digest(json.dumps(flags).encode())}
+    if profile in TOOL_PROFILES:
+        parts["tools"] = tool_pins((root / TOOL_INSTALLER).read_text(encoding="utf-8"))
     key = "-".join(filter(None, (profile, container, digest(json.dumps(parts, sort_keys=True).encode()))))
     return {"key": key, "parts": parts, "native_lines": lines, "flags": flags, "inputs": inputs}
 
@@ -1150,6 +1196,9 @@ def prepare():
     if not os.environ.get("CARGO_INCREMENTAL"):
         # The value the identity keyed, exported before the restore action exports the same.
         exported["CARGO_INCREMENTAL"] = "0"
+    if profile in TOOL_PROFILES:
+        # Only where the key holds the pin: no other profile's entry may carry an archive.
+        exported["CI_RUST_CACHE_TOOL_ARCHIVES"] = cargo / "registry" / TOOL_ARCHIVES
     output_file("GITHUB_ENV", exported)
 
 
