@@ -1514,8 +1514,14 @@ distinguishable in the cache list.
 The flags identity hashes the name and value of every set, non-empty environment
 variable that changes what rustc, a build script, a compiler or the `cc`, `cmake`
 and `pkg-config` crates emit. The step prints the selected names on one line
-(`Keyed flag variables: …`, or `none`) and never a value: a value can hold a path
-or a token.
+(`Keyed flag variables: …`; `CARGO_INCREMENTAL` is always among them, as
+`prepare` keys its effective value). A flag's value is never printed and never
+kept: a value can hold a path or a token. The directories that a
+`PKG_CONFIG_PATH` or `PKG_CONFIG_LIBDIR` variable names are not held back with
+it. By the rule that lists them under the
+[Ubuntu native key](#ubuntu-native-key), they are listed in the log, kept in
+the record of the [comparison at finish](#identity-comparison-at-finish) and
+printed again in a difference.
 
 **Why the three crates' whole read set.** Cargo reruns a build script only for
 the variables the script declared with `rerun-if-env-changed`. `ring` 0.17.14
@@ -1866,9 +1872,12 @@ and a changed one refuses the save.
   after `prepare` on the five lanes that set none (the Arch job sets it for the
   whole job), so the flags differed between the phases. `prepare` keys the
   variable's effective value and exports `CARGO_INCREMENTAL=0` itself when the
-  job set none. No variable is exempted. A job that set another value would
-  keep it, the restore action's export would then change the identity, and
-  that lane would save nothing: no lane does.
+  job set none. No variable is exempted. No lane sets `CARGO_INCREMENTAL` to
+  anything but 0. A lane that did would either keep its value through both
+  phases and save as usual or, if the restore action's export replaced it,
+  have its save refused, with the warning and a line that names the variable:
+  slower, never stale. Whether a value exported through `GITHUB_ENV` replaces
+  one set in a job's `env:` has not been verified.
 - *Every event.* The step has no event, ref or repository condition: pull
   requests, manual runs and the release workflow's build job compare too, and
   save nothing. A pull request's own run thereby shows on each lane that the
