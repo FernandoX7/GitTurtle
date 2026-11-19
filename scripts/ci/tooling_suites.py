@@ -7,7 +7,9 @@
 `scripts/ci/metrics.py measure` and in a session of its own: the agent-loop suite as three groups,
 then the native-QA, operator and CI-helper suites with the commands they always had. All six run
 to their end whatever the others do, nothing is run twice, and the step fails when one of them
-fails, ran no test, or the groups do not hold every agent-loop test exactly once.
+fails, ran no test, or the groups do not hold every agent-loop test exactly once. Only the
+driver's own deadline (, behind the job's limit) ends a process: what it cuts is named,
+every process's output is still printed, and the step fails.
 
 The agent-loop tests are dealt, not listed: each group discovers the suite as
 `python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'` does, sorts the

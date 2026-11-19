@@ -1314,10 +1314,17 @@ the summary and the diagnostics artifact show one row and one log for each.
   exactly those ids, each in one group; any difference fails the step and names
   every id. A process that ran no test fails it too. A module that cannot be
   imported fails as before: unittest reports it as a failed test, which is dealt
-  like any other.
-- **All six run to their end, and any failure fails the step.** Nothing is ended
-  early, retried or allowed to fail. The last lines name each process with its
-  exit status, its seconds and its test count.
+  like any other. A `TestCase` class imported by name into a second test module
+  (`from agent_loop.test_a import Base`) is discovered twice under one id and
+  now fails the step by name, where the old step ran it twice; import the module
+  instead (`from agent_loop import test_a`, then `test_a.Base`), so that the
+  class is not a name of the second module and is collected once. The proof
+  guards against accidents, not against hostile test code: a test runs as the
+  same user and could rewrite another group's record of its ids.
+- **All six run to their end, and any failure fails the step.** No process is
+  ended because another failed, and nothing is retried or allowed to fail; only
+  the driver's own deadline, below, ends a process. The last lines name each
+  process with its exit status, its seconds and its test count.
 - **Output is printed whole, in a fixed order, after the last process ends**,
   each process in a log group of its name, so suites are never interleaved.
   Every such line is printed behind the collector's `[ci] ` prefix, and only
