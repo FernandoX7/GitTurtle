@@ -2185,7 +2185,11 @@ against `941ba66b`), and built cold.
 the key is computed, the helper's `toolchains` phase uninstalls every listed
 toolchain but the active one (`rustup toolchain uninstall`, one name a command)
 and prints each name with the seconds. Then, on every job, the step fails by name
-unless rustup lists the active toolchain and no other. The active toolchain must
+unless rustup lists the active toolchain and no other. A rustup command that
+fails, does not answer within 120 s or cannot be started fails the step too, with
+one `::error::` line that names the command and how it ended (for a failure, its
+exit status and the last line rustup wrote, cut to 200 characters), never with a
+traceback. The active toolchain must
 be the one `rust-toolchain.toml` selects, so a `RUSTUP_TOOLCHAIN` that names
 another fails the step before anything is uninstalled. A name is checked against
 a pattern before it reaches a command line. The Arch container job uninstalls

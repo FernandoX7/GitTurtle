@@ -732,6 +732,24 @@ def toolchains():
     print(f"rustup lists the active Rust toolchain alone: {active} ({time.monotonic() - started:.1f} s)")
 
 
+def command_failure(error):
+    """What failed and how, as one line, for a command that exited with a failure, timed out or could not be started.
+
+    The command line is the helper's own fixed words and, for an uninstall, a
+    name that was validated first. A failure's last line of standard error is
+    the tool's own reason, cut to 200 characters; the caller escapes the line.
+    """
+    if isinstance(error, subprocess.CalledProcessError):
+        said = reversed((error.stderr or b"").decode("utf-8", "replace").splitlines())
+        reason = next((line.strip()[:200] for line in said if line.strip()), "")
+        return f"{' '.join(error.cmd)} failed with exit status {error.returncode}" + (f": {reason}" if reason else "")
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"{' '.join(error.cmd)} did not finish in {error.timeout:g} s"
+    if isinstance(error, OSError):
+        return f"{error.filename or 'a file or command'} could not be used: {error.strerror or type(error).__name__}"
+    return f"a command failed: {type(error).__name__}"
+
+
 def toolchains_since_setup(root):
     """None while rustup still lists the pinned toolchain alone, else the refusing verdict and its one warning.
 
@@ -1289,6 +1307,10 @@ def main():
         except ValueError as error:
             # By name, as an annotation: the message holds what rustup lists.
             print(f"::error::{shown(str(error))}")
+            return 1
+        except (OSError, subprocess.SubprocessError) as error:
+            # A rustup that fails, does not answer or is missing: the command and how it ended, not a traceback.
+            print(f"::error::{shown(command_failure(error))}")
             return 1
     elif args.phase == "prepare":
         prepare()

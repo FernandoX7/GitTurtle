@@ -2069,6 +2069,54 @@ class PinnedToolchainAlone(unittest.TestCase):
                 patch("sys.argv", ["cache.py", "toolchains"]), patch("builtins.print"):
             self.assertEqual(cache.main(), 0)
 
+    def step(self, body=None, *, timeout=None):
+        """The step's exit status and printed lines with a real `rustup` process: a shell script with this body, or none on PATH.
+
+        `timeout` replaces the helper's 120 s a command, so a script that never answers costs the test a fraction of a second.
+        """
+        # A directory of its own for each call, so that "none on PATH" finds no earlier script.
+        tools = Path(tempfile.mkdtemp(prefix="tools-", dir=self.root))
+        if body is not None:
+            (tools / "rustup").write_text("#!/bin/sh\n" + body)
+            (tools / "rustup").chmod(0o755)
+        real = cache.run
+        bounded = (lambda command, **options: real(command, **{**options, "timeout": timeout})) if timeout else real
+        environment = {"GITHUB_WORKSPACE": str(self.root), "CACHE_CONTAINER": "", "CACHE_RUN_AS": "",
+                       "PATH": str(tools) if body is None else f"{tools}{os.pathsep}{os.environ['PATH']}"}
+        with patch.dict(os.environ, environment), patch.object(cache, "run", side_effect=bounded), \
+                patch("sys.argv", ["cache.py", "toolchains"]), patch("builtins.print") as printed:
+            status = cache.main()
+        return status, [" ".join(map(str, call.args)) for call in printed.call_args_list]
+
+    def test_a_rustup_that_fails_times_out_or_is_missing_fails_the_step_with_one_annotation_that_names_it(self):
+        active = "rustup show active-toolchain"
+        # Each leaves as one annotation and a failed step, never as a traceback. The processes are real, so the
+        # lines are made from what Python reports for them.
+        self.assertEqual(self.step('echo "info: syncing channel updates" >&2\necho "error: no active toolchain" >&2\necho >&2\nexit 3\n'),
+                         (1, [f"::error::{active} failed with exit status 3: error: no active toolchain"]))
+        self.assertEqual(self.step("exit 1\n"), (1, [f"::error::{active} failed with exit status 1"]))
+        # What rustup wrote last is escaped as every keyed value is, and cut to 200 characters.
+        self.assertEqual(self.step("printf '::error::first\\n##[error]stop\\033[0m\\n' >&2\nexit 1\n"),
+                         (1, [f"::error::{active} failed with exit status 1: #\\x23[error]stop\\x1b[0m"]))
+        self.assertEqual(self.step("printf '%0300d' 0 >&2\nexit 1\n"), (1, [f"::error::{active} failed with exit status 1: " + "0" * 200]))
+        # `exec`, so that the process the helper kills is the one that holds its pipes.
+        self.assertEqual(self.step("exec sleep 30\n", timeout=0.2), (1, [f"::error::{active} did not finish in 0.2 s"]))
+        self.assertEqual(self.step(), (1, ["::error::rustup could not be used: No such file or directory"]))
+        # A later command of the step: the uninstall, named with the toolchain it was given.
+        uninstall = textwrap.dedent(f"""\
+            case "$1 $2" in
+              "show active-toolchain") echo "{self.PINNED} (overridden by 'rust-toolchain.toml')" ;;
+              "toolchain list") printf '%s\\n' {self.IMAGE} {self.PINNED} ;;
+              *) echo "error: could not remove the toolchain" >&2; exit 1 ;;
+            esac
+            """)
+        self.assertEqual(self.step(uninstall), (1, [
+            f"::error::rustup toolchain uninstall {self.IMAGE} failed with exit status 1: error: could not remove the toolchain"]))
+        # The same script once its uninstall succeeds leaves two listed: the rule's own failure, as before.
+        status, lines = self.step(uninstall.replace("exit 1", "exit 0"))
+        self.assertEqual((status, lines[-1]), (
+            1, f"::error::rustup must list the active Rust toolchain {self.PINNED} alone; it lists: {self.IMAGE}, {self.PINNED}"))
+
     def test_the_step_runs_on_every_job_after_the_toolchain_is_installed_and_before_the_key(self):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
         steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
