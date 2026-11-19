@@ -2,6 +2,7 @@
 """Lifecycle of an optional, bounded cache on fresh GitHub-hosted Rust runners."""
 import argparse
 from contextlib import contextmanager
+import errno
 import hashlib
 import json
 import grp
@@ -85,15 +86,21 @@ DPKG_VERSION = re.compile(r"[A-Za-z0-9.+~:-]+")
 DPKG_PACKAGE = re.compile(rf"({DPKG_NAME}):[a-z0-9-]+")
 DPKG_DEPENDENCY = re.compile(rf"({DPKG_NAME})(?::[a-z0-9-]+)?(?: \((?:<<|<=|=|>=|>>) {DPKG_VERSION.pattern}\))?")
 DPKG_PROVIDED = re.compile(rf"({DPKG_NAME})(?: \(= {DPKG_VERSION.pattern}\))?")
-# The names a build script or the cc and cmake crates run bare. Versions alone
-# do not say which binary PATH and the alternatives select: the hosted image
-# carries a CMake under /usr/local that is no dpkg package. cmake3 is the cmake
-# crate's other name for it and may be absent.
-UBUNTU_TOOLS = ("cc", "c++", "ar", "pkg-config", "clang", "cmake")
+# The names a build script or the cc and cmake crates run bare, and the linker,
+# the assembler and the make that gcc and CMake take from PATH in their turn.
+# Versions alone do not say which binary PATH and the alternatives select: the
+# hosted image carries a CMake under /usr/local that is no dpkg package. cmake3
+# is the cmake crate's other name for it and may be absent.
+UBUNTU_TOOLS = ("cc", "c++", "ar", "ld", "as", "make", "pkg-config", "clang", "cmake")
 UBUNTU_OPTIONAL_TOOLS = ("cmake3",)
 # pkg-config directories whose files belong to dpkg packages; a .pc file in any
 # other directory of the search order could shadow a keyed library's.
 DPKG_PC_ROOTS = ("/usr/lib", "/usr/share")
+# Where gcc looks for headers before the system's and the linker for libraries,
+# and where no file belongs to a dpkg package. Only the names at their top
+# level are keyed: a tripwire for a changed image, not a key over what the
+# directories hold.
+UBUNTU_LOCAL_DIRECTORIES = ("/usr/local/include", "/usr/local/lib")
 # pkg-config names a locked build script asks for that no build package ships.
 # aws-lc-sys asks for openssl, aws-lc, libcrypto and libcrypto-awslc and links a
 # system AWS-LC when one of them resolves to one; libssl-dev ships the first and
@@ -321,20 +328,90 @@ def tool_identity(name, *, required=True):
             "version": run([path, "--version"]).decode("utf-8", "surrogateescape")}
 
 
+def unreadable(error):
+    """How something that is there and could not be read is keyed and shown: never as empty."""
+    return f"unreadable {errno.errorcode.get(error.errno, error.errno)}"
+
+
 def pkg_config_view(pkg_config):
-    """pkg-config's search order, and the .pc files in its directories that no dpkg package owns."""
+    """pkg-config's search order, and the .pc files in its directories that no dpkg package owns.
+
+    Each file is keyed by a digest of its content. Only a directory that does
+    not exist is empty; one that cannot be listed is keyed as unreadable.
+    """
     order = run([pkg_config, "--variable", "pc_path", "pkg-config"]).decode("utf-8", "surrogateescape").strip()
     files = {}
     for directory in filter(None, order.split(":")):
+        # The real path decides, by whole components: a link from under
+        # /usr/lib to another place is listed, and /usr/lib64 is not /usr/lib.
         real = os.path.realpath(directory)
         if any(real == root or real.startswith(root + "/") for root in DPKG_PC_ROOTS):
             continue
         try:
             names = sorted(name for name in os.listdir(directory) if name.endswith(".pc"))
-        except OSError:
+        except FileNotFoundError:
             names = []
-        files[directory] = [[name, pc_size(os.path.join(directory, name))] for name in names]
+        except OSError as error:
+            files[directory] = unreadable(error)
+            continue
+        files[directory] = [[name, pc_digest(os.path.join(directory, name))] for name in names]
     return order, files
+
+
+def pc_digest(path):
+    """A digest of one .pc file's content, or how it could not be read.
+
+    A dangling link is unreadable and still occupies the name pkg-config looks
+    up. Nothing but a regular file is read: a pipe or a device need not end.
+    """
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as error:
+        return unreadable(error)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return "not a regular file"
+        hasher = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            hasher.update(chunk)
+        return hasher.hexdigest()
+    except OSError as error:
+        return unreadable(error)
+    finally:
+        os.close(descriptor)
+
+
+def local_listing(directories):
+    """The top-level entries of each directory, by name: a tripwire, not a key over content.
+
+    A regular file is listed with its size, a directory with a trailing `/`
+    and a link with its target; nothing is opened and nothing below the top
+    level is read. A directory that does not exist is `missing`, and one that
+    cannot be listed is unreadable, never empty.
+    """
+    listing = {}
+    for directory in directories:
+        try:
+            names = sorted(os.listdir(directory))
+        except FileNotFoundError:
+            listing[directory] = "missing"
+        except OSError as error:
+            listing[directory] = unreadable(error)
+        else:
+            listing[directory] = [local_entry(os.path.join(directory, name), name) for name in names]
+    return listing
+
+
+def local_entry(path, name):
+    try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode):
+            return f"{name} -> {os.readlink(path)}"
+    except OSError as error:
+        return f"{name} {unreadable(error)}"
+    if stat.S_ISDIR(info.st_mode):
+        return f"{name}/"
+    return f"{name} {info.st_size}" if stat.S_ISREG(info.st_mode) else f"{name} (not a file, a directory or a link)"
 
 
 def pkg_config_probe(pkg_config, name):
@@ -353,30 +430,30 @@ def pkg_config_probe(pkg_config, name):
     return output.decode("utf-8", "surrogateescape").removesuffix("\n")
 
 
-def pc_size(path):
-    try:
-        return os.stat(path).st_size
-    except OSError:
-        # A dangling link still occupies the name pkg-config looks up.
-        return -1
-
-
 def shown(text):
-    """Command output as one printable log line."""
+    """Command output as one printable log line that starts no workflow command.
+
+    Every character outside printable ASCII is escaped, so a value cannot begin
+    a line of its own, and the runner's older command spelling `##[`, which it
+    reads anywhere in a line, is broken up.
+    """
     return "".join(character if " " <= character <= "~" else character.encode("unicode_escape").decode("ascii")
-                   for character in text)
+                   for character in text).replace("##[", "#\\x23[")
 
 
-def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes):
-    """The Ubuntu native digest and the log lines that show every value in it.
+def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
+    """The Ubuntu native digest and the log lines that show the values in it.
 
     The digest's input starts with the mode, so a fallback key can never equal
     a closure key. The lines are built from the hashed values themselves, so
-    two hosted runs can be compared line by line.
+    two hosted runs can be compared line by line. Two things are shown without
+    being hashed: each tool's other matches on PATH and the count of installed
+    packages. Of a tool's version output, all of it hashed, the line shows a
+    short digest and the first line.
     """
     mode, keyed, count, installed, others, cause = ubuntu_packages(
         snapshot, [name for name, version in probes.items() if version is not None])
-    hashed = {"packages": keyed, "pc_path": pc_path, "pc_files": pc_files, "probes": probes,
+    hashed = {"packages": keyed, "pc_path": pc_path, "pc_files": pc_files, "probes": probes, "local": local,
               "tools": {name: tool and {"path": tool["path"], "version": tool["version"]} for name, tool in tools.items()}}
     native = digest(mode.encode() + b"\n" + json.dumps(hashed, sort_keys=True).encode())
     lines = []
@@ -394,10 +471,13 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes):
                      f"version {digest(tool['version'].encode('utf-8', 'surrogateescape'))[:12]}: {shown(first)}")
     lines.append(f"Keyed pkg-config pc_path: {shown(pc_path)}")
     for directory, found in pc_files.items():
-        listing = ", ".join(f"{name} {size}" for name, size in found) or "none"
+        listing = found if isinstance(found, str) else ", ".join(f"{name} {state}" for name, state in found) or "none"
         lines.append(f"Keyed pkg-config files in {shown(directory)}: {shown(listing)}")
     for name, version in probes.items():
         lines.append(f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {shown(version)}"))
+    for directory, found in local.items():
+        listing = found if isinstance(found, str) else ", ".join(found) or "empty"
+        lines.append(f"Keyed top level of {shown(directory)}: {shown(listing)}")
     lines.append(f"Ubuntu native digest: {native}")
     return native, lines
 
@@ -409,7 +489,8 @@ def native_identity(platform):
         tools.update((name, tool_identity(name, required=False)) for name in UBUNTU_OPTIONAL_TOOLS)
         pkg_config = tools["pkg-config"]["run"]
         probes = {name: pkg_config_probe(pkg_config, name) for name in UBUNTU_UNSUPPLIED_PROBES}
-        native, lines = ubuntu_identity(snapshot, tools, *pkg_config_view(pkg_config), probes)
+        native, lines = ubuntu_identity(snapshot, tools, *pkg_config_view(pkg_config), probes,
+                                        local_listing(UBUNTU_LOCAL_DIRECTORIES))
         print("\n".join(lines))
         return native
     if platform == "macOS":

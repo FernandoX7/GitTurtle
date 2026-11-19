@@ -1,4 +1,6 @@
 """Behavioral tests for cache identity, bounded cleanup and miss recovery."""
+from contextlib import contextmanager
+import hashlib
 import importlib.util
 import json
 import os
@@ -25,13 +27,16 @@ SPEC_TOOLCHAIN = cache.toolchain_identity
 # tab-separated. A build of the workspace's tests traced there read files of
 # 75 packages, 71 of them in the closure this key takes.
 UBUNTU_SNAPSHOT = (ROOT / "scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv").read_text()
-# What build scripts and the cc and cmake crates run bare; cmake3 is optional.
-TOOL_NAMES = ("cc", "c++", "ar", "pkg-config", "clang", "cmake")
+# What build scripts and the cc and cmake crates run bare, and the linker, the
+# assembler and the make that gcc and CMake run in their turn; cmake3 is optional.
+TOOL_NAMES = ("cc", "c++", "ar", "ld", "as", "make", "pkg-config", "clang", "cmake")
 # Tool answers for the tests that start no process.
 UBUNTU_TOOLS ={**{name: {"run": f"/usr/bin/{name}", "path": f"/usr/bin/{name}-13", "matches": [f"/usr/bin/{name}"],
                           "version": f"{name} 13.0\n"} for name in TOOL_NAMES}, "cmake3": None}
 # pkg-config's answers on an image where neither unsupplied name resolves.
 UBUNTU_PROBES = {"aws-lc": None, "libcrypto-awslc": None}
+# The top level of the two directories no dpkg package owns, with nothing in them.
+UBUNTU_LOCAL = {"/usr/local/include": [], "/usr/local/lib": []}
 
 
 # Crates through which a build script looks for something on the system.
@@ -117,11 +122,13 @@ class UbuntuRunner:
     alternatives are, and answers `--version` from a file of its own. As
     pkg-config a tool also answers `--modversion`: it records who was asked for
     what and finds no module, until `probe` gives it something to do for a name.
+    `local` stands for /usr/local/include and /usr/local/lib, both empty.
     """
 
     def __init__(self, base, snapshot=UBUNTU_SNAPSHOT):
         self.bin, self.real, self.state, self.pc = (base / name for name in ("bin", "real", "state", "pkgconfig"))
-        for directory in (self.bin, self.real, self.state, self.pc):
+        self.local = (base / "usr-local/include", base / "usr-local/lib")
+        for directory in (self.bin, self.real, self.state, self.pc, *self.local):
             directory.mkdir(parents=True)
         self.snapshot = self.state / "snapshot"
         self.snapshot.write_text(snapshot)
@@ -140,11 +147,10 @@ class UbuntuRunner:
 
     def tool(self, name, *, directory=None, variant="13", version=None):
         """Put `name` on PATH as a link to the real file `name-variant`; returns that file."""
-        answer = self.state / f"{name}-{variant}.version"
-        answer.write_text(version or f"{name} (Ubuntu) {variant}.0\nconfigured for the fixture\n")
+        answer = shlex.quote(version or f"{name} (Ubuntu) {variant}.0\nconfigured for the fixture\n")
         real = self.real / f"{name}-{variant}"
         module = shlex.quote(str(self.state / "modversion-")) + '"$2"'
-        self.script(real, f'case "$*" in\n  --version) exec /bin/cat {shlex.quote(str(answer))} ;;\n'
+        self.script(real, f'case "$*" in\n  --version) printf \'%s\' {answer}; exit 0 ;;\n'
                           f'  "--variable pc_path pkg-config") exec /bin/cat {shlex.quote(str(self.pc_path))} ;;\n'
                           f'  "--modversion "*)\n    printf \'%s\\n\' "$0 $*" >> {shlex.quote(str(self.probes))}\n'
                           f'    [ "$#" -eq 2 ] && [ -f {module} ] || {{ echo "Package $2 was not found" >&2; exit 1; }}\n'
@@ -161,12 +167,16 @@ class UbuntuRunner:
         if action is not None:
             answer.write_text(action + "\n")
 
-    def environment(self, *earlier):
-        return patch.dict(os.environ, {"PATH": os.pathsep.join(str(directory) for directory in (*earlier, self.bin))})
+    @contextmanager
+    def environment(self, *earlier, later=()):
+        path = os.pathsep.join(str(directory) for directory in (*earlier, self.bin, *later))
+        with patch.dict(os.environ, {"PATH": path}), \
+                patch.object(cache, "UBUNTU_LOCAL_DIRECTORIES", tuple(str(directory) for directory in self.local)):
+            yield
 
-    def native(self, *earlier):
-        """The native digest and the lines the step prints, with `earlier` directories first on PATH."""
-        with self.environment(*earlier), patch("builtins.print") as shown:
+    def native(self, *earlier, later=()):
+        """The native digest and the lines the step prints, with `earlier` directories first on PATH and `later` last."""
+        with self.environment(*earlier, later=later), patch("builtins.print") as shown:
             native = cache.native_identity("Linux")
         return native, shown.call_args.args[0].split("\n")
 
@@ -1230,7 +1240,8 @@ class UbuntuPackages(unittest.TestCase):
         return keyed
 
     def key(self, text=None, **changed):
-        inputs = {"tools": UBUNTU_TOOLS, "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, "probes": UBUNTU_PROBES, **changed}
+        inputs = {"tools": UBUNTU_TOOLS, "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, "probes": UBUNTU_PROBES,
+                  "local": UBUNTU_LOCAL, **changed}
         return cache.ubuntu_identity(snapshot_text(self.rows) if text is None else text, **inputs)[0]
 
     def depend(self, identity, term):
@@ -1393,14 +1404,14 @@ class UbuntuPackages(unittest.TestCase):
                               ({"aws-lc": None, "libcrypto-awslc": "1.61.0"}, "libcrypto-awslc"),
                               ({"aws-lc": "1.61.0", "libcrypto-awslc": "1.61.0"}, "aws-lc, libcrypto-awslc")):
             with self.subTest(probes=probes):
-                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, probes)
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, probes, UBUNTU_LOCAL)
                 self.assertEqual(shown[:3], [
                     "::warning::Ubuntu cache key fell back to the complete package inventory: "
                     f"pkg-config resolves {named}, which no build package ships",
                     "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
                 # Every line of the snapshot, and each name's answer.
                 self.assertEqual(shown.index("::endgroup::") - shown.index("::group::Keyed Ubuntu packages"), 279)
-                self.assertEqual(shown[-3:-1], [f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {version}")
+                self.assertEqual(shown[-5:-3], [f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {version}")
                                                 for name, version in probes.items()])
                 keys.add(key)
         self.assertEqual(len(keys), 6)
@@ -1460,7 +1471,7 @@ class UbuntuPackages(unittest.TestCase):
                 lines = text.split("\n")[:-1]
                 self.assertEqual(len(keyed), len(lines))
                 self.assertEqual(count + others, len(lines))
-                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES)
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES, UBUNTU_LOCAL)
                 self.assertEqual(shown[:2], [f"::warning::Ubuntu cache key fell back to the complete package inventory: {cause}",
                                              "Ubuntu native key mode: inventory"])
                 self.assertNotEqual(key, closure)
@@ -1509,9 +1520,48 @@ class UbuntuPackages(unittest.TestCase):
         keys.add(self.key(tools={**UBUNTU_TOOLS, "cmake3": {**UBUNTU_TOOLS["cmake"], "matches": ["/usr/bin/cmake3"]}}))
         keys.add(self.key(pc_path="/usr/local/lib/pkgconfig:/usr/lib/pkgconfig"))
         keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": []}))
-        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", 291]]}))
-        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", 292]]}))
-        self.assertEqual(len(keys), 1 + 2 * len(TOOL_NAMES) + 5)
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": "unreadable EACCES"}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", "0" * 64]]}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", "1" * 64]]}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", "unreadable EACCES"]]}))
+        for directory in UBUNTU_LOCAL:
+            for found in ("missing", "unreadable EACCES", ["libprobe.a 5"], ["libprobe.a 6"]):
+                keys.add(self.key(local={**UBUNTU_LOCAL, directory: found}))
+        self.assertEqual(len(keys), 1 + 2 * len(TOOL_NAMES) + 7 + 8)
+        self.assertEqual(len(TOOL_NAMES), 9)
+
+    def test_no_keyed_value_can_form_a_workflow_command(self):
+        self.assertEqual(cache.shown("a##[b\n::c\x1b[0m\u2028d"), "a#\\x23[b\\n::c\\x1b[0m\\u2028d")
+        self.assertEqual(cache.shown("###[####["), "##\\x23[###\\x23[")
+        # A command in every value the step prints: one a line of its own would
+        # carry, and the older spelling the runner reads anywhere in a line.
+        hostile = "##[error]stop\n::error::stop\r##[set-output name=x;]y"
+        escaped = r"#\x23[error]stop\n::error::stop\r#\x23[set-output name=x;]y"
+        rows = snapshot_rows()
+        rows["libssl3t64:arm64"][1] = "##[error]state"
+        # The snapshot's last two lines name no package: `##[error]stop` and the rest.
+        text = snapshot_text(rows) + hostile + "\n"
+        tools = {name: tool and {"run": hostile, "path": hostile, "matches": [hostile, hostile], "version": hostile}
+                 for name, tool in UBUNTU_TOOLS.items()}
+        _, lines = cache.ubuntu_identity(text, tools, hostile, {hostile: [[hostile, hostile]], "/opt": hostile},
+                                         {"aws-lc": hostile, "libcrypto-awslc": None}, {hostile: [hostile], "/usr/local/lib": hostile})
+        # Nothing a value holds starts a line: the fixed lines around 280 keyed ones, and a line for each other value.
+        self.assertEqual(len(lines), 4 + 280 + 1 + len(UBUNTU_TOOLS) + 1 + 2 + 2 + 2 + 1)
+        self.assertEqual([line for line in lines if "##[" in line or "\n" in line or "\r" in line], [])
+        self.assertEqual([line.split(" ")[0] for line in lines if line.lstrip().startswith("::")],
+                         ["::warning::Ubuntu", "::group::Keyed", "::endgroup::"])
+        # Each value is still there to read, escaped.
+        self.assertIn(r"libssl3t64:arm64=3.0.13-0ubuntu3.16 [#\x23[error]state]", lines)
+        self.assertLessEqual({r"unparsed: #\x23[error]stop", r"unparsed: ::error::stop\r#\x23[set-output name=x;]y"}, set(lines))
+        self.assertEqual(sum(escaped in line for line in lines), len(TOOL_NAMES) + 6)
+        self.assertIn(f"Keyed pkg-config probe aws-lc: version {escaped}", lines)
+        # The cause of a fallback is a value too.
+        rows = snapshot_rows()
+        rows["libssl-dev:arm64"][3] += ", ##[error]stop"
+        _, lines = cache.ubuntu_identity(snapshot_text(rows), UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES, UBUNTU_LOCAL)
+        self.assertEqual(lines[0], "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                                   r"libssl-dev:arm64 has a dependency outside dpkg's grammar: '#\x23[error]stop'")
+        self.assertEqual([line for line in lines if "##[" in line], [])
 
     def test_install_line_names_only_build_packages_and_tools(self):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
@@ -1561,10 +1611,12 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.assertEqual(lines[end + 1:], [*expected, "Keyed tool cmake3: absent", f"Keyed pkg-config pc_path: {pc_path}",
                                            f"Keyed pkg-config files in {self.runner.pc}: none",
                                            "Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent",
+                                           *(f"Keyed top level of {directory}: empty" for directory in self.runner.local),
                                            f"Ubuntu native digest: {native}"])
         # The digest is the mode, then exactly the values the lines show.
         hashed = {"packages": keyed, "tools": tools, "pc_path": pc_path, "pc_files": {str(self.runner.pc): []},
-                  "probes": {"aws-lc": None, "libcrypto-awslc": None}}
+                  "probes": {"aws-lc": None, "libcrypto-awslc": None},
+                  "local": {str(directory): [] for directory in self.runner.local}}
         self.assertEqual(native, cache.digest(b"closure\n" + json.dumps(hashed, sort_keys=True).encode()))
         self.assertEqual(self.runner.native()[0], native)
         self.assertEqual(len(self.runner.queries.read_text().splitlines()), 4)
@@ -1609,59 +1661,138 @@ class UbuntuNativeIdentity(unittest.TestCase):
         self.assertIn(f"Keyed tool cmake: {os.path.realpath(real)}; on PATH: {local / 'cmake'}, {self.runner.bin / 'cmake'}; "
                       f"version {version}: cmake version 3.31.6", lines)
         # Later on PATH it is shown and not run, so the key is the dpkg CMake's.
-        with patch.dict(os.environ, {"PATH": os.pathsep.join((str(self.runner.bin), str(local)))}), patch("builtins.print") as shown:
-            self.assertEqual(cache.native_identity("Linux"), baseline)
-        self.assertIn(f"on PATH: {self.runner.bin / 'cmake'}, {local / 'cmake'};", shown.call_args.args[0])
+        later, lines = self.runner.native(later=(local,))
+        self.assertEqual(later, baseline)
+        self.assertIn(f"on PATH: {self.runner.bin / 'cmake'}, {local / 'cmake'};", "\n".join(lines))
+
+    def pc_lines(self, lines):
+        return [line.removeprefix("Keyed pkg-config files in ") for line in lines if line.startswith("Keyed pkg-config files in ")]
 
     def test_pc_file_outside_the_dpkg_directories_changes_the_key(self):
         baseline, lines = self.runner.native()
-        self.assertEqual([line for line in lines if line.startswith("Keyed pkg-config files in ")],
-                         [f"Keyed pkg-config files in {self.runner.pc}: none"])
-        # Only .pc files count, by name and size.
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: none"])
+        # Only .pc files count, by name and content.
         (self.runner.pc / "notes.txt").write_text("not a module")
         self.assertEqual(self.runner.native()[0], baseline)
         (self.runner.pc / "openssl.pc").write_text("Name: OpenSSL\n")
         shadowed, lines = self.runner.native()
         self.assertNotEqual(shadowed, baseline)
-        self.assertIn(f"Keyed pkg-config files in {self.runner.pc}: openssl.pc 14", lines)
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: openssl.pc {hashlib.sha256(b'Name: OpenSSL' + bytes([10])).hexdigest()}"])
         (self.runner.pc / "openssl.pc").write_text("Name: OpenSSL\nVersion: 4\n")
         (self.runner.pc / "dav1d.pc").symlink_to("missing.pc")
         grown, lines = self.runner.native()
         self.assertNotIn(grown, {baseline, shadowed})
-        self.assertIn(f"Keyed pkg-config files in {self.runner.pc}: dav1d.pc -1, openssl.pc 25", lines)
-        # The search order is keyed, and a directory dpkg owns is not listed.
+        # A dangling link still occupies the name pkg-config looks up.
+        version = hashlib.sha256(b"Name: OpenSSL\nVersion: 4\n").hexdigest()
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: dav1d.pc unreadable ENOENT, openssl.pc {version}"])
+        # The search order is keyed, a directory dpkg owns is not listed, and one that does not exist is empty.
         other = self.base / "elsewhere"
         self.runner.pc_path.write_text(f"/usr/lib/pkgconfig:/usr/share/pkgconfig:{self.runner.pc}:{other}\n")
         reordered, lines = self.runner.native()
         self.assertNotIn(reordered, {baseline, shadowed, grown})
-        self.assertEqual([line.split(":")[0] for line in lines if line.startswith("Keyed pkg-config files in ")],
-                         [f"Keyed pkg-config files in {self.runner.pc}", f"Keyed pkg-config files in {other}"])
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: dav1d.pc unreadable ENOENT, openssl.pc {version}", f"{other}: none"])
+
+    def pc_files(self):
+        """The .pc files `pkg_config_view` finds through the stand-in pkg-config, by directory."""
+        order, files = cache.pkg_config_view(str(self.runner.bin / "pkg-config"))
+        self.assertEqual(order, self.runner.pc_path.read_text().strip())
+        return {Path(directory): found for directory, found in files.items()}
+
+    def test_pc_files_are_keyed_by_content_and_what_cannot_be_read_is_never_empty(self):
+        pc, module = self.runner.pc, self.runner.pc / "openssl.pc"
+        module.write_text("Name: OpenSSL\nVersion: 1.2.3\n")
+        first = hashlib.sha256(module.read_bytes()).hexdigest()
+        self.assertEqual(self.pc_files(), {pc: [["openssl.pc", first]]})
+        # An edit that keeps the size.
+        module.write_text("Name: OpenSSL\nVersion: 1.2.4\n")
+        edited = hashlib.sha256(module.read_bytes()).hexdigest()
+        self.assertNotEqual(edited, first)
+        self.assertEqual(self.pc_files(), {pc: [["openssl.pc", edited]]})
+        # A name pkg-config would find and nothing could read, each with its reason.
+        module.unlink()
+        module.mkdir()
+        (pc / "loop.pc").symlink_to("loop.pc")
+        states = [["loop.pc", "unreadable ELOOP"], ["openssl.pc", "not a regular file"]]
+        if os.geteuid():
+            (pc / "closed.pc").write_text("Name: closed\n")
+            (pc / "closed.pc").chmod(0)
+            states.insert(0, ["closed.pc", "unreadable EACCES"])
+        self.assertEqual(self.pc_files(), {pc: states})
+        # A search directory that is there and cannot be listed is not an empty one.
+        absent, blocked = self.base / "absent", self.base / "blocked"
+        self.runner.pc_path.write_text(f"{pc}:{absent}:{blocked}\n")
+        self.assertEqual(self.pc_files(), {pc: states, absent: [], blocked: []})
+        blocked.write_text("a file where pkg-config looks for a directory")
+        self.assertEqual(self.pc_files(), {pc: states, absent: [], blocked: "unreadable ENOTDIR"})
+        empty, _ = self.runner.native()
+        if os.geteuid():
+            blocked.unlink()
+            blocked.mkdir()
+            (blocked / "openssl.pc").write_text("Name: OpenSSL\n")
+            blocked.chmod(0)
+            self.addCleanup(blocked.chmod, 0o700)
+            self.assertEqual(self.pc_files(), {pc: states, absent: [], blocked: "unreadable EACCES"})
+        # Each state is in the key and in the lines as it is.
+        native, lines = self.runner.native()
+        self.assertEqual(native == empty, not os.geteuid())
+        listed = ", ".join(f"{name} {state}" for name, state in states)
+        self.assertEqual(self.pc_lines(lines), [f"{pc}: {listed}", f"{absent}: none",
+                                                f"{blocked}: unreadable {'EACCES' if os.geteuid() else 'ENOTDIR'}"])
+
+    def test_real_path_decides_by_whole_components_which_directories_dpkg_owns(self):
+        usr = Path(os.path.realpath(self.base)) / "usr"
+        owned, linked, opt = usr / "lib/aarch64-linux-gnu/pkgconfig", usr / "lib/linked/pkgconfig", self.base / "opt/pkgconfig"
+        lib64, libexec, share, local = usr / "lib64/pkgconfig", usr / "libexec/pkgconfig", usr / "share", self.base / "local/pkgconfig"
+        for directory in (owned, opt, lib64, libexec, share, linked.parent, local.parent):
+            directory.mkdir(parents=True)
+            if directory.name in {"pkgconfig", "share"}:
+                (directory / f"{directory.parent.name}.pc").write_text("Name: probe\n")
+        # A link from under /usr/lib to another place, and one from another place into it.
+        linked.symlink_to(opt)
+        local.symlink_to(owned)
+        self.runner.pc_path.write_text(":".join(map(str, (owned, linked, lib64, libexec, share, local))) + "\n")
+        state = hashlib.sha256(b"Name: probe\n").hexdigest()
+        with patch.object(cache, "DPKG_PC_ROOTS", (str(usr / "lib"), str(usr / "share"))):
+            # Listed: behind the link, and beside /usr/lib. Not listed: under it, the root itself, and a link into it.
+            self.assertEqual(self.pc_files(), {linked: [["opt.pc", state]], lib64: [["lib64.pc", state]],
+                                               libexec: [["libexec.pc", state]]})
+            baseline, lines = self.runner.native()
+            self.assertEqual(self.pc_lines(lines), [f"{linked}: opt.pc {state}", f"{lib64}: lib64.pc {state}",
+                                                    f"{libexec}: libexec.pc {state}"])
+            # A file dpkg owns does not move the key; one behind the link does.
+            (owned / "added.pc").write_text("Name: added\n")
+            (share / "added.pc").write_text("Name: added\n")
+            self.assertEqual(self.runner.native()[0], baseline)
+            (opt / "added.pc").write_text("Name: added\n")
+            self.assertNotEqual(self.runner.native()[0], baseline)
 
     def test_each_unsupplied_name_is_asked_of_the_selected_pkg_config_and_its_answer_is_keyed(self):
         closure, lines = self.runner.native()
-        asked = [f"{self.runner.bin / 'pkg-config'} --modversion {name}" for name in ("aws-lc", "libcrypto-awslc")]
+        selected = str(self.runner.bin / "pkg-config")
+        asked = [f"{selected} --modversion {name}" for name in ("aws-lc", "libcrypto-awslc")]
         self.assertEqual(self.runner.probes.read_text().splitlines(), asked)
         self.assertEqual(lines[0], "Ubuntu native key mode: closure")
-        self.assertEqual(lines[-3:-1], ["Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent"])
-        # Any failure status says the name does not resolve; pkgconf's is 1.
-        self.runner.probe("libcrypto-awslc", "exit 3")
-        self.assertEqual(self.runner.native()[0], closure)
+        self.assertEqual(lines[-5:-3], ["Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent"])
+        # Any failure status says the name does not resolve (pkgconf's is 1); success is its version, whatever it is.
+        for action, answer in (("exit 3", None), ("echo 1.61.0", "1.61.0"), ("printf '1.61.0\\n\\n'", "1.61.0\n"), ("true", "")):
+            with self.subTest(action=action):
+                self.runner.probe("libcrypto-awslc", action)
+                self.assertEqual(cache.pkg_config_probe(selected, "libcrypto-awslc"), answer)
+                self.assertIsNone(cache.pkg_config_probe(selected, "aws-lc"))
         self.runner.probe("libcrypto-awslc", None)
         keys = {closure}
-        for name in ("aws-lc", "libcrypto-awslc"):
-            for version in ("1.61.0", "1.61.1"):
-                with self.subTest(resolves=name, version=version):
-                    self.runner.probe(name, f"echo {version}")
-                    native, lines = self.runner.native()
-                    self.assertEqual(lines[:3], [
-                        "::warning::Ubuntu cache key fell back to the complete package inventory: "
-                        f"pkg-config resolves {name}, which no build package ships",
-                        "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
-                    self.assertIn(f"Keyed pkg-config probe {name}: version {version}", lines[-3:-1])
-                    keys.add(native)
-            self.runner.probe(name, None)
-        self.assertEqual(len(keys), 5)
-        self.assertEqual(self.runner.native()[0], closure)
+        for name, version in (("aws-lc", "1.61.0"), ("aws-lc", "1.61.1"), ("libcrypto-awslc", "1.61.0")):
+            with self.subTest(resolves=name, version=version):
+                self.runner.probe(name, f"echo {version}")
+                native, lines = self.runner.native()
+                self.assertEqual(lines[:3], [
+                    "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                    f"pkg-config resolves {name}, which no build package ships",
+                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
+                self.assertIn(f"Keyed pkg-config probe {name}: version {version}", lines[-5:-3])
+                keys.add(native)
+                self.runner.probe(name, None)
+        self.assertEqual(len(keys), 4)
         # The pkg-config that PATH selects is the one asked.
         local = self.base / "local"
         local.mkdir()
@@ -1676,6 +1807,69 @@ class UbuntuNativeIdentity(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError) as killed:
             self.runner.native()
         self.assertEqual((killed.exception.returncode, killed.exception.cmd[1:]), (-9, ["--modversion", "aws-lc"]))
+
+    def test_top_level_of_usr_local_is_a_tripwire_for_a_changed_image_and_not_a_content_key(self):
+        include, lib = self.runner.local
+        directories = (str(include), str(lib))
+        self.assertEqual(cache.UBUNTU_LOCAL_DIRECTORIES, ("/usr/local/include", "/usr/local/lib"))
+
+        def listing(expected, directory=lib):
+            found = cache.local_listing(directories)
+            self.assertEqual(list(found), list(directories))
+            self.assertEqual(found[str(directory)], expected)
+
+        def lines():
+            native, shown = self.runner.native()
+            return native, [line for line in shown if line.startswith("Keyed top level of ")]
+
+        baseline, shown = lines()
+        self.assertEqual(shown, [f"Keyed top level of {include}: empty", f"Keyed top level of {lib}: empty"])
+        listing([])
+        # Each name, sorted: a regular file with its size, a directory with a slash, a link with its target.
+        (lib / "python3.12").mkdir()
+        (lib / "libprobe.so").symlink_to("libprobe.so.1")
+        (lib / "libprobe.a").write_bytes(b"12345")
+        listing(["libprobe.a 5", "libprobe.so -> libprobe.so.1", "python3.12/"])
+        listed, shown = lines()
+        self.assertNotEqual(listed, baseline)
+        self.assertEqual(shown, [f"Keyed top level of {include}: empty",
+                                 f"Keyed top level of {lib}: libprobe.a 5, libprobe.so -> libprobe.so.1, python3.12/"])
+        # Top level only, and no content: neither moves the listing.
+        (lib / "libprobe.a").write_bytes(b"67890")
+        (lib / "python3.12/dist-packages").mkdir()
+        (lib / "python3.12/sitecustomize.py").write_text("import os\n")
+        listing(["libprobe.a 5", "libprobe.so -> libprobe.so.1", "python3.12/"])
+        # A size and a target do.
+        (lib / "libprobe.a").write_bytes(b"678901")
+        (lib / "libprobe.so").unlink()
+        (lib / "libprobe.so").symlink_to("libprobe.so.2")
+        listing(["libprobe.a 6", "libprobe.so -> libprobe.so.2", "python3.12/"])
+        # A link to a directory is a link, and anything else says what it is not.
+        (lib / "linked").symlink_to("python3.12")
+        os.mkfifo(lib / "queue")
+        listing(["libprobe.a 6", "libprobe.so -> libprobe.so.2", "linked -> python3.12", "python3.12/",
+                 "queue (not a file, a directory or a link)"])
+        # The headers' directory is listed the same way.
+        listing([], include)
+        (include / "openssl").mkdir()
+        (include / "probe.h").write_text("#define PROBE 1\n")
+        listing(["openssl/", "probe.h 16"], include)
+        # A directory that is not there is missing; one that cannot be listed is not empty.
+        shutil.rmtree(lib)
+        listing("missing")
+        lib.write_text("a file where the linker looks for a directory")
+        listing("unreadable ENOTDIR")
+        lib.unlink()
+        lib.mkdir()
+        if os.geteuid():
+            (lib / "libprobe.a").write_bytes(b"12345")
+            lib.chmod(0)
+            self.addCleanup(lib.chmod, 0o700)
+            listing("unreadable EACCES")
+        refused, shown = lines()
+        self.assertNotIn(refused, {baseline, listed})
+        self.assertEqual(shown, [f"Keyed top level of {include}: openssl/, probe.h 16",
+                                 f"Keyed top level of {lib}: {'unreadable EACCES' if os.geteuid() else 'empty'}"])
 
     def test_abnormal_snapshot_warns_first_and_keys_the_whole_inventory(self):
         closure, _ = self.runner.native()

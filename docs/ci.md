@@ -879,8 +879,9 @@ A third Ubuntu image (2.28 GB more) and a macOS rollout (1.83 GB) at the same ti
 would pass the limit and evict entries still in use. Since November 19, 2026 the
 Ubuntu lanes no longer key the image's inventory: like this lane they key only the
 packages a build reads, found as a dependency closure instead of a written list
-([Ubuntu native key](#ubuntu-native-key)), so two images that install the same build
-packages share one entry.
+([Ubuntu native key](#ubuntu-native-key)). Two images share one entry only when the
+closure's versions, the build tools, pkg-config's view and the `/usr/local` listing
+also match and neither falls back to the inventory, which no hosted run has shown yet.
 
 **Cost.** Before the cache, every run was cold: an image pull (about 308 MB
 compressed), the package upgrade and install, the toolchain download, a full debug
@@ -1482,9 +1483,10 @@ hashes:
   edit. Ordinary application Rust source edits reuse compatible dependency caches.
 - The platform's native inputs. On Ubuntu: the version of every installed package
   in the dependency closure of the build packages the action installs, the file
-  and version behind each build tool name on `PATH`, pkg-config's search order,
-  and what it resolves two names no build package ships to
-  ([Ubuntu native key](#ubuntu-native-key)); the rest of the hosted image's
+  and version behind each build tool name on `PATH`, pkg-config's search order
+  with the `.pc` files outside dpkg's directories, what it resolves two names no
+  build package ships to, and the top-level names of `/usr/local/include` and
+  `/usr/local/lib` ([Ubuntu native key](#ubuntu-native-key)); the rest of the hosted image's
   inventory is not keyed. On macOS: the Xcode version, SDK version/build, selected
   Clang and OS build, so a hosted-image update there still gives a new key. The
   Arch container keys its listed packages' pacman versions
@@ -1535,15 +1537,24 @@ time) and hashes these parts.
   is run only by `crates/app/build.rs`, a member whose output is never in an
   entry. A test compares both lists with the action's install line, so a package
   added to the action but to neither list fails.
-- *Tools.* For each of `cc`, `c++`, `ar`, `pkg-config`, `clang` and `cmake`: the
-  real file the name resolves to on `PATH` and its `--version` output. `cmake3`,
-  the cmake crate's other name, is keyed as absent or by the same two values. A
-  required name that does not resolve fails the step.
+- *Tools.* For each of `cc`, `c++`, `ar`, `ld`, `as`, `make`, `pkg-config`,
+  `clang` and `cmake`: the real file the name resolves to on `PATH` and its
+  `--version` output. Build scripts and the cc and cmake crates run six of them
+  bare; gcc takes the linker and the assembler from `PATH` in its turn, and
+  CMake's Makefile generator runs `make`. `cmake3`, the cmake crate's other
+  name, is keyed as absent or by the same two values. A required name that does
+  not resolve fails the step.
 - *pkg-config's view.* The search order (`pkg-config --variable pc_path
   pkg-config`) and, for each directory on it outside `/usr/lib` and `/usr/share`,
-  the names and sizes of its `.pc` files. A clean image has none; a `.pc` under
-  `/usr/local` would shadow a keyed library's. `PKG_CONFIG*` variables stay in the
-  flags identity above.
+  the name of each `.pc` file with a digest of its content: a size would survive
+  an edit of `Version: 1.2.3` to `1.2.4`. A clean image has none; a `.pc` under
+  `/usr/local` would shadow a keyed library's. The real path decides which
+  directories are dpkg's, by whole path components: a link from under `/usr/lib`
+  to another place is listed, and `/usr/lib64` is not `/usr/lib`. A directory
+  that is there and cannot be listed, like a file that cannot be read, is keyed
+  and printed as unreadable with its errno, never as empty; only a directory
+  that does not exist is empty. `PKG_CONFIG*` variables stay in the flags
+  identity above.
 - *Names no build package ships.* `aws-lc-sys` 0.45.0 asks pkg-config for
   `openssl`, `aws-lc`, `libcrypto` and `libcrypto-awslc` and links a system
   AWS-LC when one of them resolves to one. `libssl-dev` ships the first and the
@@ -1555,6 +1566,21 @@ time) and hashes these parts.
   answer: absent when the command exits with a failure status, the version
   otherwise. A name that resolves also sends the key to the complete inventory
   (the fallback below), because the closure is then not all a build reads.
+- *The top level of `/usr/local`, as a tripwire.* gcc searches
+  `/usr/local/include` before the system headers and the linker searches
+  `/usr/local/lib`, and no dpkg package owns a file in either. The sorted
+  entries at the top level of the two directories are keyed and printed: each
+  name, with its size for a regular file, a trailing `/` for a directory and its
+  target for a link; `missing` for a directory that does not exist and
+  `unreadable <errno>` for one that cannot be listed. Nothing is opened and
+  nothing below the top level is read. It is a tripwire for a changed image and
+  not a content key: a header edited in place at the same size, or a file added
+  below a subdirectory, does not change it.
+
+Two images therefore share one entry only when all of these match and neither
+falls back: the closure's versions, the file and version behind each tool,
+pkg-config's view and its two answers, and the `/usr/local` listing. No hosted
+run has shown yet that the two clouds' images agree on them.
 
 **Why.** GitHub serves the `ubuntu-24.04` label from two clouds at once. In 64
 retained job logs, image versions 20261111.370.1 and 20261116.376.1 report
@@ -1585,20 +1611,20 @@ would no longer change the key (the first precondition below). And the state
 outside dpkg that the old key followed only by accident, because a new image
 changed some package: `PATH` order, `/usr/local` and the alternatives. The tool
 and pkg-config parts key that state directly for the build tools and for
-pkg-config. The hosted image carries a CMake under `/usr/local` that is no dpkg
-package, and a version alone does not say which binary `PATH` and the
-alternatives select.
+pkg-config, and the `/usr/local` listing notices a changed image without keying
+what the two directories hold. The hosted image carries a CMake under
+`/usr/local` that is no dpkg package, and a version alone does not say which
+binary `PATH` and the alternatives select.
 
 **Fallback.** A build package that is not installed fails the step, as `pacman
 -Q` does on Arch, whatever else is wrong with the snapshot: the build packages
 are checked before any line is refused. Every other abnormality sends the key
 to the complete inventory, never to a partial closure and never past a skipped
-dependency: a
-snapshot line without six fields, a dependency or provided name outside dpkg's
-grammar, a group of alternatives that nothing installed satisfies, a package
-the closure reaches in another state than `ii ` (unpacked, half installed, or
-removed with its configuration left), or an unsupplied pkg-config name that
-resolves. The fallback hashes every line's package,
+dependency: a snapshot line without six fields, a dependency or provided name
+outside dpkg's grammar, a group of alternatives that nothing installed
+satisfies, a package the closure reaches in another state than `ii ` (unpacked,
+half installed, or removed with its configuration left), or an unsupplied
+pkg-config name that resolves. The fallback hashes every line's package,
 architecture, version and status, and the step prints a `::warning::` that names
 the first cause. The digest's input starts with the mode (`closure` or
 `inventory`), so a fallback key can never equal a closure key. Failing there
@@ -1626,6 +1652,12 @@ the fallback is one entry per image again, slower and never stale.
    again: `aws-lc` and `libcrypto-awslc` arrived with an update, unseen. The
    test also requires the names the table marks unsupplied to equal
    `UBUNTU_UNSUPPLIED_PROBES` exactly, so none is asked for without being keyed.
+   The test has a limit: it sees a prober only through those four crates. A
+   build script that runs a bare command, or that uses only the `cc` crate, is
+   not in the set, and nothing checks what it reads. Nor are features in the
+   lockfile: `x11` asks for one name for each of its features and its row gives
+   the one its users turn on today, so a feature turned on later, which leaves
+   the locked version as it is, is not seen either.
 2. `dav1d-sys` links the system `libdav1d-dev`. Its build script can instead
    clone and build dav1d with git, meson and ninja, none of them keyed, when a
    `SYSTEM_DEPS_` variable asks for it. The action's install step refuses every
@@ -1635,7 +1667,9 @@ the fallback is one entry per image again, slower and never stale.
 
 The snapshot is also the state the build sees only while no job that uses the
 action installs packages in its own steps. A test refuses `apt-get`, `apt` and
-`dpkg -i` in every such job of `quality.yml` and `release.yml`.
+`dpkg -i` in every such job of `quality.yml` and `release.yml`. That test has a
+limit too: it reads the workflows' text, so an installation inside a script a
+step runs, or inside another action, is not seen.
 
 **What the step prints**, so two hosted runs can be compared line by line: the
 mode; `Keyed Ubuntu packages: <n> of <m> installed`; inside a collapsed group,
@@ -1643,12 +1677,19 @@ each keyed `name:arch=version` on its own line, sorted; for each tool its real
 path, every match on `PATH` in order, a short digest of its whole version output
 and that output's first line; the `pc_path` and the `.pc` files; what pkg-config
 answers for each unsupplied name (`Keyed pkg-config probe aws-lc: absent`, or
-its version); and the native digest. Each line is built from the hashed values
-themselves.
+its version); the top level of the two `/usr/local` directories; and the native
+digest. The lines are built from the hashed values themselves, with two things
+shown and not hashed: a tool's other matches on `PATH` (the first is the one
+run and keyed) and the count of installed packages. Of a tool's version output,
+all of it hashed, the line shows the short digest and the first line. Every
+value is printed with the characters outside printable ASCII escaped and with
+the runner's older command spelling `##[` broken up (`#\x23[`), so no keyed
+value can start a line of its own or form a workflow command.
 
-The action's files are hashed into the key, so this change makes every lane cold
-once. No hosted run has computed the new key yet: the hosted keys of the two
-clouds are recorded here after the first runs.
+The action's files are hashed into the key, so each change to the helper makes
+every lane cold once. No hosted run has computed the new key yet: the hosted
+keys of the two clouds, and whether they are one, are recorded here after the
+first runs.
 
 ### Trust, failure and storage bounds
 
