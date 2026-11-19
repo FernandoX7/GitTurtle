@@ -1265,6 +1265,78 @@ The before and after runs differ only in `scripts/agent_loop/process.py` and
 `records.py`. On a 3-CPU hosted runner, both the per-test profile and the job
 durations vary by about 10%.
 
+**November 19, 2026: the four suites run side by side.** The suites kept
+growing. `Development tooling · macos-15` took 521, 534 and 575 s in its last
+three runs before this change (478 s before pull request #221 added tests to
+it), against a limit of 10 minutes. A cut-off there fails a required job while
+every test passes. The limit, the job's name and matrix, and every test stay as
+they are; the job now uses the runner's processors instead.
+
+Never-merged `Tooling measurement`
+[run 44582512263](https://github.com/FernandoX7/GitTurtle/actions/runs/44582512263)
+ran the same four suites three ways on one runner per platform (1,206 tests on
+macOS, 1,224 on Ubuntu, none failing in any pass):
+
+| Four suites, whole wall time | macos-15, 3 processors | ubuntu-24.04, 4 processors |
+| --- | ---: | ---: |
+| One after another, as the job ran them | 433.7 s | 262.7 s |
+| Six processes at once, the agent-loop suite as three | 188.1 s | 109.9 s |
+| The three agent-loop groups, then the other three suites | 221.4 s | 136.3 s |
+
+In the serial pass on macOS the agent-loop suite took 317 s, of which 39 s were
+its own processor time and 273 s its descendants': one processor was busy and
+the other two idle. Six at once beat the staged form on both platforms, so
+nothing is staged. Read these figures with their limits. It is one run, on one
+runner per platform. The serial pass ran first, on a macOS runner whose
+one-minute load average was still 45 from its own start. Every pass ran under
+per-test accounting, which the job does not carry. The measurement's three
+groups were whole modules; the job deals single tests.
+
+The job's four test steps are now one,
+`Test development, native-QA, operator and CI tooling side by side`, which runs
+`python3 scripts/ci/tooling_suites.py run`. It starts six processes at once, each
+under `metrics.py measure` and in a session of its own: three groups of the
+agent-loop suite, then the native-QA, operator and CI-helper suites with exactly
+the commands their steps had. Their records are `agent-tooling-1-of-3` to
+`agent-tooling-3-of-3`, `native-qa-tooling`, `operator-tooling` and `ci-tests`;
+the summary and the diagnostics artifact show one row and one log for each.
+
+- **The agent-loop tests are dealt, not listed.** Each group discovers the suite
+  as before (`-s scripts/agent_loop -t scripts -p 'test_*.py'`), sorts the tests
+  by id and keeps every third one from its own place, in that order. A class's
+  tests stay next to each other and its fixtures run around them, and a new
+  test or module needs no edit anywhere. By the measurement's per-test seconds
+  the largest group is 9 % over an equal third on both platforms; dealing whole
+  modules in turn is up to 66 % over, and whole classes up to 22 %. A group is
+  unittest's own program with only its loader changed.
+- **Nothing is lost silently.** Each group records the ids it hands to
+  unittest. When the six have ended, a discovery of the driver's own must find
+  exactly those ids, each in one group; any difference fails the step and names
+  every id. A process that ran no test fails it too. A module that cannot be
+  imported fails as before: unittest reports it as a failed test, which is dealt
+  like any other.
+- **All six run to their end, and any failure fails the step.** Nothing is ended
+  early, retried or allowed to fail. The last lines name each process with its
+  exit status, its seconds and its test count.
+- **Output is printed whole, in a fixed order, after the last process ends**,
+  each process in a log group of its name, so suites are never interleaved.
+  Every such line has the collector's `[ci] ` prefix and went through its
+  sanitizer. The driver's own lines are the group markers and those that start
+  with `tooling-suites: `, so suite output cannot open or close a group. Until
+  the end the step prints only a line every 30 s that names what is still
+  running: a job cut off by its limit shows those lines and no suite output.
+
+To run one group again as the job ran it (`--index` counts from 0, so this is
+`agent-tooling-2-of-3`):
+
+```sh
+python3 scripts/ci/tooling_suites.py group --index 1 --of 3 --record /tmp/ids.json \
+  -s scripts/agent_loop -t scripts -p 'test_*.py'
+```
+
+No hosted run of the new step exists as this is written. The job's own seconds
+before and after are recorded here from the pull request's run.
+
 ### Later measurements and C1
 
 The [September 16 record](benchmarks/2026-09-16-ci.md) documents the first

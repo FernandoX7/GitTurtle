@@ -1,4 +1,4 @@
-"""The tooling suites side by side: the deal, its proof and the driver's output."""
+"""The tooling job's side-by-side step: the deal, its proof, the driver's output and the workflow's shape."""
 
 import contextlib
 import importlib.util
@@ -23,6 +23,7 @@ SPEC = importlib.util.spec_from_file_location("ci_tooling_suites", DRIVER)
 suites = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(suites)
 
+STEP = 'python3 scripts/ci/tooling_suites.py run --directory "$RUNNER_TEMP/ci-metrics"'
 # Small suites for the driver to run; every wait in them is for an event, never for a guessed time.
 FIXTURES = {
     # A package the groups are dealt from: seven tests, sorted a1 a2 a3 a4 b1 b2 b3.
@@ -145,6 +146,12 @@ FIXTURES = {
 }
 DEALT = ("-s", "pkg", "-t", ".", "-p", "test_*.py")
 DEALT_IDS = [f"pkg.test_alpha.Alpha.test_a{n}" for n in (1, 2, 3, 4)] + [f"pkg.test_beta.Beta.test_b{n}" for n in (1, 2, 3)]
+
+
+def quality_job(name):
+    text = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+    job = re.split(r"\n  [a-z][a-z0-9-]*:\n", text.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0]
+    return job, job.split("\n      - ")[1:]
 
 
 def drive(jobs, listing=None, cwd=None, beat=suites.HEARTBEAT, directory=None):
@@ -496,6 +503,36 @@ class PlanTests(unittest.TestCase):
         # A start folder that is where the tests say it is: a renamed suite must not leave a group of nothing.
         for folder in ("scripts/agent_loop", "scripts/native_qa", "scripts/operator", "scripts/ci/tests"):
             self.assertTrue(any((ROOT / folder).glob("test_*.py")), folder)
+
+
+class WorkflowTests(unittest.TestCase):
+    def test_the_job_keeps_its_name_matrix_and_ten_minute_limit(self):
+        job, _ = quality_job("agent-tooling")
+        self.assertTrue(job.startswith(
+            "    needs: changes\n    if: needs.changes.outputs.tooling == 'true'\n"
+            "    name: Development tooling · ${{ matrix.os }}\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 10\n"
+            "    strategy:\n      fail-fast: false\n      max-parallel: 2\n      matrix:\n"
+            "        os: [macos-15, ubuntu-24.04]\n    steps:\n"), job[:400])
+        self.assertEqual(re.findall(r"^ *timeout-minutes: *(.*)$", job, re.M), ["10"])
+
+    def test_one_step_runs_the_suites_and_nothing_lets_a_failure_pass(self):
+        job, steps = quality_job("agent-tooling")
+        self.assertTrue(steps[0].startswith("uses: actions/checkout@"), steps[0])
+        self.assertEqual([step.split("\n", 1)[0] for step in steps[1:]], [
+            "name: Verify Python runtime",
+            "name: Validate development guidance",
+            "name: Test development, native-QA, operator and CI tooling side by side",
+            "name: Check CI collector syntax and help",
+            "name: Summarize CI measurements",
+            "name: Preserve CI measurements and sanitized diagnostics"])
+        # The whole step: its name and its command, with no condition, limit, retry or shell of its own.
+        self.assertEqual(steps[3], "name: Test development, native-QA, operator and CI tooling side by side\n"
+                                   f"        run: {STEP}")
+        for word in ("continue-on-error", "retry", "|| true", "unittest discover"):
+            self.assertNotIn(word, job, word)
+        # Only the summary and the artifact run after a failure; nothing else is conditional.
+        self.assertEqual(re.findall(r"^        if: (.*)$", job, re.M), ["always()", "always()"])
+        self.assertEqual(job.count("scripts/ci/tooling_suites.py"), 1)
 
 
 if __name__ == "__main__":
