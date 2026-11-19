@@ -18,11 +18,14 @@ unittest; when the six have ended, a discovery of the driver's own must find exa
 each in one group, or the step fails and names every id that differs.
 
 A process's output is captured and printed whole once all six have ended, in the order they are
-listed here, inside a log group of its name. Every such line carries the collector's `[ci] `
-prefix: the collector sanitized it and put the prefix there, or (for a line the collector wrote
-about itself) this driver passes it through the collector's sanitizer and adds it. The driver's
-own lines are `::group::`, `::endgroup::` and those that start with `tooling-suites: `, so a line
-of suite output cannot open or close a group, nor pass for a line of the driver.
+listed here, inside a log group of its name. Every such line is printed behind the collector's
+`[ci] ` prefix, on one line, and unable to spell a workflow command: control characters are
+removed, the separators U+2028, U+2029 and U+0085 become a space, and the runner's older command
+spelling `##[`, which it reads anywhere in a line, is broken up as `#\\x23[`. That is done to a
+line the collector prefixed as much as to one it wrote about itself (which also goes through its
+sanitizer here): what the collector starts runs as the same user and can write behind the prefix.
+The driver's own lines are `::group::`, `::endgroup::` and those that start with
+`tooling-suites: `; a test id in one of them is treated as suite output.
 
 `group` and `ids` are the processes `run` starts for the agent-loop suite, with the discovery
 arguments of `python3 -m unittest discover`. `group` also runs one group again as the job ran it:
@@ -61,6 +64,8 @@ SUITES = (
 HEARTBEAT = 30.0
 GRACE = 5.0
 PREFIX = "[ci] "
+# Characters that end a line for some readers of a log, though not for this driver.
+SEPARATORS = str.maketrans({"\N{LINE SEPARATOR}": " ", "\N{PARAGRAPH SEPARATOR}": " ", "\x85": " "})
 # unittest's own last word on a run, as the collector prints it.
 RAN = re.compile(r"\[ci\] Ran (\d+) tests? in \d")
 
@@ -209,7 +214,8 @@ class Running:
 
     def __init__(self, name, argv, cwd):
         self.name, self.exit, self.seconds = name, None, None
-        # Unnamed, so nothing but the process itself can write to it.
+        # Unnamed, and held by the collector alone. What the collector starts still runs as the
+        # same user and can reach the collector's descriptors, so `quote` trusts no line in it.
         self.capture = tempfile.TemporaryFile()
         started = time.monotonic()
         # Its own session, as `metrics.py measure` starts its command.
@@ -270,15 +276,34 @@ def side_by_side(commands, cwd, beat=HEARTBEAT):
     return running
 
 
+def harmless(text):
+    """Text that stays on its line and spells no workflow command.
+
+    Control characters go, and the separators that end a line for some readers become a space.
+    The runner reads its older command spelling `##[` anywhere in a line, so that is broken up
+    last, exactly as `shown` in `.github/actions/setup-rust/cache.py` breaks it.
+    """
+    kept = "".join(character for character in text.translate(SEPARATORS)
+                   if character == "\t" or not (character < " " or "\x7f" <= character <= "\x9f"))
+    return kept.replace("##[", "#\\x23[")
+
+
+def named(identifier, metrics):
+    """A test id as the driver may print it in a line of its own: it is the tests' text, not the driver's."""
+    return harmless(" ".join(metrics.sanitize(identifier).split()))
+
+
 def quote(raw, metrics):
-    """One captured line as it may be printed: always behind the collector's prefix, and sanitized."""
+    """One captured line as it may be printed: behind the collector's prefix, on one line and harmless."""
     text = raw.decode("utf-8", errors="replace").rstrip("\n")
     if text.startswith(PREFIX):
-        return text  # the collector's print of a line it sanitized
+        # The collector's print of a line it sanitized, as far as can be told from here: the
+        # prefix is no proof of that, so the line is made harmless like any other.
+        return PREFIX + harmless(metrics.ANSI.sub("", text[len(PREFIX):]))
     # The collector's own words (a refusal, a traceback): its rule for a long line, then its sanitizer.
     if len(raw) > metrics.MAX_LINE:
         return PREFIX + "[overlong diagnostic line omitted]"
-    return PREFIX + metrics.sanitize(text).replace("\n", " ")
+    return PREFIX + harmless(metrics.sanitize(text))
 
 
 def replay(item, metrics):
@@ -286,8 +311,8 @@ def replay(item, metrics):
     ran = None
     print(f"::group::{item.name}")
     item.capture.seek(0)
-    # Split at line feeds only, as the collector wrote them: a separator such as U+2028 inside a
-    # line must not start a new one, which would stand in the log without the prefix.
+    # Split at line feeds only, as the collector wrote them; `quote` takes every other separator
+    # out of the line, so none of them can start a line that would stand in the log without the prefix.
     for raw in item.capture:
         line = quote(raw, metrics)
         match = RAN.match(line)
@@ -334,8 +359,8 @@ def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT):
         shares = " + ".join(str(len(held)) for held in groups.values())
         say(f"the {len(groups)} agent-loop groups hold the {len(discovered)} discovered tests, each once ({shares})")
     for reason, identifier in problems:
-        # A test id is the tests' text, not the driver's: sanitized, and last on its line.
-        say(f"PROOF FAILED: {reason}" + ("" if identifier is None else ": " + " ".join(metrics.sanitize(identifier).split())))
+        # A test id is sanitized and made harmless like suite output, and stands last on its line.
+        say(f"PROOF FAILED: {reason}" + ("" if identifier is None else ": " + named(identifier, metrics)))
     for failure in failures:
         say(f"FAILED: {failure}")
     if failures or problems:

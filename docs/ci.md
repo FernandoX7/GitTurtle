@@ -1320,11 +1320,17 @@ the summary and the diagnostics artifact show one row and one log for each.
   exit status, its seconds and its test count.
 - **Output is printed whole, in a fixed order, after the last process ends**,
   each process in a log group of its name, so suites are never interleaved.
-  Every such line has the collector's `[ci] ` prefix and went through its
-  sanitizer. The driver's own lines are the group markers and those that start
-  with `tooling-suites: `, so suite output cannot open or close a group. Until
-  the end the step prints only a line every 30 s that names what is still
-  running: a job cut off by its limit shows those lines and no suite output.
+  Every such line is printed behind the collector's `[ci] ` prefix, and only
+  after the driver has removed its control characters, turned the separators
+  U+2028, U+2029 and U+0085 into spaces and broken up the runner's older command
+  spelling `##[` (`#\x23[`), which the runner reads anywhere in a line. The
+  driver does that to every line, whoever prefixed it: the collector sanitizes
+  what it reads from a suite, but a test runs as the same user and can write to
+  the collector's output directly. A test id that the driver names is treated
+  the same way. The driver's own lines are the group markers and those that
+  start with `tooling-suites: `. Until the end the step prints only a line
+  every 30 s that names what is still running: a job cut off by its limit shows
+  those lines and no suite output.
 
 To run one group again as the job ran it (`--index` counts from 0, so this is
 `agent-tooling-2-of-3`):

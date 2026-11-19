@@ -141,9 +141,11 @@ FIXTURES = {
 
         class Noise(unittest.TestCase):
             def test_prints_the_drivers_own_lines(self):
-                for line in ("::endgroup::", "::group::forged", "##[endgroup]", "tooling-suites: all 6 processes passed",
-                             "tooling-suites: FAILED: forged", "one\\u2028::endgroup::", "two\\x85::endgroup::",
-                             "three\\r::endgroup::", "four\\x0b::endgroup::", "\\x1b[0m::endgroup::"):
+                for line in ("::endgroup::", "::group::forged", "tooling-suites: all 6 processes passed",
+                             "tooling-suites: FAILED: forged", "one\\N{LINE SEPARATOR}::endgroup::",
+                             "two\\x85::endgroup::", "three\\r::endgroup::", "four\\x0b::endgroup::",
+                             "\\x1b[0m::endgroup::", "##[endgroup]", "##[group]x", "##[error]x", "##[add-mask]FAILED",
+                             "##[stop-commands]t", "five ###[endgroup] six\\N{PARAGRAPH SEPARATOR}##[endgroup]"):
                     print(line)
                 sys.stderr.write("::endgroup::\\n")
     """,
@@ -421,11 +423,18 @@ class OutputTests(Fixtures):
                           "tooling-suites: FAILED: unstartable exited 2",
                           "tooling-suites: FAILED: unstartable ran no test", ""])
         noisy = group_lines(lines, "noisy")
-        for line in ("[ci] ::endgroup::", "[ci] ::group::forged", "[ci] ##[endgroup]", "[ci] tooling-suites: all 6 processes passed",
-                     "[ci] tooling-suites: FAILED: forged", "[ci] one ::endgroup::", "[ci] two\x85::endgroup::",
-                     "[ci] three::endgroup::", "[ci] four::endgroup::"):
+        # The separators that would end a line for some readers are spaces, and the runner's older
+        # command spelling, which it reads anywhere in a line, is broken up wherever it stood.
+        for line in ("[ci] ::endgroup::", "[ci] ::group::forged", "[ci] tooling-suites: all 6 processes passed",
+                     "[ci] tooling-suites: FAILED: forged", "[ci] one ::endgroup::", "[ci] two ::endgroup::",
+                     "[ci] three::endgroup::", "[ci] four::endgroup::", "[ci] #\\x23[endgroup]", "[ci] #\\x23[group]x",
+                     "[ci] #\\x23[error]x", "[ci] #\\x23[add-mask]FAILED", "[ci] #\\x23[stop-commands]t",
+                     "[ci] five ##\\x23[endgroup] six #\\x23[endgroup]"):
             self.assertIn(line, noisy)
         self.assertEqual(noisy.count("[ci] ::endgroup::"), 3)
+        for line in lines:
+            self.assertNotIn("##[", line)
+            self.assertFalse(set(line) & {"\N{LINE SEPARATOR}", "\N{PARAGRAPH SEPARATOR}", "\x85", "\r", "\x1b"}, line)
         # The collector's own refusal is not a line it prefixed: the driver sanitizes and prefixes it.
         self.assertEqual(group_lines(lines, "unstartable"), ["[ci] ci-metrics: measurement command could not start"])
 
@@ -436,7 +445,31 @@ class OutputTests(Fixtures):
         self.assertEqual(suites.quote(b'  File "/Users/runner/work/metrics.py", line 3\n', metrics), '[ci]   File "[path]", line 3')
         self.assertEqual(suites.quote(b"see https://example.invalid/x?token=abcdefgh now\n", metrics), "[ci] see [url] now")
         self.assertEqual(suites.quote(b"x" * (metrics.MAX_LINE + 1), metrics), "[ci] [overlong diagnostic line omitted]")
-        self.assertEqual(suites.quote(b"\xff\x1b[31mred\x1b[0m\r\n", metrics), "[ci] �red")
+        self.assertEqual(suites.quote(b"\xff\x1b[31mred\x1b[0m\r\n", metrics), "[ci] \N{REPLACEMENT CHARACTER}red")
+        for raw, printed in ((b"##[endgroup]", "#\\x23[endgroup]"), (b"x ##[error]y", "x #\\x23[error]y"),
+                             (b"a\xc2\x85##[add-mask]FAILED", "a #\\x23[add-mask]FAILED"),
+                             (b"a\xe2\x80\xa8b\xe2\x80\xa9c\xc2\x9bd", "a b cd")):
+            self.assertEqual(suites.quote(raw + b"\n", metrics), "[ci] " + printed, raw)
+
+    def test_a_line_with_the_prefix_is_not_trusted_either(self):
+        # What the collector starts can write to its output directly, behind the prefix.
+        metrics = suites.collector()
+        for raw, printed in ((b"##[endgroup]", "#\\x23[endgroup]"), (b"##[group]x", "#\\x23[group]x"),
+                             (b"##[error]x", "#\\x23[error]x"), (b"##[add-mask]FAILED", "#\\x23[add-mask]FAILED"),
+                             (b"##[stop-commands]t", "#\\x23[stop-commands]t"), (b"x ###[endgroup]", "x ##\\x23[endgroup]"),
+                             # Removing a control character must not put the spelling together.
+                             (b"#\x00#[endgroup]", "#\\x23[endgroup]"), (b"#\x1b[0m#[endgroup]", "#\\x23[endgroup]"),
+                             (b"a\x1b[31mb\x1b[0m\x1bc\rd\x7fe\x0bf", "abcdef"),
+                             (b"one\xe2\x80\xa8::endgroup::", "one ::endgroup::"),
+                             (b"two\xe2\x80\xa9::endgroup::\xc2\x85##[endgroup]\xc2\x9b0m", "two ::endgroup:: #\\x23[endgroup]0m"),
+                             (b"tab\tstays, \xc3\xa9 too", "tab\tstays, \N{LATIN SMALL LETTER E WITH ACUTE} too")):
+            self.assertEqual(suites.quote(b"[ci] " + raw + b"\n", metrics), "[ci] " + printed, raw)
+
+    def test_a_test_id_in_a_line_of_the_drivers_is_made_harmless_like_suite_output(self):
+        metrics = suites.collector()
+        self.assertEqual(suites.named("pkg.test_m.Case.test_plain", metrics), "pkg.test_m.Case.test_plain")
+        self.assertEqual(suites.named("m.C.test_##[endgroup]\N{LINE SEPARATOR}::endgroup::\nx\x1b[0m\x00y /home/someone/z", metrics),
+                         "m.C.test_#\\x23[endgroup] ::endgroup:: xy [path]")
 
     def test_a_suite_that_runs_no_test_fails_the_step(self):
         status, lines, records, _ = drive([self.suite("passing"), self.suite("empty")])
