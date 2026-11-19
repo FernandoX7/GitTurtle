@@ -1484,8 +1484,9 @@ hashes:
   edit. Ordinary application Rust source edits reuse compatible dependency caches.
 - The platform's native inputs. On Ubuntu: the version of every installed package
   in the dependency closure of the build packages the action installs, the file
-  and version behind each build tool name on `PATH`, pkg-config's search order
-  with the `.pc` files outside dpkg's directories, what it resolves two names no
+  and version behind each build tool name on `PATH`, pkg-config's built-in path
+  with the `.pc` files outside dpkg's directories, the `.pc` files of the
+  directories a `PKG_CONFIG` variable names, what it resolves two names no
   build package ships to, and the top-level names of `/usr/local/include` and
   `/usr/local/lib` ([Ubuntu native key](#ubuntu-native-key)); the rest of the hosted image's
   inventory is not keyed. On macOS: the Xcode version, SDK version/build, selected
@@ -1613,7 +1614,7 @@ time) and hashes these parts.
   not resolve fails the step. `cmake` is the image's own: the action installs
   none, so this part is all that keys it, and an image with no CMake on `PATH`
   fails the step by name (`build tool cmake is not on PATH`).
-- *pkg-config's view.* The search order (`pkg-config --variable pc_path
+- *pkg-config's view.* The built-in path (`pkg-config --variable pc_path
   pkg-config`) and, for each directory on it outside `/usr/lib` and `/usr/share`,
   the name of each `.pc` file with a digest of its content: a size would survive
   an edit of `Version: 1.2.3` to `1.2.4`. A clean image has none; a `.pc` under
@@ -1622,13 +1623,26 @@ time) and hashes these parts.
   to another place is listed, and `/usr/lib64` is not `/usr/lib`. A directory
   that is there and cannot be listed, like a file that cannot be read, is keyed
   and printed as unreadable with its errno, never as empty; only a directory
-  that does not exist is empty. `PKG_CONFIG*` variables stay in the flags
-  identity above, by value only: a directory that `PKG_CONFIG_PATH`,
-  `PKG_CONFIG_LIBDIR` or a target-suffixed form of either adds is not listed,
-  so a `.pc` file placed there later would not change the key. The pkg-config
-  crate's `HOST_` and `TARGET_` forms of its five names are in the
-  [flags identity](#flags-identity) as exact names, by value too. No workflow
-  sets any of them.
+  that does not exist is empty.
+- *The directories a `PKG_CONFIG` variable names.* Every directory in a set,
+  non-empty `PKG_CONFIG_PATH` or `PKG_CONFIG_LIBDIR`, in any form the pkg-config
+  crate maps to them (`<VAR>`, `HOST_<VAR>`, `TARGET_<VAR>` and the
+  target-suffixed `<VAR>_…`), is listed under its variable's name by the same
+  rule: each `.pc` file with a digest of its content, a directory that does not
+  exist as empty, one that cannot be listed as unreadable. These directories
+  are listed whether or not dpkg owns them. The lists are not one search
+  order: `PKG_CONFIG_LIBDIR` replaces the built-in path while `pc_path` still
+  prints it, and the pkg-config crate hands the tool only the first set form of
+  each variable. The built-in path and each variable's directories are
+  therefore keyed side by side, and no order between them is claimed. A set form of either variable, or
+  of `PKG_CONFIG_SYSROOT_DIR`, also sends the key to the complete inventory
+  (the fallback below), like an unsupplied name that resolves: a digest keys a
+  `.pc` file's text, not the headers and libraries it leads to. The warning
+  names the variable and never its value. `PKG_CONFIG_TOP_BUILD_DIR` only fills
+  a variable of a `.pc` file and is keyed by value alone, in the
+  [flags identity](#flags-identity), where the values of all of these are
+  keyed too. With none of them set, which is every lane today, the mode, the
+  printed lines and the digest's input are those of a key without this part.
 - *Names no build package ships.* `aws-lc-sys` 0.45.0 asks pkg-config for
   `openssl`, `aws-lc`, `libcrypto` and `libcrypto-awslc` and links a system
   AWS-LC when one of them resolves to one. `libssl-dev` ships the first and the
@@ -1743,7 +1757,9 @@ dependency: a snapshot line without six fields, a dependency or provided name
 outside dpkg's grammar, a group of alternatives that nothing installed
 satisfies, a package the closure reaches in another state than `ii ` (unpacked,
 half installed, or removed with its configuration left), a dpkg package named
-`cmake` in any state, or an unsupplied pkg-config name that resolves. The
+`cmake` in any state, a set `PKG_CONFIG_PATH`, `PKG_CONFIG_LIBDIR` or
+`PKG_CONFIG_SYSROOT_DIR` in any keyed form, or an unsupplied pkg-config name
+that resolves. The
 fallback hashes every line's package,
 architecture, version and status, and the step prints a `::warning::` that names
 the first cause. The digest's input starts with the mode (`closure` or
@@ -1797,7 +1813,8 @@ step runs, or inside another action, is not seen.
 mode; `Keyed Ubuntu packages: <n> of <m> installed`; inside a collapsed group,
 each keyed `name:arch=version` on its own line, sorted; for each tool its real
 path, every match on `PATH` in order, a short digest of its whole version output
-and that output's first line; the `pc_path` and the `.pc` files; what pkg-config
+and that output's first line; the `pc_path` and the `.pc` files, those of a
+`PKG_CONFIG` variable's directories with the variable's name; what pkg-config
 answers for each unsupplied name (`Keyed pkg-config probe aws-lc: absent`, or
 its version); the top level of the two `/usr/local` directories; and the native
 digest. The lines are built from the hashed values themselves, with two things

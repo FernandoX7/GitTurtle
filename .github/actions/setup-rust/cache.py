@@ -118,6 +118,15 @@ UBUNTU_LOCAL_DIRECTORIES = ("/usr/local/include", "/usr/local/lib")
 # closure is then not all a build reads. A test holds this tuple equal to the
 # unsupplied names of the lock's probers.
 UBUNTU_UNSUPPLIED_PROBES = ("aws-lc", "libcrypto-awslc")
+# Variables that send pkg-config to directories of the job's own choosing: the
+# pkg-config crate hands the tool the first set form of each (FLAG_TARGETED's
+# forms) under the plain name. The .pc files of the directories the first two
+# name are keyed by content. Any of the three that is set also sends the key to
+# the complete inventory: a digest keys a .pc file's text, not the headers and
+# libraries it leads to. PKG_CONFIG_TOP_BUILD_DIR only fills a variable of a
+# .pc file and stays keyed by value, in the flags identity.
+PKG_CONFIG_DIRECTORIES = ("PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR")
+PKG_CONFIG_SYSROOT = "PKG_CONFIG_SYSROOT_DIR"
 # Environment that changes what rustc, build scripts, the compilers or the cc,
 # cmake and pkg-config crates emit. Each selected variable is hashed by name
 # and value, and the step prints the names alone. Paths the action fixes itself
@@ -342,13 +351,14 @@ def ubuntu_closure(lines):
     return sorted(f"{identity}={version}" for identity, version in closure.items())
 
 
-def ubuntu_packages(snapshot, resolved=()):
+def ubuntu_packages(snapshot, resolved=(), directed=()):
     """One dpkg snapshot as (mode, keyed lines, keyed installed, installed, other lines, fallback cause).
 
     `closure` keys `name:arch=version` of the closure and nothing else from the
     inventory. `inventory` is the fallback: every line of the snapshot with its
     package, architecture, version and status. `resolved` names the
-    UBUNTU_UNSUPPLIED_PROBES that pkg-config resolves: any of them is a cause.
+    UBUNTU_UNSUPPLIED_PROBES that pkg-config resolves and `directed` the set
+    variables that send pkg-config elsewhere: any of them is a cause.
     """
     lines = snapshot.split("\n")
     if lines[-1] == "":
@@ -356,8 +366,13 @@ def ubuntu_packages(snapshot, resolved=()):
     installed = sum(line.split("\t")[2:3] == [DPKG_INSTALLED] for line in lines)
     try:
         keyed = ubuntu_closure(lines)
+        causes = []
+        if directed:
+            causes.append(f"the environment sets {', '.join(directed)}, and a digest keys a .pc file's text, not what it leads to")
         if resolved:
-            raise InventoryFallback(f"pkg-config resolves {', '.join(resolved)}, which no build package ships")
+            causes.append(f"pkg-config resolves {', '.join(resolved)}, which no build package ships")
+        if causes:
+            raise InventoryFallback("; ".join(causes))
         return "closure", keyed, len(keyed), installed, 0, None
     except InventoryFallback as fallback:
         keyed = []
@@ -389,9 +404,19 @@ def unreadable(error):
     return f"unreadable {errno.errorcode.get(error.errno, error.errno)}"
 
 
-def pkg_config_view(pkg_config):
-    """pkg-config's search order, and the .pc files in its directories that no dpkg package owns.
+def variable_forms(environ, bases):
+    """The set variables of `environ` that are a keyed form of one of `bases`, as sorted (name, value) pairs."""
+    return sorted((name, value) for name, value in environ.items() if value and any(
+        name in (base, "HOST_" + base, "TARGET_" + base) or name.startswith(base + "_") for base in bases))
 
+
+def pkg_config_view(pkg_config, environ):
+    """What pkg-config can find outside dpkg's files: (built-in path, its .pc files, the variables' .pc files).
+
+    The built-in path is `pc_path`; of its directories, those no dpkg package
+    owns are listed. Then every directory a set form of PKG_CONFIG_DIRECTORIES
+    names, under its variable. The three are not one search order:
+    PKG_CONFIG_LIBDIR replaces the built-in path, and `pc_path` still prints it.
     Each file is keyed by a digest of its content. Only a directory that does
     not exist is empty; one that cannot be listed is keyed as unreadable.
     """
@@ -403,15 +428,21 @@ def pkg_config_view(pkg_config):
         real = os.path.realpath(directory)
         if any(real == root or real.startswith(root + "/") for root in DPKG_PC_ROOTS):
             continue
-        try:
-            names = sorted(name for name in os.listdir(directory) if name.endswith(".pc"))
-        except FileNotFoundError:
-            names = []
-        except OSError as error:
-            files[directory] = unreadable(error)
-            continue
-        files[directory] = [[name, pc_digest(os.path.join(directory, name))] for name in names]
-    return order, files
+        files[directory] = pc_listing(directory)
+    added = {name: {directory: pc_listing(directory) for directory in filter(None, value.split(os.pathsep))}
+             for name, value in variable_forms(environ, PKG_CONFIG_DIRECTORIES)}
+    return order, files, added
+
+
+def pc_listing(directory):
+    """The .pc files of one directory, each with a digest of its content, or how the directory could not be listed."""
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".pc"))
+    except FileNotFoundError:
+        names = []
+    except OSError as error:
+        return unreadable(error)
+    return [[name, pc_digest(os.path.join(directory, name))] for name in names]
 
 
 def pc_digest(path):
@@ -498,7 +529,7 @@ def shown(text):
                    for character in text).replace("##[", "#\\x23[")
 
 
-def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
+def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local, pc_added=None, directed=()):
     """The Ubuntu native digest and the log lines that show the values in it.
 
     The digest's input starts with the mode, so a fallback key can never equal
@@ -506,12 +537,16 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
     two hosted runs can be compared line by line. Two things are shown without
     being hashed: each tool's other matches on PATH and the count of installed
     packages. Of a tool's version output, all of it hashed, the line shows a
-    short digest and the first line.
+    short digest and the first line. `pc_added` and `directed` are what the
+    PKG_CONFIG variables add, and with none set neither the digest's input nor
+    a line differs from a key without them.
     """
     mode, keyed, count, installed, others, cause = ubuntu_packages(
-        snapshot, [name for name, version in probes.items() if version is not None])
+        snapshot, [name for name, version in probes.items() if version is not None], directed)
     hashed = {"packages": keyed, "pc_path": pc_path, "pc_files": pc_files, "probes": probes, "local": local,
               "tools": {name: tool and {"path": tool["path"], "version": tool["version"]} for name, tool in tools.items()}}
+    if pc_added:
+        hashed["pc_added"] = pc_added
     native = digest(mode.encode() + b"\n" + json.dumps(hashed, sort_keys=True).encode())
     lines = []
     if cause:
@@ -530,6 +565,10 @@ def ubuntu_identity(snapshot, tools, pc_path, pc_files, probes, local):
     for directory, found in pc_files.items():
         listing = found if isinstance(found, str) else ", ".join(f"{name} {state}" for name, state in found) or "none"
         lines.append(f"Keyed pkg-config files in {shown(directory)}: {shown(listing)}")
+    for variable, directories in (pc_added or {}).items():
+        for directory, found in directories.items():
+            listing = found if isinstance(found, str) else ", ".join(f"{name} {state}" for name, state in found) or "none"
+            lines.append(f"Keyed pkg-config files in {shown(directory)}, which {shown(variable)} names: {shown(listing)}")
     for name, version in probes.items():
         lines.append(f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {shown(version)}"))
     for directory, found in local.items():
@@ -546,8 +585,10 @@ def native_identity(platform):
         tools.update((name, tool_identity(name, required=False)) for name in UBUNTU_OPTIONAL_TOOLS)
         pkg_config = tools["pkg-config"]["run"]
         probes = {name: pkg_config_probe(pkg_config, name) for name in UBUNTU_UNSUPPLIED_PROBES}
-        native, lines = ubuntu_identity(snapshot, tools, *pkg_config_view(pkg_config), probes,
-                                        local_listing(UBUNTU_LOCAL_DIRECTORIES))
+        pc_path, pc_files, pc_added = pkg_config_view(pkg_config, os.environ)
+        directed = [name for name, _ in variable_forms(os.environ, (*PKG_CONFIG_DIRECTORIES, PKG_CONFIG_SYSROOT))]
+        native, lines = ubuntu_identity(snapshot, tools, pc_path, pc_files, probes,
+                                        local_listing(UBUNTU_LOCAL_DIRECTORIES), pc_added, directed)
         print("\n".join(lines))
         return native
     if platform == "macOS":

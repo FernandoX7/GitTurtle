@@ -255,15 +255,19 @@ class UbuntuRunner:
             answer.write_text(action + "\n")
 
     @contextmanager
-    def environment(self, *earlier, later=()):
+    def environment(self, *earlier, later=(), variables=None):
         path = os.pathsep.join(str(directory) for directory in (*earlier, self.bin, *later))
         with patch.dict(os.environ, {"PATH": path}), \
                 patch.object(cache, "UBUNTU_LOCAL_DIRECTORIES", tuple(str(directory) for directory in self.local)):
+            # No PKG_CONFIG variable of the machine the tests run on, only the test's own.
+            for name in [name for name in os.environ if "PKG_CONFIG" in name]:
+                del os.environ[name]
+            os.environ.update(variables or {})
             yield
 
-    def native(self, *earlier, later=()):
+    def native(self, *earlier, later=(), variables=None):
         """The native digest and the lines the step prints, with `earlier` directories first on PATH and `later` last."""
-        with self.environment(*earlier, later=later), patch("builtins.print") as shown:
+        with self.environment(*earlier, later=later, variables=variables), patch("builtins.print") as shown:
             native = cache.native_identity("Linux")
         return native, shown.call_args.args[0].split("\n")
 
@@ -1351,7 +1355,7 @@ class UbuntuPackages(unittest.TestCase):
 
     def key(self, text=None, **changed):
         inputs = {"tools": UBUNTU_TOOLS, "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, "probes": UBUNTU_PROBES,
-                  "local": UBUNTU_LOCAL, **changed}
+                  "local": UBUNTU_LOCAL, "pc_added": None, "directed": (), **changed}
         return cache.ubuntu_identity(snapshot_text(self.rows) if text is None else text, **inputs)[0]
 
     def depend(self, identity, term):
@@ -1540,6 +1544,47 @@ class UbuntuPackages(unittest.TestCase):
         self.depend("libssl-dev:arm64", "libprobe1 [amd64]")
         self.assertEqual(cache.ubuntu_packages(snapshot_text(self.rows), ["aws-lc"])[5],
                          "libssl-dev:arm64 has a dependency outside dpkg's grammar: 'libprobe1 [amd64]'")
+        self.assertEqual(cache.ubuntu_packages(snapshot_text(self.rows), ["aws-lc"], ["PKG_CONFIG_PATH"])[5],
+                         "libssl-dev:arm64 has a dependency outside dpkg's grammar: 'libprobe1 [amd64]'")
+
+    def test_set_pkg_config_variable_takes_the_whole_inventory_and_is_named(self):
+        closure = self.key()
+        text = snapshot_text(self.rows)
+        leads = "and a digest keys a .pc file's text, not what it leads to"
+        keys = {closure}
+        for directed in (["PKG_CONFIG_PATH"], ["PKG_CONFIG_LIBDIR"], ["PKG_CONFIG_SYSROOT_DIR"],
+                         ["HOST_PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu"]):
+            with self.subTest(directed=directed):
+                mode, keyed, count, installed, others, cause = cache.ubuntu_packages(text, (), directed)
+                self.assertEqual((mode, count, installed, others), ("inventory", 271, 271, 0))
+                self.assertEqual(cause, f"the environment sets {', '.join(directed)}, {leads}")
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES, UBUNTU_LOCAL,
+                                                   None, directed)
+                self.assertEqual(shown[:3], [f"::warning::Ubuntu cache key fell back to the complete package inventory: {cause}",
+                                             "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 271 of 271 installed"])
+                # The mode is in the digest and the names are in the flags identity: variables alone give one fallback key.
+                keys.add(key)
+        self.assertEqual(len(keys), 2)
+        # A package outside the closure is then keyed, as for every other cause.
+        fallback = self.key(directed=["PKG_CONFIG_PATH"])
+        self.rows["git:arm64"][0] += "+1"
+        self.assertEqual(self.key(), closure)
+        self.assertNotEqual(self.key(directed=["PKG_CONFIG_PATH"]), fallback)
+        # Beside a resolved name both causes are named, and what the directories hold is keyed in either mode.
+        self.assertEqual(cache.ubuntu_packages(text, ["aws-lc"], ["PKG_CONFIG_PATH"])[5],
+                         f"the environment sets PKG_CONFIG_PATH, {leads}; pkg-config resolves aws-lc, which no build package ships")
+        listed = {self.key(directed=["PKG_CONFIG_PATH"], pc_added=added) for added in (
+            None, {"PKG_CONFIG_PATH": {}}, {"PKG_CONFIG_PATH": {"/opt/pc": []}}, {"PKG_CONFIG_LIBDIR": {"/opt/pc": []}},
+            {"PKG_CONFIG_PATH": {"/opt/pc": "unreadable EACCES"}}, {"PKG_CONFIG_PATH": {"/opt/pc": [["openssl.pc", "0" * 64]]}},
+            {"PKG_CONFIG_PATH": {"/opt/pc": [["openssl.pc", "1" * 64]]}}, {"PKG_CONFIG_PATH": {"/opt/other": [["openssl.pc", "1" * 64]]}})}
+        self.assertEqual(len(listed), 8)
+        # With no variable set the digest's input is the one a key without them had: no empty entry is hashed.
+        self.assertEqual(self.key(pc_added={}), closure)
+        hashed = {"packages": self.keyed(), "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, "probes": UBUNTU_PROBES, "local": UBUNTU_LOCAL,
+                  "tools": {name: tool and {"path": tool["path"], "version": tool["version"]} for name, tool in UBUNTU_TOOLS.items()}}
+        self.rows = snapshot_rows()
+        hashed["packages"] = self.keyed()
+        self.assertEqual(self.key(), cache.digest(b"closure\n" + json.dumps(hashed, sort_keys=True).encode()))
 
     def fallbacks(self):
         """Every cause that sends the key to the inventory: label -> (snapshot, the cause the warning names)."""
@@ -1674,16 +1719,24 @@ class UbuntuPackages(unittest.TestCase):
         tools = {name: tool and {"run": hostile, "path": hostile, "matches": [hostile, hostile], "version": hostile}
                  for name, tool in UBUNTU_TOOLS.items()}
         _, lines = cache.ubuntu_identity(text, tools, hostile, {hostile: [[hostile, hostile]], "/opt": hostile},
-                                         {"aws-lc": hostile, "libcrypto-awslc": None}, {hostile: [hostile], "/usr/local/lib": hostile})
+                                         {"aws-lc": hostile, "libcrypto-awslc": None}, {hostile: [hostile], "/usr/local/lib": hostile},
+                                         {hostile: {hostile: [[hostile, hostile]], "/opt": hostile}}, [hostile])
         # Nothing a value holds starts a line: the fixed lines around 273 keyed ones, and a line for each other value.
-        self.assertEqual(len(lines), 4 + 273 + 1 + len(UBUNTU_TOOLS) + 1 + 2 + 2 + 2 + 1)
+        self.assertEqual(len(lines), 4 + 273 + 1 + len(UBUNTU_TOOLS) + 1 + 2 + 2 + 2 + 2 + 1)
         self.assertEqual([line for line in lines if "##[" in line or "\n" in line or "\r" in line], [])
         self.assertEqual([line.split(" ")[0] for line in lines if line.lstrip().startswith("::")],
                          ["::warning::Ubuntu", "::group::Keyed", "::endgroup::"])
         # Each value is still there to read, escaped.
         self.assertIn(r"libssl3t64:arm64=3.0.13-0ubuntu3.16 [#\x23[error]state]", lines)
         self.assertLessEqual({r"unparsed: #\x23[error]stop", r"unparsed: ::error::stop\r#\x23[set-output name=x;]y"}, set(lines))
-        self.assertEqual(sum(escaped in line for line in lines), len(TOOL_NAMES) + 6)
+        self.assertEqual(sum(escaped in line for line in lines), len(TOOL_NAMES) + 8)
+        self.assertIn(f"Keyed pkg-config files in /opt, which {escaped} names: {escaped}", lines)
+        # A variable's name is a value too, in the line and in the cause.
+        _, directed = cache.ubuntu_identity(snapshot_text(snapshot_rows()), UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES,
+                                            UBUNTU_LOCAL, None, [hostile])
+        self.assertEqual(directed[0], "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                                      f"the environment sets {escaped}, and a digest keys a .pc file's text, not what it leads to")
+        self.assertEqual([line for line in directed if "##[" in line or "\n" in line or "\r" in line], [])
         self.assertIn(f"Keyed pkg-config probe aws-lc: version {escaped}", lines)
         # The cause of a fallback is a value too.
         rows = snapshot_rows()
@@ -1856,9 +1909,119 @@ class UbuntuNativeIdentity(unittest.TestCase):
 
     def pc_files(self):
         """The .pc files `pkg_config_view` finds through the stand-in pkg-config, by directory."""
-        order, files = cache.pkg_config_view(str(self.runner.bin / "pkg-config"))
+        order, files, added = cache.pkg_config_view(str(self.runner.bin / "pkg-config"), {})
         self.assertEqual(order, self.runner.pc_path.read_text().strip())
+        self.assertEqual(added, {})
         return {Path(directory): found for directory, found in files.items()}
+
+    def test_directories_a_pkg_config_variable_names_are_listed_by_content_under_its_name(self):
+        closure, clean = self.runner.native()
+        self.assertEqual(clean[0], "Ubuntu native key mode: closure")
+        first, second, absent, blocked = (self.base / name for name in ("first", "second", "absent", "blocked"))
+        first.mkdir()
+        second.mkdir()
+        (first / "openssl.pc").write_text("Name: OpenSSL\nVersion: 1.2.3\n")
+        (first / "notes.txt").write_text("not a module")
+        (second / "dav1d.pc").symlink_to("missing.pc")
+        blocked.write_text("a file where pkg-config looks for a directory")
+        digest = hashlib.sha256(b"Name: OpenSSL\nVersion: 1.2.3\n").hexdigest()
+        tool = str(self.runner.bin / "pkg-config")
+        # Every form the pkg-config crate maps to the two variables, each under its own name; an empty one is not set.
+        triple = "x86_64-unknown-linux-gnu"
+        variables = {"PKG_CONFIG_PATH": f"{first}{os.pathsep}{absent}{os.pathsep}", "PKG_CONFIG_LIBDIR": str(second),
+                     "HOST_PKG_CONFIG_PATH": str(blocked), "TARGET_PKG_CONFIG_LIBDIR": str(first),
+                     f"PKG_CONFIG_PATH_{triple}": str(second), f"PKG_CONFIG_LIBDIR_{triple.replace('-', '_')}": str(absent),
+                     "HOST_PKG_CONFIG_LIBDIR": "", "PKG_CONFIG_TOP_BUILD_DIR": str(first), "PKG_CONFIG_SYSROOT_DIR": str(first),
+                     "PKG_CONFIG": tool, "HOST_PKG_CONFIG_PATHS": str(first), "XPKG_CONFIG_PATH": str(first)}
+        listed = [["openssl.pc", digest]]
+        dangling = [["dav1d.pc", "unreadable ENOENT"]]
+        expected = {"HOST_PKG_CONFIG_PATH": {str(blocked): "unreadable ENOTDIR"}, "PKG_CONFIG_LIBDIR": {str(second): dangling},
+                    f"PKG_CONFIG_LIBDIR_{triple.replace('-', '_')}": {str(absent): []},
+                    "PKG_CONFIG_PATH": {str(first): listed, str(absent): []}, f"PKG_CONFIG_PATH_{triple}": {str(second): dangling},
+                    "TARGET_PKG_CONFIG_LIBDIR": {str(first): listed}}
+        order, files, added = cache.pkg_config_view(tool, variables)
+        self.assertEqual((order, files), (self.runner.pc_path.read_text().strip(), {str(self.runner.pc): []}))
+        self.assertEqual(added, expected)
+        self.assertEqual(list(added), sorted(expected))
+        native, lines = self.runner.native(variables=variables)
+        self.assertNotEqual(native, closure)
+        named = [line for line in lines if ", which " in line]
+        self.assertEqual(named, [
+            f"Keyed pkg-config files in {blocked}, which HOST_PKG_CONFIG_PATH names: unreadable ENOTDIR",
+            f"Keyed pkg-config files in {second}, which PKG_CONFIG_LIBDIR names: dav1d.pc unreadable ENOENT",
+            f"Keyed pkg-config files in {absent}, which PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu names: none",
+            f"Keyed pkg-config files in {first}, which PKG_CONFIG_PATH names: openssl.pc {digest}",
+            f"Keyed pkg-config files in {absent}, which PKG_CONFIG_PATH names: none",
+            f"Keyed pkg-config files in {second}, which PKG_CONFIG_PATH_{triple} names: dav1d.pc unreadable ENOENT",
+            f"Keyed pkg-config files in {first}, which TARGET_PKG_CONFIG_LIBDIR names: openssl.pc {digest}"])
+        # Beside the built-in path's own lines, which stay as they were, and before the probes.
+        self.assertEqual(lines[lines.index(named[0]) - 1], f"Keyed pkg-config files in {self.runner.pc}: none")
+        self.assertEqual(lines[lines.index(named[-1]) + 1], "Keyed pkg-config probe aws-lc: absent")
+        self.assertIn(f"Keyed pkg-config pc_path: {self.runner.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig", lines)
+        # The digest holds the listing: the mode, then the values of a clean key and the variables' directories.
+        hashed = json.loads(json.dumps({"packages": cache.ubuntu_packages(UBUNTU_SNAPSHOT, (), ["x"])[1], "pc_added": expected,
+                                        "pc_path": order, "pc_files": files, "probes": UBUNTU_PROBES,
+                                        "local": {str(directory): [] for directory in self.runner.local},
+                                        "tools": {name: {"path": os.path.realpath(self.runner.real / f"{name}-13"),
+                                                         "version": f"{name} (Ubuntu) 13.0\nconfigured for the fixture\n"}
+                                                  for name in TOOL_NAMES} | {"cmake3": None}}))
+        self.assertEqual(native, cache.digest(b"inventory\n" + json.dumps(hashed, sort_keys=True).encode()))
+        # A file's content, a new file and a directory that appears each move the key; anything but a .pc file does not.
+        keys = {closure, native}
+        (first / "notes.txt").write_text("still not a module")
+        self.assertEqual(self.runner.native(variables=variables)[0], native)
+        for change in (lambda: (first / "openssl.pc").write_text("Name: OpenSSL\nVersion: 1.2.4\n"),
+                       lambda: (second / "zstd.pc").write_text("Name: zstd\n"),
+                       lambda: (absent.mkdir(), (absent / "x11.pc").write_text("Name: X11\n"))):
+            change()
+            changed = self.runner.native(variables=variables)[0]
+            self.assertNotIn(changed, keys)
+            keys.add(changed)
+        # A directory the built-in path also holds is listed under the variable all the same,
+        # and one that dpkg owns is: the variable is the job's own choice.
+        (self.runner.pc / "openssl.pc").write_text("Name: OpenSSL\n")
+        builtin = hashlib.sha256(b"Name: OpenSSL\n").hexdigest()
+        _, files, added = cache.pkg_config_view(tool, {"PKG_CONFIG_LIBDIR": f"{self.runner.pc}{os.pathsep}/usr/share/pkgconfig"})
+        self.assertEqual(files, {str(self.runner.pc): [["openssl.pc", builtin]]})
+        self.assertEqual(added["PKG_CONFIG_LIBDIR"][str(self.runner.pc)], [["openssl.pc", builtin]])
+        self.assertEqual(list(added["PKG_CONFIG_LIBDIR"]), [str(self.runner.pc), "/usr/share/pkgconfig"])
+
+    def test_set_pkg_config_variable_falls_back_and_an_unset_one_changes_nothing(self):
+        closure, clean = self.runner.native()
+        directory = self.base / "added"
+        directory.mkdir()
+        warning = "::warning::Ubuntu cache key fell back to the complete package inventory: the environment sets {}, " \
+                  "and a digest keys a .pc file's text, not what it leads to"
+        fallbacks = set()
+        for name in ("PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR", "HOST_PKG_CONFIG_PATH", "TARGET_PKG_CONFIG_PATH",
+                     "HOST_PKG_CONFIG_LIBDIR", "TARGET_PKG_CONFIG_LIBDIR", "HOST_PKG_CONFIG_SYSROOT_DIR", "TARGET_PKG_CONFIG_SYSROOT_DIR",
+                     "PKG_CONFIG_PATH_aarch64-unknown-linux-gnu", "PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu",
+                     "PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu"):
+            with self.subTest(variable=name):
+                native, lines = self.runner.native(variables={name: str(directory)})
+                # The name, never the value.
+                self.assertEqual(lines[:3], [warning.format(name), "Ubuntu native key mode: inventory",
+                                             "Keyed Ubuntu packages: 271 of 271 installed"])
+                self.assertNotEqual(native, closure)
+                listed = [line for line in lines if ", which " in line]
+                self.assertEqual(listed, [] if "SYSROOT" in name else
+                                 [f"Keyed pkg-config files in {directory}, which {name} names: none"])
+                fallbacks.add(native)
+        # The sysroot forms list nothing, so they share one fallback digest: their values are in the flags identity.
+        self.assertEqual(len(fallbacks), 8 + 1)
+        native, lines = self.runner.native(variables={"PKG_CONFIG_PATH": str(directory), "PKG_CONFIG_SYSROOT_DIR": "/sysroot"})
+        self.assertEqual(lines[0], warning.format("PKG_CONFIG_PATH, PKG_CONFIG_SYSROOT_DIR"))
+        # Nothing changes when none is set, or when one is set and empty, or for a variable that is keyed by value only.
+        for variables in ({}, {"PKG_CONFIG_PATH": "", "PKG_CONFIG_LIBDIR": "", "PKG_CONFIG_SYSROOT_DIR": ""},
+                          {"PKG_CONFIG_TOP_BUILD_DIR": str(directory)}, {"PKG_CONFIG_ALLOW_CROSS": "1", "PKG_CONFIG_ALL_STATIC": "1"},
+                          {"XPKG_CONFIG_PATH": str(directory), "HOST_PKG_CONFIG_PATHS": str(directory)}):
+            with self.subTest(variables=variables):
+                self.assertEqual(self.runner.native(variables=variables), (closure, clean))
+        # Those are keyed by value in the flags identity, the directory variables too.
+        for name in ("PKG_CONFIG_TOP_BUILD_DIR", "PKG_CONFIG_PATH", "HOST_PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"):
+            self.assertNotEqual(cache.flags_identity({name: str(directory)}), cache.flags_identity({}))
+        self.assertEqual((cache.PKG_CONFIG_DIRECTORIES, cache.PKG_CONFIG_SYSROOT),
+                         (("PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR"), "PKG_CONFIG_SYSROOT_DIR"))
 
     def test_pc_files_are_keyed_by_content_and_what_cannot_be_read_is_never_empty(self):
         pc, module = self.runner.pc, self.runner.pc / "openssl.pc"
