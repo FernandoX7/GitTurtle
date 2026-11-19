@@ -1708,8 +1708,21 @@ unsupplied names absent, and the same entries at the top of `/usr/local/include`
 and `/usr/local/lib`. With the inventory in the key those two images had computed
 two keys from one commit. The arm64 release job (Azure, 20261111.182.1) keyed 195
 of 1,254 packages and computed its own digest. Every lane missed in that run, as
-the helper had changed; hits, and the images of a later release, are recorded
-after `main` has saved the new keys.
+the helper had changed.
+
+**Hits across the clouds, and a later image release.** After `main`'s push run
+`44466577349` had saved the new keys from AWS runners, three manually dispatched
+runs on November 19, 2026 (`44472062033`, `44490423215` and `44501533068`)
+restored them. Every x64 job on an image of the 20261111 release hit, on Azure
+(20261111.370.1) and on AWS (20261111.127.1) alike: nine jobs of nine, one native
+digest, the tests and the release job's package checks green. The images of the
+20261116 release carry a newer C library (`libc6`, `libc6-dev` and `libc-dev-bin`
+at 2.39-0ubuntu8.12 against 2.39-0ubuntu8.9). Its Azure build (20261116.376.1) and
+its AWS build (20261116.133.1) computed one new digest between them, and the arm64
+image 20261116.188.1 its own; each misses until a push to `main` has saved from
+such an image. So a weekly rollout that moves a keyed package gives two keys while
+it lasts, one per state of that package, where the inventory gave one per image
+build.
 
 ### Trust, failure and storage bounds
 
