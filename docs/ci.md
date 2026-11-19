@@ -1364,8 +1364,34 @@ python3 scripts/ci/tooling_suites.py group --index 1 --of 3 --record /tmp/ids.js
   -s scripts/agent_loop -t scripts -p 'test_*.py'
 ```
 
-No hosted run of the new step exists as this is written. The job's own seconds
-before and after are recorded here from the pull request's run.
+The first hosted runs of the new step were the pull request's own, Quality
+[run 44608780306](https://github.com/FernandoX7/GitTurtle/actions/runs/44608780306),
+and `main`'s on its merge,
+[run 44613539074](https://github.com/FernandoX7/GitTurtle/actions/runs/44613539074).
+The first was also the step's first run on macOS and under Python 3.15.2:
+
+| | macos-15 | ubuntu-24.04 |
+| --- | ---: | ---: |
+| The job in the three runs before | 521, 534 and 575 s | 316, 228 and 290 s |
+| The job in the pull request's run | 267 s | 148 s |
+| The new step in it | 244 s | 134 s |
+| The job in `main`'s run on the merge | 201 s | 117 s |
+| The new step in it | 182 s | 107 s |
+
+In the pull request's run the six processes took 243.1, 238.7 and 213.5 s (the
+three agent-loop groups), 96.4 s (native-QA), 42.7 s (operator) and 175.0 s (the
+CI tests) on macOS, and 132.4, 134.0, 114.0, 20.6, 14.5 and 64.6 s on Ubuntu,
+each with exit 0. Both logs print that the three groups hold the 350 discovered
+tests, each once (117 + 117 + 116), and nothing was cut at the deadline. Against
+the last run of the four steps on the same base, every suite ran the tests it
+ran there: 350 agent-loop tests with 1 skipped, 304 native-QA tests with 80
+skipped, 38 operator tests, and the CI tests' 514 on macOS and 532 on Ubuntu
+plus the 33 this change added, with the same 25 and 8 skipped. Side by side a
+suite takes longer by its own clock than alone: on the macOS runner native-QA
+took 94.4 s where it took 55.5 s, and operator 41.8 s where it took 21.7 s,
+since six processes share three processors. In `main`'s run on the merge the six
+processes took 181.8 s side by side on macOS and 106.2 s on Ubuntu, with the
+same counts and the same line about the 350 tests.
 
 ### Later measurements and C1
 
