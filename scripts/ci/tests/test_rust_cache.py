@@ -1,13 +1,18 @@
 """Behavioral tests for cache identity, bounded cleanup and miss recovery."""
+from contextlib import contextmanager
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import time
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +21,167 @@ SPEC = importlib.util.spec_from_file_location("rust_cache", ROOT / ".github/acti
 cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
 SPEC_TOOLCHAIN = cache.toolchain_identity
+# `dpkg-query` in an ubuntu:24.04 arm64 container holding exactly the setup
+# action's install list, taken on 2026-11-19 with cache.DPKG_SNAPSHOT's format:
+# package:architecture, version, status, Pre-Depends, Depends and Provides,
+# tab-separated. A build of the workspace's tests traced there read files of
+# 75 packages, 71 of them in the closure this key takes.
+UBUNTU_SNAPSHOT = (ROOT / "scripts/ci/tests/fixtures/ubuntu-24.04-arm64-dpkg.tsv").read_text()
+# What build scripts and the cc and cmake crates run bare, and the linker, the
+# assembler and the make that gcc and CMake run in their turn; cmake3 is optional.
+TOOL_NAMES = ("cc", "c++", "ar", "ld", "as", "make", "pkg-config", "clang", "cmake")
+# Tool answers for the tests that start no process.
+UBUNTU_TOOLS ={**{name: {"run": f"/usr/bin/{name}", "path": f"/usr/bin/{name}-13", "matches": [f"/usr/bin/{name}"],
+                          "version": f"{name} 13.0\n"} for name in TOOL_NAMES}, "cmake3": None}
+# pkg-config's answers on an image where neither unsupplied name resolves.
+UBUNTU_PROBES = {"aws-lc": None, "libcrypto-awslc": None}
+# The top level of the two directories no dpkg package owns, with nothing in them.
+UBUNTU_LOCAL = {"/usr/local/include": [], "/usr/local/lib": []}
+
+
+# Crates through which a build script looks for something on the system.
+PROBING_CRATES = {"pkg-config", "system-deps", "cmake", "bindgen"}
+# A pkg-config name that no build package ships. cache.UBUNTU_UNSUPPLIED_PROBES
+# must hold exactly these names: the key then holds what each resolves to.
+UNSUPPLIED = "no build package ships it"
+# Every locked package that depends on one of them, as `name version`, with
+# what that version's build script (read in the Cargo registry) asks for on
+# Linux: the pkg-config names, each with the package of
+# cache.UBUNTU_BUILD_PACKAGES that ships its .pc file (as a pair with the
+# dependency of that package the file is in, when it is not the build package's
+# own) or UNSUPPLIED; then the build packages behind the commands and compilers
+# it runs. A package that asks for nothing on Linux has the reason instead. The
+# Ubuntu key holds those packages' closure and not the hosted image's other
+# packages, over a thousand, so a prober may find nothing outside it. The .pc owners are
+# those of the traced container's dpkg file lists. A row is one locked version:
+# an update gets a new row only once its build script has been read again.
+UBUNTU_PROBERS = {
+    # builder/system_detect.rs: the four names, in this order, to adopt a system
+    # AWS-LC, which it takes only from headers that define OPENSSL_IS_AWSLC;
+    # libssl-dev's do not. It then compiles its own sources with cc, or with
+    # cmake3 or cmake when asked, and loads libclang only with its bindgen feature.
+    "aws-lc-sys 0.45.0": ({"openssl": "libssl-dev", "aws-lc": UNSUPPLIED, "libcrypto": "libssl-dev",
+                           "libcrypto-awslc": UNSUPPLIED}, ("pkg-config", "build-essential", "cmake", "clang")),
+    # system-deps for the dav1d of its manifest, 1.3.0 or later. Its other path,
+    # a clone built with meson and ninja, needs a SYSTEM_DEPS_ variable, which
+    # the install step refuses.
+    "dav1d-sys 0.8.3": ({"dav1d": "libdav1d-dev"}, ("pkg-config",)),
+    # freetype2 at 24.3.18 or later; without it, it compiles its bundled copy with c++.
+    "freetype-sys 0.20.1": ({"freetype2": ("libfontconfig-dev", "libfreetype-dev")}, ("pkg-config", "build-essential")),
+    "gpui-pre 0.3.4": "bindgen is its build dependency on macOS only, and its build script acts on Windows only",
+    "gpui-pre-media 0.3.4": "its build script runs bindgen on macOS only; elsewhere its main is empty",
+    "khronos-egl 6.0.0": "it asks for egl only with its static feature and without no-pkg-config; wgpu-hal turns on "
+                         "dynamic here, and static together with no-pkg-config on emscripten",
+    "system-deps 7.0.8": "a library for build scripts: it probes what its user's manifest names, here dav1d-sys's",
+    # One name for each of its client, cursor, egl and server features, and
+    # nothing at all with its dlopen feature, which wgpu-hal turns on.
+    "wayland-sys 0.31.11": ({"wayland-client": "libwayland-dev", "wayland-cursor": "libwayland-dev",
+                             "wayland-egl": "libwayland-dev", "wayland-server": "libwayland-dev"}, ("pkg-config",)),
+    # One name for each feature. Its users in the lock turn on xlib alone (xcb,
+    # for its xlib_xcb feature; its other user, the screen capture crate, names
+    # none), which asks for x11. A feature turned on later asks for a name of
+    # its own and leaves this version as it is: read the features with the row.
+    "x11 2.21.0": ({"x11": ("libx11-xcb-dev", "libx11-dev")}, ("pkg-config",)),
+    # fontconfig, unless its dlopen feature or RUST_FONTCONFIG_DLOPEN is on.
+    "yeslogic-fontconfig-sys 6.0.1": ({"fontconfig": "libfontconfig-dev"}, ("pkg-config",)),
+}
+
+
+PROBER_ROW = re.compile(r"[A-Za-z0-9_-]+ \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
+
+
+def lock_probers(lock):
+    """The locked packages that depend on a probing crate, as `name version`."""
+    return {f"{package['name']} {package['version']}" for package in tomllib.loads(lock)["package"]
+            if PROBING_CRATES & {dependency.split(" ")[0] for dependency in package.get("dependencies", ())}}
+
+
+def setup_jobs(workflow):
+    """The jobs of a workflow that use the setup action, as {name: text}."""
+    jobs = re.split(r"\n(?=  [A-Za-z0-9_-]+:\n)", workflow.split("\njobs:\n", 1)[1])
+    return {job.strip().split(":", 1)[0]: job for job in jobs if "uses: ./.github/actions/setup-rust" in job}
+
+
+def later_installs(workflow):
+    """(job, line) for every apt or dpkg installation written in a job that uses the setup action."""
+    return [(name, line.strip()) for name, job in setup_jobs(workflow).items() for line in job.splitlines()
+            if re.search(r"(?<![\w-])(?:apt(?:-get)?|dpkg\s+(?:-i|--install))(?![\w-])", line)]
+
+
+def snapshot_rows(text=UBUNTU_SNAPSHOT):
+    """A snapshot as {package:architecture: [version, status, Pre-Depends, Depends, Provides]}."""
+    return {fields[0]: fields[1:] for fields in (line.split("\t") for line in text.splitlines())}
+
+
+def snapshot_text(rows):
+    return "".join("\t".join((identity, *fields)) + "\n" for identity, fields in rows.items())
+
+
+class UbuntuRunner:
+    """A PATH of stand-ins for everything the Ubuntu key runs.
+
+    `dpkg-query` answers with a snapshot file and records its arguments; each
+    tool is a link in a PATH directory to its own real file, as the image's
+    alternatives are, and answers `--version` from a file of its own. As
+    pkg-config a tool also answers `--modversion`: it records who was asked for
+    what and finds no module, until `probe` gives it something to do for a name.
+    `local` stands for /usr/local/include and /usr/local/lib, both empty.
+    """
+
+    def __init__(self, base, snapshot=UBUNTU_SNAPSHOT):
+        self.bin, self.real, self.state, self.pc = (base / name for name in ("bin", "real", "state", "pkgconfig"))
+        self.local = (base / "usr-local/include", base / "usr-local/lib")
+        for directory in (self.bin, self.real, self.state, self.pc, *self.local):
+            directory.mkdir(parents=True)
+        self.snapshot = self.state / "snapshot"
+        self.snapshot.write_text(snapshot)
+        self.queries = self.state / "queries"
+        self.probes = self.state / "probes"
+        self.pc_path = self.state / "pc_path"
+        self.pc_path.write_text(f"{self.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig\n")
+        self.script(self.bin / "dpkg-query", f"printf '%s\\n' \"$@\" >> {shlex.quote(str(self.queries))}\n"
+                                           f"exec /bin/cat {shlex.quote(str(self.snapshot))}")
+        for name in TOOL_NAMES:
+            self.tool(name)
+
+    def script(self, path, body):
+        path.write_text(f"#!/bin/sh\n{body}\n")
+        path.chmod(0o755)
+
+    def tool(self, name, *, directory=None, variant="13", version=None):
+        """Put `name` on PATH as a link to the real file `name-variant`; returns that file."""
+        answer = shlex.quote(version or f"{name} (Ubuntu) {variant}.0\nconfigured for the fixture\n")
+        real = self.real / f"{name}-{variant}"
+        module = shlex.quote(str(self.state / "modversion-")) + '"$2"'
+        self.script(real, f'case "$*" in\n  --version) printf \'%s\' {answer}; exit 0 ;;\n'
+                          f'  "--variable pc_path pkg-config") exec /bin/cat {shlex.quote(str(self.pc_path))} ;;\n'
+                          f'  "--modversion "*)\n    printf \'%s\\n\' "$0 $*" >> {shlex.quote(str(self.probes))}\n'
+                          f'    [ "$#" -eq 2 ] && [ -f {module} ] || {{ echo "Package $2 was not found" >&2; exit 1; }}\n'
+                          f'    . {module}\n    exit 0 ;;\nesac\nexit 64')
+        link = (directory or self.bin) / name
+        link.unlink(missing_ok=True)
+        link.symlink_to(real)
+        return real
+
+    def probe(self, name, action):
+        """What every stand-in pkg-config does when asked `--modversion name`, as shell; None finds no module again."""
+        answer = self.state / f"modversion-{name}"
+        answer.unlink(missing_ok=True)
+        if action is not None:
+            answer.write_text(action + "\n")
+
+    @contextmanager
+    def environment(self, *earlier, later=()):
+        path = os.pathsep.join(str(directory) for directory in (*earlier, self.bin, *later))
+        with patch.dict(os.environ, {"PATH": path}), \
+                patch.object(cache, "UBUNTU_LOCAL_DIRECTORIES", tuple(str(directory) for directory in self.local)):
+            yield
+
+    def native(self, *earlier, later=()):
+        """The native digest and the lines the step prints, with `earlier` directories first on PATH and `later` last."""
+        with self.environment(*earlier, later=later), patch("builtins.print") as shown:
+            native = cache.native_identity("Linux")
+        return native, shown.call_args.args[0].split("\n")
 
 
 class FakeClock:
@@ -367,14 +533,38 @@ class CacheFixture(unittest.TestCase):
                 cache.prepare()
 
     def test_native_versions_are_part_of_compatibility(self):
-        for platform in ("Linux", "macOS"):
-            with self.subTest(platform=platform):
-                with patch.object(cache, "run", return_value=b"old native inputs"):
-                    old = cache.native_identity(platform)
-                with patch.object(cache, "run", return_value=b"updated native inputs"):
-                    self.assertNotEqual(old, cache.native_identity(platform))
+        # Linux has its own tests below (UbuntuPackages, UbuntuNativeIdentity).
+        with patch.object(cache, "run", return_value=b"old native inputs"):
+            old = cache.native_identity("macOS")
+        with patch.object(cache, "run", return_value=b"updated native inputs"):
+            self.assertNotEqual(old, cache.native_identity("macOS"))
         with self.assertRaises(ValueError):
             cache.native_identity("Windows")
+
+    def test_prepared_ubuntu_key_follows_the_closure_and_not_the_rest_of_the_image(self):
+        self.init_git()
+        runner = UbuntuRunner(self.base / "ubuntu")
+        (runner.bin / "git").symlink_to(shutil.which("git"))
+        rows = snapshot_rows()
+
+        def key():
+            runner.snapshot.write_text(snapshot_text(rows))
+            with runner.environment(), patch("builtins.print"), \
+                    patch.dict(os.environ, {"CACHE_PROFILE": "debug", "RUNNER_OS": "Linux", "CACHE_VENDOR_REUSE": "true"}):
+                cache.prepare()
+            lines = Path(self.env["GITHUB_ENV"]).read_text().splitlines()
+            Path(self.env["GITHUB_ENV"]).write_text("")
+            return dict(line.split("=", 1) for line in lines)["CI_RUST_CACHE_KEY"]
+
+        baseline = key()
+        self.assertRegex(baseline, r"^debug-[0-9a-f]{64}$")
+        # The other cloud's image: the same build packages beside another inventory.
+        rows["git:arm64"][0] += "+other"
+        rows["azure-cli:all"] = ["2.79.0-1~noble", "ii ", "", "python3:any", ""]
+        del rows["xdg-utils:all"]
+        self.assertEqual(key(), baseline)
+        rows["libc6-dev:arm64"][0] += "+updated"
+        self.assertNotEqual(key(), baseline)
 
     def test_profiles_have_distinct_identity_and_private_paths(self):
         self.init_git()
@@ -1036,6 +1226,811 @@ class CacheFixture(unittest.TestCase):
         # before Cargo could compare the rewound times.
         self.file(self.root / "vendor/tool/data/answer.txt", b"43")
         self.assertNotEqual(cache.source_identity(self.root), key)
+
+
+class UbuntuPackages(unittest.TestCase):
+    """The package part of the Ubuntu key, on the real snapshot and edits of it."""
+
+    def setUp(self):
+        self.rows = snapshot_rows()
+
+    def packages(self):
+        return cache.ubuntu_packages(snapshot_text(self.rows))
+
+    def keyed(self):
+        mode, keyed, *_ = self.packages()
+        self.assertEqual(mode, "closure")
+        return keyed
+
+    def key(self, text=None, **changed):
+        inputs = {"tools": UBUNTU_TOOLS, "pc_path": "/usr/lib/pkgconfig", "pc_files": {}, "probes": UBUNTU_PROBES,
+                  "local": UBUNTU_LOCAL, **changed}
+        return cache.ubuntu_identity(snapshot_text(self.rows) if text is None else text, **inputs)[0]
+
+    def depend(self, identity, term):
+        """One more Depends group on a real package."""
+        self.rows[identity][3] = ", ".join(filter(None, (self.rows[identity][3], term)))
+
+    def test_closure_of_the_real_snapshot_is_what_a_traced_build_read_and_no_tool(self):
+        mode, keyed, count, installed, others, cause = self.packages()
+        self.assertEqual((mode, count, installed, others, cause), ("closure", 195, 278, 0, None))
+        self.assertEqual(keyed, sorted(keyed))
+        self.assertLessEqual(set(keyed), {f"{identity}={fields[0]}" for identity, fields in self.rows.items()})
+        names = {line.split(":", 1)[0] for line in keyed}
+        self.assertLessEqual(set(cache.UBUNTU_BUILD_PACKAGES), names)
+        # Version- and architecture-named toolchain packages no list would name,
+        # and the kernel headers libc6-dev includes.
+        self.assertLessEqual({"gcc-13", "gcc-13-aarch64-linux-gnu", "cpp-13", "g++-13", "binutils-aarch64-linux-gnu",
+                              "libc6", "libc6-dev", "linux-libc-dev", "libgcc-13-dev", "libstdc++-13-dev", "pkgconf-bin",
+                              "libclang-common-18-dev", "libllvm18", "cmake-data", "libdav1d7", "libssl3t64"}, names)
+        # The four packages the traced build read outside the closure, and the
+        # action's tools: none reaches a cached dependency output.
+        self.assertFalse(names & {"dash", "git", "libc-bin", "openssl", "openssh-client", "ca-certificates",
+                                  "python3-pil", "desktop-file-utils", "xdg-utils"})
+
+    def test_any_one_keyed_package_version_changes_the_key(self):
+        baseline = self.key()
+        keys = {baseline}
+        for line in self.keyed():
+            identity = line.split("=", 1)[0]
+            with self.subTest(package=identity):
+                original = self.rows[identity][0]
+                self.rows[identity][0] = original + "+1"
+                keys.add(self.key())
+                self.rows[identity][0] = original
+        self.assertEqual(len(keys), 196)
+        self.assertEqual(self.key(), baseline)
+
+    def test_packages_outside_the_closure_never_change_the_key(self):
+        baseline = self.key()
+        outside = sorted(set(self.rows) - {line.split("=", 1)[0] for line in self.keyed()})
+        self.assertEqual(len(outside), 83)
+        for identity in outside:
+            with self.subTest(package=identity):
+                fields = self.rows[identity]
+                self.rows[identity] = [fields[0] + "+1", *fields[1:]]
+                self.assertEqual(self.key(), baseline)
+                self.rows[identity] = [fields[0], "rc ", *fields[2:]]
+                self.assertEqual(self.key(), baseline)
+                del self.rows[identity]
+                self.assertEqual(self.key(), baseline)
+                self.rows[identity] = fields
+        # The rest of a hosted image, with its own dependencies on keyed packages.
+        self.rows["azure-cli:all"] = ["2.79.0-1~noble", "ii ", "", "python3:any, libc6 (>= 2.38)", "az"]
+        self.rows["firefox:amd64"] = ["1:1snap1-0ubuntu5", "ii ", "debconf", "snapd | zlib1g", ""]
+        self.assertEqual(self.key(), baseline)
+        self.assertEqual(self.packages()[2:4], (195, 280))
+
+    def test_new_dependency_edge_brings_its_package_into_the_key(self):
+        baseline = self.key()
+        self.rows["libprobe1:arm64"] = ["1.0-1", "ii ", "", "libprobe-data", ""]
+        self.rows["libprobe-data:all"] = ["1.0-1", "ii ", "", "", ""]
+        self.assertEqual(self.key(), baseline)
+        self.depend("libssl-dev:arm64", "libprobe1 (= 1.0-1)")
+        edged = self.key()
+        self.assertNotEqual(edged, baseline)
+        self.assertLessEqual({"libprobe1:arm64=1.0-1", "libprobe-data:all=1.0-1"}, set(self.keyed()))
+        self.assertEqual(len(self.keyed()), 197)
+        # Reached through a Pre-Depends edge as well, and keyed by version from then on.
+        self.rows["libssl-dev:arm64"][3] = self.rows["libssl-dev:arm64"][3].replace(", libprobe1 (= 1.0-1)", "")
+        self.assertEqual(self.key(), baseline)
+        self.rows["libssl-dev:arm64"][2] = "libprobe1"
+        self.assertEqual(self.key(), edged)
+        self.rows["libprobe-data:all"][0] = "1.0-2"
+        self.assertNotIn(self.key(), {baseline, edged})
+
+    def test_dependency_spellings_of_the_real_snapshot_all_resolve(self):
+        keyed = set(self.keyed())
+        # `perl:any` (dpkg-dev) and `python3:any` (libvulkan-dev).
+        self.assertIn("dpkg-dev:all", {line.split("=")[0] for line in keyed})
+        self.assertLessEqual({"perl:arm64=" + self.rows["perl:arm64"][0], "python3:arm64=" + self.rows["python3:arm64"][0]}, keyed)
+        # `libc6-dev | libc-dev` (build-essential): one alternative by name, the
+        # other through the versioned `Provides: libc-dev (= 2.39-0ubuntu8.12)`.
+        self.assertIn("libc-dev (= 2.39-0ubuntu8.12)", self.rows["libc6-dev:arm64"][4])
+        self.assertIn("libc6-dev:arm64=2.39-0ubuntu8.12", keyed)
+        # A group with one installed alternative of eight (fontconfig-config).
+        self.assertIn("fonts-dejavu-core | fonts-liberation |", self.rows["fontconfig-config:arm64"][3])
+        self.assertIn("fonts-dejavu-core:all=2.37-8", keyed)
+        spellings = {
+            "qualifier": ("libprobe1:any (>= 1.0)", {"libprobe1:arm64": ""}),
+            "versioned Provides": ("libprobe-abi", {"libprobe1:arm64": "libprobe (= 1.0-1), libprobe-abi (= 3)"}),
+            "plain Provides": ("libprobe-abi (>> 2)", {"libprobe1:arm64": "libprobe-abi"}),
+            "two installed alternatives, both followed": ("libprobe1 | libprobe2 (<< 9)", {"libprobe1:arm64": "", "libprobe2:arm64": ""}),
+            "one installed alternative of two": ("libprobe-absent (<= 2) | libprobe1", {"libprobe1:arm64": ""}),
+            "one name on two architectures": ("libprobe1", {"libprobe1:arm64": "", "libprobe1:armhf": ""}),
+            "a name and a provider of it": ("libprobe1", {"libprobe1:arm64": "", "libprobe-ng:arm64": "libprobe1 (= 1.0-1)"}),
+        }
+        for label, (term, added) in spellings.items():
+            with self.subTest(spelling=label):
+                self.rows = snapshot_rows()
+                for identity, provides in added.items():
+                    self.rows[identity] = ["1.0-1", "ii ", "", "", provides]
+                self.assertEqual(set(self.keyed()), keyed)
+                self.depend("libdav1d-dev:arm64", term)
+                self.assertEqual(set(self.keyed()) - keyed, {f"{identity}=1.0-1" for identity in added})
+
+    def test_root_that_is_missing_or_not_installed_fails_the_step(self):
+        for root in cache.UBUNTU_BUILD_PACKAGES:
+            identity = f"{root}:arm64"
+            for label, edit in (("missing", lambda: self.rows.pop(identity)),
+                                ("removed, configuration left", lambda: self.rows[identity].__setitem__(1, "rc ")),
+                                ("unpacked only", lambda: self.rows[identity].__setitem__(1, "iU "))):
+                with self.subTest(root=root, state=label):
+                    self.rows = snapshot_rows()
+                    edit()
+                    with self.assertRaisesRegex(ValueError, f"^Ubuntu build package {re.escape(root)} is not installed$"):
+                        self.key()
+        # Another package that merely provides the name is not the root.
+        self.rows = snapshot_rows()
+        del self.rows["pkg-config:arm64"]
+        self.assertIn("pkg-config (= 1.8.1-2build1)", self.rows["pkgconf:arm64"][4])
+        with self.assertRaises(ValueError):
+            self.key()
+        with self.assertRaises(ValueError):
+            self.key(text="")
+
+    def test_missing_root_fails_the_step_whatever_else_is_wrong_with_the_snapshot(self):
+        # Each abnormality alone is a fallback; beside a missing root it must not hide the failure.
+        damages = {"a malformed line before the root's": lambda: self.rows["adduser:all"].append("extra"),
+                   "a malformed line after the root's": lambda: self.rows["zlib1g:arm64"].pop(),
+                   "a dependency outside the grammar": lambda: self.depend("libssl-dev:arm64", "libprobe1 [amd64]"),
+                   "a closure member that is only unpacked": lambda: self.rows["libssl3t64:arm64"].__setitem__(1, "iU ")}
+        for label, damage in damages.items():
+            with self.subTest(damage=label):
+                self.rows = snapshot_rows()
+                damage()
+                self.assertEqual(self.packages()[0], "inventory")
+                del self.rows["cmake:arm64"]
+                with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+                    self.key()
+        whole = snapshot_text(snapshot_rows())
+        self.assertEqual(cache.ubuntu_packages(whole + "garbage\n")[0], "inventory")
+        cmake = next(line for line in whole.splitlines(keepends=True) if line.startswith("cmake:arm64\t"))
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+            self.key(text=whole.replace(cmake, "") + "garbage\n")
+        # A root's own line that no longer says `ii ` does not count as installed.
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+            self.key(text=whole.replace(cmake, "cmake:arm64\t3.28.3-1build7\n"))
+        # Nor does an unsupplied name that resolves turn the failure into a fallback.
+        self.rows = snapshot_rows()
+        del self.rows["cmake:arm64"]
+        with self.assertRaisesRegex(ValueError, "^Ubuntu build package cmake is not installed$"):
+            self.key(probes={"aws-lc": "1.61.0", "libcrypto-awslc": None})
+
+    def test_unsupplied_pkg_config_name_that_resolves_takes_the_whole_inventory_and_is_named(self):
+        closure = self.key()
+        text = snapshot_text(self.rows)
+        keys = {closure}
+        for probes, named in (({"aws-lc": "1.61.0", "libcrypto-awslc": None}, "aws-lc"),
+                              ({"aws-lc": "1.61.1", "libcrypto-awslc": None}, "aws-lc"),
+                              ({"aws-lc": "", "libcrypto-awslc": None}, "aws-lc"),
+                              ({"aws-lc": None, "libcrypto-awslc": "1.61.0"}, "libcrypto-awslc"),
+                              ({"aws-lc": "1.61.0", "libcrypto-awslc": "1.61.0"}, "aws-lc, libcrypto-awslc")):
+            with self.subTest(probes=probes):
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, probes, UBUNTU_LOCAL)
+                self.assertEqual(shown[:3], [
+                    "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                    f"pkg-config resolves {named}, which no build package ships",
+                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
+                # Every line of the snapshot, and each name's answer.
+                self.assertEqual(shown.index("::endgroup::") - shown.index("::group::Keyed Ubuntu packages"), 279)
+                self.assertEqual(shown[-5:-3], [f"Keyed pkg-config probe {name}: " + ("absent" if version is None else f"version {version}")
+                                                for name, version in probes.items()])
+                keys.add(key)
+        self.assertEqual(len(keys), 6)
+        # The closure is then not all a build reads: a package outside it is keyed too.
+        resolved = {"aws-lc": "1.61.0", "libcrypto-awslc": None}
+        self.rows["git:arm64"][0] += "+1"
+        self.assertEqual(self.key(), closure)
+        self.assertNotIn(self.key(probes=resolved), keys)
+        # The snapshot's own abnormality stays the first cause.
+        self.depend("libssl-dev:arm64", "libprobe1 [amd64]")
+        self.assertEqual(cache.ubuntu_packages(snapshot_text(self.rows), ["aws-lc"])[5],
+                         "libssl-dev:arm64 has a dependency outside dpkg's grammar: 'libprobe1 [amd64]'")
+
+    def fallbacks(self):
+        """Every cause that sends the key to the inventory: label -> (snapshot, the cause the warning names)."""
+        def edited(edit):
+            self.rows = snapshot_rows()
+            edit()
+            return snapshot_text(self.rows)
+
+        whole = snapshot_text(snapshot_rows())
+        return {
+            "a line without six fields": (edited(lambda: self.rows["zlib1g:arm64"].pop()), "snapshot line 277 has 5 fields, not six"),
+            "a line with a seventh field": (edited(lambda: self.rows["adduser:all"].append("extra")), "snapshot line 1 has 7 fields, not six"),
+            "an empty line": (whole.replace("\n", "\n\n", 1), "snapshot line 2 has 1 fields, not six"),
+            "a package listed twice": (whole + whole.splitlines()[0] + "\n", "snapshot line 279 does not name one package and its version"),
+            "a dependency outside the grammar": (edited(lambda: self.depend("libssl-dev:arm64", "libprobe1 [amd64]")),
+                                                 "libssl-dev:arm64 has a dependency outside dpkg's grammar: 'libprobe1 [amd64]'"),
+            "a substitution left in a dependency": (edited(lambda: self.depend("cmake:arm64", "${shlibs:Depends}")),
+                                                    "cmake:arm64 has a dependency outside dpkg's grammar: '${shlibs:Depends}'"),
+            "an empty dependency group": (edited(lambda: self.rows["clang:arm64"].__setitem__(3, "clang-18 (>= 18~),")),
+                                          "clang:arm64 has a dependency outside dpkg's grammar: ''"),
+            "a provided name outside the grammar": (edited(lambda: self.rows["git:arm64"].__setitem__(4, "git-core | git-all")),
+                                                    "git:arm64 provides a name outside dpkg's grammar: 'git-core | git-all'"),
+            "a group in which no alternative resolves": (edited(lambda: self.depend("libssl-dev:arm64", "libprobe1 | libprobe2")),
+                                                         "nothing installed satisfies 'libprobe1 | libprobe2' of libssl-dev:arm64"),
+            "a dependency whose package was removed": (edited(lambda: self.rows.pop("libdav1d7:arm64")),
+                                                       "nothing installed satisfies 'libdav1d7' of libdav1d-dev:arm64"),
+            "a closure member that is only unpacked": (edited(lambda: self.rows["libssl3t64:arm64"].__setitem__(1, "iU ")),
+                                                       "libssl3t64:arm64 is in dpkg state 'iU ', not installed"),
+            "an alternative whose configuration is left": (
+                edited(lambda: (self.rows.__setitem__("libprobe1:arm64", ["1.0-1", "rc ", "", "", ""]),
+                                self.depend("libssl-dev:arm64", "libssl3t64 | libprobe1"))),
+                "libprobe1:arm64 is in dpkg state 'rc ', not installed"),
+            "a second architecture that is half installed": (
+                edited(lambda: self.rows.__setitem__("clang:armhf", ["1:18.0-59~exp2", "iH ", "", "", ""])),
+                "clang:armhf is in dpkg state 'iH ', not installed"),
+        }
+
+    def test_every_abnormal_snapshot_falls_back_to_the_whole_inventory_and_says_why(self):
+        closure = self.key()
+        for label, (text, cause) in self.fallbacks().items():
+            with self.subTest(cause=label):
+                mode, keyed, count, installed, others, named = cache.ubuntu_packages(text)
+                self.assertEqual((mode, named), ("inventory", cause))
+                # Never a partial closure: every line of the snapshot is keyed.
+                lines = text.split("\n")[:-1]
+                self.assertEqual(len(keyed), len(lines))
+                self.assertEqual(count + others, len(lines))
+                key, shown = cache.ubuntu_identity(text, UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES, UBUNTU_LOCAL)
+                self.assertEqual(shown[:2], [f"::warning::Ubuntu cache key fell back to the complete package inventory: {cause}",
+                                             "Ubuntu native key mode: inventory"])
+                self.assertNotEqual(key, closure)
+                # Any package's version changes the fallback key, in the closure or
+                # not: every line for the four causes a real image could show, a
+                # sample of them for the rest.
+                every = label in {"a line without six fields", "a dependency outside the grammar",
+                                  "a group in which no alternative resolves", "a closure member that is only unpacked"}
+                for index, line in list(enumerate(lines))[::1 if every else 23]:
+                    fields = line.split("\t")
+                    if len(fields) > 1:
+                        fields[1] += "+1"
+                        changed = "".join(row + "\n" for row in (*lines[:index], "\t".join(fields), *lines[index + 1:]))
+                        self.assertNotEqual(self.key(text=changed), key, line)
+
+    def test_fallback_keys_status_and_can_never_equal_a_closure_key(self):
+        # A snapshot of the closure alone: both modes then key the same lines.
+        keyed = self.keyed()
+        self.rows = {identity: fields for identity, fields in self.rows.items() if f"{identity}={fields[0]}" in keyed}
+        self.assertEqual(len(self.rows), 195)
+        closure = self.key()
+        self.assertEqual(self.keyed(), keyed)
+        self.depend("libssl-dev:arm64", "libprobe1 [amd64]")
+        mode, inventory, *_ = self.packages()
+        self.assertEqual((mode, inventory), ("inventory", keyed))
+        fallback = self.key()
+        self.assertNotEqual(fallback, closure)
+        # The fallback keys every line's status too.
+        self.rows["perl:arm64"][1] = "hi "
+        held = self.packages()
+        self.assertIn(f"perl:arm64={self.rows['perl:arm64'][0]} [hi ]", held[1])
+        self.assertEqual(held[2:5], (194, 194, 1))
+        self.assertNotEqual(self.key(), fallback)
+        # A line that names no package is keyed whole.
+        text = snapshot_text(self.rows) + "garbage\n"
+        self.assertIn("unparsed: garbage", cache.ubuntu_packages(text)[1])
+        self.assertNotEqual(self.key(text=text), self.key())
+
+    def test_tools_and_pkg_config_view_are_part_of_the_key(self):
+        baseline = self.key()
+        keys = {baseline}
+        for name in TOOL_NAMES:
+            for field, value in (("path", f"/usr/local/bin/{name}"), ("version", f"{name} 13.1\n")):
+                with self.subTest(tool=name, changed=field):
+                    keys.add(self.key(tools={**UBUNTU_TOOLS, name: {**UBUNTU_TOOLS[name], field: value}}))
+        keys.add(self.key(tools={**UBUNTU_TOOLS, "cmake3": {**UBUNTU_TOOLS["cmake"], "matches": ["/usr/bin/cmake3"]}}))
+        keys.add(self.key(pc_path="/usr/local/lib/pkgconfig:/usr/lib/pkgconfig"))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": []}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": "unreadable EACCES"}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", "0" * 64]]}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", "1" * 64]]}))
+        keys.add(self.key(pc_files={"/usr/local/lib/pkgconfig": [["openssl.pc", "unreadable EACCES"]]}))
+        for directory in UBUNTU_LOCAL:
+            for found in ("missing", "unreadable EACCES", ["libprobe.a 5"], ["libprobe.a 6"]):
+                keys.add(self.key(local={**UBUNTU_LOCAL, directory: found}))
+        self.assertEqual(len(keys), 1 + 2 * len(TOOL_NAMES) + 7 + 8)
+        self.assertEqual(len(TOOL_NAMES), 9)
+
+    def test_no_keyed_value_can_form_a_workflow_command(self):
+        self.assertEqual(cache.shown("a##[b\n::c\x1b[0m\u2028d"), "a#\\x23[b\\n::c\\x1b[0m\\u2028d")
+        self.assertEqual(cache.shown("###[####["), "##\\x23[###\\x23[")
+        # A command in every value the step prints: one a line of its own would
+        # carry, and the older spelling the runner reads anywhere in a line.
+        hostile = "##[error]stop\n::error::stop\r##[set-output name=x;]y"
+        escaped = r"#\x23[error]stop\n::error::stop\r#\x23[set-output name=x;]y"
+        rows = snapshot_rows()
+        rows["libssl3t64:arm64"][1] = "##[error]state"
+        # The snapshot's last two lines name no package: `##[error]stop` and the rest.
+        text = snapshot_text(rows) + hostile + "\n"
+        tools = {name: tool and {"run": hostile, "path": hostile, "matches": [hostile, hostile], "version": hostile}
+                 for name, tool in UBUNTU_TOOLS.items()}
+        _, lines = cache.ubuntu_identity(text, tools, hostile, {hostile: [[hostile, hostile]], "/opt": hostile},
+                                         {"aws-lc": hostile, "libcrypto-awslc": None}, {hostile: [hostile], "/usr/local/lib": hostile})
+        # Nothing a value holds starts a line: the fixed lines around 280 keyed ones, and a line for each other value.
+        self.assertEqual(len(lines), 4 + 280 + 1 + len(UBUNTU_TOOLS) + 1 + 2 + 2 + 2 + 1)
+        self.assertEqual([line for line in lines if "##[" in line or "\n" in line or "\r" in line], [])
+        self.assertEqual([line.split(" ")[0] for line in lines if line.lstrip().startswith("::")],
+                         ["::warning::Ubuntu", "::group::Keyed", "::endgroup::"])
+        # Each value is still there to read, escaped.
+        self.assertIn(r"libssl3t64:arm64=3.0.13-0ubuntu3.16 [#\x23[error]state]", lines)
+        self.assertLessEqual({r"unparsed: #\x23[error]stop", r"unparsed: ::error::stop\r#\x23[set-output name=x;]y"}, set(lines))
+        self.assertEqual(sum(escaped in line for line in lines), len(TOOL_NAMES) + 6)
+        self.assertIn(f"Keyed pkg-config probe aws-lc: version {escaped}", lines)
+        # The cause of a fallback is a value too.
+        rows = snapshot_rows()
+        rows["libssl-dev:arm64"][3] += ", ##[error]stop"
+        _, lines = cache.ubuntu_identity(snapshot_text(rows), UBUNTU_TOOLS, "/usr/lib/pkgconfig", {}, UBUNTU_PROBES, UBUNTU_LOCAL)
+        self.assertEqual(lines[0], "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                                   r"libssl-dev:arm64 has a dependency outside dpkg's grammar: '#\x23[error]stop'")
+        self.assertEqual([line for line in lines if "##[" in line], [])
+
+    def test_install_line_names_only_build_packages_and_tools(self):
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        command = re.search(r"sudo apt-get install ((?:[^\n]*\\\n)+[^\n]*)\n", text).group(1)
+        installed = [word for word in command.replace("\\", " ").split() if not word.startswith("-")]
+        self.assertEqual(len(installed), len(set(installed)))
+        self.assertEqual(text.count("apt-get install"), 1)
+        build, tools = set(cache.UBUNTU_BUILD_PACKAGES), set(cache.UBUNTU_TOOL_PACKAGES)
+        # Every installed name is in exactly one of the two lists, and a root
+        # the action does not install would fail the step.
+        self.assertFalse(build & tools)
+        self.assertEqual(set(installed), build | tools)
+        self.assertIn("--no-install-recommends", command.split())
+        self.assertEqual(len(cache.UBUNTU_BUILD_PACKAGES), 12)
+
+
+class UbuntuNativeIdentity(unittest.TestCase):
+    """`native_identity("Linux")` against stand-in commands on PATH."""
+
+    def setUp(self):
+        (ROOT / ".local").mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local")
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.runner = UbuntuRunner(self.base)
+
+    def test_one_snapshot_feeds_the_key_and_every_printed_line_is_a_hashed_value(self):
+        native, lines = self.runner.native()
+        # One query, in the format every part reads.
+        self.assertEqual(self.runner.queries.read_text().splitlines(), [
+            "-W", r"-f=${Package}:${Architecture}\t${Version}\t${db:Status-Abbrev}\t${Pre-Depends}\t${Depends}\t${Provides}\n"])
+        start, end = lines.index("::group::Keyed Ubuntu packages"), lines.index("::endgroup::")
+        self.assertEqual(lines[:start], ["Ubuntu native key mode: closure", "Keyed Ubuntu packages: 195 of 278 installed"])
+        keyed = lines[start + 1:end]
+        self.assertEqual(keyed, cache.ubuntu_packages(UBUNTU_SNAPSHOT)[1])
+        self.assertEqual((len(keyed), keyed[0], keyed[-1]), (195, "binutils-aarch64-linux-gnu:arm64=2.42-4ubuntu2.10", "zlib1g:arm64=1:1.3.dfsg-3.1ubuntu2.3"))
+        tools = {}
+        expected = []
+        for name in TOOL_NAMES:
+            real = os.path.realpath(self.runner.real / f"{name}-13")
+            version = f"{name} (Ubuntu) 13.0\nconfigured for the fixture\n"
+            tools[name] = {"path": real, "version": version}
+            expected.append(f"Keyed tool {name}: {real}; on PATH: {self.runner.bin / name}; "
+                            f"version {cache.digest(version.encode())[:12]}: {name} (Ubuntu) 13.0")
+        tools["cmake3"] = None
+        pc_path = f"{self.runner.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig"
+        self.assertEqual(lines[end + 1:], [*expected, "Keyed tool cmake3: absent", f"Keyed pkg-config pc_path: {pc_path}",
+                                           f"Keyed pkg-config files in {self.runner.pc}: none",
+                                           "Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent",
+                                           *(f"Keyed top level of {directory}: empty" for directory in self.runner.local),
+                                           f"Ubuntu native digest: {native}"])
+        # The digest is the mode, then exactly the values the lines show.
+        hashed = {"packages": keyed, "tools": tools, "pc_path": pc_path, "pc_files": {str(self.runner.pc): []},
+                  "probes": {"aws-lc": None, "libcrypto-awslc": None},
+                  "local": {str(directory): [] for directory in self.runner.local}}
+        self.assertEqual(native, cache.digest(b"closure\n" + json.dumps(hashed, sort_keys=True).encode()))
+        self.assertEqual(self.runner.native()[0], native)
+        self.assertEqual(len(self.runner.queries.read_text().splitlines()), 4)
+
+    def test_each_tool_is_keyed_by_the_file_path_selects_and_by_its_version(self):
+        baseline, _ = self.runner.native()
+        keys = {baseline}
+        for name in TOOL_NAMES:
+            with self.subTest(tool=name):
+                # Another real file behind the same name, saying the same thing.
+                self.runner.tool(name, variant="14", version=f"{name} (Ubuntu) 13.0\nconfigured for the fixture\n")
+                keys.add(self.runner.native()[0])
+                self.runner.tool(name, version=f"{name} (Ubuntu) 13.0\nconfigured otherwise\n")
+                keys.add(self.runner.native()[0])
+                self.runner.tool(name)
+                self.assertEqual(self.runner.native()[0], baseline)
+                (self.runner.bin / name).unlink()
+                with self.assertRaisesRegex(ValueError, f"^build tool {re.escape(name)} is not on PATH$"):
+                    self.runner.native()
+                self.runner.tool(name)
+        self.assertEqual(len(keys), 1 + 2 * len(TOOL_NAMES))
+        # cmake3 may be absent; once it resolves, its file and version are keyed.
+        self.runner.tool("cmake3")
+        appeared, lines = self.runner.native()
+        self.assertNotIn(appeared, keys)
+        version = cache.digest(b"cmake3 (Ubuntu) 13.0\nconfigured for the fixture\n")[:12]
+        self.assertIn(f"Keyed tool cmake3: {os.path.realpath(self.runner.real / 'cmake3-13')}; on PATH: {self.runner.bin / 'cmake3'}; "
+                      f"version {version}: cmake3 (Ubuntu) 13.0", lines)
+        self.runner.tool("cmake3", version="cmake3 version 3.31.6\n")
+        self.assertNotIn(self.runner.native()[0], {*keys, appeared})
+
+    def test_path_order_selects_the_tool_and_every_match_is_shown(self):
+        baseline, _ = self.runner.native()
+        local = self.base / "local"
+        local.mkdir()
+        # The hosted image's CMake under /usr/local, which no dpkg package owns.
+        real = self.runner.tool("cmake", directory=local, variant="3.31.6", version="cmake version 3.31.6\n")
+        self.runner.tool("cmake")
+        first, lines = self.runner.native(local)
+        self.assertNotEqual(first, baseline)
+        version = cache.digest(b"cmake version 3.31.6\n")[:12]
+        self.assertIn(f"Keyed tool cmake: {os.path.realpath(real)}; on PATH: {local / 'cmake'}, {self.runner.bin / 'cmake'}; "
+                      f"version {version}: cmake version 3.31.6", lines)
+        # Later on PATH it is shown and not run, so the key is the dpkg CMake's.
+        later, lines = self.runner.native(later=(local,))
+        self.assertEqual(later, baseline)
+        self.assertIn(f"on PATH: {self.runner.bin / 'cmake'}, {local / 'cmake'};", "\n".join(lines))
+
+    def pc_lines(self, lines):
+        return [line.removeprefix("Keyed pkg-config files in ") for line in lines if line.startswith("Keyed pkg-config files in ")]
+
+    def test_pc_file_outside_the_dpkg_directories_changes_the_key(self):
+        baseline, lines = self.runner.native()
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: none"])
+        # Only .pc files count, by name and content.
+        (self.runner.pc / "notes.txt").write_text("not a module")
+        self.assertEqual(self.runner.native()[0], baseline)
+        (self.runner.pc / "openssl.pc").write_text("Name: OpenSSL\n")
+        shadowed, lines = self.runner.native()
+        self.assertNotEqual(shadowed, baseline)
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: openssl.pc {hashlib.sha256(b'Name: OpenSSL' + bytes([10])).hexdigest()}"])
+        (self.runner.pc / "openssl.pc").write_text("Name: OpenSSL\nVersion: 4\n")
+        (self.runner.pc / "dav1d.pc").symlink_to("missing.pc")
+        grown, lines = self.runner.native()
+        self.assertNotIn(grown, {baseline, shadowed})
+        # A dangling link still occupies the name pkg-config looks up.
+        version = hashlib.sha256(b"Name: OpenSSL\nVersion: 4\n").hexdigest()
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: dav1d.pc unreadable ENOENT, openssl.pc {version}"])
+        # The search order is keyed, a directory dpkg owns is not listed, and one that does not exist is empty.
+        other = self.base / "elsewhere"
+        self.runner.pc_path.write_text(f"/usr/lib/pkgconfig:/usr/share/pkgconfig:{self.runner.pc}:{other}\n")
+        reordered, lines = self.runner.native()
+        self.assertNotIn(reordered, {baseline, shadowed, grown})
+        self.assertEqual(self.pc_lines(lines), [f"{self.runner.pc}: dav1d.pc unreadable ENOENT, openssl.pc {version}", f"{other}: none"])
+
+    def pc_files(self):
+        """The .pc files `pkg_config_view` finds through the stand-in pkg-config, by directory."""
+        order, files = cache.pkg_config_view(str(self.runner.bin / "pkg-config"))
+        self.assertEqual(order, self.runner.pc_path.read_text().strip())
+        return {Path(directory): found for directory, found in files.items()}
+
+    def test_pc_files_are_keyed_by_content_and_what_cannot_be_read_is_never_empty(self):
+        pc, module = self.runner.pc, self.runner.pc / "openssl.pc"
+        module.write_text("Name: OpenSSL\nVersion: 1.2.3\n")
+        first = hashlib.sha256(module.read_bytes()).hexdigest()
+        self.assertEqual(self.pc_files(), {pc: [["openssl.pc", first]]})
+        # An edit that keeps the size.
+        module.write_text("Name: OpenSSL\nVersion: 1.2.4\n")
+        edited = hashlib.sha256(module.read_bytes()).hexdigest()
+        self.assertNotEqual(edited, first)
+        self.assertEqual(self.pc_files(), {pc: [["openssl.pc", edited]]})
+        # A name pkg-config would find and nothing could read, each with its reason.
+        module.unlink()
+        module.mkdir()
+        (pc / "loop.pc").symlink_to("loop.pc")
+        states = [["loop.pc", "unreadable ELOOP"], ["openssl.pc", "not a regular file"]]
+        if os.geteuid():
+            (pc / "closed.pc").write_text("Name: closed\n")
+            (pc / "closed.pc").chmod(0)
+            states.insert(0, ["closed.pc", "unreadable EACCES"])
+        self.assertEqual(self.pc_files(), {pc: states})
+        # A search directory that is there and cannot be listed is not an empty one.
+        absent, blocked = self.base / "absent", self.base / "blocked"
+        self.runner.pc_path.write_text(f"{pc}:{absent}:{blocked}\n")
+        self.assertEqual(self.pc_files(), {pc: states, absent: [], blocked: []})
+        blocked.write_text("a file where pkg-config looks for a directory")
+        self.assertEqual(self.pc_files(), {pc: states, absent: [], blocked: "unreadable ENOTDIR"})
+        empty, _ = self.runner.native()
+        if os.geteuid():
+            blocked.unlink()
+            blocked.mkdir()
+            (blocked / "openssl.pc").write_text("Name: OpenSSL\n")
+            blocked.chmod(0)
+            self.addCleanup(blocked.chmod, 0o700)
+            self.assertEqual(self.pc_files(), {pc: states, absent: [], blocked: "unreadable EACCES"})
+        # Each state is in the key and in the lines as it is.
+        native, lines = self.runner.native()
+        self.assertEqual(native == empty, not os.geteuid())
+        listed = ", ".join(f"{name} {state}" for name, state in states)
+        self.assertEqual(self.pc_lines(lines), [f"{pc}: {listed}", f"{absent}: none",
+                                                f"{blocked}: unreadable {'EACCES' if os.geteuid() else 'ENOTDIR'}"])
+
+    def test_real_path_decides_by_whole_components_which_directories_dpkg_owns(self):
+        usr = Path(os.path.realpath(self.base)) / "usr"
+        owned, linked, opt = usr / "lib/aarch64-linux-gnu/pkgconfig", usr / "lib/linked/pkgconfig", self.base / "opt/pkgconfig"
+        lib64, libexec, share, local = usr / "lib64/pkgconfig", usr / "libexec/pkgconfig", usr / "share", self.base / "local/pkgconfig"
+        for directory in (owned, opt, lib64, libexec, share, linked.parent, local.parent):
+            directory.mkdir(parents=True)
+            if directory.name in {"pkgconfig", "share"}:
+                (directory / f"{directory.parent.name}.pc").write_text("Name: probe\n")
+        # A link from under /usr/lib to another place, and one from another place into it.
+        linked.symlink_to(opt)
+        local.symlink_to(owned)
+        self.runner.pc_path.write_text(":".join(map(str, (owned, linked, lib64, libexec, share, local))) + "\n")
+        state = hashlib.sha256(b"Name: probe\n").hexdigest()
+        with patch.object(cache, "DPKG_PC_ROOTS", (str(usr / "lib"), str(usr / "share"))):
+            # Listed: behind the link, and beside /usr/lib. Not listed: under it, the root itself, and a link into it.
+            self.assertEqual(self.pc_files(), {linked: [["opt.pc", state]], lib64: [["lib64.pc", state]],
+                                               libexec: [["libexec.pc", state]]})
+            baseline, lines = self.runner.native()
+            self.assertEqual(self.pc_lines(lines), [f"{linked}: opt.pc {state}", f"{lib64}: lib64.pc {state}",
+                                                    f"{libexec}: libexec.pc {state}"])
+            # A file dpkg owns does not move the key; one behind the link does.
+            (owned / "added.pc").write_text("Name: added\n")
+            (share / "added.pc").write_text("Name: added\n")
+            self.assertEqual(self.runner.native()[0], baseline)
+            (opt / "added.pc").write_text("Name: added\n")
+            self.assertNotEqual(self.runner.native()[0], baseline)
+
+    def test_each_unsupplied_name_is_asked_of_the_selected_pkg_config_and_its_answer_is_keyed(self):
+        closure, lines = self.runner.native()
+        selected = str(self.runner.bin / "pkg-config")
+        asked = [f"{selected} --modversion {name}" for name in ("aws-lc", "libcrypto-awslc")]
+        self.assertEqual(self.runner.probes.read_text().splitlines(), asked)
+        self.assertEqual(lines[0], "Ubuntu native key mode: closure")
+        self.assertEqual(lines[-5:-3], ["Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent"])
+        # Status 1 is pkg-config's own answer for a name it cannot resolve; success is its version, whatever it is.
+        for action, answer in (("exit 1", None), ("echo 1.61.0", "1.61.0"), ("printf '1.61.0\\n\\n'", "1.61.0\n"), ("true", "")):
+            with self.subTest(action=action):
+                self.runner.probe("libcrypto-awslc", action)
+                self.assertEqual(cache.pkg_config_probe(selected, "libcrypto-awslc"), answer)
+                self.assertIsNone(cache.pkg_config_probe(selected, "aws-lc"))
+        self.runner.probe("libcrypto-awslc", None)
+        # Any other failure status (a wrapper that cannot run it says 126 or 127) is no answer: the step fails.
+        for status in (2, 126, 127):
+            with self.subTest(status=status):
+                self.runner.probe("aws-lc", f"exit {status}")
+                with self.assertRaises(subprocess.CalledProcessError) as unanswered:
+                    cache.pkg_config_probe(selected, "aws-lc")
+                self.assertEqual(unanswered.exception.returncode, status)
+        self.runner.probe("aws-lc", None)
+        keys = {closure}
+        for name, version in (("aws-lc", "1.61.0"), ("aws-lc", "1.61.1"), ("libcrypto-awslc", "1.61.0")):
+            with self.subTest(resolves=name, version=version):
+                self.runner.probe(name, f"echo {version}")
+                native, lines = self.runner.native()
+                self.assertEqual(lines[:3], [
+                    "::warning::Ubuntu cache key fell back to the complete package inventory: "
+                    f"pkg-config resolves {name}, which no build package ships",
+                    "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 278 of 278 installed"])
+                self.assertIn(f"Keyed pkg-config probe {name}: version {version}", lines[-5:-3])
+                keys.add(native)
+                self.runner.probe(name, None)
+        self.assertEqual(len(keys), 4)
+        # The pkg-config that PATH selects is the one asked.
+        local = self.base / "local"
+        local.mkdir()
+        self.runner.tool("pkg-config", directory=local, variant="2")
+        self.runner.tool("pkg-config")
+        self.runner.probes.unlink()
+        self.runner.native(local)
+        self.assertEqual(self.runner.probes.read_text().splitlines(),
+                         [line.replace(str(self.runner.bin), str(local)) for line in asked])
+        # A pkg-config that is killed gave no answer: the step fails, as for any other command.
+        self.runner.probe("aws-lc", "kill -KILL $$")
+        with self.assertRaises(subprocess.CalledProcessError) as killed:
+            self.runner.native()
+        self.assertEqual((killed.exception.returncode, killed.exception.cmd[1:]), (-9, ["--modversion", "aws-lc"]))
+
+    def test_top_level_of_usr_local_is_a_tripwire_for_a_changed_image_and_not_a_content_key(self):
+        include, lib = self.runner.local
+        directories = (str(include), str(lib))
+        self.assertEqual(cache.UBUNTU_LOCAL_DIRECTORIES, ("/usr/local/include", "/usr/local/lib"))
+
+        def listing(expected, directory=lib):
+            found = cache.local_listing(directories)
+            self.assertEqual(list(found), list(directories))
+            self.assertEqual(found[str(directory)], expected)
+
+        def lines():
+            native, shown = self.runner.native()
+            return native, [line for line in shown if line.startswith("Keyed top level of ")]
+
+        baseline, shown = lines()
+        self.assertEqual(shown, [f"Keyed top level of {include}: empty", f"Keyed top level of {lib}: empty"])
+        listing([])
+        # Each name, sorted: a regular file with its size, a directory with a slash, a link with its target.
+        (lib / "python3.12").mkdir()
+        (lib / "libprobe.so").symlink_to("libprobe.so.1")
+        (lib / "libprobe.a").write_bytes(b"12345")
+        listing(["libprobe.a 5", "libprobe.so -> libprobe.so.1", "python3.12/"])
+        listed, shown = lines()
+        self.assertNotEqual(listed, baseline)
+        self.assertEqual(shown, [f"Keyed top level of {include}: empty",
+                                 f"Keyed top level of {lib}: libprobe.a 5, libprobe.so -> libprobe.so.1, python3.12/"])
+        # Top level only, and no content: neither moves the listing.
+        (lib / "libprobe.a").write_bytes(b"67890")
+        (lib / "python3.12/dist-packages").mkdir()
+        (lib / "python3.12/sitecustomize.py").write_text("import os\n")
+        listing(["libprobe.a 5", "libprobe.so -> libprobe.so.1", "python3.12/"])
+        # A size and a target do.
+        (lib / "libprobe.a").write_bytes(b"678901")
+        (lib / "libprobe.so").unlink()
+        (lib / "libprobe.so").symlink_to("libprobe.so.2")
+        listing(["libprobe.a 6", "libprobe.so -> libprobe.so.2", "python3.12/"])
+        # A link to a directory is a link, and anything else says what it is not.
+        (lib / "linked").symlink_to("python3.12")
+        os.mkfifo(lib / "queue")
+        listing(["libprobe.a 6", "libprobe.so -> libprobe.so.2", "linked -> python3.12", "python3.12/",
+                 "queue (not a file, a directory or a link)"])
+        # The headers' directory is listed the same way.
+        listing([], include)
+        (include / "openssl").mkdir()
+        (include / "probe.h").write_text("#define PROBE 1\n")
+        listing(["openssl/", "probe.h 16"], include)
+        # A directory that is not there is missing; one that cannot be listed is not empty.
+        shutil.rmtree(lib)
+        listing("missing")
+        lib.write_text("a file where the linker looks for a directory")
+        listing("unreadable ENOTDIR")
+        lib.unlink()
+        lib.mkdir()
+        if os.geteuid():
+            (lib / "libprobe.a").write_bytes(b"12345")
+            lib.chmod(0)
+            self.addCleanup(lib.chmod, 0o700)
+            listing("unreadable EACCES")
+        refused, shown = lines()
+        self.assertNotIn(refused, {baseline, listed})
+        self.assertEqual(shown, [f"Keyed top level of {include}: openssl/, probe.h 16",
+                                 f"Keyed top level of {lib}: {'unreadable EACCES' if os.geteuid() else 'empty'}"])
+
+    def test_abnormal_snapshot_warns_first_and_keys_the_whole_inventory(self):
+        closure, _ = self.runner.native()
+        rows = snapshot_rows()
+        rows["libssl3t64:arm64"][1] = "iU "
+        self.runner.snapshot.write_text(snapshot_text(rows))
+        native, lines = self.runner.native()
+        self.assertNotEqual(native, closure)
+        self.assertEqual(lines[:4], [
+            "::warning::Ubuntu cache key fell back to the complete package inventory: libssl3t64:arm64 is in dpkg state 'iU ', not installed",
+            "Ubuntu native key mode: inventory", "Keyed Ubuntu packages: 277 of 277 installed, and 1 other snapshot lines",
+            "::group::Keyed Ubuntu packages"])
+        self.assertEqual(lines.index("::endgroup::"), 4 + 278)
+        self.assertIn("libssl3t64:arm64=3.0.13-0ubuntu3.16 [iU ]", lines)
+        self.assertIn("git:arm64=" + rows["git:arm64"][0], lines)
+        # A snapshot that cannot be taken fails the step, as a failing command always did.
+        self.runner.script(self.runner.bin / "dpkg-query", "exit 2")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.runner.native()
+
+
+class UbuntuKeyPreconditions(unittest.TestCase):
+    """What must stay true around the action for the closure to be all a build reads."""
+
+    def test_every_locked_prober_is_mapped_to_keyed_build_packages(self):
+        lock = (ROOT / "Cargo.lock").read_text()
+        self.assertEqual(lock_probers(lock), set(UBUNTU_PROBERS), (
+            "The locked packages that depend on pkg-config, system-deps, cmake or bindgen changed, by name or by version. "
+            "The Ubuntu cache key holds only the closure of cache.UBUNTU_BUILD_PACKAGES, so read the build script of the "
+            "new package or version and give it a row in UBUNTU_PROBERS: the pkg-config names it asks for on Linux, each "
+            "with the build package that ships its .pc file or UNSUPPLIED, and the build packages behind what it runs; "
+            "or the reason it asks for nothing there. A row is for one locked version because an update can ask for new "
+            "names: aws-lc-sys's aws-lc and libcrypto-awslc arrived that way, unseen. If it probes a package the setup "
+            "action does not install, add that package to the action's install list and to cache.UBUNTU_BUILD_PACKAGES; "
+            "add a name no package ships to cache.UBUNTU_UNSUPPLIED_PROBES. Remove the row of a package or version that "
+            "is gone."))
+        build, rows = set(cache.UBUNTU_BUILD_PACKAGES), snapshot_rows()
+        closure = {line.split(":", 1)[0] for line in cache.ubuntu_packages(UBUNTU_SNAPSHOT)[1]}
+        unsupplied = set()
+        for prober, asked in UBUNTU_PROBERS.items():
+            with self.subTest(prober=prober):
+                # Cargo's own spelling of a locked name and version, a pre-release or build suffix included.
+                self.assertTrue(PROBER_ROW.fullmatch(prober), prober)
+                if isinstance(asked, str):
+                    self.assertRegex(asked, r"\w+ \w+ \w+")
+                    continue
+                modules, packages = asked
+                self.assertTrue(modules)
+                self.assertIn("pkg-config", packages)
+                self.assertLessEqual(set(packages), build)
+                for module, supplier in modules.items():
+                    if supplier == UNSUPPLIED:
+                        unsupplied.add(module)
+                        continue
+                    package, owner = supplier if isinstance(supplier, tuple) else (supplier, supplier)
+                    self.assertIn(package, build, module)
+                    # A .pc file in a dependency of the build package: the edge is in the real snapshot.
+                    depends = {name for names in cache.relation_groups(rows[f"{package}:arm64"][3], package) for name in names}
+                    self.assertIn(owner, {package, *depends}, module)
+                    self.assertIn(owner, closure, module)
+        # In both directions: a name the table marks is keyed, and the key asks for no name the table does not mark.
+        self.assertEqual(sorted(unsupplied), sorted(cache.UBUNTU_UNSUPPLIED_PROBES))
+        # A row is one locked version: an update has none until its build script is read again,
+        # and neither has a second version locked beside the first.
+        name, version = next(prober for prober, asked in UBUNTU_PROBERS.items()
+                             if not isinstance(asked, str) and UNSUPPLIED in asked[0].values()).split(" ")
+        stanza = f'name = "{name}"\nversion = "{version}"\n'
+        self.assertEqual(lock.count(stanza), 1)
+        updated = lock_probers(lock.replace(stanza, f'name = "{name}"\nversion = "{version}1"\n'))
+        self.assertEqual((updated - set(UBUNTU_PROBERS), set(UBUNTU_PROBERS) - updated), ({f"{name} {version}1"}, {f"{name} {version}"}))
+        second = f'{lock}\n[[package]]\nname = "{name}"\nversion = "{version}1"\ndependencies = [\n "cc",\n "pkg-config",\n]\n'
+        self.assertEqual(lock_probers(second) - set(UBUNTU_PROBERS), {f"{name} {version}1"})
+        # A dependency added later is seen, whichever of the four crates it uses.
+        for crate in sorted(PROBING_CRATES):
+            with self.subTest(crate=crate):
+                added = f'{lock}\n[[package]]\nname = "libprobe-sys"\nversion = "1.0.0"\ndependencies = [\n "cc",\n "{crate} 0.3.0",\n]\n'
+                self.assertEqual(lock_probers(added) - set(UBUNTU_PROBERS), {"libprobe-sys 1.0.0"})
+        self.assertEqual(lock_probers(f'{lock}\n[[package]]\nname = "libplain"\nversion = "1.0.0"\ndependencies = [\n "cc",\n]\n'),
+                         set(UBUNTU_PROBERS))
+
+    def test_install_step_refuses_every_system_deps_variable_before_it_installs(self):
+        # dav1d-sys would otherwise clone and build dav1d with git, meson and
+        # ninja, none of which the key holds.
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("\n    - name: ")[1:]
+        install = next(index for index, step in enumerate(steps) if "apt-get install" in step)
+        self.assertLess(install, next(index for index, step in enumerate(steps) if "cache.py prepare" in step))
+        body = steps[install].split("      run: |\n", 1)[1].split("\n")
+        script = textwrap.dedent("\n".join(body[:next(index for index, line in enumerate(body)
+                                                       if line.strip() and not line.startswith(" " * 8))]))
+        (ROOT / ".local").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local") as temp:
+            base = Path(temp)
+            calls = base / "calls"
+            for name in ("sudo", "pkg-config"):
+                (base / name).write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> {shlex.quote(str(calls))}\n")
+                (base / name).chmod(0o755)
+            environment = {name: value for name, value in os.environ.items() if not name.startswith("SYSTEM_DEPS_")}
+            environment["PATH"] = f"{base}{os.pathsep}{environment['PATH']}"
+            allowed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            ran = calls.read_text().splitlines()
+            self.assertEqual(ran[0], "sudo apt-get update")
+            self.assertEqual(ran[1].split()[:5], ["sudo", "apt-get", "install", "-y", "--no-install-recommends"])
+            self.assertEqual(set(ran[1].split()[5:]), {*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES})
+            calls.unlink()
+            for name, value in (("SYSTEM_DEPS_DAV1D_BUILD_INTERNAL", "always"), ("SYSTEM_DEPS_LINK", "static"), ("SYSTEM_DEPS_X", "")):
+                with self.subTest(variable=name):
+                    refused = subprocess.run(["bash", "-c", script], env={**environment, name: value}, capture_output=True, text=True)
+                    self.assertEqual(refused.returncode, 1)
+                    self.assertIn(f"::error::SYSTEM_DEPS_ variables must not reach the build: {name}", refused.stdout)
+                    self.assertFalse(calls.exists())
+
+    def test_no_job_installs_packages_after_the_setup_action_took_its_snapshot(self):
+        workflows = {name: (ROOT / ".github/workflows" / name).read_text() for name in ("quality.yml", "release.yml")}
+        self.assertEqual(sorted(setup_jobs(workflows["quality.yml"])), ["rust-arch", "rust-clippy", "rust-debug", "rust-release"])
+        self.assertEqual(sorted(setup_jobs(workflows["release.yml"])), ["build"])
+        for name, text in workflows.items():
+            with self.subTest(workflow=name):
+                self.assertEqual(later_installs(text), [], "a job that uses the setup action installs packages itself: "
+                                 "the Ubuntu cache key would no longer describe what the build reads")
+        # The scan sees an installation: Quality has one, in a job without the action.
+        self.assertIn("sudo apt-get install", workflows["quality.yml"])
+        sample = textwrap.dedent("""\
+            name: Sample
+            jobs:
+              scan:
+                steps:
+                  - run: sudo apt-get install -y python3-pil
+              build:
+                steps:
+                  - uses: ./.github/actions/setup-rust
+                  - run: sudo apt-get install -y --no-install-recommends libpng-dev
+                  - run: |
+                      sudo apt install nasm
+                      sudo dpkg -i tool.deb
+                      sudo dpkg --install other.deb
+                      dpkg-query -W nasm && echo adapt
+              test:
+                steps:
+                  - uses: ./.github/actions/setup-rust
+                    with:
+                      profile: debug
+                  - run: /usr/bin/apt-get -y install ninja-build
+            """)
+        self.assertEqual(sorted(setup_jobs(sample)), ["build", "test"])
+        self.assertEqual(later_installs(sample), [
+            ("build", "- run: sudo apt-get install -y --no-install-recommends libpng-dev"), ("build", "sudo apt install nasm"),
+            ("build", "sudo dpkg -i tool.deb"), ("build", "sudo dpkg --install other.deb"),
+            ("test", "- run: /usr/bin/apt-get -y install ninja-build")])
 
 
 if __name__ == "__main__":
