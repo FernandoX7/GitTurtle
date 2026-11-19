@@ -66,8 +66,9 @@ SUITES = (
 HEARTBEAT = 30.0
 # Seconds this driver gives the step, counted from its own start. The job's limit of 10 minutes
 # is unchanged and still has the last word: this one is stricter, never wider, and nothing is
-# run again after it. The steps before this one took 8.3 to 29.5 s in 61 retained macOS runs and
-# up to 31 s in one more, so 31 + 510 + 10 s of grace is 551 s, about 49 s inside the job's 600 s.
+# run again after it. In 61 retained macOS runs the steps before this one took 8.3 to 29.5 s by
+# the log's first line and up to 31.1 s counted from the job's start, so 31 + 510 + 10 s of grace
+# is 551 s, about 49 s inside the job's 600 s.
 # A step cut here still prints what every process had written and names what it cut; a job cut by
 # its own limit shows only the lines printed while it waited.
 DEADLINE = 510.0

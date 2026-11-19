@@ -1341,7 +1341,8 @@ the summary and the diagnostics artifact show one row and one log for each.
   job's unchanged limit of 10 minutes. It is stricter than that limit, never
   wider, and nothing is run again after it. Without it, a hang that reached the
   job's limit would leave only the 30-second lines in the log, where the old
-  steps showed the test that hung. At the deadline the driver sends SIGTERM to
+  steps streamed each suite's progress up to the hang. At the deadline the
+  driver sends SIGTERM to
   the session of each collector that has not ended, and SIGKILL 10 s later to
   those still there. It then prints every process's output as on a normal end,
   names each process it cut with its seconds, does not attempt the proof, and
@@ -1350,9 +1351,10 @@ the summary and the diagnostics artifact show one row and one log for each.
   ends the collectors, not necessarily the suites: a suite that handles or
   ignores SIGTERM can outlive its collector, and is left to the runner's own
   cleanup at the job's end. A collector that had to be killed leaves no record,
-  so the summary has no row for it. The steps before this one took 8.3 to
-  29.5 s in 61 retained macOS runs and up to 31 s in one more: 31 + 510 + 10 s
-  of grace is 551 s, about 49 s inside the job's 600 s.
+  so the summary has no row for it. In 61 retained macOS runs the steps before
+  this one took 8.3 to 29.5 s by the log's first line and up to 31.1 s counted
+  from the job's start: 31 + 510 + 10 s of grace is 551 s, about 49 s inside the
+  job's 600 s.
 
 To run one group again as the job ran it (`--index` counts from 0, so this is
 `agent-tooling-2-of-3`):
