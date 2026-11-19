@@ -49,6 +49,21 @@ class ClassificationTests(unittest.TestCase):
                 self.assertEqual({lane for lane in changes.LANES if plan[lane]}, set(case["required"]))
                 changes.validate_plan(plan)
 
+    def test_the_package_installation_helper_selects_the_full_plan_for_its_own_reason(self):
+        # Only the Rust jobs' setup and the Image privacy job run it, so the
+        # tooling lane alone would let a change of it reach main unexercised.
+        plan = changes.classify_paths([b"scripts/ci/apt_install.py"])
+        self.assertEqual(plan, changes.full_plan("package-installation-helper"))
+        changes.validate_plan(plan)
+        self.assertNotEqual(plan["reason"], changes.classify_paths([b"scripts/ci/tools.py"])["reason"])
+        for paths in ([b"docs/ci.md", b"scripts/ci/apt_install.py"], [b"scripts/ci/metrics.py", b"scripts/ci/apt_install.py"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(changes.classify_paths(paths), plan)
+        # Its tests and a similar name are ordinary CI helpers.
+        for path in (b"scripts/ci/tests/test_apt_install.py", b"scripts/ci/apt_install_old.py", b"scripts/ci/apt_install.py.orig"):
+            with self.subTest(path=path):
+                self.assertEqual({lane for lane in changes.LANES if changes.classify_paths([path])[lane]}, {"tooling"})
+
     def test_path_boundaries_do_not_match_similar_prefixes(self):
         for path in [b"website-old/public.js", b"docs-old/README.md", b"scripts/ci-other/tool.py",
                      b"scripts/native_qa-old/qa.py", b"scripts/operator-old/land.py", b".claude-old/settings.json", b".claudeignore",

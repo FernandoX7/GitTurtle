@@ -71,6 +71,11 @@ def classify_paths(paths: list[bytes]) -> dict:
         # must exercise them before it reaches main.
         if path == "scripts/ci/tools.py":
             return full_plan("pinned-ci-tool")
+        # The package installation helper runs only inside the Rust jobs' setup
+        # and the Image privacy job, so a change of it must exercise them before
+        # it reaches main.
+        if path == "scripts/ci/apt_install.py":
+            return full_plan("package-installation-helper")
         if path.startswith(".github/"):
             return full_plan("workflow-or-repository-policy")
         # Claude Code configuration is development guidance like .agents/ and

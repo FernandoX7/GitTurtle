@@ -49,7 +49,13 @@ For pull requests:
   dispatch; Quality owns its PR/main triggers, avoiding another duplicate run.
 - CI helpers, development-controller files, agent guides and development contracts
   also run the existing macOS and Ubuntu development-tooling matrix, including all
-  CI helper tests.
+  CI helper tests. Three CI helpers are run by the product jobs themselves and
+  select **all** lanes instead, so a change of one exercises the jobs that run it
+  before it reaches main: `scripts/ci/packages.py` (package delivery),
+  `scripts/ci/tools.py` (the pinned nextest installer) and
+  `scripts/ci/apt_install.py`
+  ([package installation on Ubuntu](#package-installation-on-ubuntu), which only
+  the Rust jobs' setup and the `Image privacy` job run).
 - Claude Code configuration (`.claude/**` and any file named `CLAUDE.md`) routes
   like `AGENTS.md` and `.agents/`. No build or package reads it: the guidance check
   validates its agents, skills, settings structure, hook paths and syntax and links,
@@ -2299,7 +2305,10 @@ check changes, no file under `/etc/apt` is written, no package is added or
 removed, and the step still runs before the key is computed. The helper lives
 outside the action's folder because every file in that folder is hashed into
 every Rust cache key: the step's text changes the keys once, and a later
-correction of the helper does not.
+correction of the helper does not. Such a correction still runs every lane: the
+[change routing](#conservative-change-routing) selects the full plan for a change
+of the helper, as it does for the pinned tool installer, because the tooling lane
+tests the helper and never runs it.
 
 **Acceptance, still open.** No hosted run has executed the helper. An image's
 `Ubuntu native digest` line must be unchanged by it: `2432e09588b4` on the x64
