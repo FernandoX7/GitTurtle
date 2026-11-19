@@ -24,7 +24,9 @@ suites = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(suites)
 
 STEP = 'python3 scripts/ci/tooling_suites.py run --directory "$RUNNER_TEMP/ci-metrics"'
-# Small suites for the driver to run; every wait in them is for an event, never for a guessed time.
+# Small suites for the driver to run. What a test depends on is waited for as an event, with a
+# deadline far beyond any runner's. The two fixed pauses are margins: one in which a wrong driver
+# would show itself, one in which the collector takes its signals.
 FIXTURES = {
     # A package the groups are dealt from: seven tests, sorted a1 a2 a3 a4 b1 b2 b3.
     "dealt/pkg/__init__.py": "",
@@ -111,7 +113,8 @@ FIXTURES = {
             def test_fails(self):
                 self.fail("the failing suite fails here")
     """,
-    # Ends only after the failing suite's record exists, so it shows that a failure ends nothing else.
+    # Waits for the failing suite's record and then runs half a second more: ten of the wake-ups
+    # of the driver that runs it, in which a driver that ended the others at a failure would end it.
     "slow/test_slow.py": """
         import os
         from pathlib import Path
@@ -126,6 +129,7 @@ FIXTURES = {
                 while not failed.exists():
                     self.assertLess(time.monotonic(), deadline, "the failing suite never ended")
                     time.sleep(0.02)
+                time.sleep(0.5)
                 Path(os.environ["TOOLING_SUITES_TEST_MARK"]).write_text("ended after the failure", encoding="utf-8")
     """,
     "empty/test_none.py": "import unittest\n",
@@ -361,7 +365,7 @@ class DriverTests(Fixtures):
 
     def test_a_failing_process_fails_the_step_after_the_others_ran_to_their_end(self):
         self.assertEqual(self.status, 1)
-        # The slow suite ends only once the failing one's record is written, and it did end and pass.
+        # The slow suite was still running well after the failing one had ended, and it ended on its own and passed.
         self.assertEqual(self.mark.read_text(encoding="utf-8"), "ended after the failure")
         self.assertEqual({name: record["exit_code"] for name, record in self.records.items()},
                          {"slow": 0, "failing": 1, "passing": 0})
