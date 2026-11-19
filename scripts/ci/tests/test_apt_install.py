@@ -419,14 +419,20 @@ class CommandLine(unittest.TestCase):
     def test_a_healthy_run_prints_the_lookup_the_warning_and_what_each_command_printed(self):
         status, lines, apt = self.run_helper()
         self.assertEqual(status, 0, lines)
-        self.assertEqual(lines, [
+        # These seconds are measured on real processes, so the lines hold their form and never a
+        # value: a hosted macOS runner took 0.1 s for one stand-in lookup. A lookup prints tenths
+        # and a command whole seconds.
+        tenths, whole = re.compile(r" in [0-9]+\.[0-9] s\Z"), re.compile(r" ended in [0-9]+ s\Z")
+        formed = [tenths.sub(" in <tenths> s", line) if 1 <= index <= 3 else whole.sub(" ended in <whole> s", line)
+                  for index, line in enumerate(lines)]
+        self.assertEqual(formed, [
             f"Hosts apt reads, each looked up within 5 s: {', '.join(X64_HOSTS)}",
-            "  azure.archive.ubuntu.com: did not resolve in 0.0 s", "  archive.ubuntu.com: resolved in 0.0 s",
-            "  security.ubuntu.com: resolved in 0.0 s",
+            "  azure.archive.ubuntu.com: did not resolve in <tenths> s", "  archive.ubuntu.com: resolved in <tenths> s",
+            "  security.ubuntu.com: resolved in <tenths> s",
             "::warning::1 of the 3 hosts apt reads did not resolve within 5 s: azure.archive.ubuntu.com; apt-get goes on under its deadlines",
             "apt-get update, deadline 300 s", f"{apt} update --error-on=any", "Get:1 http://archive.ubuntu.com/ubuntu noble InRelease",
-            "apt-get update ended in 0 s", "apt-get install, deadline 900 s", f"{apt} install -y --no-install-recommends pkg-config",
-            "apt-get install ended in 0 s"])
+            "apt-get update ended in <whole> s", "apt-get install, deadline 900 s", f"{apt} install -y --no-install-recommends pkg-config",
+            "apt-get install ended in <whole> s"])
 
     def test_a_deadline_prints_what_apt_had_printed_and_then_its_one_line(self):
         (self.base / "apt-get.update").write_text("99\n")
