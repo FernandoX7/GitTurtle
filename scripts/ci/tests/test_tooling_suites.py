@@ -791,6 +791,10 @@ class WorkflowTests(unittest.TestCase):
             "    strategy:\n      fail-fast: false\n      max-parallel: 2\n      matrix:\n"
             "        os: [macos-15, ubuntu-24.04]\n    steps:\n"), job[:400])
         self.assertEqual(re.findall(r"^ *timeout-minutes: *(.*)$", job, re.M), ["10"])
+        # The driver's own deadline is stricter than that limit, never wider: with the 31 s the
+        # steps before it have taken and its grace, it ends well inside the job's 600 s.
+        self.assertEqual((suites.DEADLINE, suites.GRACE), (510.0, 10.0))
+        self.assertLessEqual(31 + suites.DEADLINE + suites.GRACE, 10 * 60 - 45)
 
     def test_one_step_runs_the_suites_and_nothing_lets_a_failure_pass(self):
         job, steps = quality_job("agent-tooling")
