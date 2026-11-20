@@ -12424,24 +12424,14 @@ pub(crate) mod tests {
         download_sentence_walk(&DOWNLOAD_SENTENCE_CASES[BOTH_SIDES_AT_13_PT], cx).await;
     }
 
-    /// A Download row's sentence, stood beside its buttons by a measurement
-    /// that disagrees with layout, ends inside the pane, where without a
-    /// bound its one line ran past the pane's edge; and beside a Download
-    /// row alone Diff, Before, After and Split give way in one order: the
-    /// sentence, then Compare's footer, its words kept in the comparison's
-    /// description, then the buttons' word "Download", the footer coming
-    /// back where the room then holds it with a whole row, and the stack
-    /// last ([`download_order`]). In a 461 px wide window one button leaves
-    /// a whole row, beneath Split's headings, down to 440 px at 13 and
-    /// 18 pt; beside both sides' buttons, which stack there with their word
-    /// or without it, Diff, Before and After keep it down to 460 px and
-    /// Split its headings and a row down to 490 px at 18 pt, 440 and 480 px
-    /// at 13 pt. At 18 pt both sides' stacked buttons and the footer left
-    /// Diff none at 440 px.
-    #[gpui::test]
-    async fn a_download_row_alone_keeps_its_sentence_in_the_pane_and_a_row_below(
+    /// The window the lone Download row's sections open, each test its own:
+    /// History on a commit that changes `both.txt`, an LFS pointer before
+    /// and after, and `one.txt`, a pointer before and plain text after, so
+    /// Compare offers both sides' downloads for one and Before's for the
+    /// other, with no failure line.
+    async fn lone_download_row_window(
         cx: &mut TestAppContext,
-    ) {
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
         let pointer = |digit: &str| {
             format!(
                 "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n",
@@ -12459,25 +12449,51 @@ pub(crate) mod tests {
                 &[("both.txt", new.as_bytes()), ("one.txt", b"plain text\n")],
             ),
         ]);
-        let (_fixture, app, cx) = history_window_from(cx, &input).await;
-        let select = |path: &str, cx: &mut VisualTestContext| {
-            let index = app.read_with(cx, |app, _| {
-                app.files
-                    .iter()
-                    .position(|file| file.path() == std::path::Path::new(path))
-                    .expect("the commit changes it")
-            });
-            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
-        };
-        let mode = |mode: TextMode, cx: &mut VisualTestContext| {
-            cx.update(|window, cx| {
-                app.update(cx, |app, cx| {
-                    app.text_mode = mode;
-                    app.ensure_editor(window, cx);
-                    cx.notify();
-                })
-            });
-        };
+        history_window_from(cx, &input).await
+    }
+
+    /// Opens the changed file at `path` in Compare, for the lone Download
+    /// row's sections.
+    fn lone_download_row_select(app: &Entity<GitTurtle>, path: &str, cx: &mut VisualTestContext) {
+        let index = app.read_with(cx, |app, _| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new(path))
+                .expect("the commit changes it")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+    }
+
+    /// Shows the comparison in `mode`, for the lone Download row's sections.
+    fn lone_download_row_mode(app: &Entity<GitTurtle>, mode: TextMode, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = mode;
+                app.ensure_editor(window, cx);
+                cx.notify();
+            })
+        });
+    }
+
+    /// Beside a Download row alone Diff, Before, After and Split give way
+    /// in one order: the sentence, then Compare's footer, its words kept in
+    /// the comparison's description, then the buttons' word "Download", the
+    /// footer coming back where the room then holds it with a whole row, and
+    /// the stack last ([`download_order`]). In a 461 px wide window one
+    /// button leaves a whole row, beneath Split's headings, down to 440 px
+    /// at 13 and 18 pt; beside both sides' buttons, which stack there with
+    /// their word or without it, Diff, Before and After keep it down to
+    /// 460 px and Split its headings and a row down to 490 px at 18 pt, 440
+    /// and 480 px at 13 pt. At 18 pt both sides' stacked buttons and the
+    /// footer left Diff none at 440 px. The first of the three sections that
+    /// were one test; the order as the room shrinks is
+    /// [`lone_download_row_s_order`] and the sentence stood by a measurement
+    /// [`lone_download_row_s_stood_sentence`].
+    async fn lone_download_row_at_461_px(app: Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let select =
+            |path: &str, cx: &mut VisualTestContext| lone_download_row_select(&app, path, cx);
+        let mode =
+            |mode: TextMode, cx: &mut VisualTestContext| lone_download_row_mode(&app, mode, cx);
         for path in ["both.txt", "one.txt"] {
             select(path, cx);
             settle(&app, cx).await;
@@ -12510,6 +12526,11 @@ pub(crate) mod tests {
                             settle(&app, cx).await;
                             draw(cx);
                             draw(cx);
+                            assert_eq!(
+                                cx.update(|window, _| window.scale_factor()),
+                                scale,
+                                "{at}: drawn at the scale asked for"
+                            );
                             let row = cx.update(|window, _| comparison_floor(1., window));
                             let comparison = cx
                                 .debug_bounds("preview-content")
@@ -12595,6 +12616,19 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// Each step of the order a lone Download row and the comparison give
+    /// way in ([`download_order`]) as the window shortens, in wider windows
+    /// at 18 pt and both scales: the steps follow in order, none coming
+    /// back, and every step is met among the walk's windows, which is asked
+    /// of them all together, so the walk stays whole in one test. The second
+    /// of the three sections that were one test.
+    async fn lone_download_row_s_order(app: Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let select =
+            |path: &str, cx: &mut VisualTestContext| lone_download_row_select(&app, path, cx);
+        let mode =
+            |mode: TextMode, cx: &mut VisualTestContext| lone_download_row_mode(&app, mode, cx);
         // Where the buttons stack with their word and share a line without
         // it, wider windows at 18 pt, each step of the order as the window
         // shortens, and never back: the footer gives way, then the word,
@@ -12622,6 +12656,11 @@ pub(crate) mod tests {
                         settle(&app, cx).await;
                         draw(cx);
                         draw(cx);
+                        assert_eq!(
+                            cx.update(|window, _| window.scale_factor()),
+                            scale,
+                            "{at}: drawn at the scale asked for"
+                        );
                         let (short, footer, room) =
                             download_order(cx, &at, shown == TextMode::Split);
                         let step = match (short, footer) {
@@ -12653,6 +12692,20 @@ pub(crate) mod tests {
             seen.iter().all(|&seen| seen > 0),
             "every step of the order is met: {seen:?}"
         );
+    }
+
+    /// A Download row's sentence, stood beside its buttons by a measurement
+    /// that disagrees with layout, ends inside the pane, where without a
+    /// bound its one line ran past the pane's edge. The third of the three
+    /// sections that were one test.
+    async fn lone_download_row_s_stood_sentence(
+        app: Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) {
+        let select =
+            |path: &str, cx: &mut VisualTestContext| lone_download_row_select(&app, path, cx);
+        let mode =
+            |mode: TextMode, cx: &mut VisualTestContext| lone_download_row_mode(&app, mode, cx);
         // Stood beside its button whatever they measure, the sentence ends
         // inside the pane, beside the button, which keeps its line.
         crate::lfs_download::SENTENCE_FITS.set(Some(true));
@@ -12682,6 +12735,11 @@ pub(crate) mod tests {
             .expect("the comparison is drawn");
         let row = cx.update(|window, _| comparison_floor(1., window));
         crate::lfs_download::SENTENCE_FITS.set(None);
+        assert_eq!(
+            cx.update(|window, _| window.scale_factor()),
+            2.,
+            "the sentence is stood at the test display's own scale"
+        );
         assert!(
             sentence.right() <= pane.right() - inset + px(0.5),
             "{sentence:?} ends inside the pane, {pane:?}"
@@ -12699,6 +12757,32 @@ pub(crate) mod tests {
             comparison.size.height >= row - px(0.25),
             "{comparison:?} keeps its row, {row:?}"
         );
+    }
+
+    /// The lone Download row in a 461 px wide window
+    /// ([`lone_download_row_at_461_px`]) and then its sentence stood by a
+    /// measurement ([`lone_download_row_s_stood_sentence`]): the first and
+    /// the third section of what was one test, in its order.
+    #[gpui::test]
+    async fn a_download_row_alone_keeps_its_sentence_in_the_pane_and_a_row_below_in_the_461_px_walk_and_the_stood_sentence(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = lone_download_row_window(cx).await;
+        lone_download_row_at_461_px(app.clone(), cx).await;
+        lone_download_row_s_stood_sentence(app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The lone Download row's order as the room shrinks
+    /// ([`lone_download_row_s_order`]): the second section of what was one
+    /// test, whole, both scales feeding its "every step of the order is
+    /// met".
+    #[gpui::test]
+    async fn a_download_row_alone_keeps_its_sentence_in_the_pane_and_a_row_below_in_the_order_walk(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = lone_download_row_window(cx).await;
+        lone_download_row_s_order(app, cx).await;
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
