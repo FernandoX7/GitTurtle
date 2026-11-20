@@ -35,7 +35,8 @@ pending real superseding-run evidence at C1.
 ### Conservative change routing
 
 The mandatory `Changes and CI policy` job checks guidance, all focused CI helper
-fixtures and every checked-in Actions workflow with the pinned linter. The
+fixtures and every checked-in Actions workflow with the pinned linter, fetched in
+[one attempt that names its failure](#the-actionlint-fetch-in-quality). The
 [classifier](../scripts/ci/changes.py) then produces boolean product, tooling and
 website outputs plus a versioned JSON plan. Downstream jobs consume those flags;
 the final gate verifies the same recorded plan and actual job results.
@@ -1529,7 +1530,9 @@ Validate changed Actions YAML with
 [actionlint v1.7.12](https://github.com/rhysd/actionlint/releases/tag/v1.7.12),
 the version pinned by Quality. Its [Linux amd64 release archive](https://github.com/rhysd/actionlint/releases/expanded_assets/v1.7.12) SHA-256 is
 `8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8`;
-the workflow verifies that digest before execution. With that version available:
+the workflow fetches it in one attempt
+([below](#the-actionlint-fetch-in-quality)) and verifies that digest before
+execution. With that version available:
 
 ```sh
 actionlint -version
@@ -1557,6 +1560,59 @@ The CI fixtures place temporary files inside the checkout. For other tooling
 tests that use the system temporary directory, use a checkout-local directory when
 the session requires it: `mkdir -p .local/ci-observability/tmp`, then prefix the
 test command with `TMPDIR="$PWD/.local/ci-observability/tmp"`.
+
+### The actionlint fetch in Quality
+
+The `Changes and CI policy` job downloads the pinned archive with the runner's
+curl in one anonymous attempt, with 15 s to connect and 60 s in all. Nothing is
+retried, in the command or around it, and the job's token is not sent. A failed
+fetch fails the step: curl prints its own `curl: (22) …` line, and the command's
+`--write-out` then ends the step with one `::error::` line that names the host
+the failure happened on and the HTTP status or curl's reason, as in
+`::error::actionlint download failed at release-assets.githubusercontent.com: The requested URL returned error: 504 (curl exit 22)`.
+The release download redirects once, from `github.com` to
+`release-assets.githubusercontent.com` with a signed query. The line therefore
+takes its host from `%{urle.host}`, the host alone of the last URL curl asked,
+and no URL is printed: a read of that curl's error messages in its source found
+none that prints the request's URL or its query. A fetched file with another
+digest ends the step at the unchanged `sha256sum --check --status`, which
+prints nothing.
+
+**Why one attempt.** Until November 2026 the command carried `--retry 2`
+under `--silent`. curl announces a retry in a warning, and `--silent` hides
+warnings: a first attempt that fails and a second that succeeds leave a green
+step whose only trace is the failed attempt's own `curl: (22) …` line. In the
+155 kept records of the step (Quality runs of October 6 to November 17, 2026)
+it never failed, and each of its 152 successes took 0 or 1 s in whole seconds:
+114 took 0 s and so held no retry, whose first wait is 1 s; for the other 38
+the records cannot tell.
+
+**Shown in a container.** The hosted image lists curl `8.5.0-2ubuntu10.16`
+([software list](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
+image version 20261111.370.1), and that version's source has every write-out
+variable the command uses. With that package in a disposable `ubuntu:24.04`
+container (arm64), against local servers, on November 20, 2026:
+
+| Case | Last line, after `::error::actionlint download failed at ` | Exit |
+| --- | --- | --- |
+| A name that does not resolve | `actionlint-fetch.invalid: Could not resolve host: actionlint-fetch.invalid (curl exit 6)` | 6 |
+| A refused connection | `first.test: Failed to connect to first.test port 9 after 0 ms: Couldn't connect to server (curl exit 7)` | 7 |
+| HTTP 404 | `first.test: The requested URL returned error: 404 (curl exit 22)` | 22 |
+| HTTP 504 | `first.test: The requested URL returned error: 504 (curl exit 22)` | 22 |
+| A redirect to a second host that answers 504 | `second.test: The requested URL returned error: 504 (curl exit 22)` | 22 |
+| A server that accepts and never answers, with `--max-time 3` for the proof only | `silent.test: Operation timed out after 3001 milliseconds with 0 bytes received (curl exit 28)` | 28 |
+| The real archive | Nothing printed; the digest verified and the archive unpacked | 0 |
+
+No case asked a server twice. The redirect's target carried a query that held a
+marker word: that case and three more behind the same redirect (a refused
+connection, a name that does not resolve, a silent server) printed neither the
+word nor a question mark. The command as it was, with `--retry 2`, asked the
+504 server three times in 3 s, and against a server that answers 504 once and
+then 200 it exited 0 after two requests. The step's own text, taken from the
+workflow, then ran whole in a second such container: the pinned archive verified and
+both runs of the binary passed on the checked-in workflows, the amd64 binary
+under the arm64 host's emulation. None of this ran on a hosted runner, so the
+line's display there as an error annotation is not shown.
 
 ### Source validation evidence
 

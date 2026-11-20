@@ -41,7 +41,11 @@ jobs:
         run: |
           actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
           mkdir -p "$actionlint_dir"
-          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 60 \
+          # One anonymous attempt; nothing is retried. A failure ends the step with a line that names
+          # the host it happened on and the status or curl's reason. The line takes the host alone:
+          # the release redirects to a URL with a signed query, and no URL is printed.
+          curl --fail --location --silent --show-error --connect-timeout 15 --max-time 60 \
+            --write-out '%{onerror}%{stderr}::error::actionlint download failed at %{urle.host}: %{errormsg} (curl exit %{exitcode})\n' \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
             --output "$actionlint_dir/actionlint.tar.gz"
           printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
