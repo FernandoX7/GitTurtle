@@ -22,6 +22,10 @@ SPEC = importlib.util.spec_from_file_location("rust_cache", ROOT / ".github/acti
 cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
 SPEC_TOOLCHAIN = cache.toolchain_identity
+# The installer whose pin the debug identity reads.
+SPEC_TOOLS = importlib.util.spec_from_file_location("ci_tools_for_cache", ROOT / "scripts/ci/tools.py")
+ci_tools = importlib.util.module_from_spec(SPEC_TOOLS)
+SPEC_TOOLS.loader.exec_module(ci_tools)
 # `dpkg-query` in a disposable ubuntu:24.04 arm64 container holding exactly the
 # setup action's install list, which names no cmake, taken on 2026-11-19 with
 # cache.DPKG_SNAPSHOT's format: package:architecture, version, status,
@@ -198,6 +202,9 @@ for _system, _prepare, _finish in LANES.values():
     _finish.update({"CACHE_PHASE": "finish", "CACHE_VENDOR_REUSE": "false", "CACHE_ON_FAILURE": "false", "CARGO_INCREMENTAL": "0"})
 
 
+# What the finish phase asks rustup, in the checkout: setup's two reads, and nothing that changes a toolchain.
+RUSTUP_READS = [["rustup", "show", "active-toolchain"], ["rustup", "toolchain", "list", "--quiet"]]
+
 PROBER_ROW = re.compile(r"[A-Za-z0-9_-]+ \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
 
 
@@ -214,9 +221,9 @@ def setup_jobs(workflow):
 
 
 def later_installs(workflow):
-    """(job, line) for every apt or dpkg installation written in a job that uses the setup action."""
+    """(job, line) for every apt or dpkg installation, or call of the package helper, written in a job that uses the setup action."""
     return [(name, line.strip()) for name, job in setup_jobs(workflow).items() for line in job.splitlines()
-            if re.search(r"(?<![\w-])(?:apt(?:-get)?|dpkg\s+(?:-i|--install))(?![\w-])", line)]
+            if re.search(r"(?<![\w-])(?:apt(?:-get)?|apt_install\.py|dpkg\s+(?:-i|--install))(?![\w-])", line)]
 
 
 def snapshot_rows(text=UBUNTU_SNAPSHOT):
@@ -355,6 +362,10 @@ class CacheFixture(unittest.TestCase):
                      "crates/app/build.rs", "crates/app/Cargo.toml", "vendor/tool/src/lib.rs",
                      "vendor/tool/native/source.c", "vendor/tool/build.rs", ".github/actions/setup-rust/action.yml"):
             self.file(self.root / name, name.encode())
+        # The debug identity reads the cargo-nextest pin from the checkout's installer.
+        self.file(self.root / cache.TOOL_INSTALLER, (ROOT / cache.TOOL_INSTALLER).read_bytes())
+        # The finish phase asks rustup for the toolchain this file selects.
+        self.file(self.root / "rust-toolchain.toml", b'[toolchain]\nchannel = "1.99.0"\n')
         subprocess.run(["git", "-C", str(self.root), "add", "--all"], check=True)
 
     def test_source_only_edits_reuse_but_real_build_inputs_invalidate(self):
@@ -634,7 +645,7 @@ class CacheFixture(unittest.TestCase):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
         steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
         helper = [step for step in steps if "cache.py " in step]
-        self.assertEqual(len(helper), 5)
+        self.assertEqual(len(helper), 6)
         for step in helper:
             with self.subTest(step=step.splitlines()[0]):
                 self.assertIn("CACHE_RUN_AS: ${{ inputs.run-as }}", step)
@@ -645,9 +656,12 @@ class CacheFixture(unittest.TestCase):
             "restore": "id: restore", "owner": "chown -R -h -P", "restored": "cache.py restored"}.items()}
         self.assertEqual(sorted(index, key=index.get), list(index))
         self.assertIn("if: inputs.phase == 'setup' && inputs.run-as != ''", steps[index["owner"]])
-        # The container brings its own packages and toolchain.
-        for marker in ("apt-get install", "rustup show active-toolchain"):
-            step = next(step for step in steps if marker in step)
+        # The container brings its own packages and toolchain. The package step
+        # is the one step that calls the package helper, under its own name: a
+        # comment's words do not find it, and neither does a step that lost the call.
+        packages = [step for step in steps if "python3 scripts/ci/apt_install.py " in step]
+        self.assertEqual([step.split("\n", 1)[0] for step in packages], ["Install Linux native build dependencies"])
+        for step in (packages[0], next(step for step in steps if "rustup show active-toolchain" in step)):
             self.assertIn("&& inputs.container == ''", step.split("\n", 2)[1])
         validation = steps[0]
         self.assertIn('case "$CACHE_CONTAINER" in ""|archlinux) ;; *) exit 2 ;; esac', validation)
@@ -728,17 +742,23 @@ class CacheFixture(unittest.TestCase):
             runner, path = None, os.environ["PATH"]
         real, answers = cache.run, {("pacman", "-Q"): b"gcc 15.2.1-1\n", ("xcodebuild", "-version"): b"Xcode 26.3\n",
                                     ("xcrun", "--sdk"): b"26.3\n", ("xcrun", "clang"): b"clang 21\n", ("sw_vers", "-buildVersion"): b"25D125\n"}
+        # As the setup phase left it on every lane: the pinned toolchain, alone.
+        rustup = FakeRustup([PinnedToolchainAlone.PINNED], PinnedToolchainAlone.PINNED)
 
         def answer(command, **kwargs):
+            if command[0] == "rustup":
+                return rustup(command, **kwargs)
             return answers[tuple(command[:2])] if tuple(command[:2]) in answers else real(command, **kwargs)
 
-        return {"system": system, "prepare": prepare, "finish": finish, "runner": runner, "rows": rows, "path": path, "answer": answer}
+        return {"system": system, "prepare": prepare, "finish": finish, "runner": runner, "rows": rows, "path": path, "answer": answer,
+                "rustup": rustup}
 
     def phases(self, lane, *, between=lambda: None, finish=None, compare=None, state=lambda path: None, account=None):
         """prepare in the lane's prepare-time environment, then the comparison and bound in its finish-time one.
 
-        Returns what the three wrote: prepare's exports and its lines (`prepared`), the comparison's lines and its output,
-        bound's output and result, and under `recorded` what the comparison's output file held as each of its lines was printed.
+        Returns what the three wrote: prepare's exports and its lines (`prepared`), the comparison's lines, its output and
+        its exit status, bound's output and result, and under `recorded` what the comparison's output file held as each of
+        its lines was printed.
         """
         base = {**self.env, "PATH": lane["path"], "RUNNER_OS": lane["system"]}
         del base["CACHE_IDENTITY"], base["CARGO_HOME"], base["CARGO_TARGET_DIR"]
@@ -772,7 +792,7 @@ class CacheFixture(unittest.TestCase):
             output, recorded = Path(self.env["GITHUB_OUTPUT"]), []
             with patch.dict(os.environ, compared, clear=True), patch("sys.argv", ["cache.py", "compare"]), \
                     patch("builtins.print", side_effect=lambda *_: recorded.append(output.read_text() if output.is_file() else None)) as shown:
-                cache.main()
+                status = cache.main()
             lines = [line for call in shown.call_args_list for line in " ".join(map(str, call.args)).split("\n")]
             # The comparison exports nothing, rewinds nothing and creates nothing.
             self.assertEqual(dict(line.split("=", 1) for line in Path(self.env["GITHUB_ENV"]).read_text().splitlines()), exports)
@@ -784,7 +804,7 @@ class CacheFixture(unittest.TestCase):
             with patch.dict(os.environ, {**environment, "CACHE_IDENTITY": written.get("identity", "")}, clear=True), \
                     patch("sys.argv", ["cache.py", "bound"]), patch("builtins.print"):
                 cache.main()
-        return {"exports": exports, "prepared": prepared, "lines": lines, "identity": written, "recorded": recorded,
+        return {"exports": exports, "prepared": prepared, "lines": lines, "identity": written, "recorded": recorded, "status": status,
                 "save": Path(self.env["GITHUB_OUTPUT"]).read_text(),
                 "result": record.call_args.kwargs["details"], "bound": bound, "account": become}
 
@@ -811,6 +831,9 @@ class CacheFixture(unittest.TestCase):
                 self.assertEqual(outcome["recorded"], ["identity=unchanged\n"])
                 self.assertEqual((outcome["save"], outcome["result"]), ("save=true\n", {"save": True, "reason": "within budget"}))
                 outcome["bound"].assert_called_once()
+                # rustup still lists the pinned toolchain alone. It was asked in the checkout and only asked.
+                self.assertEqual(lane["rustup"].commands, [(command, self.root.resolve()) for command in RUSTUP_READS])
+                self.assertEqual(outcome["status"], 0)
                 # prepare exports the CARGO_INCREMENTAL it keyed where the job set none: the five lanes but Arch.
                 self.assertEqual(outcome["exports"].get("CARGO_INCREMENTAL"), None if "CARGO_INCREMENTAL" in lane["prepare"] else "0")
                 self.assertEqual("CARGO_INCREMENTAL" in lane["prepare"], name == "Arch debug")
@@ -961,6 +984,75 @@ class CacheFixture(unittest.TestCase):
                     cache.main()
                 self.refused({"save": Path(self.env["GITHUB_OUTPUT"]).read_text(), "result": record.call_args.kwargs["details"], "bound": bound})
 
+    def test_a_toolchain_list_that_changed_since_setup_refuses_the_save_with_one_warning_that_names_it(self):
+        self.init_git()
+        pinned, image = PinnedToolchainAlone.PINNED, PinnedToolchainAlone.IMAGE
+        warning = "::warning::Rust toolchains changed since setup, so this job saves no cache entry: "
+        alone = f"rustup must list the active Rust toolchain {pinned} alone; it lists: "
+        # A `rustc` run outside the checkout after setup downloads the image's default again. The helper's key is still
+        # the one setup exported, and the save step's own run of rust-cache would hash two toolchains into its suffix.
+        for name in LANES:
+            with self.subTest(lane=name):
+                lane = self.lane(name)
+                outcome = self.phases(lane, between=lambda: lane["rustup"].installed.insert(0, image))
+                self.assertEqual(outcome["lines"], [warning + alone + f"{image}, {pinned}"])
+                self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "changed"}, 0))
+                self.refused(outcome)
+                # The finish phase only reads: both toolchains are still there, and no command but the two reads ran.
+                self.assertEqual(lane["rustup"].commands, [(command, self.root.resolve()) for command in RUSTUP_READS])
+                self.assertEqual(lane["rustup"].installed, [image, pinned])
+        # Whatever is not the pinned toolchain alone, each named as the setup phase names it. A name is escaped as the
+        # key step's lines are, so one that rustup should never print cannot start a workflow command.
+        selected = f"the active Rust toolchain {image} is not the 1.99.0 that rust-toolchain.toml selects"
+        for label, change, said in (
+                ("another toolchain in its place", lambda rustup: rustup.installed.__setitem__(0, image), alone + image),
+                ("none listed", lambda rustup: rustup.installed.clear(), alone + "none"),
+                ("another one selected", lambda rustup: setattr(rustup, "active", image), selected),
+                ("no active toolchain", lambda rustup: setattr(rustup, "active", ""), "rustup names no supported active Rust toolchain"),
+                ("an unsupported name", lambda rustup: rustup.installed.append("##[error]stop\u00e9"),
+                 "rustup lists a toolchain whose name is not supported: '#\\x23[error]stop\\xe9'")):
+            with self.subTest(listing=label):
+                lane = self.lane("Ubuntu debug")
+                outcome = self.phases(lane, between=lambda: change(lane["rustup"]))
+                self.assertEqual(outcome["lines"], [warning + said])
+                self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "changed"}, 0))
+                self.refused(outcome)
+        # A key that changed as well keeps its own warning and lines; the toolchains follow in theirs.
+        lane = self.lane("Ubuntu debug")
+        outcome = self.phases(lane, between=lambda: lane["rustup"].installed.insert(0, image), compare={"RUSTFLAGS": "-g"})
+        self.assertEqual(outcome["lines"], ["::warning::Cache identity changed since setup, so this job saves no cache entry: flags",
+                                            "Flag variables that differ: RUSTFLAGS", warning + alone + f"{image}, {pinned}"])
+        self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "changed"}, 0))
+        self.refused(outcome)
+
+    def test_a_rustup_that_cannot_answer_at_finish_refuses_the_save_and_never_fails_the_job(self):
+        self.init_git()
+        warning = "::warning::Rust toolchains could not be read from rustup, so this job saves no cache entry: {}"
+        failures = {"it exits with a failure": subprocess.CalledProcessError(1, ["rustup"]),
+                    "it does not answer in time": subprocess.TimeoutExpired(["rustup"], 120),
+                    "it is not on PATH": FileNotFoundError(2, "No such file or directory", "rustup"),
+                    "it cannot be executed": PermissionError(13, "Permission denied", "rustup")}
+        for label, error in failures.items():
+            # Either of the two reads: the active toolchain's name, then the list.
+            for read in ("show", "toolchain"):
+                with self.subTest(failure=label, read=read):
+                    lane = self.lane("Ubuntu debug")
+                    outcome = self.phases(lane, between=lambda: lane["rustup"].errors.update({read: error}))
+                    # The key is the one setup exported, and without the list that is still not "unchanged".
+                    self.assertEqual(outcome["lines"], [warning.format(type(error).__name__)])
+                    self.assertEqual((outcome["identity"], outcome["status"]), ({"identity": "unconfirmed"}, 0))
+                    self.refused(outcome)
+        # On the Arch lane the build account asks, as it did at setup: it is taken before either read, and when it
+        # cannot be taken rustup is never run.
+        lane, taken = self.lane("Arch debug"), []
+        outcome = self.phases(lane, account=lambda name: taken.append((name, len(lane["rustup"].commands))))
+        self.assertEqual(taken, [("builder", 0), ("builder", 0), ("builder", 2)])
+        self.assertEqual(outcome["identity"], {"identity": "unchanged"})
+        lane = self.lane("Arch debug")
+        outcome = self.phases(lane, account=[None, ValueError("cache helper is not running as its account"), None])
+        self.assertEqual((lane["rustup"].commands, outcome["identity"], outcome["status"]), ([], {"identity": "unconfirmed"}, 0))
+        self.refused(outcome)
+
     def test_finish_compares_the_identity_on_every_event_before_the_bound_step(self):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
         steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
@@ -993,6 +1085,170 @@ class CacheFixture(unittest.TestCase):
         # The save step's condition is as it was.
         self.assertEqual(fields("save")[0], f"if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && {main}")
         self.assertEqual(text.count("GITHUB_ENV"), 0)
+
+    def profile_exports(self, profile):
+        with patch.dict(os.environ, {"CACHE_PROFILE": profile, "RUNNER_OS": "Linux"}), \
+                patch.object(cache, "native_identity", return_value=("native", [])), patch("builtins.print"):
+            cache.prepare()
+        lines = Path(self.env["GITHUB_ENV"]).read_text().splitlines()
+        Path(self.env["GITHUB_ENV"]).write_text("")
+        return dict(line.split("=", 1) for line in lines)
+
+    def test_the_debug_key_holds_the_nextest_pin_and_no_other_profile_does(self):
+        self.init_git()
+        installer = self.root / cache.TOOL_INSTALLER
+        original = installer.read_text()
+        pins = cache.tool_pins(original)
+        # The installer's own values: the version and, a platform, the archive's name and digest.
+        self.assertEqual(pins, {"nextest": {"version": ci_tools.NEXTEST_VERSION, "archives": sorted(
+            [*platform, *archive] for platform, archive in ci_tools.NEXTEST_ARCHIVES.items())}})
+        (linux, macos) = pins["nextest"]["archives"]
+        self.assertEqual((linux[:2], macos[:2]), (["Linux", "X64"], ["macOS", "ARM64"]))
+
+        def keys():
+            return {profile: self.profile_exports(profile)["CI_RUST_CACHE_KEY"] for profile in sorted(cache.PROFILES)}
+
+        baseline = keys()
+        moved = {"version": original.replace(f'NEXTEST_VERSION = "{pins["nextest"]["version"]}"', 'NEXTEST_VERSION = "0.0.1"'),
+                 "Linux digest": original.replace(linux[3], "0" * 64), "macOS digest": original.replace(macos[3], "f" * 64),
+                 "Linux archive name": original.replace(f'"{linux[2]}"', '"cargo-nextest-renamed.tar.gz"')}
+        debug = {baseline["debug"]}
+        for label, text in moved.items():
+            with self.subTest(moved=label):
+                self.assertNotEqual(text, original)
+                installer.write_text(text)
+                changed = keys()
+                # A pin move is a new debug key, so no restored entry can hold another pin's archive.
+                self.assertNotIn(changed["debug"], debug)
+                debug.add(changed["debug"])
+                # The lanes that install nothing keep their entries.
+                self.assertEqual({profile: key for profile, key in changed.items() if profile != "debug"},
+                                 {profile: key for profile, key in baseline.items() if profile != "debug"})
+        # What is not the pin leaves every key: the installer's code, limits and comments.
+        installer.write_text(original.replace("MAX_EXECUTABLE = 128 << 20", "MAX_EXECUTABLE = 256 << 20") + "\n# a later comment\n")
+        self.assertEqual(keys(), baseline)
+        self.assertEqual(cache.TOOL_PROFILES, {"debug"})
+
+    def test_the_pin_is_read_from_two_literals_without_running_the_installer(self):
+        valid = ('NEXTEST_VERSION = "1.2.3"\nNEXTEST_ARCHIVES = {\n    ("Linux", "X64"): ("cargo-nextest-1.2.3-linux.tar.gz", "' + "a" * 64
+                 + '"),\n}\n')
+        expected = {"nextest": {"version": "1.2.3", "archives": [["Linux", "X64", "cargo-nextest-1.2.3-linux.tar.gz", "a" * 64]]}}
+        self.assertEqual(cache.tool_pins(valid), expected)
+        # Nothing else in the file runs: not an import, not a statement that would stop the step.
+        self.assertEqual(cache.tool_pins("import no_such_module\nraise SystemExit(9)\n" + valid), expected)
+        refused = {
+            "no version": valid.split("\n", 1)[1],
+            "no archives": valid.split("\n", 1)[0] + "\n",
+            "a version that is no release": valid.replace('"1.2.3"\n', '"latest"\n'),
+            "a computed version": valid.replace('"1.2.3"\n', 'f"{1}.2.3"\n'),
+            "the pin assigned twice": valid + 'NEXTEST_VERSION = "1.2.4"\n',
+            "no archive": 'NEXTEST_VERSION = "1.2.3"\nNEXTEST_ARCHIVES = {}\n',
+            "a short digest": valid.replace("a" * 64, "a" * 63),
+            "an upper-case digest": valid.replace("a" * 64, "A" * 64),
+            "an archive name with a path": valid.replace("cargo-nextest-1.2.3-linux.tar.gz", "../archive.tar.gz"),
+            "an archive without a digest": valid.replace(', "' + "a" * 64 + '")', ",)"),
+            "a platform of one part": valid.replace('("Linux", "X64")', '("Linux",)'),
+        }
+        for label, source in refused.items():
+            with self.subTest(source=label):
+                self.assertNotEqual(source, valid)
+                with self.assertRaises(ValueError):
+                    cache.tool_pins(source)
+
+    def test_the_identity_keys_the_pin_and_never_what_the_archive_directory_holds(self):
+        self.init_git()
+        exports = self.profile_exports("debug")
+        directory = self.cargo / "registry" / cache.TOOL_ARCHIVES
+        # Inside the registry root, which the restore action saves whole and whose clean-up visits index, cache and src alone.
+        self.assertEqual(exports["CI_RUST_CACHE_TOOL_ARCHIVES"], str(directory))
+        self.assertEqual(directory.parent, self.paths[1])
+        self.assertNotIn(cache.TOOL_ARCHIVES, {"index", "cache", "src"})
+        # The installer stores the archive between the phases: the key does not move with it.
+        self.file(directory / "cargo-nextest-0.0.0-x86_64-unknown-linux-gnu.tar.gz", b"stored after setup")
+        self.assertEqual(self.profile_exports("debug")["CI_RUST_CACHE_KEY"], exports["CI_RUST_CACHE_KEY"])
+        # Only a profile whose key holds the pin is told of a directory.
+        for profile in sorted(cache.PROFILES - cache.TOOL_PROFILES):
+            with self.subTest(profile=profile):
+                self.assertNotIn("CI_RUST_CACHE_TOOL_ARCHIVES", self.profile_exports(profile))
+
+    def test_a_pin_moved_since_setup_refuses_the_save_and_names_the_tools(self):
+        self.init_git()
+        installer = self.root / cache.TOOL_INSTALLER
+        moved = installer.read_text().replace(f'NEXTEST_VERSION = "{ci_tools.NEXTEST_VERSION}"', 'NEXTEST_VERSION = "0.0.1"')
+        outcome = self.phases(self.lane("Ubuntu debug"), between=lambda: installer.write_text(moved))
+        self.assertEqual(outcome["lines"], ["::warning::Cache identity changed since setup, so this job saves no cache entry: tools"])
+        self.assertEqual(outcome["identity"], {"identity": "changed"})
+        self.refused(outcome)
+        # An installer that can no longer be read refuses too and fails nothing.
+        outcome = self.phases(self.lane("Ubuntu debug"), between=installer.unlink)
+        self.assertEqual(outcome["identity"], {"identity": "unconfirmed"})
+        self.refused(outcome)
+        subprocess.run(["git", "-C", str(self.root), "checkout", "-q", "--", "."], check=True)
+        # A release lane keys no pin and saves as before.
+        outcome = self.phases(self.lane("Ubuntu release x64"), between=lambda: installer.write_text(moved))
+        self.assertEqual((outcome["identity"], outcome["save"]), ({"identity": "unchanged"}, "save=true\n"))
+
+    def test_the_archive_directory_survives_the_bound_phase_as_registry_payload(self):
+        directory = self.paths[1] / cache.TOOL_ARCHIVES
+        archive = self.file(directory / "cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz", b"A" * 1000)
+        source = self.file(self.paths[1] / "src/index.crates.io-abc/dep-1.0.0/src/lib.rs", b"S" * 10)
+        output = self.file(self.paths[0] / "debug/deps/libdep-abcd.rlib", b"D" * 50)
+        packages = [{"name": "dep", "version": "1.0.0", "id": "dep", "source": "registry", "targets": [{"name": "dep", "kind": ["lib"]}]}]
+
+        def execute(command, **_):
+            return json.dumps({"packages": packages}).encode() if command[1] == "metadata" else b""
+
+        snapshots = []
+        result = cache.bound_payload(self.root, self.paths, "debug", execute=execute, snapshots=snapshots)
+        self.assertEqual((result["save"], result["dropped_target"], result["removed_source_directories"]), (True, False, 1))
+        self.assertFalse(source.exists())
+        self.assertEqual(archive.read_bytes(), b"A" * 1000)
+        # Its bytes are counted against the profile's limit: the directory and the file, 4 KiB an entry.
+        self.assertEqual(snapshots[-1]["subtrees"]["registry_other"],
+                         {"logical_bytes": 1000, "entry_overhead_bytes": 2 * 4096, "entries": 2})
+        # A payload over the limit drops the target, never the archive.
+        with patch.dict(cache.PROFILE_LIMITS, {"debug": 1000 + 5 * 4096}):
+            result = cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        self.assertEqual((result["save"], result["dropped_target"]), (True, True))
+        self.assertFalse(output.exists())
+        self.assertEqual(archive.read_bytes(), b"A" * 1000)
+        # A link beside it refuses the save rather than entering an entry.
+        (directory / "alias.tar.gz").symlink_to(archive)
+        with self.assertRaisesRegex(ValueError, "nonregular cache payload refused"):
+            cache.bound_payload(self.root, self.paths, "debug", execute=execute)
+        # A restore that was no exact hit discards the directory with the rest, before the installer looks.
+        (directory / "alias.tar.gz").unlink()
+        self.restore(hit="false")
+        self.assertFalse(directory.exists())
+
+    def test_only_the_jobs_whose_key_holds_the_pin_install_nextest_from_the_cached_archive(self):
+        workflows = {name: (ROOT / ".github/workflows" / name).read_text() for name in ("quality.yml", "release.yml")}
+        command = ('python3 scripts/ci/tools.py install-nextest --directory "$RUNNER_TEMP/cargo-nextest" '
+                   '--path-file "$GITHUB_PATH" --archive-cache "$CI_RUST_CACHE_TOOL_ARCHIVES"')
+        installing = {name: job for name, job in setup_jobs(workflows["quality.yml"]).items() if "install-nextest" in job}
+        self.assertEqual(sorted(installing), ["rust-arch", "rust-debug"])
+        for name, job in installing.items():
+            with self.subTest(job=name):
+                steps = job.split("\n      - ")[1:]
+                (install,) = [step.split("\n      #")[0] for step in steps if "install-nextest" in step]
+                self.assertEqual([line.split(" -- ", 1)[1] for line in re.findall(r"^        run: (.*)$", install, re.M)], [command])
+                # Anonymous, as before: no token, secret or variable of the step's own.
+                for unwanted in ("env:", "secrets.", "github.token", "GITHUB_TOKEN", "if:"):
+                    self.assertNotIn(unwanted, install)
+                # After the setup phase that restores the entry and exports the directory, in a profile that keys the pin.
+                setups = [index for index, step in enumerate(steps) if "uses: ./.github/actions/setup-rust" in step]
+                position = next(index for index, step in enumerate(steps) if "install-nextest" in step)
+                self.assertLess(setups[0], position)
+                self.assertLess(position, setups[1])
+                self.assertEqual(set(re.findall(r"^          profile: (.*)$", job, re.M)), cache.TOOL_PROFILES)
+        # The executable's directory is no cached path: neither the isolated Cargo home nor the target.
+        self.assertNotIn("gitturtle-cargo", command.split("--archive-cache")[0])
+        self.assertNotIn("target", command.split("--archive-cache")[0])
+        self.assertEqual(sum(text.count("install-nextest") for text in workflows.values()), 2)
+        # Clippy restores the same debug entry with the same inputs and installs nothing.
+        clippy = setup_jobs(workflows["quality.yml"])["rust-clippy"]
+        self.assertEqual(set(re.findall(r"^          profile: (.*)$", clippy, re.M)), cache.TOOL_PROFILES)
+        self.assertNotIn("tools.py", clippy)
 
     def test_profiles_have_distinct_identity_and_private_paths(self):
         self.init_git()
@@ -1657,6 +1913,242 @@ class CacheFixture(unittest.TestCase):
         self.assertNotEqual(cache.source_identity(self.root), key)
 
 
+class FakeRustup:
+    """rustup as the toolchains phase runs it: a list of installed names, the active one and every command."""
+
+    def __init__(self, installed, active, *, uninstalls=True):
+        self.installed, self.active, self.uninstalls, self.commands = list(installed), active, uninstalls, []
+        # What a subcommand (`show` or `toolchain`) raises in place of its answer.
+        self.errors = {}
+
+    def __call__(self, command, *, cwd=None, timeout=120):
+        self.commands.append((command, cwd))
+        if command[1] in self.errors:
+            raise self.errors[command[1]]
+        if command == ["rustup", "show", "active-toolchain"]:
+            return f"{self.active} (overridden by '{cwd}/rust-toolchain.toml')\n".encode()
+        if command == ["rustup", "toolchain", "list", "--quiet"]:
+            return "".join(f"{name}\n" for name in self.installed).encode()
+        if command[:3] == ["rustup", "toolchain", "uninstall"] and len(command) == 4:
+            if self.uninstalls:
+                self.installed.remove(command[3])
+            return b""
+        raise AssertionError(f"unexpected command {command}")
+
+    def uninstalled(self):
+        return [command[3:] for command, _ in self.commands if command[:3] == ["rustup", "toolchain", "uninstall"]]
+
+
+class PinnedToolchainAlone(unittest.TestCase):
+    """rust-cache keys every toolchain rustup lists, so setup leaves the active one alone."""
+
+    PINNED = "1.99.0-x86_64-unknown-linux-gnu"
+    IMAGE = "stable-x86_64-unknown-linux-gnu"
+
+    def setUp(self):
+        (ROOT / ".local").mkdir(exist_ok=True)
+        temp = tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.99.0"\nprofile = "minimal"\n')
+
+    def phase(self, rustup, container=""):
+        """The phase's printed lines; whatever it raises passes through."""
+        with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(self.root), "CACHE_CONTAINER": container}), \
+                patch.object(cache, "run", side_effect=rustup), patch("builtins.print") as printed:
+            cache.toolchains()
+        return [" ".join(map(str, call.args)) for call in printed.call_args_list]
+
+    def test_every_listed_toolchain_but_the_active_one_is_removed(self):
+        for listing, removed in (
+                (f"{self.IMAGE}\n{self.PINNED}\n", [self.IMAGE]),
+                # rustup's own notes beside a name, when the listing is not the quiet one.
+                (f"{self.IMAGE} (default)\n{self.PINNED} (active)\n", [self.IMAGE]),
+                (f"{self.PINNED}\n1.100.0-x86_64-unknown-linux-gnu\n\nnightly-2026-11-01-x86_64-unknown-linux-gnu\n",
+                 ["1.100.0-x86_64-unknown-linux-gnu", "nightly-2026-11-01-x86_64-unknown-linux-gnu"]),
+                (f"{self.PINNED}\n", [])):
+            with self.subTest(listing=listing):
+                self.assertEqual(cache.other_toolchains(listing, self.PINNED), removed)
+        # Nothing is chosen for removal when the active one is not there to be kept.
+        for listing in ("", "no installed toolchains\n", f"{self.IMAGE}\n"):
+            with self.subTest(listing=listing), self.assertRaisesRegex(ValueError, f"does not list the active Rust toolchain {self.PINNED}"):
+                cache.other_toolchains(listing, self.PINNED)
+
+    def test_a_list_that_holds_another_toolchain_or_lacks_the_active_one_fails_by_name(self):
+        cache.only_toolchain(f"{self.PINNED}\n", self.PINNED)
+        cache.only_toolchain(f"{self.PINNED} (active, default)\n", self.PINNED)
+        for listing, named in ((f"{self.IMAGE}\n{self.PINNED}\n", f"{self.IMAGE}, {self.PINNED}"),
+                               (f"{self.PINNED}\n{self.PINNED}\n", f"{self.PINNED}, {self.PINNED}"),
+                               (f"{self.IMAGE}\n", self.IMAGE), ("", "none")):
+            with self.subTest(listing=listing):
+                with self.assertRaises(ValueError) as refused:
+                    cache.only_toolchain(listing, self.PINNED)
+                self.assertEqual(str(refused.exception),
+                                 f"rustup must list the active Rust toolchain {self.PINNED} alone; it lists: {named}")
+
+    def test_a_name_is_validated_before_any_reaches_a_command_line(self):
+        for name in ("--force", "-V", "stable;id", "$(id)", "a/b", "../x", "stable'", "é", "a" * 129):
+            with self.subTest(name=name):
+                rustup = FakeRustup([self.IMAGE, name, self.PINNED], self.PINNED)
+                with self.assertRaisesRegex(ValueError, "name is not supported"):
+                    self.phase(rustup)
+                # Not even the valid name listed before it was uninstalled.
+                self.assertEqual(rustup.uninstalled(), [])
+                with self.assertRaisesRegex(ValueError, "no supported active Rust toolchain"):
+                    cache.active_toolchain(f"{name} (default)\n", 'channel = "1.99.0"\n')
+
+    def test_the_active_toolchain_is_the_one_the_checkout_pins(self):
+        pinned = (ROOT / "rust-toolchain.toml").read_text()
+        channel = tomllib.loads(pinned)["toolchain"]["channel"]
+        for host in ("x86_64-unknown-linux-gnu", "aarch64-apple-darwin"):
+            name = f"{channel}-{host}"
+            self.assertEqual(cache.active_toolchain(f"{name} (overridden by '/w/rust-toolchain.toml')\n", pinned), name)
+        self.assertEqual(cache.active_toolchain(f"{channel}\nactive because: overridden by '/w/rust-toolchain.toml'\n", pinned), channel)
+        for active in (f"stable-x86_64-unknown-linux-gnu (overridden by environment variable RUSTUP_TOOLCHAIN)\n",
+                       f"{channel}1-x86_64-unknown-linux-gnu (default)\n", f"1{channel}-x86_64-unknown-linux-gnu\n"):
+            with self.subTest(active=active), self.assertRaisesRegex(ValueError, f"is not the {re.escape(channel)} that rust-toolchain.toml selects"):
+                cache.active_toolchain(active, pinned)
+        for active in ("", "\n"):
+            with self.subTest(active=active), self.assertRaisesRegex(ValueError, "no supported active Rust toolchain"):
+                cache.active_toolchain(active, pinned)
+        for text in ("[toolchain]\n", '[toolchain]\nchannel = "1.99.0"\nchannel = "stable"\n', '[toolchain]\nchannel = "--x"\n',
+                     "[toolchain]\nchannel = '1.99.0'\n"):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "no single supported channel"):
+                cache.active_toolchain(f"{self.PINNED}\n", text)
+
+    def test_setup_uninstalls_each_other_toolchain_as_one_argument_and_then_requires_the_active_one_alone(self):
+        rustup = FakeRustup([self.IMAGE, self.PINNED, "1.100.0-x86_64-unknown-linux-gnu"], self.PINNED)
+        lines = self.phase(rustup)
+        listing = ["rustup", "toolchain", "list", "--quiet"]
+        self.assertEqual([command for command, _ in rustup.commands], [
+            ["rustup", "show", "active-toolchain"], listing,
+            ["rustup", "toolchain", "uninstall", self.IMAGE],
+            ["rustup", "toolchain", "uninstall", "1.100.0-x86_64-unknown-linux-gnu"], listing])
+        # In the checkout, where rust-toolchain.toml selects the toolchain.
+        self.assertEqual({cwd for _, cwd in rustup.commands}, {self.root})
+        self.assertEqual(rustup.installed, [self.PINNED])
+        seconds = r"\d+\.\d s"
+        self.assertRegex(lines[0], rf"^Uninstalled Rust toolchain {re.escape(self.IMAGE)}, {seconds} into the step$")
+        self.assertRegex(lines[1], rf"^Uninstalled Rust toolchain 1\.100\.0-x86_64-unknown-linux-gnu, {seconds} into the step$")
+        self.assertRegex(lines[2], rf"^rustup lists the active Rust toolchain alone: {re.escape(self.PINNED)} \({seconds}\)$")
+        self.assertEqual(len(lines), 3)
+        # The pinned toolchain alone, as on the second job of a runner: nothing to uninstall.
+        alone = FakeRustup([self.PINNED], self.PINNED)
+        self.assertEqual(len(self.phase(alone)), 1)
+        self.assertEqual(alone.uninstalled(), [])
+        # An uninstall that left the toolchain listed is not taken on trust.
+        kept = FakeRustup([self.IMAGE, self.PINNED], self.PINNED, uninstalls=False)
+        with self.assertRaisesRegex(ValueError, f"alone; it lists: {self.IMAGE}, {self.PINNED}$"):
+            self.phase(kept)
+        # Something else selected the active toolchain: nothing is uninstalled for it.
+        overridden = FakeRustup([self.IMAGE, self.PINNED], self.IMAGE)
+        with self.assertRaisesRegex(ValueError, "is not the 1.99.0 that rust-toolchain.toml selects"):
+            self.phase(overridden)
+        self.assertEqual(overridden.uninstalled(), [])
+
+    def test_a_container_job_uninstalls_nothing_and_still_requires_the_active_toolchain_alone(self):
+        alone = FakeRustup([self.PINNED], self.PINNED)
+        self.assertRegex(self.phase(alone, "archlinux")[0], "^rustup lists the active Rust toolchain alone: ")
+        second = FakeRustup([self.IMAGE, self.PINNED], self.PINNED)
+        with self.assertRaisesRegex(ValueError, f"alone; it lists: {self.IMAGE}, {self.PINNED}$"):
+            self.phase(second, "archlinux")
+        self.assertEqual((alone.uninstalled(), second.uninstalled()), ([], []))
+        with self.assertRaisesRegex(ValueError, "unsupported cache container"):
+            self.phase(FakeRustup([self.PINNED], self.PINNED), "alpine")
+
+    def test_the_phase_fails_its_step_with_one_annotation_that_names_the_toolchains(self):
+        rustup = FakeRustup([self.IMAGE, self.PINNED], self.PINNED, uninstalls=False)
+        environment = {"GITHUB_WORKSPACE": str(self.root), "CACHE_CONTAINER": "", "CACHE_RUN_AS": ""}
+        with patch.dict(os.environ, environment), patch.object(cache, "run", side_effect=rustup), \
+                patch("sys.argv", ["cache.py", "toolchains"]), patch("builtins.print") as printed:
+            status = cache.main()
+        self.assertEqual(status, 1)
+        self.assertEqual([call.args for call in printed.call_args_list][-1], (
+            f"::error::rustup must list the active Rust toolchain {self.PINNED} alone; it lists: {self.IMAGE}, {self.PINNED}",))
+        with patch.dict(os.environ, environment), patch.object(cache, "run", side_effect=FakeRustup([self.PINNED], self.PINNED)), \
+                patch("sys.argv", ["cache.py", "toolchains"]), patch("builtins.print"):
+            self.assertEqual(cache.main(), 0)
+
+    def step(self, body=None, *, timeout=None):
+        """The step's exit status and printed lines with a real `rustup` process: a shell script with this body, or none on PATH.
+
+        `timeout` replaces the helper's 120 s a command, so a script that never answers costs the test a fraction of a second.
+        """
+        # A directory of its own for each call, so that "none on PATH" finds no earlier script.
+        tools = Path(tempfile.mkdtemp(prefix="tools-", dir=self.root))
+        if body is not None:
+            (tools / "rustup").write_text("#!/bin/sh\n" + body)
+            (tools / "rustup").chmod(0o755)
+        real = cache.run
+        bounded = (lambda command, **options: real(command, **{**options, "timeout": timeout})) if timeout else real
+        environment = {"GITHUB_WORKSPACE": str(self.root), "CACHE_CONTAINER": "", "CACHE_RUN_AS": "",
+                       "PATH": str(tools) if body is None else f"{tools}{os.pathsep}{os.environ['PATH']}"}
+        with patch.dict(os.environ, environment), patch.object(cache, "run", side_effect=bounded), \
+                patch("sys.argv", ["cache.py", "toolchains"]), patch("builtins.print") as printed:
+            status = cache.main()
+        return status, [" ".join(map(str, call.args)) for call in printed.call_args_list]
+
+    def test_a_rustup_that_fails_times_out_or_is_missing_fails_the_step_with_one_annotation_that_names_it(self):
+        active = "rustup show active-toolchain"
+        # Each leaves as one annotation and a failed step, never as a traceback. The processes are real, so the
+        # lines are made from what Python reports for them.
+        self.assertEqual(self.step('echo "info: syncing channel updates" >&2\necho "error: no active toolchain" >&2\necho >&2\nexit 3\n'),
+                         (1, [f"::error::{active} failed with exit status 3: error: no active toolchain"]))
+        self.assertEqual(self.step("exit 1\n"), (1, [f"::error::{active} failed with exit status 1"]))
+        # What rustup wrote last is escaped as every keyed value is, and cut to 200 characters.
+        self.assertEqual(self.step("printf '::error::first\\n##[error]stop\\033[0m\\n' >&2\nexit 1\n"),
+                         (1, [f"::error::{active} failed with exit status 1: #\\x23[error]stop\\x1b[0m"]))
+        self.assertEqual(self.step("printf '%0300d' 0 >&2\nexit 1\n"), (1, [f"::error::{active} failed with exit status 1: " + "0" * 200]))
+        # `exec`, so that the process the helper kills is the one that holds its pipes.
+        self.assertEqual(self.step("exec sleep 30\n", timeout=0.2), (1, [f"::error::{active} did not finish in 0.2 s"]))
+        self.assertEqual(self.step(), (1, ["::error::rustup could not be used: No such file or directory"]))
+        # A later command of the step: the uninstall, named with the toolchain it was given.
+        uninstall = textwrap.dedent(f"""\
+            case "$1 $2" in
+              "show active-toolchain") echo "{self.PINNED} (overridden by 'rust-toolchain.toml')" ;;
+              "toolchain list") printf '%s\\n' {self.IMAGE} {self.PINNED} ;;
+              *) echo "error: could not remove the toolchain" >&2; exit 1 ;;
+            esac
+            """)
+        self.assertEqual(self.step(uninstall), (1, [
+            f"::error::rustup toolchain uninstall {self.IMAGE} failed with exit status 1: error: could not remove the toolchain"]))
+        # The same script once its uninstall succeeds leaves two listed: the rule's own failure, as before.
+        status, lines = self.step(uninstall.replace("exit 1", "exit 0"))
+        self.assertEqual((status, lines[-1]), (
+            1, f"::error::rustup must list the active Rust toolchain {self.PINNED} alone; it lists: {self.IMAGE}, {self.PINNED}"))
+
+    def test_the_step_runs_on_every_job_after_the_toolchain_is_installed_and_before_the_key(self):
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("\nruns:\n", 1)[1].split("\n    - name: ")[1:]
+        index = {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in {
+            "install": "rustup show active-toolchain", "alone": "cache.py toolchains", "key": "cache.py prepare",
+            "restore": "id: restore"}.items()}
+        self.assertEqual(sorted(index, key=index.get), list(index))
+        self.assertEqual(index["alone"], index["install"] + 1)
+        step = steps[index["alone"]].split("\n    #")[0]
+        # The container job included: the condition names the phase alone.
+        self.assertEqual(re.findall(r"^      if: (.*)$", step, re.M), ["inputs.phase == 'setup'"])
+        self.assertIn("        CACHE_CONTAINER: ${{ inputs.container }}\n", step)
+        self.assertIn("        CACHE_RUN_AS: ${{ inputs.run-as }}\n", step)
+        self.assertEqual(text.count("cache.py toolchains"), 1)
+
+    def test_no_other_input_of_the_restore_action_changed(self):
+        # The toolchains leave the key by leaving rustup, not by an input:
+        # turning the environment hash off would drop the lockfile hashes too.
+        text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
+        steps = text.split("uses: Swatinem/rust-cache@")[1:]
+        shared = {"prefix-key": "gitturtle-rust-v2", "shared-key": "${{ env.CI_RUST_CACHE_KEY }}",
+                  "workspaces": "crates -> ../target", "cache-bin": "false", "cache-workspace-crates": "false",
+                  "cache-all-crates": "false", "cache-on-failure": "false",
+                  "env-vars": "SDKROOT MACOSX_DEPLOYMENT_TARGET PKG_CONFIG LIBRARY_PATH LDFLAGS AR",
+                  "cmd-format": "${{ inputs.run-as != '' && format('setpriv --reuid={0} --regid={0} --init-groups -- {{0}}', "
+                                "inputs.run-as) || '{0}' }}"}
+        options = [dict(line.strip().split(": ", 1) for line in step.split("\n    #")[0].split("\n    - name: ")[0].splitlines()
+                        if line.startswith("        ") and ": " in line and not line.strip().startswith("#")) for step in steps]
+        self.assertEqual(options, [{**shared, "save-if": "false"}, {**shared, "lookup-only": "true", "save-if": "true"}])
+        self.assertTrue(all(step.startswith("d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3\n") for step in steps))
+
+
 class UbuntuPackages(unittest.TestCase):
     """The package part of the Ubuntu key, on the real snapshot and edits of it."""
 
@@ -2066,16 +2558,18 @@ class UbuntuPackages(unittest.TestCase):
 
     def test_install_line_names_only_build_packages_and_tools(self):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
-        command = re.search(r"sudo apt-get install ((?:[^\n]*\\\n)+[^\n]*)\n", text).group(1)
-        installed = [word for word in command.replace("\\", " ").split() if not word.startswith("-")]
+        # The step hands the names to the package helper after `--`.
+        command = re.search(r"python3 scripts/ci/apt_install\.py ((?:[^\n]*\\\n)+[^\n]*)\n", text).group(1)
+        installed = command.replace("\\", " ").split(" -- ", 1)[1].split()
         self.assertEqual(len(installed), len(set(installed)))
-        self.assertEqual(text.count("apt-get install"), 1)
+        self.assertEqual(text.count("apt_install.py"), 1)
         build, tools = set(cache.UBUNTU_BUILD_PACKAGES), set(cache.UBUNTU_TOOL_PACKAGES)
         # Every installed name is in exactly one of the two lists, and a root
         # the action does not install would fail the step.
         self.assertFalse(build & tools)
         self.assertEqual(set(installed), build | tools)
-        self.assertIn("--no-install-recommends", command.split())
+        # The helper owns the install command; its own tests hold the whole line.
+        self.assertIn('"--no-install-recommends"', (ROOT / "scripts/ci/apt_install.py").read_text())
         self.assertEqual(len(cache.UBUNTU_BUILD_PACKAGES), 11)
         # No CMake is installed, by apt or by anything else the action could run
         # on a condition: the installed set must not depend on the image. The
@@ -2734,7 +3228,7 @@ class UbuntuKeyPreconditions(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="cache-test-", dir=ROOT / ".local") as temp:
             base = Path(temp)
             calls = base / "calls"
-            for name in ("sudo", "pkg-config"):
+            for name in ("python3", "sudo", "pkg-config"):
                 (base / name).write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> {shlex.quote(str(calls))}\n")
                 (base / name).chmod(0o755)
             environment = {name: value for name, value in os.environ.items() if not name.startswith("SYSTEM_DEPS_")}
@@ -2742,9 +3236,13 @@ class UbuntuKeyPreconditions(unittest.TestCase):
             allowed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
             self.assertEqual(allowed.returncode, 0, allowed.stderr)
             ran = calls.read_text().splitlines()
-            self.assertEqual(ran[0], "sudo apt-get update")
-            self.assertEqual(ran[1].split()[:5], ["sudo", "apt-get", "install", "-y", "--no-install-recommends"])
-            self.assertEqual(set(ran[1].split()[5:]), {*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES})
+            # The step installs through the package helper alone: one call, the
+            # image's Ubuntu source file as the selection, then the names.
+            self.assertEqual([line.split()[0] for line in ran], ["python3", "pkg-config", "pkg-config", "pkg-config"])
+            self.assertEqual(ran[0].split()[:7], ["python3", "scripts/ci/apt_install.py",
+                                                  "-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources",
+                                                  "-o", "Dir::Etc::sourceparts=-", "--"])
+            self.assertEqual(set(ran[0].split()[7:]), {*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES})
             calls.unlink()
             for name, value in (("SYSTEM_DEPS_DAV1D_BUILD_INTERNAL", "always"), ("SYSTEM_DEPS_LINK", "static"), ("SYSTEM_DEPS_X", "")):
                 with self.subTest(variable=name):
@@ -2762,7 +3260,7 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                 self.assertEqual(later_installs(text), [], "a job that uses the setup action installs packages itself: "
                                  "the Ubuntu cache key would no longer describe what the build reads")
         # The scan sees an installation: Quality has one, in a job without the action.
-        self.assertIn("sudo apt-get install", workflows["quality.yml"])
+        self.assertIn("python3 scripts/ci/apt_install.py", workflows["quality.yml"])
         sample = textwrap.dedent("""\
             name: Sample
             jobs:
@@ -2784,12 +3282,14 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                     with:
                       profile: debug
                   - run: /usr/bin/apt-get -y install ninja-build
+                  - run: python3 scripts/ci/apt_install.py -o Dir::Etc::sourceparts=- -- nasm
             """)
         self.assertEqual(sorted(setup_jobs(sample)), ["build", "test"])
         self.assertEqual(later_installs(sample), [
             ("build", "- run: sudo apt-get install -y --no-install-recommends libpng-dev"), ("build", "sudo apt install nasm"),
             ("build", "sudo dpkg -i tool.deb"), ("build", "sudo dpkg --install other.deb"),
-            ("test", "- run: /usr/bin/apt-get -y install ninja-build")])
+            ("test", "- run: /usr/bin/apt-get -y install ninja-build"),
+            ("test", "- run: python3 scripts/ci/apt_install.py -o Dir::Etc::sourceparts=- -- nasm")])
 
 
 if __name__ == "__main__":

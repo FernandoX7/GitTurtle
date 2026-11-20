@@ -43,7 +43,8 @@ PREFIX = re.compile(r"^(?:[^\t\n]*\t){0,2}\ufeff?(?:\d{4}-\d\d-\d\dT\d\d:\d\d:\d
 LIBTEST_BINARY = re.compile(r"^\s*Running (?P<unit>unittests )?(?P<source>\S+) \((?P<executable>[^)]*)\)\s*$")
 LIBTEST_DOCS = re.compile(r"^\s*Doc-tests (?P<crate>\S+)\s*$")
 LIBTEST_RESULT = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<result>ok|ignored|FAILED)(?:,.*)?$")
-# nextest 0.9.146, as three runs of `gitturtle-preview` and the hosted logs print it:
+# nextest 0.9.146, as three runs of `gitturtle-preview` and the hosted logs print it,
+# and 0.9.152, as two runs of that crate print it:
 #     Starting 96 tests across 1 binary (97 tests skipped)
 #         PASS [   0.010s] ( 1/96) gitturtle-preview animation::tests::spent_budget
 #         SKIP [         ] (─────) gitturtle-preview animation::tests::caps_frames

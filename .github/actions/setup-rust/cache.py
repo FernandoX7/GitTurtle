@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Lifecycle of an optional, bounded cache on fresh GitHub-hosted Rust runners."""
 import argparse
+import ast
 from contextlib import contextmanager
 import errno
 import hashlib
@@ -189,6 +190,30 @@ IDENTITY_UNCHANGED = "unchanged"
 IDENTITY_REFUSAL = "cache identity changed or was not confirmed since setup"
 TRIPLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+# The pinned rust-cache hashes `rustc -vV` of every toolchain that `rustup
+# toolchain list` names into its part of the key. A hosted image ships a
+# default Rust of its own, which no build here runs and which differs between
+# image releases, so one platform on two images had two keys and built cold.
+# The setup phase therefore leaves rustup the active toolchain alone. A name is
+# checked against this pattern before it reaches a command line, where it is
+# one argument that cannot be read as an option.
+TOOLCHAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+TOOLCHAIN_CHANNEL = re.compile(r'^channel[ \t]*=[ \t]*"([^"\n]*)"[ \t]*(?:#.*)?$', re.MULTILINE)
+# The test jobs' pinned cargo-nextest archive rides in the entry they restore, so
+# a restored job makes no request for it. It lives beside Cargo's own registry
+# directories: the pinned rust-cache saves `registry` whole and cleans only its
+# `index`, `cache` and `src`, and the bound phase prunes only `src`. The cache
+# holds the release archive, never the executable, and the installer hashes it
+# against the pin before anything reads it (scripts/ci/tools.py). The profiles
+# whose lanes install it key the pin, read from the installer's own literals,
+# so a pin move is a new key and never a mismatch in a restored entry. The
+# identity keys the pin and never what the directory holds.
+TOOL_ARCHIVES = "gitturtle-tool-archives"
+TOOL_PROFILES = {"debug"}
+TOOL_INSTALLER = "scripts/ci/tools.py"
+TOOL_VERSION = re.compile(r"\d+\.\d+\.\d+")
+TOOL_ARCHIVE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+TOOL_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 def profile_limit(profile):
@@ -625,6 +650,154 @@ def toolchain_identity():
     return {"rustc": digest(output), "target": hosts[0]}
 
 
+def listed_toolchains(listing):
+    """The toolchain names of a `rustup toolchain list` text, one a line, in its order.
+
+    A line's first word is the name, with or without rustup's `(active)` and
+    `(default)` notes. A name outside TOOLCHAIN raises: it is never guessed at.
+    """
+    names = []
+    for line in listing.splitlines():
+        words = line.split()
+        if not words:
+            continue
+        if not TOOLCHAIN.fullmatch(words[0]):
+            raise ValueError(f"rustup lists a toolchain whose name is not supported: {words[0]!r}")
+        names.append(words[0])
+    return names
+
+
+def active_toolchain(active, pinned):
+    """The active toolchain's name, which must be the one rust-toolchain.toml selects.
+
+    `active` is the output of `rustup show active-toolchain` in the checkout,
+    whose first word is the name, and `pinned` the text of rust-toolchain.toml.
+    rustup names the toolchain after the file's channel and the host, so
+    another name says something else selected it (RUSTUP_TOOLCHAIN does).
+    """
+    words = active.split()
+    if not words or not TOOLCHAIN.fullmatch(words[0]):
+        raise ValueError("rustup names no supported active Rust toolchain")
+    channels = TOOLCHAIN_CHANNEL.findall(pinned)
+    if len(channels) != 1 or not TOOLCHAIN.fullmatch(channels[0]):
+        raise ValueError("rust-toolchain.toml names no single supported channel")
+    if words[0] != channels[0] and not words[0].startswith(channels[0] + "-"):
+        raise ValueError(f"the active Rust toolchain {words[0]} is not the {channels[0]} that rust-toolchain.toml selects")
+    return words[0]
+
+
+def other_toolchains(listing, active):
+    """The listed toolchains that are not the active one: what the setup phase uninstalls."""
+    names = listed_toolchains(listing)
+    if active not in names:
+        raise ValueError(f"rustup does not list the active Rust toolchain {active}; it lists: {', '.join(names) or 'none'}")
+    return [name for name in names if name != active]
+
+
+def only_toolchain(listing, active):
+    """Raise, naming what is listed, unless rustup lists the active toolchain and no other."""
+    names = listed_toolchains(listing)
+    if names != [active]:
+        raise ValueError(f"rustup must list the active Rust toolchain {active} alone; it lists: {', '.join(names) or 'none'}")
+
+
+def rustup(root, *arguments):
+    """What a rustup command prints, run in the checkout, where rust-toolchain.toml selects the toolchain."""
+    return run(["rustup", *arguments], cwd=root).decode("utf-8", "surrogateescape")
+
+
+def selected_toolchain(root):
+    """The checkout's active toolchain, which must be the one its rust-toolchain.toml selects."""
+    return active_toolchain(rustup(root, "show", "active-toolchain"), (root / "rust-toolchain.toml").read_text(encoding="utf-8"))
+
+
+def toolchains():
+    """Uninstall every toolchain but the active one, then fail unless rustup lists it alone.
+
+    The listing is the command the pinned rust-cache hashes. A container job
+    uninstalls nothing: its account's RUSTUP_HOME holds only the toolchain the
+    job installed from rust-toolchain.toml, and the check keeps that true.
+    """
+    started = time.monotonic()
+    root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    container = os.environ.get("CACHE_CONTAINER", "")
+    if container not in {"", "archlinux"}:
+        raise ValueError("unsupported cache container")
+    active = selected_toolchain(root)
+    if not container:
+        for name in other_toolchains(rustup(root, "toolchain", "list", "--quiet"), active):
+            rustup(root, "toolchain", "uninstall", name)
+            print(f"Uninstalled Rust toolchain {name}, {time.monotonic() - started:.1f} s into the step")
+    only_toolchain(rustup(root, "toolchain", "list", "--quiet"), active)
+    print(f"rustup lists the active Rust toolchain alone: {active} ({time.monotonic() - started:.1f} s)")
+
+
+def command_failure(error):
+    """What failed and how, as one line, for a command that exited with a failure, timed out or could not be started.
+
+    The command line is the helper's own fixed words and, for an uninstall, a
+    name that was validated first. A failure's last line of standard error is
+    the tool's own reason, cut to 200 characters; the caller escapes the line.
+    """
+    if isinstance(error, subprocess.CalledProcessError):
+        said = reversed((error.stderr or b"").decode("utf-8", "replace").splitlines())
+        reason = next((line.strip()[:200] for line in said if line.strip()), "")
+        return f"{' '.join(error.cmd)} failed with exit status {error.returncode}" + (f": {reason}" if reason else "")
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"{' '.join(error.cmd)} did not finish in {error.timeout:g} s"
+    if isinstance(error, OSError):
+        return f"{error.filename or 'a file or command'} could not be used: {error.strerror or type(error).__name__}"
+    return f"a command failed: {type(error).__name__}"
+
+
+def toolchains_since_setup(root):
+    """None while rustup still lists the pinned toolchain alone, else the refusing verdict and its one warning.
+
+    The save step is a second run of the pinned rust-cache, which hashes the
+    list again. A toolchain that came back since setup (a `rustc` run outside
+    the checkout downloads the default one) would store the entry under a
+    suffix no setup phase computes, so the finish phase asks what setup asked,
+    with the same functions. It only reads: nothing is uninstalled once the
+    job's steps have run. A list that differs is named, as setup names it; a
+    rustup that cannot be run or does not answer is never read as unchanged.
+    """
+    try:
+        active = selected_toolchain(root)
+        only_toolchain(rustup(root, "toolchain", "list", "--quiet"), active)
+    except ValueError as error:
+        return "changed", "::warning::Rust toolchains changed since setup, so this job saves no cache entry: " + shown(str(error))
+    except (OSError, subprocess.SubprocessError) as error:
+        return "unconfirmed", ("::warning::Rust toolchains could not be read from rustup, so this job saves no cache entry: "
+                               + shown(type(error).__name__))
+    return None
+
+
+def tool_pins(source):
+    """The cargo-nextest pin of the installer's source text: its version and every archive's name and digest.
+
+    Read from the two literal assignments without running the file, so the
+    identity has no side effect. Anything but one valid literal of each raises.
+    """
+    found = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("NEXTEST_VERSION", "NEXTEST_ARCHIVES"):
+            if node.targets[0].id in found:
+                raise ValueError("the cargo-nextest pin is assigned twice")
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    version, archives = found.get("NEXTEST_VERSION"), found.get("NEXTEST_ARCHIVES")
+    if not isinstance(version, str) or not TOOL_VERSION.fullmatch(version) or not isinstance(archives, dict) or not archives:
+        raise ValueError("the cargo-nextest pin is not one version and its archives")
+    pinned = []
+    for platform, archive in archives.items():
+        if not (isinstance(platform, tuple) and len(platform) == 2 and all(isinstance(part, str) for part in platform)
+                and isinstance(archive, tuple) and len(archive) == 2 and all(isinstance(part, str) for part in archive)
+                and TOOL_ARCHIVE.fullmatch(archive[0]) and TOOL_DIGEST.fullmatch(archive[1])):
+            raise ValueError("the cargo-nextest pin has an archive without a name and a SHA-256")
+        pinned.append([*platform, *archive])
+    return {"nextest": {"version": version, "archives": sorted(pinned)}}
+
+
 def keyed_flags(environ):
     """The set variables of the environment that are flags, as sorted (name, value) pairs."""
     return sorted((name, value) for name, value in environ.items()
@@ -973,13 +1146,15 @@ def record(name, elapsed, *, cache=None, details=None):
 
 
 def cache_identity():
-    """The cache key and its five parts, from the environment and the machine as they are now.
+    """The cache key and its parts, from the environment and the machine as they are now.
 
     No side effect: nothing is created, rewound, exported or printed, so
     prepare and the finish phase's comparison compute the identity alike.
     CARGO_INCREMENTAL is keyed by its effective value: prepare exports 0 when
     the job set none, as the restore action does after it, so the variable is
-    the same in both phases by construction and needs no exemption.
+    the same in both phases by construction and needs no exemption. A profile
+    of TOOL_PROFILES has a sixth part, the pinned tools, whatever the job goes
+    on to install: Clippy restores the entry the test job saves.
     """
     profile = os.environ["CACHE_PROFILE"]
     if profile not in PROFILES:
@@ -993,6 +1168,8 @@ def cache_identity():
     native, lines = native_identity(container or os.environ["RUNNER_OS"])
     parts = {"profile": profile, "source": source_identity(root, inputs), "native": native,
              "toolchain": toolchain_identity(), "flags": digest(json.dumps(flags).encode())}
+    if profile in TOOL_PROFILES:
+        parts["tools"] = tool_pins((root / TOOL_INSTALLER).read_text(encoding="utf-8"))
     key = "-".join(filter(None, (profile, container, digest(json.dumps(parts, sort_keys=True).encode()))))
     return {"key": key, "parts": parts, "native_lines": lines, "flags": flags, "inputs": inputs}
 
@@ -1004,14 +1181,19 @@ def compared():
     step reads. What prepare kept only names the difference: the parts, the
     native part's differing keyed lines, and the flags by name, never by value.
     A missing key or state raises, which the caller turns into a refusal.
+    Unchanged also takes rustup listing the pinned toolchain alone, as it did
+    at setup: the save step keys that list, which is no part of this key.
     """
     expected = os.environ["CI_RUST_CACHE_KEY"]
     state = json.loads((Path(os.environ["RUNNER_TEMP"]) / IDENTITY_STATE).read_text(encoding="utf-8"))
     kept = {"parts": dict(state["parts"]), "native_lines": [str(line) for line in state["native_lines"]],
             "flags": {str(name): str(value) for name, value in state["flags"].items()}}
     current = cache_identity()
+    listed = toolchains_since_setup(Path(os.environ["GITHUB_WORKSPACE"]).resolve())
     if current["key"] == expected:
-        return IDENTITY_UNCHANGED, [f"Cache identity unchanged since setup: {shown(current['key'])}"]
+        if listed is None:
+            return IDENTITY_UNCHANGED, [f"Cache identity unchanged since setup: {shown(current['key'])}"]
+        return listed[0], [listed[1]]
     parts = [name for name in current["parts"] if kept["parts"].get(name) != current["parts"][name]] or ["key"]
     lines = [f"::warning::Cache identity changed since setup, so this job saves no cache entry: {shown(', '.join(parts))}"]
     if "native" in parts:
@@ -1022,7 +1204,7 @@ def compared():
         flags = {name: digest(value.encode("utf-8", "surrogateescape")) for name, value in current["flags"]}
         differing = sorted(name for name in {*kept["flags"], *flags} if kept["flags"].get(name) != flags.get(name))
         lines.append(f"Flag variables that differ: {shown(', '.join(differing))}")
-    return "changed", lines
+    return "changed", lines + ([listed[1]] if listed else [])
 
 
 def prepare():
@@ -1065,6 +1247,9 @@ def prepare():
     if not os.environ.get("CARGO_INCREMENTAL"):
         # The value the identity keyed, exported before the restore action exports the same.
         exported["CARGO_INCREMENTAL"] = "0"
+    if profile in TOOL_PROFILES:
+        # Only where the key holds the pin: no other profile's entry may carry an archive.
+        exported["CI_RUST_CACHE_TOOL_ARCHIVES"] = cargo / "registry" / TOOL_ARCHIVES
     output_file("GITHUB_ENV", exported)
 
 
@@ -1088,7 +1273,7 @@ def restored():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("prepare", "start", "restored", "compare", "bound"))
+    parser.add_argument("phase", choices=("toolchains", "prepare", "start", "restored", "compare", "bound"))
     args = parser.parse_args()
     account = os.environ.get("CACHE_RUN_AS")
     if account and args.phase not in {"compare", "bound"}:
@@ -1116,6 +1301,17 @@ def main():
         except Exception:  # noqa: BLE001
             # A line that cannot be printed fails no job either.
             pass
+    elif args.phase == "toolchains":
+        try:
+            toolchains()
+        except ValueError as error:
+            # By name, as an annotation: the message holds what rustup lists.
+            print(f"::error::{shown(str(error))}")
+            return 1
+        except (OSError, subprocess.SubprocessError) as error:
+            # A rustup that fails, does not answer or is missing: the command and how it ended, not a traceback.
+            print(f"::error::{shown(command_failure(error))}")
+            return 1
     elif args.phase == "prepare":
         prepare()
     elif args.phase == "start":
@@ -1153,7 +1349,8 @@ def main():
         output_file("GITHUB_OUTPUT", {"save": str(result["save"]).lower()})
         record("rust-cache-budget", time.monotonic() - start, details=result)
         print(json.dumps(result, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

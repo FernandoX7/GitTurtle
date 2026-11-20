@@ -1,18 +1,27 @@
 """Pinned cargo-nextest installation and the Quality tests-step policy; no network required."""
 
 import contextlib
+import email.message
 import importlib.util
 import hashlib
 import io
+import os
 from pathlib import Path
 import re
+import socket
+import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import urllib.error
+import urllib.parse
+import urllib.request
+import urllib.response
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -33,6 +42,42 @@ def archive(members):
                 info.size = len(data)
             tar.addfile(info, io.BytesIO(data) if kind != tarfile.SYMTYPE else None)
     return buffer.getvalue()
+
+
+RELEASE_HOST = "github.com"
+ASSET_HOST = "release-assets.githubusercontent.com"
+# What a release download is answered with: a redirect to a signed asset URL.
+SIGNED_ASSET = f"https://{ASSET_HOST}/github-production-release-asset/1/2?sp=r&sig=SIGNED&skoid=KEY"
+REDIRECT = (302, {"Location": SIGNED_ASSET}, b"")
+
+
+class Transport:
+    """Every HTTPS request `download` makes, answered by host with no network: (status, headers, body) or an error."""
+
+    def __init__(self, answers):
+        self.answers, self.requests = answers, []
+
+    def __call__(self, request):
+        self.requests.append(request)
+        answer = self.answers[urllib.parse.urlsplit(request.full_url).hostname]
+        if isinstance(answer, BaseException):
+            raise answer
+        status, headers, body = answer
+        message = email.message.Message()
+        for name, value in headers.items():
+            message[name] = value
+        response = urllib.response.addinfourl(io.BytesIO(body), message, request.full_url, status)
+        response.msg = "status"
+        return response
+
+    def hosts(self):
+        return [urllib.parse.urlsplit(request.full_url).hostname for request in self.requests]
+
+    @contextlib.contextmanager
+    def installed(self):
+        with mock.patch.object(urllib.request.HTTPSHandler, "https_open", self), \
+                mock.patch.object(urllib.request, "getproxies", return_value={}):
+            yield self
 
 
 def quality_job_steps(name):
@@ -119,59 +164,264 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(tools.ToolError):
             tools.verified_member(b"not a tarball", hashlib.sha256(b"not a tarball").hexdigest(), "cargo-nextest")
 
-    def test_download_retries_transport_failures_but_not_oversized_bodies(self):
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        response.geturl.return_value = "https://release-assets.githubusercontent.com/archive"
-        response.read.return_value = b"abc"
-        failure = urllib.error.URLError("reset")
-        with mock.patch.object(tools.urllib.request, "urlopen", side_effect=[failure, response]) as opened, \
-                mock.patch.object(tools.time, "sleep"):
-            self.assertEqual(tools.download("https://example.invalid/a", limit=3), b"abc")
-        self.assertEqual(opened.call_count, 2)
-        response.read.return_value = b"abcd"
-        with mock.patch.object(tools.urllib.request, "urlopen", return_value=response) as opened:
+    def test_download_is_one_anonymous_request_and_an_oversized_body_is_refused(self):
+        url = tools.NEXTEST_RELEASE + "archive.tar.gz"
+        with Transport({RELEASE_HOST: REDIRECT, ASSET_HOST: (200, {}, b"abc")}).installed() as transport:
+            self.assertEqual(tools.download(url, limit=3), b"abc")
+        self.assertEqual(transport.hosts(), [RELEASE_HOST, ASSET_HOST])
+        # No token and no header of ours on either hop.
+        for request in transport.requests:
+            self.assertEqual({name.lower() for name in {**request.headers, **request.unredirected_hdrs}} - {"host", "user-agent"}, set())
+        with Transport({RELEASE_HOST: (200, {}, b"abcd")}).installed() as transport:
             with self.assertRaisesRegex(tools.ToolError, "size limit"):
-                tools.download("https://example.invalid/a", limit=3)
-        self.assertEqual(opened.call_count, 1)
-        with mock.patch.object(tools.urllib.request, "urlopen", side_effect=failure), \
-                mock.patch.object(tools.time, "sleep"), self.assertRaisesRegex(tools.ToolError, "3 attempts"):
-            tools.download("https://example.invalid/a")
+                tools.download(url, limit=3)
+        self.assertEqual(len(transport.requests), 1)
+        self.assertFalse(hasattr(tools, "ATTEMPTS"))
 
-    def install(self, directory, version_output, platform=("Linux", "X64"), returncode=0):
-        data = archive([("cargo-nextest", b"#!/bin/sh\n", tarfile.REGTYPE)])
-        pins = {platform: ("cargo-nextest-test.tar.gz", hashlib.sha256(data).hexdigest())}
+    def test_one_failed_request_is_not_followed_by_a_second(self):
+        url = tools.NEXTEST_RELEASE + "archive.tar.gz"
+        for answers, hosts in (
+                ({RELEASE_HOST: (504, {}, b"")}, [RELEASE_HOST]),
+                ({RELEASE_HOST: urllib.error.URLError(ConnectionResetError("reset"))}, [RELEASE_HOST]),
+                ({RELEASE_HOST: TimeoutError("timed out")}, [RELEASE_HOST]),
+                # One request a hop: the redirect's target fails and nothing is asked again.
+                ({RELEASE_HOST: REDIRECT, ASSET_HOST: (504, {}, b"")}, [RELEASE_HOST, ASSET_HOST]),
+                ({RELEASE_HOST: REDIRECT, ASSET_HOST: (500, {}, b"")}, [RELEASE_HOST, ASSET_HOST])):
+            with self.subTest(answers=answers), Transport(answers).installed() as transport:
+                with self.assertRaises(tools.ToolError):
+                    tools.download(url)
+                self.assertEqual(transport.hosts(), hosts)
+
+    def test_a_failure_names_the_failing_hops_host_and_status_or_error_class_and_never_a_query(self):
+        url = tools.NEXTEST_RELEASE + "archive.tar.gz"
+        unresolved = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        for answers, message in (
+                ({RELEASE_HOST: REDIRECT, ASSET_HOST: (504, {}, b"")}, f"tool download failed: HTTP 504 from {ASSET_HOST}"),
+                ({RELEASE_HOST: (504, {}, b"")}, f"tool download failed: HTTP 504 from {RELEASE_HOST}"),
+                ({RELEASE_HOST: REDIRECT, ASSET_HOST: unresolved}, f"tool download failed: gaierror from {ASSET_HOST}"),
+                ({RELEASE_HOST: unresolved}, f"tool download failed: gaierror from {RELEASE_HOST}"),
+                ({RELEASE_HOST: REDIRECT, ASSET_HOST: TimeoutError("timed out")}, f"tool download failed: TimeoutError from {ASSET_HOST}"),
+                # A reason that is text and not an error: the error's own class.
+                ({RELEASE_HOST: urllib.error.URLError(f"unknown url type: {SIGNED_ASSET}")}, f"tool download failed: URLError from {RELEASE_HOST}"),
+                # A host that is no hostname is not printed either.
+                ({RELEASE_HOST: (302, {"Location": "https://bad_host/x?sig=SIGNED"}, b""), "bad_host": (504, {}, b"")},
+                 "tool download failed: HTTP 504 from an unnamed host")):
+            with self.subTest(message=message), Transport(answers).installed():
+                with self.assertRaises(tools.ToolError) as failed:
+                    tools.download(url)
+                self.assertEqual(str(failed.exception), message)
+                for leaked in ("?", "SIGNED", "sig=", "github-production-release-asset"):
+                    self.assertNotIn(leaked, str(failed.exception))
+        # The step's own line is that message and nothing more.
+        with Transport({RELEASE_HOST: REDIRECT, ASSET_HOST: (504, {}, b"")}).installed(), \
+                contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+            status = tools.main(["install-nextest", "--directory", "unused", "--os", "Linux", "--arch", "X64"])
+        self.assertEqual((status, output.getvalue(), errors.getvalue()),
+                         (1, "", f"error: tool download failed: HTTP 504 from {ASSET_HOST}\n"))
+
+    ARCHIVE = "cargo-nextest-test.tar.gz"
+    VERSION_LINE = f"cargo-nextest {tools.NEXTEST_VERSION} (abc 2026-09-21)"
+
+    ARCHIVE_BYTES = archive([("cargo-nextest", b"#!/bin/sh\n", tarfile.REGTYPE)])
+
+    def archive_bytes(self):
+        return self.ARCHIVE_BYTES
+
+    def install(self, directory, version_output, platform=("Linux", "X64"), returncode=0, *, cache=None, fetched=None):
+        """One install with the pin set to a small archive; `cache` is the --archive-cache, `fetched` what a fetch returns."""
+        data = self.archive_bytes()
+        pins = {platform: (self.ARCHIVE, hashlib.sha256(data).hexdigest())}
         completed = subprocess.CompletedProcess([], returncode, stdout=version_output, stderr="")
         path_file = Path(directory) / "github-path"
+        arguments = [] if cache is None else ["--archive-cache", str(cache)]
         with mock.patch.object(tools, "NEXTEST_ARCHIVES", pins), \
-                mock.patch.object(tools, "download", return_value=data), \
+                mock.patch.object(tools, "download", return_value=data if fetched is None else fetched) as download, \
                 mock.patch.object(tools.subprocess, "run", return_value=completed) as run, \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
             status = tools.main(["install-nextest", "--directory", str(Path(directory) / "bin"),
-                                 "--path-file", str(path_file), "--os", "Linux", "--arch", "X64"])
-        return status, path_file, run
+                                 "--path-file", str(path_file), "--os", "Linux", "--arch", "X64", *arguments])
+        return SimpleNamespace(status=status, path_file=path_file, run=run, download=download, output=output.getvalue(),
+                               errors=errors.getvalue(), data=data, sha256=pins[platform][1])
+
+    def tree(self, directory):
+        """Every path under a directory, with a link's target or a file's bytes."""
+        return {str(path.relative_to(directory)): (os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None)
+                for path in sorted(Path(directory).rglob("*"))}
+
+    def test_a_restored_archive_is_verified_and_used_with_no_request(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            cache = Path(directory) / "cargo/registry/archives"
+            cache.mkdir(parents=True)
+            (cache / self.ARCHIVE).write_bytes(self.archive_bytes())
+            before = self.tree(cache)
+            result = self.install(directory, self.VERSION_LINE + "\n", cache=cache)
+            self.assertEqual((result.status, result.errors), (0, ""))
+            result.download.assert_not_called()
+            self.assertEqual(result.output, f"{self.VERSION_LINE}; {self.ARCHIVE} sha256 {result.sha256}; archive from: cache\n")
+            # The executable is unpacked where --directory says, and the cache still holds the archive alone.
+            self.assertEqual((Path(directory) / "bin/cargo-nextest").read_bytes(), b"#!/bin/sh\n")
+            self.assertEqual(self.tree(cache), before)
+            self.assertEqual(list(before), [self.ARCHIVE])
+
+    def test_a_miss_is_one_fetch_whose_verified_archive_is_stored_by_rename_for_the_next_run(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            cache = Path(directory) / "cargo/registry/archives"
+            with mock.patch.object(tools.os, "rename", wraps=os.rename) as rename:
+                first = self.install(directory, self.VERSION_LINE + "\n", cache=cache)
+            self.assertEqual((first.status, first.errors), (0, ""))
+            first.download.assert_called_once_with(tools.NEXTEST_RELEASE + self.ARCHIVE)
+            self.assertEqual(first.output, f"{self.VERSION_LINE}; {self.ARCHIVE} sha256 {first.sha256}; archive from: fetch\n")
+            # The archive and nothing else: no executable and no temporary file.
+            self.assertEqual(self.tree(cache), {self.ARCHIVE: first.data})
+            self.assertEqual([call.args for call in rename.call_args_list], [(f".{self.ARCHIVE}.partial", self.ARCHIVE)])
+            self.assertTrue(all(call.kwargs["src_dir_fd"] == call.kwargs["dst_dir_fd"] for call in rename.call_args_list))
+            second = self.install(directory, self.VERSION_LINE + "\n", cache=cache)
+            second.download.assert_not_called()
+            self.assertTrue(second.output.endswith("; archive from: cache\n"))
+            # A temporary file that a killed run left is replaced, never trusted.
+            (cache / self.ARCHIVE).unlink()
+            (cache / f".{self.ARCHIVE}.partial").write_bytes(b"half")
+            self.assertEqual(self.install(directory, self.VERSION_LINE + "\n", cache=cache).status, 0)
+            self.assertEqual(self.tree(cache), {self.ARCHIVE: first.data})
+
+    def test_a_fetched_archive_with_another_digest_is_never_stored(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            cache = Path(directory) / "cargo/registry/archives"
+            result = self.install(directory, self.VERSION_LINE + "\n", cache=cache, fetched=self.archive_bytes() + b"x")
+            self.assertEqual(result.status, 1)
+            self.assertRegex(result.errors, rf"^error: checksum mismatch for fetched archive {re.escape(self.ARCHIVE)}: "
+                                            rf"expected {result.sha256}, got [0-9a-f]{{64}}\n$")
+            self.assertEqual(self.tree(directory), {})
+            # Without a cache directory nothing is stored anywhere, as before.
+            plain = self.install(directory, self.VERSION_LINE + "\n")
+            self.assertEqual(plain.status, 0)
+            plain.download.assert_called_once()
+            self.assertTrue(plain.output.endswith("; archive from: fetch\n"))
+            self.assertEqual(sorted(self.tree(directory)), ["bin", "bin/cargo-nextest", "github-path"])
+
+    def test_a_cached_archive_that_is_not_the_pinned_regular_file_fails_by_name_and_is_left_as_it_is(self):
+        good = self.archive_bytes()
+
+        def wrong_digest(path, base):
+            path.write_bytes(good + b"x")
+
+        def link(path, base):
+            (base / "elsewhere.tar.gz").write_bytes(good)
+            path.symlink_to(base / "elsewhere.tar.gz")
+
+        def dangling(path, base):
+            path.symlink_to(base / "missing.tar.gz")
+
+        def directory_there(path, base):
+            path.mkdir()
+
+        def oversized(path, base):
+            path.write_bytes(good)
+
+        name = re.escape(self.ARCHIVE)
+        cases = {
+            "another digest": (wrong_digest, rf"checksum mismatch for cached archive {name}, which is left in place: "
+                                             r"expected [0-9a-f]{64}, got [0-9a-f]{64}", None),
+            "a link to the pinned archive": (link, rf"cached archive {name} is a link or cannot be opened: ELOOP", None),
+            "a dangling link": (dangling, rf"cached archive {name} is a link or cannot be opened: ELOOP", None),
+            "a directory": (directory_there, rf"cached archive {name} is not a regular file", None),
+            "an oversized file": (oversized, rf"cached archive {name} exceeds its size limit", len(good) - 1),
+        }
+        for label, (place, message, limit) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+                base = Path(directory)
+                cache = base / "cargo/registry/archives"
+                cache.mkdir(parents=True)
+                place(cache / self.ARCHIVE, base)
+                before = self.tree(base)
+                with mock.patch.object(tools, "MAX_ARCHIVE", limit or tools.MAX_ARCHIVE), \
+                        mock.patch.object(tools.tarfile, "open") as parsed, \
+                        mock.patch.object(tools.hashlib, "sha256", wraps=hashlib.sha256) as hashed:
+                    result = self.install(directory, self.VERSION_LINE + "\n", cache=cache)
+                self.assertEqual(result.status, 1)
+                self.assertRegex(result.errors, rf"^error: {message}\n$")
+                # Not replaced by a fetch, not parsed, and nothing written or removed.
+                result.download.assert_not_called()
+                parsed.assert_not_called()
+                self.assertEqual(self.tree(base), before)
+                self.assertFalse(result.path_file.exists())
+                # Only the regular file within the bound was read as far as its hash.
+                self.assertEqual(hashed.call_count > 1, label == "another digest")
+
+    # The installer as the step runs it, in a process of its own, with a fetch replaced by a refusal.
+    ISOLATED_INSTALL = ("import importlib.util, sys\n"
+                        "spec = importlib.util.spec_from_file_location('ci_tools', sys.argv[1])\n"
+                        "tools = importlib.util.module_from_spec(spec)\n"
+                        "spec.loader.exec_module(tools)\n"
+                        "def refuse(*_, **__):\n"
+                        "    raise SystemExit('a request was made')\n"
+                        "tools.download = refuse\n"
+                        "sys.exit(tools.main(sys.argv[2:]))\n")
+    # Seconds the whole install may take before it counts as blocked; it needs well under one.
+    FIFO_DEADLINE = 30
+
+    def test_a_fifo_under_the_cached_archives_name_fails_by_name_and_never_blocks_the_step(self):
+        # Opened for reading without O_NONBLOCK, a FIFO that nothing writes to blocks until the job's time limit.
+        # The install therefore runs in a process of its own under a deadline: an open that blocks fails this test
+        # when the deadline passes and the process is killed, and can never hang the suite.
+        name = tools.NEXTEST_ARCHIVES[("Linux", "X64")][0]
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            base = Path(directory)
+            cache = base / "cargo/registry/archives"
+            cache.mkdir(parents=True)
+            os.mkfifo(cache / name)
+            before = self.tree(base)
+            command = [sys.executable, "-I", "-B", "-c", self.ISOLATED_INSTALL, str(ROOT / "scripts/ci/tools.py"), "install-nextest",
+                       "--directory", str(base / "bin"), "--path-file", str(base / "github-path"), "--os", "Linux", "--arch", "X64",
+                       "--archive-cache", str(cache)]
+            try:
+                result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=self.FIFO_DEADLINE)
+            except subprocess.TimeoutExpired:
+                self.fail(f"the install was still running after {self.FIFO_DEADLINE} s: opening the FIFO blocked")
+            self.assertEqual((result.returncode, result.stdout, result.stderr),
+                             (1, "", f"error: cached archive {name} is not a regular file\n"))
+            # Left as it is: still the FIFO, with nothing written beside it and no executable unpacked.
+            self.assertTrue(stat.S_ISFIFO(os.lstat(cache / name).st_mode))
+            self.assertEqual(self.tree(base), before)
+
+    def test_the_archive_cache_must_be_a_named_directory_of_its_own(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
+            base = Path(directory)
+            (base / "real").mkdir()
+            (base / "real" / self.ARCHIVE).write_bytes(self.archive_bytes())
+            (base / "alias").symlink_to(base / "real")
+            result = self.install(directory, self.VERSION_LINE + "\n", cache=base / "alias")
+            # Linux answers ENOTDIR for a link opened as a directory without following it, macOS ELOOP.
+            self.assertEqual(result.status, 1)
+            self.assertRegex(result.errors, r"^error: archive cache is not a directory of its own: (ENOTDIR|ELOOP)\n$")
+            result.download.assert_not_called()
+            # An empty value is a setup that exported no directory: it never means "fetch every time".
+            result = self.install(directory, self.VERSION_LINE + "\n", cache="")
+            self.assertEqual(result.status, 1)
+            self.assertIn("archive cache directory is empty", result.errors)
+            result.download.assert_not_called()
 
     def test_install_adds_the_directory_to_path_only_after_cargo_resolves_the_pin(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
-            status, path_file, run = self.install(directory, f"cargo-nextest {tools.NEXTEST_VERSION} (abc 2026-09-21)\n")
-            self.assertEqual(status, 0)
+            result = self.install(directory, f"cargo-nextest {tools.NEXTEST_VERSION} (abc 2026-09-21)\n")
+            self.assertEqual(result.status, 0)
             binary = Path(directory) / "bin/cargo-nextest"
             self.assertEqual(binary.read_bytes(), b"#!/bin/sh\n")
             self.assertTrue(binary.stat().st_mode & 0o111)
-            self.assertEqual(path_file.read_text(), f"{binary.parent.resolve()}\n")
-            self.assertEqual(run.call_args.args[0], ["cargo", "nextest", "--version"])
-            self.assertTrue(run.call_args.kwargs["env"]["PATH"].startswith(str(binary.parent.resolve())))
+            self.assertEqual(result.path_file.read_text(), f"{binary.parent.resolve()}\n")
+            self.assertEqual(result.run.call_args.args[0], ["cargo", "nextest", "--version"])
+            self.assertTrue(result.run.call_args.kwargs["env"]["PATH"].startswith(str(binary.parent.resolve())))
 
     def test_a_different_resolved_version_or_platform_fails_without_touching_path(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "scripts/ci/tests") as directory:
-            status, path_file, _ = self.install(directory, "cargo-nextest 0.9.100 (old)\n")
-            self.assertEqual(status, 1)
-            self.assertFalse(path_file.exists())
-            status, path_file, _ = self.install(directory, "", returncode=101)
-            self.assertEqual(status, 1)
-            status, path_file, _ = self.install(directory, "", platform=("Linux", "ARM64"))
-            self.assertEqual(status, 1)
-            self.assertFalse(path_file.exists())
+            result = self.install(directory, "cargo-nextest 0.9.100 (old)\n")
+            self.assertEqual(result.status, 1)
+            self.assertFalse(result.path_file.exists())
+            result = self.install(directory, "", returncode=101)
+            self.assertEqual(result.status, 1)
+            result = self.install(directory, "", platform=("Linux", "ARM64"))
+            self.assertEqual(result.status, 1)
+            self.assertFalse(result.path_file.exists())
 
 
 class WorkflowPolicyTests(unittest.TestCase):

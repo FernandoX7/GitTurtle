@@ -64,6 +64,8 @@ test crates/git-core/src/lib.rs - paths::Path (line 12) ... ok
 # the whole crate, `--partition slice:1/2` and `--partition slice:2/2`. A test
 # outside the slice prints the same SKIP line as `svg_bounded_mutation_probe`,
 # which is marked `#[ignore]`; the Starting and Summary lines count both alike.
+# cargo-nextest 0.9.152 printed these shapes on 2026-11-19 (the whole crate and
+# `slice:1/2`), so the lines stand as captured.
 # `libdav1d_layouts_match_the_binding` prints its output on success, indented.
 REAL_UNSHARDED = """\
 [ci] ────────────
@@ -151,7 +153,7 @@ def plural(count):
 
 
 def nextest_log(tests, shard=None, *, prefix="[ci]"):
-    """One nextest run in 0.9.146's shapes: every test of the list as its result or as a SKIP line.
+    """One nextest run in the shapes of 0.9.146 and 0.9.152: every test of the list as its result or as a SKIP line.
 
     A test's owner is a shard number or a collection of them; without a shard
     every test with an owner runs. The Starting and Summary lines hold what the
@@ -282,7 +284,7 @@ class ExtractionTests(Comparison):
 
 
 class NextestOutputTests(Comparison):
-    """What cargo-nextest 0.9.146 prints, from real runs with and without `--partition`."""
+    """What cargo-nextest 0.9.146 prints, and 0.9.152 alike, from real runs with and without `--partition`."""
 
     def test_a_run_is_counted_from_its_starting_line_to_its_summary_line(self):
         log = extract(NEXTEST)
