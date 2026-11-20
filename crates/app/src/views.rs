@@ -12215,6 +12215,63 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The Download rows the sentence's walk goes through
+    /// ([`download_sentence_walk`]), in its order: the file compared, the
+    /// sides its row offers a download for and the interface text size, so
+    /// one side's download and both sides', each at 18 and 13 pt. Each test
+    /// of the walk runs a slice of this list ([`DOWNLOAD_SENTENCE_PARTS`]).
+    const DOWNLOAD_SENTENCE_CASES: [(&str, &[&str], u8); 4] = [
+        ("one.txt", &["download-lfs-side-0"], 18),
+        ("one.txt", &["download-lfs-side-0"], 13),
+        (
+            "both.txt",
+            &["download-lfs-side-0", "download-lfs-side-1"],
+            18,
+        ),
+        (
+            "both.txt",
+            &["download-lfs-side-0", "download-lfs-side-1"],
+            13,
+        ),
+    ];
+
+    /// The slices of [`DOWNLOAD_SENTENCE_CASES`] the walk's tests take, each
+    /// named for the cases it holds.
+    const ONE_SIDE_AT_18_PT: std::ops::Range<usize> = 0..1;
+    const ONE_SIDE_AT_13_PT: std::ops::Range<usize> = 1..2;
+    const BOTH_SIDES_AT_18_PT: std::ops::Range<usize> = 2..3;
+    const BOTH_SIDES_AT_13_PT: std::ops::Range<usize> = 3..4;
+
+    /// Every slice a test of the walk takes, in the list's order. The walk
+    /// was one test, which on a hosted runner took up to 108.9 s of the
+    /// 120 s a test may run; a case added to the list goes to the slice with
+    /// time to spare, or to a new one with a test of its own
+    /// ([`the_download_sentence_s_walk_takes_each_case_in_one_part`]).
+    const DOWNLOAD_SENTENCE_PARTS: [std::ops::Range<usize>; 4] = [
+        ONE_SIDE_AT_18_PT,
+        ONE_SIDE_AT_13_PT,
+        BOTH_SIDES_AT_18_PT,
+        BOTH_SIDES_AT_13_PT,
+    ];
+
+    /// The walk's slices, one after another, are
+    /// [`DOWNLOAD_SENTENCE_CASES`] whole: each case in one slice, in the
+    /// list's order, and no slice empty, so a case added to the list that
+    /// no test takes fails here, and so does one that two tests take.
+    #[test]
+    fn the_download_sentence_s_walk_takes_each_case_in_one_part() {
+        let taken: Vec<usize> = DOWNLOAD_SENTENCE_PARTS.into_iter().flatten().collect();
+        let listed: Vec<usize> = (0..DOWNLOAD_SENTENCE_CASES.len()).collect();
+        assert_eq!(
+            taken, listed,
+            "the slices take each case of the list once, in its order"
+        );
+        assert!(
+            DOWNLOAD_SENTENCE_PARTS.iter().all(|part| !part.is_empty()),
+            "a slice with no case would pass having walked nothing"
+        );
+    }
+
     /// A Download row with no failure line draws its sentence only on one
     /// line beside its buttons, for one side's download or both, and
     /// wherever it would not fit there gives it to each button's tooltip and
@@ -12226,9 +12283,11 @@ pub(crate) mod tests {
     /// headings, Compare's footer giving way there first, its words kept in
     /// the comparison's description, and only where it would leave no whole
     /// row. The sentence first stands at the width where it fits beside the
-    /// buttons, searched for to the pixel: a pixel narrower, it moves.
-    #[gpui::test]
-    async fn a_download_row_s_sentence_stands_on_one_line_beside_its_buttons(
+    /// buttons, searched for to the pixel: a pixel narrower, it moves. Walks
+    /// `cases`, a slice of [`DOWNLOAD_SENTENCE_CASES`], in a window of its
+    /// own.
+    async fn download_sentence_walk(
+        cases: &[(&'static str, &'static [&'static str], u8)],
         cx: &mut TestAppContext,
     ) {
         let pointer = |digit: &str| {
@@ -12249,81 +12308,77 @@ pub(crate) mod tests {
             ),
         ]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
-        for (path, sides) in [
-            ("one.txt", &["download-lfs-side-0"][..]),
-            (
-                "both.txt",
-                &["download-lfs-side-0", "download-lfs-side-1"][..],
-            ),
-        ] {
-            for text in [18, 13] {
-                cx.update(|window, cx| {
-                    window.set_scale_factor(2.);
-                    appearance::apply_text_sizes(text, 12, window, cx)
-                });
+        for &(path, sides, text) in cases {
+            cx.update(|window, cx| {
+                window.set_scale_factor(2.);
+                appearance::apply_text_sizes(text, 12, window, cx)
+            });
+            cx.simulate_resize(size(px(1800.), px(900.)));
+            draw(cx);
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = TextMode::Unified;
+                    app.select_file(index, window, cx)
+                })
+            });
+            settle(&app, cx).await;
+            for scale in [2.0f32, 1.2] {
                 cx.simulate_resize(size(px(1800.), px(900.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
                 draw(cx);
-                let index = app.read_with(cx, |app, _| {
-                    app.files
-                        .iter()
-                        .position(|file| file.path() == std::path::Path::new(path))
-                        .expect("the commit changes it")
-                });
-                cx.update(|window, cx| {
-                    app.update(cx, |app, cx| {
-                        app.text_mode = TextMode::Unified;
-                        app.select_file(index, window, cx)
-                    })
-                });
-                settle(&app, cx).await;
-                for scale in [2.0f32, 1.2] {
-                    cx.simulate_resize(size(px(1800.), px(900.)));
-                    cx.update(|window, _| window.set_scale_factor(scale));
-                    draw(cx);
-                    draw(cx);
-                    let at = format!("{path} at {text} pt and scale {scale}");
-                    let whole = cx
-                        .debug_bounds(DOWNLOAD_SENTENCE)
-                        .expect("with the room, the row says why");
-                    let sentence = (whole.size.width, whole.size.height);
-                    for width in (461..=1519).step_by(46) {
-                        for mode in [TextMode::Unified, TextMode::Split] {
-                            let shown = (width as f32, scale, mode);
-                            let (drawn, ..) =
-                                download_row_at(&app, cx, shown, sides, sentence, &at).await;
-                            assert!(
-                                width > 461 || !drawn,
-                                "{at}: in a 461 px window the sentence moves"
-                            );
-                        }
-                    }
-                    // The narrowest window, to the pixel, whose row draws
-                    // the sentence, and the room on both sides of it.
-                    let (mut narrower, mut wider) = (461., 1800.);
-                    while wider - narrower > 1. {
-                        let width = ((narrower + wider) / 2.0f32).floor();
-                        let shown = (width, scale, TextMode::Unified);
+                draw(cx);
+                let at = format!("{path} at {text} pt and scale {scale}");
+                assert_eq!(
+                    cx.update(|window, _| window.scale_factor()),
+                    scale,
+                    "{at}: the sentence is measured at the scale asked for"
+                );
+                let whole = cx
+                    .debug_bounds(DOWNLOAD_SENTENCE)
+                    .expect("with the room, the row says why");
+                let sentence = (whole.size.width, whole.size.height);
+                for width in (461..=1519).step_by(46) {
+                    for mode in [TextMode::Unified, TextMode::Split] {
+                        let shown = (width as f32, scale, mode);
                         let (drawn, ..) =
                             download_row_at(&app, cx, shown, sides, sentence, &at).await;
-                        if drawn {
-                            wider = width;
-                        } else {
-                            narrower = width;
-                        }
-                    }
-                    for mode in [TextMode::Unified, TextMode::Split] {
-                        let shown = (narrower, scale, mode);
-                        let (moved, short, need) =
-                            download_row_at(&app, cx, shown, sides, sentence, &at).await;
-                        let shown = (wider, scale, mode);
-                        let (stands, room, _) =
-                            download_row_at(&app, cx, shown, sides, sentence, &at).await;
                         assert!(
-                            !moved && stands && short < need && need <= room + px(1e-3),
-                            "{at}: the sentence first fits, {need:?}, at {wider} px, in \
-                             {room:?}, and moves at {narrower} px, in {short:?}"
+                            width > 461 || !drawn,
+                            "{at}: in a 461 px window the sentence moves"
                         );
                     }
+                }
+                // The narrowest window, to the pixel, whose row draws
+                // the sentence, and the room on both sides of it.
+                let (mut narrower, mut wider) = (461., 1800.);
+                while wider - narrower > 1. {
+                    let width = ((narrower + wider) / 2.0f32).floor();
+                    let shown = (width, scale, TextMode::Unified);
+                    let (drawn, ..) = download_row_at(&app, cx, shown, sides, sentence, &at).await;
+                    if drawn {
+                        wider = width;
+                    } else {
+                        narrower = width;
+                    }
+                }
+                for mode in [TextMode::Unified, TextMode::Split] {
+                    let shown = (narrower, scale, mode);
+                    let (moved, short, need) =
+                        download_row_at(&app, cx, shown, sides, sentence, &at).await;
+                    let shown = (wider, scale, mode);
+                    let (stands, room, _) =
+                        download_row_at(&app, cx, shown, sides, sentence, &at).await;
+                    assert!(
+                        !moved && stands && short < need && need <= room + px(1e-3),
+                        "{at}: the sentence first fits, {need:?}, at {wider} px, in \
+                         {room:?}, and moves at {narrower} px, in {short:?}"
+                    );
                 }
             }
         }
@@ -12331,6 +12386,42 @@ pub(crate) mod tests {
             window.set_scale_factor(2.);
             appearance::apply_text_sizes(13, 12, window, cx);
         });
+    }
+
+    /// [`download_sentence_walk`] for one side's download at 18 pt
+    /// ([`ONE_SIDE_AT_18_PT`]).
+    #[gpui::test]
+    async fn a_download_row_s_sentence_stands_on_one_line_beside_its_buttons_for_one_side_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        download_sentence_walk(&DOWNLOAD_SENTENCE_CASES[ONE_SIDE_AT_18_PT], cx).await;
+    }
+
+    /// [`download_sentence_walk`] for one side's download at 13 pt
+    /// ([`ONE_SIDE_AT_13_PT`]).
+    #[gpui::test]
+    async fn a_download_row_s_sentence_stands_on_one_line_beside_its_buttons_for_one_side_at_13_pt(
+        cx: &mut TestAppContext,
+    ) {
+        download_sentence_walk(&DOWNLOAD_SENTENCE_CASES[ONE_SIDE_AT_13_PT], cx).await;
+    }
+
+    /// [`download_sentence_walk`] for both sides' downloads at 18 pt
+    /// ([`BOTH_SIDES_AT_18_PT`]).
+    #[gpui::test]
+    async fn a_download_row_s_sentence_stands_on_one_line_beside_its_buttons_for_both_sides_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        download_sentence_walk(&DOWNLOAD_SENTENCE_CASES[BOTH_SIDES_AT_18_PT], cx).await;
+    }
+
+    /// [`download_sentence_walk`] for both sides' downloads at 13 pt
+    /// ([`BOTH_SIDES_AT_13_PT`]).
+    #[gpui::test]
+    async fn a_download_row_s_sentence_stands_on_one_line_beside_its_buttons_for_both_sides_at_13_pt(
+        cx: &mut TestAppContext,
+    ) {
+        download_sentence_walk(&DOWNLOAD_SENTENCE_CASES[BOTH_SIDES_AT_13_PT], cx).await;
     }
 
     /// A Download row's sentence, stood beside its buttons by a measurement
@@ -13264,6 +13355,12 @@ pub(crate) mod tests {
         let at = format!(
             "{at} in a {width} px window, {}",
             if split { "Split" } else { "Diff" }
+        );
+        // Set after the resize, which takes the test display's own scale.
+        assert_eq!(
+            cx.update(|window, _| window.scale_factor()),
+            scale,
+            "{at}: drawn at the scale asked for"
         );
         let device = px(1. / scale);
         let pane = cx.debug_bounds("compare-toolbar").expect("the pane");
