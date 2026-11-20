@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -556,6 +557,42 @@ class OutputTests(Fixtures):
         self.assertEqual(suites.named("pkg.test_m.Case.test_plain", metrics), "pkg.test_m.Case.test_plain")
         self.assertEqual(suites.named("m.C.test_##[endgroup]\N{LINE SEPARATOR}::endgroup::\nx\x1b[0m\x00y /home/someone/z", metrics),
                          "m.C.test_#\\x23[endgroup] ::endgroup:: xy [path]")
+
+    def test_the_collectors_rule_gives_every_byte_the_drivers_own_gave(self):
+        metrics = suites.collector()
+
+        def before(text):
+            """The driver's own `harmless`, as it was until the collector owned the rule."""
+            separators = str.maketrans({"\N{LINE SEPARATOR}": " ", "\N{PARAGRAPH SEPARATOR}": " ", "\x85": " "})
+            kept = "".join(character for character in text.translate(separators)
+                           if character == "\t" or not (character < " " or "\x7f" <= character <= "\x9f"))
+            return kept.replace("##[", "#\\x23[")
+
+        # Every character alone and inside the spelling, then every short text of the characters that matter.
+        texts = [form.format(chr(code)) for code in range(0x3000) for form in ("a{}b", "#{}#[", "##{}[")]
+        texts += ["".join(characters) for length in range(1, 6)
+                  for characters in itertools.product("#[\\a\t\n\x00\x85\x9b\N{LINE SEPARATOR}", repeat=length)]
+        for text in texts:
+            if metrics.harmless(text) != before(text):
+                self.fail(ascii(text))
+
+    def test_a_line_the_collector_printed_is_quoted_as_it_stands(self):
+        # The collector makes each line it prints harmless and the driver does so again: twice is once.
+        metrics = suites.collector()
+        cases = (("##[error]x", "#\\x23[error]x"), ("x ###[endgroup] ##[group]y", "x ##\\x23[endgroup] #\\x23[group]y"),
+                 ("#\x00#[add-mask]FAILED", "#\\x23[add-mask]FAILED"), ("one\N{LINE SEPARATOR}::endgroup::", "one ::endgroup::"),
+                 ("two\x85::endgroup::\x9b0m", "two ::endgroup::0m"), ("tab\tstays", "tab\tstays"),
+                 ("Ran 3 tests in 0.001s", "Ran 3 tests in 0.001s"))
+        program = f"import sys\nfor line in {[raw for raw, _ in cases]!r}:\n    sys.stdout.buffer.write(line.encode('utf-8') + b'\\n')\n"
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([sys.executable, "-B", str(suites.METRICS), "measure", "--name", "printed",
+                                     "--directory", directory, "--", sys.executable, "-c", program],
+                                    capture_output=True, check=False)
+        self.assertEqual((result.returncode, result.stderr), (0, b""))
+        printed = result.stdout.split(b"\n")[:-1]
+        self.assertEqual(printed, [("[ci] " + line).encode("utf-8") for _, line in cases])
+        for line in printed:
+            self.assertEqual(suites.quote(line + b"\n", metrics).encode("utf-8"), line)
 
     def test_summary_lines_that_a_test_prints_neither_stop_the_replay_nor_pass_for_unittests(self):
         status, lines, _, _ = drive([self.suite("digits"), self.suite("passing")])

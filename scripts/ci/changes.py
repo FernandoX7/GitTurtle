@@ -76,6 +76,11 @@ def classify_paths(paths: list[bytes]) -> dict:
         # it reaches main.
         if path == "scripts/ci/apt_install.py":
             return full_plan("package-installation-helper")
+        # Every Rust job runs its commands under the collector, and the Rust
+        # cache action records with it, so a change of it must run them before
+        # it reaches main.
+        if path == "scripts/ci/metrics.py":
+            return full_plan("ci-collector")
         if path.startswith(".github/"):
             return full_plan("workflow-or-repository-policy")
         # Claude Code configuration is development guidance like .agents/ and
