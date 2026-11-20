@@ -18023,6 +18023,17 @@ mod tests {
         }
     }
 
+    /// The text sizes and window sizes the twelve-row PR list is walked at
+    /// ([`a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at`]), in the
+    /// order one test walked them. Each is one test now, its own slice of this list below.
+    const FOLD_SIZES: [(u8, f32, f32); 3] = [(13, 461., 490.), (17, 461., 490.), (18, 461., 490.)];
+
+    /// The slice of [`FOLD_SIZES`] each part of the walk runs, in the list's order;
+    /// `the_parts_of_the_fold_walk_run_each_size_once` holds them to the list.
+    const FOLD_AT_13_PT: std::ops::Range<usize> = 0..1;
+    const FOLD_AT_17_PT: std::ops::Range<usize> = 1..2;
+    const FOLD_AT_18_PT: std::ops::Range<usize> = 2..3;
+
     /// Tab and Shift+Tab through a PR list of twelve rows, taller than the list's 206 px cap, at
     /// 13, 17 and 18 pt in a 461 × 490 window, across the list's fold and the body's: each row's
     /// title takes focus with its ring whole, inside both the list and the body, the list
@@ -18031,8 +18042,12 @@ mod tests {
     /// ([`needless_cut`]). Rows start below the list's fold, so the walk cannot pass without
     /// scrolling it. Revealed as parts of the body, the rows below the fold had the body scroll
     /// to where the list clipped them, away from the list, their rings undrawn.
-    #[gpui::test]
-    async fn a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body(
+    ///
+    /// Walked at `sizes`, a slice of [`FOLD_SIZES`], on a panel and twelve rows of its own:
+    /// one test a size, since the six walks in one test took 73.6 s on a hosted runner,
+    /// against the 120 s at which nextest ends a test.
+    async fn a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at(
+        sizes: std::ops::Range<usize>,
         cx: &mut TestAppContext,
     ) {
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
@@ -18047,7 +18062,7 @@ mod tests {
             .collect();
         let count = rows.len();
         panel.update(cx, |panel, _| panel.rows = rows);
-        for size in [(13, 461., 490.), (17, 461., 490.), (18, 461., 490.)] {
+        for size in FOLD_SIZES[sizes].iter().copied() {
             for key in BOTH_WAYS {
                 show_surface((&app, &panel, &pull, &[]), Surface::Pulls, size, cx).await;
                 // Laid out, a row the list clips draws nothing a debug selector records.
@@ -18121,6 +18136,50 @@ mod tests {
                 assert_eq!(findings, Vec::<String>::new(), "{size:?} by {key}");
             }
         }
+    }
+
+    /// [`a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at`] 13 pt.
+    #[gpui::test]
+    async fn a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at_13_pt(
+        cx: &mut TestAppContext,
+    ) {
+        a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at(FOLD_AT_13_PT, cx)
+            .await;
+    }
+
+    /// [`a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at`] 17 pt.
+    #[gpui::test]
+    async fn a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at_17_pt(
+        cx: &mut TestAppContext,
+    ) {
+        a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at(FOLD_AT_17_PT, cx)
+            .await;
+    }
+
+    /// [`a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at`] 18 pt.
+    #[gpui::test]
+    async fn a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        a_pr_row_below_the_lists_fold_is_revealed_in_the_list_then_the_body_at(FOLD_AT_18_PT, cx)
+            .await;
+    }
+
+    /// The three parts of the twelve-row walk run [`FOLD_SIZES`] between them, each size once
+    /// and in the list's order, and each part runs one size at least: a size added to the list
+    /// that no part takes fails here, as does one two parts take.
+    #[test]
+    fn the_parts_of_the_fold_walk_run_each_size_once() {
+        let parts = [FOLD_AT_13_PT, FOLD_AT_17_PT, FOLD_AT_18_PT];
+        assert!(
+            parts.iter().all(|part| !part.is_empty()),
+            "a part runs no size: {parts:?}"
+        );
+        let run: Vec<_> = parts
+            .into_iter()
+            .flat_map(|part| FOLD_SIZES[part].iter().copied())
+            .collect();
+        assert_eq!(run, FOLD_SIZES);
     }
 
     /// A pane that holds focus, itself or on a control inside it, hands it to the control
