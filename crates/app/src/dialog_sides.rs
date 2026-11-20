@@ -29,8 +29,7 @@ const SIZES: [(u8, f32, f32); 4] = [
 /// The half tile at both text sizes on a display of fractional scale, 1.25,
 /// where a ghost Button's pull, 12.5 device pixels at 13 pt and about 17.3 at
 /// 18 pt, lies on the device pixel only as layout snaps it
-/// ([`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]; the test
-/// display's own scale is 2).
+/// ([`ghost_buttons_walk`]; the test display's own scale is 2).
 const FRACTIONAL: [(u8, f32, f32, f32); 2] = [(13, 461., 490., 1.25), (18, 461., 490., 1.25)];
 
 /// A dialog the fixture opens from History: the ones with a ghost Button at
@@ -78,7 +77,8 @@ impl Site {
     ];
 
     /// The dialogs with a ghost Button at their text edge, walked by
-    /// [`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]: those in
+    /// [`ghost_buttons_walk`], whose tests each take a slice of them
+    /// ([`GHOST_PARTS`]): those in
     /// [`Self::ALL`], Download an LFS preview and Worktree created, opened
     /// from their openers with a working file's pointer and a worktree's
     /// plan the fixture reads but never creates, the Reflog, whose
@@ -533,7 +533,7 @@ fn inside(panel: Bounds<Pixels>) -> Bounds<Pixels> {
 /// the text started 16 px inside at 18 pt, where the 14 px pull and the 3 px
 /// ring take 17. The ghost Buttons pulled before that edge, their rings end
 /// 3 px inside the panel's edge at 13 pt and on it at 18 pt
-/// ([`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]).
+/// ([`ghost_buttons_walk`]).
 #[gpui::test]
 async fn dialogs_pad_their_sides_for_a_ghost_buttons_ring(cx: &mut TestAppContext) {
     let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
@@ -922,9 +922,11 @@ fn ghost_findings(
 /// reveals nothing, or with no reveal of their own, Compare local
 /// revisions' choices took focus below the form's fold in the half tile,
 /// and Read configured source's, Open in editor's and the series list's
-/// rings were cut at the foot at 18 pt there.
-#[gpui::test]
-async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAppContext) {
+/// rings were cut at the foot at 18 pt there. Walks `sites`, a slice of
+/// [`Site::GHOSTS`], through every size in a window of its own, so the one
+/// size at least is looked for among all of them for each of its dialogs.
+async fn ghost_buttons_walk(sites: &[Site], cx: &mut TestAppContext) {
+    assert!(!sites.is_empty(), "the walk has a dialog to open");
     let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
     sweep::prepare(&app, cx);
     let mut failures = Vec::new();
@@ -949,9 +951,14 @@ async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAp
         appearance::mark_controls(control_mark());
         width_walk::frame(cx);
         width_walk::frame(cx);
-        for site in Site::GHOSTS {
+        for &site in sites {
             let at = format!("{site:?} at {interface} pt in {width} × {height} at scale {scale}");
             site.open(&app, cx).await;
+            assert_eq!(
+                cx.update(|window, _| window.scale_factor()),
+                scale,
+                "{at}: the dialog is read at the scale asked for"
+            );
             let Some((panel, Some(edge))) = drawn(cx) else {
                 failures.push(format!("{at}: no dialog panel with text drawn"));
                 sweep::close_dialogs(cx, &at, interface, &mut Vec::new());
@@ -1035,7 +1042,7 @@ async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAp
             views::tests::settle(&app, cx).await;
         }
     }
-    for site in Site::GHOSTS {
+    for &site in sites {
         for row in site.ghost_rows().into_iter().filter(|row| row.drawn) {
             let (selector, _) = &row.ghosts[0];
             let opened = format!("{site:?} at ");
@@ -1051,6 +1058,86 @@ async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAp
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The slices of [`Site::GHOSTS`] the tests of the ghost Buttons' walk
+/// ([`ghost_buttons_walk`]) take, each named for the dialogs it holds. The
+/// walk reads each Button whole in view at one size at least, a rule kept a
+/// dialog across the sizes, so it is cut between dialogs, each test taking
+/// its dialogs through every size, and never between sizes.
+const ABOUT_PROFILES_AND_ACTIVITY: std::ops::Range<usize> = 0..4;
+const REVISION_CHOICES_AND_SERIES_REVIEW: std::ops::Range<usize> = 4..6;
+const REMOTE_FORM_LFS_SOURCE_AND_WORKTREE_CREATED: std::ops::Range<usize> = 6..9;
+const REFLOG_AND_INTERACTIVE_REBASE: std::ops::Range<usize> = 9..11;
+
+/// Every slice a test of the walk takes, in the list's order. The walk was
+/// one test, which on a hosted runner took up to 100.1 s of the 120 s a test
+/// may run; a dialog added to the list goes to the slice with time to spare,
+/// or to a new one with a test of its own
+/// ([`the_ghost_buttons_walk_takes_each_dialog_in_one_part`]).
+const GHOST_PARTS: [std::ops::Range<usize>; 4] = [
+    ABOUT_PROFILES_AND_ACTIVITY,
+    REVISION_CHOICES_AND_SERIES_REVIEW,
+    REMOTE_FORM_LFS_SOURCE_AND_WORKTREE_CREATED,
+    REFLOG_AND_INTERACTIVE_REBASE,
+];
+
+/// The walk's slices, one after another, are [`Site::GHOSTS`] whole: each
+/// dialog in one slice, in the list's order, and no slice empty, so a dialog
+/// added to the list that no test takes fails here, and so does one that two
+/// tests take.
+#[test]
+fn the_ghost_buttons_walk_takes_each_dialog_in_one_part() {
+    let taken: Vec<usize> = GHOST_PARTS.into_iter().flatten().collect();
+    let listed: Vec<usize> = (0..Site::GHOSTS.len()).collect();
+    assert_eq!(
+        taken, listed,
+        "the slices take each dialog of the list once, in its order"
+    );
+    assert!(
+        GHOST_PARTS.iter().all(|part| !part.is_empty()),
+        "a slice with no dialog would pass having walked nothing"
+    );
+}
+
+/// [`ghost_buttons_walk`] for About, Git profiles, the profile form and
+/// Activity ([`ABOUT_PROFILES_AND_ACTIVITY`]).
+#[gpui::test]
+async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge_in_about_the_profile_dialogs_and_activity(
+    cx: &mut TestAppContext,
+) {
+    ghost_buttons_walk(&Site::GHOSTS[ABOUT_PROFILES_AND_ACTIVITY], cx).await;
+}
+
+/// [`ghost_buttons_walk`] for Compare local revisions' choices and the
+/// rewritten-series review ([`REVISION_CHOICES_AND_SERIES_REVIEW`]).
+#[gpui::test]
+async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge_in_the_revision_choices_and_the_series_review(
+    cx: &mut TestAppContext,
+) {
+    ghost_buttons_walk(&Site::GHOSTS[REVISION_CHOICES_AND_SERIES_REVIEW], cx).await;
+}
+
+/// [`ghost_buttons_walk`] for Add remote, Download an LFS preview and
+/// Worktree created ([`REMOTE_FORM_LFS_SOURCE_AND_WORKTREE_CREATED`]).
+#[gpui::test]
+async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge_in_the_remote_form_the_lfs_source_and_worktree_created(
+    cx: &mut TestAppContext,
+) {
+    ghost_buttons_walk(
+        &Site::GHOSTS[REMOTE_FORM_LFS_SOURCE_AND_WORKTREE_CREATED],
+        cx,
+    )
+    .await;
+}
+
+/// [`ghost_buttons_walk`] for the Reflog and interactive rebase
+/// ([`REFLOG_AND_INTERACTIVE_REBASE`]).
+#[gpui::test]
+async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge_in_the_reflog_and_interactive_rebase(
+    cx: &mut TestAppContext,
+) {
+    ghost_buttons_walk(&Site::GHOSTS[REFLOG_AND_INTERACTIVE_REBASE], cx).await;
 }
 
 /// An empty view for a window that only needs the kit's root.

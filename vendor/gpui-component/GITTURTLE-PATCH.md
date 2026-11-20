@@ -769,7 +769,9 @@ panel and the theme editor) at 13 and 18 pt in a 461 × 490 and a
 footer's close Button, 16 px and 17 px inside the panel's edge, and every
 ring Tab draws in those with a ghost Button at their text edge, and in the
 palette, inside it. Download an LFS preview, Worktree created and the
-Reflog are reached by `dialog_sides::ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`,
+Reflog are reached by `dialog_sides::ghost_buttons_walk` (run by the four
+`dialog_sides::ghost_buttons_stand_their_labels_on_a_dialogs_text_edge_in_…`
+tests, a slice of its dialogs each),
 which opens the first two from their openers, with a working file's pointer
 and a worktree's plan the test makes, and the Reflog with its newest entry
 selected, beside the other seven consumers, at the same sizes and windows,
