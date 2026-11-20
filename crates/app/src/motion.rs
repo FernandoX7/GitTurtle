@@ -2284,8 +2284,8 @@ mod tests {
     }
 
     /// Where the pointer stands as a control of the Working list is pressed
-    /// ([`a_working_control_takes_a_press_exactly_when_it_is_lit`]).
-    #[derive(Clone, Copy, Debug)]
+    /// ([`a_working_control_takes_a_press_exactly_when_it_is_lit_for`]).
+    #[derive(Clone, Copy, Debug, PartialEq)]
     enum Aim {
         /// Moved onto delta's Stage, nothing pressed before.
         MovedOntoARowsStage,
@@ -2314,6 +2314,55 @@ mod tests {
         AwayOnARowsUnstageThatArrived(&'static [(f32, f32)]),
     }
 
+    /// Every press [`a_working_control_takes_a_press_exactly_when_it_is_lit_for`]
+    /// makes, in the order one test made them: where the pointer stands, the
+    /// click's count and whether the control under it is lit. Each part of
+    /// the test runs its own slice of this list, below.
+    const PRESSES: [(Aim, usize, bool); 26] = [
+        (Aim::MovedOntoARowsStage, 1, true),
+        (Aim::StillOnStageAllThatArrived, 1, false),
+        (Aim::StillOnStageAllThatArrived, 2, false),
+        (Aim::MovedOnStageAllThatArrived, 1, true),
+        (Aim::AwayOnStageAllThatArrived(&[(1., 0.)]), 1, false),
+        (Aim::AwayOnStageAllThatArrived(&[(3., 0.)]), 2, false),
+        (Aim::AwayOnStageAllThatArrived(&[(0., 5.)]), 1, false),
+        (Aim::AwayOnStageAllThatArrived(&[(-3., 4.)]), 1, false),
+        (Aim::AwayOnStageAllThatArrived(&[(4., -4.)]), 1, false),
+        (Aim::AwayOnStageAllThatArrived(&[(5., 5.)]), 2, false),
+        (Aim::AwayOnStageAllThatArrived(&[(-5., 5.)]), 1, false),
+        (Aim::AwayOnStageAllThatArrived(&[(6., 0.)]), 1, true),
+        (Aim::AwayOnStageAllThatArrived(&[(0., 6.)]), 1, true),
+        (Aim::AwayOnStageAllThatArrived(&[(5.5, 0.)]), 1, true),
+        (Aim::AwayOnStageAllThatArrived(&[(-6., 3.)]), 1, true),
+        (
+            Aim::AwayOnStageAllThatArrived(&[(3., 0.), (7., 0.)]),
+            1,
+            true,
+        ),
+        (Aim::BackOnStageAllThatArrived, 1, true),
+        (Aim::BackOnStageAllThatArrived, 2, true),
+        (Aim::StillOnARowsStageThatArrived, 1, false),
+        (Aim::StillOnARowsStageThatArrived, 2, false),
+        (Aim::StillOnARowsUnstageThatArrived, 1, false),
+        (Aim::StillOnARowsUnstageThatArrived, 2, false),
+        (Aim::MovedOnARowsUnstageThatArrived, 1, true),
+        (Aim::AwayOnARowsUnstageThatArrived(&[(-1., 0.)]), 1, false),
+        (Aim::AwayOnARowsUnstageThatArrived(&[(-5., 0.)]), 1, false),
+        (Aim::AwayOnARowsUnstageThatArrived(&[(-6., 0.)]), 1, true),
+    ];
+
+    /// The slice of [`PRESSES`] each part of the test runs, in the list's
+    /// order: the pointer moved onto a row's Stage, and on the Stage all that
+    /// arrived under it, still or moved; within 5 px of where it rested on
+    /// that Stage all; past 5 px from there, or gone to another row and back;
+    /// and on a row's Stage or Unstage that arrived under it.
+    /// `the_parts_of_the_lit_press_test_make_each_press_once` holds them to
+    /// the list.
+    const PRESSES_ONTO_A_ROW_AND_ON_STAGE_ALL: std::ops::Range<usize> = 0..4;
+    const PRESSES_WITHIN_5_PX_ON_STAGE_ALL: std::ops::Range<usize> = 4..11;
+    const PRESSES_PAST_5_PX_ON_STAGE_ALL: std::ops::Range<usize> = 11..18;
+    const PRESSES_ON_A_ROW_THAT_ARRIVED: std::ops::Range<usize> = 18..26;
+
     /// A control of the Working list that starts a write, a row's Stage or
     /// Unstage or a heading's Stage all or Unstage all, takes a pointer's
     /// press exactly when it is lit: the hover fill it draws under the
@@ -2327,40 +2376,15 @@ mod tests {
     /// and 4 px up or 5 px and 5 px, where the platform still counts a
     /// double-click's second press; 5.5 px or 6 px along one axis is moved,
     /// whatever the other, and so is a drift of 3 px and 4 px more.
-    #[gpui::test]
-    async fn a_working_control_takes_a_press_exactly_when_it_is_lit(cx: &mut TestAppContext) {
-        for (aim, count, lights) in [
-            (Aim::MovedOntoARowsStage, 1, true),
-            (Aim::StillOnStageAllThatArrived, 1, false),
-            (Aim::StillOnStageAllThatArrived, 2, false),
-            (Aim::MovedOnStageAllThatArrived, 1, true),
-            (Aim::AwayOnStageAllThatArrived(&[(1., 0.)]), 1, false),
-            (Aim::AwayOnStageAllThatArrived(&[(3., 0.)]), 2, false),
-            (Aim::AwayOnStageAllThatArrived(&[(0., 5.)]), 1, false),
-            (Aim::AwayOnStageAllThatArrived(&[(-3., 4.)]), 1, false),
-            (Aim::AwayOnStageAllThatArrived(&[(4., -4.)]), 1, false),
-            (Aim::AwayOnStageAllThatArrived(&[(5., 5.)]), 2, false),
-            (Aim::AwayOnStageAllThatArrived(&[(-5., 5.)]), 1, false),
-            (Aim::AwayOnStageAllThatArrived(&[(6., 0.)]), 1, true),
-            (Aim::AwayOnStageAllThatArrived(&[(0., 6.)]), 1, true),
-            (Aim::AwayOnStageAllThatArrived(&[(5.5, 0.)]), 1, true),
-            (Aim::AwayOnStageAllThatArrived(&[(-6., 3.)]), 1, true),
-            (
-                Aim::AwayOnStageAllThatArrived(&[(3., 0.), (7., 0.)]),
-                1,
-                true,
-            ),
-            (Aim::BackOnStageAllThatArrived, 1, true),
-            (Aim::BackOnStageAllThatArrived, 2, true),
-            (Aim::StillOnARowsStageThatArrived, 1, false),
-            (Aim::StillOnARowsStageThatArrived, 2, false),
-            (Aim::StillOnARowsUnstageThatArrived, 1, false),
-            (Aim::StillOnARowsUnstageThatArrived, 2, false),
-            (Aim::MovedOnARowsUnstageThatArrived, 1, true),
-            (Aim::AwayOnARowsUnstageThatArrived(&[(-1., 0.)]), 1, false),
-            (Aim::AwayOnARowsUnstageThatArrived(&[(-5., 0.)]), 1, false),
-            (Aim::AwayOnARowsUnstageThatArrived(&[(-6., 0.)]), 1, true),
-        ] {
+    ///
+    /// Pressed for `presses`, a slice of [`PRESSES`], each press on files of
+    /// its own: one test took 81.5 s on a hosted macOS runner, against the
+    /// 120 s at which nextest ends a test.
+    async fn a_working_control_takes_a_press_exactly_when_it_is_lit_for(
+        presses: std::ops::Range<usize>,
+        cx: &mut TestAppContext,
+    ) {
+        for (aim, count, lights) in PRESSES[presses].iter().copied() {
             let at = format!("{aim:?}, click {count}");
             let (fixture, app, cx) = six_files(cx).await;
             let (_, palette) = crate::appearance::test_palettes().remove(0);
@@ -2444,6 +2468,83 @@ mod tests {
                 "{at}: the index changes exactly when the press is taken"
             );
         }
+    }
+
+    /// [`a_working_control_takes_a_press_exactly_when_it_is_lit_for`] a
+    /// pointer moved onto a row's Stage, and one on the Stage all that
+    /// arrived under it, still or moved.
+    #[gpui::test]
+    async fn a_working_control_takes_a_press_exactly_when_it_is_lit_on_a_row_s_stage_or_stage_all(
+        cx: &mut TestAppContext,
+    ) {
+        a_working_control_takes_a_press_exactly_when_it_is_lit_for(
+            PRESSES_ONTO_A_ROW_AND_ON_STAGE_ALL,
+            cx,
+        )
+        .await;
+    }
+
+    /// [`a_working_control_takes_a_press_exactly_when_it_is_lit_for`] a
+    /// pointer within 5 px of where it rested on the Stage all that arrived.
+    #[gpui::test]
+    async fn a_working_control_takes_a_press_exactly_when_it_is_lit_within_5_px_on_stage_all(
+        cx: &mut TestAppContext,
+    ) {
+        a_working_control_takes_a_press_exactly_when_it_is_lit_for(
+            PRESSES_WITHIN_5_PX_ON_STAGE_ALL,
+            cx,
+        )
+        .await;
+    }
+
+    /// [`a_working_control_takes_a_press_exactly_when_it_is_lit_for`] a
+    /// pointer past 5 px from where it rested on the Stage all that arrived,
+    /// or gone to another row and back.
+    #[gpui::test]
+    async fn a_working_control_takes_a_press_exactly_when_it_is_lit_past_5_px_on_stage_all(
+        cx: &mut TestAppContext,
+    ) {
+        a_working_control_takes_a_press_exactly_when_it_is_lit_for(
+            PRESSES_PAST_5_PX_ON_STAGE_ALL,
+            cx,
+        )
+        .await;
+    }
+
+    /// [`a_working_control_takes_a_press_exactly_when_it_is_lit_for`] a
+    /// pointer on a row's Stage or Unstage that arrived under it.
+    #[gpui::test]
+    async fn a_working_control_takes_a_press_exactly_when_it_is_lit_on_a_row_that_arrived(
+        cx: &mut TestAppContext,
+    ) {
+        a_working_control_takes_a_press_exactly_when_it_is_lit_for(
+            PRESSES_ON_A_ROW_THAT_ARRIVED,
+            cx,
+        )
+        .await;
+    }
+
+    /// The four parts of the lit-press test make [`PRESSES`] between them,
+    /// each press once and in the list's order, and each part makes one press
+    /// at least: a press added to the list that no part takes fails here, as
+    /// does one two parts take.
+    #[test]
+    fn the_parts_of_the_lit_press_test_make_each_press_once() {
+        let parts = [
+            PRESSES_ONTO_A_ROW_AND_ON_STAGE_ALL,
+            PRESSES_WITHIN_5_PX_ON_STAGE_ALL,
+            PRESSES_PAST_5_PX_ON_STAGE_ALL,
+            PRESSES_ON_A_ROW_THAT_ARRIVED,
+        ];
+        assert!(
+            parts.iter().all(|part| !part.is_empty()),
+            "a part makes no press: {parts:?}"
+        );
+        let made: Vec<_> = parts
+            .into_iter()
+            .flat_map(|part| PRESSES[part].iter().copied())
+            .collect();
+        assert_eq!(made, PRESSES);
     }
 
     /// Enter and Space act on the control holding focus while the pointer
