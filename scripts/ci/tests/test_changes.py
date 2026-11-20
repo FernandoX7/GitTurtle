@@ -56,11 +56,29 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(plan, changes.full_plan("package-installation-helper"))
         changes.validate_plan(plan)
         self.assertNotEqual(plan["reason"], changes.classify_paths([b"scripts/ci/tools.py"])["reason"])
-        for paths in ([b"docs/ci.md", b"scripts/ci/apt_install.py"], [b"scripts/ci/metrics.py", b"scripts/ci/apt_install.py"]):
+        for paths in ([b"docs/ci.md", b"scripts/ci/apt_install.py"], [b"scripts/ci/executed_tests.py", b"scripts/ci/apt_install.py"]):
             with self.subTest(paths=paths):
                 self.assertEqual(changes.classify_paths(paths), plan)
         # Its tests and a similar name are ordinary CI helpers.
         for path in (b"scripts/ci/tests/test_apt_install.py", b"scripts/ci/apt_install_old.py", b"scripts/ci/apt_install.py.orig"):
+            with self.subTest(path=path):
+                self.assertEqual({lane for lane in changes.LANES if changes.classify_paths([path])[lane]}, {"tooling"})
+
+    def test_the_collector_selects_the_full_plan_for_its_own_reason(self):
+        # Every Rust job runs its commands under it, so the tooling lane alone
+        # would let a change of it reach main without one of them having run.
+        plan = changes.classify_paths([b"scripts/ci/metrics.py"])
+        self.assertEqual(plan, changes.full_plan("ci-collector"))
+        changes.validate_plan(plan)
+        for other in (b"scripts/ci/packages.py", b"scripts/ci/tools.py", b"scripts/ci/apt_install.py"):
+            self.assertNotEqual(plan["reason"], changes.classify_paths([other])["reason"])
+        for paths in ([b"docs/ci.md", b"scripts/ci/metrics.py"], [b"scripts/ci/metrics.py", b"scripts/ci/tests/test_metrics.py"],
+                      [b"scripts/ci/executed_tests.py", b"scripts/ci/metrics.py", b"website/check.py"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(changes.classify_paths(paths), plan)
+        # Its tests and a similar name are ordinary CI helpers.
+        for path in (b"scripts/ci/tests/test_metrics.py", b"scripts/ci/metrics_old.py", b"scripts/ci/metrics.py.orig",
+                     b"scripts/ci/tests/metrics.py"):
             with self.subTest(path=path):
                 self.assertEqual({lane for lane in changes.LANES if changes.classify_paths([path])[lane]}, {"tooling"})
 
@@ -118,8 +136,8 @@ class GateTests(unittest.TestCase):
                         changes.gate(needs)
 
     def test_required_lanes_pass_and_justified_skips_pass(self):
-        for paths in [[b"docs/user-guide.md"], [b"website/check.py"], [b"scripts/ci/metrics.py"],
-                      [b"crates/app/src/main.rs"]]:
+        for paths in [[b"docs/user-guide.md"], [b"website/check.py"], [b"scripts/ci/executed_tests.py"],
+                      [b"scripts/ci/metrics.py"], [b"crates/app/src/main.rs"]]:
             with self.subTest(paths=paths):
                 self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 8)
 
@@ -247,9 +265,9 @@ class GitComparisonTests(unittest.TestCase):
         return changes.classify_checkout(self.repo, "push",
                                          {"before": before, "after": head, "deleted": False, "ref": "refs/heads/main"}, head)
 
-    def classify_pull_request(self, base):
+    def classify_pull_request(self, base, branch="pull-request-base"):
         head = self.git("rev-parse", "HEAD")
-        self.git("checkout", "-b", "pull-request-base", base)
+        self.git("checkout", "-b", branch, base)
         self.git("-c", "commit.gpgsign=false", "merge", "--no-ff", "-m", "PR merge fixture", head)
         merge = self.git("rev-parse", "HEAD")
         return changes.classify_checkout(self.repo, "pull_request",
@@ -265,6 +283,23 @@ class GitComparisonTests(unittest.TestCase):
                 self.assertTrue(all(plan[lane] for lane in changes.LANES))
                 self.assertEqual(plan["reason"], "main-full-validation")
                 changes.validate_plan(plan)
+
+    def test_a_pull_request_that_changes_the_collector_runs_every_lane(self):
+        self.write("scripts/ci/metrics.py", "collector\n")
+        self.write("scripts/ci/executed_tests.py", "an ordinary helper\n")
+        base = self.commit("helpers")
+        plans = []
+        # An ordinary helper, then the collector alone, with a documentation file and with a website file.
+        for number, paths in enumerate((("scripts/ci/executed_tests.py",), ("scripts/ci/metrics.py",),
+                                        ("docs/guide.md", "scripts/ci/metrics.py"),
+                                        ("scripts/ci/metrics.py", "website/public/index.html"))):
+            self.git("checkout", "-b", f"contribution-{number}", base)
+            for path in paths:
+                self.write(path, "changed by the pull request\n")
+            self.commit("change " + ", ".join(paths))
+            plans.append(self.classify_pull_request(base, f"pull-request-base-{number}"))
+        self.assertEqual({lane for lane in changes.LANES if plans[0][lane]}, {"tooling"})
+        self.assertEqual(plans[1:], [changes.full_plan("ci-collector")] * 3)
 
     def test_docs_move_preserves_cheap_routing(self):
         self.git("mv", "docs/guide.md", "docs/renamed.md")
