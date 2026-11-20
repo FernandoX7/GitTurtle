@@ -35,7 +35,8 @@ pending real superseding-run evidence at C1.
 ### Conservative change routing
 
 The mandatory `Changes and CI policy` job checks guidance, all focused CI helper
-fixtures and every checked-in Actions workflow with the pinned linter. The
+fixtures and every checked-in Actions workflow with the pinned linter, fetched in
+[one attempt that names its failure](#the-actionlint-fetch-in-quality). The
 [classifier](../scripts/ci/changes.py) then produces boolean product, tooling and
 website outputs plus a versioned JSON plan. Downstream jobs consume those flags;
 the final gate verifies the same recorded plan and actual job results.
@@ -1554,7 +1555,9 @@ Validate changed Actions YAML with
 [actionlint v1.7.12](https://github.com/rhysd/actionlint/releases/tag/v1.7.12),
 the version pinned by Quality. Its [Linux amd64 release archive](https://github.com/rhysd/actionlint/releases/expanded_assets/v1.7.12) SHA-256 is
 `8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8`;
-the workflow verifies that digest before execution. With that version available:
+the workflow fetches it in one attempt
+([below](#the-actionlint-fetch-in-quality)) and verifies that digest before
+execution. With that version available:
 
 ```sh
 actionlint -version
@@ -1582,6 +1585,119 @@ The CI fixtures place temporary files inside the checkout. For other tooling
 tests that use the system temporary directory, use a checkout-local directory when
 the session requires it: `mkdir -p .local/ci-observability/tmp`, then prefix the
 test command with `TMPDIR="$PWD/.local/ci-observability/tmp"`.
+
+### The actionlint fetch in Quality
+
+The `Changes and CI policy` job downloads the pinned archive with the runner's
+curl in one anonymous attempt over HTTPS only, with 15 s to connect and 60 s in
+all. Nothing is retried, in the command or around it, and the job's token is not
+sent. `--proto '=https' --proto-redir '=https'` refuses every other protocol on
+the first request and on every redirect, before anything is asked: a redirect to
+plain HTTP ends the step and its target never sees a request. A failed
+fetch fails the step: curl prints its own `curl: (22) …` line, and the command's
+`--write-out` then ends the step with one `::error::` line that names the host
+the failure happened on and the HTTP status or curl's reason, as in
+`::error::actionlint download failed at release-assets.githubusercontent.com: The requested URL returned error: 504 (curl exit 22)`.
+The release download redirects once, from `github.com` to
+`release-assets.githubusercontent.com` with a signed query. The line therefore
+takes its host from `%{urle.host}`, the host alone of the last URL curl took up
+(for a refused redirect, the target it did not ask), and neither the request's
+URL nor its query is printed: a
+read of that curl's error messages in its source found none that prints the
+request's URL or its query.
+
+A fetched file with another digest ends the step with status 1 and one fixed
+line, `::error::actionlint archive's SHA-256 is not the pinned one`, before
+anything is unpacked or run. The check is the unchanged
+`sha256sum --check --status`, which prints nothing of its own: without
+`--status` it would print the runner's path. The line never holds the fetched
+file's digest, which would invite a new pin that nobody verified.
+
+**Why one attempt.** Until November 2026 the command carried `--retry 2`
+under `--silent`. curl announces a retry in a warning, and `--silent` hides
+warnings: a first attempt that fails and a second that succeeds leave a green
+step whose only trace is the failed attempt's own `curl: (22) …` line, which
+`--show-error` still prints. By that line a past retry can be told, and neither
+this fetch nor the [cargo-deny one](#the-cargo-deny-fetch-in-dependency-advisories)
+retried in what is kept. The actionlint step succeeded 152 times in the 150
+Quality runs of October 6 to November 17, 2026. A retry's first wait is 1 s, so
+a step that the job records time at 0 whole seconds held none; the 38 steps
+that took a whole second hold no `curl: (N)` line in their job logs, and their
+lines span 0.38 to 0.98 s, under that wait. The advisories workflow's cargo-deny
+fetch succeeded 30 times in its kept runs with no such line.
+
+**Shown in a container.** The hosted image lists curl `8.5.0-2ubuntu10.16`
+([software list](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
+image version 20261111.370.1), and that version's source has every write-out
+variable the command uses. With that package in a disposable `ubuntu:24.04`
+container (arm64), on November 20, 2026, each case ran the step's own text,
+taken from the workflow, with only its URL changed unless the case says
+otherwise. The local servers spoke TLS with a certificate from a throwaway
+authority that the container's trust store was given, so the flags were the
+step's own:
+
+| Case | Last line, after `::error::actionlint download failed at ` | Exit |
+| --- | --- | --- |
+| A first request over plain HTTP | `first.test: Protocol "http" not supported or disabled in libcurl (curl exit 1)` | 1 |
+| A redirect to plain HTTP on a second host | `second.test: Protocol "http" not supported or disabled in libcurl (curl exit 1)` | 1 |
+| A name that does not resolve | `actionlint-fetch.invalid: Could not resolve host: actionlint-fetch.invalid (curl exit 6)` | 6 |
+| A refused connection | `first.test: Failed to connect to first.test port 9 after 0 ms: Couldn't connect to server (curl exit 7)` | 7 |
+| HTTP 404 | `first.test: The requested URL returned error: 404 (curl exit 22)` | 22 |
+| HTTP 504 | `first.test: The requested URL returned error: 504 (curl exit 22)` | 22 |
+| A redirect to a second host that answers 504 | `second.test: The requested URL returned error: 504 (curl exit 22)` | 22 |
+| A certificate the container does not trust | `first.test: SSL certificate problem: self-signed certificate (curl exit 60)` | 60 |
+| A server that accepts and never answers the TLS handshake | `silent.test: SSL connection timeout (curl exit 28)`, at the 15 s connect limit | 28 |
+| A server that completes the handshake and never answers, with `--max-time 3` for the proof only | `silent.test: Operation timed out after N milliseconds with 0 bytes received (curl exit 28)`, N being a little over the limit | 28 |
+| The real archive | Nothing printed; the digest verified and the archive unpacked | 0 |
+
+No case asked a server twice, and neither plain-HTTP server saw a request: the
+one named in the first row, and the redirect's target in the second (a redirect
+to an FTP URL ended the same way). The targets of the other redirects carried a
+query that held a marker word: the 504 behind one and three more failures behind
+the same kind of redirect (a refused connection, a name that does not resolve, a
+silent server) printed neither the word nor a question mark. A server that
+answers 504 once and 200 from then on was asked once and the step failed; the
+command as it was, with `--retry 2`, asked a 504 server three times in 3 s, and
+exited 0 after two requests to the server that recovers, with the first
+attempt's `curl: (22) …` line as its whole output.
+
+A body that cannot be written fails the step with the line too, naming the host
+the body came from, and no path is printed. With the output file in a directory
+that does not exist the line ended
+`second.test: Failure writing output to destination (curl exit 23)`, after
+curl's own line; with a full device as the output file it ended
+`second.test: Failed writing received data to disk/application (curl exit 23)`
+and was the only line, curl printing none of its own there.
+
+A redirect to another archive, one whose program would have left a canary file
+had it run, ended the step with status 1 and the one line
+`::error::actionlint archive's SHA-256 is not the pinned one`: the step's
+directory held the fetched file alone and there was no canary. So did an answer
+with an empty body. With that archive's own digest in place of the pin, the same
+run unpacked it and its program ran, which shows what the canary can tell.
+Unchanged, the step fetched the pinned archive, verified it and both runs of the
+binary passed on the checked-in workflows, the amd64 binary under the arm64
+host's emulation. None of this ran on a hosted runner, so the lines' display
+there as error annotations is not shown.
+
+### The cargo-deny fetch in Dependency advisories
+
+The [`Dependency advisories`](../.github/workflows/advisories.yml) workflow
+installs its pinned cargo-deny 0.20.2 the same way, and until November 2026 its
+command carried the same `--retry 2`: one anonymous attempt over HTTPS only,
+with 15 s to connect and 120 s in all, and nothing retried. A failed fetch ends
+the step with `::error::cargo-deny download failed at <host>: <reason> (curl exit N)`,
+and an archive with another digest with
+`::error::cargo-deny archive's SHA-256 is not the pinned one`, before anything
+is unpacked or run and before the step adds its directory to `GITHUB_PATH`.
+
+Every case above ran on this step's text too, in the same kind of container on
+the same day, with the same exits and the same lines but for the tool's name;
+its command as it was ran against the server that recovers only, and left the
+same one line. Unchanged, the step fetched the pinned archive, verified it, and the binary
+printed `cargo-deny 0.20.2` (an amd64 binary, under the same emulation) before
+the directory was written to the `GITHUB_PATH` file. This did not run on a
+hosted runner either.
 
 ### Source validation evidence
 
