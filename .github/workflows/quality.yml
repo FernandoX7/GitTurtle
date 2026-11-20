@@ -41,15 +41,22 @@ jobs:
         run: |
           actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
           mkdir -p "$actionlint_dir"
-          # One anonymous attempt; nothing is retried. A failure ends the step with a line that names
-          # the host it happened on and the status or curl's reason. The line takes the host alone:
-          # the release redirects to a URL with a signed query, and no URL is printed.
-          curl --fail --location --silent --show-error --connect-timeout 15 --max-time 60 \
+          # One anonymous attempt over HTTPS only, on the first request and on every redirect; nothing
+          # is retried. A failure ends the step with a line that names the host it happened on and the
+          # status or curl's reason. The line takes the host alone: the release redirects to a URL
+          # with a signed query, and no URL is printed.
+          curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+            --connect-timeout 15 --max-time 60 \
             --write-out '%{onerror}%{stderr}::error::actionlint download failed at %{urle.host}: %{errormsg} (curl exit %{exitcode})\n' \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
             --output "$actionlint_dir/actionlint.tar.gz"
+          # --status keeps the runner's path out of the log, so a wrong digest gets a line of its own:
+          # a fixed one, without the fetched file's digest. Nothing is unpacked or run after it.
           printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
-            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check --status
+            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check --status || {
+            echo "::error::actionlint archive's SHA-256 is not the pinned one"
+            exit 1
+          }
           tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
           "$actionlint_dir/actionlint" -version
           "$actionlint_dir/actionlint" -shellcheck='' -pyflakes=''

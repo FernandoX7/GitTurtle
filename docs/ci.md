@@ -1564,19 +1564,28 @@ test command with `TMPDIR="$PWD/.local/ci-observability/tmp"`.
 ### The actionlint fetch in Quality
 
 The `Changes and CI policy` job downloads the pinned archive with the runner's
-curl in one anonymous attempt, with 15 s to connect and 60 s in all. Nothing is
-retried, in the command or around it, and the job's token is not sent. A failed
+curl in one anonymous attempt over HTTPS only, with 15 s to connect and 60 s in
+all. Nothing is retried, in the command or around it, and the job's token is not
+sent. `--proto '=https' --proto-redir '=https'` refuses every other protocol on
+the first request and on every redirect, before anything is asked: a redirect to
+plain HTTP ends the step and its target never sees a request. A failed
 fetch fails the step: curl prints its own `curl: (22) …` line, and the command's
 `--write-out` then ends the step with one `::error::` line that names the host
 the failure happened on and the HTTP status or curl's reason, as in
 `::error::actionlint download failed at release-assets.githubusercontent.com: The requested URL returned error: 504 (curl exit 22)`.
 The release download redirects once, from `github.com` to
 `release-assets.githubusercontent.com` with a signed query. The line therefore
-takes its host from `%{urle.host}`, the host alone of the last URL curl asked,
-and no URL is printed: a read of that curl's error messages in its source found
-none that prints the request's URL or its query. A fetched file with another
-digest ends the step at the unchanged `sha256sum --check --status`, which
-prints nothing.
+takes its host from `%{urle.host}`, the host alone of the last URL curl took up
+(for a refused redirect, the target it did not ask), and no URL is printed: a
+read of that curl's error messages in its source found none that prints the
+request's URL or its query.
+
+A fetched file with another digest ends the step with status 1 and one fixed
+line, `::error::actionlint archive's SHA-256 is not the pinned one`, before
+anything is unpacked or run. The check is the unchanged
+`sha256sum --check --status`, which prints nothing by itself: without
+`--status` it would print the runner's path. The line never holds the fetched
+file's digest, which would invite a new pin that nobody verified.
 
 **Why one attempt.** Until November 2026 the command carried `--retry 2`
 under `--silent`. curl announces a retry in a warning, and `--silent` hides
@@ -1591,28 +1600,45 @@ the records cannot tell.
 ([software list](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
 image version 20261111.370.1), and that version's source has every write-out
 variable the command uses. With that package in a disposable `ubuntu:24.04`
-container (arm64), against local servers, on November 20, 2026:
+container (arm64), on November 20, 2026, each case ran the step's own text,
+taken from the workflow, with only its URL changed. The local servers spoke TLS
+with a certificate from a throwaway authority that the container's trust store
+was given, so the flags were the step's own:
 
 | Case | Last line, after `::error::actionlint download failed at ` | Exit |
 | --- | --- | --- |
+| A first request over plain HTTP | `first.test: Protocol "http" not supported or disabled in libcurl (curl exit 1)` | 1 |
+| A redirect to plain HTTP on a second host | `second.test: Protocol "http" not supported or disabled in libcurl (curl exit 1)` | 1 |
 | A name that does not resolve | `actionlint-fetch.invalid: Could not resolve host: actionlint-fetch.invalid (curl exit 6)` | 6 |
 | A refused connection | `first.test: Failed to connect to first.test port 9 after 0 ms: Couldn't connect to server (curl exit 7)` | 7 |
 | HTTP 404 | `first.test: The requested URL returned error: 404 (curl exit 22)` | 22 |
 | HTTP 504 | `first.test: The requested URL returned error: 504 (curl exit 22)` | 22 |
 | A redirect to a second host that answers 504 | `second.test: The requested URL returned error: 504 (curl exit 22)` | 22 |
-| A server that accepts and never answers, with `--max-time 3` for the proof only | `silent.test: Operation timed out after 3001 milliseconds with 0 bytes received (curl exit 28)` | 28 |
+| A certificate the container does not trust | `first.test: SSL certificate problem: self-signed certificate (curl exit 60)` | 60 |
+| A server that accepts and never answers the TLS handshake | `silent.test: SSL connection timeout (curl exit 28)`, at the 15 s connect limit | 28 |
+| A server that completes the handshake and never answers, with `--max-time 3` for the proof only | `silent.test: Operation timed out after N milliseconds with 0 bytes received (curl exit 28)`, N being the limit and a millisecond or two | 28 |
 | The real archive | Nothing printed; the digest verified and the archive unpacked | 0 |
 
-No case asked a server twice. The redirect's target carried a query that held a
-marker word: that case and three more behind the same redirect (a refused
-connection, a name that does not resolve, a silent server) printed neither the
-word nor a question mark. The command as it was, with `--retry 2`, asked the
-504 server three times in 3 s, and against a server that answers 504 once and
-then 200 it exited 0 after two requests. The step's own text, taken from the
-workflow, then ran whole in a second such container: the pinned archive verified and
-both runs of the binary passed on the checked-in workflows, the amd64 binary
-under the arm64 host's emulation. None of this ran on a hosted runner, so the
-line's display there as an error annotation is not shown.
+No case asked a server twice, and neither plain-HTTP server saw a request: the
+one named in the first row, and the redirect's target in the second (a redirect
+to an FTP URL ended the same way). The targets of the other redirects carried a
+query that held a marker word: the 504 behind one and three more failures behind
+the same kind of redirect (a refused connection, a name that does not resolve, a
+silent server) printed neither the word nor a question mark. A server that
+answers 504 once and 200 from then on was asked once and the step failed; the
+command as it was, with `--retry 2`, asked a 504 server three times in 3 s, and
+exited 0 after two requests to the server that recovers.
+
+A redirect to another archive, one whose program would have left a canary file
+had it run, ended the step with status 1 and the one line
+`::error::actionlint archive's SHA-256 is not the pinned one`: the step's
+directory held the fetched file alone and there was no canary. So did an answer
+with an empty body. With that archive's own digest in place of the pin, the same
+run unpacked it and its program ran, which shows what the canary can tell.
+Unchanged, the step fetched the pinned archive, verified it and both runs of the
+binary passed on the checked-in workflows, the amd64 binary under the arm64
+host's emulation. None of this ran on a hosted runner, so the lines' display
+there as error annotations is not shown.
 
 ### Source validation evidence
 
