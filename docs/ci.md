@@ -1576,7 +1576,8 @@ the failure happened on and the HTTP status or curl's reason, as in
 The release download redirects once, from `github.com` to
 `release-assets.githubusercontent.com` with a signed query. The line therefore
 takes its host from `%{urle.host}`, the host alone of the last URL curl took up
-(for a refused redirect, the target it did not ask), and no URL is printed: a
+(for a refused redirect, the target it did not ask), and neither the request's
+URL nor its query is printed: a
 read of that curl's error messages in its source found none that prints the
 request's URL or its query.
 
@@ -1621,7 +1622,7 @@ step's own:
 | A redirect to a second host that answers 504 | `second.test: The requested URL returned error: 504 (curl exit 22)` | 22 |
 | A certificate the container does not trust | `first.test: SSL certificate problem: self-signed certificate (curl exit 60)` | 60 |
 | A server that accepts and never answers the TLS handshake | `silent.test: SSL connection timeout (curl exit 28)`, at the 15 s connect limit | 28 |
-| A server that completes the handshake and never answers, with `--max-time 3` for the proof only | `silent.test: Operation timed out after N milliseconds with 0 bytes received (curl exit 28)`, N being the limit and a millisecond or two | 28 |
+| A server that completes the handshake and never answers, with `--max-time 3` for the proof only | `silent.test: Operation timed out after N milliseconds with 0 bytes received (curl exit 28)`, N being a little over the limit | 28 |
 | The real archive | Nothing printed; the digest verified and the archive unpacked | 0 |
 
 No case asked a server twice, and neither plain-HTTP server saw a request: the

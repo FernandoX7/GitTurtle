@@ -44,7 +44,7 @@ jobs:
           # One anonymous attempt over HTTPS only, on the first request and on every redirect; nothing
           # is retried. A failure ends the step with a line that names the host it happened on and the
           # status or curl's reason. The line takes the host alone: the release redirects to a URL
-          # with a signed query, and no URL is printed.
+          # with a signed query, and neither the request's URL nor its query is printed.
           curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
             --connect-timeout 15 --max-time 60 \
             --write-out '%{onerror}%{stderr}::error::actionlint download failed at %{urle.host}: %{errormsg} (curl exit %{exitcode})\n' \
