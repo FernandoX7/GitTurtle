@@ -1640,6 +1640,24 @@ binary passed on the checked-in workflows, the amd64 binary under the arm64
 host's emulation. None of this ran on a hosted runner, so the lines' display
 there as error annotations is not shown.
 
+### The cargo-deny fetch in Dependency advisories
+
+The [`Dependency advisories`](../.github/workflows/advisories.yml) workflow
+installs its pinned cargo-deny 0.20.2 the same way, and until November 2026 its
+command carried the same `--retry 2`: one anonymous attempt over HTTPS only,
+with 15 s to connect and 120 s in all, and nothing retried. A failed fetch ends
+the step with `::error::cargo-deny download failed at <host>: <reason> (curl exit N)`,
+and an archive with another digest with
+`::error::cargo-deny archive's SHA-256 is not the pinned one`, before anything
+is unpacked or run and before the step adds its directory to `GITHUB_PATH`.
+
+Every case above ran on this step's text too, in the same kind of container on
+the same day, with the same exits and the same lines but for the tool's name.
+Unchanged, the step fetched the pinned archive, verified it, and the binary
+printed `cargo-deny 0.20.2` (an amd64 binary, under the same emulation) before
+the directory was written to the `GITHUB_PATH` file. This did not run on a
+hosted runner either.
+
 ### Source validation evidence
 
 Validated September 15, 2026 on Linux x86_64 with Python 3.12.3, for the source
