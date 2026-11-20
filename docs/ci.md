@@ -49,13 +49,15 @@ For pull requests:
   dispatch; Quality owns its PR/main triggers, avoiding another duplicate run.
 - CI helpers, development-controller files, agent guides and development contracts
   also run the existing macOS and Ubuntu development-tooling matrix, including all
-  CI helper tests. Three CI helpers are run by the product jobs themselves and
+  CI helper tests. Four CI helpers are run by the product jobs themselves and
   select **all** lanes instead, so a change of one exercises the jobs that run it
   before it reaches main: `scripts/ci/packages.py` (package delivery),
-  `scripts/ci/tools.py` (the pinned nextest installer) and
+  `scripts/ci/tools.py` (the pinned nextest installer),
   `scripts/ci/apt_install.py`
   ([package installation on Ubuntu](#package-installation-on-ubuntu), which only
-  the Rust jobs' setup and the `Image privacy` job run).
+  the Rust jobs' setup and the `Image privacy` job run) and
+  `scripts/ci/metrics.py` (the CI collector, under which every Rust job runs its
+  commands and with which the Rust cache action writes its records).
 - Claude Code configuration (`.claude/**` and any file named `CLAUDE.md`) routes
   like `AGENTS.md` and `.agents/`. No build or package reads it: the guidance check
   validates its agents, skills, settings structure, hook paths and syntax and links,
