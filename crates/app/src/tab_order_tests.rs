@@ -1273,12 +1273,44 @@ async fn tracing_keeps_history_of_lines_bounds(cx: &mut TestAppContext) {
     blame::lands(&app, cx);
 }
 
+/// The text sizes and window widths the capped list is walked at
+/// ([`the_capped_list_never_nests_in_a_scrolling_footer_at`]), in the order
+/// one test walked them: every 20 px from 461 px towards the full window's
+/// 1,480 px at 13 pt, then the same widths at 18 pt, 51 a text size. Each part
+/// of the walk runs its own slice of this list, below.
+fn capped_list_sizes() -> Vec<(u8, u32)> {
+    [13, 18]
+        .into_iter()
+        .flat_map(|interface| {
+            (461..=1480)
+                .step_by(20)
+                .map(move |width| (interface, width))
+        })
+        .collect()
+}
+
+/// The slice of [`capped_list_sizes`] each part of the walk runs, in the
+/// list's order: each text size's widths up to 961 px, then those from 981 px.
+/// `the_parts_of_the_capped_list_walk_run_each_size_once` holds them to the
+/// list.
+const CAPPED_AT_13_PT_UP_TO_961_PX: std::ops::Range<usize> = 0..26;
+const CAPPED_AT_13_PT_FROM_981_PX: std::ops::Range<usize> = 26..51;
+const CAPPED_AT_18_PT_UP_TO_961_PX: std::ops::Range<usize> = 51..77;
+const CAPPED_AT_18_PT_FROM_981_PX: std::ops::Range<usize> = 77..102;
+
 /// A line's history keeps its capped list only where the footer holds it
 /// without scrolling: at 18 pt, whose cap and footer scale with the text, and
 /// never where the actions wrap, where the rows merge into the footer's own
 /// scroll. A list capped in pixels nested inside a footer that scrolled.
-#[gpui::test]
-async fn the_capped_list_never_nests_in_a_scrolling_footer(cx: &mut TestAppContext) {
+///
+/// Walked at `sizes`, a slice of [`capped_list_sizes`], on a history of its
+/// own, and every part ends as the one test did, on the cap at 18 pt in the
+/// full window: one test took 82.8 s on a hosted runner, against the 120 s at
+/// which nextest ends a test.
+async fn the_capped_list_never_nests_in_a_scrolling_footer_at(
+    sizes: std::ops::Range<usize>,
+    cx: &mut TestAppContext,
+) {
     // Past the line history's 100 rows, so the longer limit note shows, the
     // newest commit's subject long enough to wrap, so the text above the list
     // takes all it can.
@@ -1288,20 +1320,18 @@ async fn the_capped_list_never_nests_in_a_scrolling_footer(cx: &mut TestAppConte
         .collect();
     let script = history_of(&steps);
     let (_fixture, app, cx) = blame_with(cx, script, size(px(1480.), px(973.)), 13, true).await;
-    for interface in [13, 18] {
-        for width in (461..=1480).step_by(20) {
-            resized(cx, size(px(width as f32), px(973.)), interface);
-            let at = format!("{width} px at {interface} pt");
-            let list = drawn(cx, "line-history-results");
-            let capped = list.size.height <= appearance::ui_size(130.) + px(0.5);
-            let overflow = app.read_with(cx, |app, _| app.blame.footer_overflow());
-            assert!(
-                !capped || overflow == Pixels::ZERO,
-                "{at}: a capped list {list:?} nests in a footer scrolling {overflow:?}"
-            );
-            if drawn(cx, "blame-compare-commit").top() != drawn(cx, "blame-copy-line").top() {
-                assert!(!capped, "{at}: the actions wrap, so the footer is not full");
-            }
+    for (interface, width) in capped_list_sizes()[sizes].iter().copied() {
+        resized(cx, size(px(width as f32), px(973.)), interface);
+        let at = format!("{width} px at {interface} pt");
+        let list = drawn(cx, "line-history-results");
+        let capped = list.size.height <= appearance::ui_size(130.) + px(0.5);
+        let overflow = app.read_with(cx, |app, _| app.blame.footer_overflow());
+        assert!(
+            !capped || overflow == Pixels::ZERO,
+            "{at}: a capped list {list:?} nests in a footer scrolling {overflow:?}"
+        );
+        if drawn(cx, "blame-compare-commit").top() != drawn(cx, "blame-copy-line").top() {
+            assert!(!capped, "{at}: the actions wrap, so the footer is not full");
         }
     }
     resized(cx, size(px(1480.), px(973.)), 18);
@@ -1310,6 +1340,66 @@ async fn the_capped_list_never_nests_in_a_scrolling_footer(cx: &mut TestAppConte
         list.size.height > px(130.5),
         "at 18 pt the cap scales: {list:?}"
     );
+}
+
+/// [`the_capped_list_never_nests_in_a_scrolling_footer_at`] 13 pt in windows
+/// 461 to 961 px wide.
+#[gpui::test]
+async fn the_capped_list_never_nests_in_a_scrolling_footer_at_13_pt_up_to_961_px(
+    cx: &mut TestAppContext,
+) {
+    the_capped_list_never_nests_in_a_scrolling_footer_at(CAPPED_AT_13_PT_UP_TO_961_PX, cx).await;
+}
+
+/// [`the_capped_list_never_nests_in_a_scrolling_footer_at`] 13 pt in windows
+/// 981 to 1,461 px wide.
+#[gpui::test]
+async fn the_capped_list_never_nests_in_a_scrolling_footer_at_13_pt_from_981_px(
+    cx: &mut TestAppContext,
+) {
+    the_capped_list_never_nests_in_a_scrolling_footer_at(CAPPED_AT_13_PT_FROM_981_PX, cx).await;
+}
+
+/// [`the_capped_list_never_nests_in_a_scrolling_footer_at`] 18 pt in windows
+/// 461 to 961 px wide.
+#[gpui::test]
+async fn the_capped_list_never_nests_in_a_scrolling_footer_at_18_pt_up_to_961_px(
+    cx: &mut TestAppContext,
+) {
+    the_capped_list_never_nests_in_a_scrolling_footer_at(CAPPED_AT_18_PT_UP_TO_961_PX, cx).await;
+}
+
+/// [`the_capped_list_never_nests_in_a_scrolling_footer_at`] 18 pt in windows
+/// 981 to 1,461 px wide.
+#[gpui::test]
+async fn the_capped_list_never_nests_in_a_scrolling_footer_at_18_pt_from_981_px(
+    cx: &mut TestAppContext,
+) {
+    the_capped_list_never_nests_in_a_scrolling_footer_at(CAPPED_AT_18_PT_FROM_981_PX, cx).await;
+}
+
+/// The four parts of the capped list's walk run [`capped_list_sizes`] between
+/// them, each size once and in the list's order, and each part runs one size
+/// at least: a size added to the list that no part takes fails here, as does
+/// one two parts take.
+#[test]
+fn the_parts_of_the_capped_list_walk_run_each_size_once() {
+    let sizes = capped_list_sizes();
+    let parts = [
+        CAPPED_AT_13_PT_UP_TO_961_PX,
+        CAPPED_AT_13_PT_FROM_981_PX,
+        CAPPED_AT_18_PT_UP_TO_961_PX,
+        CAPPED_AT_18_PT_FROM_981_PX,
+    ];
+    assert!(
+        parts.iter().all(|part| !part.is_empty()),
+        "a part runs no size: {parts:?}"
+    );
+    let run: Vec<_> = parts
+        .into_iter()
+        .flat_map(|part| sizes[part].iter().copied())
+        .collect();
+    assert_eq!(run, sizes);
 }
 
 /// A control a resize takes away hands its focus to the lines, the region's
