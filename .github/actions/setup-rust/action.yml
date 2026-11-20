@@ -55,8 +55,11 @@ runs:
           echo "::error::SYSTEM_DEPS_ variables must not reach the build: $(tr '\n' ' ' <<<"$names")"
           exit 1
         fi
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
+        # The helper looks up the hosts of the image's own Ubuntu source file,
+        # then runs `apt-get update --error-on=any` and `apt-get install` as
+        # root with this one selection, each once and under its own deadline.
+        python3 scripts/ci/apt_install.py \
+          -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -- \
           build-essential clang pkg-config git openssh-client ca-certificates \
           libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
           libssl-dev libzstd-dev libvulkan-dev libdav1d-dev \
@@ -72,6 +75,19 @@ runs:
         rustup show active-toolchain
         rustc --version
         cargo --version
+    # The restore action hashes the compiler version of every toolchain rustup
+    # lists into its key, and a hosted image's own default Rust, which no step
+    # here runs, differs between image releases. Every listed toolchain but the
+    # active one is uninstalled. A container job's account holds the pinned
+    # toolchain alone, so nothing is uninstalled there. On every job the step
+    # fails unless rustup lists the active toolchain and no other.
+    - name: Leave rustup the pinned toolchain alone
+      if: inputs.phase == 'setup'
+      shell: bash
+      env:
+        CACHE_CONTAINER: ${{ inputs.container }}
+        CACHE_RUN_AS: ${{ inputs.run-as }}
+      run: python3 .github/actions/setup-rust/cache.py toolchains
     - name: Prepare cache identity and isolated Cargo storage
       if: inputs.phase == 'setup'
       shell: bash
@@ -129,6 +145,8 @@ runs:
       run: python3 .github/actions/setup-rust/cache.py restored
     # On every event, pull requests and manual runs included: the identity is
     # computed again as setup computed it, and one that changed refuses the save.
+    # So does a toolchain rustup lists now and did not at setup: the save step
+    # hashes that list again, and the helper's key does not hold it.
     - name: Compare cache identity with setup
       if: inputs.phase == 'finish'
       id: identity

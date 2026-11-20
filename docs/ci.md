@@ -49,7 +49,13 @@ For pull requests:
   dispatch; Quality owns its PR/main triggers, avoiding another duplicate run.
 - CI helpers, development-controller files, agent guides and development contracts
   also run the existing macOS and Ubuntu development-tooling matrix, including all
-  CI helper tests.
+  CI helper tests. Three CI helpers are run by the product jobs themselves and
+  select **all** lanes instead, so a change of one exercises the jobs that run it
+  before it reaches main: `scripts/ci/packages.py` (package delivery),
+  `scripts/ci/tools.py` (the pinned nextest installer) and
+  `scripts/ci/apt_install.py`
+  ([package installation on Ubuntu](#package-installation-on-ubuntu), which only
+  the Rust jobs' setup and the `Image privacy` job run).
 - Claude Code configuration (`.claude/**` and any file named `CLAUDE.md`) routes
   like `AGENTS.md` and `.agents/`. No build or package reads it: the guidance check
   validates its agents, skills, settings structure, hook paths and syntax and links,
@@ -173,7 +179,8 @@ lists the PNG, JPEG, GIF and WebP files the event adds or changes, using the
 classifier's verified comparisons (the merge-base to the PR head and the base to
 the merge commit; a main push's before/after) with deletions excluded. When the
 optional `NATIVE_QA_PRIVACY_TEMPLATES` repository secret is present, the job
-installs Pillow from the Ubuntu archive and runs the
+installs Pillow from the Ubuntu archive when the image lacks it, through the
+[package helper](#package-installation-on-ubuntu), and runs the
 [native-QA scan](../scripts/native_qa/README.md#automated-scans) with
 `--redacted`, which prints each image's path and `clean` or `MATCH` only. Every
 frame of an animated GIF, WebP or PNG is scanned; an image with more than 64
@@ -459,31 +466,119 @@ of per-binary times.
 
 The pinned version is installed by
 [`scripts/ci/tools.py install-nextest`](../scripts/ci/tools.py) before the tests
-step, measured as `nextest-install`. It downloads the official release archive
-over HTTPS, verifies its SHA-256 against the digest committed in that script before
-reading it, extracts only the regular `cargo-nextest` file into
-`$RUNNER_TEMP/cargo-nextest`, checks that `cargo nextest --version` resolves to the
-pinned release, and only then adds the directory to `GITHUB_PATH`. A transport
-failure is retried twice; a checksum, archive or version mismatch fails the step.
-The step needs no token or permission beyond the workflow's `contents: read`, and
-no third-party install action is used. It lives outside the Rust setup action, whose
-files are hashed into the [cache key](#tool-choice-and-compatible-reuse), so
-changing the pin does not invalidate the Rust caches. The archive is fetched on
-each run rather than cached: about 12 MB (Linux) or 17 MB (macOS).
+step, measured as `nextest-install`. It takes the official release archive from
+the restored debug cache entry or, when the entry holds none, downloads it over
+HTTPS in one anonymous attempt
+([below](#the-nextest-archive-in-the-debug-entry)). Either way it verifies the
+SHA-256 against the digest committed in that script before reading the archive,
+extracts only the regular `cargo-nextest` file into `$RUNNER_TEMP/cargo-nextest`,
+checks that `cargo nextest --version` resolves to the pinned release, and only
+then adds the directory to `GITHUB_PATH`. Nothing is retried: a failed request
+fails the step, and so does a checksum, archive or version mismatch. The step
+needs no token or permission beyond the workflow's `contents: read`, and no
+third-party install action is used. The pin's version and both digests are part
+of the debug [cache key](#tool-choice-and-compatible-reuse), so moving the pin
+makes the debug lanes cold once and leaves the release entries alone. The
+archive is about 12 MB (Linux) or 17 MB (macOS).
 
-| Runner | Release archive (cargo-nextest 0.9.146) | SHA-256 |
+| Runner | Release archive (cargo-nextest 0.9.152) | SHA-256 |
 | --- | --- | --- |
-| ubuntu-24.04 (Linux X64) | [`cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz) | `682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428` |
-| macos-15 (macOS ARM64) | [`cargo-nextest-0.9.146-universal-apple-darwin.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz) | `39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8` |
+| ubuntu-24.04 (Linux X64) | [`cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz) | `d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a` |
+| macos-15 (macOS ARM64) | [`cargo-nextest-0.9.152-universal-apple-darwin.tar.gz`](https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/cargo-nextest-0.9.152-universal-apple-darwin.tar.gz) | `2fadf57df4243e691f088ee3bff4f4ab9af16da0c95a1db84b5cb1685e098a76` |
 
-Version 0.9.146 (September 21, 2026) was the latest release when this was pinned.
-It differs from 0.9.145, whose status-line format `scripts/gate.py` parses, only in
-replacing yanked dependency versions. Both digests matched the release's published
-`.sha256` files, GitHub's recorded asset digests, and a local `sha256sum` of the
-downloaded archives on September 27, 2026. To move the pin, update the version and
-both digests in `tools.py` and this table from the new release's `.sha256` assets,
-check that its output format still matches the gate's parser, and run the CI helper
-tests.
+Version 0.9.152 (November 13, 2026) was the latest release when this was pinned,
+on November 19, 2026; the pin before it was 0.9.146 (September 21, 2026). Both
+digests matched the release's published `.sha256` assets and GitHub's recorded
+asset digests, and the installer itself fetched the Linux archive, matched its
+digest and resolved `cargo-nextest 0.9.152 (26ebeda79 2026-11-13)`. The parsers
+were checked on real output, not on release notes: that executable ran
+`gitturtle-preview` with the `ci` profile, whole and as `--partition slice:1/2`,
+on a Linux arm64 host under x86_64 emulation, and its `Starting`, `PASS`, `SKIP`
+and `Summary` lines have the shapes of the 0.9.146 lines kept in
+`scripts/ci/tests/test_executed_tests.py`. `scripts/ci/executed_tests.py` read
+both runs with nothing unreconciled (192 run and 1 skipped; 96 run and 97
+skipped). The macOS archive was not run. To move the pin, update the version and
+both digests in `tools.py` and this table from the new release's `.sha256`
+assets, run the new executable and compare its lines with those kept in the
+tests, and run the CI helper tests. The move changes the debug cache key.
+
+#### The nextest archive in the debug entry
+
+Until this change every test job fetched the pinned archive anonymously, in up
+to three attempts. The request failed four times in 150 runs, each with HTTP 504
+after all three attempts: three inside GitHub's incident of November 9, 2026
+(05:59 to 09:09 UTC) and one on November 5, for which no incident was published.
+The fault behind the retry was a network request in every test job.
+
+**Rule.** `install-nextest --archive-cache` first looks for the pinned archive in
+`$CARGO_HOME/registry/gitturtle-tool-archives`, which the Rust dependency cache
+restores and saves with Cargo's registry. On a hit it makes no request. On a miss
+it makes one anonymous request and stores the archive there once its digest
+matched, under a temporary name and by rename. The line the step prints ends in
+`archive from: cache` or `archive from: fetch`. The cache holds the archive and
+never the executable, which is unpacked into `$RUNNER_TEMP/cargo-nextest`, outside
+every cached path.
+
+**The cache is not trusted.** The cached file is opened without following a
+link, in a directory opened the same way. It must be a regular file no larger
+than the 64 MiB archive limit, and it is hashed against the pinned SHA-256 before
+anything parses it. A link, a directory, an oversized file or another digest
+fails the step by name and stays as it is: a fetch never replaces it. Someone
+who can write a cache entry therefore gains nothing new, since only the pinned
+archive is ever used; in the security consult's words, "an entry writer already
+runs code through unverified `target/` outputs, so gains nothing; nor does
+pull-request code under GitHub's cache scoping".
+
+**When a cached file is refused.** Nothing saves over a refused file, by design,
+so a rerun does not clear the failure: every test shard that restores that entry
+fails at its install step, shard 1, the entry's writer, among them (Clippy
+restores the entry too and installs nothing), and a job that failed saves
+nothing. There are two ways out. A maintainer deletes the entry by its key, as a
+deliberate act: `DELETE /repos/{owner}/{repo}/actions/caches?key=<key>` in
+GitHub's REST API (a classic token needs the `repo` scope), with the full key as
+the repository's cache list shows it: the action's prefix, the helper's key and
+rust-cache's suffix. The lanes of that key are then cold, each test shard fetches
+the archive once, and the next `main` run saves a new entry. Or a file under
+`.github/actions/setup-rust/` changes, which re-keys every entry and makes every
+lane cold once. A refused file also says something about the entry. The
+installer stores an archive only after its digest matched, under a temporary
+name and by rename, so no save of the helper's put that file there: something
+else wrote into the directory before the entry was saved, or wrote the entry
+itself. Look at the entry before deleting it.
+
+**The key.** The debug profile's identity has a sixth part, `tools`: the pinned
+version and each archive's name and SHA-256, read from the two literals in
+`tools.py` without running it. On each platform the test shards and the Clippy
+job, which installs nothing, use the debug profile with the same inputs and so
+compute one key; the release lanes key no pin and are told of no directory. A
+pin move is a new debug key, so a restored entry never holds another pin's
+archive. The identity keys the pin and never what the directory holds, so it is
+the same at setup and at [finish](#identity-comparison-at-finish).
+
+**Writers and bytes.** The entries have the writers they had: shard 1 of each
+platform's test job, on `main`. The directory lies inside the `registry` root.
+The pinned rust-cache cleans only `registry/index`, `registry/cache` and
+`registry/src` before a save, and the bound phase prunes only `registry/src` and,
+over the limit, drops `target`, so the directory survives both and its bytes
+count against the 7 GiB debug limit: 12,393,262 bytes in the Ubuntu and the Arch
+entry and 17,256,724 in the macOS entry for 0.9.152, and 8 KiB of entry
+accounting each. On the Arch lane the restored directory goes to the build
+account with the rest of `CARGO_HOME`. A restore that is no exact hit is
+discarded whole, this directory included, before the installer looks.
+
+**Failure line.** A failed request names the host of the hop that failed and
+the HTTP status or the error's class, as in
+`tool download failed: HTTP 504 from release-assets.githubusercontent.com`. The
+release redirects to a signed asset URL: Python's `HTTPError` text names no host
+and its `url` carries the signed query, so neither is printed.
+
+**Why not the job's token.** GitHub's final text for the November 9 incident
+counts authenticated requests that timed out too, so a token would put a
+credential into the install steps without removing the failure.
+
+**Not shown yet.** No hosted run has executed this path. The first `main` run
+after the change seeds each debug entry with one fetch a platform; a later run
+that prints `archive from: cache` in every test shard is the acceptance.
 
 Reproduce the CI test phase locally with the same isolation as the job:
 
@@ -550,7 +645,8 @@ pattern cannot read or a write into nextest's own stream; the comparison is evid
 about a run that is not trying to deceive it. A count of more than nine digits is
 refused as unreadable. These are cargo-nextest 0.9.146's shapes,
 taken from three runs of `gitturtle-preview` (unsharded, `slice:1/2` and
-`slice:2/2`) and the retained hosted logs. A Summary line in another shape is
+`slice:2/2`) and the retained hosted logs; 0.9.152 printed the same shapes in
+two such runs (unsharded and `slice:1/2`). A Summary line in another shape is
 refused rather than guessed, and so is a log whose `PASS` and `FAIL` lines are not
 its passed and failed figures.
 
@@ -641,7 +737,7 @@ with its number and the total from the job's matrix (`shard: [1, 2]` and
 `shards: [2]`, the one place the total is written). Nothing else about selection
 changed: no filter, no package or target selection, the same profile, no
 retries. nextest's [partitioning page](https://nexte.st/docs/ci-features/partitioning/)
-describes `slice:` (added in 0.9.127; the pin is 0.9.146): "nextest lists all
+describes `slice:` (added in 0.9.127; the pin is 0.9.152): "nextest lists all
 tests across all specified binaries, then assigns tests to each bucket in a
 round-robin fashion", and "Sliced partitioning applies after all other test
 filters." Both shards of a platform build the same commit with the same command,
@@ -1938,8 +2034,10 @@ the fallback is one entry per image again, slower and never stale.
    installed.
 
 The snapshot is also the state the build sees only while no job that uses the
-action installs packages in its own steps. A test refuses `apt-get`, `apt` and
-`dpkg -i` in every such job of `quality.yml` and `release.yml`. That test has a
+action installs packages in its own steps. A test refuses `apt-get`, `apt`,
+`dpkg -i` and the package helper (`apt_install.py`, see
+[Package installation on Ubuntu](#package-installation-on-ubuntu)) in every such
+job of `quality.yml` and `release.yml`. That test has a
 limit too: it reads the workflows' text, so an installation inside a script a
 step runs, or inside another action, is not seen.
 
@@ -2019,7 +2117,8 @@ text forbid such steps. The finish phase therefore computes the identity again,
 and a changed one refuses the save.
 
 - *One function, twice.* `cache_identity` computes the five parts (`profile`,
-  `source`, `native`, `toolchain`, `flags`) and the key with no side effect: it
+  `source`, `native`, `toolchain`, `flags`), for the debug profile a sixth
+  ([`tools`](#the-nextest-archive-in-the-debug-entry)), and the key with no side effect: it
   creates no directory, rewinds no timestamp, exports nothing and prints
   nothing. `prepare` calls it, exports the key, and keeps the parts, the native
   part's keyed lines and a digest of each flag's value in
@@ -2028,7 +2127,10 @@ and a changed one refuses the save.
   the build account, with the profile, container and account that setup had.
 - *The verdict.* The recomputed key is compared with the `CI_RUST_CACHE_KEY`
   the save step reads. What `prepare` kept only names a difference; it never
-  decides.
+  decides. The same step also asks rustup for its list of toolchains again,
+  because the save step hashes that list a second time and the helper's key
+  does not hold it: see [the image's own Rust](#the-images-own-rust), "The
+  list at finish".
 - *Stable by construction.* The restore action exports `CARGO_INCREMENTAL=0`
   after `prepare` on the five lanes that set none (the Arch job sets it for the
   whole job), so the flags differed between the phases. `prepare` keys the
@@ -2086,6 +2188,180 @@ six entries under those keys. The manually dispatched run `44567826647` printed
 the line on the same six lanes after restoring them (a dispatched run saves
 nothing). No run has printed the warning, so the refusal itself has only its tests
 behind it.
+
+#### The image's own Rust
+
+The pinned rust-cache appends a suffix of its own to the key this action hands it,
+and hashes into it `rustc -vV` and the same output of every toolchain that
+`rustup toolchain list --quiet` names (`getRustVersions` in its `src/config.ts`).
+A hosted image ships a default Rust that no build here runs, beside the 1.99.0
+that `rust-toolchain.toml` selects: 1.99.1 on older images, 1.100.0 on the newest
+macOS and Ubuntu ones. In Quality run `44608780306` (November 19, 2026)
+`Rust Clippy · macos-15` on image 20261118.0550.1 computed the same helper key
+as the test shards on 20261104.0514.1 and another rust-cache suffix (`6129b690`
+against `941ba66b`), and built cold.
+
+**Rule.** In the setup phase, after the pinned toolchain is installed and before
+the key is computed, the helper's `toolchains` phase uninstalls every listed
+toolchain but the active one (`rustup toolchain uninstall`, one name a command)
+and prints each name with the seconds. Then, on every job, the step fails by name
+unless rustup lists the active toolchain and no other. A rustup command that
+fails, does not answer within 120 s or cannot be started fails the step too, with
+one `::error::` line that names the command and how it ended (for a failure, its
+exit status and the last line rustup wrote, cut to 200 characters), never with a
+traceback. The active toolchain must
+be the one `rust-toolchain.toml` selects, so a `RUSTUP_TOOLCHAIN` that names
+another fails the step before anything is uninstalled. A name is checked against
+a pattern before it reaches a command line. The Arch container job uninstalls
+nothing: its fresh `RUSTUP_HOME` holds only the toolchain the job installed, and
+the check keeps that true. How the pinned toolchain is installed does not change,
+and neither does any input of the restore action: `add-rust-environment-hash-key`
+stays on, since turning it off would drop the environment and lockfile hashes
+with the toolchains. The helper's own `toolchain` part still keys the active
+compiler's whole `rustc -vV` and its host triple.
+
+**What it gives up.** After the step the image's default is gone: a `rustc` or
+`cargo` run outside the checkout, or one that names a toolchain (`rustc +stable`),
+makes rustup download that toolchain again, and the list then holds two. With
+rustup 1.29.3 in a local container each of the three began that download. No step
+of `quality.yml` or `release.yml` after the setup phase runs a Rust tool outside
+the checkout or names a toolchain, and the scripts they call run Cargo in the
+repository root.
+
+**The list at finish.** The save step is a second run of the pinned rust-cache,
+which hashes the list again, while the helper's key holds only the active
+compiler. A toolchain that came back between the phases would store the entry
+under a suffix no setup phase computes, with the
+[comparison](#identity-comparison-at-finish) printing its positive line. So the
+comparison step asks rustup what the setup phase asked, with the same functions
+and as the same account: the active toolchain must be the one
+`rust-toolchain.toml` selects, and `rustup toolchain list --quiet` must hold it
+alone. When it does not, the verdict is `changed`, the save is refused and one
+`::warning::` names what rustup lists (`Rust toolchains changed since setup, so
+this job saves no cache entry: …`), after the key's own warning when the key
+changed too. A rustup that cannot be run, fails or does not answer within the
+helper's 120 s a command gives the verdict `unconfirmed` and one warning with the
+error's class. Neither is read as unchanged, and neither fails the job. The
+finish phase only reads: it uninstalls nothing, so the cost of a toolchain that
+came back is that job's save and never a wrong entry. No hosted run has executed
+the check. Its acceptance is the comparison's positive line on all six saving
+lanes in the pull request's own run, as for the comparison itself. The two
+warnings have only their tests behind them, and one local run of the check
+against rustup 1.29.3 on a host that listed `stable` beside the pinned toolchain,
+which gave `changed` and named both.
+
+**Acceptance, still open.** One rust-cache suffix a platform on two image
+releases that differ only in their own Rust. No hosted run has executed the step:
+the uninstall and the check ran against rustup 1.29.3 in a local container, on a
+`RUSTUP_HOME` that listed a default beside the pinned toolchain.
+
+#### Package installation on Ubuntu
+
+On November 11, 2026 the hosted x64 runners could not resolve their cloud
+mirror's name. `sudo apt-get update` spent 203 to 207 s on it, printed warnings
+and exited 0, and `sudo apt-get install` then failed for 25 minutes, one lookup
+every 20 s. A failed index was a warning, and nothing bounded either command but
+the job's own limit of 45 or 60 minutes. With the rule below that case ends by
+name. When no listed name resolves, the step fails at the lookup, before apt and
+after at most 5 s a name. Otherwise one warning names the cloud mirror, and
+`apt-get update` then succeeds through another mirror, exits 100 for an index it
+could not fetch, or is ended by its 300 s deadline; in the last two cases
+`install` does not run.
+
+**Rule.** The action's install step and the `Image privacy` job install through
+[`scripts/ci/apt_install.py`](../scripts/ci/apt_install.py). A step's text keeps
+the selection and the package names; the helper does the rest, each thing once:
+
+1. *One selection.* `-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources
+   -o Dir::Etc::sourceparts=-` is written once in the step and handed to both apt
+   commands, so `update` and `install` read the image's own, unmodified Ubuntu
+   source file and no other. The helper accepts those two options and nothing
+   else, and only package names after them. A missing file fails the step by
+   name; it never falls back to every listed source. The image also lists
+   `packages.microsoft.com` and other sources no build here uses, and with every
+   source listed the stricter `update` below would fail whenever one of them is
+   down.
+2. *A bounded lookup.* The hosts are those apt reads on that runner: the URIs of
+   the file's enabled paragraphs and, where one names a `mirror+file:` list (the
+   x64 image), the mirrors of that list; the arm64 image names `ports.ubuntu.com`
+   in the file itself. Every name must match a hostname pattern before any
+   command runs, and a file that holds one outside it fails the step, an IPv6
+   literal included. Each name is then one argument of `getent ahosts` under
+   `timeout`, 5 s a name; the names, the bound and each answer are printed. When
+   none resolves, the step fails and names them before apt runs. When some do
+   not, one `::warning::` names those and the step goes on: the mirrors serve one
+   signed archive, so a host is a matter of availability, not of trust.
+3. *`apt-get update --error-on=any`*, which exits 100 for an index it could not
+   fetch, where the plain command warns and exits 0.
+4. *`apt-get install -y --no-install-recommends`* of the step's names.
+
+**Deadlines.** Each of the two apt commands runs as
+`sudo timeout --kill-after=10 <seconds> apt-get …`: 300 s for `update`, 900 s for
+`install`. Both are constants of the helper. No option of its command line, no
+input of the action and no environment variable sets one; a reproduction lowers
+them through the helper's function arguments, which refuse a wider value.
+`timeout` stands on the root side because apt runs as root: it sends TERM to apt
+and its process group at the deadline and KILL 10 s later. When a deadline ends a
+command the step fails, and below what apt had printed stands one line that
+names the phase, the bound and the hosts with which of them had resolved.
+Nothing is run again. In 110 hosted Ubuntu job logs of November 16 to 19, 2026,
+`update`'s own fetch took 2 s at the median, 18 s at p95 and 49 s at most, and
+`install`'s fetch 5 s at the median, 292 s at p95 and 640 s at most: that maximum
+was 19.2 MB from a mirror serving about 30 kB/s, and with the 5.7 MB the step
+fetches since apt's CMake left it the slowest was about 290 s.
+
+**The hang the deadline answers.** In a disposable `ubuntu:24.04` container
+(arm64, apt 2.8.3) with the hosted x64 image's apt settings (`Acquire::Retries
+"1"`, 15 s timeouts) and its `mirror+file` layout, a first mirror whose name does
+not resolve, or one that resolves and never answers (`192.0.2.1`), makes
+`apt-get update` print its first index lines and then sleep. Every apt process
+was asleep at 285 s, and `timeout 300` ended the command with status 124, for
+the plain command and for `--error-on=any` alike. So the plain command the step
+ran before this rule hangs the same way, and neither `--error-on=any` nor the
+lookup ends it. With every host dead the command ends in 1 s, with status 0
+plain and 100 with `--error-on=any`. The hang was reproduced in that container
+and never seen on a hosted runner; "the first host does not resolve" is
+therefore a warning and not a failure, and the deadline stands behind it.
+
+**The step in that container.** The step's own script ran as an unprivileged
+account with `sudo`, in one fresh container a case. The three failing cases ran
+with the deadlines lowered to 30 s and 120 s through the helper's function
+arguments; the healthy one kept 300 s and 900 s.
+
+| Case | The step |
+| --- | --- |
+| Healthy | Exit 0 in under a minute: `update` 3 s, `install` of the step's 18 names 40 and 50 s in two runs. |
+| Every host dead | Exit 1 in under a second, at the lookup and before apt: `none of the hosts /etc/apt/sources.list.d/ubuntu.sources names resolved within 5 s`, then the three names. |
+| First dead, second alive | The warning that names the first, then at 30 s `apt-get update did not end within its 30 s deadline and was stopped; hosts: dead-mirror.invalid (did not resolve), ports.ubuntu.com (resolved)`; exit 1. |
+| First silent, second alive | No warning: the address passes the hostname pattern and its lookup answers at once; the same line at 30 s with both hosts resolved; exit 1. |
+
+After each of them `ps` listed no process of apt and none of the step's
+`sudo timeout`. A root command
+that ignores TERM was ended by KILL 10 s after its deadline: `sudo` then ends by
+that signal, and the helper names the deadline. With the deadline on the
+unprivileged side (`timeout … sudo …`) the same command stayed behind as a root
+process.
+
+**No package changes.** In 65 retained hosted logs whose step installed packages
+(24 on Azure-hosted x64, 29 on AWS-hosted x64 and 12 on arm64) all 2,252 package
+lines name an Ubuntu archive host (`azure.archive.ubuntu.com`,
+`us-east-2.ec2.archive.ubuntu.com`, `archive.ubuntu.com` or `ports.ubuntu.com`),
+so reading the Ubuntu source file alone takes no package away. No signature
+check changes, no file under `/etc/apt` is written, no package is added or
+removed, and the step still runs before the key is computed. The helper lives
+outside the action's folder because every file in that folder is hashed into
+every Rust cache key: the step's text changes the keys once, and a later
+correction of the helper does not. Such a correction still runs every lane: the
+[change routing](#conservative-change-routing) selects the full plan for a change
+of the helper, as it does for the pinned tool installer, because the tooling lane
+tests the helper and never runs it.
+
+**Acceptance, still open.** No hosted run has executed the helper. An image's
+`Ubuntu native digest` line must be unchanged by it: `2432e09588b4` on the x64
+20261111 images, `2371b93bc9b8` on 20261116.133.1 and `3de5484704a9` on arm64
+20261116.188.1. The container was arm64 and its living mirror spoke HTTP, so x64
+and the image's HTTPS mirrors are not covered, and a name that resolves slowly
+cannot be made locally.
 
 ### Trust, failure and storage bounds
 
