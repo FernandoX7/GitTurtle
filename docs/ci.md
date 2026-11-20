@@ -581,10 +581,10 @@ credential into the install steps without removing the failure.
 test shards printed `cargo-nextest 0.9.152 (26ebeda79 2026-11-13)` with its
 pinned digest and `archive from: fetch`, and the debug entries `main` then saved
 are 12.7 MB (Ubuntu), 12.3 MB (Arch) and 17.3 MB (macOS) larger than the last
-entries of their lanes, about the archive each now holds. **Still open:** a
-later run in which every test shard that restores its entry prints
-`archive from: cache` is the acceptance. A shard whose image has no entry yet
-fetches once, as before.
+entries of their lanes, about the archive each now holds. **Acceptance, met.**
+In `main`'s next run (44655082744) the five test shards that restored their
+entry printed `archive from: cache`, and the sixth, on an older Ubuntu image
+whose key had no entry, printed `archive from: fetch` and saved one.
 
 Reproduce the CI test phase locally with the same isolation as the job:
 
@@ -2268,6 +2268,9 @@ and macos-26 20261102.0473.1 and 20261117.0516.1. The twelve Ubuntu x64 jobs
 computed one, `fe7a48b2`, on four image releases of both clouds. Before these
 runs the uninstall and the check had run only against rustup 1.29.3 in a local
 container, on a `RUSTUP_HOME` that listed a default beside the pinned toolchain.
+In `main`'s next run (44655082744) the debug entry saved on macos-15
+20261118.0550.1 was restored on 20261104.0514.1 as well, the two images whose
+own Rust differs.
 
 #### Package installation on Ubuntu
 
