@@ -12424,6 +12424,73 @@ pub(crate) mod tests {
         download_sentence_walk(&DOWNLOAD_SENTENCE_CASES[BOTH_SIDES_AT_13_PT], cx).await;
     }
 
+    /// A Download row's sentence follows a change of text size, then of
+    /// file, beneath a row already drawn: one window shows one side's
+    /// download at 18 pt, then at 13 pt, then both sides' at 13 pt, rows of
+    /// [`DOWNLOAD_SENTENCE_CASES`] in the walk's order, each checked as the
+    /// walk checks a row ([`download_row_at`]), in Diff and in Split, in a
+    /// window `WIDTH` wide, where the sentence's place differs at each step:
+    /// it moves at 18 pt, stands at 13 pt and moves again beside both sides'
+    /// buttons. The walk was one test in one window, its 13 pt rows drawn
+    /// after its 18 pt ones; each of its four tests now opens a window of
+    /// its own at one text size, where a width the row kept from another
+    /// text size (`lfs_download::row_text_width`) is never read, so a row
+    /// that kept one passes all four.
+    #[gpui::test]
+    async fn a_download_row_s_sentence_follows_a_text_size_change_in_one_window(
+        cx: &mut TestAppContext,
+    ) {
+        // Between the windows where one side's sentence first fits at 13 pt,
+        // 861 px, and where both sides' does, 1,017 px; at 18 pt one side's
+        // first fits at 1,192 px.
+        const WIDTH: f32 = 940.;
+        const SCALE: f32 = 2.;
+        let steps = [ONE_SIDE_AT_18_PT, ONE_SIDE_AT_13_PT, BOTH_SIDES_AT_13_PT]
+            .into_iter()
+            .flatten()
+            .map(|case| DOWNLOAD_SENTENCE_CASES[case]);
+        let (_fixture, app, cx) = lone_download_row_window(cx).await;
+        let mut earlier = None;
+        for (path, sides, text) in steps {
+            // As the walk opens a row: the text size first, drawn with the
+            // room the sentence takes whole, then the file.
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(1800.), px(900.)));
+            cx.update(|window, _| window.set_scale_factor(SCALE));
+            draw(cx);
+            app.update(cx, |app, _| app.text_mode = TextMode::Unified);
+            lone_download_row_select(&app, path, cx);
+            settle(&app, cx).await;
+            draw(cx);
+            draw(cx);
+            let at = format!("{path} at {text} pt and scale {SCALE}");
+            assert_eq!(
+                cx.update(|window, _| window.scale_factor()),
+                SCALE,
+                "{at}: the sentence is measured at the scale asked for"
+            );
+            let whole = cx
+                .debug_bounds(DOWNLOAD_SENTENCE)
+                .expect("with the room, the row says why");
+            let sentence = (whole.size.width, whole.size.height);
+            let shown = (WIDTH, SCALE, TextMode::Unified);
+            let (stands, ..) = download_row_at(&app, cx, shown, sides, sentence, &at).await;
+            let shown = (WIDTH, SCALE, TextMode::Split);
+            download_row_at(&app, cx, shown, sides, sentence, &at).await;
+            assert_ne!(
+                Some(stands),
+                earlier,
+                "{at}: a {WIDTH} px window tells each step's row from the one before, the \
+                 sentence standing in one and not in the other"
+            );
+            earlier = Some(stands);
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
     /// The window the lone Download row's sections open, each test its own:
     /// History on a commit that changes `both.txt`, an LFS pointer before
     /// and after, and `one.txt`, a pointer before and plain text after, so
