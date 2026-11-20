@@ -509,7 +509,9 @@ def measure(args):
                 # No line printed here can spell an Actions command: behind the prefix no
                 # `::name::` starts it, and `harmless` leaves it no line of its own and no
                 # `##[`. The saved log keeps the sanitized line; a step that printed that
-                # file into a job's log would have to apply the rule itself.
+                # file into a job's log would have to apply the rule itself. The claim is
+                # about the lines printed here and no others: the command runs as the same
+                # user and can write to the job's log without the collector.
                 print(PREFIX + harmless(clean), flush=True)
                 tail.append(clean)
                 size += len(clean.encode("utf-8"))
