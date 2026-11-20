@@ -30,6 +30,9 @@ NAME = re.compile(r"[a-z][a-z0-9-]{0,47}\Z")
 # Saved terminal exports can render ESC as the literal two-character caret form ^[.
 # Normalize the same CSI sequences before both parsing and credential redaction.
 ANSI = re.compile(r"(?:\x1b|\^\[)\[[0-?]*[ -/]*[@-~]")
+PREFIX = "[ci] "
+# Characters that end a line for some readers of a log, though not for the collector.
+SEPARATORS = str.maketrans({"\N{LINE SEPARATOR}": " ", "\N{PARAGRAPH SEPARATOR}": " ", "\x85": " "})
 CONTEXT_ENV = (("Repository", "GITHUB_REPOSITORY"), ("Run", "GITHUB_RUN_ID"),
                ("Attempt", "GITHUB_RUN_ATTEMPT"), ("Commit", "GITHUB_SHA"),
                ("Event", "GITHUB_EVENT_NAME"), ("OS", "RUNNER_OS"),
@@ -44,7 +47,8 @@ class MetricsError(ValueError):
 def sanitize(value):
     """Remove common credential forms, URLs, absolute paths and control sequences.
 
-    Diagnostics are still untrusted text; never emit them as workflow commands.
+    Diagnostics are still untrusted text; never emit them as workflow commands
+    (print them through `harmless`, which is done last).
     No environment dump, command arguments, raw API bodies or runner names are kept.
     """
     # JSON can contain escaped lone surrogates, which cannot be printed as UTF-8.
@@ -79,8 +83,30 @@ def sanitize(value):
     return "".join(c for c in value if c in "\n\t" or ord(c) >= 32 and ord(c) != 127)
 
 
+def harmless(text):
+    """One line as the collector may print it: it stays on its line and spells no workflow command.
+
+    This is the last thing done to text the collector did not write, after `sanitize`, which
+    leaves the C1 control characters and the separators U+2028, U+2029 and U+0085 in a line.
+    Control characters go, and those separators, which end a line for some readers of a log,
+    become a space, so that nothing in the line can stand at the start of a line of its own.
+    The runner reads its older command spelling `##[` anywhere in a line, so that is broken up
+    after every removal that could put it together, exactly as `shown` in
+    `.github/actions/setup-rust/cache.py` breaks it. Done twice, it changes nothing more.
+    """
+    kept = "".join(character for character in text.translate(SEPARATORS)
+                   if character == "\t" or not (character < " " or "\x7f" <= character <= "\x9f"))
+    return kept.replace("##[", "#\\x23[")
+
+
+def harmless_lines(text):
+    """Text of several lines, each made harmless and still a line of its own."""
+    return "\n".join(harmless(line) for line in text.split("\n"))
+
+
 def label(value):
-    return sanitize(value)[:160] if value is not None else None
+    # Harmless as a value too: a report's JSON stays JSON when its printed lines are made harmless.
+    return harmless_lines(sanitize(value))[:160] if value is not None else None
 
 
 def runner_context():
@@ -480,8 +506,11 @@ def measure(args):
                     if timings["test_harness_seconds"] is not None:
                         harness = (harness or 0) + timings["test_harness_seconds"]
                     clean = sanitize(text)
-                # Prefixing prevents untrusted stdout from issuing Actions commands.
-                print("[ci] " + clean.rstrip("\n"), flush=True)
+                # No line printed here can spell an Actions command: behind the prefix no
+                # `::name::` starts it, and `harmless` leaves it no line of its own and no
+                # `##[`. The saved log keeps the sanitized line; a step that printed that
+                # file into a job's log would have to apply the rule itself.
+                print(PREFIX + harmless(clean), flush=True)
                 tail.append(clean)
                 size += len(clean.encode("utf-8"))
                 while size > MAX_LOG:
@@ -558,8 +587,14 @@ def job_summary(directory):
     return "\n".join(lines)
 
 
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse quotes the argument it refuses, which is not the collector's text.
+        super().error(harmless(message))
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = Parser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
     report = sub.add_parser("report", help="read an export or GET explicitly named GitHub runs; print only",
                             description="Use GH_TOKEN or GITHUB_TOKEN for optional Actions:read authentication. No API writes, logs download, redirects or automatic retries.")
@@ -579,7 +614,9 @@ def main(argv=None):
         if args.mode == "measure":
             return measure(args)
         if args.mode == "summary":
-            print(job_summary(args.directory))
+            # The summary and the reports hold environment values, measurement records and
+            # fields of an export or an API answer.
+            print(harmless_lines(job_summary(args.directory)))
             return 0
         if args.input:
             if args.run_id:
@@ -592,12 +629,12 @@ def main(argv=None):
         else:
             data = collect(args.repo, args.run_id)
         result = make_report(data)
-        print(json.dumps(result, indent=2) if args.format == "json" else markdown(result))
+        print(harmless_lines(json.dumps(result, indent=2) if args.format == "json" else markdown(result)))
         return 0
     except (MetricsError, OSError) as error:
         # Never echo an OSError filename, API response body, command or token.
         message = str(error) if isinstance(error, MetricsError) else "local input/output failed; check access and paths"
-        print(f"ci-metrics: {message}", file=sys.stderr)
+        print(f"ci-metrics: {harmless(message)}", file=sys.stderr)
         return 2
 
 

@@ -4,6 +4,7 @@ import contextlib
 import copy
 import importlib.util
 import io
+import itertools
 import http.client
 import os
 import json
@@ -41,6 +42,26 @@ def invoke(*arguments, input_text=None, env=None):
         cwd=METRICS.parents[2],
         env=env,
     )
+
+
+def printed(lines, stream="stdout"):
+    """What `measure` prints and what it saves, as bytes, for a command that writes these lines."""
+    program = f"import sys\nfor line in {lines!r}:\n    sys.{stream}.buffer.write(line.encode('utf-8') + b'\\n')\n"
+    with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
+        result = subprocess.run(
+            [sys.executable, "-B", str(METRICS), "measure", "--name", "printed", "--directory", directory,
+             "--", sys.executable, "-c", program],
+            capture_output=True, check=False, cwd=METRICS.parents[2],
+        )
+        saved = (Path(directory) / "printed.log").read_bytes()
+    if result.returncode or result.stderr:
+        raise AssertionError(result)
+    return result.stdout, saved
+
+
+# The C0 and C1 control characters, DEL and the two Unicode separators, without the line feed
+# that ends a command's line.
+CONTROLS = [chr(code) for code in (*range(0x20), 0x7F, *range(0x80, 0xA0), 0x2028, 0x2029) if code != 0x0A]
 
 
 class ReportTests(unittest.TestCase):
@@ -968,6 +989,154 @@ class CommandDiagnosticsTests(unittest.TestCase):
         self.assertIn("&#96;injected&#96;", report)
         self.assertNotIn("private-workflow", report)
         self.assertNotIn("^[[", report)
+
+
+class WorkflowCommandTests(unittest.TestCase):
+    """No line the collector prints can spell a workflow command, wherever its text came from."""
+
+    def test_a_commands_line_cannot_spell_the_runners_older_command(self):
+        cases = (
+            ("##[error]x", "#\\x23[error]x"),
+            ("in the middle ##[error]x", "in the middle #\\x23[error]x"),
+            ("##[warning]two ##[error]on one line", "#\\x23[warning]two #\\x23[error]on one line"),
+            ("x ###[endgroup]", "x ##\\x23[endgroup]"),
+            # Removing a control character or a colour must not put the spelling together.
+            ("#\x00#[error]x", "#\\x23[error]x"),
+            ("#\x1b[0m#[group]x", "#\\x23[group]x"),
+            ("#\x9b#[add-mask]x", "#\\x23[add-mask]x"),
+        )
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                output, saved = printed([raw for raw, _ in cases], stream)
+                self.assertEqual(output.decode("utf-8").split("\n"), ["[ci] " + line for _, line in cases] + [""])
+                self.assertNotIn(b"##[", output)
+                # The saved log is not printed by any job and keeps what the sanitizer left.
+                self.assertEqual(saved.decode("utf-8").split("\n")[:5],
+                                 ["##[error]x", "in the middle ##[error]x", "##[warning]two ##[error]on one line",
+                                  "x ###[endgroup]", "##[error]x"])
+
+    def test_an_ordinary_line_is_printed_as_it_was(self):
+        ordinary = [
+            "plain text", "", "  indented, and with spaces behind it  ",
+            "a tab\tstays, \N{LATIN SMALL LETTER E WITH ACUTE} and \N{BOX DRAWINGS LIGHT HORIZONTAL} too",
+            "# [ ## #[ [##] #x23[ ##( ]##", "::notice::behind the prefix",
+            "warning: unused variable: `x`, see #[warn(unused_variables)] and #![deny(warnings)]",
+            "error[E0308]: mismatched types",
+            "        PASS [   0.012s] (1/5) gitturtle::bin/gitturtle activity::tests::retains_nothing",
+            "     Summary [  61.600s] 5 tests run: 4 passed (1 slow), 1 failed, 1 skipped",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.04s",
+            "Ran 3 tests in 0.001s",
+        ]
+        output, saved = printed(ordinary)
+        self.assertEqual(output, "".join(f"[ci] {line}\n" for line in ordinary).encode("utf-8"))
+        self.assertEqual(saved, "".join(f"{line}\n" for line in ordinary).encode("utf-8"))
+
+    def test_the_sanitizer_leaves_the_c1_characters_and_two_separators_in_a_line(self):
+        # What is left for `harmless`: of these the sanitizer removes all but the tab, the C1
+        # characters (U+0085 among them) and the line and paragraph separators.
+        kept = [character for character in CONTROLS if metrics.sanitize(f"a{character}b") == f"a{character}b"]
+        gone = [character for character in CONTROLS if metrics.sanitize(f"a{character}b") == "ab"]
+        self.assertEqual(kept, ["\t", *map(chr, range(0x80, 0xA0)), "\N{LINE SEPARATOR}", "\N{PARAGRAPH SEPARATOR}"])
+        self.assertEqual(len(kept) + len(gone), len(CONTROLS))
+        self.assertEqual(metrics.sanitize("a\nb"), "a\nb")
+
+    def test_nothing_in_a_commands_line_can_begin_a_line_of_its_own(self):
+        output, _ = printed([f"a{character}::error::x" for character in CONTROLS])
+        spaced = {"\t": "a\t::error::x", "\x85": "a ::error::x",
+                  "\N{LINE SEPARATOR}": "a ::error::x", "\N{PARAGRAPH SEPARATOR}": "a ::error::x"}
+        lines = output.decode("utf-8")
+        self.assertEqual(lines.split("\n"), ["[ci] " + spaced.get(character, "a::error::x") for character in CONTROLS] + [""])
+        # Whatever a reader of the log takes for the end of a line, each line it finds is behind the prefix.
+        self.assertEqual(len(lines.splitlines()), len(CONTROLS))
+        for line in lines.splitlines():
+            self.assertTrue(line.startswith("[ci] "), ascii(line))
+
+    def test_the_rule_done_twice_changes_nothing_more(self):
+        # The tooling driver applies it again to every line the collector printed.
+        for length in range(1, 6):
+            for characters in itertools.product("#[\\a\t\n\x00\x85\x9b\N{LINE SEPARATOR}", repeat=length):
+                once = metrics.harmless("".join(characters))
+                if metrics.harmless(once) != once or "##[" in once or set(once) & {"\n", *CONTROLS} - {"\t"}:
+                    self.fail(ascii("".join(characters)))
+        self.assertEqual(metrics.harmless("#\\x23[error] ##\\x23[group]"), "#\\x23[error] ##\\x23[group]")
+
+    def test_a_reports_names_cannot_spell_a_workflow_command_and_its_json_stays_json(self):
+        data = fixture()
+        run = data["runs"][0]
+        run["run"]["name"] = "#\x00#[group]workflow"
+        run["run"]["event"] = "event\N{LINE SEPARATOR}::error::own line"
+        run["jobs"][0]["name"] = "##[error]job"
+        run["jobs"][0]["steps"][0]["name"] = "step ###[add-mask]x\x85::warning::own line\x9b"
+        outputs = {}
+        for output_format in ("json", "markdown"):
+            with self.subTest(output_format=output_format):
+                result = invoke("report", "--input", "-", "--format", output_format, input_text=json.dumps(data))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("##[", result.stdout)
+                self.assertFalse(set(result.stdout) & set(CONTROLS) - {"\t"}, ascii(result.stdout))
+                outputs[output_format] = result.stdout
+        report = json.loads(outputs["json"])["runs"][0]
+        self.assertEqual(report["workflow_name"], "#\\x23[group]workflow")
+        self.assertEqual(report["event"], "event ::error::own line")
+        self.assertEqual(report["jobs"][0]["name"], "#\\x23[error]job")
+        self.assertEqual(report["jobs"][0]["steps"][0]["name"], "step ##\\x23[add-mask]x ::warning::own line")
+        for line in ("Workflow: #\\x23[group]workflow; ", "; event: event ::error::own line; ", ": #\\x23[error]job\n",
+                     ". step ##\\x23[add-mask]x ::warning::own line | "):
+            self.assertIn(line, outputs["markdown"])
+
+    def test_a_summarys_records_and_runner_values_cannot_spell_a_workflow_command(self):
+        with tempfile.TemporaryDirectory(dir=METRICS.parent / "tests") as directory:
+            # A record is a file in the measurements' folder, which a measured command can write.
+            record = {"schema_version": 1, "name": "tests", "exit_code": "##[error]exit",
+                      "elapsed_seconds": "1\N{PARAGRAPH SEPARATOR}::error::own line",
+                      "build_timing_artifact": "#\x00#[group]timing"}
+            (Path(directory) / "tests.json").write_text(json.dumps(record))
+            env = dict(os.environ, GITHUB_EVENT_NAME="##[add-mask]event", ImageVersion="image\x85::warning::own line")
+            result = invoke("summary", "--directory", directory, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("| tests | #\\x23[error]exit | 1 ::error::own line | unavailable | unavailable | #\\x23[group]timing |\n",
+                      result.stdout)
+        self.assertIn("Event: #\\x23[add-mask]event  \n", result.stdout)
+        self.assertIn("Image version: image ::warning::own line  \n", result.stdout)
+        self.assertNotIn("##[", result.stdout)
+        self.assertFalse(set(result.stdout) & set(CONTROLS) - {"\t"}, ascii(result.stdout))
+
+    def test_whatever_a_summary_or_a_report_holds_its_printed_lines_are_harmless(self):
+        # Their values are harmless where they are made; the print holds the rule for all else.
+        hostile = "first ##[error]x\nsecond\N{LINE SEPARATOR}::error::own line #\x00#[group]y"
+        for arguments, patched in (
+            (["summary", "--directory", "unused"], {"job_summary": hostile}),
+            (["report", "--input", str(FIXTURE)], {"markdown": hostile}),
+            (["report", "--input", str(FIXTURE), "--format", "json"], {"make_report": hostile.split("\n")}),
+        ):
+            with self.subTest(arguments=arguments), contextlib.ExitStack() as stack:
+                for name, value in patched.items():
+                    stack.enter_context(mock.patch.object(metrics, name, return_value=value))
+                output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                self.assertEqual(metrics.main(arguments), 0)
+                if "make_report" in patched:
+                    # JSON escapes the control characters itself; the spelling is all that is left to break up.
+                    self.assertEqual(output.getvalue(), '[\n  "first #\\x23[error]x",\n'
+                                     '  "second\\u2028::error::own line #\\u0000#[group]y"\n]\n')
+                else:
+                    self.assertEqual(output.getvalue(), "first #\\x23[error]x\nsecond ::error::own line #\\x23[group]y\n")
+
+    def test_a_refusal_cannot_spell_a_workflow_command(self):
+        # argparse quotes the argument it refuses.
+        result = invoke("report", "--repo", "example/gitturtle", "--run-id", "##[error]x")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("argument --run-id: invalid int value: '#\\x23[error]x'", result.stderr)
+        self.assertNotIn("##[", result.stderr)
+        result = invoke("summary", "--directory", "unused", "x\n::error::own line ##[error]y\N{LINE SEPARATOR}::error::z")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unrecognized arguments: x::error::own line #\\x23[error]y ::error::z", result.stderr)
+        self.assertFalse(any(line.startswith("::") for line in result.stderr.splitlines()), result.stderr)
+        # The collector's own refusals quote no value today; one that did would be printed the same way.
+        refusal = metrics.MetricsError("refused ##[error]x\N{LINE SEPARATOR}::error::own line")
+        with mock.patch.object(metrics, "job_summary", side_effect=refusal):
+            with contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(metrics.main(["summary", "--directory", "unused"]), 2)
+        self.assertEqual(errors.getvalue(), "ci-metrics: refused #\\x23[error]x ::error::own line\n")
 
 
 if __name__ == "__main__":

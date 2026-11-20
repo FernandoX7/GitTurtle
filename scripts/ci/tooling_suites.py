@@ -75,8 +75,6 @@ DEADLINE = 510.0
 # Seconds between SIGTERM and SIGKILL for a session that is being ended.
 GRACE = 10.0
 PREFIX = "[ci] "
-# Characters that end a line for some readers of a log, though not for this driver.
-SEPARATORS = str.maketrans({"\N{LINE SEPARATOR}": " ", "\N{PARAGRAPH SEPARATOR}": " ", "\x85": " "})
 # unittest's summary of a run, the whole line as it prints it, behind the collector's prefix. The
 # count is bounded because the line is the tests' text: thousands of digits are no count.
 RAN = re.compile(r"\[ci\] Ran (\d{1,9}) tests? in \d+\.\d{3}s")
@@ -323,34 +321,28 @@ def side_by_side(commands, cwd, beat=HEARTBEAT, until=None, grace=GRACE, clock=t
             signal.signal(signum, handler)
     return running, passed
 
-def harmless(text):
-    """Text that stays on its line and spells no workflow command.
-
-    Control characters go, and the separators that end a line for some readers become a space.
-    The runner reads its older command spelling `##[` anywhere in a line, so that is broken up
-    last, exactly as `shown` in `.github/actions/setup-rust/cache.py` breaks it.
-    """
-    kept = "".join(character for character in text.translate(SEPARATORS)
-                   if character == "\t" or not (character < " " or "\x7f" <= character <= "\x9f"))
-    return kept.replace("##[", "#\\x23[")
-
-
 def named(identifier, metrics):
     """A test id as the driver may print it in a line of its own: it is the tests' text, not the driver's."""
-    return harmless(" ".join(metrics.sanitize(identifier).split()))
+    return metrics.harmless(" ".join(metrics.sanitize(identifier).split()))
 
 
 def quote(raw, metrics):
-    """One captured line as it may be printed: behind the collector's prefix, on one line and harmless."""
+    """One captured line as it may be printed: behind the collector's prefix, on one line and harmless.
+
+    Harmless is the collector's own rule (`harmless` in `metrics.py`): control characters go,
+    the separators that end a line for some readers become a space, and the runner's older
+    command spelling `##[` is broken up last. The collector applies it to each line it prints,
+    and here it is applied again to every line, which changes nothing in a line that had it.
+    """
     text = raw.decode("utf-8", errors="replace").rstrip("\n")
     if text.startswith(PREFIX):
-        # The collector's print of a line it sanitized, as far as can be told from here: the
-        # prefix is no proof of that, so the line is made harmless like any other.
-        return PREFIX + harmless(metrics.ANSI.sub("", text[len(PREFIX):]))
+        # The collector's print of a line it made harmless, as far as can be told from here:
+        # the prefix is no proof of that, so the line is made harmless like any other.
+        return PREFIX + metrics.harmless(metrics.ANSI.sub("", text[len(PREFIX):]))
     # The collector's own words (a refusal, a traceback): its rule for a long line, then its sanitizer.
     if len(raw) > metrics.MAX_LINE:
         return PREFIX + "[overlong diagnostic line omitted]"
-    return PREFIX + harmless(metrics.sanitize(text))
+    return PREFIX + metrics.harmless(metrics.sanitize(text))
 
 
 def replay(item, metrics):
