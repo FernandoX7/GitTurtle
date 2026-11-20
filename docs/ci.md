@@ -1220,6 +1220,26 @@ observations. Use a fresh diagnostics directory for a new investigation; repeati
 a command name replaces that command's previous files, including after a launch
 failure, while other command records remain.
 
+`measure` prints each line of its command as it arrives, sanitized and behind a
+`[ci] ` prefix, and no line it prints can spell a workflow command. Behind the
+prefix no `::name::` starts a line. One function of the helper, `harmless`, is
+then applied last: it removes the control characters the sanitizer leaves (the
+C1 range), turns the separators U+2028, U+2029 and U+0085 into spaces, so that
+nothing in a line can begin a line of its own for a reader that ends lines
+there, and breaks up the runner's older command spelling `##[` (`#\x23[`),
+which the runner reads anywhere in a line. Whether the runner ends a line at
+one of those separators is not established here; they are treated as if it
+did. A line of ordinary text is printed as it was before the rule. The same
+function is applied to the summary, to both report formats and to a refusal,
+which hold runner values, measurement records, fields of an export or an API
+answer and a refused argument; a report's values are also made harmless where
+they are made, so its JSON stays JSON. The saved log and timing text keep the
+sanitized text without this step. No workflow step prints them into a job's log
+(Quality uploads them and the release workflow only summarizes its records); a
+step that did would have to apply the rule itself. The rule covers what the
+helper prints: a measured command runs as the same user and can write to the
+helper's output directly.
+
 The summary reserves fields for cache restore duration, save duration, hit/miss,
 size and build timing artifacts. Quality's setup action supplies explicit restore
 and budget records; compressed size and completed post-job save duration need
@@ -1432,8 +1452,11 @@ the summary and the diagnostics artifact show one row and one log for each.
   Every such line is printed behind the collector's `[ci] ` prefix, and only
   after the driver has removed its control characters, turned the separators
   U+2028, U+2029 and U+0085 into spaces and broken up the runner's older command
-  spelling `##[` (`#\x23[`), which the runner reads anywhere in a line. The
-  driver does that to every line, whoever prefixed it: the collector sanitizes
+  spelling `##[` (`#\x23[`), which the runner reads anywhere in a line. That is
+  the collector's own rule for each line it prints
+  ([Workflow summaries and retained diagnostics](#workflow-summaries-and-retained-diagnostics)),
+  and the driver applies it again to every line, whoever prefixed it, which
+  changes nothing in a line that already had it: the collector makes harmless
   what it reads from a suite, but a test runs as the same user and can write to
   the collector's output directly. A test id that the driver names is treated
   the same way. The driver's own lines are the group markers and those that
