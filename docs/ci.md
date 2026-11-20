@@ -576,9 +576,15 @@ and its `url` carries the signed query, so neither is printed.
 counts authenticated requests that timed out too, so a token would put a
 credential into the install steps without removing the failure.
 
-**Not shown yet.** No hosted run has executed this path. The first `main` run
-after the change seeds each debug entry with one fetch a platform; a later run
-that prints `archive from: cache` in every test shard is the acceptance.
+**Shown so far.** In the pull request's run and in `main`'s run on its merge
+(Quality runs 44641714260 and 44647613167, November 20, 2026) each of the six
+test shards printed `cargo-nextest 0.9.152 (26ebeda79 2026-11-13)` with its
+pinned digest and `archive from: fetch`, and the debug entries `main` then saved
+are 12.7 MB (Ubuntu), 12.3 MB (Arch) and 17.3 MB (macOS) larger than the last
+entries of their lanes, about the archive each now holds. **Still open:** a
+later run in which every test shard that restores its entry prints
+`archive from: cache` is the acceptance. A shard whose image has no entry yet
+fetches once, as before.
 
 Reproduce the CI test phase locally with the same isolation as the job:
 
@@ -2243,17 +2249,25 @@ changed too. A rustup that cannot be run, fails or does not answer within the
 helper's 120 s a command gives the verdict `unconfirmed` and one warning with the
 error's class. Neither is read as unchanged, and neither fails the job. The
 finish phase only reads: it uninstalls nothing, so the cost of a toolchain that
-came back is that job's save and never a wrong entry. No hosted run has executed
-the check. Its acceptance is the comparison's positive line on all six saving
-lanes in the pull request's own run, as for the comparison itself. The two
+came back is that job's save and never a wrong entry. The check first ran on
+hosted runners in the pull request's own run (Quality run 44641714260), where
+all six saving lanes printed the comparison's positive line, and again in
+`main`'s run on the merge (44647613167), where the same six then saved. The two
 warnings have only their tests behind them, and one local run of the check
 against rustup 1.29.3 on a host that listed `stable` beside the pinned toolchain,
 which gave `changed` and named both.
 
-**Acceptance, still open.** One rust-cache suffix a platform on two image
-releases that differ only in their own Rust. No hosted run has executed the step:
-the uninstall and the check ran against rustup 1.29.3 in a local container, on a
-`RUSTUP_HOME` that listed a default beside the pinned toolchain.
+**Acceptance, met in the pull request's runs and in `main`'s.** In Quality runs
+44635428693, 44641714260 and 44647613167 the step uninstalled the image's
+`stable` toolchain on every hosted lane (27 jobs, within 0.4 s of the step's
+start) and found the pinned toolchain alone in all 33 jobs, the six in the Arch
+container among them, and the cache action's "Rust Versions" held 1.99.0 alone.
+The twelve macOS jobs computed one suffix, `19727863`, on four image releases:
+macos-15 20261104.0514.1 and 20261118.0550.1, which had computed two before,
+and macos-26 20261102.0473.1 and 20261117.0516.1. The twelve Ubuntu x64 jobs
+computed one, `fe7a48b2`, on four image releases of both clouds. Before these
+runs the uninstall and the check had run only against rustup 1.29.3 in a local
+container, on a `RUSTUP_HOME` that listed a default beside the pinned toolchain.
 
 #### Package installation on Ubuntu
 
@@ -2356,12 +2370,19 @@ correction of the helper does not. Such a correction still runs every lane: the
 of the helper, as it does for the pinned tool installer, because the tooling lane
 tests the helper and never runs it.
 
-**Acceptance, still open.** No hosted run has executed the helper. An image's
-`Ubuntu native digest` line must be unchanged by it: `2432e09588b4` on the x64
-20261111 images, `2371b93bc9b8` on 20261116.133.1 and `3de5484704a9` on arm64
-20261116.188.1. The container was arm64 and its living mirror spoke HTTP, so x64
-and the image's HTTPS mirrors are not covered, and a name that resolves slowly
-cannot be made locally.
+**Acceptance, met for healthy mirrors.** The helper ran in the 15 hosted Ubuntu
+jobs of Quality runs 44635428693, 44641714260 and 44647613167, on both clouds
+and on arm64. Each image's `Ubuntu native digest` line is unchanged by it:
+`2432e09588b4` on the x64 20261111 images, `2371b93bc9b8` on 20261116.133.1,
+`3de5484704a9` on arm64 20261116.188.1 and `e91b57fc1421` on arm64
+20261111.182.1. The Azure image 20261116.376.1, which no job had drawn since the
+digest's rules last changed, printed its AWS sibling's `2371b93bc9b8`, as the two
+had agreed before. The lookup resolved every host in 0.0 to 0.2 s, `update`
+ended in 4 to 20 s and `install` in 9 to 105 s, the longest on the AWS runners,
+and no deadline was reached. The failure paths have still run only in the
+container, which was arm64 with a living mirror that spoke HTTP: a name that
+does not resolve, a dead or silent first mirror and a reached deadline have not
+happened on a hosted runner since the helper exists.
 
 ### Trust, failure and storage bounds
 
