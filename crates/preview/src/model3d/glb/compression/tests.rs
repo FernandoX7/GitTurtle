@@ -7,8 +7,10 @@ use std::cell::Cell;
 fn encode(bytes: &[u8], count: usize, stride: usize, mode: &str) -> Vec<u8> {
     assert_eq!(bytes.len(), count * stride);
     if mode == "ATTRIBUTES" {
+        // SAFETY: pure upper-bound calculation on vertex count and stride.
         let bound = unsafe { meshopt::ffi::meshopt_encodeVertexBufferBound(count, stride) };
         let mut result = vec![0; bound];
+        // SAFETY: `result` has `bound` writable bytes and `bytes` has `count * stride` readable bytes.
         let length = unsafe {
             meshopt::ffi::meshopt_encodeVertexBufferLevel(
                 result.as_mut_ptr(),
@@ -42,6 +44,7 @@ fn encode_indices(indices: &[u32], mode: &str) -> Vec<u8> {
         meshopt::encode_index_buffer(indices, indices.iter().copied().max().unwrap() as usize + 1)
             .unwrap()
     } else {
+        // SAFETY: pure upper-bound calculation on index count and max vertex index.
         let bound = unsafe {
             meshopt::ffi::meshopt_encodeIndexSequenceBound(
                 indices.len(),
@@ -49,6 +52,7 @@ fn encode_indices(indices: &[u32], mode: &str) -> Vec<u8> {
             )
         };
         let mut bytes = vec![0; bound];
+        // SAFETY: `bytes` has `bound` writable bytes and `indices` is a valid slice of `u32`.
         let length = unsafe {
             meshopt::ffi::meshopt_encodeIndexSequence(
                 bytes.as_mut_ptr(),
@@ -77,7 +81,7 @@ fn compress_view(
     let encoded = encode(&bin[start..start + length], count, stride, mode);
     attach(document, bin, index, count, stride, mode, filter, &encoded);
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn attach(
     document: &mut Value,
     bin: &mut Vec<u8>,

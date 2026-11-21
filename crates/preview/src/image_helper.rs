@@ -544,6 +544,57 @@ pub(crate) fn elapsed_us(start: Instant) -> u32 {
     u32::try_from(start.elapsed().as_micros()).unwrap_or(u32::MAX)
 }
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+/// Converts `rgba` in place from an embedded RGB ICC profile to sRGB in
+/// bounded chunks; returns `false` if the profile is oversized, non-RGB, or
+/// rejected by moxcms (returning before mutating pixels when validation or
+/// transform setup fails).
+pub(crate) fn apply_rgb_icc_profile(rgba: &mut RgbaImage, icc: &[u8]) -> bool {
+    // RGB display and working-space profiles take kilobytes and LUT-based ones
+    // hundreds; a larger profile is skipped without being parsed (moxcms's own
+    // default allows 10 MB).
+    const MAX_ICC_PROFILE_BYTES: usize = 4 << 20;
+    const PROFILE_STEP_PIXELS: usize = 1 << 14;
+    use moxcms::{ColorProfile, DataColorSpace, Layout, ParsingOptions, TransformOptions};
+    if icc.len() > MAX_ICC_PROFILE_BYTES {
+        return false;
+    }
+    let transform = std::panic::catch_unwind(|| {
+        let options = ParsingOptions {
+            // moxcms refuses a profile of this many bytes or more.
+            max_profile_size: MAX_ICC_PROFILE_BYTES + 1,
+            ..ParsingOptions::default()
+        };
+        let source = ColorProfile::new_from_slice_with_options(icc, options).ok()?;
+        if source.color_space != DataColorSpace::Rgb {
+            return None;
+        }
+        source
+            .create_transform_8bit(
+                Layout::Rgba,
+                &ColorProfile::new_srgb(),
+                Layout::Rgba,
+                TransformOptions::default(),
+            )
+            .ok()
+    });
+    let Ok(Some(transform)) = transform else {
+        return false;
+    };
+    let mut converted = vec![0; PROFILE_STEP_PIXELS * 4];
+    for pixels in rgba.chunks_mut(PROFILE_STEP_PIXELS * 4) {
+        let converted = &mut converted[..pixels.len()];
+        if transform.transform(pixels, converted).is_err() {
+            return false;
+        }
+        pixels.copy_from_slice(converted);
+    }
+    true
+}
+
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     let mut value = [0; 4];
     value.copy_from_slice(&bytes[offset..offset + 4]);

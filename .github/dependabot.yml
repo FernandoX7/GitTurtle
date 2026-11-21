@@ -5,10 +5,11 @@ updates:
     directories: ["/", "/.github/actions/*"]
     schedule:
       interval: weekly
-    # Let a new release age before it is proposed, so a compromised or
-    # retracted tag is usually caught first. Security updates are not delayed.
+    # Zero cooldown: propose GitHub Actions updates immediately (omitting
+    # cooldown triggers GitHub's 3-day default). Actions are pinned by full
+    # commit SHA and reviewed before merge.
     cooldown:
-      default-days: 7
+      default-days: 0
     open-pull-requests-limit: 2
     groups:
       actions-minor-and-patch:

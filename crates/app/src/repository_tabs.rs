@@ -1254,7 +1254,6 @@ impl GitTurtle {
                 TextMode::Before => "before",
                 TextMode::After => "after",
                 TextMode::Diagrams => "diagrams",
-                #[allow(unreachable_patterns)]
                 _ => "markdown",
             }
             .into(),

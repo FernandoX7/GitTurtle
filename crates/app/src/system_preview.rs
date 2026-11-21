@@ -1078,7 +1078,7 @@ pub(crate) fn header_ends_for_room(
 
 /// [`header_ends`] for a side with a header of its own, which `header`
 /// builds for the most room its region holds it in.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn own_header_ends(
     name: &'static str,
     header: HeaderForRoom,

@@ -1207,7 +1207,7 @@ impl SeriesBrowser {
     /// patch editor's decorations. This transient review has no retained-bytes bound of its
     /// own, and a modal stays out of the repository tabs' bound because tabs cannot switch
     /// while it is open; its preview worker's cache bounds the content separately.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     fn preview_retained_bytes(&self) -> usize {
         self.content
             .as_ref()
@@ -6317,7 +6317,7 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         let store = |text: &str, bytes: &str| {
-            let oid = format!("{:x}", Sha256::digest(text));
+            let oid = gitturtle_core::lower_hex(Sha256::digest(text));
             let directory = repo
                 .path()
                 .join(".git/lfs/objects")
@@ -6328,8 +6328,8 @@ mod tests {
         };
         let pointer = |text: &str| {
             format!(
-                "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
-                Sha256::digest(text),
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+                gitturtle_core::lower_hex(Sha256::digest(text)),
                 text.len()
             )
         };
@@ -6478,13 +6478,13 @@ mod tests {
         let repo = tagged_repository(fixture.path());
         let pointer = |text: &str| {
             format!(
-                "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
-                Sha256::digest(text),
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+                gitturtle_core::lower_hex(Sha256::digest(text)),
                 text.len()
             )
         };
         let diagram = "flowchart LR\n  A --> B\n";
-        let oid = format!("{:x}", Sha256::digest(diagram));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(diagram));
         let directory = repo
             .path()
             .join(".git/lfs/objects")
@@ -6764,14 +6764,14 @@ mod tests {
         let repo = tagged_repository(fixture.path());
         let pointer = |text: &str| {
             format!(
-                "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
-                Sha256::digest(text),
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+                gitturtle_core::lower_hex(Sha256::digest(text)),
                 text.len()
             )
         };
         // After's object stored with the wrong bytes: damaged.
         let damaged = "flowchart LR\n  C --> D\n";
-        let oid = format!("{:x}", Sha256::digest(damaged));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(damaged));
         let directory = repo
             .path()
             .join(".git/lfs/objects")
@@ -6994,8 +6994,8 @@ mod tests {
         for (message, name) in [("Before", "Two"), ("After", "Three")] {
             let text = format!("flowchart LR\n  {name} --> Gone\n");
             let pointer = format!(
-                "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
-                Sha256::digest(&text),
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+                gitturtle_core::lower_hex(Sha256::digest(&text)),
                 text.len()
             );
             std::fs::write(repo.path().join("both.mmd"), pointer).unwrap();
@@ -9413,7 +9413,7 @@ mod tests {
         let repo = tagged_repository(fixture.path());
         // `text`'s pointer, with its object in the local store if `local`.
         let pointer = |text: &str, local: bool| {
-            let oid = format!("{:x}", Sha256::digest(text));
+            let oid = gitturtle_core::lower_hex(Sha256::digest(text));
             if local {
                 let directory = repo
                     .path()
@@ -9435,7 +9435,7 @@ mod tests {
         // Local, and failing verification: the right size, the wrong bytes.
         let damaged = "flowchart LR\n  Damaged --> Object\n";
         let corrupt = pointer(damaged, true);
-        let oid = format!("{:x}", Sha256::digest(damaged));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(damaged));
         std::fs::write(
             repo.path()
                 .join(".git/lfs/objects")

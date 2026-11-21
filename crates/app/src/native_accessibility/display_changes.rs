@@ -41,8 +41,8 @@ pub(super) fn subscribe(
     }
     impl Drop for Observer {
         fn drop(&mut self) {
-            // SAFETY: this is the token registered with this retained center.
             let token: &ProtocolObject<dyn NSObjectProtocol> = &self.token;
+            // SAFETY: this is the token registered with this retained center.
             unsafe { self.center.removeObserver(token.as_ref()) };
         }
     }

@@ -10,7 +10,7 @@ const WARMUPS: usize = 3;
 const SAMPLES: usize = 24;
 
 fn fingerprint(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    gitturtle_core::lower_hex(Sha256::digest(bytes))
 }
 
 fn measure<T>(

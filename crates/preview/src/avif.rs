@@ -28,7 +28,6 @@ use image::metadata::{
     CicpVideoFullRangeFlag,
 };
 use image::{ConvertColorOptions, DynamicImage, RgbaImage};
-use moxcms::{ColorProfile, DataColorSpace, Layout, ParsingOptions, TransformOptions};
 use mp4parse::{Feature, ParseStrictness};
 
 use crate::image_helper::{self, Decoded, ImageErrorKind, ImageFlags, ImageTimings};
@@ -41,13 +40,9 @@ const MAX_DECODE_STEPS: usize = 16;
 /// dav1d refuses a frame over `frame_size_limit` with `DAV1D_ERR(ERANGE)`;
 /// ERANGE is 34 on Linux for both helper architectures.
 const ERANGE: i32 = 34;
-/// The largest ICC profile converted. RGB display and working-space profiles
-/// take kilobytes and LUT-based ones hundreds; a larger `colr` is flagged
-/// without being parsed (moxcms's own default allows 10 MB).
+#[cfg(test)]
+/// The largest ICC profile converted (mirrors `image_helper::apply_rgb_icc_profile`).
 const MAX_ICC_PROFILE_BYTES: usize = 4 << 20;
-/// Pixels converted from a profile per step, so the conversion needs no second
-/// full-size buffer.
-const PROFILE_STEP_PIXELS: usize = 1 << 14;
 const ALPHA_URNS: [&[u8]; 2] = [
     b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
     b"urn:mpeg:hevc:2015:auxid:1",
@@ -503,40 +498,7 @@ fn to_srgb(rgba: RgbaImage, primaries: u8, transfer: u8) -> RgbaImage {
 /// requirement 18). Converting otherwise fails only on lane sizes, which every
 /// step meets, so the first step's result stands for all of them.
 fn apply_profile(rgba: &mut RgbaImage, icc: &[u8]) -> bool {
-    if icc.len() > MAX_ICC_PROFILE_BYTES {
-        return false;
-    }
-    let transform = std::panic::catch_unwind(|| {
-        let options = ParsingOptions {
-            // moxcms refuses a profile of this many bytes or more.
-            max_profile_size: MAX_ICC_PROFILE_BYTES + 1,
-            ..ParsingOptions::default()
-        };
-        let source = ColorProfile::new_from_slice_with_options(icc, options).ok()?;
-        if source.color_space != DataColorSpace::Rgb {
-            return None;
-        }
-        source
-            .create_transform_8bit(
-                Layout::Rgba,
-                &ColorProfile::new_srgb(),
-                Layout::Rgba,
-                TransformOptions::default(),
-            )
-            .ok()
-    });
-    let Ok(Some(transform)) = transform else {
-        return false;
-    };
-    let mut converted = vec![0; PROFILE_STEP_PIXELS * 4];
-    for pixels in rgba.chunks_mut(PROFILE_STEP_PIXELS * 4) {
-        let converted = &mut converted[..pixels.len()];
-        if transform.transform(pixels, converted).is_err() {
-            return false;
-        }
-        pixels.copy_from_slice(converted);
-    }
-    true
+    image_helper::apply_rgb_icc_profile(rgba, icc)
 }
 
 /// MIAF order: `clap` (not applied), then `irot` anticlockwise quarter turns,
@@ -3170,11 +3132,12 @@ mod tests {
             }
         }
         // Every dav1d call is in that module, and so is every use of the
-        // moxcms crate (an AVIF's ICC profile; `image` and hayro-jpeg2000 call
-        // it themselves): no other line names it, as a path, `use moxcms as`,
-        // `extern crate` or in a macro, and the manifest, as Cargo reads it,
-        // gives it no other name (`the_manifest_reaches_only_what_the_scan_reads`,
-        // which holds dav1d-rs and dav1d-sys to their names too).
+        // moxcms crate (AVIF and JPEG 2000 RGB ICC profiles via image_helper's
+        // single bounded converter): no other module names it, as a path,
+        // `use moxcms as`, `extern crate` or in a macro, and the manifest, as
+        // Cargo reads it, gives it no other name
+        // (`the_manifest_reaches_only_what_the_scan_reads`, which holds
+        // dav1d-rs and dav1d-sys to their names too).
         for line in [
             "use moxcms as cms;",
             "extern crate moxcms;",
@@ -3194,8 +3157,13 @@ mod tests {
             if !path.ends_with("/avif.rs") && !path.ends_with("/lib.rs") {
                 assert!(!text.contains(["dav1d", "::"].concat().as_str()), "{path}");
             }
-            if !path.ends_with("/avif.rs") {
-                for (index, line) in text.lines().enumerate() {
+            if !path.ends_with("/image_helper.rs") {
+                let checked = if path.ends_with("/avif.rs") {
+                    std::borrow::Cow::Owned(product_code(text))
+                } else {
+                    std::borrow::Cow::Borrowed(text.as_str())
+                };
+                for (index, line) in checked.lines().enumerate() {
                     assert!(!names_moxcms(line), "{path}:{} names moxcms", index + 1);
                 }
             }

@@ -829,9 +829,8 @@ fn read_templates(
     listing: gitturtle_core::TrackedPaths,
     cancellation: &gitturtle_core::HistoryCancellation,
 ) -> Result<Vec<Template>> {
-    let revision = match listing.scope {
-        gitturtle_core::PathScope::Revision(oid) => oid,
-        _ => unreachable!(),
+    let gitturtle_core::PathScope::Revision(revision) = listing.scope else {
+        unreachable!();
     };
     let mut templates = Vec::new();
     for entry in listing.entries {

@@ -307,7 +307,7 @@ type Delivered = std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>;
 enum Watch {
     Off,
     Starting,
-    On(#[allow(dead_code, reason = "held so the watch lasts")] notify::RecommendedWatcher),
+    On(#[expect(dead_code, reason = "held so the watch lasts")] notify::RecommendedWatcher),
     /// `current/` could not be watched; focus return tries again.
     Failed,
 }
@@ -863,7 +863,9 @@ mod tests {
         agrees(false);
         std::fs::remove_dir(&colors).unwrap();
         let fifo = std::ffi::CString::new(colors.as_os_str().as_encoded_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        // SAFETY: `fifo` is a valid NUL-terminated path inside the test tempdir.
+        let created = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        assert_eq!(created, 0);
         agrees(false);
     }
 
@@ -904,7 +906,9 @@ mod tests {
         );
         std::fs::remove_dir(&colors).unwrap();
         let fifo = std::ffi::CString::new(colors.as_os_str().as_encoded_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        // SAFETY: `fifo` is a valid NUL-terminated path inside the test tempdir.
+        let created = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        assert_eq!(created, 0);
         assert_eq!(
             seen(&root),
             unavailable("colors.toml is not a regular file")
@@ -938,6 +942,7 @@ mod tests {
 
         // A file it may not read keeps the card, with the error's kind as the reason, as does
         // a theme directory it may not search. Root reads either, so this needs a user.
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
         if unsafe { libc::geteuid() } != 0 {
             use std::os::unix::fs::PermissionsExt as _;
             let mode = |path: &Path, mode| {

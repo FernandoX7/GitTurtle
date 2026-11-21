@@ -388,8 +388,7 @@ pub(super) fn controls<T: 'static>(
                 .id("model-comparison-time")
                 .role(Role::Label)
                 .aria_value(format!(
-                    "Comparison time {:.2} of {:.2} seconds",
-                    seconds, total
+                    "Comparison time {seconds:.2} of {total:.2} seconds"
                 ))
                 .text_size(appearance::ui_text(11.))
                 .child(format!("{seconds:.2} / {total:.2} s")),

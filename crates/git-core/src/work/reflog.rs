@@ -49,7 +49,7 @@ impl GitRepository {
         let directory = if reference == "HEAD" { private } else { common };
         let (bytes, tail_only) =
             read_reflog_tail(&directory, &PathBuf::from("logs").join(reference))?;
-        let snapshot = format!("{:x}", Sha256::digest(&bytes));
+        let snapshot = crate::lower_hex(Sha256::digest(&bytes));
         let records: Vec<_> = bytes
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())

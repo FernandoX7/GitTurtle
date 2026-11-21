@@ -711,7 +711,7 @@ impl Reopening {
     ///
     /// Returns where it then lies, whether it draws its ring on its edge, that room, and how
     /// far the body moved its content, if it moved.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn reveal_laid_out(
         &self,
         body: &ScrollHandle,
@@ -1740,7 +1740,7 @@ impl Insides {
 /// one of `blocks` ([`landing`]), after this frame paints, unless focus or a scroll supersedes
 /// it. Only a change of focus since the frame `revealed` records reveals. `edge` is the focus
 /// whose ring the part draws on its own edge, if it has one.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reveal(
     scroll: &ScrollHandle,
     revealed: &std::cell::RefCell<FocusObservation>,
@@ -1800,7 +1800,7 @@ fn to_reveal(
 /// start of one of `blocks` ([`landing`]), after this frame paints, unless a scroll supersedes
 /// it or `still` no longer holds then; nowhere where they are in view already. Focus stays
 /// where it is. `ringed` is whether the part draws focus as a ring on its own edge.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn show(
     scroll: &ScrollHandle,
     blocks: &Blocks,
@@ -1872,7 +1872,7 @@ type Landed = Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App)>;
 /// inside the view that scrolled its own rows moved lines under the view's edges without
 /// moving the view, and Shift+Tab onto the fourth of twelve PR rows at 13 pt in a 461 × 490
 /// window left the row above it cut at the body's top, its title in view.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn show_then(
     scroll: &ScrollHandle,
     blocks: &Blocks,
@@ -1936,7 +1936,7 @@ fn show_then(
 /// `blocks` hold ([`clear_of_lines`]); with `in_view`, where it stands already. Read while the
 /// frame prepaints, `blocks` hold the last frame's starts and lines, which the place of what
 /// the reveal keeps whole never depends on ([`Reopening::reveal_laid_out`]).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn landed_edge(
     scroll: &ScrollHandle,
     blocks: &Blocks,
@@ -2242,7 +2242,7 @@ impl Element for Reopened {
 /// `owned` the content below the part that it owns, if any ([`own`]). While the panel reopens
 /// (`reopening`), a part of the body holding focus records where it lies, and reveals wait for
 /// the reopened focus to settle, then run whatever input came last ([`Reopening`]).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn revealing(
     element: Div,
     key: &'static str,

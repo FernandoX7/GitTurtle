@@ -204,7 +204,6 @@ impl CredentialStore for SecureStore {
 
 /// The connected account's API transport. A test build never makes one: it has no stored
 /// authorization to make it from ([`CredentialStore`]) and no connection.
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct GhTransport {
     credential: Credential,
 }
@@ -213,7 +212,6 @@ impl GhTransport {
     pub fn stored() -> Result<Self> {
         Ok(Self { credential:SecureStore.load()?.ok_or_else(||anyhow!("Connect a GitHub account first. Sign in through GitHub CLI using ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account."))? })
     }
-    #[cfg_attr(test, allow(dead_code))]
     pub fn login(&self) -> &str {
         &self.credential.login
     }
@@ -388,12 +386,11 @@ fn parse_response(bytes: &[u8]) -> Result<Response> {
 fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<()> {
     let descriptor = pipe.as_raw_fd();
     // SAFETY: descriptor belongs to the live pipe, and fcntl does not retain it.
-    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
-    ensure!(
-        flags >= 0
-            && unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
-        "Could not configure bounded GitHub subprocess I/O"
-    );
+    let ok = unsafe {
+        let flags = libc::fcntl(descriptor, libc::F_GETFL);
+        flags >= 0 && libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
+    };
+    ensure!(ok, "Could not configure bounded GitHub subprocess I/O");
     Ok(())
 }
 #[cfg(unix)]

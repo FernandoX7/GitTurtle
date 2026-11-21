@@ -702,7 +702,7 @@ fn source_room(
     side - px(1.) - rem * (0.5 * 2. + 0.5) - text - copy
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn render_side<T: 'static>(
     index: usize,
     label: &'static str,
@@ -1262,7 +1262,7 @@ fn details_room(window: &Window) -> Pixels {
         + crate::image_compare::text_line(appearance::ui_text(10.), window) * 4.
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn model_canvas<T: 'static>(
     index: usize,
     label: &'static str,

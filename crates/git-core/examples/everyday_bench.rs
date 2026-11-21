@@ -211,7 +211,7 @@ fn optional(value: Option<&str>) -> Json {
     value.map_or(Json::Null, string)
 }
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    gitturtle_core::lower_hex(Sha256::digest(bytes))
 }
 fn path_info(path: &Path) -> Json {
     object([

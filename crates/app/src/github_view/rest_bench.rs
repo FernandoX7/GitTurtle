@@ -56,10 +56,8 @@ async fn panel_at_rest_release_benchmark(cx: &mut TestAppContext) {
             tv_nsec: 0,
         };
         // SAFETY: writes into a local.
-        assert_eq!(
-            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
-            0
-        );
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+        assert_eq!(rc, 0);
         time.tv_sec as f64 * 1000. + time.tv_nsec as f64 / 1_000_000.
     };
     let summary = |samples: &[f64]| {

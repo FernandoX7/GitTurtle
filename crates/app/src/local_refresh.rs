@@ -281,7 +281,7 @@ pub(crate) enum Backend {
     #[cfg_attr(not(test), default)]
     #[cfg_attr(
         test,
-        allow(dead_code, reason = "tests about watching call `watch` themselves")
+        expect(dead_code, reason = "tests about watching call `watch` themselves")
     )]
     Native,
     /// A subscription that never reports a change and starts no watch.
@@ -474,7 +474,7 @@ impl Burst {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn run_actor(
     mut watcher: RecommendedWatcher,
     mut registrations: Registrations,

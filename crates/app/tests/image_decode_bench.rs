@@ -42,14 +42,14 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-#[allow(
+#[expect(
     dead_code,
     reason = "the measurement uses the runner, the client and their constants"
 )]
 #[path = "../src/pdf_helper.rs"]
 mod pdf_helper;
 
-#[allow(dead_code, reason = "the measurement uses the client and its routing")]
+#[expect(dead_code, reason = "the measurement uses the client and its routing")]
 #[path = "../src/image_helper.rs"]
 mod image_helper;
 

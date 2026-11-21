@@ -1,15 +1,19 @@
 [package]
 name = "gitturtle-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Git inspection and explicit everyday repository operations for GitTurtle"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1.0"
-similar = "2.7"
-sha2 = "0.10"
-ignore = "=0.4.33"
+similar = "3.2"
+sha2 = "0.11"
+ignore = "=0.4.34"
 
 [features]
 # `LfsDownloadPlan::stand_in`, for the app's tests, which cannot run Git LFS.

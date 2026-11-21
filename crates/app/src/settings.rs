@@ -4731,7 +4731,7 @@ pub(super) fn theme_preview(
 /// filled by [`LayerCard`], outside its cached body. `wrap` lets the
 /// description take a second line; otherwise it is one line, cut short with
 /// an ellipsis.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn preview_caption(
     p: appearance::Palette,
     label: SharedString,
@@ -7193,7 +7193,7 @@ mod picker_tests {
     /// The four switches' rows, for tests: each switch's ID, its row's
     /// title, its description at rest and the selector drawn around the row.
     fn switch_rows() -> Vec<(&'static str, &'static str, String, &'static str)> {
-        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        #[cfg_attr(not(target_os = "linux"), expect(unused_mut))]
         let mut rows = vec![
             (
                 "follow-system",
@@ -8365,7 +8365,7 @@ mod picker_tests {
     /// fails to stand its `content` on the text's `edge`, within a device
     /// pixel, or draws its ring past its `card`'s 1 px border or the page's
     /// `view`, by half a device pixel.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn on_the_edge(
         cx: &mut VisualTestContext,
         at: &str,

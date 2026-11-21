@@ -1393,7 +1393,7 @@ impl Panel {
             // column; 0.75 rem inside the border, they started 0.65 px past it at 18 pt.
             .map(super::bordered_pane)
             .child(self.part("conversations-header", div(), cx).flex().flex_wrap().items_center().gap_2()
-                .child(super::phrases("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).min_w_0().font_weight(FontWeight::SEMIBOLD))
+                .child(super::phrases("github-conversations-heading",format!("Conversations · {unresolved} unresolved on this page")).min_w_0().font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
                 .child(self.button("github-threads-refresh","Refresh conversations","refresh",false, cx).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
             .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(super::review::clipped_lines(crate::native_accessibility::clips_children(div()

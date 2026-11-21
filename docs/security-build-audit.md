@@ -119,6 +119,12 @@ release; the vendored toolkit crates are not workspace members, so their use
 then becomes a transitive one that is retained with the toolkit, as the
 entries above are, and the `deny.toml` entry goes.
 
+**Update, November 21, 2026 (Rust 1.100.0, cargo-deny 0.21.0).** `crates/app`
+replaced `chrono` with `jiff 1.0.2` in `crates/app/src/main.rs` and
+`crates/app/src/activity.rs`. `deny.toml` now has zero ignored advisories;
+`RUSTSEC-2026-0543` remains only in `.cargo/audit.toml` as a transitive GPUI
+toolkit dependency until the toolkit drops `chrono`.
+
 ## Source and native boundaries
 
 The workspace has no custom build scripts. The local GPUI component build script

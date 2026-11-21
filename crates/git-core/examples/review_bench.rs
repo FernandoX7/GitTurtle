@@ -31,7 +31,7 @@ fn json(value: &str) -> String {
 }
 
 fn fingerprint(value: &impl std::fmt::Debug) -> String {
-    format!("{:x}", Sha256::digest(format!("{value:?}").as_bytes()))
+    gitturtle_core::lower_hex(Sha256::digest(format!("{value:?}").as_bytes()))
 }
 
 fn measure<T: std::fmt::Debug>(

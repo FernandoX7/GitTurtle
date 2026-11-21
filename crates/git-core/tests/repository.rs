@@ -769,7 +769,7 @@ fn local_lfs_objects_are_verified_bounded_and_shared_across_worktrees() {
     let f = Fixture::new();
     let commit = f.commit("initial");
     let bytes = b"locally available LFS media\n";
-    let oid = format!("{:x}", Sha256::digest(bytes));
+    let oid = gitturtle_core::lower_hex(Sha256::digest(bytes));
     let object = f
         .root
         .join(".git/lfs/objects")
@@ -822,7 +822,7 @@ fn local_lfs_objects_are_verified_bounded_and_shared_across_worktrees() {
             .to_string()
             .contains("SHA-256")
     );
-    let empty_oid = format!("{:x}", Sha256::digest([]));
+    let empty_oid = gitturtle_core::lower_hex(Sha256::digest([]));
     assert_eq!(
         repo.local_lfs_object(&empty_oid, 0, 0).unwrap(),
         Some(vec![])
@@ -838,7 +838,7 @@ fn local_lfs_honors_relative_custom_storage_and_rejects_symlinks() {
     f.commit("initial");
     f.git(&["config", "lfs.storage", "custom-media"]);
     let bytes = b"media";
-    let oid = format!("{:x}", Sha256::digest(bytes));
+    let oid = gitturtle_core::lower_hex(Sha256::digest(bytes));
     let storage = f.root.join(".git/custom-media");
     let object = storage
         .join("objects")

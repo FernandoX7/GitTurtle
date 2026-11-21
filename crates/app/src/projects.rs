@@ -1600,7 +1600,7 @@ fn focus_clearance(cx: &App) -> Pixels {
 /// line scrolled the focused tab, ring and all, under the page's header. A
 /// refusal the person asked for later, as under Choose a repository… with
 /// focus still on that stop, is not one: it shows whole.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reveal_feedback(
     line: Bounds<Pixels>,
     shown: usize,

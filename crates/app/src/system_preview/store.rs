@@ -425,6 +425,7 @@ mod tests {
         }
         assert_eq!(mode(&session.join("lock")), 0o600);
         // The handed-over descriptor is read-only and is the written file.
+        // SAFETY: `copy.file` is an open descriptor owned by this test.
         let flags =
             unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&copy.file), libc::F_GETFL) };
         assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);

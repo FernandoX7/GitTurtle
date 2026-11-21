@@ -51,9 +51,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install cargo-deny 0.20.2
+      - name: Install cargo-deny 0.21.0
         run: |
-          deny_dir="$RUNNER_TEMP/cargo-deny-0.20.2"
+          deny_dir="$RUNNER_TEMP/cargo-deny-0.21.0"
           mkdir -p "$deny_dir"
           # One anonymous attempt over HTTPS only, on the first request and on every redirect; nothing
           # is retried. A failure ends the step with a line that names the host it happened on and the
@@ -62,17 +62,17 @@ jobs:
           curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
             --connect-timeout 15 --max-time 120 \
             --write-out '%{onerror}%{stderr}::error::cargo-deny download failed at %{urle.host}: %{errormsg} (curl exit %{exitcode})\n' \
-            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.21.0/cargo-deny-0.21.0-x86_64-unknown-linux-musl.tar.gz \
             --output "$deny_dir/cargo-deny.tar.gz"
           # --status keeps the runner's path out of the log, so a wrong digest gets a line of its own:
           # a fixed one, without the fetched file's digest. Nothing is unpacked or run after it.
-          printf '%s  %s\n' '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f' \
+          printf '%s  %s\n' 'a2170b854ff697e79e39c4c538981c9c1bdd803addbae6719a4cb66b4585a903' \
             "$deny_dir/cargo-deny.tar.gz" | sha256sum --check --status || {
             echo "::error::cargo-deny archive's SHA-256 is not the pinned one"
             exit 1
           }
           tar -xzf "$deny_dir/cargo-deny.tar.gz" -C "$deny_dir" --strip-components=1 \
-            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+            cargo-deny-0.21.0-x86_64-unknown-linux-musl/cargo-deny
           "$deny_dir/cargo-deny" --version
           printf '%s\n' "$deny_dir" >> "$GITHUB_PATH"
       # rustup installs the pinned toolchain from rust-toolchain.toml for the

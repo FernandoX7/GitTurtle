@@ -14,13 +14,13 @@ use std::sync::{
 
 // Upstream values for the adapted built-in themes. Families whose themes have
 // not landed yet are referenced only by the source tests.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), expect(dead_code))]
 mod sources;
 
 // The preference store reads the custom theme model; the theme editor and picker
 // will consume the readability rules, token names and document format. Until
 // they land, the tests are the only readers of most of them.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), expect(dead_code))]
 pub mod custom;
 
 // Linux only: the palette of the desktop's current Omarchy theme, for the Omarchy selection.

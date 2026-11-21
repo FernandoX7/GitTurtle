@@ -1021,7 +1021,7 @@ pub(crate) fn record_reply_outcome(
 fn reply_fingerprint(reply: &ReplyDraft) -> String {
     // Serde's fixed struct layout includes every captured identity and exact
     // body byte. Persist only a bounded digest, never a second copy of the text.
-    format!("{:x}", Sha256::digest(json!(reply).to_string().as_bytes()))
+    gitturtle_core::lower_hex(Sha256::digest(json!(reply).to_string().as_bytes()))
 }
 pub(crate) fn reply_was_completed(attempts: &[Attempt], reply: &ReplyDraft) -> bool {
     let fingerprint = reply_fingerprint(reply);

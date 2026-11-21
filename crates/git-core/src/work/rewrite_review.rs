@@ -267,7 +267,7 @@ impl GitRepository {
                     digest.update(line);
                 }
             }
-            let patch_digest = format!("{:x}", digest.finalize());
+            let patch_digest = crate::lower_hex(digest.finalize());
             let patch_id = if patch.is_empty() {
                 None
             } else {

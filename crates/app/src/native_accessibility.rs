@@ -450,7 +450,7 @@ impl KeyboardMenu {
     /// beside: a write's quiet reload can take a commit from History's row
     /// (an Undo or an Amend), and a branch deleted or renamed moves the
     /// navigator's rows.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn following(
         row: impl Into<RowPlace>,
         focus: FocusHandle,
@@ -4389,9 +4389,8 @@ impl GitTurtle {
             cx.notify();
             return;
         }
-        let depth = match row {
-            NavRow::Folder { depth, .. } | NavRow::Branch(_, depth) => depth,
-            _ => return,
+        let (NavRow::Folder { depth, .. } | NavRow::Branch(_, depth)) = row else {
+            return;
         };
         if expand {
             if matches!(self.nav_rows.get(index+1),Some(NavRow::Folder {depth:next,..})|Some(NavRow::Branch(_,next)) if *next>depth){self.move_navigation(true,false,window,cx);}

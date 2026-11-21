@@ -423,7 +423,14 @@ impl Render for ActivityBrowser {
             .children(error.map(|error|div().text_color(rgb(p.warning)).child(error)))
             .child(crate::native_accessibility::clips_children(div().id("activity-entries").h(list_height).flex_shrink_0().overflow_y_scroll().flex().flex_col().gap_2()
                 .children(entries.into_iter().rev().map(|entry|{
-                    let timestamp=chrono::DateTime::from_timestamp(entry.time,0).map(|t|t.with_timezone(&chrono::Local).format("%b %d %H:%M:%S").to_string()).unwrap_or_default();
+                    let timestamp = jiff::Timestamp::from_second(entry.time)
+                        .ok()
+                        .map(|t| {
+                            t.to_zoned_datetime(jiff::tz::TimeZone::system())
+                                .strftime("%b %d %H:%M:%S")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
                     let heading=format!("{} · {} · {}",entry.operation,entry.outcome.label(),timestamp);
                     let description = format!("{heading}. Repository: {}. Target: {}. {}", entry.repository, entry.target, if entry.outcome == Outcome::Running { progress.as_deref().unwrap_or(&entry.explanation) } else { &entry.explanation });
                     div().id(("activity-entry",entry.id)).role(Role::Group).aria_label(description).p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_1()
