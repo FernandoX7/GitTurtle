@@ -221,6 +221,38 @@ Read [rules](../../absent.md).
         self.write("AGENTS.md", "# Project\n" + ("x" * 9000) + "\n")
         self.assertIn("root AGENTS.md exceeds 8192 bytes", self.messages())
 
+    def test_html_links_and_public_docs_are_validated(self):
+        self.write("assets/icon.png", "ok")
+        self.write("docs/guide.md", "# Guide\n")
+        self.write(
+            "README.md",
+            '<p><img src="assets/icon.png" alt="ok">'
+            '<a href="docs/guide.md#guide">Guide</a>'
+            '<img src="assets/missing.png" alt="bad">'
+            '<a href="docs/guide.md#absent">Bad</a></p>\n'
+            '```html\n<img src="assets/ignored.png">\n```\n'
+            '`<a href="docs/ignored.md">ignored</a>`\n',
+        )
+        self.write("docs/decisions/0001-choice.md", "[Missing](../missing.md)\n")
+        self.write("website/README.md", "[Broken](../missing-site.md)\n")
+        message = self.messages()
+        self.assertIn("missing local link target: assets/missing.png", message)
+        self.assertIn("missing Markdown anchor: docs/guide.md#absent", message)
+        self.assertNotIn("assets/ignored.png", message)
+        self.assertNotIn("docs/ignored.md", message)
+        self.assertIn("0001-choice.md:1: missing local link target: ../missing.md", message)
+        self.assertIn("website/README.md:1: missing local link target: ../missing-site.md", message)
+
+    def test_design_spec_budgets_and_no_test_refs_are_enforced(self):
+        self.write("DESIGN.md", "# Design\n" + ("a" * 1205) + "\n")
+        self.write("docs/design/tokens.md", "# Tokens\nSee `views::tests::focus_ring`.\n")
+        message = self.messages()
+        self.assertIn("DESIGN.md:2: design spec line exceeds 1200 bytes", message)
+        self.assertIn("tokens.md:2: living design spec must not cite ::tests:: function paths", message)
+
+        self.write("DESIGN.md", "# Design\n" + ("line of text\n" * 2200))
+        self.assertIn("DESIGN.md exceeds 25600 bytes", self.messages())
+
 
 class ImageMetadataTests(unittest.TestCase):
     def setUp(self):

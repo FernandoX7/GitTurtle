@@ -248,15 +248,15 @@ have no recorded check. On Omarchy itself, Git writes and network actions were
 checked on 2026-09-30, on a headless 1480 × 800 output: staging a file and a single hunk, unstaging, committing,
 creating, switching and deleting a branch, and fetch, pull and push over
 `file://` and over HTTP with GitTurtle's authentication prompt; see the
-[Git writes record](validation.md#september-30-git-writes-and-network-actions-on-omarchy).
+[Git writes record](validation/2026-09.md#september-30-git-writes-and-network-actions-on-omarchy).
 More than one monitor and a physical HiDPI panel have no recorded check yet; see
-the [validation record](validation.md#september-27-omarchy-and-hyprland).
+the [validation record](validation/2026-09.md#september-27-omarchy-and-hyprland).
 Omarchy 4.5 on x86-64 was checked on 2026-11-17 with the CI-built archive, on
 an AMD laptop at 1,366 × 768: installation, the `gitturtle-bin` package build,
 a first launch, 23 stock themes live, the desktop font, tiled, floating and
 half-width windows, scale 2, and by hand Super+C, Super+V and the folder
 picker; see the
-[x86-64 record](validation.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop).
+[x86-64 record](validation/2026-11.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop).
 That panel takes no fractional scale, so 1.25 and 1.5 have no record on
 Omarchy 4.5 for x86-64.
 [Omarchy on Apple Silicon](#omarchy-on-apple-silicon-aarch64) says what has
@@ -274,7 +274,7 @@ Hyprland does not scale an X11 window, and GitTurtle takes its scale from
 1366 × 768 panel that measures 310 × 170 mm, it drew about 17% larger than
 native at scale 1, and about 7% smaller than native on an output at scale 1.25.
 `GPUI_X11_SCALE_FACTOR` overrides that choice; see the
-[XWayland record](validation.md#september-29-gitturtle-under-xwayland-on-omarchy).
+[XWayland record](validation/2026-09.md#september-29-gitturtle-under-xwayland-on-omarchy).
 
 Omarchy already ships the native libraries, `clang`, `desktop-file-utils` and
 both portal backends. Install the three missing build tools, then use the same
@@ -547,7 +547,7 @@ own line, as the last then is too, because the search field still shows the
 paste; a prompt left unanswered, or without its picture, is reported as not
 covered. `--help` has
 the rest. The first x86-64 run is the
-[November 17 record](validation.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop).
+[November 17 record](validation/2026-11.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop).
 
 ### Omarchy on Apple Silicon (AArch64)
 
@@ -573,7 +573,7 @@ ran Omarchy Mac 4.0.4 on Asahi Linux, and they name that system. The first, on
 2026-10-25, covered the native release build, packaging, installation, launch
 from the installed executable, History and image comparison, on a temporary
 1480 × 800 headless output at scale 1; see the
-[AArch64 record](validation.md#october-25-linux-aarch64-on-omarchy-on-asahi-linux).
+[AArch64 record](validation/2026-10.md#october-25-linux-aarch64-on-omarchy-on-asahi-linux).
 The system already had every native library and `clang`. That check installed
 Rust and cmake through mise and Pillow into mise's Python instead of the pacman
 packages; either works, as long as the `python3` on `PATH` can import Pillow.
@@ -581,12 +581,12 @@ packages; either works, as long as the `python3` on `PATH` can import Pillow.
 That first check left open the folder picker, Git writes and network actions,
 fractional scaling, the Omarchy theme and the command palette. Later records on
 the same MacBook cover a
-[first launch that matches the desktop](validation.md#october-26-a-first-launch-on-omarchy-matches-the-desktop),
-[`omarchy font set`](validation.md#october-26-omarchy-font-set-reaches-code-text-at-once),
-the [editor and terminal handoffs](validation.md#october-26-omarchy-editor-default-terminal-and-a-launch-or-focus-binding),
-[every stock Omarchy theme](validation.md#october-27-every-stock-omarchy-theme-after-the-contrast-fixes)
+[first launch that matches the desktop](validation/2026-10.md#october-26-a-first-launch-on-omarchy-matches-the-desktop),
+[`omarchy font set`](validation/2026-10.md#october-26-omarchy-font-set-reaches-code-text-at-once),
+the [editor and terminal handoffs](validation/2026-10.md#october-26-omarchy-editor-default-terminal-and-a-launch-or-focus-binding),
+[every stock Omarchy theme](validation/2026-10.md#october-27-every-stock-omarchy-theme-after-the-contrast-fixes)
 in History, Compare, Changes, Settings, the command palette and the menu, and
-[Stage all and Fetch](validation.md#october-29-keyboard-menus-clear-the-status-bar-capped-menus-keep-whole-rows-and-fetch-says-when-nothing-is-new),
+[Stage all and Fetch](validation/2026-10.md#october-29-keyboard-menus-clear-the-status-bar-capped-menus-keep-whole-rows-and-fetch-says-when-nothing-is-new),
 among many checks of single changes. The rest of that list (the folder picker,
 pull and push, and fractional scaling) has no AArch64 record of its own.
 
@@ -688,9 +688,12 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   from `/usr/local/bin/gh` or `/usr/bin/gh` (`sudo pacman -S github-cli` on
   Arch and Omarchy), and `/usr/local/bin/gh` wins when both exist; a CLI
   installed elsewhere, such as through mise or in `~/.local/bin`, is not used.
-- Pull-request review on Linux is covered by tests and the offline fixture; a
-  live sign-in with a real account is still to be checked. Git's own
-  configured authentication for explicit fetch/pull/push is separate.
+- Live GitHub sign-in, disconnect/reconnect via the desktop keyring with zero
+  token leaks, and end-to-end PR creation were verified on Omarchy 4.5
+  ([November 16 check](validation/2026-11.md#november-16-a-live-github-sign-in-writes-no-token-and-the-app-creates-a-pull-request-end-to-end));
+  live commenting, replying, and review submission remain covered by tests and
+  the offline fixture. Git's own configured authentication for explicit
+  fetch/pull/push is separate.
 - PDF pages and their text, AVIF images and JPEG 2000 images (JP2 files and
   raw J2K codestreams) render on x86-64 and AArch64 in GitTurtle's own helper
   process: the app starts its own executable once per page or image, the
@@ -718,7 +721,7 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   [quality run 41757534359](https://github.com/FernandoX7/GitTurtle/actions/runs/41757534359)
   (the Ubuntu 24.04 tests job and the Arch container, the 17 tests of
   `tests/image_helper.rs` at `36d977aa`; see the
-  [record](validation.md#november-3-night-the-linux-avif-and-jpeg-2000-view-passes-its-x86-64-run-and-a-slow-macos-runner-reaches-the-jobs-time-limit)).
+  [record](validation/2026-11.md#november-3-night-the-linux-avif-and-jpeg-2000-view-passes-its-x86-64-run-and-a-slow-macos-runner-reaches-the-jobs-time-limit)).
 - **libdav1d is a hard runtime dependency.** The executable links the
   distribution's `libdav1d.so.7` (Arch `dav1d`, Ubuntu `libdav1d7`), so
   GitTurtle does not start without it, even when no AVIF is ever opened.

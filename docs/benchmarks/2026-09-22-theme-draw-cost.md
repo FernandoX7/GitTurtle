@@ -70,7 +70,7 @@ Re-pointing for the solid focus ring (2026-09-29, `button-focus-ring-recapture`)
 - **Adopted build.** On release `650a76e`, sha256 `394c5d17e830fec8eac9e9b4e8759ecd50e1051ab9356a93d83bee698449cbac`, at scale 2 in the default 2960×1960 window, it landed on row 1's Edit…: 480 ring pixels, box [1378, 1313, 1497, 1372]. A disposable `create-demo-repo.py` fixture stood in for `themes-apply-trace`, because steps 1 and 2 read only the Settings page.
 - **Controls.** On the old ring, base `105ef2f` (debug) gives 1144 pixels with the old `RING` in the same box, and the adopted build gives only 16. On base the new `RING` also matches #66's inset band inside the Button's edge: 524 pixels, box [1384, 1315, 1491, 1370].
 
-Steps 3 to 6 and every sample, statistic and verification in this record are unchanged and were not rerun. The [validation entry](../validation.md#september-29-frames-retaken-under-the-solid-focus-ring) describes the run.
+Steps 3 to 6 and every sample, statistic and verification in this record are unchanged and were not rerun. The [validation entry](../validation/2026-09.md#september-29-frames-retaken-under-the-solid-focus-ring) describes the run.
 
 1. Ctrl+comma opened Settings over the comparison, and 15 wheel steps brought "Your themes" on screen; the card's top border was found at y = 1197 (x 373..1834) and row 1's swatch strip put the row's band at 1321..1381 physical px.
 2. Tab ×28 put the focus ring on row 1's Edit… (1106 ring pixels, box [1378, 1321, 1497, 1380]).

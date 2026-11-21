@@ -836,6 +836,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([step.split("\n", 1)[0] for step in steps[1:]], [
             "name: Verify Python runtime",
             "name: Validate development guidance",
+            "name: Validate documentation sync",
             "name: Test development, gate, native-QA and CI tooling side by side",
             "name: Check CI collector syntax and help",
             "name: Summarize CI measurements",
@@ -843,7 +844,7 @@ class WorkflowTests(unittest.TestCase):
         # On Linux the parallel ci-tests job already runs scripts/ci/tests, so
         # agent-tooling passes --skip-ci-tests there and runs all suites on macOS.
         self.assertEqual(
-            steps[3],
+            steps[4],
             "name: Test development, gate, native-QA and CI tooling side by side\n"
             "        run: |\n"
             '          if [ "${{ runner.os }}" = "Linux" ]; then\n'

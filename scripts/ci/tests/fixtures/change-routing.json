@@ -8,7 +8,7 @@
   {"name":"CI collector", "paths":["scripts/ci/metrics.py", "scripts/ci/tests/test_metrics.py"], "required":["product", "tooling", "website"]},
   {"name":"CI libdav1d ELF check", "paths":["scripts/ci/libdav1d_elf.py"], "required":["product", "tooling", "website"]},
   {"name":"ci tools", "paths":["scripts/ci/executed_tests.py", "scripts/ci/tests/test_metrics.py"], "required":["tooling"]},
-  {"name":"dev tools and git hooks", "paths":["scripts/dev/worktree.py", "scripts/dev/build_slot.py", "scripts/dev/guards.py", ".githooks/pre-commit", "scripts/gate.py", "scripts/test_gate.py", "scripts/check-docs-sync.py"], "required":["tooling"]},
+  {"name":"dev tools and git hooks", "paths":["scripts/dev/worktree.py", "scripts/dev/build_slot.py", "scripts/dev/guards.py", ".githooks/pre-commit", "scripts/gate.py", "scripts/test_gate.py", "scripts/check-docs-sync.py", "docs/doc-manifest.json"], "required":["tooling"]},
   {"name":"native-QA tools", "paths":["scripts/native_qa/qa.py", "scripts/native_qa/ncc.c", "scripts/native_qa/README.md"], "required":["tooling"]},
   {"name":"multi-agent shims", "paths":["GEMINI.md", ".github/copilot-instructions.md", ".agents/roles/code-reviewer.md", ".agents/workflows/review-candidate.md"], "required":["tooling"]},
   {"name":"agent guide", "paths":["crates/app/AGENTS.md", ".agents/skills/gitturtle-feature-work/SKILL.md"], "required":["tooling"]},

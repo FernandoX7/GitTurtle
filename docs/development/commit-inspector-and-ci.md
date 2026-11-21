@@ -182,7 +182,7 @@ release guide after integration; do not relabel local fixtures as hosted results
 
 - Reconcile the exact locked target inventories with the known
   [Linux notice review](../licenses/linux-notice-review.md) and
-  [macOS/Linux validation record](../validation.md#september-14-public-launch-preparation).
+  [macOS/Linux validation record](../validation/2026-09.md#september-14-public-launch-preparation).
   Linux strict collection is complete since the license review of November 15,
   2026 (mac 0.1.1 by that review, the Rust ufbx wrapper by its 0.11.5 release);
   macOS still documents block 0.1.6, objc_exception 0.1.2, leak 0.1.2 and

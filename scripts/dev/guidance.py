@@ -40,6 +40,13 @@ from . import sync_adapters
 CONFLICT_MARKER = re.compile(r"^(?:<{7} |\|{7} |>{7} )")
 ROOT_AGENTS_MAX_BYTES = 8192
 STATE_MAX_LINES = 60
+DESIGN_MAX_BYTES = 25600
+DESIGN_MAX_LINE_BYTES = 1200
+TEST_REF = re.compile(r"::tests::")
+HTML_LINK = re.compile(
+    r"""<(?:a\b[^>]*?\bhref|img\b[^>]*?\bsrc)\s*=\s*(?:"([^"]+)"|'([^']+)')""",
+    re.IGNORECASE,
+)
 SHIM_MAX_LINES = {
     "CLAUDE.md": 15,
     "GEMINI.md": 10,
@@ -52,7 +59,11 @@ def guidance_files(root: Path) -> list[Path]:
     paths = {root / name for name in (
         "AGENTS.md", "CONTRIBUTING.md", "docs/agent-guidance.md"
     )}
-    for optional in ("GEMINI.md", ".github/copilot-instructions.md"):
+    for optional in (
+        "GEMINI.md", ".github/copilot-instructions.md",
+        "README.md", "SUPPORT.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md",
+        "DESIGN.md", "CODE_OF_CONDUCT.md",
+    ):
         candidate = root / optional
         if candidate.is_file():
             paths.add(candidate)
@@ -63,8 +74,13 @@ def guidance_files(root: Path) -> list[Path]:
         for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             if name in files:
                 paths.add(Path(directory) / name)
+    paths.update((root / "docs").glob("*.md"))
+    paths.update((root / "docs/design").glob("*.md"))
+    paths.update((root / "docs/decisions").glob("*.md"))
+    paths.update((root / "docs/validation").glob("*.md"))
+    paths.update((root / "docs/archive").glob("**/*.md"))
     paths.update((root / "docs/development").glob("*.md"))
-    paths.update((root / "docs").glob("architecture.md"))
+    paths.update((root / "website").glob("*.md"))
     paths.update((root / "crates").glob("*/docs/*.md"))
     paths.update((root / ".agents/skills").glob("**/*.md"))
     paths.update((root / ".agents/roles").glob("*.md"))
@@ -151,7 +167,7 @@ def _destination(text: str) -> str | None:
 
 
 def markdown_links(text: str) -> list[tuple[int, str]]:
-    """Extract inline and defined reference links, excluding code examples."""
+    """Extract inline, reference, and HTML a/img links, excluding code examples."""
     visible = _without_inline_code(_without_fences(text))
     links = []
     # Check definitions once. Shortcut/reference uses need no duplicate report.
@@ -164,6 +180,11 @@ def markdown_links(text: str) -> list[tuple[int, str]]:
         destination = _destination(visible[match.end():])
         if destination is not None:
             links.append((visible.count("\n", 0, match.start()) + 1, destination))
+    for match in HTML_LINK.finditer(visible):
+        destination = (match.group(1) or match.group(2) or "").strip()
+        if destination:
+            links.append((visible.count("\n", 0, match.start()) + 1, destination))
+    links.sort(key=lambda item: item[0])
     return links
 
 
@@ -255,6 +276,17 @@ def _budget_issues(root: Path, path: Path, text: str) -> list[Issue]:
         lines = len(text.splitlines())
         if lines > limit:
             issues.append(Issue(path, 1, f"{rel} shim exceeds {limit} lines ({lines} lines)"))
+    if rel == "DESIGN.md":
+        size = len(text.encode("utf-8"))
+        if size > DESIGN_MAX_BYTES:
+            issues.append(Issue(path, 1, f"DESIGN.md exceeds {DESIGN_MAX_BYTES} bytes ({size} bytes)"))
+    if rel == "DESIGN.md" or rel.startswith("docs/design/"):
+        for index, line in enumerate(text.splitlines(), start=1):
+            line_bytes = len(line.encode("utf-8"))
+            if line_bytes > DESIGN_MAX_LINE_BYTES:
+                issues.append(Issue(path, index, f"design spec line exceeds {DESIGN_MAX_LINE_BYTES} bytes ({line_bytes} bytes)"))
+            if TEST_REF.search(line):
+                issues.append(Issue(path, index, "living design spec must not cite ::tests:: function paths"))
     return issues
 
 

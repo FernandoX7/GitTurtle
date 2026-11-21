@@ -105,6 +105,40 @@ def render(template, route, title, description, body):
     )
 
 
+REPO_ROOT = ROOT.parent
+LOCAL_MD_LINK = re.compile(r'\[([^\]]+)\]\((?!https?://|mailto:|#)([^)]+)\)')
+
+
+def render_legal_notices(repo_root=REPO_ROOT):
+    """Generate website/public/legal/notices/* deterministically from repository legal sources."""
+    license_text = (repo_root / 'LICENSE').read_text(encoding='utf-8')
+    raw_third_party = (repo_root / 'THIRD_PARTY_NOTICES.md').read_text(encoding='utf-8')
+    # Rewrite relative repository Markdown links into plain readable references for standalone .txt serving.
+    third_party_text = LOCAL_MD_LINK.sub(r'\1 (\2)', raw_third_party)
+
+    assets_dir = repo_root / 'docs' / 'licenses' / 'assets'
+    sections = [
+        'GitTurtle artwork, theme, font and native-library notices',
+        '',
+        'Each section reproduces a notice from the source checkout.',
+    ]
+    for path in sorted(assets_dir.iterdir()):
+        if not path.is_file() or path.name == 'sources.json':
+            continue
+        sections.extend([
+            '',
+            f'===== docs/licenses/assets/{path.name} =====',
+            '',
+            path.read_text(encoding='utf-8').rstrip('\n'),
+        ])
+    artwork_text = '\n'.join(sections) + '\n'
+    return {
+        PUBLIC / 'legal' / 'notices' / 'gitturtle-license.txt': license_text,
+        PUBLIC / 'legal' / 'notices' / 'third-party-notices.txt': third_party_text,
+        PUBLIC / 'legal' / 'notices' / 'artwork-themes-fonts.txt': artwork_text,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='compare against the published files')
@@ -127,9 +161,19 @@ def main():
     for target in PUBLIC.rglob('index.html'):
         if target not in outputs and MARKER in target.read_text(encoding='utf-8'):
             problems.append(f'Remove the obsolete generated file {target.relative_to(ROOT)}')
+    notices = render_legal_notices()
+    for target, text in notices.items():
+        if target.exists() and target.read_text(encoding='utf-8') == text:
+            continue
+        if args.check:
+            problems.append(f'Stale or missing legal notice {target.relative_to(ROOT)}')
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding='utf-8')
     if problems:
         sys.exit('\n'.join(problems))
-    print(f'{len(outputs)} static pages {"verified" if args.check else "rendered"}.')
+    verb = 'verified' if args.check else 'rendered'
+    print(f'{len(outputs)} static pages and {len(notices)} legal notices {verb}.')
 
 
 if __name__ == '__main__':

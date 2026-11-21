@@ -13,7 +13,7 @@ body:
     id: build
     attributes:
       label: App version and build
-      description: Include the version and commit ID if known, local modifications, and how you built or installed it. For a Linux bundle, build-info.json contains the packaging revision and executable hash.
+      description: Paste output from About GitTurtle → Copy bug diagnostics or `gitturtle --build-info` (plus how you built or installed it; Linux bundles also include build-info.json).
       placeholder: "0.1.0, commit abc1234, local release build; or unknown"
     validations:
       required: true
@@ -21,7 +21,7 @@ body:
     id: os
     attributes:
       label: Operating system and architecture
-      placeholder: "Ubuntu 24.04 x86-64, or macOS version and Apple Silicon / Intel"
+      placeholder: "Arch / Omarchy (x86-64 or AArch64), Ubuntu 24.04 (x86-64 or ARM64), or macOS Apple Silicon"
     validations:
       required: true
   - type: input

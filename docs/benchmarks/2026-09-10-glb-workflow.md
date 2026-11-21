@@ -56,7 +56,7 @@ load and native QA could overlap; release builds and corpus scans had finished.
 ## Packaged native frame callbacks
 
 The exact arm64 package UUID `996D52A5-7CF1-3CC5-BA91-928AF6AD0ECC` exercised
-the native [workflow](../glb-workflow-validation.md). The captured 17,064-triangle
+the native [workflow](../archive/2026-09/glb-workflow-validation.md). The captured 17,064-triangle
 asset rendered one After side, with the absent Before shown independently. The
 playback interval kept all 807 recorded 360-pixel callbacks:
 

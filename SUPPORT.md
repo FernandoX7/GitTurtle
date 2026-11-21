@@ -11,7 +11,7 @@ Community help is offered as time allows. There is no response-time guarantee.
 
 ## Share useful, safe diagnostics
 
-Include the app version and, for a source build, its commit ID and whether the checkout has local changes. The Linux bundle's `build-info.json` identifies the packaging revision and executable hash; a reused binary may have a different source identity. Describe your OS version, CPU architecture, and relevant display or graphics details. On Linux, include the desktop environment and Wayland or X11 session type, plus the scale setting for display issues.
+Use **About GitTurtle → Copy bug diagnostics** (or run `gitturtle --build-info`) to capture the app version, commit ID, dirty state, target architecture, and executable details without opening repository state. The Linux bundle's `build-info.json` also identifies the packaging revision and executable hash. Describe your OS version, CPU architecture, and relevant display or graphics details. On Linux, include the desktop environment and Wayland or X11 session type, plus the scale setting for display issues.
 
 A minimal example in a disposable repository is usually more useful than a full log. Before attaching logs or screenshots, remove access tokens, passwords, private keys, authenticated remote URLs, personal names and email addresses, private paths, commit messages and source content. Share only the excerpt needed to explain the failure. Do not attach your entire environment, Git configuration or application data directory: those can contain private information and saved drafts.
 

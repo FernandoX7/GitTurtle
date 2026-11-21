@@ -290,11 +290,13 @@ def check_site(root=ROOT, write_sitemap=False):
     for required in ("index.html", "404.html"):
         if public / required not in documents:
             errors.append(f"missing {required}")
+    referenced_assets = set()
     for source, doc in documents.items():
         for ref in doc.refs:
             target = local_target(public, source, ref)
             if target is None:
                 continue
+            referenced_assets.add(target)
             if not target.is_file():
                 errors.append(f"{source.relative_to(public)}: missing target {ref}")
             fragment = unquote(urlsplit(ref).fragment)
@@ -311,8 +313,20 @@ def check_site(root=ROOT, write_sitemap=False):
         # intentionally is not a complete CSS parser or a browser substitute.
         for _, ref in re.findall(r"url\(\s*(['\"]?)(.*?)\1\s*\)", css, flags=re.I):
             target = local_target(public, source, ref.strip())
-            if target is not None and not target.is_file():
-                errors.append(f"{source.name}: missing CSS asset {ref}")
+            if target is not None:
+                referenced_assets.add(target)
+                if not target.is_file():
+                    errors.append(f"{source.name}: missing CSS asset {ref}")
+    assets_dir = public / "assets"
+    if assets_dir.is_dir():
+        js_texts = [p.read_text(encoding="utf-8", errors="ignore") for p in sorted(public.rglob("*.js"))]
+        for asset in sorted(assets_dir.rglob("*")):
+            if not asset.is_file():
+                continue
+            resolved_asset = asset.resolve()
+            rel_url = "/" + asset.relative_to(public).as_posix()
+            if resolved_asset not in referenced_assets and not any(rel_url in txt or asset.name in txt for txt in js_texts):
+                errors.append(f"orphaned public asset unreferenced by HTML/CSS/JS: {asset.relative_to(public)}")
     for item in json.loads((root / "asset-provenance.json").read_text())["assets"]:
         target = (root / item["site_path"]).resolve()
         if not target.is_relative_to(public):

@@ -4,7 +4,7 @@ Research for task `atspi-disabled-state` in [`tasks.json`](tasks.json), using th
 
 ## Decision and scope
 
-- **Question:** how GitTurtle's disabled Buttons can report a disabled state to AT-SPI on Linux. On every build so far, a disabled Button reports `enabled` and `sensitive` ([validation, September 30](../validation.md#september-30-tab-leaves-a-focused-button-that-turns-disabled)). A screen-reader user cannot tell it from an enabled one.
+- **Question:** how GitTurtle's disabled Buttons can report a disabled state to AT-SPI on Linux. On every build so far, a disabled Button reports `enabled` and `sensitive` ([validation, September 30](../validation/2026-09.md#september-30-tab-leaves-a-focused-button-that-turns-disabled)). A screen-reader user cannot tell it from an enabled one.
 - **Recommendation:** option (a). Vendor the published `accesskit_atspi_common` 0.19.1 with only the upstream #788 change, select it through `[patch.crates-io]`, and retire the patch when the toolkit moves to `accesskit_unix` 0.24 or later. No released GPUI stack carries the fix, and the backport is a +6/-4 change to one function. Its only new call, `is_read_only()`, already exists in the locked `accesskit_consumer` 0.38.0. Nothing else in the dependency graph changes.
 - **Re-check:** the planner's facts of 2026-09-30 in the task contract hold on 2026-10-01; the evidence below adds exact requirements and revisions.
 - **Outside this decision:** upgrading GPUI Kit or `gpui-pre`, `deny.toml`, the macOS adapter (`accesskit_macos`, VoiceOver), Windows, and Orca speech.
@@ -37,7 +37,7 @@ Research for task `atspi-disabled-state` in [`tasks.json`](tasks.json), using th
 
 - **Owners:** `vendor/accesskit_atspi_common/GITTURTLE-PATCH.md` records provenance, the change, the consuming path and the removal condition. `vendor/AGENTS.md` lists it, `THIRD_PARTY_NOTICES.md` names its license and patch record, and `Cargo.toml` selects and excludes it.
 - **Regression:** `native_accessibility::atspi_state_tests` is a Linux-only application test, so every Linux run of the app's tests, Ubuntu CI included, runs it. It maps an AccessKit tree through the vendored adapter's `PlatformNode::state()`.
-- **Native:** an AT-SPI read of base and candidate on Linux X11 on 2026-10-01, recorded in [`docs/validation.md`](../validation.md#october-1-disabled-buttons-report-disabled-to-at-spi). It covered disabled Buttons, not a disabled text input.
+- **Native:** an AT-SPI read of base and candidate on Linux X11 on 2026-10-01, recorded in [`docs/validation.md`](../validation/2026-10.md#october-1-disabled-buttons-report-disabled-to-at-spi). It covered disabled Buttons, not a disabled text input.
 - **Dependency:** `cargo deny --locked check` passed (advisories, bans, licenses and sources), and the independent [security review](security-review.md) passed on 2026-10-01.
 - **Remaining uncertainty:** whether Orca speaks the new state as intended (not covered), and VoiceOver, which this change does not touch.
 

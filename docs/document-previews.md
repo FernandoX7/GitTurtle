@@ -8,7 +8,7 @@ UI thread. The original source/diff remains the authority for staging.
 
 This document records the finite implementation contract. The
 [format matrix](file-previews.md) covers other image and metadata formats;
-[the milestone record](next-milestone.md) records native acceptance and remaining
+[the milestone record](archive/2026-09/next-milestone.md) records native acceptance and remaining
 work. Unit/decoder tests establish data behavior, not native layout, latency,
 GPU cleanup or packaged-build identity.
 
