@@ -11,7 +11,16 @@ use std::{
 
 const PROMPT_LIMIT: usize = 8192;
 const RESPONSE_LIMIT: usize = 16 * 1024;
+const PROGRESS_CARRY_LIMIT: usize = 4096;
 const SOCKET_ENV: &str = "GITTURTLE_ASKPASS_SOCKET";
+const PROGRESS_TITLES: [&str; 6] = [
+    "Receiving objects:",
+    "Counting objects:",
+    "Enumerating objects:",
+    "Compressing objects:",
+    "Writing objects:",
+    "Resolving deltas:",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticationPrompt {
@@ -88,31 +97,15 @@ impl OperationControl {
             .progress
             .clone()
     }
-    pub(super) fn update_progress(&self, bytes: &[u8]) {
-        let text = String::from_utf8_lossy(bytes);
-        // Progress is deliberately restricted to Git's numeric transfer phases.
-        // Arbitrary helper/hook output belongs only in redacted error details.
-        if let Some(line) = text.split(['\n', '\r']).rev().find(|line| {
-            [
-                "Receiving objects:",
-                "Counting objects:",
-                "Enumerating objects:",
-                "Compressing objects:",
-                "Writing objects:",
-                "Resolving deltas:",
-            ]
-            .iter()
-            .any(|prefix| line.trim_start().starts_with(prefix))
-        }) {
-            // Redact exact answers before acquiring the progress lock: redact()
-            // reads the same state, including previously entered secrets.
-            let progress = self.redact(line.trim()).chars().take(160).collect();
-            self.0
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .progress = Some(progress);
-        }
+    pub(super) fn record_progress(&self, line: &str) {
+        // Redact exact answers before acquiring the progress lock: redact()
+        // reads the same state, including previously entered secrets.
+        let progress = self.redact(line).chars().take(160).collect();
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .progress = Some(progress);
     }
     fn request(&self, message: String, stop: &AtomicBool) -> Option<String> {
         let id = self.0.sequence.fetch_add(1, Ordering::Relaxed);
@@ -170,6 +163,157 @@ impl OperationControl {
             output = output.replace(secret, "[redacted]");
         }
         output
+    }
+}
+
+/// Frames one child stderr stream into `\r`/`\n`-terminated segments so
+/// progress lines are validated and redacted only once whole. Lives on one
+/// child's stderr reader thread and dies with it; unterminated tails are never
+/// shown.
+#[derive(Default)]
+pub(super) struct ProgressScanner {
+    carry: Vec<u8>,
+    discarding: bool,
+}
+
+impl ProgressScanner {
+    pub(super) fn feed(&mut self, bytes: &[u8], control: &OperationControl) {
+        let mut last_match: Option<String> = None;
+        for slice in bytes.split_inclusive(|&byte| byte == b'\n' || byte == b'\r') {
+            if matches!(slice.last(), Some(b'\n' | b'\r')) {
+                let body = &slice[..slice.len() - 1];
+                if self.discarding {
+                    self.discarding = false;
+                    self.carry.clear();
+                    continue;
+                }
+                if self.carry.len().saturating_add(body.len()) > PROGRESS_CARRY_LIMIT {
+                    self.carry.clear();
+                    self.carry.shrink_to(0);
+                    continue;
+                }
+                let segment = if self.carry.is_empty() {
+                    body
+                } else {
+                    self.carry.extend_from_slice(body);
+                    &self.carry[..]
+                };
+                if let Ok(text) = std::str::from_utf8(segment) {
+                    let trimmed = text.trim_matches([' ', '\t']);
+                    if is_git_progress_line(trimmed) {
+                        last_match = Some(trimmed.to_owned());
+                    }
+                }
+                self.carry.clear();
+            } else if !self.discarding {
+                if self.carry.len().saturating_add(slice.len()) > PROGRESS_CARRY_LIMIT {
+                    self.carry.clear();
+                    self.carry.shrink_to(0);
+                    self.discarding = true;
+                } else {
+                    self.carry.extend_from_slice(slice);
+                }
+            }
+        }
+        if let Some(matched) = last_match {
+            control.record_progress(&matched);
+        }
+    }
+
+    #[cfg(test)]
+    fn carry_len(&self) -> usize {
+        self.carry.len()
+    }
+}
+
+/// Progress is strictly limited to Git's own numeric transfer counters, units,
+/// `done.`, and `completed with N local object(s).` so helper, hook, or remote
+/// text after a progress title is never surfaced in the status bar.
+fn is_git_progress_line(line: &str) -> bool {
+    let Some(rest) = PROGRESS_TITLES
+        .iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(' ') else {
+        return false;
+    };
+    let rest = rest.trim_start_matches(' ');
+    let Some(rest) = parse_digits(rest) else {
+        return false;
+    };
+    let rest = if let Some(after_pct) = rest.strip_prefix("% (") {
+        let Some(after_done) = parse_digits(after_pct) else {
+            return false;
+        };
+        let Some(after_slash) = after_done.strip_prefix('/') else {
+            return false;
+        };
+        let Some(after_total) = parse_digits(after_slash) else {
+            return false;
+        };
+        let Some(after_close) = after_total.strip_prefix(')') else {
+            return false;
+        };
+        after_close
+    } else {
+        rest
+    };
+    let rest = if let Some(after_comma) = rest.strip_prefix(", ") {
+        parse_throughput(after_comma).unwrap_or(rest)
+    } else {
+        rest
+    };
+    let rest = if let Some(after_done) = rest.strip_prefix(", done.") {
+        after_done
+    } else if let Some(after_completed) = rest.strip_prefix(", completed with ") {
+        let Some(after_count) = parse_digits(after_completed) else {
+            return false;
+        };
+        if let Some(tail) = after_count.strip_prefix(" local objects.") {
+            tail
+        } else if let Some(tail) = after_count.strip_prefix(" local object.") {
+            tail
+        } else {
+            return false;
+        }
+    } else {
+        rest
+    };
+    rest.is_empty()
+}
+
+fn parse_digits(input: &str) -> Option<&str> {
+    let count = input.bytes().take_while(u8::is_ascii_digit).count();
+    (count > 0).then(|| &input[count..])
+}
+
+fn parse_number(input: &str) -> Option<&str> {
+    let after_int = parse_digits(input)?;
+    if let Some(after_dot) = after_int.strip_prefix('.') {
+        parse_digits(after_dot)
+    } else {
+        Some(after_int)
+    }
+}
+
+fn strip_unit<'a>(input: &'a str, units: &[&str]) -> Option<&'a str> {
+    units.iter().find_map(|unit| input.strip_prefix(unit))
+}
+
+fn parse_throughput(input: &str) -> Option<&str> {
+    const SIZE_UNITS: [&str; 7] = ["bytes", "byte", "KiB", "MiB", "GiB", "TiB", "B"];
+    const RATE_UNITS: [&str; 7] = [
+        "bytes/s", "byte/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s", "B/s",
+    ];
+    let after_size = parse_number(input)?.strip_prefix(' ')?;
+    let after_unit = strip_unit(after_size, &SIZE_UNITS)?;
+    if let Some(after_pipe) = after_unit.strip_prefix(" | ") {
+        let after_rate = parse_number(after_pipe)?.strip_prefix(' ')?;
+        strip_unit(after_rate, &RATE_UNITS)
+    } else {
+        Some(after_unit)
     }
 }
 
@@ -350,13 +494,18 @@ fn askpass_exchange(socket: &Path, prompt: &str) -> Result<Vec<u8>> {
 struct AskpassServer {
     directory: PathBuf,
     socket: PathBuf,
+    control: OperationControl,
     stop: Arc<AtomicBool>,
+    wake_writer: std::os::unix::net::UnixStream,
     worker: Option<thread::JoinHandle<()>>,
 }
 #[cfg(unix)]
 impl AskpassServer {
     fn new(control: OperationControl) -> Result<Self> {
-        use std::os::unix::{fs::DirBuilderExt, net::UnixListener};
+        use std::os::unix::{
+            fs::DirBuilderExt,
+            net::{UnixListener, UnixStream},
+        };
         static NEXT: AtomicU64 = AtomicU64::new(0);
         // Short path also avoids macOS's small sockaddr_un path limit.
         let directory = PathBuf::from("/tmp").join(format!(
@@ -369,65 +518,83 @@ impl AskpassServer {
         ));
         std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
         let socket = directory.join("askpass");
-        let listener = match UnixListener::bind(&socket) {
-            Ok(listener) => listener,
-            Err(error) => {
-                let _ = std::fs::remove_dir(&directory);
-                return Err(error.into());
-            }
-        };
-        listener.set_nonblocking(true)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::clone(&stop);
-        let worker = thread::spawn(move || {
-            while !stopped.load(Ordering::Acquire) && !control.is_cancelled() {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let handle = || -> Result<()> {
-                            // macOS accept(2) inherits the listener's O_NONBLOCK, which
-                            // would drop a prompt the helper has not finished writing.
-                            stream.set_nonblocking(false)?;
-                            stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-                            stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-                            let mut size = [0; 4];
-                            stream.read_exact(&mut size)?;
-                            let size = u32::from_be_bytes(size) as usize;
-                            ensure!(size <= PROMPT_LIMIT, "Prompt too long");
-                            let mut prompt = vec![0; size];
-                            stream.read_exact(&mut prompt)?;
-                            let response = control.request(String::from_utf8(prompt)?, &stopped);
-                            if let Some(response) = response {
-                                stream.write_all(&(response.len() as u32).to_be_bytes())?;
-                                stream.write_all(response.as_bytes())?;
-                            } else {
-                                stream.write_all(&u32::MAX.to_be_bytes())?;
+        let setup = (|| -> Result<Self> {
+            let listener = UnixListener::bind(&socket)?;
+            listener.set_nonblocking(true)?;
+            let (wake_reader, wake_writer) = UnixStream::pair()?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::clone(&stop);
+            let worker_control = control.clone();
+            let worker = thread::Builder::new()
+                .name("git-askpass".into())
+                .spawn(move || {
+                    use rustix::event::{PollFd, PollFlags, poll};
+                    while !stopped.load(Ordering::Acquire) && !worker_control.is_cancelled() {
+                        match listener.accept() {
+                            Ok((mut stream, _)) => {
+                                let mut handle = || -> Result<()> {
+                                    // macOS accept(2) inherits the listener's O_NONBLOCK, which
+                                    // would drop a prompt the helper has not finished writing.
+                                    stream.set_nonblocking(false)?;
+                                    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+                                    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+                                    let mut size = [0; 4];
+                                    stream.read_exact(&mut size)?;
+                                    let size = u32::from_be_bytes(size) as usize;
+                                    ensure!(size <= PROMPT_LIMIT, "Prompt too long");
+                                    let mut prompt = vec![0; size];
+                                    stream.read_exact(&mut prompt)?;
+                                    let response = worker_control
+                                        .request(String::from_utf8(prompt)?, &stopped);
+                                    if let Some(response) = response {
+                                        stream.write_all(&(response.len() as u32).to_be_bytes())?;
+                                        stream.write_all(response.as_bytes())?;
+                                    } else {
+                                        stream.write_all(&u32::MAX.to_be_bytes())?;
+                                    }
+                                    Ok(())
+                                };
+                                let _ = handle();
                             }
-                            Ok(())
-                        };
-                        let _ = {
-                            let mut handle = handle;
-                            handle()
-                        };
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                let mut fds = [
+                                    PollFd::new(&listener, PollFlags::IN),
+                                    PollFd::new(&wake_reader, PollFlags::IN),
+                                ];
+                                match poll(&mut fds, None) {
+                                    Ok(_) | Err(rustix::io::Errno::INTR) => continue,
+                                    Err(_) => break,
+                                }
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                                continue;
+                            }
+                            Err(_) => break,
+                        }
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(10))
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Ok(Self {
-            directory,
-            socket,
-            stop,
-            worker: Some(worker),
-        })
+                })?;
+            Ok(Self {
+                directory: directory.clone(),
+                socket: socket.clone(),
+                control,
+                stop,
+                wake_writer,
+                worker: Some(worker),
+            })
+        })();
+        if setup.is_err() {
+            let _ = std::fs::remove_file(&socket);
+            let _ = std::fs::remove_dir(&directory);
+        }
+        setup
     }
 }
 #[cfg(unix)]
 impl Drop for AskpassServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.control.0.changed.notify_all();
+        let _ = self.wake_writer.shutdown(std::net::Shutdown::Write);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -1765,10 +1932,17 @@ mod tests {
         assert!(!control.answer(prompt.id + 1, Some("wrong prompt".into())));
         assert!(control.answer(prompt.id, Some("ephemeral-fixture-token".into())));
         assert_eq!(helper.join().unwrap(), b"ephemeral-fixture-token");
-        control.update_progress(b"Receiving objects: 50% ephemeral-fixture-token\r");
-        let progress = control.progress().unwrap();
-        assert!(!progress.contains("ephemeral-fixture-token"), "{progress}");
-        assert!(progress.contains("50%"), "{progress}");
+        let mut scanner = ProgressScanner::default();
+        scanner.feed(
+            b"Receiving objects: 50% ephemeral-fixture-token\r",
+            &control,
+        );
+        assert_eq!(control.progress(), None);
+        scanner.feed(b"Receiving objects:  50% (1/2)\r", &control);
+        assert_eq!(
+            control.progress().as_deref(),
+            Some("Receiving objects:  50% (1/2)")
+        );
         assert!(
             !control
                 .redact("helper echoed ephemeral-fixture-token")
@@ -1778,52 +1952,328 @@ mod tests {
         assert!(!directory.exists());
     }
 
-    /// Git's progress reaches `update_progress` in whatever pieces its pipe
-    /// gave, so one text is fed here split in two at every byte, through
-    /// multi-byte characters too. No split panics, and no piece shows whole
-    /// the answered secret or the marked one that the unsplit line hides.
+    /// Progress only accepts Git's own numeric transfer grammar, rejecting
+    /// arbitrary helper, hook, or remote text placed after a progress title.
     #[test]
-    fn progress_split_at_any_byte_neither_panics_nor_shows_a_secret_whole() {
+    fn progress_grammar_accepts_git_numeric_lines_and_rejects_arbitrary_text() {
+        for accepted in [
+            "Enumerating objects: 42",
+            "Enumerating objects: 42, done.",
+            "Counting objects: 3, done.",
+            "Counting objects: 100% (3/3), done.",
+            "Compressing objects:  50% (10/20)",
+            "Receiving objects:  42% (42/100)",
+            "Receiving objects: 100% (100/100), 1.23 MiB | 5.67 MiB/s, done.",
+            "Writing objects: 100% (5/5), 512 bytes | 512.00 KiB/s, done.",
+            "Writing objects: 100% (5/5), 1 byte | 1 byte/s",
+            "Writing objects: 100% (5/5), 2.50 GiB | 25.00 MiB/s",
+            "Writing objects: 100% (5/5), 1.00 TiB | 500.00 GiB/s, done.",
+            "Writing objects: 100% (5/5), 100 B | 50 B/s",
+            "Receiving objects:  50% (1/2), 1.20 MiB",
+            "Resolving deltas: 100% (5/5), done.",
+            "Resolving deltas: 100% (5/5), completed with 2 local objects.",
+            "Resolving deltas: 100% (1/1), completed with 1 local object.",
+        ] {
+            assert!(
+                is_git_progress_line(accepted),
+                "expected accept: {accepted}"
+            );
+        }
+        for rejected in [
+            "",
+            "Receiving objects:",
+            "Receiving objects: ",
+            "Receiving objects:50% (1/2)",
+            "Receiving objects: 50%",
+            "Receiving objects: 50% ephemeral-fixture-token",
+            "Receiving objects: hunter2-fixture",
+            "Receiving objects: 100% (2/2) https://user:pw@host",
+            "Receiving objects: 100% text chosen by the remote",
+            "Receiving objects: 100% (2/2), 1.20 MiB | ",
+            "Receiving objects: 100% (2/2), 1.20 MiB/s",
+            "Receiving objects: 100% (2/2), done. trailing",
+            "Receiving objects: 100% (2/2), completed with two local objects.",
+            "remote: Counting objects: 100% (3/3), done.",
+            "Total 12 (delta 0), reused 0 (delta 0)",
+        ] {
+            assert!(
+                !is_git_progress_line(rejected),
+                "expected reject: {rejected}"
+            );
+        }
+    }
+
+    /// Progress is framed on `\r` and `\n` before grammar checks and
+    /// redaction: across every two-way split and a byte-at-a-time feed, every
+    /// intermediate value matches a whole redacted segment, the final value
+    /// matches the unsplit feed, secrets never leak (even numeric answers
+    /// split mid-token or remote text after `\r`), and unterminated tails show
+    /// nothing.
+    #[test]
+    fn progress_split_at_any_byte_neither_panics_nor_shows_a_secret_or_unterminated_tail() {
         let answered = "ephemeral-fixture-token";
+        let numeric_secret = "123456";
         let marked = "marked-s3cret";
-        let lines = [
+        let segments = [
             "Counting objects: 3, done.\r".to_owned(),
             format!("Receiving objects:  50% (1/2) é🐢 {answered} token={marked}\r"),
-            "Receiving objects: 100% (2/2), done.\n".to_owned(),
+            format!("Writing objects:  37% (37/100) https://deploy:{answered}@example.invalid\n"),
+            "password: \rReceiving objects: hunter2-fixture\n".to_owned(),
+            "fatal: remote error: denied\nReceiving objects: 100% text chosen by the remote\n"
+                .to_owned(),
+            format!("Receiving objects:  50% ({numeric_secret}/200000)\r\n"),
+            "Receiving objects: 100% (200000/200000), 1.20 MiB | 3.40 MiB/s, done.\n".to_owned(),
         ];
         let controlled = || {
             let control = OperationControl::default();
-            control
-                .0
-                .state
-                .lock()
-                .unwrap()
-                .secrets
-                .push(answered.to_owned());
+            {
+                let mut state = control.0.state.lock().unwrap();
+                state.secrets.push(answered.to_owned());
+                state.secrets.push(numeric_secret.to_owned());
+            }
             control
         };
-        let hidden = |progress: &str, at: &str| {
+        let allowed: Vec<String> = vec![
+            "Counting objects: 3, done.".to_owned(),
+            "Receiving objects:  50% ([redacted]/200000)".to_owned(),
+            "Receiving objects: 100% (200000/200000), 1.20 MiB | 3.40 MiB/s, done.".to_owned(),
+        ];
+        let check = |progress: &str, at: &str| {
+            assert!(
+                allowed.iter().any(|item| item == progress),
+                "{at}: unexpected progress {progress:?}"
+            );
             assert!(!progress.contains(answered), "{at}: {progress}");
+            assert!(!progress.contains(numeric_secret), "{at}: {progress}");
             assert!(!progress.contains(marked), "{at}: {progress}");
+            assert!(!progress.contains("hunter2"), "{at}: {progress}");
+            assert!(!progress.contains("remote"), "{at}: {progress}");
         };
-        let unsplit = controlled();
-        unsplit.update_progress(lines[1].as_bytes());
-        let shown = unsplit.progress().unwrap();
-        assert_eq!(
-            shown,
-            "Receiving objects:  50% (1/2) é🐢 [redacted] token=[redacted]"
-        );
-        let text = lines.concat();
+
+        let text = segments.concat();
         let bytes = text.as_bytes();
+        let unsplit = controlled();
+        ProgressScanner::default().feed(bytes, &unsplit);
+        let expected_final = unsplit.progress().unwrap();
+        assert_eq!(expected_final, allowed[2]);
+
         for split in 0..=bytes.len() {
             let control = controlled();
+            let mut scanner = ProgressScanner::default();
             for piece in [&bytes[..split], &bytes[split..]] {
-                control.update_progress(piece);
+                scanner.feed(piece, &control);
                 if let Some(progress) = control.progress() {
-                    hidden(&progress, &format!("split at {split}"));
+                    check(&progress, &format!("split at {split}"));
+                }
+            }
+            assert_eq!(
+                control.progress().as_deref(),
+                Some(expected_final.as_str()),
+                "split at {split}"
+            );
+        }
+
+        // Byte-at-a-time feed: every intermediate update is a whole redacted
+        // segment and the final progress matches the unsplit feed.
+        let control = controlled();
+        let mut scanner = ProgressScanner::default();
+        let mut seen = Vec::new();
+        for (index, byte) in bytes.iter().enumerate() {
+            scanner.feed(std::slice::from_ref(byte), &control);
+            if let Some(progress) = control.progress() {
+                check(&progress, &format!("byte {index}"));
+                if seen.last() != Some(&progress) {
+                    seen.push(progress);
                 }
             }
         }
+        assert_eq!(seen, allowed);
+
+        // Unterminated tails never surface, whether valid progress or secret-bearing.
+        for tail in [
+            b"Receiving objects:  42% (42/100)".as_slice(),
+            b"Writing objects:  37% (37/100) https://deploy:s3cr3t-fixture-pw",
+            b"Receiving objects:  50% (123456/200000)",
+        ] {
+            let control = controlled();
+            let mut scanner = ProgressScanner::default();
+            scanner.feed(tail, &control);
+            assert_eq!(
+                control.progress(),
+                None,
+                "unterminated tail surfaced: {:?}",
+                String::from_utf8_lossy(tail)
+            );
+        }
+    }
+
+    /// Segments exceeding the 4 KiB carry bound are dropped in full (head and
+    /// tail) across chunk boundaries without unbounded memory growth, and a
+    /// following normal segment resumes normally.
+    #[test]
+    fn progress_scanner_bounds_carry_and_drops_overlong_segments() {
+        let control = OperationControl::default();
+        let mut scanner = ProgressScanner::default();
+        // 1 MiB unterminated stream stays strictly within PROGRESS_CARRY_LIMIT.
+        let chunk = vec![b'a'; 8192];
+        for _ in 0..128 {
+            scanner.feed(&chunk, &control);
+            assert!(scanner.carry_len() <= PROGRESS_CARRY_LIMIT);
+        }
+        assert_eq!(control.progress(), None);
+
+        // Even if the tail ends with a valid progress line right before `\r`,
+        // the overlong segment is dropped through its terminator.
+        scanner.feed(b"Receiving objects:  99% (99/100)\r", &control);
+        assert_eq!(control.progress(), None);
+        assert_eq!(scanner.carry_len(), 0);
+
+        // A valid segment starting after that terminator is shown normally.
+        scanner.feed(b"Receiving objects: 100% (100/100), done.\n", &control);
+        assert_eq!(
+            control.progress().as_deref(),
+            Some("Receiving objects: 100% (100/100), done.")
+        );
+
+        // A segment at the exact 4 KiB carry bound is accepted; one byte past
+        // it is dropped, whether fed whole or split across chunks.
+        let valid = b"Receiving objects: 100% (1/1), done.";
+        let mut exact = vec![b' '; PROGRESS_CARRY_LIMIT - valid.len()];
+        exact.extend_from_slice(valid);
+        exact.push(b'\r');
+        let control = OperationControl::default();
+        let mut scanner = ProgressScanner::default();
+        scanner.feed(&exact[..2048], &control);
+        assert_eq!(control.progress(), None);
+        scanner.feed(&exact[2048..], &control);
+        assert_eq!(
+            control.progress().as_deref(),
+            Some("Receiving objects: 100% (1/1), done.")
+        );
+        assert_eq!(scanner.carry_len(), 0);
+
+        let control = OperationControl::default();
+        let mut scanner = ProgressScanner::default();
+        let mut overlong = vec![b' '; PROGRESS_CARRY_LIMIT - valid.len() + 1];
+        overlong.extend_from_slice(valid);
+        overlong.push(b'\r');
+        scanner.feed(&overlong, &control);
+        assert_eq!(control.progress(), None);
+        assert_eq!(scanner.carry_len(), 0);
+
+        // Split overlong segment: 2000 + 2097 bytes + `\r` drops both halves.
+        let control = OperationControl::default();
+        let mut scanner = ProgressScanner::default();
+        scanner.feed(&overlong[..2000], &control);
+        scanner.feed(&overlong[2000..], &control);
+        assert_eq!(control.progress(), None);
+        assert_eq!(scanner.carry_len(), 0);
+    }
+
+    /// Through `bounded_write_output`, an unterminated tail never surfaces at
+    /// EOF, and a segment crossing the 8,192-byte pipe read boundary is framed
+    /// whole before validation and redaction.
+    #[cfg(unix)]
+    #[test]
+    fn bounded_write_stderr_frames_progress_across_read_boundaries_and_drops_eof_tail() {
+        let control = OperationControl::default();
+        let output = run_controlled(control.clone(), || {
+            let mut command = Command::new("python3");
+            command.args([
+                "-c",
+                "import sys
+sys.stderr.write('x' * 8180 + '\\n')
+sys.stderr.write('Writing objects:  37% (37/100) https://deploy:s3cr3t-fixture-pw@example.invalid\\r')
+sys.stderr.write('Receiving objects:  42% (42/100)')
+sys.stderr.flush()
+",
+            ]);
+            bounded_write_output(command, None, WRITE_TIMEOUT)
+        })
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(control.progress(), None);
+
+        let control = OperationControl::default();
+        let output = run_controlled(control.clone(), || {
+            let mut command = Command::new("python3");
+            command.args([
+                "-c",
+                "import sys
+sys.stderr.write('x' * 8180 + '\\n')
+sys.stderr.write('Receiving objects:  84% (84/100)\\r')
+sys.stderr.flush()
+",
+            ]);
+            bounded_write_output(command, None, WRITE_TIMEOUT)
+        })
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            control.progress().as_deref(),
+            Some("Receiving objects:  84% (84/100)")
+        );
+    }
+
+    /// A real `git clone --progress` over `file://` under `run_controlled`
+    /// still surfaces Git's numeric transfer progress.
+    #[cfg(unix)]
+    #[test]
+    fn real_git_clone_progress_reaches_operation_control() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        GitRepository::init(&source, "main").unwrap();
+        for index in 0..8 {
+            std::fs::write(
+                source.join(format!("file-{index}.txt")),
+                format!("fixture line {index}\n").repeat(64),
+            )
+            .unwrap();
+        }
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args([
+                    "-c",
+                    "commit.gpgSign=false",
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=f@example.invalid",
+                ])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "fixture"]);
+
+        let control = OperationControl::default();
+        let output = run_controlled(control.clone(), || {
+            let mut command = Command::new("git");
+            command
+                .env("LC_ALL", "C")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args(["clone", "--progress"])
+                .arg(format!("file://{}", source.display()))
+                .arg(&target);
+            bounded_write_output(command, None, WRITE_TIMEOUT)
+        })
+        .unwrap();
+        assert!(output.status.success());
+        let progress = control
+            .progress()
+            .expect("git clone --progress updates control");
+        assert!(
+            is_git_progress_line(&progress),
+            "unexpected progress: {progress:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -1836,8 +2286,9 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        // Outlast the 10 ms accept poll so the server holds the connection before any
-        // prompt bytes exist, then split the frame the way a slow helper could.
+        // Pause before writing the frame so the server accepts the connection
+        // before any prompt bytes exist, then split the frame the way a slow
+        // helper could.
         let prompt = "Password for 'https://example.invalid/repo': ";
         thread::sleep(Duration::from_millis(100));
         stream
@@ -1876,6 +2327,22 @@ mod tests {
         control.cancel();
         assert!(helper.join().unwrap().is_err());
         drop(server);
+    }
+
+    /// Dropping an idle `AskpassServer` wakes its `poll()` loop immediately
+    /// via its wake socket without waiting on any polling sleep.
+    #[cfg(unix)]
+    #[test]
+    fn askpass_server_drops_promptly_from_poll_wait() {
+        let started = Instant::now();
+        for _ in 0..8 {
+            let control = OperationControl::default();
+            let server = AskpassServer::new(control).unwrap();
+            let directory = server.directory.clone();
+            drop(server);
+            assert!(!directory.exists());
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     /// `command` run as a controlled operation's own failing step, off the
