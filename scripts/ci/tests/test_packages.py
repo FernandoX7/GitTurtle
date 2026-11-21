@@ -226,7 +226,9 @@ class NoticeTests(unittest.TestCase):
                 packages.notice_state(0, {**value, field: wrong}, "x86_64-unknown-linux-gnu", "a" * 64)
 
 
-class PayloadTests(unittest.TestCase):
+class PayloadFixture:
+    """A real Linux archive with its sidecars under `self.root`, and the record a job expects of it."""
+
     # The Linux bundle under test: its target, the label in its name and its ELF machine (EM_X86_64).
     TARGET, LABEL, ELF_MACHINE = "x86_64-unknown-linux-gnu", "linux-x86_64", 62
 
@@ -275,6 +277,8 @@ class PayloadTests(unittest.TestCase):
                              manifest_sha256=packages.identity.digest(manifest), target=self.compiled["target"],
                              revision="a" * 40, version="0.1.0", input_binary_sha256=sha(self.binary), cargo_lock_sha256="b" * 64)
 
+
+class PayloadTests(PayloadFixture, unittest.TestCase):
     def test_roundtrip_checks_real_archive_and_explicit_cross_platform_no_probe(self):
         with patch.object(packages.identity, "probe", return_value=self.compiled) as probe:
             payload, binary, package = packages.verify_payload(self.root, self.expected, complete=True)
@@ -394,8 +398,14 @@ class PrepareTests(unittest.TestCase):
     @staticmethod
     def uploaded(report):
         return ("Complete notices verified. This job uploads the archive next as the Actions artifact "
-                f"`{report['artifact_name']}`, kept 7 days, then downloads and verifies that artifact. "
+                f"`{report['artifact_name']}`, kept 7 days. The later job `Package transfer` downloads and verifies "
+                "that artifact: this job's green does not say that it did. "
                 "It is an early-development CI build, not a release.\n")
+
+    @staticmethod
+    def uploaded_record_sha256(root):
+        """The SHA-256 of the provenance file as `prepare` left it for the upload."""
+        return sha((root / "work/publish/ci-provenance.json").read_bytes())
 
     def prepare(self, target, missing, *, uploads=None, refusal=None, event="pull_request"):
         """Run `prepare` over stand-in tools; `missing` is what strict collection reports.
@@ -523,7 +533,14 @@ class PrepareTests(unittest.TestCase):
                 self.assertEqual(report["archive"], stem + ".tar.gz")
                 self.assertEqual(report["artifact_name"], f"{stem}-{trust}-123-2")
                 names.add(report["artifact_name"])
-                self.assertEqual(output, f"eligible=true\nartifact-name={report['artifact_name']}\n")
+                # The answer and the name for this job's own steps, then what the later job reads under this
+                # leg's label alone: the same answer and the SHA-256 of the record's bytes as uploaded.
+                label, digest = self.LINUX_LABELS[target], self.uploaded_record_sha256(root)
+                self.assertEqual(output, f"eligible=true\nartifact-name={report['artifact_name']}\n"
+                                         f"{label}-eligible=true\n{label}-provenance-sha256={digest}\n")
+                self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
+                self.assertEqual((root / "work/publish/ci-provenance.json").read_bytes(),
+                                 (root / "work/prepared.json").read_bytes())
                 self.assertTrue(summary.startswith(f"### {self.LINUX_LABELS[target]} CI package\n"), summary)
                 self.assertTrue(summary.endswith(self.uploaded(report)), summary)
                 self.assertNotIn("Download unavailable", summary)
@@ -550,18 +567,24 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(report["license_review_required"], [])
         self.assertEqual(report["local_archive_checks"], "passed")
         self.assertEqual(report["hosted_transfer"], "not-performed")
-        self.assertEqual(output, f"eligible=false\nartifact-name={report['artifact_name']}\n")
+        # A held leg hands on its answer under its label and no digest: there is no uploaded record.
+        self.assertEqual(output, f"eligible=false\nartifact-name={report['artifact_name']}\nmacos-arm64-eligible=false\n")
         self.assertFalse((root / "work/publish").exists())
         self.assertTrue(summary.endswith(self.held("macOS")), summary)
         self.assertNotIn("uploads the archive", summary)
         self.assertNotIn("incomplete", summary)
-        # The download verifier refuses the held record, so nothing can stand in for the upload.
+        # The download verifier refuses the held record even when it is handed that record's own digest
+        # and identity, so nothing can stand in for the upload.
         self.assertEqual(json.loads((root / "work/prepared.json").read_text()), report)
-        refused = argparse.Namespace(expected=root / "work/prepared.json", directory=root / "work/prepared",
-                                     artifact_id="1", report=root / "transfer.json", summary=None)
+        shutil.copyfile(root / "work/prepared.json", root / "work/prepared/ci-provenance.json")
+        refused = argparse.Namespace(directory=root / "work/prepared", target=self.MAC, revision="a" * 40,
+                                     expected_sha256=sha((root / "work/prepared.json").read_bytes()),
+                                     run_id="123", attempt="2", artifact_id="1", report=root / "transfer.json",
+                                     summary=None, output=root / "transfer-output")
         with self.assertRaisesRegex(packages.Error, "upload-eligible CI package"):
             packages.verify(refused)
         self.assertFalse((root / "transfer.json").exists())
+        self.assertFalse((root / "transfer-output").exists())
 
     def test_its_entry_in_the_set_alone_separates_a_held_platform_from_an_uploading_one(self):
         # Each platform's shipped state beside the other one: Linux unlisted, macOS listed.
@@ -579,8 +602,11 @@ class PrepareTests(unittest.TestCase):
                 self.assertEqual(report.keys(), held_report.keys())
                 self.assertEqual({key for key in report if report[key] != held_report[key]}, {"upload_eligible"})
                 self.assertIs(report["upload_eligible"], True)
-                self.assertEqual(output, f"eligible=true\nartifact-name={report['artifact_name']}\n")
-                self.assertEqual(held_output, output.replace("eligible=true", "eligible=false"))
+                # Both answers under the leg's label too; only the upload hands on a digest, of its own record.
+                label, named = packages.TARGETS[target], f"artifact-name={report['artifact_name']}\n"
+                self.assertEqual(output, f"eligible=true\n{named}{label}-eligible=true\n"
+                                         f"{label}-provenance-sha256={self.uploaded_record_sha256(root)}\n")
+                self.assertEqual(held_output, f"eligible=false\n{named}{label}-eligible=false\n")
                 self.assertTrue(summary.endswith(self.uploaded(report)), summary)
                 self.assertEqual(held_summary.removesuffix(self.held(platform)),
                                  summary.removesuffix(self.uploaded(report)))
@@ -627,11 +653,535 @@ class PrepareTests(unittest.TestCase):
                 report, output, summary = self.left_behind(root)
                 self.assertIs(report["upload_eligible"], False)
                 self.assertEqual(report["license_review_required"], gaps)
-                self.assertEqual(output, f"eligible=false\nartifact-name={report['artifact_name']}\n")
+                self.assertEqual(output, f"eligible=false\nartifact-name={report['artifact_name']}\n"
+                                         "macos-arm64-eligible=false\n")
                 self.assertTrue(summary.endswith(ending), summary)
                 self.assertNotIn("Complete notices verified", summary)
                 seen.append((calls, report, output, summary.removesuffix(ending)))
         self.assertEqual(seen[0], seen[1])
+
+
+LINUX_LABELS = ("linux-x86_64", "linux-aarch64")
+ARTIFACT, DIGEST = "14598682882", "5e" * 32
+# What neither the hand-off nor the plan may take for an artifact ID. The pinned download action reads
+# its input with parseInt and splits it at commas, so each of these would name another artifact, several
+# or, when empty, every artifact of the run.
+NOT_AN_ID = ("", "0", "012", "12abc", "abc", "1234567890123456", " 12", "12 ", "12\n", "+12", "-12", "1.0", "1e3",
+             "12,13", "0x1f", "１２")
+
+
+class HandOffTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.output = Path(temporary.name) / "github-output"
+
+    def hand_off(self, target, artifact):
+        with patch("builtins.print") as printed:
+            packages.hand_off(argparse.Namespace(target=target, artifact_id=artifact, output=self.output))
+        return printed
+
+    def test_the_uploaded_id_is_written_under_the_legs_own_label_alone(self):
+        for target, label in zip(packages.identity.LINUX_TARGETS, LINUX_LABELS):
+            for artifact in ("1", ARTIFACT, "9" * 15):
+                with self.subTest(target=target, artifact=artifact):
+                    self.output.write_text("eligible=true\n")
+                    printed = self.hand_off(target, artifact)
+                    # Appended to what the job's earlier steps wrote, and nothing for the other label.
+                    self.assertEqual(self.output.read_text(), f"eligible=true\n{label}-artifact-id={artifact}\n")
+                    printed.assert_called_once_with(f"{label}: the uploaded artifact's ID is handed to the later job, "
+                                                    "which downloads and verifies it")
+
+    def test_anything_but_a_plain_id_is_refused_without_being_written_or_printed(self):
+        for artifact in NOT_AN_ID:
+            with self.subTest(artifact=artifact):
+                with self.assertRaises(packages.Error) as refused:
+                    self.hand_off("aarch64-unknown-linux-gnu", artifact)
+                self.assertEqual(str(refused.exception),
+                                 "linux-aarch64: the upload returned no artifact ID of the expected form")
+                self.assertFalse(self.output.exists())
+
+
+class TransferPlanTests(unittest.TestCase):
+    X86, ARM = packages.identity.LINUX_TARGETS
+    MALFORMED = "The release job's outputs are missing or malformed"
+
+    @staticmethod
+    def handed(label="linux-x86_64", eligible="true", artifact=ARTIFACT, digest=DIGEST):
+        """A release job's outputs with one label's three; None leaves a name unset, as an empty output is."""
+        named = {"eligible": eligible, "artifact-id": artifact, "provenance-sha256": digest}
+        return {f"{label}-{name}": value for name, value in named.items() if value is not None}
+
+    def refusal(self, outputs, target=X86):
+        raw = outputs if isinstance(outputs, str) else json.dumps(outputs)
+        with self.assertRaises(packages.Error) as refused:
+            packages.transfer_plan(raw, target)
+        return str(refused.exception)
+
+    def test_an_uploaded_package_is_planned_from_its_own_labels_three_outputs(self):
+        both = {**self.handed(), **self.handed("linux-aarch64", artifact="77", digest="0f" * 32)}
+        self.assertEqual(packages.transfer_plan(json.dumps(both), self.X86), (ARTIFACT, DIGEST))
+        self.assertEqual(packages.transfer_plan(json.dumps(both), self.ARM), ("77", "0f" * 32))
+        for artifact in ("1", "9" * 15):
+            self.assertEqual(packages.transfer_plan(json.dumps(self.handed(artifact=artifact)), self.X86), (artifact, DIGEST))
+        # A leg judges its own label alone: the other leg's job refuses the other label's values.
+        broken = {**self.handed(), **self.handed("linux-aarch64", artifact="12abc", digest="")}
+        self.assertEqual(packages.transfer_plan(json.dumps(broken), self.X86), (ARTIFACT, DIGEST))
+        self.assertEqual(self.refusal(broken, self.ARM), "linux-aarch64: the release leg's artifact ID is missing or malformed")
+
+    def test_a_held_package_is_planned_only_when_nothing_else_was_handed_on(self):
+        for empty in (None, ""):
+            with self.subTest(empty=empty):
+                held = self.handed(eligible="false", artifact=empty, digest=empty)
+                self.assertIsNone(packages.transfer_plan(json.dumps(held), self.X86))
+        for artifact, digest in ((ARTIFACT, None), (None, DIGEST), (ARTIFACT, DIGEST), ("0", ""), ("", "x")):
+            with self.subTest(artifact=artifact, digest=digest):
+                self.assertEqual(self.refusal(self.handed(eligible="false", artifact=artifact, digest=digest)),
+                                 "linux-x86_64: the release leg held its package, yet handed on an artifact ID or a "
+                                 "provenance SHA-256")
+
+    def test_an_upload_without_a_plain_id_and_a_whole_digest_is_refused_by_name(self):
+        for artifact in (None, *NOT_AN_ID):
+            with self.subTest(artifact=artifact):
+                self.assertEqual(self.refusal(self.handed(artifact=artifact)),
+                                 "linux-x86_64: the release leg's artifact ID is missing or malformed")
+        for digest in (None, "", "5e" * 31, "5e" * 31 + "5", "5e" * 32 + "5", "5E" * 32, "5g" * 32, "5e" * 32 + "\n",
+                       " " + "5e" * 32, "sha256:" + "5e" * 32):
+            with self.subTest(digest=digest):
+                self.assertEqual(self.refusal(self.handed(digest=digest)),
+                                 "linux-x86_64: the release leg's provenance SHA-256 is missing or malformed")
+
+    def test_an_answer_that_is_neither_true_nor_false_is_refused_whatever_came_with_it(self):
+        for eligible in (None, "", "True", "TRUE", "yes", "1", " true", "true\n", "false ", "null"):
+            for rest in ({}, {"artifact": None, "digest": None}):
+                with self.subTest(eligible=eligible, rest=rest):
+                    self.assertEqual(self.refusal(self.handed(eligible=eligible, **rest)),
+                                     "linux-x86_64: the release leg's `eligible` answer is missing or is neither `true` "
+                                     "nor `false`")
+        # The other leg's complete outputs do not stand in for this leg's.
+        self.assertIn("`eligible` answer is missing", self.refusal(self.handed("linux-aarch64")))
+
+    def test_outputs_that_are_not_one_object_of_strings_are_refused(self):
+        duplicate = '{"linux-x86_64-eligible": "false", "linux-x86_64-eligible": "true"}'
+        for raw in ("", "null", "[]", '"true"', "{", "true", "7", duplicate,
+                    json.dumps({**self.handed(), "linux-x86_64-eligible": True}),
+                    json.dumps({**self.handed(), "linux-x86_64-artifact-id": 14598682882}),
+                    json.dumps({**self.handed(), "other": {"nested": "value"}}),
+                    json.dumps({**self.handed(), "padding": "x" * packages.MAX_OUTPUTS})):
+            with self.subTest(raw=raw[:60]):
+                self.assertEqual(self.refusal(raw), self.MALFORMED)
+
+    def test_no_refusal_repeats_a_value_it_was_handed(self):
+        marker = "VALUE-7f3a"
+        for outputs in (self.handed(artifact=marker), self.handed(digest=marker), self.handed(eligible=marker),
+                        self.handed(eligible="false", artifact=marker), {marker: 1}, marker,
+                        f'{{"{marker}": "a", "{marker}": "b"}}'):
+            with self.subTest(outputs=outputs):
+                self.assertNotIn(marker, self.refusal(outputs))
+
+
+class PlanStepTests(unittest.TestCase):
+    """`plan` as the later job's first step: the outputs the next steps read, or a failed step that writes none."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.output, self.summary = self.root / "github-output", self.root / "summary.md"
+
+    def plan(self, outputs, target="x86_64-unknown-linux-gnu"):
+        arguments = argparse.Namespace(target=target, output=self.output, summary=self.summary)
+        with patch.dict(os.environ, {packages.RELEASE_OUTPUTS: json.dumps(outputs)}), patch("builtins.print") as printed:
+            packages.plan(arguments)
+        return printed.call_args.args[0]
+
+    def test_an_upload_gives_the_validated_id_and_digest_to_the_next_steps_and_no_verdict(self):
+        printed = self.plan(TransferPlanTests.handed())
+        self.assertEqual(self.output.read_text(), f"verify=true\nartifact-id={ARTIFACT}\nprovenance-sha256={DIGEST}\n")
+        self.assertFalse(self.summary.exists())
+        self.assertEqual(printed, "linux-x86_64: The release leg handed on an artifact ID and a provenance SHA-256 of the "
+                                  "expected form; this job downloads that artifact once and verifies it.")
+
+    def test_a_held_package_skips_the_next_steps_and_is_recorded_as_held_under_its_label(self):
+        for target, label in zip(packages.identity.LINUX_TARGETS, LINUX_LABELS):
+            with self.subTest(target=target):
+                self.output.unlink(missing_ok=True)
+                self.summary.unlink(missing_ok=True)
+                printed = self.plan(TransferPlanTests.handed(label, eligible="false", artifact=None, digest=None), target)
+                self.assertEqual(self.output.read_text(), f"verify=false\n{label}-transfer=held\n")
+                sentence = ("The release leg held this package: nothing was uploaded, so nothing is downloaded or "
+                            "verified here.")
+                self.assertEqual(self.summary.read_text(), f"### {label} package transfer\n\n{sentence}\n")
+                self.assertEqual(printed, f"{label}: {sentence}")
+
+    def test_a_refusal_fails_the_step_by_name_and_writes_no_output(self):
+        script = packages.ROOT / "scripts/ci/packages.py"
+        cases = [(TransferPlanTests.handed(artifact="12abc"), "linux-x86_64: the release leg's artifact ID is missing or malformed"),
+                 (TransferPlanTests.handed(digest="5e" * 31), "linux-x86_64: the release leg's provenance SHA-256 is missing or malformed"),
+                 (TransferPlanTests.handed(eligible="false"), "linux-x86_64: the release leg held its package, yet handed on an "
+                                                              "artifact ID or a provenance SHA-256"),
+                 ({}, "linux-x86_64: the release leg's `eligible` answer is missing or is neither `true` nor `false`"),
+                 (None, "The release job's outputs are missing or malformed")]
+        for outputs, message in cases:
+            with self.subTest(message=message):
+                status, diagnostic = packages.run(
+                    [os.sys.executable, "-B", script, "plan", "--target", "x86_64-unknown-linux-gnu",
+                     "--output", self.output, "--summary", self.summary],
+                    env={packages.RELEASE_OUTPUTS: json.dumps(outputs)}, allowed=(1,))
+                self.assertEqual((status, diagnostic), (1, f"CI package verification failed: {message}\n"))
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.summary.exists())
+        # The variable itself is required: an unset one is not an empty set of outputs.
+        status, diagnostic = packages.run([os.sys.executable, "-B", script, "plan", "--target", "x86_64-unknown-linux-gnu",
+                                           "--output", self.output], env={}, allowed=(1,))
+        self.assertEqual(diagnostic, "CI package verification failed: The release job's outputs are missing or malformed\n")
+        self.assertFalse(self.output.exists())
+
+
+class DownloadFailedTests(unittest.TestCase):
+    WORDS = ("The package artifact was not returned intact at this job's one download attempt, or it is past its 7 days "
+             "of retention. A re-run is not the remedy: this is the owner's question of the later job against no "
+             "read-back in Quality.")
+
+    def test_the_step_prints_fixed_words_as_one_annotation_and_names_nothing(self):
+        self.assertEqual(packages.DOWNLOAD_FAILED, self.WORDS)
+        # One line, and nothing of a run in it: no address, and no figure but the retention.
+        self.assertNotIn("\n", self.WORDS)
+        self.assertEqual(re.findall(r"[0-9]+|https?:|/|`|\$", self.WORDS), [str(packages.UPLOAD_RETENTION_DAYS)])
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "summary.md"
+            summary.write_text("earlier\n")
+            script = packages.ROOT / "scripts/ci/packages.py"
+            status, printed = packages.run([os.sys.executable, "-B", script, "download-failed", "--summary", summary])
+            self.assertEqual((status, printed), (0, f"::error::{self.WORDS}\n"))
+            self.assertEqual(summary.read_text(), f"earlier\n\n**{self.WORDS}**\n")
+            # It takes nothing to print: no artifact, run or path option exists.
+            for option in ("--artifact-id", "--run-id", "--directory", "--output"):
+                with self.subTest(option=option):
+                    status, _ = packages.run([os.sys.executable, "-B", script, "download-failed", option, "1"], allowed=(2,))
+                    self.assertEqual(status, 2)
+
+
+class TransferFixture(PayloadFixture):
+    """A download directory with the four files a release leg uploaded, and what that leg handed on."""
+
+    RUN, UPLOADED_IN, VERIFIED_IN = "123", "1", "2"
+
+    def setUp(self):
+        super().setUp()
+        self.download = self.root / "download"
+        self.download.mkdir()
+        self.names = [self.expected["archive"] + suffix for suffix in ("", ".sha256", ".manifest.json")]
+        for name in self.names:
+            shutil.copyfile(self.root / name, self.download / name)
+        self.record = dict(format=1, **self.expected, upload_eligible=True, license_review_required=[],
+                           artifact_name=f"{self.stem}-ci-build-{self.RUN}-{self.UPLOADED_IN}", event="push",
+                           run_id=self.RUN, run_attempt=self.UPLOADED_IN, release_input=False,
+                           native_smoke="not-performed", hosted_transfer="not-performed",
+                           local_archive_checks="passed", signing="unsigned")
+        self.report, self.summary, self.output = (self.root / "reports/package-transfer.json", self.root / "summary.md",
+                                                  self.root / "github-output")
+        self.upload(self.record)
+
+    def upload(self, record):
+        """Put a record in the download as its release leg would have written it, and hand on its SHA-256."""
+        raw = (json.dumps(record, indent=2) + "\n").encode()
+        (self.download / "ci-provenance.json").write_bytes(raw)
+        self.handed = sha(raw)
+
+    def arguments(self, **changed):
+        return argparse.Namespace(**{**dict(
+            directory=self.download, expected_sha256=self.handed, target=self.TARGET, revision="a" * 40, run_id=self.RUN,
+            attempt=self.VERIFIED_IN, artifact_id=ARTIFACT, report=self.report, summary=self.summary, output=self.output),
+            **changed})
+
+    def verify(self, refusal=None, error=packages.Error, checks=None, **changed):
+        """Run `verify` with only the executable and the install checks stood in; a refusal leaves no word."""
+        with patch.object(packages.identity, "probe", return_value=self.compiled), \
+                patch.object(packages, "platform_checks", side_effect=checks) as installed:
+            if refusal is None:
+                packages.verify(self.arguments(**changed))
+            else:
+                with self.assertRaisesRegex(error, refusal):
+                    packages.verify(self.arguments(**changed))
+                self.assertFalse(self.output.exists(), "a refused transfer wrote its output")
+        return installed
+
+    def again(self):
+        """Leave the download as the action left it, and no trace of an earlier verification."""
+        shutil.rmtree(self.download / "extracted", ignore_errors=True)
+        shutil.rmtree(self.download / "install-home", ignore_errors=True)
+        shutil.rmtree(self.root / "reports", ignore_errors=True)
+        for path in (self.summary, self.output):
+            if path.is_dir():
+                path.rmdir()
+            path.unlink(missing_ok=True)
+
+
+class TransferVerifyTests(TransferFixture, unittest.TestCase):
+    def test_a_bound_record_gets_the_full_checks_then_the_report_the_summary_and_last_the_word(self):
+        seen = []
+        installed = self.verify(checks=lambda *_: seen.append((self.report.exists(), self.output.exists())))
+        # The same payload and install checks as `prepare` ran, on the downloaded bytes.
+        payload = self.download / "extracted" / self.stem
+        installed.assert_called_once_with(payload, payload / "bin/gitturtle", self.package, self.download)
+        self.assertEqual(seen, [(False, False)])
+        # The report is the uploaded record with the transfer's own fields: which bytes, which ID, which attempts.
+        self.assertEqual(json.loads(self.report.read_text()),
+                         {**self.record, "hosted_transfer": "passed", "artifact_id": ARTIFACT, "native_smoke": "not-performed",
+                          "provenance_sha256": self.handed, "verified_run_attempt": self.VERIFIED_IN})
+        self.assertEqual(self.summary.read_text(),
+                         f"\nActual Actions artifact `{ARTIFACT}`, uploaded by attempt 1 of this run, downloaded once and "
+                         f"verified in attempt 2: `{self.record['archive_sha256']}`. Package checks passed; native desktop "
+                         "acceptance remains separate.\n")
+        self.assertEqual(self.output.read_text(), f"{self.LABEL}-transfer=verified\n")
+
+    def test_the_record_is_hashed_before_it_is_read_and_one_changed_byte_refuses_it(self):
+        refusal = "Downloaded CI provenance differs from what the release leg handed on"
+        path = self.download / "ci-provenance.json"
+        intact = path.read_bytes()
+        flipped = bytearray(intact)
+        flipped[len(flipped) // 2] ^= 1
+        # A changed byte, a record that would not even parse, another leg's digest, an empty file.
+        for raw, handed in ((bytes(flipped), self.handed), (b"{not a record", self.handed), (intact, "0" * 64),
+                            (intact, sha(intact + b"\n")), (b"", self.handed)):
+            with self.subTest(raw=raw[:20], handed=handed[:8]):
+                self.again()
+                path.write_bytes(raw)
+                with patch.object(packages.json, "loads", side_effect=AssertionError("read before it was bound")), \
+                        patch.object(packages, "verify_payload", side_effect=AssertionError("checked before it was bound")):
+                    installed = self.verify(refusal, expected_sha256=handed)
+                installed.assert_not_called()
+                self.assertFalse(self.report.exists())
+        # Bound and still unreadable: its own failure, and no word either.
+        self.again()
+        path.write_bytes(b"{not a record")
+        self.verify("Expecting property name", error=ValueError, expected_sha256=sha(b"{not a record"))
+        for raw in (b"[]", b'"record"'):
+            self.again()
+            path.write_bytes(raw)
+            self.verify("Expected a JSON object", expected_sha256=sha(raw))
+        # Only a bounded regular file is read at all.
+        self.again()
+        path.unlink()
+        path.symlink_to(self.root / (self.expected["archive"] + ".manifest.json"))
+        self.verify("Expected a bounded regular file", expected_sha256=self.expected["manifest_sha256"])
+        path.unlink()
+        path.write_bytes(intact)
+        with patch.object(packages.identity, "MAX_JSON", len(intact) - 1):
+            self.verify("Expected a bounded regular file")
+
+    def test_a_record_of_another_target_revision_or_run_or_of_a_later_attempt_is_refused(self):
+        other = next(target for target in packages.identity.LINUX_TARGETS if target != self.TARGET)
+        cases = [("target", other, "for another target than this job's"),
+                 ("target", "aarch64-apple-darwin", "for another target than this job's"),
+                 ("revision", "c" * 40, "for another revision than this job's"),
+                 ("revision", "a" * 39, "for another revision than this job's"),
+                 ("run_id", "124", "from another run than this job's"),
+                 ("run_id", 123, "from another run than this job's"),
+                 ("run_attempt", "3", "from no numbered attempt or from a later one than this job's"),
+                 ("run_attempt", "10", "from no numbered attempt or from a later one than this job's"),
+                 ("run_attempt", 1, "from no numbered attempt or from a later one than this job's"),
+                 ("run_attempt", "", "from no numbered attempt or from a later one than this job's"),
+                 ("run_attempt", "1 ", "from no numbered attempt or from a later one than this job's"),
+                 ("upload_eligible", False, "upload-eligible CI package"), ("upload_eligible", "true", "upload-eligible CI package"),
+                 ("release_input", True, "upload-eligible CI package"), ("format", 2, "upload-eligible CI package")]
+        for key, value, refusal in cases:
+            with self.subTest(key=key, value=value):
+                self.again()
+                # The leg handed on this very record's digest: only what the record says refuses it.
+                self.upload({**self.record, key: value})
+                with patch.object(packages, "verify_payload", side_effect=AssertionError("checked before it was bound")):
+                    self.verify(refusal).assert_not_called()
+                self.assertFalse(self.report.exists())
+        for key in ("target", "revision", "run_id", "run_attempt"):
+            with self.subTest(missing=key):
+                self.again()
+                self.upload({name: value for name, value in self.record.items() if name != key})
+                self.verify("Downloaded CI provenance is ")
+        # The same from the job's side: its own target, revision, run and attempt are what the record must name.
+        self.upload(self.record)
+        for changed, refusal in (({"target": other}, "another target"), ({"revision": "c" * 40}, "another revision"),
+                                 ({"run_id": "124"}, "another run"), ({"attempt": "0"}, "a later one than this job's")):
+            with self.subTest(job=changed):
+                self.again()
+                self.verify(refusal, **changed)
+
+    def test_an_upload_of_this_attempt_or_an_earlier_one_is_accepted(self):
+        # A re-run of the later job alone reads the release leg's earlier attempt; the report names both.
+        for uploaded, verifying in (("1", "1"), ("1", "2"), ("2", "2"), ("2", "10"), ("9", "10")):
+            with self.subTest(uploaded=uploaded, verifying=verifying):
+                self.again()
+                self.upload({**self.record, "run_attempt": uploaded})
+                self.verify(attempt=verifying)
+                report = json.loads(self.report.read_text())
+                self.assertEqual((report["run_attempt"], report["verified_run_attempt"]), (uploaded, verifying))
+                self.assertIn(f"uploaded by attempt {uploaded} of this run, downloaded once and verified in attempt "
+                              f"{verifying}: ", self.summary.read_text())
+                self.assertEqual(self.output.read_text(), f"{self.LABEL}-transfer=verified\n")
+
+    def test_the_word_is_written_only_after_every_check_the_report_and_the_summary(self):
+        archive = self.download / self.expected["archive"]
+
+        def tampered():
+            archive.write_bytes(archive.read_bytes() + b"changed")
+
+        def restored():
+            shutil.copyfile(self.root / archive.name, archive)
+
+        # What fails, how the download is prepared for it, and what leaves the download as it was.
+        cases = [("the archive's bytes", tampered, restored, {}, packages.Error, "differs from the prepared bytes"),
+                 ("an extra file", lambda: (self.download / "other.txt").write_text("x"),
+                  lambda: (self.download / "other.txt").unlink(), {}, packages.Error, "missing or unexpected files"),
+                 ("a missing sidecar", lambda: (self.download / self.names[1]).unlink(),
+                  lambda: shutil.copyfile(self.root / self.names[1], self.download / self.names[1]), {}, packages.Error,
+                  "missing or unexpected files"),
+                 ("the install checks", None, None, {"checks": packages.Error("Installed package has unresolved native libraries")},
+                  packages.Error, "unresolved native libraries"),
+                 ("the report", lambda: (self.report.parent.mkdir(), self.report.write_text("{}")), None, {}, FileExistsError, ""),
+                 ("the summary", lambda: self.summary.mkdir(), None, {}, IsADirectoryError, "")]
+        for name, prepare, restore, options, error, refusal in cases:
+            with self.subTest(failing=name):
+                self.again()
+                if prepare:
+                    prepare()
+                self.verify(refusal, error=error, **options)
+                if restore:
+                    restore()
+        # The summary's failure came after the report was written: a report alone is not the verdict.
+        self.assertTrue(self.report.exists())
+        # Nothing above was the fixture's fault: the untouched download is verified.
+        self.again()
+        self.verify()
+        self.assertEqual(self.output.read_text(), f"{self.LABEL}-transfer=verified\n")
+
+    def test_malformed_job_arguments_are_refused_before_the_download_is_read(self):
+        cases = [({"artifact_id": artifact}, "Expected uploaded artifact ID") for artifact in NOT_AN_ID]
+        cases += [({"expected_sha256": digest}, "Expected the SHA-256 of the release leg's provenance")
+                  for digest in ("", self.handed[:63], self.handed.upper(), self.handed + "0", self.handed + "\n")]
+        cases += [(changed, "Expected numeric GitHub run identity")
+                  for changed in ({"run_id": ""}, {"run_id": "12a"}, {"attempt": ""}, {"attempt": "x"}, {"attempt": "-1"})]
+        for changed, refusal in cases:
+            with self.subTest(changed=changed), \
+                    patch.object(packages, "bound_provenance", side_effect=AssertionError("read the download")):
+                self.verify(refusal, **changed)
+
+    def test_the_command_fails_by_itself_on_a_download_directory_the_action_did_not_fill(self):
+        # The one download step fails the job itself; this is what stands behind it. The verify command
+        # exits non-zero when the directory is absent, empty or partly filled, and records no transfer.
+        (self.root / "empty").mkdir()
+        (self.root / "partial").mkdir()
+        shutil.copyfile(self.download / "ci-provenance.json", self.root / "partial/ci-provenance.json")
+        for directory in ("absent", "empty", "partial"):
+            with self.subTest(directory=directory):
+                status, diagnostic = packages.run(
+                    [os.sys.executable, "-B", packages.ROOT / "scripts/ci/packages.py", "verify",
+                     "--directory", self.root / directory, "--expected-sha256", self.handed, "--target", self.TARGET,
+                     "--revision", "a" * 40, "--run-id", self.RUN, "--attempt", self.VERIFIED_IN, "--artifact-id", ARTIFACT,
+                     "--report", self.report, "--output", self.output], allowed=(1,))
+                self.assertEqual(status, 1)
+                self.assertTrue(diagnostic.startswith("CI package verification failed: "), diagnostic)
+                self.assertFalse(self.report.exists())
+                self.assertFalse(self.output.exists())
+
+
+class ArmTransferVerifyTests(TransferVerifyTests):
+    """Every binding again for the AArch64 Linux leg, whose word carries its own label."""
+    TARGET, LABEL, ELF_MACHINE = "aarch64-unknown-linux-gnu", "linux-aarch64", 183
+
+
+class TransferRouteTests(PayloadFixture, unittest.TestCase):
+    """One package from `prepare` to the later job's word; only the tools and the executable are stood in."""
+
+    def release_leg(self, work, output, uploads=packages.HOSTED_UPLOAD_PLATFORMS):
+        """`prepare` over the fixture's real archive and, as the workflow does on its answer alone, the
+        hand-off of the ID the upload returned. Returns everything the leg's steps wrote as outputs."""
+        binary = self.root / "target" / self.TARGET / "release/gitturtle"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(self.binary)
+
+        def tool(command, **_):
+            command = list(map(str, command))
+            if "--require-complete" in command:
+                notices = Path(command[-1])
+                notices.mkdir()
+                (notices / "dependencies.json").write_text(json.dumps(dict(
+                    target=self.TARGET, cargo_lock_sha256="b" * 64, dependencies=[{}], review_required=[])))
+                return 0, ""
+            # The packager: the archive and its two sidecars beside the path it was given.
+            for suffix in ("", ".sha256", ".manifest.json"):
+                shutil.copyfile(self.root / (self.stem + ".tar.gz" + suffix), Path(command[-1] + ".tar.gz" + suffix))
+            return 0, ""
+
+        prepare = argparse.Namespace(target=self.TARGET, revision="a" * 40, directory=work, event="pull_request",
+                                     run_id="123", attempt="1", output=output, summary=None, report=None)
+        with patch.object(packages, "ROOT", self.root), patch.object(packages, "run", side_effect=tool), \
+                patch.object(packages, "HOSTED_UPLOAD_PLATFORMS", uploads), \
+                patch.object(packages.identity, "expectations", return_value=("a" * 40, "0.1.0", "b" * 64, "clean")), \
+                patch.object(packages.identity, "probe", return_value=self.compiled), \
+                patch.object(packages, "platform_checks"), patch("builtins.print"):
+            packages.prepare(prepare)
+            if "eligible=true\n" in output.read_text():
+                packages.hand_off(argparse.Namespace(target=self.TARGET, artifact_id=ARTIFACT, output=output))
+        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def later_job(self, needs, download, **changed):
+        """The plan, then `verify` on a download with what the plan gave it; returns the job's outputs."""
+        planned, output = self.root / "plan-output", self.root / "transfer-output"
+        with patch.dict(os.environ, {packages.RELEASE_OUTPUTS: json.dumps(needs)}), patch("builtins.print"):
+            packages.plan(argparse.Namespace(target=self.TARGET, output=planned, summary=None))
+        plan = dict(line.split("=", 1) for line in planned.read_text().splitlines())
+        planned.unlink()
+        if plan["verify"] != "true":
+            return plan
+        arguments = argparse.Namespace(**{**dict(
+            directory=download, expected_sha256=plan["provenance-sha256"], target=self.TARGET, revision="a" * 40,
+            run_id="123", attempt="1", artifact_id=plan["artifact-id"], report=self.root / "transfer.json", summary=None,
+            output=output), **changed})
+        with patch.object(packages.identity, "probe", return_value=self.compiled), patch.object(packages, "platform_checks"):
+            packages.verify(arguments)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_what_the_release_leg_writes_is_what_the_plan_accepts_and_verify_binds(self):
+        work = self.root / "work"
+        written = self.release_leg(work, self.root / "release-output")
+        # The job declares its label's three outputs; `needs` shows the later job exactly these.
+        needs = {name: value for name, value in written.items() if name.startswith(f"{self.LABEL}-")}
+        self.assertEqual(needs, {f"{self.LABEL}-eligible": "true", f"{self.LABEL}-artifact-id": ARTIFACT,
+                                 f"{self.LABEL}-provenance-sha256": sha((work / "publish/ci-provenance.json").read_bytes())})
+        # The download: the four files the leg uploaded, byte for byte.
+        shutil.copytree(work / "publish", self.root / "download")
+        self.assertEqual(self.later_job(needs, self.root / "download"), {f"{self.LABEL}-transfer": "verified"})
+        report = json.loads((self.root / "transfer.json").read_text())
+        self.assertEqual((report["hosted_transfer"], report["artifact_id"], report["provenance_sha256"]),
+                         ("passed", ARTIFACT, needs[f"{self.LABEL}-provenance-sha256"]))
+        # The uploaded record itself still says what was true when it was written.
+        self.assertEqual(json.loads((work / "publish/ci-provenance.json").read_text())["hosted_transfer"], "not-performed")
+        # One changed byte of the downloaded record, and the same hand-off refuses it.
+        shutil.copytree(work / "publish", self.root / "changed")
+        record = self.root / "changed/ci-provenance.json"
+        raw = bytearray(record.read_bytes())
+        raw[raw.index(b"not-performed")] ^= 1
+        record.write_bytes(raw)
+        (self.root / "transfer.json").unlink()
+        (self.root / "transfer-output").unlink()
+        with self.assertRaisesRegex(packages.Error, "differs from what the release leg handed on"):
+            self.later_job(needs, self.root / "changed")
+        self.assertFalse((self.root / "transfer.json").exists())
+        self.assertFalse((self.root / "transfer-output").exists())
+
+    def test_a_leg_whose_platform_is_held_ends_as_held_without_a_download(self):
+        # No platform uploads: `prepare` holds the package, and neither the upload nor the hand-off runs.
+        work = self.root / "work"
+        written = self.release_leg(work, self.root / "release-output", uploads=frozenset())
+        needs = {name: value for name, value in written.items() if name.startswith(f"{self.LABEL}-")}
+        self.assertEqual(needs, {f"{self.LABEL}-eligible": "false"})
+        self.assertFalse((work / "publish").exists())
+        self.assertEqual(self.later_job(needs, self.root / "absent"), {"verify": "false", f"{self.LABEL}-transfer": "held"})
+
+
+class ArmTransferRouteTests(TransferRouteTests):
+    TARGET, LABEL, ELF_MACHINE = "aarch64-unknown-linux-gnu", "linux-aarch64", 183
 
 
 class QualityUploadTests(unittest.TestCase):
@@ -780,27 +1330,6 @@ class QualityUploadTests(unittest.TestCase):
             'python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \\',
             '--directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \\',
             '--report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"'])
-
-    def test_the_verification_fails_on_a_download_directory_no_attempt_filled(self):
-        # What stands behind the tolerated attempts: the verify command exits non-zero by itself when the
-        # directory is absent, empty or partly filled, and records no transfer.
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            archive = "GitTurtle-0.1.0-aaaaaaaaaaaa-linux-x86_64-release.tar.gz"
-            expected = dict(format=1, upload_eligible=True, release_input=False, archive=archive)
-            (root / "prepared.json").write_text(json.dumps(expected))
-            (root / "empty").mkdir()
-            (root / "partial").mkdir()
-            (root / "partial/ci-provenance.json").write_text(json.dumps(expected))
-            for directory in ("absent", "empty", "partial"):
-                with self.subTest(directory=directory):
-                    status, diagnostic = packages.run(
-                        [os.sys.executable, "-B", packages.ROOT / "scripts/ci/packages.py", "verify",
-                         "--expected", root / "prepared.json", "--directory", root / directory,
-                         "--artifact-id", "1", "--report", root / "transfer.json"], allowed=(1,))
-                    self.assertEqual(status, 1)
-                    self.assertTrue(diagnostic.startswith("CI package verification failed: "), diagnostic)
-                    self.assertFalse((root / "transfer.json").exists())
 
 
 class CommandTests(unittest.TestCase):

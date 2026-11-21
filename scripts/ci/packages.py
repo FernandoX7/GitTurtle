@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Prepare CI packages and verify an actual Actions download against local evidence.
+"""Prepare CI packages and verify an actual Actions download of one in a later job.
 
 CI archives (especially PR builds) are test outputs, never trusted release inputs.
-This helper executes only the current job's own build after checking its digest.
+`prepare` executes only its own job's build after checking its digest. `verify`
+runs in a later job of the same run: it executes the downloaded build only after
+the SHA-256 of the downloaded provenance equals the one its release leg handed on
+as a job output, and the provenance names this job's own target, revision and run.
 """
 from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import importlib.util
 import json
 import os
@@ -50,8 +54,10 @@ KNOWN_GAPS = {
 # Quality run and product pull request therefore publishes, for each Linux
 # target, a public Actions artifact kept UPLOAD_RETENTION_DAYS days: the release
 # archive, its .sha256 and .manifest.json, and ci-provenance.json. It is a CI
-# build, not a release. `prepare` writes `eligible=true`, which runs the upload,
-# download and verify steps of quality.yml's release job.
+# build, not a release. `prepare` writes `eligible=true`, which runs the upload
+# and hand-off steps of quality.yml's release job; the legs of its later
+# package-transfer job, one for each target of a listed platform, download and
+# verify what was uploaded.
 # macOS is not listed, so its archive never leaves the job, whatever its
 # notices: it is still collected strictly, packaged and verified there. Adding
 # "macos" would publish an ad-hoc signed, not notarized macOS archive as the
@@ -62,6 +68,23 @@ HOSTED_UPLOAD_PLATFORMS = frozenset({"linux"})
 PLATFORM_NAMES = {"linux": "Linux", "macos": "macOS"}
 # What quality.yml's upload step asks of Actions; the step summary states it.
 UPLOAD_RETENTION_DAYS = 7
+# What a release leg hands to the later job, and the only forms that job accepts.
+# The pinned download action reads an ID with parseInt, which takes "12abc" as 12
+# and rounds a number above 2^53: fifteen digits without a leading zero are always
+# the number that was written.
+ARTIFACT_ID = re.compile(r"[1-9][0-9]{0,14}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+# The variable that carries `toJSON(needs.rust-release.outputs)` to `plan`.
+RELEASE_OUTPUTS = "RELEASE_OUTPUTS_JSON"
+MAX_OUTPUTS = 64 * 1024
+# The later job's two answers, which the Quality gate pairs with `eligible`.
+# `verify` alone writes the first, as its last act.
+VERIFIED, HELD = "verified", "held"
+# Printed by the step that runs only when the one download failed. Fixed words:
+# no artifact, run or address is named.
+DOWNLOAD_FAILED = ("The package artifact was not returned intact at this job's one download attempt, or it is past its "
+                   f"{UPLOAD_RETENTION_DAYS} days of retention. A re-run is not the remedy: this is the owner's question "
+                   "of the later job against no read-back in Quality.")
 MAX_TREE = 2 * 1024**3
 MAX_ENTRIES = 30000
 MAX_LOG = 8 * 1024**2
@@ -433,24 +456,31 @@ def prepare(args):
     write_json(output / "prepared.json", expected)
     if args.report:
         write_json(args.report, expected)
+    # What this leg hands to the later job under its own label: its answer and, for
+    # an upload, the SHA-256 of the provenance file as uploaded, which that job
+    # requires of the file it downloads before it reads it.
+    label = TARGETS[args.target]
+    handed = f"{label}-eligible={str(upload).lower()}\n"
     if upload:
         publish = output / "publish"
         publish.mkdir()
         for suffix in ("", ".sha256", ".manifest.json"):
             shutil.copyfile(Path(str(archive) + suffix), publish / (archive.name + suffix))
         write_json(publish / "ci-provenance.json", expected)
+        handed += f"{label}-provenance-sha256={identity.digest(publish / 'ci-provenance.json')}\n"
     if args.output:
         with args.output.open("a") as stream:
-            stream.write(f"eligible={str(upload).lower()}\nartifact-name={expected['artifact_name']}\n")
-    summary = (f"### {TARGETS[args.target]} CI package\n\n"
+            stream.write(f"eligible={str(upload).lower()}\nartifact-name={expected['artifact_name']}\n{handed}")
+    summary = (f"### {label} CI package\n\n"
                f"Source `{revision}`, version `{version}`, release profile. "
                f"Archive SHA-256 `{expected['archive_sha256']}`.\n\n"
                "Local archive/executable/package checks passed. Native desktop verification remains separate.\n\n")
     held = f"the {PLATFORM_NAMES[platform]} upload is held until {PLATFORM_NAMES[platform]} distribution is decided"
     if upload:
         summary += (f"Complete notices verified. This job uploads the archive next as the Actions artifact "
-                    f"`{expected['artifact_name']}`, kept {UPLOAD_RETENTION_DAYS} days, then downloads and verifies "
-                    "that artifact. It is an early-development CI build, not a release.\n")
+                    f"`{expected['artifact_name']}`, kept {UPLOAD_RETENTION_DAYS} days. The later job "
+                    "`Package transfer` downloads and verifies that artifact: this job's green does not say that it "
+                    "did. It is an early-development CI build, not a release.\n")
     elif complete:
         summary += f"Complete notices verified. **Download unavailable: {held}; C3 hosted transfer remains open.** "
         summary += "The verified complete-notice archive stays in this job and is not uploaded.\n"
@@ -465,27 +495,132 @@ def prepare(args):
     print(summary)
 
 
+def hand_off(args):
+    """After the upload: write the artifact's ID under this leg's label for the later job."""
+    label = TARGETS[args.target]
+    if not ARTIFACT_ID.fullmatch(args.artifact_id):
+        raise Error(f"{label}: the upload returned no artifact ID of the expected form")
+    with args.output.open("a") as stream:
+        stream.write(f"{label}-artifact-id={args.artifact_id}\n")
+    print(f"{label}: the uploaded artifact's ID is handed to the later job, which downloads and verifies it")
+
+
+def transfer_plan(raw, target):
+    """What the later job does with what its release leg handed on: the artifact ID and
+    the provenance SHA-256 to verify with, or None for a package the leg held.
+
+    Exactly those two shapes are accepted. A refusal names the field, never its value.
+    """
+    label = TARGETS[target]
+    try:
+        outputs = json.loads(raw, object_pairs_hook=identity.unique_object) if len(raw) <= MAX_OUTPUTS else None
+    except ValueError:
+        outputs = None
+    if not isinstance(outputs, dict) or any(not isinstance(value, str) for value in outputs.values()):
+        raise Error("The release job's outputs are missing or malformed")
+    # An output that was never set and one set to nothing are the same to a reader.
+    eligible, artifact, digest = (outputs.get(f"{label}-{name}", "") for name in
+                                  ("eligible", "artifact-id", "provenance-sha256"))
+    if eligible == "true":
+        if not ARTIFACT_ID.fullmatch(artifact):
+            raise Error(f"{label}: the release leg's artifact ID is missing or malformed")
+        if not SHA256.fullmatch(digest):
+            raise Error(f"{label}: the release leg's provenance SHA-256 is missing or malformed")
+        return artifact, digest
+    if eligible == "false":
+        if artifact or digest:
+            raise Error(f"{label}: the release leg held its package, yet handed on an artifact ID or a provenance SHA-256")
+        return None
+    raise Error(f"{label}: the release leg's `eligible` answer is missing or is neither `true` nor `false`")
+
+
+def plan(args):
+    """The later job's first act, before any action runs: accept or refuse what was handed on."""
+    label = TARGETS[args.target]
+    accepted = transfer_plan(os.environ.get(RELEASE_OUTPUTS, ""), args.target)
+    if accepted:
+        artifact, digest = accepted
+        outputs = f"verify=true\nartifact-id={artifact}\nprovenance-sha256={digest}\n"
+        message = ("The release leg handed on an artifact ID and a provenance SHA-256 of the expected form; "
+                   "this job downloads that artifact once and verifies it.")
+    else:
+        outputs = f"verify=false\n{label}-transfer={HELD}\n"
+        message = ("The release leg held this package: nothing was uploaded, so nothing is downloaded or "
+                   "verified here.")
+    with args.output.open("a") as stream:
+        stream.write(outputs)
+    if args.summary and not accepted:
+        with args.summary.open("a") as stream:
+            stream.write(f"### {label} package transfer\n\n{message}\n")
+    print(f"{label}: {message}")
+
+
+def download_failed(args):
+    """Say what a failed download is. The workflow runs this only when its one download step failed."""
+    if args.summary:
+        with args.summary.open("a") as stream:
+            stream.write(f"\n**{DOWNLOAD_FAILED}**\n")
+    print(f"::error::{DOWNLOAD_FAILED}")
+
+
+def bound_provenance(directory, expected_sha256):
+    """The downloaded provenance record, read once and believed only when those bytes
+    hash to what the release leg handed on. Nothing is parsed before the comparison."""
+    path = directory / "ci-provenance.json"
+    identity.regular(path, identity.MAX_JSON)
+    with path.open("rb") as stream:
+        raw = stream.read(identity.MAX_JSON + 1)
+    if len(raw) > identity.MAX_JSON or hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise Error("Downloaded CI provenance differs from what the release leg handed on")
+    value = json.loads(raw, object_pairs_hook=identity.unique_object)
+    if not isinstance(value, dict):
+        raise Error("Expected a JSON object")
+    return value
+
+
 def verify(args):
-    expected = identity.read_json(args.expected)
+    label = TARGETS[args.target]
+    if not ARTIFACT_ID.fullmatch(args.artifact_id):
+        raise Error("Expected uploaded artifact ID")
+    if not SHA256.fullmatch(args.expected_sha256):
+        raise Error("Expected the SHA-256 of the release leg's provenance")
+    if not re.fullmatch(r"[0-9]+", args.run_id) or not re.fullmatch(r"[0-9]+", args.attempt):
+        raise Error("Expected numeric GitHub run identity")
+    expected = bound_provenance(args.directory, args.expected_sha256)
     if expected.get("format") != 1 or expected.get("upload_eligible") is not True or expected.get("release_input") is not False:
         raise Error("Expected a prepared, upload-eligible CI package; CI outputs cannot be release inputs")
+    # The record is of this job's own target, source and run. A re-run of this job
+    # alone may read an earlier attempt's upload, never a later one's.
+    uploaded = expected.get("run_attempt")
+    if expected.get("target") != args.target:
+        raise Error("Downloaded CI provenance is for another target than this job's")
+    if expected.get("revision") != args.revision:
+        raise Error("Downloaded CI provenance is for another revision than this job's")
+    if expected.get("run_id") != args.run_id:
+        raise Error("Downloaded CI provenance is from another run than this job's")
+    if not isinstance(uploaded, str) or not re.fullmatch(r"[0-9]+", uploaded) or int(uploaded) > int(args.attempt):
+        raise Error("Downloaded CI provenance is from no numbered attempt or from a later one than this job's")
     # Exact names prevent unrelated assets being silently treated as verified.
     names = {expected["archive"] + suffix for suffix in ("", ".sha256", ".manifest.json")} | {"ci-provenance.json"}
     if set(path.name for path in args.directory.iterdir()) != names:
         raise Error("Downloaded artifact contains missing or unexpected files")
-    if identity.read_json(args.directory / "ci-provenance.json") != expected:
-        raise Error("Downloaded CI provenance differs from this job's prepared evidence")
     payload, binary, package = verify_payload(args.directory, expected, complete=True)
     platform_checks(payload, binary, package, args.directory)
     report = {**expected, "hosted_transfer": "passed", "artifact_id": args.artifact_id,
-              "native_smoke": "not-performed"}
-    if not re.fullmatch(r"[0-9]+", args.artifact_id):
-        raise Error("Expected uploaded artifact ID")
+              "native_smoke": "not-performed", "provenance_sha256": args.expected_sha256,
+              "verified_run_attempt": args.attempt}
+    args.report.parent.mkdir(parents=True, exist_ok=True)
     write_json(args.report, report)
     if args.summary:
         with args.summary.open("a") as stream:
-            stream.write(f"\nActual Actions artifact `{args.artifact_id}` downloaded and verified: `{expected['archive_sha256']}`. "
+            stream.write(f"\nActual Actions artifact `{args.artifact_id}`, uploaded by attempt {uploaded} of this run, "
+                         f"downloaded once and verified in attempt {args.attempt}: `{expected['archive_sha256']}`. "
                          "Package checks passed; native desktop acceptance remains separate.\n")
+    # The last act, after every check, the report and the summary: the one place
+    # that writes the word the Quality gate requires of an uploaded package.
+    if args.output:
+        with args.output.open("a") as stream:
+            stream.write(f"{label}-transfer={VERIFIED}\n")
 
 
 def main():
@@ -501,16 +636,32 @@ def main():
     prepared.add_argument("--output", type=Path)
     prepared.add_argument("--summary", type=Path)
     prepared.add_argument("--report", type=Path)
+    handed = commands.add_parser("hand-off")
+    handed.add_argument("--target", choices=TARGETS, required=True)
+    handed.add_argument("--artifact-id", required=True)
+    handed.add_argument("--output", type=Path, required=True)
+    planned = commands.add_parser("plan", description=f"Reads the release job's outputs as JSON from {RELEASE_OUTPUTS}.")
+    planned.add_argument("--target", choices=TARGETS, required=True)
+    planned.add_argument("--output", type=Path, required=True)
+    planned.add_argument("--summary", type=Path)
+    failed = commands.add_parser("download-failed")
+    failed.add_argument("--summary", type=Path)
     downloaded = commands.add_parser("verify")
-    downloaded.add_argument("--expected", type=Path, required=True)
     downloaded.add_argument("--directory", type=Path, required=True)
+    downloaded.add_argument("--expected-sha256", required=True)
+    downloaded.add_argument("--target", choices=TARGETS, required=True)
+    downloaded.add_argument("--revision", required=True)
+    downloaded.add_argument("--run-id", required=True)
+    downloaded.add_argument("--attempt", required=True)
     downloaded.add_argument("--artifact-id", required=True)
     downloaded.add_argument("--report", type=Path, required=True)
     downloaded.add_argument("--summary", type=Path)
+    downloaded.add_argument("--output", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        (prepare if args.command == "prepare" else verify)(args)
+        {"prepare": prepare, "hand-off": hand_off, "plan": plan, "download-failed": download_failed,
+         "verify": verify}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
         parser.exit(1, f"CI package verification failed: {error}\n")
     return 0
