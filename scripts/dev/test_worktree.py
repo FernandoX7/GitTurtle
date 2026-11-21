@@ -115,7 +115,23 @@ class WorktreeTests(unittest.TestCase):
             with mock.patch.object(worktree.subprocess, "run", return_value=ok) as patched:
                 mode = worktree.clone_target_cow(src, dst, platform="darwin")
             self.assertEqual(mode, "apfs-clone")
-            self.assertEqual(patched.call_args.args[0][:2], ["cp", "-Rc"])
+            self.assertEqual(patched.call_args.args[0][:2], ["cp", "-ac"])
+
+    def test_rm_refuses_dirty_worktree_without_wiping_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            init_fixture_repo(root)
+            self.assertEqual(worktree.main(["--root", str(root), "new", "dirty-wt", "--no-seed"]), 0)
+            wt = root / ".local" / "wt" / "dirty-wt"
+            sentinel = wt / ".local" / "target" / "keep.bin"
+            sentinel.write_bytes(b"ok")
+            (wt / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            rc = worktree.main(["--root", str(root), "rm", "dirty-wt"])
+            self.assertEqual(rc, 1)
+            self.assertTrue(sentinel.exists(), "failed rm must not wipe .local/target")
+            self.assertEqual(worktree.main(["--root", str(root), "rm", "dirty-wt", "--force", "--delete-branch"]), 0)
+            self.assertFalse(wt.exists())
 
     def test_gc_reports_and_prunes_only_unprotected_stale_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,20 +140,23 @@ class WorktreeTests(unittest.TestCase):
             init_fixture_repo(root)
             local = root / ".local"
             stale = local / "bench-old"
+            active_nested = local / "gate-active"
             fresh = local / "bench-new"
             protected = local / "target-base"
-            for directory in (stale, fresh, protected):
+            for directory in (stale, active_nested, fresh, protected):
                 directory.mkdir(parents=True)
                 (directory / "data.bin").write_bytes(b"x" * 1024)
             old_ts = os.path.getmtime(stale) - 30 * 86400
-            os.utime(stale, (old_ts, old_ts))
-            os.utime(protected, (old_ts, old_ts))
+            for path in (stale / "data.bin", stale, active_nested, protected / "data.bin", protected):
+                os.utime(path, (old_ts, old_ts))
+            # active_nested top-level dir is old, but its inner file is fresh: must NOT be pruned.
 
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = worktree.main(["--root", str(root), "gc", "--days", "14"])
             self.assertEqual(rc, 0)
             self.assertIn("bench-old [stale]", buf.getvalue())
+            self.assertNotIn("gate-active [stale]", buf.getvalue())
             self.assertTrue(stale.exists())
 
             buf2 = io.StringIO()
@@ -145,6 +164,7 @@ class WorktreeTests(unittest.TestCase):
                 rc = worktree.main(["--root", str(root), "gc", "--days", "14", "--prune"])
             self.assertEqual(rc, 0)
             self.assertFalse(stale.exists())
+            self.assertTrue(active_nested.exists())
             self.assertTrue(fresh.exists())
             self.assertTrue(protected.exists())
 

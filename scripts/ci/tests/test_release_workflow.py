@@ -538,7 +538,8 @@ class XcodeSelection(unittest.TestCase):
     def test_selects_newest_verified_xcode_26_or_later(self):
         with tempfile.TemporaryDirectory() as directory:
             applications = Path(directory)
-            for name in ("Xcode.app", "Xcode_16.4.app", "Xcode_26.3.app", "Xcode_26.6.app"):
+            for name in ("Xcode.app", "Xcode_16.4.app", "Xcode_26.3.app", "Xcode_26.6.app",
+                         "Xcode_26.7_beta.app", "Xcode_26.8_RC.app"):
                 (applications / name / "Contents/Developer").mkdir(parents=True)
             output = applications / "job-environment"
             versions = {
@@ -546,6 +547,8 @@ class XcodeSelection(unittest.TestCase):
                 str(applications / "Xcode_16.4.app/Contents/Developer"): (0, "Xcode 16.4\nBuild version 16F6\n"),
                 str(applications / "Xcode_26.3.app/Contents/Developer"): (0, "Xcode 26.3\nBuild version 17C529\n"),
                 str(applications / "Xcode_26.6.app/Contents/Developer"): (0, "Xcode 26.6\nBuild version 17F113\n"),
+                str(applications / "Xcode_26.7_beta.app/Contents/Developer"): (0, "Xcode 26.7\nBuild version 17G100a\n"),
+                str(applications / "Xcode_26.8_RC.app/Contents/Developer"): (0, "Xcode 26.8\nBuild version 17H100\n"),
             }
 
             def fake_run(_argv, *, env, **_kwargs):

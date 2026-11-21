@@ -49,20 +49,32 @@ def default_slot_dir(root: Path | None = None) -> Path:
     return Path.cwd().resolve() / ".local" / "build-slots"
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
+
+
 def try_acquire_slot(slot_dir: Path, slots: int) -> tuple[int, int] | None:
     """Attempt a non-blocking flock on slots 1..=slots; returns (slot_num, fd) or None."""
+    if slots < 1:
+        raise ValueError(f"slots must be >= 1, got {slots}")
     slot_dir.mkdir(parents=True, exist_ok=True)
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
     for index in range(1, slots + 1):
         fd = os.open(slot_dir / str(index), flags, 0o600)
-        os.set_inheritable(fd, False)
-        if fcntl is None:  # pragma: no cover
-            return index, fd
         try:
+            os.set_inheritable(fd, False)
+            if fcntl is None:  # pragma: no cover
+                return index, fd
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return index, fd
         except BlockingIOError:
             os.close(fd)
+        except BaseException:
+            os.close(fd)
+            raise
     return None
 
 
@@ -173,7 +185,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Portable build concurrency slot manager.")
     parser.add_argument("--slot-dir", type=Path, default=None, help="Override slot lock directory")
-    parser.add_argument("--slots", type=int, default=DEFAULT_SLOTS, help="Maximum concurrent build slots")
+    parser.add_argument("--slots", type=positive_int, default=DEFAULT_SLOTS, help="Maximum concurrent build slots")
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     p_run = sub.add_parser("run", help="Run a command while holding a build slot")

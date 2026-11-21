@@ -64,6 +64,12 @@ def find_main_root(start: Path | None = None) -> Path:
     return Path(top).resolve()
 
 
+def validate_ref_arg(label: str, value: str) -> str:
+    if not value or value.startswith("-") or any(c in value for c in "\r\n\0"):
+        raise WorktreeError(f"invalid {label} {value!r}")
+    return value
+
+
 def clone_target_cow(src: Path, dst: Path, *, platform: str | None = None) -> str:
     """Seed dst from src using CoW reflinks when supported; never does a full byte copy."""
     plat = platform or sys.platform
@@ -74,7 +80,7 @@ def clone_target_cow(src: Path, dst: Path, *, platform: str | None = None) -> st
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     if plat == "darwin":
-        cmd = ["cp", "-Rc", str(src), str(dst)]
+        cmd = ["cp", "-ac", str(src), str(dst)]
         mode = "apfs-clone"
     else:
         cmd = ["cp", "-a", "--reflink=always", str(src), str(dst)]
@@ -102,7 +108,8 @@ def cmd_new(args: argparse.Namespace) -> int:
         raise WorktreeError(f"worktree path already exists: {wt_path}")
     wt_root.mkdir(parents=True, exist_ok=True)
 
-    base = args.base
+    base_explicit = args.base is not None
+    base = validate_ref_arg("base", args.base) if base_explicit else None
     if base is None:
         probe = run_git(root, "rev-parse", "--verify", "--quiet", "main^{commit}", check=False)
         base = "main" if probe.returncode == 0 else "HEAD"
@@ -111,14 +118,18 @@ def cmd_new(args: argparse.Namespace) -> int:
     if not args.full:
         add_args.append("--no-checkout")
     if args.detach:
-        add_args.extend(["--detach", str(wt_path), base])
+        add_args.extend(["--detach", "--", str(wt_path), base])
     else:
-        branch = args.branch or f"wt/{name}"
+        branch = validate_ref_arg("branch", args.branch) if args.branch else f"wt/{name}"
         exists = run_git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False)
         if exists.returncode == 0:
-            add_args.extend([str(wt_path), branch])
+            if base_explicit:
+                raise WorktreeError(
+                    f"branch {branch!r} already exists; omit base {base!r} to check it out as-is"
+                )
+            add_args.extend(["--", str(wt_path), branch])
         else:
-            add_args.extend(["-b", branch, str(wt_path), base])
+            add_args.extend(["-b", branch, "--", str(wt_path), base])
 
     run_git(root, *add_args)
     try:
@@ -164,41 +175,70 @@ def cmd_rm(args: argparse.Namespace) -> int:
     name = validate_name(args.name)
     wt_path = root / ".local" / "wt" / name
     branch: str | None = None
-    if wt_path.exists():
+    if wt_path.exists() or wt_path.is_symlink():
+        if wt_path.is_symlink():
+            raise WorktreeError(f"refusing to remove symlinked worktree path: {wt_path}")
+        if not args.force:
+            dirty = run_git(wt_path, "status", "--porcelain", "--untracked-files=normal")
+            if dirty.stdout.strip():
+                raise WorktreeError(
+                    f"worktree {wt_path} has uncommitted or untracked files; pass --force to remove"
+                )
         head = run_git(wt_path, "symbolic-ref", "--short", "HEAD", check=False)
         if head.returncode == 0 and head.stdout.strip():
             branch = head.stdout.strip()
-        run_git(root, "worktree", "unlock", str(wt_path), check=False)
+        run_git(root, "worktree", "unlock", "--", str(wt_path), check=False)
         target_dir = wt_path / ".local" / "target"
+        if target_dir.is_symlink():
+            raise WorktreeError(f"refusing to remove symlinked target path: {target_dir}")
         if target_dir.exists():
             shutil.rmtree(target_dir)
         rm_args = ["worktree", "remove"]
         if args.force:
             rm_args.append("--force")
-        rm_args.append(str(wt_path))
+        rm_args.extend(["--", str(wt_path)])
         run_git(root, *rm_args)
     run_git(root, "worktree", "prune")
     if args.delete_branch and branch and branch != "main":
         flag = "-D" if args.force else "-d"
-        run_git(root, "branch", flag, branch)
+        run_git(root, "branch", flag, "--", branch)
     print(f"REMOVED={wt_path}")
     return 0
 
 
-def dir_size_bytes(path: Path) -> int:
-    total = 0
+def dir_stats(path: Path) -> tuple[int, float]:
+    """Return (apparent_bytes, latest_mtime) without following symlinks."""
+    try:
+        st = path.lstat()
+    except OSError:
+        return 0, time.time()
     if path.is_symlink() or path.is_file():
+        return st.st_size, st.st_mtime
+    total = 0
+    latest = st.st_mtime
+    for root_dir, dirs, files in os.walk(path, followlinks=False):
+        root_path = Path(root_dir)
         try:
-            return path.lstat().st_size
+            latest = max(latest, root_path.lstat().st_mtime)
         except OSError:
-            return 0
-    for root_dir, _dirs, files in os.walk(path, followlinks=False):
-        for fname in files:
+            pass
+        for name in files:
             try:
-                total += (Path(root_dir) / fname).lstat().st_size
+                fst = (root_path / name).lstat()
+                total += fst.st_size
+                latest = max(latest, fst.st_mtime)
             except OSError:
                 pass
-    return total
+        for name in dirs:
+            dpath = root_path / name
+            if dpath.is_symlink():
+                try:
+                    dst = dpath.lstat()
+                    total += dst.st_size
+                    latest = max(latest, dst.st_mtime)
+                except OSError:
+                    pass
+    return total, latest
 
 
 def format_bytes(size: int) -> str:
@@ -221,11 +261,7 @@ def cmd_gc(args: argparse.Namespace) -> int:
     cutoff = now - args.days * 86400
     entries: list[tuple[int, float, Path, bool]] = []
     for child in sorted(local_dir.iterdir()):
-        size = dir_size_bytes(child)
-        try:
-            mtime = child.lstat().st_mtime
-        except OSError:
-            mtime = now
+        size, mtime = dir_stats(child)
         prunable = child.name not in PROTECTED_LOCAL_ENTRIES and mtime < cutoff
         entries.append((size, mtime, child, prunable))
     entries.sort(key=lambda item: item[0], reverse=True)

@@ -84,7 +84,7 @@ def classify_paths(paths: list[bytes], *, has_images: bool | None = None) -> dic
     images = paths_have_images(paths) if has_images is None else has_images
     if not paths or len(paths) > MAX_PATHS:
         return full_plan("empty-or-oversized-comparison", has_images=True)
-    selected = set()
+    decoded: list[tuple[str, list[str]]] = []
     for raw in paths:
         try:
             path = raw.decode("utf-8", errors="strict")
@@ -94,6 +94,9 @@ def classify_paths(paths: list[bytes], *, has_images: bool | None = None) -> dic
         if (not path or any(part in ("", ".", "..") for part in parts)
                 or "\\" in path or any(ord(c) < 32 or ord(c) == 127 for c in path)):
             return full_plan("unrecognized-path", has_images=True)
+        decoded.append((path, parts))
+    selected = set()
+    for path, parts in decoded:
         if path == "scripts/ci/packages.py":
             return full_plan("package-delivery", has_images=images)
         # The pinned tool installer only runs in the Rust jobs, so a pin change
@@ -126,7 +129,9 @@ def classify_paths(paths: list[bytes], *, has_images: bool | None = None) -> dic
         elif path.startswith("website/"):
             selected.add("website")
         elif (path in DOC_NAMES
-              or (path.startswith("docs/") and PurePosixPath(path).suffix in DOC_SUFFIXES)
+              or (path.startswith("docs/")
+                  and not path.startswith("docs/licenses/")
+                  and PurePosixPath(path).suffix in DOC_SUFFIXES)
               or (path.startswith("docs/benchmarks/")
                   and PurePosixPath(path).suffix in BENCHMARK_DATA_SUFFIXES)
               or (path.startswith("crates/app/docs/") and PurePosixPath(path).suffix == ".md")
@@ -230,7 +235,7 @@ def classify_checkout(repository: Path, event_name: str, event: dict, checkout_s
                 raise PolicyError("push-identity-mismatch")
             before = event.get("before")
             if before == ZERO_OID:
-                return full_plan("main-full-validation", has_images=False)
+                return full_plan("main-no-comparison", has_images=False)
             before_oid = valid_oid(before)
             comparisons = [(before_oid, expected)]
             paths = compared_paths(repository, comparisons)
@@ -332,7 +337,7 @@ def gate(needs: object) -> list[str]:
     if result == "skipped" and not plan["has_images"]:
         skipped_status = (
             "no-comparison"
-            if plan["reason"] in ("manual-full-validation", "scheduled-cache-seed")
+            if plan["reason"] in ("manual-full-validation", "scheduled-cache-seed", "main-no-comparison")
             else "no-images"
         )
         results.append(PRIVACY_RESULTS[skipped_status])

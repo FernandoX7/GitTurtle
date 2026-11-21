@@ -20,7 +20,14 @@ from pathlib import Path
 
 def run_tool(argv: list[str]) -> str:
     env = {**os.environ, "LC_ALL": "C"}
-    result = subprocess.run(argv, env=env, capture_output=True, text=True, check=True)
+    result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        if detail:
+            print(detail, file=sys.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, argv, output=result.stdout, stderr=result.stderr
+        )
     return result.stdout
 
 
@@ -106,6 +113,9 @@ def inspect_binary_and_libdav1d(app_path: Path) -> int:
             target_hex = parse_relative_target(relocations, entry_hex)
             if not target_hex:
                 file_pos = offset + slot_offset
+                if file_pos < 0 or file_pos + 8 > len(raw_lib):
+                    print(f"::error::.init_array slot {slot_offset // 8} offset {file_pos} out of bounds for {lib}")
+                    return 1
                 word = int.from_bytes(raw_lib[file_pos : file_pos + 8], "little")
                 target_hex = f"{word:x}"
             if re.fullmatch(r"[0-9a-fA-F]+", target_hex):

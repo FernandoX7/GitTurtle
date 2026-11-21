@@ -503,12 +503,23 @@ class GitComparisonTests(unittest.TestCase):
         self.assertFalse(self.classify_pull_request(self.base)["product"])
 
     def test_missing_before_and_checkout_mismatch_run_everything(self):
-        self.assertTrue(self.classify_push("0" * 40)["product"])
+        zero_plan = self.classify_push("0" * 40)
+        self.assertTrue(zero_plan["product"])
+        self.assertEqual(zero_plan["reason"], "main-no-comparison")
+        self.assertFalse(zero_plan["has_images"])
+        self.assertEqual(changes.gate(needs_for(zero_plan))[-1], changes.PRIVACY_RESULTS["no-comparison"])
         self.assertTrue(self.classify_push("a" * 40)["product"])
         plan = changes.classify_checkout(self.repo, "push",
                                          {"before": self.base, "after": "b" * 40, "deleted": False},
                                          "b" * 40)
         self.assertTrue(plan["product"])
+
+    def test_packaged_license_markdown_requires_product_and_invalid_path_forces_images(self):
+        plan = changes.classify_paths([b"docs/licenses/assets/atom-one-LICENSE.md"])
+        self.assertTrue(plan["product"])
+        bad = changes.classify_paths([b".github/workflows/quality.yml", b"docs/../escape.png"], has_images=False)
+        self.assertEqual(bad["reason"], "unrecognized-path")
+        self.assertTrue(bad["has_images"])
 
     def test_pull_request_compares_complete_head_and_actual_merge(self):
         self.git("checkout", "-b", "contribution")

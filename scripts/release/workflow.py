@@ -149,6 +149,7 @@ def select_xcode(_args=None, _context=None, *, applications=Path("/Applications"
         for path in applications.glob("Xcode*.app")
         if (path / "Contents/Developer").is_dir()
         and not any(char in str(path) for char in "\r\n")
+        and not any(tag in path.name.lower() for tag in ("beta", "rc"))
     )
     best = None
     for developer in candidates:
@@ -161,7 +162,7 @@ def select_xcode(_args=None, _context=None, *, applications=Path("/Applications"
         if status != 0:
             continue
         lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
-        if len(lines) < 2:
+        if len(lines) != 2:
             continue
         version_match = re.fullmatch(r"Xcode (\d+)\.(\d+)(?:\.(\d+))?", lines[0])
         build_match = re.fullmatch(r"Build version ([A-Za-z0-9]+)", lines[1])
