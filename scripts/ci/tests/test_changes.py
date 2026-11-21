@@ -47,21 +47,31 @@ def packaged(eligible="true", transfer="verified", labels=LINUX_LABELS):
 
 
 def needs_for(plan):
+    privacy_entry = (
+        privacy()
+        if plan["has_images"]
+        else {"image-privacy": {"result": "skipped", "outputs": {}}}
+    )
     needs = {
         "changes": {"result": "success", "outputs": {
-            "plan": json.dumps(plan), **{lane: str(plan[lane]).lower() for lane in changes.LANES}}},
+            "plan": json.dumps(plan),
+            "has-images": str(plan["has_images"]).lower(),
+            **{lane: str(plan[lane]).lower() for lane in changes.LANES}}},
+        "ci-tests": {"result": "success", "outputs": {}},
         **{job: {"result": "success" if plan[lane] else "skipped", "outputs": {}}
            for job, lane in changes.JOBS.items()},
-        **privacy(),
+        **privacy_entry,
     }
     return {**needs, **packaged()} if plan["product"] else needs
 
 
 def expected_lines(results, privacy_line="image-privacy: added or changed images template-scanned; no match"):
-    """What the gate prints for literal job results: a line a job in the given order, then a line for each
+    """What the gate prints for literal job results: ci-tests, a line a job in the given order, then a line for each
     Linux package when the release job ran, then the image privacy job's."""
-    lines = [f"{job}: {'success' if result == 'success' else 'not needed by classification'}"
-             for job, result in results.items()]
+    lines = ["ci-tests: success"] + [
+        f"{job}: {'success' if result == 'success' else 'not needed by classification'}"
+        for job, result in results.items()
+    ]
     if results["rust-release"] == "success":
         lines += [f"package-transfer: {label} {UPLOADED}" for label in LINUX_LABELS]
     return [*lines, privacy_line]
@@ -80,7 +90,7 @@ class ClassificationTests(unittest.TestCase):
         # Only the Rust jobs' setup, the Image privacy job and the package transfer job run
         # it, so the tooling lane alone would let a change of it reach main unexercised.
         plan = changes.classify_paths([b"scripts/ci/apt_install.py"])
-        self.assertEqual(plan, changes.full_plan("package-installation-helper"))
+        self.assertEqual(plan, changes.full_plan("package-installation-helper", has_images=False))
         changes.validate_plan(plan)
         self.assertNotEqual(plan["reason"], changes.classify_paths([b"scripts/ci/tools.py"])["reason"])
         for paths in ([b"docs/ci.md", b"scripts/ci/apt_install.py"], [b"scripts/ci/executed_tests.py", b"scripts/ci/apt_install.py"]):
@@ -95,7 +105,7 @@ class ClassificationTests(unittest.TestCase):
         # Every Rust job runs its commands under it, so the tooling lane alone
         # would let a change of it reach main without one of them having run.
         plan = changes.classify_paths([b"scripts/ci/metrics.py"])
-        self.assertEqual(plan, changes.full_plan("ci-collector"))
+        self.assertEqual(plan, changes.full_plan("ci-collector", has_images=False))
         changes.validate_plan(plan)
         for other in (b"scripts/ci/packages.py", b"scripts/ci/tools.py", b"scripts/ci/apt_install.py"):
             self.assertNotEqual(plan["reason"], changes.classify_paths([other])["reason"])
@@ -156,7 +166,7 @@ class GateTests(unittest.TestCase):
                 plan = changes.classify_paths([case["path"].encode()])
                 # A job that ran carries what a real run's does, so a refusal here is its result's alone.
                 ran = packaged()
-                needs = {"changes": needs_for(plan)["changes"], **privacy(),
+                needs = {"changes": needs_for(plan)["changes"], "ci-tests": {"result": "success", "outputs": {}}, **privacy(),
                          **{job: ran[job] if result == "success" and job in ran else {"result": result, "outputs": {}}
                             for job, result in case["results"].items()}}
                 if case["accept"]:
@@ -177,18 +187,18 @@ class GateTests(unittest.TestCase):
         for paths, required in [([b"docs/user-guide.md"], set()), ([b"website/check.py"], {"website"}),
                                 ([b"scripts/ci/executed_tests.py"], {"tooling"}),
                                 ([b"scripts/ci/metrics.py"], {"product", "tooling", "website"}),
-                                ([b"crates/app/src/main.rs"], {"product", "tooling", "website"})]:
+                                ([b"crates/app/src/main.rs"], {"product"})]:
             with self.subTest(paths=paths):
                 results = {job: "success" if lane in required else "skipped" for job in jobs
                            for lane, members in lanes.items() if job in members}
-                # Eleven lines when the product lane ran, two of them the Linux packages'; nine when it did not.
+                # Twelve lines when the product lane ran (ci-tests + 8 jobs + 2 packages + privacy); ten otherwise.
                 lines = changes.gate(needs_for(changes.classify_paths(paths)))
-                self.assertEqual(lines, expected_lines(results))
-                self.assertEqual(len(lines), 11 if "product" in required else 9)
+                self.assertEqual(lines, expected_lines(results, privacy_line=changes.PRIVACY_RESULTS["no-images"]))
+                self.assertEqual(len(lines), 12 if "product" in required else 10)
 
     def test_required_failure_cancellation_and_skip_each_fail(self):
         baseline = needs_for(changes.full_plan("full"))
-        for job in ["changes", "image-privacy", *changes.JOBS]:
+        for job in ["changes", "ci-tests", "image-privacy", *changes.JOBS]:
             for result in ["failure", "cancelled", "skipped", "timed_out", None]:
                 with self.subTest(job=job, result=result):
                     needs = copy.deepcopy(baseline)
@@ -213,7 +223,7 @@ class GateTests(unittest.TestCase):
         needs = re.search(r"^    needs: \[(.*)\]$", jobs["quality"], re.M)
         self.assertIsNotNone(needs)
         self.assertEqual({name.strip() for name in needs.group(1).split(",")},
-                         {"changes", changes.PRIVACY_JOB, *changes.JOBS})
+                         {"changes", changes.CI_TESTS_JOB, changes.PRIVACY_JOB, *changes.JOBS})
         for job, lane in changes.JOBS.items():
             with self.subTest(job=job):
                 self.assertIn(f"\n    if: needs.changes.outputs.{lane} == 'true'\n", "\n" + jobs[job])
@@ -227,12 +237,13 @@ class GateTests(unittest.TestCase):
             changes.gate(needs)
         needs.update(packaged())
         lines = changes.gate(needs)
-        self.assertEqual(lines, expected_lines({job: "success" for job in changes.JOBS}))
-        self.assertEqual(len(lines), 11)
+        self.assertEqual(lines, expected_lines({job: "success" for job in changes.JOBS},
+                                               privacy_line=changes.PRIVACY_RESULTS["no-images"]))
+        self.assertEqual(len(lines), 12)
 
     def test_each_linux_package_is_judged_as_the_pair_of_its_release_leg_and_the_later_job(self):
         baseline = needs_for(changes.full_plan("full"))
-        jobs = [f"{job}: success" for job in changes.JOBS]
+        jobs = ["ci-tests: success"] + [f"{job}: success" for job in changes.JOBS]
         privacy_line = changes.PRIVACY_RESULTS["scanned"]
         # Uploaded and verified, held on both sides, and one of each: a line a package either way.
         self.assertEqual(changes.gate(baseline), [*jobs, f"package-transfer: linux-x86_64 {UPLOADED}",
@@ -287,8 +298,8 @@ class GateTests(unittest.TestCase):
             changes.gate(skipped)
         # Where no lane asked for the product jobs, the two still stand or fall together.
         unasked = needs_for(changes.classify_paths([b"README.md"]))
-        self.assertEqual(changes.gate(unasked)[3:5], ["rust-release: not needed by classification",
-                                                     "package-transfer: not needed by classification"])
+        self.assertEqual(changes.gate(unasked)[4:6], ["rust-release: not needed by classification",
+                                                      "package-transfer: not needed by classification"])
         for ran in ("rust-release", "package-transfer"):
             with self.subTest(ran=ran):
                 needs = {**unasked, ran: packaged()[ran]}
@@ -342,9 +353,10 @@ class GateTests(unittest.TestCase):
     def test_malformed_and_inconsistent_classification_fails(self):
         valid = changes.classify_paths([b"README.md"])
         invalid = [None, {}, {**valid, "version": 2}, {**valid, "product": "false"},
+                   {**valid, "has_images": "false"},
                    {**valid, "path_count": 0}, {**valid, "path_count": True},
                    {**valid, "reason": "comparison-unavailable", "path_count": None},
-                   {**valid, "product": True}, {**valid, "unexpected": False}]
+                   {**valid, "unexpected": False}]
         for plan in invalid:
             with self.subTest(plan=plan):
                 needs = needs_for(valid)
@@ -353,6 +365,10 @@ class GateTests(unittest.TestCase):
                     changes.gate(needs)
         needs = needs_for(valid)
         needs["changes"]["outputs"]["product"] = "true"
+        with self.assertRaises(changes.PolicyError):
+            changes.gate(needs)
+        needs = needs_for(valid)
+        needs["changes"]["outputs"]["has-images"] = "true"
         with self.assertRaises(changes.PolicyError):
             changes.gate(needs)
 
@@ -422,16 +438,32 @@ class GitComparisonTests(unittest.TestCase):
         return changes.classify_checkout(self.repo, "pull_request",
                                          {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}, merge)
 
-    def test_main_push_always_runs_full_coverage_for_every_changed_input(self):
-        for path in ("docs/guide.md", "website/public/index.html", "scripts/ci/metrics.py", "crates/sample.rs"):
+    def test_main_push_skips_product_on_pure_docs_and_runs_full_on_code_or_policy(self):
+        for path, expects_product, expected_lanes in (
+            ("docs/guide.md", False, set()),
+            ("website/public/index.html", False, {"website"}),
+            ("scripts/ci/metrics.py", True, {"product", "tooling", "website"}),
+            ("crates/sample.rs", True, {"product", "tooling", "website"}),
+        ):
             with self.subTest(path=path):
                 before = self.git("rev-parse", "HEAD")
                 self.write(path, "changed fixture content\n")
                 self.commit("change " + path)
                 plan = self.classify_push(before)
-                self.assertTrue(all(plan[lane] for lane in changes.LANES))
-                self.assertEqual(plan["reason"], "main-full-validation")
+                self.assertEqual(plan["product"], expects_product)
+                self.assertEqual({lane for lane in changes.LANES if plan[lane]}, expected_lanes)
+                if expects_product:
+                    self.assertEqual(plan["reason"], "main-full-validation")
+                else:
+                    self.assertEqual(plan["reason"], "classified-paths")
                 changes.validate_plan(plan)
+
+    def test_schedule_event_runs_full_cache_seed_without_image_privacy(self):
+        plan = changes.classify_checkout(self.repo, "schedule", {}, "")
+        self.assertEqual(plan, changes.full_plan("scheduled-cache-seed", has_images=False))
+        changes.validate_plan(plan)
+        lines = changes.gate(needs_for(plan))
+        self.assertEqual(lines[-1], changes.PRIVACY_RESULTS["no-comparison"])
 
     def test_a_pull_request_that_changes_the_collector_runs_every_lane(self):
         self.write("scripts/ci/metrics.py", "collector\n")
@@ -448,7 +480,7 @@ class GitComparisonTests(unittest.TestCase):
             self.commit("change " + ", ".join(paths))
             plans.append(self.classify_pull_request(base, f"pull-request-base-{number}"))
         self.assertEqual({lane for lane in changes.LANES if plans[0][lane]}, {"tooling"})
-        self.assertEqual(plans[1:], [changes.full_plan("ci-collector")] * 3)
+        self.assertEqual(plans[1:], [changes.full_plan("ci-collector", has_images=False)] * 3)
 
     def test_docs_move_preserves_cheap_routing(self):
         self.git("mv", "docs/guide.md", "docs/renamed.md")
@@ -512,8 +544,9 @@ class GitComparisonTests(unittest.TestCase):
                                      "GITHUB_EVENT_PATH": str(event_file)})
         self.assertEqual(result.returncode, 0, result.stderr)
         output = dict(line.split("=", 1) for line in output_file.read_text().splitlines())
-        self.assertEqual(output["product"], "true")
-        self.assertEqual(len(output), 4)
+        self.assertEqual(output["product"], "false")
+        self.assertEqual(output["has-images"], "false")
+        self.assertEqual(len(output), 5)
         self.assertNotIn("guide.md", result.stdout)
         changes.validate_plan(json.loads(output["plan"]))
 

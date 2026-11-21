@@ -99,8 +99,29 @@ def step_index(steps, markers):
     return {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in markers.items()}
 
 
+def matrix_include_entries(job):
+    """Parse matrix `include:` entries into a list of dicts when present."""
+    strategy = job_header(job, "strategy")
+    if "        include:\n" not in strategy:
+        return None
+    block = strategy.split("        include:\n", 1)[1]
+    entries = []
+    for raw in block.splitlines():
+        if raw.startswith("          - "):
+            entries.append({})
+            key, value = raw[len("          - "):].split(": ", 1)
+            entries[-1][key.strip()] = value.strip()
+        elif raw.startswith("            ") and entries:
+            key, value = raw.strip().split(": ", 1)
+            entries[-1][key.strip()] = value.strip()
+    return entries
+
+
 def matrix_axis(job, key):
-    """One matrix axis, written as an inline list, as its items' text."""
+    """One matrix axis, written as an inline list or collected from `include:` entries."""
+    entries = matrix_include_entries(job)
+    if entries is not None:
+        return list(dict.fromkeys(entry[key] for entry in entries))
     found = re.findall(rf"^        {key}: \[(.*)\]$", job_header(job, "strategy"), re.M)
     if len(found) != 1:
         raise AssertionError(f"matrix axis {key} is not one inline list")
@@ -108,8 +129,18 @@ def matrix_axis(job, key):
 
 
 def leg_names(job):
-    """The names GitHub gives the job's legs: its name with each matrix axis expanded, the first axis slowest."""
-    names = [re.search(r"^    name: (.+)$", job, re.M).group(1)]
+    """The names GitHub gives the job's legs: expanded from `include:` or inline axes."""
+    template = re.search(r"^    name: (.+)$", job, re.M).group(1)
+    entries = matrix_include_entries(job)
+    if entries is not None:
+        names = []
+        for entry in entries:
+            rendered = template
+            for key, value in entry.items():
+                rendered = rendered.replace(f"${{{{ matrix.{key} }}}}", value)
+            names.append(rendered)
+        return names
+    names = [template]
     for axis in dict.fromkeys(re.findall(r"\$\{\{ matrix\.([a-z-]+) \}\}", names[0])):
         names = [name.replace(f"${{{{ matrix.{axis} }}}}", value) for name in names for value in matrix_axis(job, axis)]
     return names
@@ -125,13 +156,13 @@ def step_conditions(steps):
     return conditions
 
 
-# The two test jobs and the legs their matrices produce: two shards per platform.
+# The two test jobs and the legs their matrices produce: 3 macOS shards, 2 Ubuntu and 2 Arch.
 TEST_LEGS = {
-    "rust-debug": ["Rust tests · macos-15 · 1/2", "Rust tests · macos-15 · 2/2",
+    "rust-debug": ["Rust tests · macos-15 · 1/3", "Rust tests · macos-15 · 2/3", "Rust tests · macos-15 · 3/3",
                    "Rust tests · ubuntu-24.04 · 1/2", "Rust tests · ubuntu-24.04 · 2/2"],
     "rust-arch": ["Rust tests · archlinux · 1/2", "Rust tests · archlinux · 2/2"],
 }
-TEST_AXES = {"rust-debug": ["os", "shard", "shards"], "rust-arch": ["shard", "shards"]}
+TEST_AXES = {"rust-debug": ["include"], "rust-arch": ["shard", "shards"]}
 PARTITIONED_TESTS = ('python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- '
                      'cargo nextest run --locked --workspace -P ci --no-fail-fast --timings '
                      '--partition "slice:$SHARD/$SHARDS"')
@@ -470,7 +501,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         setup = [step for step in steps if "uses: ./.github/actions/setup-rust" in step]
         self.assertEqual(len(setup), 1)
         self.assertEqual({line.strip() for line in setup[0].split("\n        with:\n", 1)[1].splitlines()},
-                         {"profile: debug", "vendor-reuse: true"})
+                         {"profile: debug", "vendor-reuse: true", "install-tool-packages: false"})
         # No finish phase, so no save: the test job alone writes the debug entry
         # it restores, and this job's checked dependencies never replace its build.
         self.assertNotIn("phase: finish", job)
@@ -512,10 +543,20 @@ class WorkflowPolicyTests(unittest.TestCase):
                               "          SHARDS: ${{ matrix.shards }}\n        run: ", tests)
                 self.assertNotIn("\n        if:", tests)
                 self.assertEqual((job.count("--partition"), job.count("cargo nextest ")), (1, 1))
-                # The total is written once, and the shards are exactly 1 to
-                # that total: a shorter list would leave a slice's tests unrun.
-                (total,) = matrix_axis(job, "shards")
-                self.assertEqual(matrix_axis(job, "shard"), [str(shard) for shard in range(1, int(total) + 1)])
+                # For every platform, shards cover exactly 1..=total without gaps.
+                entries = matrix_include_entries(job)
+                if entries is not None:
+                    by_os = {}
+                    for entry in entries:
+                        by_os.setdefault(entry["os"], []).append((int(entry["shard"]), int(entry["shards"])))
+                    for os_name, pairs in by_os.items():
+                        totals = {total for _, total in pairs}
+                        self.assertEqual(len(totals), 1, os_name)
+                        total = next(iter(totals))
+                        self.assertEqual([shard for shard, _ in pairs], list(range(1, total + 1)), os_name)
+                else:
+                    (total,) = matrix_axis(job, "shards")
+                    self.assertEqual(matrix_axis(job, "shard"), [str(shard) for shard in range(1, int(total) + 1)])
                 self.assertEqual(re.findall(r"^        ([a-z-]+):", job_header(job, "strategy"), re.M), TEST_AXES[name])
 
     def test_the_test_legs_are_two_shards_per_platform_and_all_start_at_once(self):
@@ -544,7 +585,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                 job, steps = quality_job_steps(name)
                 # Every other step, the tests among them, runs in every shard.
                 self.assertEqual(step_conditions(steps), {**records[name], **once, **always})
-                index = step_index(steps, {"records": "readelf -d -W", "doctests": "--name doctests ",
+                index = step_index(steps, {"records": "scripts/ci/libdav1d_elf.py", "doctests": "--name doctests ",
                                            "finish": "phase: finish"})
                 self.assertEqual([steps[position].split("\n", 1)[0] for position in index.values()],
                                  ["name: Print the libdav1d link and initializers", "name: Locked workspace doctests",
@@ -590,8 +631,10 @@ class WorkflowPolicyTests(unittest.TestCase):
             with self.subTest(job=name):
                 job, steps = quality_job_steps(name)
                 self.assertEqual(re.findall(r"^    if: (.*)$", job, re.M), ["needs.changes.outputs.product == 'true'"])
-                for unwanted in ("continue-on-error", "include:", "exclude:"):
+                for unwanted in ("continue-on-error", "exclude:"):
                     self.assertNotIn(unwanted, job)
+                if name == "rust-arch":
+                    self.assertNotIn("include:", job)
         gate, _ = quality_job_steps("quality")
         self.assertIn("\n    if: always()\n", gate)
         needs = re.search(r"^    needs: \[(.*)\]$", gate, re.M).group(1).split(", ")

@@ -33,7 +33,7 @@ SHA = "a" * 40
 TAG = "b" * 40
 LOCK = "c" * 64
 REQUIRED = ["Quality gate", "Rust formatting",
-            "Rust tests · macos-15 · 1/2", "Rust tests · macos-15 · 2/2",
+            "Rust tests · macos-15 · 1/3", "Rust tests · macos-15 · 2/3", "Rust tests · macos-15 · 3/3",
             "Rust tests · ubuntu-24.04 · 1/2", "Rust tests · ubuntu-24.04 · 2/2",
             "Rust Clippy · macos-15", "Rust Clippy · ubuntu-24.04",
             "Rust release · macos-26", "Rust release · ubuntu-24.04", "Rust release · ubuntu-24.04-arm"]
@@ -535,41 +535,49 @@ class Preparation(Fixture):
 
 
 class XcodeSelection(unittest.TestCase):
-    def test_selects_verified_build_even_when_newer_or_default_tools_exist(self):
+    def test_selects_newest_verified_xcode_26_or_later(self):
         with tempfile.TemporaryDirectory() as directory:
             applications = Path(directory)
-            for name in ("Xcode.app", "Xcode_26.2.app", "Xcode_26.3.app", "Xcode_26.6.app"):
+            for name in ("Xcode.app", "Xcode_16.4.app", "Xcode_26.3.app", "Xcode_26.6.app"):
                 (applications / name / "Contents/Developer").mkdir(parents=True)
             output = applications / "job-environment"
-            with patch.object(release.packages, "run", return_value=(0, "Xcode 26.3\nBuild version 17C529\n")) as probe:
-                release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(output)})
-            selected = str(applications / "Xcode_26.3.app/Contents/Developer")
-            self.assertEqual(output.read_text(), "DEVELOPER_DIR=" + selected + "\n")
-            probe.assert_called_once_with(["/usr/bin/xcodebuild", "-version"],
-                env={"GITHUB_ENV": str(output), "DEVELOPER_DIR": selected}, allowed=tuple(range(256)), timeout=20)
+            versions = {
+                str(applications / "Xcode.app/Contents/Developer"): (0, "Xcode 16.4\nBuild version 16F6\n"),
+                str(applications / "Xcode_16.4.app/Contents/Developer"): (0, "Xcode 16.4\nBuild version 16F6\n"),
+                str(applications / "Xcode_26.3.app/Contents/Developer"): (0, "Xcode 26.3\nBuild version 17C529\n"),
+                str(applications / "Xcode_26.6.app/Contents/Developer"): (0, "Xcode 26.6\nBuild version 17F113\n"),
+            }
 
-    def test_missing_pinned_installation_does_not_probe_other_versions(self):
+            def fake_run(_argv, *, env, **_kwargs):
+                return versions[env["DEVELOPER_DIR"]]
+
+            with patch.object(release.packages, "run", side_effect=fake_run):
+                release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(output)})
+            selected = str(applications / "Xcode_26.6.app/Contents/Developer")
+            self.assertEqual(output.read_text(), "DEVELOPER_DIR=" + selected + "\n")
+
+    def test_missing_or_older_xcode_never_exports_the_path(self):
         with tempfile.TemporaryDirectory() as directory:
             applications = Path(directory)
-            for name in ("Xcode.app", "Xcode_26.2.app", "Xcode_26.6.app"):
+            for name in ("Xcode.app", "Xcode_16.4.app"):
                 (applications / name / "Contents/Developer").mkdir(parents=True)
-            with patch.object(release.packages, "run") as probe, self.assertRaisesRegex(github.Error, "no fallback"):
+            with patch.object(release.packages, "run", return_value=(0, "Xcode 16.4\nBuild version 16F6\n")), \
+                    self.assertRaisesRegex(github.Error, "Xcode 26.0 or later"):
                 release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(applications / "output")})
-            probe.assert_not_called()
             self.assertFalse((applications / "output").exists())
 
-    def test_failed_mismatched_or_ambiguous_identity_never_exports_the_path(self):
+    def test_failed_or_malformed_xcodebuild_output_never_exports_the_path(self):
         with tempfile.TemporaryDirectory() as directory:
             applications = Path(directory)
             (applications / "Xcode_26.3.app/Contents/Developer").mkdir(parents=True)
             output = applications / "output"
             output.write_text("EXISTING=value\n")
             for result in ((1, "Xcode 26.3\nBuild version 17C529\n"),
-                           (0, "Xcode 26.6\nBuild version 17F113\n"),
-                           (0, "Xcode 26.3\nBuild version changed\n"),
-                           (0, "Xcode 26.3\n"), (0, "unexpected"),
-                           (0, "Xcode 26.3\nBuild version 17C529\nXcode 26.6\n")):
-                with self.subTest(result=result), patch.object(release.packages, "run", return_value=result), self.assertRaisesRegex(github.Error, "no fallback"):
+                           (0, "Xcode 25.9\nBuild version 16Z999\n"),
+                           (0, "Xcode 26.3\nBuild version bad-build!\n"),
+                           (0, "Xcode 26.3\n"), (0, "unexpected")):
+                with self.subTest(result=result), patch.object(release.packages, "run", return_value=result), \
+                        self.assertRaisesRegex(github.Error, "Xcode 26.0 or later"):
                     release.select_xcode(applications=applications, environ={"GITHUB_ENV": str(applications / "output")})
                 self.assertEqual(output.read_text(), "EXISTING=value\n")
 
@@ -741,36 +749,51 @@ class Trust(unittest.TestCase):
             name = re.search(r"^    name: (.+)$", block, re.M)
             if not name:
                 continue
-            # Every matrix axis in the name, each an inline list or, for the
-            # release legs, one `include` entry per value.
-            names = [name.group(1)]
-            for axis in dict.fromkeys(re.findall(r"\$\{\{ matrix\.([a-z-]+) \}\}", name.group(1))):
-                listed = re.search(rf"^        {axis}: \[(.*)\]$", block, re.M)
-                values = ([value.strip() for value in listed.group(1).split(",")] if listed
-                          else re.findall(rf"^          - {axis}: (\S+)$", block, re.M))
-                self.assertTrue(values, name.group(1))
-                names = [item.replace(f"${{{{ matrix.{axis} }}}}", value) for item in names for value in values]
+            # Every matrix axis in the name, expanded from `include:` entries or inline lists.
+            if "        include:\n" in block:
+                inc_block = re.split(r"\n    [a-z]", block.split("        include:\n", 1)[1], maxsplit=1)[0]
+                entries = []
+                for raw in inc_block.splitlines():
+                    if raw.startswith("          - "):
+                        entries.append({})
+                        key, value = raw[len("          - "):].split(": ", 1)
+                        entries[-1][key.strip()] = value.strip()
+                    elif raw.startswith("            ") and entries:
+                        key, value = raw.strip().split(": ", 1)
+                        entries[-1][key.strip()] = value.strip()
+                names = []
+                for entry in entries:
+                    rendered = name.group(1)
+                    for key, value in entry.items():
+                        rendered = rendered.replace(f"${{{{ matrix.{key} }}}}", value)
+                    names.append(rendered)
+            else:
+                names = [name.group(1)]
+                for axis in dict.fromkeys(re.findall(r"\$\{\{ matrix\.([a-z-]+) \}\}", name.group(1))):
+                    listed = re.search(rf"^        {axis}: \[(.*)\]$", block, re.M)
+                    values = [value.strip() for value in listed.group(1).split(",")] if listed else []
+                    self.assertTrue(values, name.group(1))
+                    names = [item.replace(f"${{{{ matrix.{axis} }}}}", value) for item in names for value in values]
             self.assertNotIn("${{", "".join(names))
             produced.update(names)
         required = set(github.quality_evidence(FakeGitHub(), SHA, 45)["required_jobs"])
         self.assertLessEqual(required, produced)
-        # Both shards of each required platform, so no release counts half a suite.
+        # All shards of each required platform (3 macOS + 2 Ubuntu), so no release counts partial suites.
         tests = sorted(name for name in produced if name.startswith("Rust tests · ") and "archlinux" not in name)
         self.assertEqual(tests, sorted(name for name in required if name.startswith("Rust tests · ")))
-        self.assertEqual(len(tests), 4)
+        self.assertEqual(len(tests), 5)
         # The later job that downloads and verifies the Linux packages has names of its own, one a leg.
-        # The preflight's eleven names are unchanged and none of them is one of these: like the Arch Linux
-        # shards, that job is required through the Quality gate, which fails without it.
+        # The preflight's twelve names include all five test shards; Arch and package-transfer remain required via Quality gate.
         transfer = sorted(name for name in produced if name.startswith("Package transfer"))
         self.assertEqual(transfer, ["Package transfer · ubuntu-24.04", "Package transfer · ubuntu-24.04-arm"])
         self.assertEqual(sorted(required), sorted(REQUIRED))
-        self.assertEqual(len(required), 11)
+        self.assertEqual(len(required), 12)
         self.assertFalse(required & set(transfer))
         self.assertIn("Quality gate", required)
 
     def test_every_test_shard_is_required_and_no_unsharded_job_stands_in_for_one(self):
         shards = [name for name in REQUIRED if name.startswith("Rust tests · ")]
-        self.assertEqual(shards, ["Rust tests · macos-15 · 1/2", "Rust tests · macos-15 · 2/2",
+        self.assertEqual(shards, ["Rust tests · macos-15 · 1/3", "Rust tests · macos-15 · 2/3", "Rust tests · macos-15 · 3/3",
                                   "Rust tests · ubuntu-24.04 · 1/2", "Rust tests · ubuntu-24.04 · 2/2"])
         for shard in shards:
             for variant in ("missing", "duplicate", "unsharded", "skipped", "failure", "cancelled"):

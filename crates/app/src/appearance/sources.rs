@@ -1,7 +1,7 @@
 //! Upstream palette values for the built-in themes adapted from Solarized, One, Rosé Pine,
 //! Dracula and Kanagawa.
 //!
-//! Every value is copied from `docs/development/2026-09-17-theme-palettes.md` ("Source values for
+//! Every value is copied from `crates/app/tests/fixtures/2026-09-17-theme-palettes.md` ("Source values for
 //! the chosen palettes"), which records it from the upstream file at the pinned revision named in
 //! each family module. Constants keep the upstream name so a reviewer can diff them against the
 //! note and the source. Semantic mapping to GitTurtle's palette tokens, and any tuning needed to
@@ -454,7 +454,7 @@ pub mod kanagawa {
 mod tests {
     use super::*;
 
-    const NOTE: &str = include_str!("../../../../docs/development/2026-09-17-theme-palettes.md");
+    const NOTE: &str = include_str!("../../tests/fixtures/2026-09-17-theme-palettes.md");
 
     /// Every constant, grouped by the note paragraph that records it, with its upstream name.
     const SOURCES: &[(&str, &[(&str, u32)])] = &[

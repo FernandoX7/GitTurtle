@@ -137,21 +137,50 @@ def preflight(args):
 
 
 def select_xcode(_args=None, _context=None, *, applications=Path("/Applications"), environ=None):
-    """Select the observed Xcode build for Quality and release jobs.
+    """Select the newest installed Xcode 26.0 or later for Quality and release jobs.
+
     The selected toolchain applies through DEVELOPER_DIR; no shared host setting
-    or developer directory is changed. Missing or changed tools never fall back.
+    or developer directory is changed. Exact observed version and build are
+    recorded in stdout for provenance; older or unverified installations fail.
     """
     env = os.environ if environ is None else environ
-    selected = applications / "Xcode_26.3.app/Contents/Developer"
-    if any(char in str(selected) for char in "\r\n") or not selected.is_dir():
-        raise Error("CI requires installed Xcode 26.3 (17C529); no fallback")
-    status, text = packages.run(["/usr/bin/xcodebuild", "-version"],
-        env={**env, "DEVELOPER_DIR": str(selected)}, allowed=tuple(range(256)), timeout=20)
-    if status != 0 or text.strip() != "Xcode 26.3\nBuild version 17C529":
-        raise Error("CI requires verified Xcode 26.3 (17C529); no fallback")
+    candidates = sorted(
+        path / "Contents/Developer"
+        for path in applications.glob("Xcode*.app")
+        if (path / "Contents/Developer").is_dir()
+        and not any(char in str(path) for char in "\r\n")
+    )
+    best = None
+    for developer in candidates:
+        status, text = packages.run(
+            ["/usr/bin/xcodebuild", "-version"],
+            env={**env, "DEVELOPER_DIR": str(developer)},
+            allowed=tuple(range(256)),
+            timeout=20,
+        )
+        if status != 0:
+            continue
+        lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+        version_match = re.fullmatch(r"Xcode (\d+)\.(\d+)(?:\.(\d+))?", lines[0])
+        build_match = re.fullmatch(r"Build version ([A-Za-z0-9]+)", lines[1])
+        if not version_match or not build_match:
+            continue
+        major = int(version_match.group(1))
+        minor = int(version_match.group(2))
+        patch = int(version_match.group(3) or 0)
+        if major < 26:
+            continue
+        key = (major, minor, patch, developer.parent.parent.name)
+        if best is None or key > best[0]:
+            best = (key, developer, lines[0], lines[1])
+    if best is None:
+        raise Error("CI requires installed Xcode 26.0 or later; none verified")
+    _key, selected, version_line, build_line = best
     with Path(env["GITHUB_ENV"]).open("a") as output:
         output.write("DEVELOPER_DIR=" + str(selected) + "\n")
-    print("Selected " + selected.parent.parent.name)
+    print(f"Selected {selected.parent.parent.name} ({version_line}, {build_line})")
 
 
 def local_identity(context):
