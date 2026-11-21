@@ -2640,6 +2640,193 @@ mod tests {
         assert!(error.to_string().contains("may have applied"));
         assert!(start.elapsed() < Duration::from_secs(2));
     }
+
+    /// A write whose operation is already cancelled starts no process: this
+    /// program does not exist, and starting it would fail in other words.
+    #[test]
+    fn a_cancelled_operation_starts_no_process() {
+        let control = OperationControl::default();
+        let inside = control.clone();
+        let error = run_controlled(control, || {
+            inside.cancel();
+            bounded_write_output(
+                Command::new("/nonexistent/gitturtle-fixture"),
+                None,
+                WRITE_TIMEOUT,
+            )
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Git operation cancelled before starting. It was not retried."
+        );
+    }
+
+    /// The control shows a transfer's progress while its write still runs:
+    /// this one ends only once the test has read it.
+    #[cfg(unix)]
+    #[test]
+    fn a_running_write_s_progress_reaches_its_control() {
+        let temp = tempfile::tempdir().unwrap();
+        let release = temp.path().join("release");
+        let control = OperationControl::default();
+        let worker = {
+            let control = control.clone();
+            let mut command = crate::process_io::fixtures::shell(
+                "printf 'Receiving objects:  42%% (42/100)\\r' >&2; while [ ! -e \"$1\" ]; do sleep 0.01; done",
+            );
+            command.arg(&release);
+            thread::spawn(move || {
+                run_controlled(control, || {
+                    bounded_write_output(command, None, WRITE_TIMEOUT)
+                })
+            })
+        };
+        let started = Instant::now();
+        while control.progress().is_none() && started.elapsed() < Duration::from_secs(3) {
+            thread::sleep(Duration::from_millis(2));
+        }
+        let progress = control.progress();
+        // Released whatever was read, so a write that showed nothing ends too.
+        std::fs::write(&release, "").unwrap();
+        let output = worker.join().unwrap().unwrap();
+        assert_eq!(
+            progress.as_deref(),
+            Some("Receiving objects:  42% (42/100)")
+        );
+        assert!(output.status.success());
+    }
+
+    /// A write leaves no child behind to wait for, whether it succeeded, ran
+    /// out of time or was cancelled; and a child that closes both streams and
+    /// lingers is not complete: its write ends at the deadline, in the words
+    /// a sub-second limit has.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_leaves_no_child_to_wait_for() {
+        use crate::process_io::fixtures::{shell, still_a_child, written_line};
+        let output = bounded_write_output(shell("echo $$"), None, WRITE_TIMEOUT).unwrap();
+        assert!(!still_a_child(&String::from_utf8_lossy(&output.stdout)));
+
+        let temp = tempfile::tempdir().unwrap();
+        let lingering = |name: &str| {
+            let pid = temp.path().join(name);
+            let mut command = shell("echo $$ > \"$1\"; exec >&- 2>&-; sleep 10");
+            command.arg(&pid);
+            (pid, command)
+        };
+        let (pid, command) = lingering("deadline");
+        let started = Instant::now();
+        let error = bounded_write_output(command, None, Duration::from_millis(300)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Git operation exceeded its 0 second time limit. Its result may have applied partially or remotely; refresh and inspect before retrying. It was not retried."
+        );
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!still_a_child(&written_line(&pid)));
+
+        let (pid, command) = lingering("cancel");
+        let control = OperationControl::default();
+        let worker = {
+            let control = control.clone();
+            thread::spawn(move || {
+                run_controlled(control, || {
+                    bounded_write_output(command, None, WRITE_TIMEOUT)
+                })
+            })
+        };
+        let child = written_line(&pid);
+        let started = Instant::now();
+        control.cancel();
+        let error = worker.join().unwrap().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Git operation cancelled. Its result may have applied partially or remotely; inspect local state and explicitly check the remote before retrying. It was not retried."
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!still_a_child(&child));
+    }
+
+    /// A deadline and a cancel kill the child's whole group, not the child
+    /// alone: the descendant never gets to leave its marker.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_deadline_and_a_cancel_kill_the_child_s_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let with_descendant = |name: &str| {
+            let marker = temp.path().join(name);
+            let mut command =
+                crate::process_io::fixtures::shell("(sleep 0.3; touch \"$1\") & wait");
+            command.arg(&marker);
+            (marker, command)
+        };
+        let (after_deadline, command) = with_descendant("deadline");
+        let error = bounded_write_output(command, None, Duration::from_millis(30)).unwrap_err();
+        assert!(error.to_string().contains("time limit"), "{error}");
+
+        let (after_cancel, command) = with_descendant("cancel");
+        let control = OperationControl::default();
+        let trigger = {
+            let control = control.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(30));
+                control.cancel();
+            })
+        };
+        let error = run_controlled(control, || {
+            bounded_write_output(command, None, WRITE_TIMEOUT)
+        })
+        .unwrap_err();
+        trigger.join().unwrap();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+
+        thread::sleep(Duration::from_millis(350));
+        assert!(!after_deadline.exists());
+        assert!(!after_cancel.exists());
+    }
+
+    /// A write is not complete while its input is unwritten: a helper in
+    /// another session that holds the input pipe without reading it keeps the
+    /// write waiting to its deadline, and the blocked writer is stopped then.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_deadline_covers_a_detached_holder_of_its_input() {
+        let (fixture, command) = crate::process_io::fixtures::DetachedPipeHolder::command(true);
+        let started = Instant::now();
+        let error = bounded_write_output(
+            command,
+            Some(vec![b'x'; 1024 * 1024]),
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        fixture.wait_ready();
+        assert!(
+            error
+                .to_string()
+                .contains("exceeded its 0 second time limit"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Input larger than a pipe holds reaches a reader that starts late,
+    /// every byte of it in order. A pipe holds sixteen pages, 64 KiB to
+    /// 1 MiB by the host's page size, so the writer here has to wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_large_write_input_reaches_a_slow_reader_whole() {
+        let input: Vec<u8> = (0..2 * 1024 * 1024u32)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let command = crate::process_io::fixtures::shell("sleep 0.2; cat");
+        let output = bounded_write_output(command, Some(input.clone()), WRITE_TIMEOUT).unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout.len(), input.len());
+        assert!(output.stdout == input, "input arrived reordered or changed");
+    }
+
     #[cfg(unix)]
     #[test]
     fn status_and_write_input_preserve_non_utf8_paths_even_on_utf8_only_filesystems() {

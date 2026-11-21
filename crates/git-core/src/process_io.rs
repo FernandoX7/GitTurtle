@@ -235,4 +235,42 @@ os._exit(0)
             }
         }
     }
+
+    /// `/bin/sh` running `script`, whose `$1` is the next argument added.
+    pub(crate) fn shell(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script, "fixture"]);
+        command
+    }
+
+    /// The line a fixture's shell wrote to `path` (`echo $$ > "$1"`), once it
+    /// is whole.
+    pub(crate) fn written_line(path: &Path) -> String {
+        let started = Instant::now();
+        loop {
+            if let Ok(line) = std::fs::read_to_string(path)
+                && line.ends_with('\n')
+            {
+                return line.trim().to_owned();
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "{} was never written",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Whether this process still has the child `pid` to wait for, running or
+    /// exited: a reaped child is no longer one. Looking leaves it as it was.
+    pub(crate) fn still_a_child(pid: &str) -> bool {
+        use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+        let pid = Pid::from_raw(pid.trim().parse().unwrap()).unwrap();
+        let unreaped = waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        );
+        !matches!(unreaped, Err(rustix::io::Errno::CHILD))
+    }
 }

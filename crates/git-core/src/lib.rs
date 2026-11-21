@@ -4277,6 +4277,132 @@ mod tests {
         drop(reader);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
+
+    #[cfg(unix)]
+    use process_io::fixtures::shell;
+
+    /// Each stream is kept whole up to its cap and the read is refused one
+    /// byte past it, in the words callers show. Far past it the reader has
+    /// closed its end, so the writer fails and the read still ends at once.
+    #[cfg(unix)]
+    #[test]
+    fn passive_output_is_kept_up_to_its_caps_and_refused_past_them() {
+        let read = |script: &str| bounded_output(shell(script), GIT_TIMEOUT);
+        let kept = read("head -c 131072 /dev/zero >&2").unwrap();
+        assert!(kept.status.success());
+        assert_eq!(kept.stderr.len(), 128 * 1024);
+        assert!(kept.stdout.is_empty());
+        let started = Instant::now();
+        for past in [
+            "head -c 131073 /dev/zero >&2",
+            "head -c 134217729 /dev/zero",
+            "head -c 4194304 /dev/zero >&2; exit 0",
+        ] {
+            let error = read(past).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "Git command output exceeded its memory limit",
+                "{past}"
+            );
+        }
+        assert!(started.elapsed() < GIT_TIMEOUT);
+    }
+
+    /// A read whose inspection is already cancelled starts no process: this
+    /// program does not exist, and starting it would fail in other words.
+    #[test]
+    fn a_cancelled_inspection_starts_no_process() {
+        let cancellation = HistoryCancellation::default();
+        let inside = cancellation.clone();
+        let error = run_cancellable_inspection(cancellation, || {
+            inside.cancel();
+            bounded_output(Command::new("/nonexistent/gitturtle-fixture"), GIT_TIMEOUT)
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Repository inspection cancelled");
+    }
+
+    /// A read leaves no child behind to wait for, whether it succeeded, ran
+    /// out of time or was cancelled; and a child that closes both streams and
+    /// lingers is not complete: its read ends at the deadline, in the words
+    /// a sub-second limit has.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_read_leaves_no_child_to_wait_for() {
+        use process_io::fixtures::{still_a_child, written_line};
+        let output = bounded_output(shell("echo $$"), GIT_TIMEOUT).unwrap();
+        assert!(!still_a_child(&String::from_utf8_lossy(&output.stdout)));
+
+        let temp = tempfile::tempdir().unwrap();
+        let lingering = |name: &str| {
+            let pid = temp.path().join(name);
+            let mut command = shell("echo $$ > \"$1\"; exec >&- 2>&-; sleep 10");
+            command.arg(&pid);
+            (pid, command)
+        };
+        let (pid, command) = lingering("deadline");
+        let started = Instant::now();
+        let error = bounded_output(command, Duration::from_millis(300)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Git read exceeded its 0 second time limit"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!still_a_child(&written_line(&pid)));
+
+        let (pid, command) = lingering("cancel");
+        let cancellation = HistoryCancellation::default();
+        let worker = {
+            let cancellation = cancellation.clone();
+            thread::spawn(move || {
+                run_cancellable_inspection(cancellation, || bounded_output(command, GIT_TIMEOUT))
+            })
+        };
+        let child = written_line(&pid);
+        let started = Instant::now();
+        cancellation.cancel();
+        let error = worker.join().unwrap().unwrap_err();
+        assert_eq!(error.to_string(), "Repository inspection cancelled");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!still_a_child(&child));
+    }
+
+    /// A deadline and a cancel kill the child's whole group, not the child
+    /// alone: the descendant never gets to leave its marker.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_deadline_and_a_cancel_kill_the_child_s_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let with_descendant = |name: &str| {
+            let marker = temp.path().join(name);
+            let mut command = shell("(sleep 0.3; touch \"$1\") & wait");
+            command.arg(&marker);
+            (marker, command)
+        };
+        let (after_deadline, command) = with_descendant("deadline");
+        let error = bounded_output(command, Duration::from_millis(30)).unwrap_err();
+        assert!(error.to_string().contains("time limit"), "{error}");
+
+        let (after_cancel, command) = with_descendant("cancel");
+        let cancellation = HistoryCancellation::default();
+        let trigger = {
+            let cancellation = cancellation.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(30));
+                cancellation.cancel();
+            })
+        };
+        let error =
+            run_cancellable_inspection(cancellation, || bounded_output(command, GIT_TIMEOUT))
+                .unwrap_err();
+        trigger.join().unwrap();
+        assert_eq!(error.to_string(), "Repository inspection cancelled");
+
+        thread::sleep(Duration::from_millis(350));
+        assert!(!after_deadline.exists());
+        assert!(!after_cancel.exists());
+    }
 }
 
 #[cfg(not(unix))]
