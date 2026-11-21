@@ -144,13 +144,16 @@ class LockTest(unittest.TestCase):
 
     def test_both_unlocked_keeps_the_clear_result(self) -> None:
         reads = FakeReads()
-        status, lines = self.run_check(reads)
+        fixed_date = mock.Mock(stdout="Sat Nov 21 00:00:00 UTC 2026\n")
+        with mock.patch.object(display.subprocess, "run", return_value=fixed_date):
+            status, lines = self.run_check(reads)
         self.assertEqual(status, 0)
         self.assertEqual(lines[-1], "display clear")
         self.assertIn("GNOME ScreenSaver: GetActive false (unlocked)", lines)
         self.assertIn("logind: LockedHint=no for session 8 (wayland) (unlocked)", lines)
         self.assertFalse(any(line.startswith(display.LOCKED_PREFIX) for line in lines))
-        with mock.patch.object(display, "lock_check", lambda: (0, [])), \
+        with mock.patch.object(display.subprocess, "run", return_value=fixed_date), \
+                mock.patch.object(display, "lock_check", lambda: (0, [])), \
                 mock.patch.object(display, "pgrep", lambda pattern, exclude: []), \
                 mock.patch.object(display, "windows", lambda name: []):
             before = display.check(":1")[1]
