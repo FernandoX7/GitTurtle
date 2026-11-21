@@ -15809,6 +15809,42 @@ pub(crate) mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// One case of the strip's ring walk: the window's width and height, its
+    /// scale factor and the interface text size.
+    #[cfg(target_os = "linux")]
+    type StripRingCase = ((f32, f32), f32, u8);
+
+    /// The windows, scale factors and text sizes the strip's rings are walked
+    /// at ([`the_strip_keeps_a_rings_room_beside_its_tabs_at`]), in the order
+    /// one test walked them: a 1480 × 800 window, then a 461 × 490 one, each
+    /// at scale factors 1.25, 1.5, 1.75 and 2, and each of those at 11, 13
+    /// and 18 pt, twelve cases a window. Each part of the walk runs its own
+    /// slice of this list, below.
+    #[cfg(target_os = "linux")]
+    fn strip_ring_cases() -> Vec<StripRingCase> {
+        [(1480., 800.), (461., 490.)]
+            .into_iter()
+            .flat_map(|window| {
+                [1.25, 1.5, 1.75, 2.].into_iter().flat_map(move |scale| {
+                    [11, 13, 18]
+                        .into_iter()
+                        .map(move |interface| (window, scale, interface))
+                })
+            })
+            .collect()
+    }
+
+    /// The slice of [`strip_ring_cases`] each part of the walk runs, in the
+    /// list's order: one window's twelve cases, so a part changes the scale
+    /// factor and the text size in place, in the order the one test did, in
+    /// a window it lays out at one size.
+    /// `the_parts_of_the_strip_ring_walk_run_each_case_once` holds them to
+    /// the list.
+    #[cfg(target_os = "linux")]
+    const STRIP_RINGS_IN_THE_WIDE_WINDOW: std::ops::Range<usize> = 0..12;
+    #[cfg(target_os = "linux")]
+    const STRIP_RINGS_IN_THE_NARROW_WINDOW: std::ops::Range<usize> = 12..24;
+
     /// The strip keeps a ring's room beside its tab list and between its
     /// controls ([`tab_gap`]): Main Menu focused from the keyboard beside a
     /// selected first tab draws its ring clear of that tab's frame and
@@ -15822,9 +15858,17 @@ pub(crate) mod tests {
     /// and the first tab's ring a device pixel over Menu; the window
     /// controls' `gap_1` let each control's ring reach a device pixel into
     /// the one beside it.
+    ///
+    /// Walked at `cases`, cases of [`strip_ring_cases`] in the order given,
+    /// in a window of its own on two fresh repositories, and every test of
+    /// it ends as the one test did, its window back at scale factor 2 and
+    /// the default text size: one test took 58.2 s on a hosted runner,
+    /// against the 120 s at which nextest ends a test.
     #[cfg(target_os = "linux")]
-    #[gpui::test]
-    async fn the_strip_keeps_a_rings_room_beside_its_tabs(cx: &mut TestAppContext) {
+    async fn the_strip_keeps_a_rings_room_beside_its_tabs_at(
+        cases: &[StripRingCase],
+        cx: &mut TestAppContext,
+    ) {
         use crate::tags::tests::{draw, rendered};
         use gpui_kit::{ScaledPixels, component::ActiveTheme as _};
 
@@ -15914,79 +15958,169 @@ pub(crate) mod tests {
         settle_tab_test(&app, cx).await;
 
         let mut failures = Vec::new();
-        for (width, height) in [(1480., 800.), (461., 490.)] {
-            for scale in [1.25, 1.5, 1.75, 2.] {
-                for interface in [11, 13, 18] {
-                    // A resize puts the test window back at scale 2.
-                    resize_strip(cx, &app, (interface, width, height)).await;
-                    cx.update(|window, cx| {
-                        window.set_scale_factor(scale);
-                        window.blur(cx);
-                    });
-                    settle_tab_test(&app, cx).await;
-                    draw(cx);
-                    assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
-                    assert_eq!(
-                        cx.update(|_, cx| app.read(cx).repository_tabs.active),
-                        Some(0),
-                        "the first tab is selected"
-                    );
-                    // Each control and the one beside it, on its right or
-                    // its left: the first tab's frame is selected, so its
-                    // fill is painted after Menu's ring.
-                    for (control, beside, right) in [
-                        ("main-menu", "repository-tab-frame-0", true),
-                        ("repository-tab-0", "main-menu", false),
-                        ("new-repository-tab", "repository-workspaces", true),
-                        ("repository-workspaces", "new-repository-tab", false),
-                        ("minimize-window", "maximize-window", true),
-                        ("maximize-window", "minimize-window", false),
-                        ("maximize-window", "close-window", true),
-                        ("close-window", "maximize-window", false),
-                    ] {
-                        let at = format!(
-                            "{control} at scale {scale}, {interface} pt, {width} x {height}"
-                        );
-                        tab_onto(cx, control);
-                        let to_device = |b: Bounds<Pixels>| {
-                            Bounds::from_corners(
-                                point(f32::from(b.left()) * scale, f32::from(b.top()) * scale),
-                                point(f32::from(b.right()) * scale, f32::from(b.bottom()) * scale),
-                            )
-                        };
-                        let element = to_device(rendered(cx, control));
-                        let rings = rings_around(cx, element);
-                        let [(ring, covered)] = rings.as_slice() else {
-                            failures.push(format!("{at}: one ring, not {rings:?}"));
-                            continue;
-                        };
-                        let neighbour = to_device(rendered(cx, beside));
-                        let slack = 0.01;
-                        let reaches = if right {
-                            ring.right() > neighbour.left() + slack
-                        } else {
-                            ring.left() < neighbour.right() - slack
-                        };
-                        if reaches {
-                            failures.push(format!(
-                                "{at}: its ring {ring:?} reaches into {beside} {neighbour:?}"
-                            ));
-                        }
-                        if !covered.is_empty() {
-                            failures.push(format!(
-                                "{at}: its ring {ring:?} is painted over by {covered:?}"
-                            ));
-                        }
-                    }
-                    cx.update(|window, cx| window.blur(cx));
-                    draw(cx);
+        for ((width, height), scale, interface) in cases.iter().copied() {
+            // A resize puts the test window back at scale 2.
+            resize_strip(cx, &app, (interface, width, height)).await;
+            cx.update(|window, cx| {
+                window.set_scale_factor(scale);
+                window.blur(cx);
+            });
+            settle_tab_test(&app, cx).await;
+            draw(cx);
+            assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+            assert_eq!(
+                cx.update(|_, cx| app.read(cx).repository_tabs.active),
+                Some(0),
+                "the first tab is selected"
+            );
+            // Each control and the one beside it, on its right or
+            // its left: the first tab's frame is selected, so its
+            // fill is painted after Menu's ring.
+            for (control, beside, right) in [
+                ("main-menu", "repository-tab-frame-0", true),
+                ("repository-tab-0", "main-menu", false),
+                ("new-repository-tab", "repository-workspaces", true),
+                ("repository-workspaces", "new-repository-tab", false),
+                ("minimize-window", "maximize-window", true),
+                ("maximize-window", "minimize-window", false),
+                ("maximize-window", "close-window", true),
+                ("close-window", "maximize-window", false),
+            ] {
+                let at = format!("{control} at scale {scale}, {interface} pt, {width} x {height}");
+                tab_onto(cx, control);
+                let to_device = |b: Bounds<Pixels>| {
+                    Bounds::from_corners(
+                        point(f32::from(b.left()) * scale, f32::from(b.top()) * scale),
+                        point(f32::from(b.right()) * scale, f32::from(b.bottom()) * scale),
+                    )
+                };
+                let element = to_device(rendered(cx, control));
+                let rings = rings_around(cx, element);
+                let [(ring, covered)] = rings.as_slice() else {
+                    failures.push(format!("{at}: one ring, not {rings:?}"));
+                    continue;
+                };
+                let neighbour = to_device(rendered(cx, beside));
+                let slack = 0.01;
+                let reaches = if right {
+                    ring.right() > neighbour.left() + slack
+                } else {
+                    ring.left() < neighbour.right() - slack
+                };
+                if reaches {
+                    failures.push(format!(
+                        "{at}: its ring {ring:?} reaches into {beside} {neighbour:?}"
+                    ));
+                }
+                if !covered.is_empty() {
+                    failures.push(format!(
+                        "{at}: its ring {ring:?} is painted over by {covered:?}"
+                    ));
                 }
             }
+            cx.update(|window, cx| window.blur(cx));
+            draw(cx);
         }
         cx.update(|window, _| window.set_scale_factor(2.));
         reset_strip_text(cx, &app);
         settle_tab_test(&app, cx).await;
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// [`the_strip_keeps_a_rings_room_beside_its_tabs_at`] the twelve cases
+    /// of the 1480 × 800 window.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_strip_keeps_a_rings_room_beside_its_tabs_in_the_wide_window(
+        cx: &mut TestAppContext,
+    ) {
+        let cases = strip_ring_cases();
+        let part = &cases[STRIP_RINGS_IN_THE_WIDE_WINDOW];
+        the_strip_keeps_a_rings_room_beside_its_tabs_at(part, cx).await;
+    }
+
+    /// [`the_strip_keeps_a_rings_room_beside_its_tabs_at`] the twelve cases
+    /// of the 461 × 490 window.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_strip_keeps_a_rings_room_beside_its_tabs_in_the_narrow_window(
+        cx: &mut TestAppContext,
+    ) {
+        let cases = strip_ring_cases();
+        let part = &cases[STRIP_RINGS_IN_THE_NARROW_WINDOW];
+        the_strip_keeps_a_rings_room_beside_its_tabs_at(part, cx).await;
+    }
+
+    /// What only the one walk's order covered. In one window,
+    /// [`the_strip_keeps_a_rings_room_beside_its_tabs_at`] the largest text
+    /// size in the 1480 × 800 window and then, at the same scale factor, in
+    /// the 461 × 490 one: each window's last case in [`strip_ring_cases`].
+    /// The one walk laid every text size and scale factor out in the wide
+    /// window before it laid it out in the narrow one; each part lays one
+    /// window out, so nothing the strip kept for a text size and scale
+    /// factor in the wide window is ever read in the narrow one. Which of
+    /// Menu's and Workspaces' labels the strip keeps
+    /// (`GitTurtle::tab_strip_labels`) depends on the window's width as
+    /// well: at 18 pt the narrow strip gives both up for its tabs. With the
+    /// wide window's two labels kept there for the text size and scale
+    /// factor, the walk finds New tab's ring and Workspaces' painted over,
+    /// which fails this test as it failed the one walk, and neither part.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_strip_keeps_a_rings_room_beside_its_tabs_as_one_window_narrows(
+        cx: &mut TestAppContext,
+    ) {
+        let cases = strip_ring_cases();
+        let wide = cases[STRIP_RINGS_IN_THE_WIDE_WINDOW.end - 1];
+        let narrow = cases[STRIP_RINGS_IN_THE_NARROW_WINDOW.end - 1];
+        let (.., scale, interface) = wide;
+        assert_eq!(
+            (narrow.1, narrow.2),
+            (scale, interface),
+            "one scale factor and text size in both windows"
+        );
+        assert_eq!(
+            cases.iter().map(|(.., interface)| *interface).max(),
+            Some(interface),
+            "the largest text size, whose narrow strip gives both labels up"
+        );
+        the_strip_keeps_a_rings_room_beside_its_tabs_at(&[wide, narrow], cx).await;
+    }
+
+    /// The two parts of the strip's ring walk run [`strip_ring_cases`]
+    /// between them, each case once and in the list's order, and each part
+    /// runs one case at least: a case added to the list that no part takes
+    /// fails here, as does one two parts take. Each part holds one window's
+    /// cases, the wide part the wider window's, so no part resizes between
+    /// the two.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_parts_of_the_strip_ring_walk_run_each_case_once() {
+        let cases = strip_ring_cases();
+        let parts = [
+            STRIP_RINGS_IN_THE_WIDE_WINDOW,
+            STRIP_RINGS_IN_THE_NARROW_WINDOW,
+        ];
+        assert!(
+            parts.iter().all(|part| !part.is_empty()),
+            "a part runs no case: {parts:?}"
+        );
+        let run: Vec<_> = parts
+            .iter()
+            .flat_map(|part| cases[part.clone()].iter().copied())
+            .collect();
+        assert_eq!(run, cases);
+        let [wide, narrow] = parts.map(|part| {
+            let (window, ..) = cases[part.start];
+            assert!(
+                cases[part.clone()]
+                    .iter()
+                    .all(|(other, ..)| *other == window),
+                "the part {part:?} walks more than one window"
+            );
+            window
+        });
+        assert!(wide.0 > narrow.0, "{wide:?} is no wider than {narrow:?}");
     }
 
     /// Draws the test's window as client-decorated, with its controls,
