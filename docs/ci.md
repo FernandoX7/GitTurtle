@@ -56,7 +56,7 @@ For pull requests:
   `scripts/ci/tools.py` (the pinned nextest installer),
   `scripts/ci/apt_install.py`
   ([package installation on Ubuntu](#package-installation-on-ubuntu), which only
-  the Rust jobs' setup and the `Image privacy` job run) and
+  the Rust jobs' setup, the `Image privacy` job and the package transfer job run) and
   `scripts/ci/metrics.py` (the CI collector, under which every Rust job runs its
   commands and with which the Rust cache action writes its records).
 - Claude Code configuration (`.claude/**` and any file named `CLAUDE.md`) routes
@@ -97,21 +97,31 @@ by GitHub's existing repository policy; C1 must observe a real approved fork run
 ### Stable gate and compatibility
 
 `Quality gate` runs with `always()` after classification, formatting, the test,
-Clippy and release platform matrices, the Arch Linux container job, development tooling,
+Clippy and release platform matrices, the package transfer job that follows the
+release matrix, the Arch Linux container job, development tooling,
 the image privacy scan and the Website call. It requires successful classification
 and success for each required lane and for the image privacy job, whose recorded status it prints. A skipped lane is accepted only when the recorded classification says it is
 unneeded. Failures, cancellations, unexpected skips, absent jobs, mismatched
-outputs or unknown classification versions fail. Each matrix keeps
+outputs or unknown classification versions fail.
+
+For each Linux package the gate also requires a pair, and prints a line for it:
+the release leg's `eligible` answer `true` with the package transfer job's word
+`verified`, or `false` with `held`. Any other pair, a missing or unexpected
+value, or one of the two jobs having run without the other fails the gate, and
+the refusal names the label without printing a value that is not one of those
+words. A green release job therefore does not pass a product change by itself:
+see [the package transfer job](ci-artifacts.md#find-and-verify-a-download). Each matrix keeps
 `fail-fast: false` so one platform failure does not discard the other platform's
 diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
 The actual platform work is named `Rust tests · <platform> · <shard>/2`,
-`Rust Clippy · <platform>` and `Rust release · <platform>`. The test platforms are
+`Rust Clippy · <platform>`, `Rust release · <platform>` and, for the two Linux
+release platforms, `Package transfer · <platform>`. The test platforms are
 `macos-15`, `ubuntu-24.04` and `archlinux`, each in [two shards](#test-shards)
 (until November 3, 2026 tests and Clippy were one `Rust tests and Clippy · <platform>`
 job, and until November 19, 2026 each platform's tests were one `Rust tests · <platform>`
 job). `Rust formatting` checks the workspace once on Ubuntu. The aggregate cannot pass a product change unless
-the three platform matrices, the Arch Linux matrix, formatting and other required lanes
+the three platform matrices, the package transfer job, the Arch Linux matrix, formatting and other required lanes
 succeed; documentation changes may pass after
 justified skips. This avoids GitHub's [skipped-job success behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 silently bypassing a failed dependency.
@@ -261,6 +271,18 @@ four statuses ([`gate`](../scripts/ci/changes.py)):
   failed the gate in Quality 41900575513, and one test job cancelled at its
   time limit did in Quality 41757534359.
 
+The release matrix and the package transfer matrix rest on the same rule about
+outputs and rely on it differently: no two legs set the same name. Each Linux
+release leg sets three outputs under its own package label
+(`linux-x86_64-eligible`, `-provenance-sha256` and `-artifact-id`, and the same
+for `linux-aarch64`), each transfer leg one (`<label>-transfer`), and a leg
+leaves the other label's outputs empty. Since an empty value sets nothing, the
+job's outputs hold every leg's own values in whatever order the legs end.
+`scripts/ci/packages.py` writes each name from the target the leg passes it;
+no expression in the workflow tells one leg from another. The gate reads the
+pairs from `needs.rust-release.outputs` and `needs.package-transfer.outputs`.
+No hosted run of these outputs is recorded here yet.
+
 With all eight shards successful, every slice was scanned clean and every shard
 says `scanned`, whichever sets the output last. With one failed, cancelled,
 timed out or skipped, the result is not `success` and the gate fails whatever
@@ -325,16 +347,28 @@ After classification, the selected jobs have no build dependencies on each other
   entry, dynamic libraries and the expected no-display launch failure; macOS
   checks bundle identity and ad-hoc signatures. Complete license notices on a
   platform in the upload set (Linux; the macOS upload is held) enable
-  a same-run artifact upload/download and independent payload verification. The
-  download asks for the uploaded artifact's exact ID up to three times (at once,
-  then about 15 s and about 45 s more after a failure), because the run's
-  artifact listing can lag the upload; the first two attempts may fail without
-  failing the job, the third fails it, and the verification still requires the
-  downloaded files. Known
+  the artifact upload. The job does not read its upload back: it hands the
+  uploaded artifact's ID and the SHA-256 of the uploaded provenance file to the
+  package transfer job as job outputs, and its own green does not say that the
+  upload was downloaded or verified. Known
   C0 notice gaps explicitly withhold public binaries while development package
   checks continue; other collection or verification errors fail the job. See the
   [artifact runbook](ci-artifacts.md) for exact gates and evidence requirements.
   These checks do not establish an interactive native desktop or notarized build.
+- `Package transfer · ubuntu-24.04` and `· ubuntu-24.04-arm` need the release
+  job, so they start only when all three release legs have succeeded (a failed
+  leg, the macOS one included, skips both, and the gate is then red), each on
+  the runner
+  label its package was built on. A leg first refuses anything malformed in what
+  its release leg handed on, then installs the runtime libraries the executable
+  names and the desktop-entry tools through the
+  [package helper](#package-installation-on-ubuntu), downloads the artifact once
+  by that exact ID and runs the full payload and install verification on the
+  downloaded bytes. It compiles nothing, restores no cache and repeats nothing:
+  a failed download fails the job. The [artifact runbook](ci-artifacts.md#find-and-verify-a-download)
+  describes its checks, what its green means and what a red one is. No hosted
+  run of this job is recorded here yet: its first is the run of the pull
+  request that adds it.
 - `Rust tests · archlinux · 1/2` and `· 2/2` run the same nextest and doctest commands as the debug
   jobs, in the same two shards, inside a digest-pinned Arch Linux container, against that day's Arch
   packages, with a Rust cache keyed on the Arch packages that reach compiled
@@ -2426,8 +2460,13 @@ after at most 5 s a name. Otherwise one warning names the cloud mirror, and
 could not fetch, or is ended by its 300 s deadline; in the last two cases
 `install` does not run.
 
-**Rule.** The action's install step and the `Image privacy` job install through
-[`scripts/ci/apt_install.py`](../scripts/ci/apt_install.py). A step's text keeps
+**Rule.** The action's install step, the `Image privacy` job and the package
+transfer job install through
+[`scripts/ci/apt_install.py`](../scripts/ci/apt_install.py). The last of them
+names runtime packages only (the four libraries the executable links beside the
+C and GCC runtime, and `desktop-file-utils` for the installer's two commands)
+and has the shortest limit of a job that installs packages, 30 minutes, above
+the 1,220 s the two deadlines below allow. A step's text keeps
 the selection and the package names; the helper does the rest, each thing once:
 
 1. *One selection.* `-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources

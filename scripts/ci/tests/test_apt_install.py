@@ -274,11 +274,24 @@ class Deadlines(HelperFixture):
 
     def test_the_deadlines_are_constants_that_nothing_widens(self):
         self.assertEqual((apt_install.UPDATE_SECONDS, apt_install.INSTALL_SECONDS), (300, 900))
-        # Each is stricter than the shortest job limit of a workflow that installs packages.
-        limits = [int(minutes) for name in ("quality.yml", "release.yml")
-                  for minutes in re.findall(r"timeout-minutes: (\d+)", (ROOT / ".github/workflows" / name).read_text())]
-        self.assertLess(apt_install.UPDATE_SECONDS + apt_install.INSTALL_SECONDS + 2 * apt_install.KILL_AFTER_SECONDS, 60 * 45)
-        self.assertIn(45, limits)
+        # Together, each with its time to be stopped, they are stricter than the limit of every job that
+        # installs packages, by the helper's own call or through the setup action. The shortest limit is the
+        # package transfer job's, which installs a handful of runtime packages and builds nothing.
+        deadlines = apt_install.UPDATE_SECONDS + apt_install.INSTALL_SECONDS + 2 * apt_install.KILL_AFTER_SECONDS
+        self.assertEqual(deadlines, 1220)
+        limits = {}
+        for name in ("quality.yml", "release.yml"):
+            jobs = (ROOT / ".github/workflows" / name).read_text().split("\njobs:\n", 1)[1]
+            for job in re.split(r"\n(?=  [A-Za-z0-9_-]+:\n)", jobs):
+                if "scripts/ci/apt_install.py" in job or "uses: ./.github/actions/setup-rust" in job:
+                    (minutes,) = re.findall(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)
+                    limits[f"{name} {job.strip().split(':', 1)[0]}"] = int(minutes)
+        self.assertEqual(limits, {"quality.yml rust-debug": 60, "quality.yml rust-clippy": 45, "quality.yml rust-release": 45,
+                                  "quality.yml rust-arch": 60, "quality.yml image-privacy": 90,
+                                  "quality.yml package-transfer": 30, "release.yml build": 60})
+        for job, minutes in limits.items():
+            with self.subTest(job=job):
+                self.assertLess(deadlines, 60 * minutes)
         for wider in ({"update_seconds": 301}, {"install_seconds": 901}, {"update_seconds": 0}, {"install_seconds": -1}):
             with self.subTest(deadlines=wider):
                 commands = Commands()
@@ -366,16 +379,27 @@ def helper_calls(text):
 class Callers(unittest.TestCase):
     SELECTION = ["-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources", "-o", PARTS, "--"]
 
-    def test_the_action_and_image_privacy_install_through_the_helper_with_the_image_ubuntu_source_file(self):
+    def test_the_action_image_privacy_and_package_transfer_install_through_the_helper_with_the_image_ubuntu_source_file(self):
         action = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
         quality = (ROOT / ".github/workflows/quality.yml").read_text()
         privacy = quality.split("\n  image-privacy:\n", 1)[1].split("\n  website:\n", 1)[0]
-        (build,), (pillow,) = helper_calls(action), helper_calls(privacy)
+        transfer = quality.split("\n  package-transfer:\n", 1)[1].split("\n  quality:\n", 1)[0]
+        (build,), (pillow,), (runtime,) = helper_calls(action), helper_calls(privacy), helper_calls(transfer)
         # The selection is written once in each step, and nothing else is passed: no deadline, no other option.
         self.assertEqual(build[:5], self.SELECTION)
         self.assertEqual(pillow, [*self.SELECTION, "python3-pil"])
         self.assertEqual([word for word in build[5:] if not apt_install.PACKAGE.fullmatch(word)], [])
-        self.assertEqual(helper_calls(quality), [pillow])
+        # The package transfer job runs a built executable and its installer and builds nothing: the libraries
+        # the executable names and the package with the installer's two desktop-entry commands.
+        self.assertEqual(runtime, [*self.SELECTION, "desktop-file-utils", "libdav1d7", "libxcb1", "libxkbcommon0",
+                                   "libxkbcommon-x11-0"])
+        # Runtime packages only: no headers, compiler or build tool, so nothing the build job installs to
+        # compile with. The one name the two lists share is the desktop-entry tools'.
+        self.assertEqual([name for name in runtime[5:] if name.endswith("-dev")], [])
+        self.assertEqual(sorted(set(runtime[5:]) & set(build[5:])), ["desktop-file-utils"])
+        # The job has no setup action, so that list is everything it installs.
+        self.assertNotIn("./.github/actions/", transfer)
+        self.assertEqual(helper_calls(quality), [pillow, runtime])
         # Neither runs an apt command of its own beside the helper, and the release workflow installs nothing itself.
         command = re.compile(r"^(?![ \t]*#).*(?<![\w`-])apt(?:-get)?\s.*", re.MULTILINE)
         for name, text in (("action.yml", action), ("quality.yml", quality),

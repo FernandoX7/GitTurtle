@@ -43,7 +43,10 @@ trusted-ref policy. It never creates or moves a tag.
    refused. So is every run from before the tests were split into
    [two shards](ci.md#test-shards), whose test jobs carry the unsharded names.
    The Arch Linux shards are not named here; the required Quality gate covers
-   them. A Quality run without the AArch64 Linux release job,
+   them. Neither are the two `Package transfer` jobs, which download and verify
+   what the Linux release jobs uploaded: the gate requires them too, and with
+   them each Linux package's upload and verification as a pair
+   ([CI package downloads](ci-artifacts.md#find-and-verify-a-download)). A Quality run without the AArch64 Linux release job,
    which is every run from before Quality built that target, is refused.
    Skipped product validation is insufficient. A changed Quality attempt
    requires a newly reviewed context.
