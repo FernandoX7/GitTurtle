@@ -782,9 +782,9 @@ jobs:
           RELEASE_OUTPUTS_JSON: ${{ toJSON(needs.rust-release.outputs) }}
           PACKAGE_TARGET: ${{ matrix.target }}
         run: python3 scripts/ci/packages.py plan --target "$PACKAGE_TARGET" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
-      # The libraries the executable names beside the C library's own, and the
-      # package with the two desktop-entry commands the installer runs. The
-      # helper reads the image's own Ubuntu source file alone, as the setup
+      # The four libraries the executable links beside the C and GCC runtime,
+      # and the package with the two desktop-entry commands the installer runs.
+      # The helper reads the image's own Ubuntu source file alone, as the setup
       # action's install step does, and runs each command once under its deadline.
       - name: Install the runtime libraries and the desktop-entry tools
         if: steps.plan.outputs.verify == 'true'
