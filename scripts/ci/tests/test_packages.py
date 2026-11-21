@@ -667,7 +667,7 @@ ARTIFACT, DIGEST = "14598682882", "5e" * 32
 # its input with parseInt and splits it at commas, so each of these would name another artifact, several
 # or, when empty, every artifact of the run.
 NOT_AN_ID = ("", "0", "012", "12abc", "abc", "1234567890123456", " 12", "12 ", "12\n", "+12", "-12", "1.0", "1e3",
-             "12,13", "0x1f", "１２")
+             "12,13", "0x1f", "１２", "1２", "1٢٣")
 
 
 class HandOffTests(unittest.TestCase):
@@ -770,6 +770,14 @@ class TransferPlanTests(unittest.TestCase):
                     json.dumps({**self.handed(), "padding": "x" * packages.MAX_OUTPUTS})):
             with self.subTest(raw=raw[:60]):
                 self.assertEqual(self.refusal(raw), self.MALFORMED)
+
+    def test_outputs_are_read_at_the_bound_and_refused_one_character_past_it(self):
+        room = packages.MAX_OUTPUTS - len(json.dumps({**self.handed(), "padding": ""}))
+        at_the_bound = json.dumps({**self.handed(), "padding": "x" * room})
+        self.assertEqual(len(at_the_bound), packages.MAX_OUTPUTS)
+        self.assertEqual(packages.transfer_plan(at_the_bound, self.X86), (ARTIFACT, DIGEST))
+        # The same object with one space before its closing brace.
+        self.assertEqual(self.refusal(at_the_bound[:-1] + " }"), self.MALFORMED)
 
     def test_no_refusal_repeats_a_value_it_was_handed(self):
         marker = "VALUE-7f3a"
