@@ -1910,6 +1910,9 @@ fn bounded_write_output(
             let mut bytes = Vec::new();
             let mut overflow = false;
             let mut chunk = [0u8; 8192];
+            let mut scanner = progress
+                .as_ref()
+                .map(|_| authentication::ProgressScanner::default());
             while !stopped.load(std::sync::atomic::Ordering::Acquire) {
                 let count = match pipe.read(&mut chunk) {
                     Ok(count) => count,
@@ -1923,8 +1926,8 @@ fn bounded_write_output(
                 if count == 0 {
                     break;
                 }
-                if let Some(control) = &progress {
-                    control.update_progress(&chunk[..count]);
+                if let (Some(control), Some(scanner)) = (&progress, &mut scanner) {
+                    scanner.feed(&chunk[..count], control);
                 }
                 let keep = count.min(WRITE_OUTPUT_LIMIT.saturating_sub(bytes.len()));
                 bytes.extend_from_slice(&chunk[..keep]);
