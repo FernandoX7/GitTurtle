@@ -47,7 +47,22 @@ class RoleSpec:
     body: str
 
 
+def _yaml_scalar(value: str) -> str:
+    if (
+        not value
+        or ": " in value
+        or " #" in value
+        or value.startswith(("#", "[", "{", "'", '"', "&", "*", "!", "|", ">", "-", "?"))
+        or "\n" in value
+        or "\r" in value
+    ):
+        return json.dumps(value)
+    return value
+
+
 def parse_role(path: Path) -> RoleSpec:
+    if path.is_symlink():
+        raise ValueError(f"{path}: canonical role file must not be a symlink")
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     if not lines or lines[0] != "---":
@@ -99,7 +114,7 @@ def render_claude_agent(role: RoleSpec) -> str:
     header = [
         "---",
         f"name: {role.name}",
-        f"description: {role.description}",
+        f"description: {_yaml_scalar(role.description)}",
     ]
     if role.claude_tools:
         header.append(f"tools: {role.claude_tools}")
@@ -115,7 +130,20 @@ def render_claude_agent(role: RoleSpec) -> str:
 
 
 def _toml_multiline(text: str) -> str:
-    escaped = text.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    out: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\n" or ch == "\t":
+            out.append(ch)
+        elif code < 0x20 or code == 0x7F:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    escaped = "".join(out).replace('"""', '\\"\\"\\"')
     return '"""\n' + escaped + '\n"""'
 
 
@@ -129,17 +157,26 @@ def render_codex_agent(role: RoleSpec) -> str:
     )
 
 
+def _check_not_symlink_dir(path: Path, root: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(f"refusing symlink directory: {path.relative_to(root)}")
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"expected directory, found non-directory: {path.relative_to(root)}")
+
+
 def load_roles(root: Path) -> list[RoleSpec]:
     roles_dir = root / ".agents" / "roles"
-    if not roles_dir.is_dir():
+    if not roles_dir.exists() and not roles_dir.is_symlink():
         return []
+    _check_not_symlink_dir(roles_dir, root)
     return [parse_role(path) for path in sorted(roles_dir.glob("*.md"))]
 
 
 def canonical_skills(root: Path) -> list[str]:
     skills_dir = root / ".agents" / "skills"
-    if not skills_dir.is_dir():
+    if not skills_dir.exists() and not skills_dir.is_symlink():
         return []
+    _check_not_symlink_dir(skills_dir, root)
     return sorted(
         entry.name
         for entry in skills_dir.iterdir()
@@ -149,15 +186,26 @@ def canonical_skills(root: Path) -> list[str]:
 
 def sync(root: Path, *, write: bool) -> list[str]:
     issues: list[str] = []
-    roles = load_roles(root)
-    claude_agents = root / ".claude" / "agents"
-    codex_agents = root / ".codex" / "agents"
+    roles_dir = root / ".agents" / "roles"
+    has_roles_dir = roles_dir.exists() or roles_dir.is_symlink()
+    roles = load_roles(root) if has_roles_dir else []
 
-    if roles:
+    claude_root = root / ".claude"
+    codex_root = root / ".codex"
+    for parent in (claude_root, codex_root):
+        if parent.exists() or parent.is_symlink():
+            _check_not_symlink_dir(parent, root)
+
+    claude_agents = claude_root / "agents"
+    codex_agents = codex_root / "agents"
+
+    if has_roles_dir:
         expected_claude = {f"{role.name}.md": render_claude_agent(role) for role in roles}
         expected_codex = {f"{role.name}.toml": render_codex_agent(role) for role in roles}
 
         for directory, expected in ((claude_agents, expected_claude), (codex_agents, expected_codex)):
+            if directory.exists() or directory.is_symlink():
+                _check_not_symlink_dir(directory, root)
             if write:
                 directory.mkdir(parents=True, exist_ok=True)
             existing = {p.name: p for p in directory.iterdir()} if directory.is_dir() else {}
@@ -172,6 +220,18 @@ def sync(root: Path, *, write: bool) -> list[str]:
                         issues.append(f"stale adapter file not in .agents/roles/: {path.relative_to(root)}")
             for name, content in sorted(expected.items()):
                 target = directory / name
+                if target.is_symlink():
+                    if write:
+                        target.unlink()
+                    else:
+                        issues.append(f"adapter file must not be a symlink: {target.relative_to(root)}")
+                        continue
+                elif target.is_dir():
+                    if write:
+                        shutil.rmtree(target)
+                    else:
+                        issues.append(f"adapter target is a directory: {target.relative_to(root)}")
+                        continue
                 current = target.read_text(encoding="utf-8") if target.is_file() else None
                 if current != content:
                     if write:
@@ -180,8 +240,10 @@ def sync(root: Path, *, write: bool) -> list[str]:
                         issues.append(f"adapter out of sync with .agents/roles/: {target.relative_to(root)}")
 
     skills = canonical_skills(root)
-    claude_skills = root / ".claude" / "skills"
-    if skills and (claude_skills.exists() or (root / ".claude").is_dir()):
+    claude_skills = claude_root / "skills"
+    if skills and (claude_skills.exists() or claude_skills.is_symlink() or claude_root.is_dir()):
+        if claude_skills.exists() or claude_skills.is_symlink():
+            _check_not_symlink_dir(claude_skills, root)
         if write:
             claude_skills.mkdir(parents=True, exist_ok=True)
         existing_skills = {p.name: p for p in claude_skills.iterdir()} if claude_skills.is_dir() else {}
@@ -215,7 +277,7 @@ def sync(root: Path, *, write: bool) -> list[str]:
 def check_sync(root: Path) -> list[str]:
     try:
         return sync(root, write=False)
-    except ValueError as error:
+    except (OSError, ValueError) as error:
         return [str(error)]
 
 
@@ -230,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve()
     try:
         issues = sync(root, write=args.write)
-    except ValueError as error:
+    except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     if issues:

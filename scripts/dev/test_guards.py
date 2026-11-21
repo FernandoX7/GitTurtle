@@ -19,15 +19,21 @@ from dev import guards  # noqa: E402
 class GuardsTests(unittest.TestCase):
     def test_staged_paths_reject_snap_new_and_loop_protected_paths(self):
         self.assertTrue(guards.check_staged_paths(["crates/app/src/snapshots/a.snap.new"]))
+        # Deleting an accidental .snap.new is allowed when only all_touched includes it.
+        self.assertEqual(guards.check_staged_paths([], all_touched=["crates/app/src/snapshots/a.snap.new"]), [])
+        # Deleting or renaming away a protected path in loop mode must still be rejected.
+        self.assertTrue(guards.check_staged_paths([], all_touched=["AGENTS.md"], loop_mode=True))
         self.assertEqual(guards.check_staged_paths(["AGENTS.md"], loop_mode=False), [])
         self.assertTrue(guards.check_staged_paths(["AGENTS.md"], loop_mode=True))
         self.assertTrue(guards.check_staged_paths(["GEMINI.md"], loop_mode=True))
         self.assertTrue(guards.check_staged_paths([".githooks/pre-commit"], loop_mode=True))
+        self.assertTrue(guards.check_staged_paths(["scripts/dev/__init__.py"], loop_mode=True))
         self.assertTrue(guards.check_staged_paths(["docs/development/q.json"], loop_mode=True, queue="docs/development/q.json"))
         self.assertEqual(guards.check_staged_paths(["crates/app/src/main.rs"], loop_mode=True), [])
 
-    def test_staged_diff_detects_conflict_and_probe_markers(self):
+    def test_staged_diff_detects_conflict_and_probe_markers_and_ignores_hunk_spoofing(self):
         conflict = "\n".join([
+            "diff --git a/docs/notes.md b/docs/notes.md",
             "+++ b/docs/notes.md",
             "@@ -1,0 +1,2 @@",
             "+" + "<" * 7 + " HEAD",
@@ -35,26 +41,53 @@ class GuardsTests(unittest.TestCase):
         ])
         self.assertTrue(any("merge conflict marker" in item for item in guards.check_staged_diff(conflict)))
 
-        probe = "\n".join([
+        # Valid 7-char Markdown Setext H1 heading must not false-positive.
+        setext = "\n".join([
+            "diff --git a/docs/notes.md b/docs/notes.md",
+            "+++ b/docs/notes.md",
+            "@@ -1,0 +1,2 @@",
+            "+Summary",
+            "+=======",
+        ])
+        self.assertEqual(guards.check_staged_diff(setext), [])
+
+        # An added line starting with `++ b/scripts/dev/guards.py` inside a hunk must not spoof current_path.
+        spoof = "\n".join([
+            "diff --git a/crates/app/src/main.rs b/crates/app/src/main.rs",
             "+++ b/crates/app/src/main.rs",
-            "@@ -10,0 +11,2 @@",
-            "+// " + "MUTATION" + ": temporary check",
+            "@@ -10,0 +11,3 @@",
+            "+++ b/scripts/dev/guards.py",
+            "+// " + "MUTATION" + ": spoofed check",
             "+let x = " + "Q9_" + "PROBE;",
         ])
-        found = guards.check_staged_diff(probe)
+        found = guards.check_staged_diff(spoof)
         self.assertEqual(len(found), 2)
+        self.assertTrue(all(item.startswith("crates/app/src/main.rs:") for item in found))
 
-        self_file = "\n".join([
-            "+++ b/scripts/dev/test_guards.py",
-            "@@ -1,0 +1,1 @@",
-            "+// " + "MUTATION",
-        ])
-        self.assertEqual(guards.check_staged_diff(self_file), [])
-
-    def test_commit_message_rejects_ai_trailers(self):
+    def test_commit_message_rejects_ai_trailers_and_strips_verbose_diff(self):
         self.assertEqual(guards.check_commit_message("feat(app): refine layout\n"), [])
         self.assertTrue(guards.check_commit_message("feat(app): x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n"))
         self.assertTrue(guards.check_commit_message("fix: y\n\nCo-Authored-By: Gemini <a@b.test>\n"))
+        self.assertTrue(guards.check_commit_message("fix: z\n\nGenerated with [Claude Code]\n"))
+        verbose = (
+            "test(guards): update parser\n\n"
+            + guards.SCISSORS_LINE
+            + "\n+Co-Authored-By: Claude <noreply@anthropic.com>\n"
+        )
+        self.assertEqual(guards.check_commit_message(verbose), [])
+
+    def test_path_protection_handles_subdirectory_cwd_and_symlink_escapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+            sub = root / "crates" / "app"
+            sub.mkdir(parents=True)
+            self.assertIsNotNone(guards.path_protection_reason("../../AGENTS.md", sub))
+            self.assertIsNotNone(guards.path_protection_reason(str(root / "scripts/dev/__init__.py"), sub))
+            self.assertIsNone(guards.path_protection_reason("src/main.rs", sub))
+            escape_link = root / "crates" / "app" / "escape"
+            escape_link.symlink_to("/tmp")
+            self.assertIsNotNone(guards.path_protection_reason(str(escape_link / "outside.txt"), sub))
 
     def test_rm_problem_rejects_unresolvable_shapes(self):
         self.assertIsNotNone(guards.rm_problem("cd run && rm -rf out/*"))

@@ -35,9 +35,9 @@ class Issue:
         return f"{self.path}:{self.line}: {self.message}"
 
 
-from dev import sync_adapters
+from . import sync_adapters
 
-CONFLICT_MARKER = re.compile(r"^(?:<{7}(?: |$)|\|{7}(?: |$)|={7}$|>{7}(?: |$))")
+CONFLICT_MARKER = re.compile(r"^(?:<{7} |\|{7} |>{7} )")
 ROOT_AGENTS_MAX_BYTES = 8192
 STATE_MAX_LINES = 60
 SHIM_MAX_LINES = {
@@ -199,21 +199,32 @@ def markdown_anchors(text: str) -> set[str]:
 
 
 def _skip_worktree_paths(root: Path) -> set[str]:
-    """Return repository-relative POSIX paths omitted by Git sparse-checkout."""
+    """Return repository-relative POSIX paths (and parent dirs) omitted by Git sparse-checkout."""
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1"}
     try:
+        top = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True, check=False, env=env,
+        )
+        if top.returncode != 0 or Path(os.fsdecode(top.stdout.strip())).resolve() != root:
+            return set()
         completed = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-v"],
-            capture_output=True, text=True, check=False,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            ["git", "-C", str(root), "-c", "core.fsmonitor=false", "ls-files", "-v", "-z"],
+            capture_output=True, check=False, env=env,
         )
     except OSError:
         return set()
     if completed.returncode != 0:
         return set()
     omitted: set[str] = set()
-    for line in completed.stdout.splitlines():
-        if len(line) > 2 and line[0] in ("S", "s") and line[1] == " ":
-            omitted.add(line[2:])
+    for raw in completed.stdout.split(b"\0"):
+        if len(raw) > 2 and raw[:1] in (b"S", b"s") and raw[1:2] == b" ":
+            rel = os.fsdecode(raw[2:])
+            omitted.add(rel)
+            parent = Path(rel).parent
+            while parent != Path("."):
+                omitted.add(parent.as_posix())
+                parent = parent.parent
     return omitted
 
 
@@ -629,8 +640,6 @@ def _skill_issues(path: Path, text: str) -> list[Issue]:
     return issues
 
 
-AGENT_MODELS = {"sonnet", "opus", "haiku", "fable", "inherit"}
-AGENT_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 AGENT_PERMISSION_MODES = {"default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan", "manual"}
 AGENT_LIST_FIELDS = ("tools", "disallowedTools", "skills")
 BUILTIN_AGENT_NAMES = {"Explore"}  # the documented built-in override keeps its capitalized name

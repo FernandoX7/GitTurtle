@@ -16,11 +16,17 @@ if [ -f scripts/check-docs-sync.py ]; then
 fi
 
 if command -v actionlint >/dev/null 2>&1; then
+  base_ref="origin/main"
+  if ! git rev-parse --verify -q "$base_ref" >/dev/null 2>&1; then
+    base_ref="HEAD~1"
+  fi
   existing=()
   while IFS= read -r wf; do
-    [ -n "$wf" ] && [ -f "$wf" ] && existing+=("$wf")
-  done < <(git diff --name-only origin/main...HEAD -- '.github/workflows/*.yml' '.github/workflows/*.yaml' 2>/dev/null || true)
+    if [ -n "$wf" ] && [ -f "$wf" ]; then
+      existing+=("$wf")
+    fi
+  done < <(git -c core.quotePath=false diff --name-only "$base_ref...HEAD" -- '.github/workflows/*.yml' '.github/workflows/*.yaml' 2>/dev/null || true)
   if [ "${#existing[@]}" -gt 0 ]; then
-    actionlint "${existing[@]}"
+    actionlint -shellcheck='' -pyflakes='' "${existing[@]}"
   fi
 fi

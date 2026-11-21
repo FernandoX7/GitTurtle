@@ -21,9 +21,7 @@ PROTECTED_PREFIXES = (
     ".githooks/",
     ".config/nextest.toml",
     ".github/copilot-instructions.md",
-    "scripts/dev/guards.py",
-    "scripts/dev/guidance.py",
-    "scripts/dev/sync_adapters.py",
+    "scripts/dev/",
     "scripts/check-agent-guidance.py",
     "scripts/check-docs-sync.py",
     "scripts/gate.py",
@@ -44,30 +42,68 @@ SUBSTITUTION = re.compile(r"\$\([^()]*\)|`[^`]*`")
 # `$NAME` or `${NAME...}` (a substitution is renamed to one first), then at most one path component.
 EXPANSION_ROOT = re.compile(r"^(?:\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*])(?:/[^/]*)?/*$")
 
-CONFLICT_MARKER = re.compile(r"^(?:<{7}(?: |$)|\|{7}(?: |$)|={7}$|>{7}(?: |$))")
+# Match real Git merge/diff3 conflict markers (with trailing space/label) while avoiding
+# valid 7-character Markdown Setext H1 underlines (`=======`).
+CONFLICT_MARKER = re.compile(r"^(?:<{7} |\|{7} |>{7} )")
 PROBE_MARKER = re.compile(r"(?://\s*MUTATION\b|\bQ9_PROBE\b)")
 AI_TRAILER = re.compile(
-    r"(?im)^\s*(?:co-authored-by|signed-off-by)\s*:.*\b(?:claude|anthropic|gemini|openai|chatgpt|copilot|codex|cursor|grok)\b"
+    r"(?im)^(?:"
+    r"\s*(?:co-authored-by|signed-off-by|generated-by|assisted-by)\s*:.*"
+    r"(?:noreply@anthropic\.com|anthropic|claude(?:[-_ ]?(?:code|opus|sonnet|haiku|bot|ai))?\b"
+    r"|gemini|openai|chatgpt|copilot|codex|cursor[-_ ]?agent|grok)"
+    r"|\s*generated\s+with\s+\[?.*(?:claude|gemini|openai|chatgpt|copilot|codex|cursor|grok)"
+    r")"
 )
-# Files that legitimately contain conflict-marker or probe-marker test strings.
-SELF_TEST_PATHS = (
-    "scripts/dev/guards.py",
-    "scripts/dev/test_guards.py",
-    "scripts/dev/guidance.py",
-    "scripts/dev/test_guidance.py",
-    ".githooks/pre-commit",
-    ".githooks/commit-msg",
-)
+SCISSORS_LINE = "# ------------------------ >8 ------------------------"
+HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+# Only this file contains the literal PROBE_MARKER regex itself.
+SELF_TEST_PATHS = ("scripts/dev/guards.py",)
+
+
+def repo_root(cwd: Path) -> Path:
+    """Resolve the Git repository top-level directory for `cwd`, or `cwd` itself."""
+    resolved = cwd.resolve()
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, errors="replace", check=False,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except OSError:
+        return resolved
+    if completed.returncode == 0 and completed.stdout.strip():
+        return Path(completed.stdout.strip()).resolve()
+    return resolved
+
+
+def candidate_relative_paths(raw: str, cwd: Path) -> tuple[list[str], bool]:
+    """Return candidate repo-relative paths (lexical + resolved) and whether the target escapes the repo."""
+    root = repo_root(cwd)
+    raw_path = Path(raw)
+    joined = raw_path if raw_path.is_absolute() else (cwd / raw_path)
+    lexical = Path(os.path.normpath(str(joined)))
+    resolved = joined.resolve()
+
+    candidates: list[str] = []
+    escaped = False
+    for path in (lexical, resolved):
+        try:
+            rel = path.relative_to(root).as_posix()
+            if rel not in candidates:
+                candidates.append(rel)
+        except ValueError:
+            escaped = True
+    return candidates, escaped
 
 
 def relative_path(raw: str, cwd: Path) -> str:
+    candidates, _ = candidate_relative_paths(raw, cwd)
+    if candidates:
+        return candidates[0]
     path = Path(raw)
     if not path.is_absolute():
         path = cwd / path
-    try:
-        return path.resolve().relative_to(cwd.resolve()).as_posix()
-    except ValueError:
-        return path.as_posix()
+    return Path(os.path.normpath(str(path))).as_posix()
 
 
 def active_queue() -> str:
@@ -82,6 +118,19 @@ def is_protected(relative: str) -> bool:
         return True
     parts = Path(relative).parts
     return "snapshots" in parts and relative.endswith((".snap", ".snap.new"))
+
+
+def path_protection_reason(raw: str, cwd: Path, queue: str = "") -> str | None:
+    """Return a refusal reason if `raw` targets a protected path, active queue, or escapes repo root."""
+    candidates, escaped = candidate_relative_paths(raw, cwd)
+    for rel in candidates:
+        if queue and rel == queue:
+            return f"{rel} is this run's active task queue"
+        if is_protected(rel):
+            return f"{rel} is a protected policy path"
+    if escaped:
+        return f"{raw} resolves outside the repository root"
+    return None
 
 
 def segments(command: str) -> list[list[str]]:
@@ -148,12 +197,20 @@ def rm_problem(command: str) -> str | None:
     return None
 
 
-def check_staged_paths(paths: list[str], *, loop_mode: bool = False, queue: str = "") -> list[str]:
+def check_staged_paths(
+    added_or_modified: list[str],
+    *,
+    all_touched: list[str] | None = None,
+    loop_mode: bool = False,
+    queue: str = "",
+) -> list[str]:
     issues: list[str] = []
-    for path in paths:
+    for path in added_or_modified:
         if path.endswith(".snap.new"):
             issues.append(f"staged insta preview snapshot must not be committed: {path}")
-        if loop_mode:
+    if loop_mode:
+        checked = added_or_modified if all_touched is None else all_touched
+        for path in checked:
             if queue and path == queue:
                 issues.append(f"protected active task queue in loop mode: {path}")
             elif is_protected(path):
@@ -162,60 +219,123 @@ def check_staged_paths(paths: list[str], *, loop_mode: bool = False, queue: str 
 
 
 def check_staged_diff(diff_text: str) -> list[str]:
-    """Scan added lines in a unified diff for conflict markers and temporary probe markers."""
+    """Scan added lines in a unified=0 diff for conflict markers and temporary probe markers."""
     issues: list[str] = []
     current_path = ""
     line_no = 0
+    remaining_new_lines = 0
+    in_hunk = False
+
     for raw in diff_text.splitlines():
-        if raw.startswith("+++ b/"):
-            current_path = raw[6:]
+        if not in_hunk:
+            if raw.startswith("diff --git "):
+                current_path = ""
+                continue
+            if raw.startswith("+++ b/"):
+                current_path = raw[6:]
+                continue
+            if raw.startswith("+++ /dev/null"):
+                current_path = ""
+                continue
+            match = HUNK_HEADER.match(raw)
+            if match:
+                line_no = int(match.group(1)) - 1
+                remaining_new_lines = int(match.group(2)) if match.group(2) is not None else 1
+                in_hunk = remaining_new_lines > 0
+                continue
             continue
-        if raw.startswith("@@ "):
-            match = re.search(r"\+(\d+)", raw)
-            line_no = int(match.group(1)) - 1 if match else 0
-            continue
-        if not current_path or current_path in SELF_TEST_PATHS:
-            continue
-        if raw.startswith("+") and not raw.startswith("+++"):
+
+        # Inside a unified=0 hunk body: never treat payload lines as file headers.
+        if raw.startswith("+"):
             line_no += 1
+            remaining_new_lines -= 1
             body = raw[1:]
-            if current_path.endswith((".md", ".yml", ".yaml", ".toml", ".json", ".py", ".sh", ".html", ".css", ".js")):
-                if CONFLICT_MARKER.match(body):
-                    issues.append(f"{current_path}:{line_no}: merge conflict marker")
-            if current_path.startswith(("crates/", "vendor/", "scripts/")) and PROBE_MARKER.search(body):
-                issues.append(f"{current_path}:{line_no}: temporary mutation or probe marker")
-        elif not raw.startswith("-"):
+            if current_path and current_path not in SELF_TEST_PATHS:
+                if current_path.endswith((".md", ".yml", ".yaml", ".toml", ".json", ".py", ".sh", ".html", ".css", ".js")):
+                    if CONFLICT_MARKER.match(body):
+                        issues.append(f"{current_path}:{line_no}: merge conflict marker")
+                if current_path.startswith(("crates/", "vendor/", "scripts/")) and PROBE_MARKER.search(body):
+                    issues.append(f"{current_path}:{line_no}: temporary mutation or probe marker")
+            if remaining_new_lines <= 0:
+                in_hunk = False
+        elif raw.startswith(" "):
             line_no += 1
+            remaining_new_lines -= 1
+            if remaining_new_lines <= 0:
+                in_hunk = False
+        elif raw.startswith(("-", "\\")):
+            continue
+        else:
+            # Unexpected non-hunk line (e.g., next `diff --git` after pure deletion hunk).
+            in_hunk = False
+            if raw.startswith("diff --git "):
+                current_path = ""
+            elif raw.startswith("+++ b/"):
+                current_path = raw[6:]
+            elif raw.startswith("+++ /dev/null"):
+                current_path = ""
+            else:
+                match = HUNK_HEADER.match(raw)
+                if match:
+                    line_no = int(match.group(1)) - 1
+                    remaining_new_lines = int(match.group(2)) if match.group(2) is not None else 1
+                    in_hunk = remaining_new_lines > 0
     return issues
 
 
 def check_commit_message(message: str) -> list[str]:
+    # Strip verbose `git commit -v` diff below scissors and Git comment lines.
+    if SCISSORS_LINE in message:
+        message = message.split(SCISSORS_LINE, 1)[0]
+    cleaned = "\n".join(line for line in message.splitlines() if not line.startswith("#"))
     issues: list[str] = []
-    if AI_TRAILER.search(message):
-        issues.append("commit message must not contain AI co-author or sign-off trailers")
+    if AI_TRAILER.search(cleaned):
+        issues.append("commit message must not contain AI attribution or co-author trailers")
     return issues
 
 
 def run_pre_commit(repo: Path) -> int:
-    staged = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
-        capture_output=True, check=False,
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    staged_acmr = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--cached", "--name-only", "--diff-filter=ACMRT", "--no-renames", "-z"],
+        capture_output=True, check=False, env=env,
     )
-    if staged.returncode != 0:
-        sys.stderr.write(staged.stderr.decode("utf-8", errors="replace"))
-        return staged.returncode
-    paths = [p.decode("utf-8", errors="surrogateescape") for p in staged.stdout.split(b"\0") if p]
+    if staged_acmr.returncode != 0:
+        sys.stderr.write(staged_acmr.stderr.decode("utf-8", errors="replace"))
+        return staged_acmr.returncode
+    added_or_modified = [p.decode("utf-8", errors="surrogateescape") for p in staged_acmr.stdout.split(b"\0") if p]
+
+    staged_all = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--cached", "--name-only", "--no-renames", "-z"],
+        capture_output=True, check=False, env=env,
+    )
+    if staged_all.returncode != 0:
+        sys.stderr.write(staged_all.stderr.decode("utf-8", errors="replace"))
+        return staged_all.returncode
+    all_touched = [p.decode("utf-8", errors="surrogateescape") for p in staged_all.stdout.split(b"\0") if p]
+
     issues = check_staged_paths(
-        paths,
+        added_or_modified,
+        all_touched=all_touched,
         loop_mode=os.environ.get("GITTURTLE_LOOP") == "1",
         queue=active_queue(),
     )
     diff = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--cached", "--unified=0", "--no-color"],
-        capture_output=True, text=True, errors="replace", check=False,
+        [
+            "git", "-C", str(repo),
+            "-c", "core.quotePath=false",
+            "-c", "diff.noprefix=false",
+            "-c", "diff.mnemonicPrefix=false",
+            "diff", "--cached", "--unified=0", "--no-color", "--no-ext-diff", "--no-textconv",
+        ],
+        capture_output=True, text=True, errors="replace", check=False, env=env,
     )
-    if diff.returncode == 0:
-        issues.extend(check_staged_diff(diff.stdout))
+    if diff.returncode != 0:
+        sys.stderr.write(f"pre-commit guard: git diff --cached failed (exit {diff.returncode})\n")
+        if diff.stderr:
+            sys.stderr.write(diff.stderr)
+        return diff.returncode
+    issues.extend(check_staged_diff(diff.stdout))
     if issues:
         for issue in issues:
             sys.stderr.write(f"pre-commit guard: {issue}\n")

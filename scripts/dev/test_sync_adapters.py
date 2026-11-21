@@ -73,6 +73,34 @@ class SyncAdaptersTests(unittest.TestCase):
         issues = sync_adapters.check_sync(self.root)
         self.assertTrue(any("omit 'model'" in item for item in issues))
 
+    def test_rejects_symlink_targets_and_escapes_control_chars(self):
+        self.assertEqual(sync_adapters.main(["--root", str(self.root), "--write"]), 0)
+        outside = self.root / "outside.md"
+        outside.write_text("original\n", encoding="utf-8")
+        target = self.root / ".claude/agents/code-reviewer.md"
+        target.unlink()
+        target.symlink_to(outside)
+        issues = sync_adapters.check_sync(self.root)
+        self.assertTrue(any("must not be a symlink" in item for item in issues))
+        # --write unlinks the symlink instead of overwriting the external target.
+        self.assertEqual(sync_adapters.main(["--root", str(self.root), "--write"]), 0)
+        self.assertFalse(target.is_symlink())
+        self.assertEqual(outside.read_text(encoding="utf-8"), "original\n")
+        # TOML escaping handles control characters and YAML scalar quoting handles `: `.
+        role = sync_adapters.RoleSpec(
+            name="demo",
+            description="Review: safety # check",
+            claude_tools="Read",
+            claude_disallowed_tools="",
+            claude_permission_mode="dontAsk",
+            claude_max_turns="",
+            codex_sandbox="read-only",
+            body="Line 1\x07\rLine 2",
+        )
+        self.assertIn('description: "Review: safety # check"', sync_adapters.render_claude_agent(role))
+        parsed = tomllib.loads(sync_adapters.render_codex_agent(role))
+        self.assertEqual(parsed["developer_instructions"], "Line 1\x07\rLine 2\n")
+
 
 if __name__ == "__main__":
     unittest.main()

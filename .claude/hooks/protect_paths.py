@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
-from dev.guards import active_queue, is_protected, relative_path  # noqa: E402
+from dev.guards import active_queue, path_protection_reason  # noqa: E402
 
 
 def main() -> int:
@@ -25,19 +25,11 @@ def main() -> int:
     if not raw:
         return 0
     cwd = Path(data.get("cwd") or os.getcwd())
-    relative = relative_path(str(raw), cwd)
-    queue = active_queue()
-    if queue and relative == queue:
-        sys.stderr.write(
-            f"protected path in a loop session: {relative} is this run's active task "
-            "queue. A worker cannot change the contract it is being graded against; return "
-            "`blocked` with a concrete proposal instead.\n"
-        )
-        return 2
-    if not is_protected(relative):
+    reason = path_protection_reason(str(raw), cwd, queue=active_queue())
+    if reason is None:
         return 0
     sys.stderr.write(
-        f"protected path in a loop session: {relative}. Guidance, agent, skill, "
+        f"protected path in a loop session: {reason}. Guidance, agent, skill, "
         "guard, task-policy and gate-configuration files cannot change during a "
         "loop attempt; return `blocked` with a concrete proposal instead.\n"
     )
