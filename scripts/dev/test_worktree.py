@@ -61,7 +61,7 @@ class WorktreeTests(unittest.TestCase):
 
     def test_new_sparse_and_full_and_rm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "repo"
+            root = (Path(tmp) / "repo").resolve()
             root.mkdir()
             init_fixture_repo(root)
             (root / ".local" / "target-base").mkdir(parents=True)
@@ -119,7 +119,7 @@ class WorktreeTests(unittest.TestCase):
 
     def test_rm_refuses_dirty_worktree_without_wiping_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "repo"
+            root = (Path(tmp) / "repo").resolve()
             root.mkdir()
             init_fixture_repo(root)
             self.assertEqual(worktree.main(["--root", str(root), "new", "dirty-wt", "--no-seed"]), 0)
@@ -135,7 +135,7 @@ class WorktreeTests(unittest.TestCase):
 
     def test_gc_reports_and_prunes_only_unprotected_stale_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "repo"
+            root = (Path(tmp) / "repo").resolve()
             root.mkdir()
             init_fixture_repo(root)
             local = root / ".local"
