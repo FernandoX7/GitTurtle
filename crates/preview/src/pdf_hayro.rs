@@ -27,7 +27,7 @@ use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::util::{RectExt, TransformExt};
 use hayro::hayro_interpret::{
     BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
-    InterpreterCache, InterpreterSettings, SoftMask, interpret_page,
+    InterpreterCache, InterpreterSettings, RenderContent, SoftMask, interpret_page,
 };
 use hayro::hayro_syntax::page::Page;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
@@ -133,7 +133,7 @@ fn settings() -> InterpreterSettings {
     // Embedded standard fonts and CMaps; annotations are not drawn, as with
     // CoreGraphics' page drawing on macOS, and no action is ever run.
     InterpreterSettings {
-        render_annotations: false,
+        render_content: RenderContent::PAGE,
         ..InterpreterSettings::default()
     }
 }

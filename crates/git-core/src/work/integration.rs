@@ -60,7 +60,7 @@ impl OperationState {
         if include_index {
             digest.update(self.index_token.as_bytes());
         }
-        format!("{:x}", digest.finalize())
+        crate::lower_hex(digest.finalize())
     }
     /// Drafts belong to the same operation even when another conflict is staged.
     /// Continue/Abort still compare the complete state, including the index.
@@ -144,7 +144,7 @@ impl ConflictPreview {
             digest.update(working.mode.as_bytes());
             digest.update(&working.bytes);
         }
-        format!("{:x}", digest.finalize())
+        crate::lower_hex(digest.finalize())
     }
 }
 
@@ -318,8 +318,8 @@ impl GitRepository {
                 .flat_map(|entry| entry.paths())
                 .collect(),
             requires_message_editor,
-            state_token: format!("{:x}", digest.finalize()),
-            index_token: format!("{:x}", Sha256::digest(index)),
+            state_token: crate::lower_hex(digest.finalize()),
+            index_token: crate::lower_hex(Sha256::digest(index)),
         }))
     }
 

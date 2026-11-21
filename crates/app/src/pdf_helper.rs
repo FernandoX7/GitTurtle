@@ -148,7 +148,7 @@ fn confine(parent: libc::pid_t) -> Result<(), i32> {
     // before (b): once the process is not dumpable, the file belongs to root
     // and the write fails.
     let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
-    // SAFETY (this block): process settings on the single-threaded helper,
+    // SAFETY: process settings on the single-threaded helper,
     // with valid pointers to locals and static strings.
     unsafe {
         // (b) No core file or ptrace by the same user; a recognizable name.
@@ -472,6 +472,10 @@ pub(crate) enum Failure {
     /// The helper died on `signal`, stopped in the renderer or exited without
     /// a valid reply. The signal is for tests and diagnostics, never wording.
     Stopped {
+        #[expect(
+            clippy::allow_attributes,
+            reason = "read by tests/pdf_helper.rs, unused by bin"
+        )]
         #[allow(
             dead_code,
             reason = "never worded; only tests/pdf_helper.rs reads which signal ended the helper"
@@ -577,6 +581,10 @@ impl Slots {
     /// neither taken a slot nor been cancelled, so tests observe a waiting
     /// request rather than sleep while it waits.
     #[cfg(test)]
+    #[expect(
+        clippy::allow_attributes,
+        reason = "observed by integration tests, unused by bin tests"
+    )]
     #[allow(
         dead_code,
         reason = "tests/image_helper.rs and tests/pdf_helper.rs observe it; the app's own tests do not"

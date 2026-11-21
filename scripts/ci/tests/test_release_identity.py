@@ -219,7 +219,7 @@ class Repository(unittest.TestCase):
                 self.verify(tag="v0.2.0")
 
     def test_hardcoded_core_version_mismatch_is_refused(self):
-        self.replace("crates/git-core/Cargo.toml", 'version = "0.1.0"', 'version = "0.2.0"')
+        self.replace("crates/git-core/Cargo.toml", "version.workspace = true", 'version = "0.2.0"')
         self.retag()
         with self.assertRaisesRegex(identity.IdentityError, "gitturtle-core version"):
             self.verify()
@@ -232,7 +232,6 @@ class Repository(unittest.TestCase):
 
     def test_matching_literal_app_and_inherited_core_versions_are_supported(self):
         self.replace("crates/app/Cargo.toml", "version.workspace = true", 'version = "0.1.0"')
-        self.replace("crates/git-core/Cargo.toml", 'version = "0.1.0"', "version.workspace = true")
         self.retag()
         self.assertEqual(self.verify().version, "0.1.0")
 
@@ -288,7 +287,7 @@ class Repository(unittest.TestCase):
 
     def test_linux_prerelease_is_exact_and_macos_mapping_remains_explicit(self):
         version = "0.1.0-rc.1+test.5"
-        for name in ("Cargo.toml", "crates/git-core/Cargo.toml", "Cargo.lock"):
+        for name in ("Cargo.toml", "Cargo.lock"):
             self.replace(name, '"0.1.0"', f'"{version}"')
         self.commit = self.save("Prerelease fixture")
         self.git("tag", "v" + version)

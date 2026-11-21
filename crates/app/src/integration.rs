@@ -41,7 +41,7 @@ impl GitTurtle {
     /// opened again, as Stashes is for Drop… (`StashBrowser::drop_stash`).
     /// It runs after the close, which gives focus back first; a confirmed
     /// write keeps its own route.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn confirm_git_write_or_return(
         &mut self,
         title: String,

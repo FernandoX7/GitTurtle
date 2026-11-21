@@ -89,7 +89,7 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
     let updates = cx.spawn(async move |cx| {
         let mut ready = Some(ready);
         while snapshots.next().await.is_some() {
-            let snapshot = latest.lock().unwrap().take();
+            let snapshot = latest.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(snapshot) = snapshot {
                 cx.update(|cx| apply(snapshot, cx));
                 if let Some(ready) = ready.take() {
@@ -838,7 +838,7 @@ mod portal {
 
     impl Snapshots {
         fn send(&mut self, snapshot: DesktopText) -> bool {
-            *self.latest.lock().unwrap() = Some(snapshot);
+            *self.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
             match self.wake.try_send(()) {
                 Ok(()) => true,
                 Err(error) => error.is_full(),
@@ -1307,8 +1307,11 @@ mod portal {
         let mut stdout = child.0.stdout.take()?;
         let fd = stdout.as_raw_fd();
         // SAFETY: stdout owns this valid pipe descriptor throughout both calls.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        let nonblocking_ok = unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
+        };
+        if !nonblocking_ok {
             return None;
         }
         let read = async {
@@ -1347,9 +1350,8 @@ mod portal {
         buffer: &mut [u8],
         limit: usize,
     ) -> Option<Option<String>> {
-        let exited = match child.try_wait() {
-            Ok(exited) => exited,
-            Err(_) => return Some(None),
+        let Ok(exited) = child.try_wait() else {
+            return Some(None);
         };
         loop {
             match stdout.read(buffer) {
@@ -2133,7 +2135,7 @@ mod portal {
             // and says whether there was one.
             let apply_latest = |cx: &mut gpui_kit::TestAppContext| {
                 executor.run_until_parked();
-                let snapshot = latest.lock().unwrap().take();
+                let snapshot = latest.lock().unwrap_or_else(|e| e.into_inner()).take();
                 let sent = snapshot.is_some();
                 if let Some(snapshot) = snapshot {
                     cx.update(|cx| super::super::apply(snapshot, cx));

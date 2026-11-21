@@ -1812,7 +1812,7 @@ pub(super) struct ThemeForm {
 }
 
 impl ThemeForm {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         owner: WeakEntity<GitTurtle>,
         editing: Option<u32>,

@@ -50,7 +50,7 @@ impl GitRepository {
     /// stage-zero identity before resources are used. Revision checks the document
     /// blob in the captured commit. Worktree assets are raw bytes captured at this
     /// call, not historical substitutes or an atomic multi-file snapshot.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn capture_preview_assets(
         &self,
         scope: &PreviewAssetScope,

@@ -5525,7 +5525,7 @@ mod tests {
     /// `select`'s lines and Space, a click on `caret`, the text scrolled so
     /// `then` is its first row where given, Tab and, with the operations
     /// executor held, Enter.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     async fn press_lines<'a>(
         cx: &'a mut gpui::TestAppContext,
         lines: usize,

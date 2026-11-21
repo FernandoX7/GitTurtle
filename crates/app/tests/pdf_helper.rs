@@ -8,7 +8,7 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-#[allow(dead_code, reason = "each test uses part of the module")]
+#[expect(dead_code, reason = "each test uses part of the module")]
 #[path = "../src/pdf_helper.rs"]
 mod pdf_helper;
 
@@ -139,107 +139,152 @@ mod filter {
         let cases: Vec<Case> = vec![
             (
                 "read on fd 0",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_read, 0, buffer, 1);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_read, 0, buffer, 1);
+                    }
                 }),
             ),
             (
                 "write on fd 1",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_write, 1, buffer, 1);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_write, 1, buffer, 1);
+                    }
                 }),
             ),
             (
                 "write on fd 2",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_write, 2, buffer, 1);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_write, 2, buffer, 1);
+                    }
                 }),
             ),
             (
                 "close",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_close, 3);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_close, 3);
+                    }
                 }),
             ),
             ("anonymous mmap", Box::new(mmap(READ_WRITE, ANONYMOUS, -1))),
             (
                 "mprotect",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_mprotect, PAGE, 0, libc::PROT_READ);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_mprotect, PAGE, 0, libc::PROT_READ);
+                    }
                 }),
             ),
             (
                 "munmap",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_munmap, PAGE, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_munmap, PAGE, 0);
+                    }
                 }),
             ),
             (
                 "mremap",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_mremap, PAGE, 0, 0, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_mremap, PAGE, 0, 0, 0);
+                    }
                 }),
             ),
             (
                 "brk",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_brk, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_brk, 0);
+                    }
                 }),
             ),
             (
                 "madvise",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_madvise, PAGE, 0, libc::MADV_NORMAL);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_madvise, PAGE, 0, libc::MADV_NORMAL);
+                    }
                 }),
             ),
             (
                 "futex",
-                Box::new(move || unsafe {
-                    syscall(
-                        libc::SYS_futex,
-                        futex,
-                        libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG,
-                        1,
-                        0,
-                        0,
-                        0,
-                    );
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(
+                            libc::SYS_futex,
+                            futex,
+                            libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG,
+                            1,
+                            0,
+                            0,
+                            0,
+                        );
+                    }
                 }),
             ),
             (
                 "getrandom",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_getrandom, buffer, 1, 0);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_getrandom, buffer, 1, 0);
+                    }
                 }),
             ),
             (
                 "clock_gettime",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_clock_gettime, libc::CLOCK_MONOTONIC, time);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_clock_gettime, libc::CLOCK_MONOTONIC, time);
+                    }
                 }),
             ),
             (
                 "rt_sigprocmask",
-                Box::new(move || unsafe {
-                    syscall(
-                        libc::SYS_rt_sigprocmask,
-                        libc::SIG_BLOCK,
-                        ptr::null::<u64>(),
-                        mask,
-                        8,
-                    );
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(
+                            libc::SYS_rt_sigprocmask,
+                            libc::SIG_BLOCK,
+                            ptr::null::<u64>(),
+                            mask,
+                            8,
+                        );
+                    }
                 }),
             ),
             (
                 "sigaltstack",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_sigaltstack, ptr::null::<u8>(), stack);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_sigaltstack, ptr::null::<u8>(), stack);
+                    }
                 }),
             ),
             (
                 "restart_syscall",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_restart_syscall);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_restart_syscall);
+                    }
                 }),
             ),
             (
@@ -256,34 +301,42 @@ mod filter {
             ),
             (
                 "getpid",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_getpid);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_getpid);
+                    }
                 }),
             ),
             (
                 "gettid",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_gettid);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_gettid);
+                    }
                 }),
             ),
             (
                 "exit_group",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_exit_group, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_exit_group, 0);
+                    }
                 }),
             ),
         ];
         for (case, call) in &cases {
             assert_eq!(calling(call), Ended::Exited(0), "{case}");
         }
-        // SAFETY: ends the only thread with its own code.
-        assert_eq!(
-            calling(&|| unsafe {
+        let exit_call = || {
+            // SAFETY: ends the only thread with its own code.
+            unsafe {
                 syscall(libc::SYS_exit, 7);
-            }),
-            Ended::Exited(7),
-            "exit"
-        );
+            }
+        };
+        assert_eq!(calling(&exit_call), Ended::Exited(7), "exit");
     }
 
     extern "C" fn returns(_: libc::c_int) {}
@@ -333,86 +386,128 @@ mod filter {
         let cases: Vec<Case> = vec![
             (
                 "openat",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_openat, libc::AT_FDCWD, root, libc::O_RDONLY);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_openat, libc::AT_FDCWD, root, libc::O_RDONLY);
+                    }
                 }),
             ),
             (
                 "socket",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_socket, libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_socket, libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                    }
                 }),
             ),
             (
                 "connect",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_connect, -1, 0, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_connect, -1, 0, 0);
+                    }
                 }),
             ),
             (
                 "kill",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_kill, pid(), 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_kill, pid(), 0);
+                    }
                 }),
             ),
             (
                 "ptrace",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_ptrace, libc::PTRACE_PEEKDATA, 1, 0, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_ptrace, libc::PTRACE_PEEKDATA, 1, 0, 0);
+                    }
                 }),
             ),
             (
                 "execve",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_execve, missing, 0, 0);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_execve, missing, 0, 0);
+                    }
                 }),
             ),
             (
                 "clone3",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_clone3, 0, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_clone3, 0, 0);
+                    }
                 }),
             ),
             (
                 "prctl",
-                Box::new(|| unsafe {
-                    syscall(libc::SYS_prctl, libc::PR_GET_DUMPABLE, 0, 0, 0, 0);
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(libc::SYS_prctl, libc::PR_GET_DUMPABLE, 0, 0, 0, 0);
+                    }
                 }),
             ),
             (
                 "prlimit64",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_prlimit64, 0, libc::RLIMIT_NOFILE, 0, old);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_prlimit64, 0, libc::RLIMIT_NOFILE, 0, old);
+                    }
                 }),
             ),
             (
                 "seccomp",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_seccomp, libc::SECCOMP_GET_ACTION_AVAIL, 0, action);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_seccomp, libc::SECCOMP_GET_ACTION_AVAIL, 0, action);
+                    }
                 }),
             ),
             (
                 "read on fd 3",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_read, 3, buffer, 1);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_read, 3, buffer, 1);
+                    }
                 }),
             ),
             (
                 "read on fd 1",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_read, 1, buffer, 1);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_read, 1, buffer, 1);
+                    }
                 }),
             ),
             (
                 "write on fd 3",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_write, 3, buffer, 1);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_write, 3, buffer, 1);
+                    }
                 }),
             ),
             (
                 "write on fd 0",
-                Box::new(move || unsafe {
-                    syscall(libc::SYS_write, 0, buffer, 1);
+                Box::new(move || {
+                    // SAFETY: seccomp test probe inside isolated child using valid local buffers.
+                    unsafe {
+                        syscall(libc::SYS_write, 0, buffer, 1);
+                    }
                 }),
             ),
             (
@@ -433,13 +528,16 @@ mod filter {
             ),
             (
                 "executable mprotect",
-                Box::new(|| unsafe {
-                    syscall(
-                        libc::SYS_mprotect,
-                        PAGE,
-                        0,
-                        libc::PROT_READ | libc::PROT_EXEC,
-                    );
+                Box::new(|| {
+                    // SAFETY: seccomp test probe inside isolated child with harmless arguments.
+                    unsafe {
+                        syscall(
+                            libc::SYS_mprotect,
+                            PAGE,
+                            0,
+                            libc::PROT_READ | libc::PROT_EXEC,
+                        );
+                    }
                 }),
             ),
             (
@@ -820,10 +918,9 @@ mod helper {
             rlim_max: 0,
         };
         // SAFETY: reads into a local.
-        assert_eq!(
-            unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut stack) },
-            0
-        );
+        // SAFETY: writes the current stack limit into a local.
+        let rc = unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut stack) };
+        assert_eq!(rc, 0);
         let stack = (8 << 20).min(stack.rlim_cur).to_string();
         let limits = fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
         for (name, soft, hard) in [
@@ -1408,10 +1505,9 @@ mod client {
             tv_nsec: 0,
         };
         // SAFETY: writes into a local.
-        assert_eq!(
-            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
-            0
-        );
+        // SAFETY: writes into a local.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+        assert_eq!(rc, 0);
         Duration::new(time.tv_sec as u64, time.tv_nsec as u32)
     }
 
@@ -1679,7 +1775,7 @@ mod client {
 mod hostile {
     use std::time::{Duration, Instant};
 
-    use gitturtle_preview::pdf_helper::{ErrorKind, PROTOCOL_VERSION, PageReply};
+    use gitturtle_preview::pdf_helper::{PROTOCOL_VERSION, PageReply};
 
     use super::fixtures::{assemble, page, stream};
     use super::pdf_helper::{Client, Failure, HELPER_FLAG, HelperCommand, Slots};
@@ -1853,18 +1949,12 @@ mod hostile {
                 super::fixtures::benign(),
                 |result| matches!(result, Ok(page) if page.image.rgba[..4] == [255, 0, 0, 255]),
             ),
+            // https://github.com/LaurenzV/hayro/issues/1546: fixed in hayro
+            // 0.9.0; renders cleanly without panicking or meeting the filter.
             (
-                "#1546 panic",
+                "#1546 fixed",
                 custom_page(separation, "", b"/Cs1 cs 0.5 sc 0 0 50 50 re f"),
-                |result| {
-                    matches!(
-                        result,
-                        Err(Failure::Document {
-                            kind: ErrorKind::RendererFailed,
-                            ..
-                        })
-                    )
-                },
+                |result| matches!(result, Ok(page) if page.page_count == 1),
             ),
             (
                 "#1549",

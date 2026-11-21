@@ -711,12 +711,10 @@ impl Preferences {
     /// settings, recents, drafts, names and the project list saved since the
     /// caller loaded its copy survive. A section outside the bounds is refused.
     // The theme editor submits this; until it lands, tests are the only callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn save_custom_themes(themes: &[CustomTheme]) -> Result<Self> {
         Self::save_custom_themes_at(themes, &settings_path()?)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     fn save_custom_themes_at(themes: &[CustomTheme], settings: &Path) -> Result<Self> {
         let themes: Vec<CustomTheme> = themes
             .iter()
@@ -2085,7 +2083,7 @@ mod tests {
         #[serde(untagged)]
         enum OlderSelection {
             Custom {
-                #[allow(dead_code, reason = "only its shape matters")]
+                #[expect(dead_code, reason = "only its shape matters")]
                 custom: u32,
             },
             BuiltIn(ThemeChoice),

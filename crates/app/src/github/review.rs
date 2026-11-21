@@ -280,7 +280,7 @@ const NO_ACCOUNT_IN_TESTS: &str = "A test build has no GitHub account and reads 
 /// process, URL-following or network path, including when a fixture request fails.
 pub(crate) enum UiTransport {
     // A test build never connects: it reaches no stored authorization (`Self::live`).
-    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(test, expect(dead_code))]
     Live(super::transport::GhTransport),
     #[cfg(test)]
     Fixture { moved: bool },

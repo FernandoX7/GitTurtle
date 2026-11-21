@@ -248,40 +248,40 @@
   },
   {
     "name": "hayro-interpret",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "license": "Apache-2.0 OR MIT",
     "repository": "LaurenzV/hayro",
-    "revision": "ea9c81dc70cde40c64205986fdcfcd481fe934d8",
+    "revision": "3f3825c3e50bb41ed6ec6c3f4b6007978bd13def",
     "files": [
       {
-        "path": "texts/a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4.txt",
-        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/NOTICE.md",
-        "sha256": "a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4"
+        "path": "texts/38bd105a4a722da1d7138b78d88e6ca9de0aadd3c40fe386de7704f67a33d118.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/3f3825c3e50bb41ed6ec6c3f4b6007978bd13def/NOTICE.md",
+        "sha256": "38bd105a4a722da1d7138b78d88e6ca9de0aadd3c40fe386de7704f67a33d118"
       },
       {
         "path": "texts/469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9.txt",
-        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/hayro-interpret/assets/CGATS_LICENSE.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/3f3825c3e50bb41ed6ec6c3f4b6007978bd13def/hayro-interpret/assets/CGATS_LICENSE.txt",
         "sha256": "469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9"
       },
       {
-        "path": "texts/060a1d5778f49e9de3050c2bb84e5980a29744d9fe25ce590e76d7614c4f172f.txt",
-        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/hayro-interpret/assets/README.md",
-        "sha256": "060a1d5778f49e9de3050c2bb84e5980a29744d9fe25ce590e76d7614c4f172f"
+        "path": "texts/f68d76f2fc90d5b7ce3a503dce3ae231f8850ec4edcb3fd23ea948c4cfd02609.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/3f3825c3e50bb41ed6ec6c3f4b6007978bd13def/hayro-interpret/assets/README.md",
+        "sha256": "f68d76f2fc90d5b7ce3a503dce3ae231f8850ec4edcb3fd23ea948c4cfd02609"
       }
     ],
     "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate. The embedded CMYK profile's CC0-1.0 text is in assets/CGATS_LICENSE.txt, a name the collector does not match, and assets/README.md records the embedded Foxit fonts' PDFium origin and the generated LAB profile."
   },
   {
     "name": "hayro-syntax",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "license": "Apache-2.0 OR MIT",
     "repository": "LaurenzV/hayro",
-    "revision": "ea9c81dc70cde40c64205986fdcfcd481fe934d8",
+    "revision": "3f3825c3e50bb41ed6ec6c3f4b6007978bd13def",
     "files": [
       {
-        "path": "texts/a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4.txt",
-        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/NOTICE.md",
-        "sha256": "a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4"
+        "path": "texts/38bd105a4a722da1d7138b78d88e6ca9de0aadd3c40fe386de7704f67a33d118.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/3f3825c3e50bb41ed6ec6c3f4b6007978bd13def/NOTICE.md",
+        "sha256": "38bd105a4a722da1d7138b78d88e6ca9de0aadd3c40fe386de7704f67a33d118"
       }
     ],
     "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate."
@@ -429,19 +429,19 @@
   },
   {
     "name": "meshopt",
-    "version": "0.6.2",
+    "version": "0.7.0",
     "license": "MIT OR Apache-2.0",
     "repository": "gwihlidal/meshopt-rs",
-    "revision": "585fe7f5120df13f494bcde7134d8b115fc28213",
+    "revision": "67c589e166a41be6f7e1e41360ecd7cb02f0b9c9",
     "files": [
       {
         "path": "texts/dcea10c83f859de2ef34b6c52ff9f6c1fbd551cdc317048dd6ee3c3d5ddc859c.txt",
-        "url": "https://raw.githubusercontent.com/gwihlidal/meshopt-rs/585fe7f5120df13f494bcde7134d8b115fc28213/LICENSE-APACHE",
+        "url": "https://raw.githubusercontent.com/gwihlidal/meshopt-rs/67c589e166a41be6f7e1e41360ecd7cb02f0b9c9/LICENSE-APACHE",
         "sha256": "dcea10c83f859de2ef34b6c52ff9f6c1fbd551cdc317048dd6ee3c3d5ddc859c"
       },
       {
         "path": "texts/a8c45859b6a02f502545f33d1973e2d5a3a1b0e8b2beeb8f80a5e42c9a523267.txt",
-        "url": "https://raw.githubusercontent.com/gwihlidal/meshopt-rs/585fe7f5120df13f494bcde7134d8b115fc28213/LICENSE-MIT",
+        "url": "https://raw.githubusercontent.com/gwihlidal/meshopt-rs/67c589e166a41be6f7e1e41360ecd7cb02f0b9c9/LICENSE-MIT",
         "sha256": "a8c45859b6a02f502545f33d1973e2d5a3a1b0e8b2beeb8f80a5e42c9a523267"
       }
     ]

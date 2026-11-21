@@ -5,6 +5,9 @@
 //! Clones share a persistent `cat-file` process; its lock only protects the wire
 //! protocol. Repository operations themselves do not take that lock.
 
+#![forbid(unsafe_code)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 mod blame;
 mod conflict_blocks;
 mod history;
@@ -20,6 +23,18 @@ pub use inspection::*;
 pub use local_watch::*;
 pub use preview_assets::*;
 pub use work::*;
+
+/// Encodes bytes (such as a SHA-256 digest) as lowercase hexadecimal.
+pub fn lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
 
 use anyhow::{Context, Result, bail, ensure};
 use process_io::{ChildPipes, ExitWatcher, PipeControl, StopPipe, WaitPart, WaitSeam, WaitStep};
@@ -2008,7 +2023,7 @@ impl GitRepository {
             ));
         }
         let oid = oid.to_ascii_lowercase();
-        if expected_size == 0 && oid == format!("{:x}", Sha256::digest([])) {
+        if expected_size == 0 && oid == crate::lower_hex(Sha256::digest([])) {
             return Ok(LocalLfsObject::Verified(Vec::new()));
         }
         let storage = self.preview_lfs_storage()?;
@@ -2055,7 +2070,7 @@ impl GitRepository {
         if bytes.len() as u64 != expected_size {
             return corrupt(anyhow::anyhow!("Local LFS object changed while being read"));
         }
-        if format!("{:x}", Sha256::digest(&bytes)) != oid {
+        if crate::lower_hex(Sha256::digest(&bytes)) != oid {
             return corrupt(anyhow::anyhow!(
                 "Local LFS object failed SHA-256 verification"
             ));

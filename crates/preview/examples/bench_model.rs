@@ -84,7 +84,7 @@ fn main() -> Result<()> {
         .read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= MAX_INPUT_BYTES, "Input exceeds 32 MiB");
     let name = path.to_string_lossy();
-    println!("# model={:?}", path);
+    println!("# model={path:?}");
     println!("# executable={:?}", std::env::current_exe()?);
     println!("# profile=release; input_bytes={}", bytes.len());
     println!(

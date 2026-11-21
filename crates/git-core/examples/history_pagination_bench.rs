@@ -13,7 +13,7 @@ fn fingerprint(commits: &[gitturtle_core::Commit]) -> String {
     for commit in commits {
         digest.update(commit.oid.as_bytes());
     }
-    format!("{:x}", digest.finalize())
+    gitturtle_core::lower_hex(digest.finalize())
 }
 
 fn main() -> Result<()> {

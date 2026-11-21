@@ -35,9 +35,10 @@ pub(crate) fn decode(
     let preflight = jpeg2000::preflight(bytes)?;
     let original = preflight.original();
     let target = scaled_dimensions(original.0, original.1, edge);
-    let (image, _) = open(bytes, &preflight, target)?;
+    let (mut image, _) = open(bytes, &preflight, target)?;
     let size = image.dimensions();
     image_helper::check_rgba_budget(size.0, size.1)?;
+    let icc = image.icc_profile().ok().flatten();
     timings.parse_us = image_helper::elapsed_us(start);
 
     let start = Instant::now();
@@ -45,9 +46,13 @@ pub(crate) fn decode(
     timings.decode_us = image_helper::elapsed_us(start);
 
     let start = Instant::now();
+    let mut rgba = decoded.into_rgba8();
+    if let Some(icc) = icc.as_deref() {
+        let _ = image_helper::apply_rgb_icc_profile(&mut rgba, icc);
+    }
     // A reduced level scales to the full size's output like any other, up
     // when it is the level below the target.
-    let decoded = image_helper::finish(decoded.into_rgba8(), original, edge, ImageFlags::default());
+    let decoded = image_helper::finish(rgba, original, edge, ImageFlags::default());
     timings.convert_us = image_helper::elapsed_us(start);
     Ok(decoded)
 }
@@ -956,15 +961,12 @@ mod tests {
         }
     }
 
-    /// A real `hayro-jpeg2000` 0.4.1 panic past every preflight bound,
-    /// requirement 12's (kept for A3): a one-column 7-bit palette (no `colr`,
-    /// so grey, one output byte per pixel) whose `cmap` maps column 0 twice.
-    /// `interleave_and_convert` takes its slow path for the 7-bit planes and
-    /// writes both into the grey buffer until an `unwrap()` meets its end
-    /// (`lib.rs:482`); `serve` turns the panic into `DecoderFailed`. With the
-    /// fixture's 8-bit columns and sRGB `colr` the same mapping decodes.
+    /// Regression for the `hayro-jpeg2000` 0.4.1 panic past every preflight
+    /// bound: a one-column 7-bit palette (no `colr`, so grey) whose `cmap`
+    /// maps column 0 twice. 0.4.1 panicked in `interleave_and_convert`; 0.5.0
+    /// fixed the bug and decodes the 64 × 48 image cleanly without panicking.
     #[test]
-    fn a_hayro_panic_past_the_preflight_ends_as_decoder_failed() {
+    fn duplicate_cmap_on_one_column_7bit_palette_no_longer_panics() {
         let palette = fixture("jpeg2000-palette.jp2");
         // Four entries in one 7-bit column.
         let one_column = jp2_box(b"pclr", &[0, 4, 1, 6, 0, 40, 80, 127]);
@@ -982,10 +984,8 @@ mod tests {
             jpeg2000::preflight(&bytes).unwrap().decode_bytes(0),
             64 * 48 * 4 * (1 + 2) + 64 * 48 * 4
         );
-        assert_eq!(
-            jpeg2000(&bytes, 1600).unwrap_err(),
-            ImageErrorKind::DecoderFailed
-        );
+        let reply = jpeg2000(&bytes, 1600).expect("hayro-jpeg2000 0.5.0 decodes without panicking");
+        assert_eq!((reply.image.width, reply.image.height), (64, 48));
     }
 
     #[test]

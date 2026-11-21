@@ -461,7 +461,7 @@ pub(crate) enum Fit {
 /// the action bar's 34 px Fetch, Pull and Push; `gap` is the space it keeps
 /// between its icon and its label, so the content sits where the frame's own
 /// icon and label would, and `fit` how a label's confirmation fits.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn confirming(
     frame: Button,
     gap: impl Into<DefiniteLength>,
@@ -498,7 +498,7 @@ enum Lines {
 
 /// [`confirming`], with no tooltip at all where `tooltip` is `None`, and its
 /// label laid out on `lines`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn confirming_with(
     frame: Button,
     gap: impl Into<DefiniteLength>,

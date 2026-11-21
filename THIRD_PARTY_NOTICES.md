@@ -59,7 +59,7 @@ decode both formats with ImageIO.
   distribution's package (Arch `dav1d`, Ubuntu `libdav1d7`) through
   pkg-config, never a copy built from source, and GitTurtle packages do not
   ship it. A package that ever bundles libdav1d must ship its notice too.
-- `hayro-jpeg2000` 0.4.1 (`Apache-2.0 OR MIT`) decodes JPEG 2000; it already
+- `hayro-jpeg2000` 0.5.0 (`Apache-2.0 OR MIT`) decodes JPEG 2000; it already
   reached Linux builds through hayro and now adds its `image` integration.
 - `moxcms` 0.8.1 (`BSD-3-Clause OR Apache-2.0`, with its own license files)
   converts an AVIF's embedded ICC profile to sRGB. It already reached every

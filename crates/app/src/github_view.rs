@@ -3429,21 +3429,17 @@ impl Panel {
         } else {
             self.saved.push(draft.clone());
         }
-        let response = match self.owner.update(cx, |owner, _| {
+        let Ok(response) = self.owner.update(cx, |owner, _| {
             self.saver.queue_with(
                 &owner.preferences_writer,
                 key,
                 draft.into(),
                 drafts::save_batch,
             )
-        }) {
-            Ok(response) => response,
-            Err(_) => {
-                self.save_status =
-                    "Draft save failed — keep this window open or copy the text".into();
-                cx.notify();
-                return;
-            }
+        }) else {
+            self.save_status = "Draft save failed — keep this window open or copy the text".into();
+            cx.notify();
+            return;
         };
         self.save_status = "Saving local draft…".into();
         if let Some(response) = track_save_completion(&mut self.save_completion, response) {
@@ -7399,12 +7395,12 @@ mod tests {
         at: String,
         #[cfg_attr(
             not(target_os = "linux"),
-            allow(dead_code, reason = "only the Linux-only Shift+Tab test reads it")
+            expect(dead_code, reason = "only the Linux-only Shift+Tab test reads it")
         )]
         step: (&'static str, &'static str),
         #[cfg_attr(
             not(target_os = "linux"),
-            allow(dead_code, reason = "only the Linux-only Shift+Tab test reads it")
+            expect(dead_code, reason = "only the Linux-only Shift+Tab test reads it")
         )]
         cut: Vec<String>,
         whole: Vec<String>,
@@ -10649,7 +10645,7 @@ mod tests {
         // Whether some layout elided a status, hovered one it elided in view, and named one.
         let mut elided = false;
         let mut tipped = false;
-        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        #[cfg_attr(not(target_os = "linux"), expect(unused_mut))]
         let mut named_elided = cfg!(not(target_os = "linux"));
         for (interface, width, height) in [
             (13, 1480., 980.),

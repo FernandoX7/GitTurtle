@@ -5056,7 +5056,7 @@ mod image_tests {
     fn check_glb_lfs_retry(bytes: &[u8]) {
         use sha2::{Digest, Sha256};
         let fixture = Fixture::new();
-        let oid = format!("{:x}", Sha256::digest(bytes));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(bytes));
         let pointer = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
             bytes.len()
@@ -5118,7 +5118,7 @@ mod image_tests {
         for unavailable_side in [0, 1] {
             let fixture = Fixture::new();
             let bytes = [MESHOPT_GLB_BEFORE, MESHOPT_GLB_AFTER];
-            let oids = bytes.map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+            let oids = bytes.map(|bytes| gitturtle_core::lower_hex(Sha256::digest(bytes)));
             let pointers: [String; 2] = std::array::from_fn(|i| {
                 format!(
                     "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
@@ -5271,7 +5271,7 @@ mod image_tests {
         use sha2::{Digest, Sha256};
         let fixture = Fixture::new();
         let oids = [MESHOPT_GLB_BEFORE, MESHOPT_GLB_AFTER]
-            .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+            .map(|bytes| gitturtle_core::lower_hex(Sha256::digest(bytes)));
         let pointers: [String; 2] = std::array::from_fn(|i| {
             format!(
                 "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
@@ -5698,7 +5698,7 @@ mod image_tests {
         let fixture = Fixture::new();
         // The pointer to `body`, with `stored` as its object in the local store.
         let pointer = |body: &[u8], stored: Option<&[u8]>| {
-            let oid = format!("{:x}", Sha256::digest(body));
+            let oid = gitturtle_core::lower_hex(Sha256::digest(body));
             if let Some(stored) = stored {
                 let directory = fixture
                     .0
@@ -5899,7 +5899,7 @@ mod image_tests {
         let fixture = Fixture::new();
         let repo = GitRepository::open(&fixture.0).unwrap();
         let body = b"the true text\n";
-        let oid = format!("{:x}", Sha256::digest(body));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(body));
         let store = fixture.0.join(".git/lfs");
         let directory = store.join("objects").join(&oid[..2]).join(&oid[2..4]);
         fs::create_dir_all(&directory).unwrap();
@@ -5996,7 +5996,7 @@ mod image_tests {
         let repo = GitRepository::open(&fixture.0).unwrap();
         // `text`'s pointer, with its object in the local store if `local`.
         let pointer = |text: &str, local: bool| {
-            let oid = format!("{:x}", Sha256::digest(text));
+            let oid = gitturtle_core::lower_hex(Sha256::digest(text));
             if local {
                 let directory = fixture
                     .0
@@ -6103,7 +6103,7 @@ mod image_tests {
         let fixture = Fixture::new();
         let repo = GitRepository::open(&fixture.0).unwrap();
         let body = b"the true object\n";
-        let oid = format!("{:x}", Sha256::digest(body));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(body));
         let directory = fixture
             .0
             .join(".git/lfs/objects")
@@ -6234,7 +6234,7 @@ mod image_tests {
         let repo = GitRepository::open(&fixture.0).unwrap();
         let store = fixture.0.join(".git/lfs");
         let body = b"the true object\n";
-        let oid = format!("{:x}", Sha256::digest(body));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(body));
         let directory = store.join("objects").join(&oid[..2]).join(&oid[2..4]);
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join(&oid), b"a wrong object!\n").unwrap();
@@ -6313,7 +6313,7 @@ mod image_tests {
         );
         let diagram = "flowchart LR\n  A --> B\n";
         // A local pointer to the diagram, so that side resolves.
-        let oid = format!("{:x}", Sha256::digest(diagram));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(diagram));
         let directory = fixture
             .0
             .join(".git/lfs/objects")
@@ -6674,7 +6674,7 @@ mod image_tests {
     fn a_missing_lfs_side_beside_a_binary_notice_is_not_cached() {
         use sha2::{Digest, Sha256};
         let object = b"downloaded text\n";
-        let oid = format!("{:x}", Sha256::digest(object));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(object));
         let pointer = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
             object.len()

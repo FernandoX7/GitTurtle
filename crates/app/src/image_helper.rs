@@ -300,6 +300,13 @@ impl Client<'static> {
     /// helper slots the app's PDF pages also use.
     #[cfg_attr(
         test,
+        expect(
+            clippy::allow_attributes,
+            reason = "used by tests/image_helper.rs, unused by the app's own tests"
+        )
+    )]
+    #[cfg_attr(
+        test,
         allow(
             dead_code,
             reason = "the app's tests decode through named helpers; tests/image_helper.rs checks this one"
@@ -325,6 +332,10 @@ impl<'a> Client<'a> {
 
     /// The runner a client uses.
     #[cfg(test)]
+    #[expect(
+        clippy::allow_attributes,
+        reason = "used by tests/image_helper.rs, unused by bin tests"
+    )]
     #[allow(dead_code, reason = "only tests/image_helper.rs reads it")]
     pub(crate) fn runner(&self) -> &Runner<'a> {
         &self.runner
@@ -386,6 +397,10 @@ pub(crate) enum Failure {
     /// The helper died on `signal`, or exited without a valid reply. The
     /// signal is for tests and diagnostics, never wording.
     Stopped {
+        #[expect(
+            clippy::allow_attributes,
+            reason = "read by tests/image_helper.rs, unused by bin"
+        )]
         #[allow(
             dead_code,
             reason = "never worded; only tests/image_helper.rs reads which signal ended the helper"
@@ -463,6 +478,10 @@ impl std::error::Error for Failure {}
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
+#[expect(
+    clippy::allow_attributes,
+    reason = "called by tests/image_helper.rs, unused by bin"
+)]
 #[allow(dead_code, reason = "only tests/image_helper.rs calls it")]
 pub(crate) fn classify_exit(
     status: std::process::ExitStatus,

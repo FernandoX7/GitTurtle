@@ -275,7 +275,7 @@ impl GitRepository {
             root: self.path.clone(),
             directories,
             storage,
-            config_token: format!("{:x}", digest.finalize()),
+            config_token: crate::lower_hex(digest.finalize()),
         })
     }
 

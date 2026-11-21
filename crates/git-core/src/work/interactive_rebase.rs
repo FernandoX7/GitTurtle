@@ -53,7 +53,7 @@ impl InteractiveRebasePlan {
             digest.update((value.len() as u64).to_le_bytes());
             digest.update(value.as_bytes());
         }
-        format!("{:x}", digest.finalize())
+        crate::lower_hex(digest.finalize())
     }
     pub fn steps(&self) -> Vec<RebaseStep> {
         self.commits
@@ -115,7 +115,7 @@ impl InteractiveRebaseResume {
         if let Some(message) = &self.message {
             digest.update(message.as_bytes());
         }
-        format!("{:x}", digest.finalize())
+        crate::lower_hex(digest.finalize())
     }
 }
 
@@ -345,7 +345,7 @@ impl GitRepository {
                     .iter()
                     .map(|step| format!("{} {}\n", step.action.label().to_lowercase(), step.oid))
                     .collect::<String>();
-                command.env("GIT_SEQUENCE_EDITOR", format!("printf '%s' '{}' >", todo));
+                command.env("GIT_SEQUENCE_EDITOR", format!("printf '%s' '{todo}' >"));
                 command.args([
                     "rebase",
                     "--interactive",

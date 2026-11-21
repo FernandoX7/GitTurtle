@@ -260,7 +260,7 @@ fn panels(surface: Surface) -> &'static [Panel] {
 struct Offset {
     panel: Option<&'static [(Surface, &'static str)]>,
     by: fn() -> Pixels,
-    #[allow(dead_code, reason = "read by people, as a follow-up is")]
+    #[expect(dead_code, reason = "read by people, as a follow-up is")]
     reason: &'static str,
 }
 

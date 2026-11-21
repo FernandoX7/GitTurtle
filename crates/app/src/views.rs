@@ -4366,7 +4366,7 @@ impl GitTurtle {
 impl DownloadRegion {
     /// The region holding `content`, or Split's `split` view, with the
     /// `reason` its lines cannot be staged and `footer`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn render(
         self,
         content: AnyElement,
@@ -4605,7 +4605,7 @@ thread_local! {
 /// `reason`'s height it keeps, `reason_height`, measured only where what it
 /// follows from changes ([`GitTurtle::download_heights`]); without it the
 /// reason is measured in the frame it is drawn.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn split_room(
     view: Entity<crate::split_diff::SplitView>,
     edge: Option<AnyElement>,
@@ -11836,7 +11836,7 @@ pub(crate) mod tests {
             "b".repeat(64)
         );
         let body = b"the true text\n";
-        let oid = format!("{:x}", Sha256::digest(body));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(body));
         let corrupt = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
             body.len()
@@ -11988,7 +11988,7 @@ pub(crate) mod tests {
             "b".repeat(64)
         );
         let body = b"the true text\n";
-        let oid = format!("{:x}", Sha256::digest(body));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(body));
         let corrupt = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
             body.len()
@@ -13245,8 +13245,8 @@ pub(crate) mod tests {
     fn lfs_pointer(body: &[u8]) -> String {
         use sha2::{Digest, Sha256};
         format!(
-            "version https://git-lfs.github.com/spec/v1\noid sha256:{:x}\nsize {}\n",
-            Sha256::digest(body),
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+            gitturtle_core::lower_hex(Sha256::digest(body)),
             body.len()
         )
     }
@@ -13255,7 +13255,7 @@ pub(crate) mod tests {
     /// where its pointer ([`lfs_pointer`]) finds it, returning where.
     fn store_lfs_object(root: &std::path::Path, body: &[u8]) -> std::path::PathBuf {
         use sha2::{Digest, Sha256};
-        let oid = format!("{:x}", Sha256::digest(body));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(body));
         let directory = root
             .join(".git/lfs/objects")
             .join(&oid[..2])
@@ -13654,7 +13654,7 @@ pub(crate) mod tests {
             33 * 1024 * 1024
         );
         let body = b"the true text\n";
-        let oid = format!("{:x}", Sha256::digest(body));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(body));
         let corrupt = format!(
             "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
             body.len()
@@ -20123,10 +20123,8 @@ pub(crate) mod tests {
                 tv_nsec: 0,
             };
             // SAFETY: writes into a local.
-            assert_eq!(
-                unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
-                0
-            );
+            let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+            assert_eq!(rc, 0);
             time.tv_sec as f64 * 1000. + time.tv_nsec as f64 / 1_000_000.
         };
         let summary = |samples: &[f64]| {

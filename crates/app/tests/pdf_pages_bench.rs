@@ -30,7 +30,7 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-#[allow(
+#[expect(
     dead_code,
     reason = "the measurement uses the client and its constants"
 )]
@@ -644,12 +644,9 @@ fn measure_pdf_pages_through_the_helper() {
     let starts: Vec<Value> = (0..runs).map(|_| start_and_kill()).collect();
     let mut records = Vec::new();
     for (name, source, pdf) in &fixtures {
-        let count = match read_count(pdf) {
-            Some(count) => count,
-            None => {
-                records.push(json!({ "name": name, "source": source, "bytes": pdf.len(), "sha256": sha256(pdf), "error": "the first page did not render" }));
-                continue;
-            }
+        let Some(count) = read_count(pdf) else {
+            records.push(json!({ "name": name, "source": source, "bytes": pdf.len(), "sha256": sha256(pdf), "error": "the first page did not render" }));
+            continue;
         };
         let mut pages = Vec::new();
         for page in pages_of(count) {

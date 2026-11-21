@@ -2258,7 +2258,7 @@ impl StashBrowser {
     /// patch editor's decorations. This transient inspector has no retained-bytes bound of its
     /// own, and a modal stays out of the repository tabs' bound because tabs cannot switch
     /// while it is open; its preview worker's cache bounds the content separately.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     fn preview_retained_bytes(&self) -> usize {
         self.content
             .as_ref()

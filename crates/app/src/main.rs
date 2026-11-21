@@ -3180,15 +3180,21 @@ fn short_oid(oid: &str) -> String {
     oid.chars().take(7).collect()
 }
 fn short_date(timestamp: i64) -> String {
-    chrono::DateTime::from_timestamp(timestamp, 0)
-        .map(|d| d.with_timezone(&chrono::Local).format("%b %d").to_string())
+    jiff::Timestamp::from_second(timestamp)
+        .ok()
+        .map(|d| {
+            d.to_zoned_datetime(jiff::tz::TimeZone::system())
+                .strftime("%b %d")
+                .to_string()
+        })
         .unwrap_or_default()
 }
 fn full_date(timestamp: i64) -> String {
-    chrono::DateTime::from_timestamp(timestamp, 0)
+    jiff::Timestamp::from_second(timestamp)
+        .ok()
         .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%b %-d, %Y at %H:%M")
+            d.to_zoned_datetime(jiff::tz::TimeZone::system())
+                .strftime("%b %-d, %Y at %H:%M")
                 .to_string()
         })
         .unwrap_or_default()
@@ -3559,7 +3565,7 @@ impl Element for PhraseLine {
                 run.prepaint_as_root(at((line, left)), unbounded, window, cx);
             }
         });
-        #[cfg_attr(not(test), allow(unused_mut))]
+        #[cfg_attr(not(test), expect(unused_mut))]
         let mut phrases = Vec::new();
         #[cfg(test)]
         {

@@ -260,7 +260,7 @@ fn focus_contexts(cx: &mut VisualTestContext) -> String {
 /// wrapping to B, was seen as B, C, D, B and passed. A start on the
 /// window's root, or on a handle that is no tab stop, such as a dialog's
 /// shell, is no stop for the round to meet.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn walk_keyed(
     root: &FocusHandle,
     cx: &mut VisualTestContext,
@@ -1081,7 +1081,7 @@ async fn dialogs_open_with_a_whole_ring_on_their_first_field(cx: &mut TestAppCon
 async fn settings_opens_with_a_whole_ring_on_its_first_control(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = views::tests::history_window(cx).await;
     prepare(&app, cx);
-    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    #[cfg_attr(not(target_os = "linux"), expect(unused_mut))]
     let mut desktops = vec![false];
     #[cfg(target_os = "linux")]
     let desktop = {

@@ -57,7 +57,7 @@ impl Fixture {
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
         let payload = b"one exact LFS preview payload\n".to_vec();
-        let oid = format!("{:x}", Sha256::digest(&payload));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(&payload));
         let pointer = pointer(&oid, payload.len());
         fs::write(root.join("image.png"), &pointer).unwrap();
         git(&root, &["add", "."]);
@@ -145,7 +145,7 @@ fn each_lfs_text_side_resolves_on_its_own_and_reads_only_the_local_store() {
     let repo = fixture.repo();
     let store = fixture.root.join(".git/lfs");
     let local = |bytes: &[u8]| {
-        let oid = format!("{:x}", Sha256::digest(bytes));
+        let oid = gitturtle_core::lower_hex(Sha256::digest(bytes));
         let path = object(&store, &oid);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
@@ -157,7 +157,10 @@ fn each_lfs_text_side_resolves_on_its_own_and_reads_only_the_local_store() {
     let large = local("x\n".repeat(1_100_000).as_bytes());
     let corrupt = local(b"corrupt\n");
     fs::write(
-        object(&store, &format!("{:x}", Sha256::digest(b"corrupt\n"))),
+        object(
+            &store,
+            &gitturtle_core::lower_hex(Sha256::digest(b"corrupt\n")),
+        ),
         b"tampered",
     )
     .unwrap();
@@ -400,7 +403,7 @@ fn a_store_that_cannot_be_read_is_not_called_a_corrupt_object() {
     let repo = fixture.repo();
     let store = fixture.root.join(".git/lfs");
     let bytes = b"the object's bytes\n";
-    let oid = format!("{:x}", Sha256::digest(bytes));
+    let oid = gitturtle_core::lower_hex(Sha256::digest(bytes));
     let stored = pointer(&oid, bytes.len());
     let file = FileChange {
         old_path: Some("notes.txt".into()),
@@ -513,7 +516,7 @@ fn lfs_preparation_is_passive_and_download_is_exact_verified_and_preserves_work(
     };
     let repo = f.repo();
     let other = b"another object that must stay remote\n";
-    let other_oid = format!("{:x}", Sha256::digest(other));
+    let other_oid = gitturtle_core::lower_hex(Sha256::digest(other));
     fs::write(f.root.join("other.png"), pointer(&other_oid, other.len())).unwrap();
     git(&f.root, &["add", "."]);
     git(&f.root, &["commit", "-m", "Other pointer"]);
@@ -556,7 +559,7 @@ fn raw_working_pointer_fetch_uses_private_temporary_git_objects() {
     };
     let repo = f.repo();
     let payload = b"not present in any Git pointer blob\n";
-    let oid = format!("{:x}", Sha256::digest(payload));
+    let oid = gitturtle_core::lower_hex(Sha256::digest(payload));
     let bytes = pointer(&oid, payload.len());
     let remote = object(&f.remote.join("lfs"), &oid);
     fs::create_dir_all(remote.parent().unwrap()).unwrap();

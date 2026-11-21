@@ -550,7 +550,7 @@ impl GitRepository {
                 head,
                 root: self.path.clone(),
                 branch_ref: status.branch.clone(),
-                index_token: format!("{:x}", Sha256::digest(index)),
+                index_token: crate::lower_hex(Sha256::digest(index)),
             },
             status,
         ))
@@ -793,7 +793,7 @@ impl GitRepository {
             bytes.is_empty() || bytes.last() == Some(&0),
             "Incomplete stash reflog output"
         );
-        let token = format!("{:x}", Sha256::digest(&bytes));
+        let token = crate::lower_hex(Sha256::digest(&bytes));
         let fields: Vec<_> = bytes
             .strip_suffix(&[0])
             .unwrap_or(&bytes)
@@ -939,7 +939,7 @@ impl GitRepository {
             }
             digest.update([0]);
         }
-        Ok(format!("{:x}", digest.finalize()))
+        Ok(crate::lower_hex(digest.finalize()))
     }
 }
 

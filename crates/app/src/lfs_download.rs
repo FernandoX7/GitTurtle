@@ -268,7 +268,7 @@ pub(super) fn above_comparison<V: 'static>(
 /// between the line and `body`, or above `body` where no side failed: as in
 /// Compare, the row keeps its height, the line gives way first and the body
 /// keeps one whole row beside it.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn above_comparison_with_row<V: 'static>(
     line: &FailureLine,
     key: ComparisonKey,
@@ -892,7 +892,7 @@ pub(crate) struct CompareRow {
 /// of its pull glyph and, where they keep "Failed…", the failure's words,
 /// after the last Download on the failed side's line, or in the sentence's
 /// place where that led the line, so no Download moves.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn download_row(
     targets: Vec<(usize, LfsDownloadTarget)>,
     quick_source: bool,

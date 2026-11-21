@@ -178,7 +178,7 @@ impl Walk {
 /// sweep's checks at a stop added to `failures`, named by `surface`,
 /// `walk`'s interface size, the stop and `key` ([`sweep::place`]), and, at
 /// a stop named in `lists`, what is painted over its ring after it.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn stops(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,

@@ -10,11 +10,11 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-#[allow(dead_code, reason = "each test uses part of the module")]
+#[expect(dead_code, reason = "each test uses part of the module")]
 #[path = "../src/pdf_helper.rs"]
 mod pdf_helper;
 
-#[allow(dead_code, reason = "each test uses part of the module")]
+#[expect(dead_code, reason = "each test uses part of the module")]
 #[path = "../src/image_helper.rs"]
 mod image_helper;
 
@@ -334,7 +334,7 @@ mod real {
     #[test]
     fn hostile_images_end_in_their_error_kinds_and_never_meet_the_filter() {
         use ImageErrorKind::*;
-        let cases: [(&str, Vec<u8>, u32, ImageErrorKind); 11] = [
+        let cases: [(&str, Vec<u8>, u32, ImageErrorKind); 10] = [
             ("#1549", fixtures::issue_1549(), 1_600, EdgeLimit),
             (
                 "#1558 1 × 1 tiles",
@@ -346,19 +346,13 @@ mod real {
                 "#1409 empty resolution level",
                 fixtures::empty_resolution_level(),
                 125,
-                DecoderFailed,
+                Jpeg2000Unreadable,
             ),
             (
                 "#1409 tile-part lowers the levels",
                 fixtures::tile_part_lowers_levels(),
                 128,
-                DecoderFailed,
-            ),
-            (
-                "hayro-jpeg2000 panic past the preflight",
-                fixtures::hayro_panic(),
-                1_600,
-                DecoderFailed,
+                Jpeg2000Unreadable,
             ),
             (
                 "truncated OBU",
@@ -411,12 +405,19 @@ mod real {
         assert!(wrong.is_empty(), "{wrong:#?}");
         // Each #1409 codestream decodes without its trigger: at full
         // resolution, and with the tile-part's levels left as they are.
+        // The 0.4.1 7-bit duplicate-cmap palette fixture also decodes cleanly
+        // under hayro-jpeg2000 0.5.0 without panicking or meeting the filter.
         let controls = [
             ("all levels kept", fixtures::empty_resolution_level(), 1_600),
             (
                 "no tile-part COD",
                 fixtures::codestream(5, [1_024, 64, 0, 0, 1_024, 64, 0, 0], &[]),
                 128,
+            ),
+            (
+                "0.4.1 7-bit duplicate-cmap palette",
+                fixtures::hayro_panic(),
+                1_600,
             ),
         ];
         for (case, bytes, edge) in controls {
@@ -512,10 +513,8 @@ mod real {
     fn unread(fd: &impl AsRawFd) -> usize {
         let mut count: libc::c_int = 0;
         // SAFETY: FIONREAD writes one int into a local.
-        assert_eq!(
-            unsafe { libc::ioctl(fd.as_raw_fd(), libc::FIONREAD, &mut count) },
-            0
-        );
+        let rc = unsafe { libc::ioctl(fd.as_raw_fd(), libc::FIONREAD, &mut count) };
+        assert_eq!(rc, 0);
         count as usize
     }
 

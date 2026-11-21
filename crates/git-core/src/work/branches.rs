@@ -871,7 +871,7 @@ fn config_entries_token(entries: &[(String, String)]) -> String {
         digest.update(value.as_bytes());
         digest.update([0]);
     }
-    format!("{:x}", digest.finalize())
+    crate::lower_hex(digest.finalize())
 }
 
 fn regex_literal(value: &str) -> String {

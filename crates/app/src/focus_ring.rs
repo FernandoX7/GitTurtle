@@ -193,7 +193,7 @@ pub(crate) fn painted_outlines_where(
                 }
             })
             .collect();
-        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        spans.sort_by(|a, b| a.0.as_f32().total_cmp(&b.0.as_f32()));
         let mut reach = start;
         for (from, to) in spans {
             if from > reach {
