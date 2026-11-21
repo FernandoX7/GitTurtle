@@ -233,7 +233,7 @@ def install(options, packages, *, update_seconds=UPDATE_SECONDS, install_seconds
     resolved = lookup(source_hosts(source))
     if warning := verdict(resolved, source):
         print(warning)
-    phase("update", ["--error-on=any"], update_seconds, options, resolved)
+    phase("update", ["-o", "Acquire::Languages=none", "--error-on=any"], update_seconds, options, resolved)
     phase("install", ["-y", "--no-install-recommends", *packages], install_seconds, options, resolved)
 
 

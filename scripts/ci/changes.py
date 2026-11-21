@@ -27,6 +27,9 @@ LANES = ("product", "tooling", "website")
 JOBS = {"rust-format": "product", "rust-debug": "product", "rust-clippy": "product",
         "rust-release": "product", "package-transfer": "product", "rust-arch": "product",
         "agent-tooling": "tooling", "website": "website"}
+# Runs unconditionally in parallel with other lanes once `changes` finishes,
+# taking the full CI unit test suite off the serial `changes` critical path.
+CI_TESTS_JOB = "ci-tests"
 # A Linux release leg hands on `<label>-eligible` and its leg of the later job
 # `<label>-transfer` (scripts/ci/packages.py writes both). A package counts only
 # as one of these pairs, each with the line the gate prints for it. The labels
@@ -37,8 +40,9 @@ TRANSFER_PAIRS = {
     ("true", "verified"): "uploaded by its release leg; downloaded and verified by the later job",
     ("false", "held"): "held by its release leg; nothing uploaded and nothing verified",
 }
-# The image privacy job always runs and reports what it did. Only "scanned" is a
-# scan; the other results succeed without claiming one, and the gate says so.
+# The image privacy job runs whenever added or changed raster images exist (or
+# when comparison fails closed). Only "scanned" is a scan; the other results
+# succeed without claiming one, and the gate says so.
 PRIVACY_JOB = "image-privacy"
 PRIVACY_RESULTS = {
     "scanned": f"{PRIVACY_JOB}: added or changed images template-scanned; no match",
@@ -47,72 +51,103 @@ PRIVACY_RESULTS = {
                    "(fork pull request or unconfigured repository)",
     "no-comparison": f"{PRIVACY_JOB}: NOT scanned; this event has no comparison",
 }
+IMAGE_SUFFIXES = (b".png", b".jpg", b".jpeg", b".gif", b".webp")
+ZERO_OID = "0" * 40
 OID = re.compile(r"[0-9a-f]{40}\Z")
 DOC_NAMES = {
     "README.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md",
-    "DESIGN.md", "CHANGELOG.md",
+    "DESIGN.md", "SUPPORT.md",
 }
 DOC_SUFFIXES = {".md", ".png", ".jpg", ".jpeg", ".svg", ".webp"}
+BENCHMARK_DATA_SUFFIXES = {".json", ".csv", ".tsv"}
+PURE_PRODUCT_PREFIXES = ("crates/", "vendor/", "assets/", ".cargo/")
+PURE_PRODUCT_FILES = {
+    "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml",
+    "clippy.toml", "deny.toml",
+}
 
 
 class PolicyError(ValueError):
     """Input cannot establish the requested policy result."""
 
 
-def full_plan(reason: str) -> dict:
+def paths_have_images(paths: list[bytes]) -> bool:
+    return any(path.lower().endswith(IMAGE_SUFFIXES) for path in paths)
+
+
+def full_plan(reason: str, *, has_images: bool = True) -> dict:
     return {"version": 1, "product": True, "tooling": True, "website": True,
-            "reason": reason, "path_count": None}
+            "has_images": has_images, "reason": reason, "path_count": None}
 
 
-def classify_paths(paths: list[bytes]) -> dict:
+def classify_paths(paths: list[bytes], *, has_images: bool | None = None) -> dict:
+    images = paths_have_images(paths) if has_images is None else has_images
     if not paths or len(paths) > MAX_PATHS:
-        return full_plan("empty-or-oversized-comparison")
-    selected = set()
+        return full_plan("empty-or-oversized-comparison", has_images=True)
+    decoded: list[tuple[str, list[str]]] = []
     for raw in paths:
         try:
             path = raw.decode("utf-8", errors="strict")
         except UnicodeError:
-            return full_plan("unrecognized-path")
+            return full_plan("unrecognized-path", has_images=True)
         parts = path.split("/")
         if (not path or any(part in ("", ".", "..") for part in parts)
                 or "\\" in path or any(ord(c) < 32 or ord(c) == 127 for c in path)):
-            return full_plan("unrecognized-path")
+            return full_plan("unrecognized-path", has_images=True)
+        decoded.append((path, parts))
+    selected = set()
+    for path, parts in decoded:
         if path == "scripts/ci/packages.py":
-            return full_plan("package-delivery")
+            return full_plan("package-delivery", has_images=images)
         # The pinned tool installer only runs in the Rust jobs, so a pin change
         # must exercise them before it reaches main.
         if path == "scripts/ci/tools.py":
-            return full_plan("pinned-ci-tool")
+            return full_plan("pinned-ci-tool", has_images=images)
         # The package installation helper runs only inside the Rust jobs' setup,
         # the Image privacy job and the package transfer job, so a change of it
         # must exercise them before it reaches main.
         if path == "scripts/ci/apt_install.py":
-            return full_plan("package-installation-helper")
+            return full_plan("package-installation-helper", has_images=images)
         # Every Rust job runs its commands under the collector, and the Rust
         # cache action records with it, so a change of it must run them before
         # it reaches main.
         if path == "scripts/ci/metrics.py":
-            return full_plan("ci-collector")
+            return full_plan("ci-collector", has_images=images)
+        # Linux Rust test shards run this ELF inspector directly.
+        if path == "scripts/ci/libdav1d_elf.py":
+            return full_plan("elf-link-check", has_images=images)
         if path.startswith(".github/"):
-            return full_plan("workflow-or-repository-policy")
+            return full_plan("workflow-or-repository-policy", has_images=images)
         # Claude Code configuration is development guidance like .agents/ and
-        # .codex/: the guidance check and the agent-loop suite exercise it.
-        if (path.startswith(("scripts/ci/", "scripts/agent_loop/", "scripts/native_qa/", "scripts/operator/",
+        # .codex/: the guidance check and the tooling suite exercise it.
+        if (path.startswith(("scripts/ci/", "scripts/dev/", "scripts/agent_loop/",
+                             "scripts/native_qa/", "scripts/operator/",
                              ".agents/", ".codex/", ".claude/", "docs/development/"))
                 or path in ("scripts/agent-loop.py", "scripts/check-agent-guidance.py")
                 or parts[-1] in ("AGENTS.md", "CLAUDE.md")):
             selected.add("tooling")
         elif path.startswith("website/"):
             selected.add("website")
-        elif path in DOC_NAMES or (path.startswith("docs/")
-                                  and PurePosixPath(path).suffix in DOC_SUFFIXES):
+        elif (path in DOC_NAMES
+              or (path.startswith("docs/")
+                  and not path.startswith("docs/licenses/")
+                  and PurePosixPath(path).suffix in DOC_SUFFIXES)
+              or (path.startswith("docs/benchmarks/")
+                  and PurePosixPath(path).suffix in BENCHMARK_DATA_SUFFIXES)
+              or (path.startswith("crates/app/docs/") and PurePosixPath(path).suffix == ".md")
+              or path in ("crates/git-core/README.md", "packaging/aur/README.md")):
             pass  # Guidance and CI policy checks run in the mandatory changes job.
+        elif path.startswith(PURE_PRODUCT_PREFIXES) or path in PURE_PRODUCT_FILES:
+            # Pure Rust/app/vendor/manifest/asset edits run all product Rust
+            # checks without holding a macOS slot on unrelated agent-tooling
+            # or website jobs (ci-tests still runs in parallel on Ubuntu).
+            selected.add("product")
         else:
-            # Includes crates, manifests, toolchain, native assets, vendor, build
-            # and package scripts, root configuration, and unknown future inputs.
-            return full_plan("product-or-unrecognized-input")
+            # Includes packaging/release scripts, root configuration, and
+            # unknown future inputs: fail closed to full validation.
+            return full_plan("product-or-unrecognized-input", has_images=images)
     return {"version": 1, **{lane: lane in selected for lane in LANES},
-            "reason": "classified-paths", "path_count": len(paths)}
+            "has_images": images, "reason": "classified-paths", "path_count": len(paths)}
 
 
 def parse_paths(raw: bytes) -> list[bytes]:
@@ -183,33 +218,48 @@ def compared_paths(repository: Path, comparisons: list[tuple[str, str]], diff_fi
 
 def classify_checkout(repository: Path, event_name: str, event: dict, checkout_sha: str) -> dict:
     if event_name == "workflow_dispatch":
-        return full_plan("manual-full-validation")
+        return full_plan("manual-full-validation", has_images=False)
+    if event_name == "schedule":
+        return full_plan("scheduled-cache-seed", has_images=False)
     try:
         expected = checkout_identity(repository, checkout_sha)
         if event_name == "pull_request":
             comparisons = pull_request_comparisons(repository, event, expected)
+            paths = compared_paths(repository, comparisons)
+            non_deleted = compared_paths(repository, comparisons, "d")
+            return classify_paths(paths, has_images=paths_have_images(non_deleted))
         elif event_name == "push":
-            valid_oid(event["before"])
             head = valid_oid(event["after"])
             if (head != expected or event.get("deleted") is not False
                     or event.get("ref") != "refs/heads/main"):
                 raise PolicyError("push-identity-mismatch")
-            # Main establishes both package coverage and a trusted cache seed.
-            # Cheap changed-path routing belongs to contribution PRs only.
-            return full_plan("main-full-validation")
+            before = event.get("before")
+            if before == ZERO_OID:
+                return full_plan("main-no-comparison", has_images=False)
+            before_oid = valid_oid(before)
+            comparisons = [(before_oid, expected)]
+            paths = compared_paths(repository, comparisons)
+            non_deleted = compared_paths(repository, comparisons, "d")
+            classified = classify_paths(paths, has_images=paths_have_images(non_deleted))
+            if classified["product"]:
+                # Any code, manifest, workflow, or unrecognized change on main
+                # runs full validation and refreshes trusted main caches.
+                return full_plan("main-full-validation", has_images=classified["has_images"])
+            # Pure docs/records/website/tooling merges on main leave the built
+            # product and Rust cache keys unchanged; run only affected lanes.
+            return classified
         else:
             raise PolicyError("unsupported-event")
-        return classify_paths(compared_paths(repository, comparisons))
     except (PolicyError, KeyError, TypeError, UnicodeError):
-        return full_plan("comparison-unavailable-or-inconsistent")
+        return full_plan("comparison-unavailable-or-inconsistent", has_images=True)
 
 
 def validate_plan(plan: object) -> dict:
-    if not isinstance(plan, dict) or set(plan) != {"version", *LANES, "reason", "path_count"}:
+    if not isinstance(plan, dict) or set(plan) != {"version", *LANES, "has_images", "reason", "path_count"}:
         raise PolicyError("missing or malformed classification")
     if type(plan["version"]) is not int or plan["version"] != 1:
         raise PolicyError("unknown classification version")
-    if any(type(plan[lane]) is not bool for lane in LANES):
+    if any(type(plan[lane]) is not bool for lane in LANES) or type(plan["has_images"]) is not bool:
         raise PolicyError("classification flags must be booleans")
     count = plan["path_count"]
     if plan["reason"] == "classified-paths":
@@ -219,9 +269,6 @@ def validate_plan(plan: object) -> dict:
         raise PolicyError("fallback must require all validation lanes")
     if not isinstance(plan["reason"], str) or not re.fullmatch(r"[a-z-]{1,64}", plan["reason"]):
         raise PolicyError("invalid classification reason")
-    # Product inputs require development tooling as well as both Rust platforms.
-    if plan["product"] and not plan["tooling"]:
-        raise PolicyError("product validation requires tooling")
     return plan
 
 
@@ -256,7 +303,7 @@ def transfer_results(needs: dict) -> list[str]:
 
 
 def gate(needs: object) -> list[str]:
-    if not isinstance(needs, dict) or set(needs) != {"changes", PRIVACY_JOB, *JOBS}:
+    if not isinstance(needs, dict) or set(needs) != {"changes", CI_TESTS_JOB, PRIVACY_JOB, *JOBS}:
         raise PolicyError("missing or unexpected job results")
     changes = needs["changes"]
     if not isinstance(changes, dict) or changes.get("result") != "success":
@@ -264,11 +311,15 @@ def gate(needs: object) -> list[str]:
     try:
         outputs = changes["outputs"]
         plan = validate_plan(json.loads(outputs["plan"]))
-        if any(outputs.get(lane) != str(plan[lane]).lower() for lane in LANES):
+        if (any(outputs.get(lane) != str(plan[lane]).lower() for lane in LANES)
+                or outputs.get("has-images") != str(plan["has_images"]).lower()):
             raise PolicyError("classification outputs disagree")
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise PolicyError("missing or malformed classification outputs") from error
-    results = []
+    ci_tests = needs[CI_TESTS_JOB]
+    if not isinstance(ci_tests, dict) or ci_tests.get("result") != "success":
+        raise PolicyError(f"{CI_TESTS_JOB}: required result was not successful ({ci_tests.get('result') if isinstance(ci_tests, dict) else None!r})")
+    results = [f"{CI_TESTS_JOB}: success"]
     for job, lane in JOBS.items():
         entry = needs[job]
         result = entry.get("result") if isinstance(entry, dict) else None
@@ -283,9 +334,17 @@ def gate(needs: object) -> list[str]:
     result = entry.get("result") if isinstance(entry, dict) else None
     outputs = entry.get("outputs") if isinstance(entry, dict) else None
     status = outputs.get("status") if isinstance(outputs, dict) else None
-    if result != "success" or not isinstance(status, str) or status not in PRIVACY_RESULTS:
+    if result == "skipped" and not plan["has_images"]:
+        skipped_status = (
+            "no-comparison"
+            if plan["reason"] in ("manual-full-validation", "scheduled-cache-seed", "main-no-comparison")
+            else "no-images"
+        )
+        results.append(PRIVACY_RESULTS[skipped_status])
+    elif result == "success" and isinstance(status, str) and status in PRIVACY_RESULTS:
+        results.append(PRIVACY_RESULTS[status])
+    else:
         raise PolicyError(f"{PRIVACY_JOB}: required result was not successful ({result!r}, {status!r})")
-    results.append(PRIVACY_RESULTS[status])
     return results
 
 
@@ -319,6 +378,7 @@ def main() -> int:
                 with args.output.open("a", encoding="utf-8") as output:
                     for lane in LANES:
                         output.write(f"{lane}={str(plan[lane]).lower()}\n")
+                    output.write(f"has-images={str(plan['has_images']).lower()}\n")
                     output.write(f"plan={serialized}\n")
         else:
             raw = os.environ.get("NEEDS_JSON", "")

@@ -154,6 +154,16 @@ class FilterTests(unittest.TestCase):
         self.assertIn("    called `Result::unwrap()` on an `Err` value: fatal: could not read Username", kept)
         self.assertNotIn(" Nextest run ID b0bb9fd2 with nextest profile: ci", kept)
 
+    def test_nextest_0_9_152_space_padded_progress_counter(self):
+        output = [
+            "        PASS [   0.004s] (  1/100) gitturtle-core tests::passing_one",
+            "        FAIL [   0.014s] ( 12/100) gitturtle-core work::tests::padded_counter_failure",
+            "     Summary [   0.250s] 100 tests run: 99 passed, 1 failed, 0 skipped",
+        ]
+        kept, failed, _ = gate.filter_nextest(output)
+        self.assertEqual(failed, ("work::tests::padded_counter_failure",))
+        self.assertFalse(any("passing_one" in line for line in kept))
+
     def test_cargo_test_fallback_collects_failed_names(self):
         output = [
             "running 2 tests",

@@ -516,6 +516,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(image_privacy.changes.PRIVACY_JOB, "image-privacy")
         needs = re.search(r"^    needs: \[(.*)\]$", self.jobs["quality"], re.M).group(1).split(", ")
         self.assertIn("image-privacy", needs)
+        self.assertIn("    needs: changes\n", self.header)
+        self.assertIn("    if: needs.changes.outputs.has-images == 'true'\n", self.header)
         self.assertIn("    name: Image privacy · ${{ matrix.shard }}/8\n", self.header)
         self.assertIn("    timeout-minutes: 90\n", self.header)
         self.assertIn("    strategy:\n      fail-fast: false\n      matrix:\n"
@@ -523,8 +525,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(SHARDS), 8)
         self.assertIn("    outputs:\n      status: ${{ steps.scan.outputs.status || steps.slice.outputs.status "
                       "|| steps.plan.outputs.status }}\n", self.header)
-        # Either would let a shard that failed, or never ran, count as a success.
-        for unwanted in ("continue-on-error", "\n    if:", "include:", "exclude:"):
+        # Either would let a shard that failed, or a dropped shard, count as a success.
+        for unwanted in ("continue-on-error", "include:", "exclude:"):
             self.assertNotIn(unwanted, self.jobs["image-privacy"])
 
     def test_every_shard_slices_the_same_plan_and_scans_only_a_slice_that_has_images(self):

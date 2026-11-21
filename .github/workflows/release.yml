@@ -71,7 +71,7 @@ jobs:
     name: Verify chosen release context
     if: github.repository == 'FernandoX7/GitTurtle' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       context: ${{ steps.identity.outputs.context }}
       linux: ${{ steps.identity.outputs.linux }}
@@ -83,6 +83,23 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
+      - name: Check locked dependency advisories and licenses with cargo-deny 0.20.2
+        run: |
+          deny_dir="$RUNNER_TEMP/cargo-deny-0.20.2"
+          mkdir -p "$deny_dir"
+          curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+            --connect-timeout 15 --max-time 60 \
+            --write-out '%{onerror}%{stderr}::error::cargo-deny download failed at %{urle.host}: %{errormsg} (curl exit %{exitcode})\n' \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
+            --output "$deny_dir/cargo-deny.tar.gz"
+          printf '%s  %s\n' '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f' \
+            "$deny_dir/cargo-deny.tar.gz" | sha256sum --check --status || {
+            echo "::error::cargo-deny archive's SHA-256 is not the pinned one"
+            exit 1
+          }
+          tar -xzf "$deny_dir/cargo-deny.tar.gz" -C "$deny_dir" --strip-components=1 cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+          "$deny_dir/cargo-deny" --version
+          "$deny_dir/cargo-deny" --locked check
       - name: Validate exact tag, source, workflow trust and full Quality results
         id: identity
         env:
@@ -105,7 +122,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 3
       matrix: ${{ fromJSON(needs.context.outputs.matrix) }}
     env:
       RELEASE_CONTEXT: ${{ needs.context.outputs.context }}
@@ -172,7 +189,7 @@ jobs:
     name: Sign and notarize the verified macOS package
     needs: [context, build]
     if: needs.context.outputs.macos == 'true' && inputs.macos_signing == 'notarized'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 65
     environment: gitturtle-macos-signing
     env:

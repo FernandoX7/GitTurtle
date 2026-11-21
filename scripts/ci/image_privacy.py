@@ -51,7 +51,7 @@ SHARDS = 8
 
 def comparisons(repository: Path, event_name: str, event: dict, checkout_sha: str) -> list[tuple[str, str]]:
     """The comparisons that define added or changed images; empty when the event has none."""
-    if event_name == "workflow_dispatch":
+    if event_name in ("workflow_dispatch", "schedule"):
         return []
     expected = changes.checkout_identity(repository, checkout_sha)
     if event_name == "pull_request":

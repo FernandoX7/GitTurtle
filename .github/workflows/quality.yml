@@ -5,13 +5,21 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly cache-seed run so main caches stay warm even across doc-only weeks.
+    - cron: '17 4 * * 0'
 
 permissions:
   contents: read
 
 concurrency:
-  group: quality-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    quality-${{
+      github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) ||
+      (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && format('dispatch-{0}', github.ref)) ||
+      format('{0}-{1}', github.event_name, github.run_id)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}
 
 defaults:
   run:
@@ -26,17 +34,20 @@ jobs:
       product: ${{ steps.classify.outputs.product }}
       tooling: ${{ steps.classify.outputs.tooling }}
       website: ${{ steps.classify.outputs.website }}
+      has-images: ${{ steps.classify.outputs.has-images }}
       plan: ${{ steps.classify.outputs.plan }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Local comparisons avoid the API/path-filter changed-file limits.
+          # Local comparisons avoid the API/path-filter changed-file limits;
+          # blobless clone fetches commits and trees without 200+ MiB of blobs.
           fetch-depth: 0
+          filter: blob:none
       - name: Check development guidance
         run: python3 scripts/check-agent-guidance.py
-      - name: Test CI helpers and required results
-        run: python3 -B -m unittest discover -s scripts/ci/tests -p 'test_*.py'
+      - name: Test routing and gate policy
+        run: python3 -B -m unittest scripts/ci/tests/test_changes.py
       - name: Validate Actions workflow with actionlint 1.7.12
         run: |
           actionlint_dir="$RUNNER_TEMP/actionlint-1.7.12"
@@ -63,6 +74,17 @@ jobs:
       - name: Classify changed inputs
         id: classify
         run: python3 scripts/ci/changes.py classify --output "$GITHUB_OUTPUT"
+  ci-tests:
+    needs: changes
+    name: CI unit tests · ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test CI helpers and required results
+        run: python3 -B -m unittest discover -s scripts/ci/tests -p 'test_*.py'
   agent-tooling:
     needs: changes
     if: needs.changes.outputs.tooling == 'true'
@@ -83,7 +105,12 @@ jobs:
       - name: Validate development guidance
         run: python3 scripts/ci/metrics.py measure --name guidance --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/check-agent-guidance.py
       - name: Test development, native-QA, operator and CI tooling side by side
-        run: python3 scripts/ci/tooling_suites.py run --directory "$RUNNER_TEMP/ci-metrics"
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            python3 scripts/ci/tooling_suites.py run --skip-ci-tests --directory "$RUNNER_TEMP/ci-metrics"
+          else
+            python3 scripts/ci/tooling_suites.py run --directory "$RUNNER_TEMP/ci-metrics"
+          fi
       - name: Check CI collector syntax and help
         run: |
           python3 -m py_compile scripts/ci/metrics.py
@@ -148,19 +175,27 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Every leg at once: two platforms times two shards.
-      max-parallel: 4
+      # Every leg at once: 3 macOS shards + 2 Ubuntu shards.
+      # With agent-tooling decoupled from pure crates/ PRs, all 5 free macOS
+      # slots are available for Rust (3 debug shards + 1 clippy + 1 release).
+      max-parallel: 5
       matrix:
-        os: [macos-15, ubuntu-24.04]
-        # Each platform's tests run in `shards` jobs. nextest lists the tests
-        # of every binary and deals them to the shards in turn, after its
-        # other filters, so a shard runs only its share and the shards
-        # together run the list (docs/ci.md#test-shards). `shards` is the one
-        # place the total is written; `shard` must list 1 to that total, or
-        # the missing shard's tests would not run (a policy test in
-        # scripts/ci/tests/test_nextest.py holds both).
-        shard: [1, 2]
-        shards: [2]
+        include:
+          - os: macos-15
+            shard: 1
+            shards: 3
+          - os: macos-15
+            shard: 2
+            shards: 3
+          - os: macos-15
+            shard: 3
+            shards: 3
+          - os: ubuntu-24.04
+            shard: 1
+            shards: 2
+          - os: ubuntu-24.04
+            shard: 2
+            shards: 2
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -203,58 +238,11 @@ jobs:
           SHARDS: ${{ matrix.shards }}
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings --partition "slice:$SHARD/$SHARDS"
       - name: Print the libdav1d link and initializers
-        # Requirement 15 of the AVIF and JPEG 2000 security review
-        # (docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md) on
-        # this runner's architecture: the app the tests built links the system
-        # libdav1d (NEEDED, every dav1d_* undefined), and libdav1d's DT_INIT
-        # and .init_array entries with a few instructions at each. It only
-        # reads ELF files; a missing pkg-config skips the library's records.
-        # Every Linux shard prints them: each shard's runner installs its own
-        # library and the helper tests run in whichever shard the slice puts
-        # them, so each log carries the records of the library its tests met.
+        # Requirement 15 of the AVIF and JPEG 2000 security review on Linux
+        # shards: reads ELF dynamic tags, dav1d_* dynsym entries, and
+        # libdav1d's DT_INIT / .init_array initializers.
         if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          for tool in readelf objdump; do
-            if ! command -v "$tool" >/dev/null; then echo "::error::$tool is missing"; exit 1; fi
-          done
-          app="${CARGO_TARGET_DIR:-target}/debug/gitturtle"
-          echo "== readelf -d -W $app"
-          LC_ALL=C readelf -d -W "$app"
-          echo "== dav1d_* in its .dynsym"
-          LC_ALL=C readelf --dyn-syms -W "$app" | grep dav1d_ || echo "none"
-          if ! command -v pkg-config >/dev/null; then
-            echo "::notice::pkg-config is missing, so libdav1d's initializers are not printed"
-            exit 0
-          fi
-          lib="$(readlink -f -- "$(pkg-config --variable=libdir dav1d)/libdav1d.so.7")"
-          dynamic="$(LC_ALL=C readelf -d -W "$lib")"
-          echo "== readelf -d -W $lib"
-          echo "$dynamic"
-          tag() { awk -v tag="($1)" '$2 == tag { print $3; exit }' <<<"$dynamic"; }
-          init="$(tag INIT)" array="$(tag INIT_ARRAY)" size="$(tag INIT_ARRAYSZ)"
-          offset="$(LC_ALL=C readelf -S -W "$lib" | awk '{ for (i = 1; i < NF; i++) if ($i == ".init_array") { print $(i + 3); exit } }')"
-          relocations="$(LC_ALL=C readelf -r -W "$lib")"
-          targets=()
-          if [[ -n "$init" ]]; then targets+=("$init DT_INIT"); fi
-          if [[ -n "$array" && -n "$size" && -n "$offset" ]]; then
-            echo "== .init_array at $array, $size bytes: each entry's relocation and target"
-            for ((at = array; at < array + size; at += 8)); do
-              entry="$(printf '%016x' "$at")"
-              grep -F "$entry" <<<"$relocations" || echo "$entry: no relocation"
-              # A RELA relocation's addend, else the address stored in place (RELR).
-              target="$(awk -v entry="$entry" '$1 == entry && $3 ~ /_RELATIVE$/ { print $NF; exit }' <<<"$relocations")"
-              if [[ -z "$target" ]]; then
-                target="$(od -An -t x8 -j "$((16#$offset + at - array))" -N 8 -- "$lib" | tr -d ' ')"
-              fi
-              if [[ "$target" =~ ^[0-9a-f]+$ ]]; then targets+=("0x$target .init_array[$(((at - array) / 8))]"); fi
-            done
-          fi
-          for target in "${targets[@]}"; do
-            read -r address label <<<"$target"
-            echo "== $label: $address"
-            LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
-          done
+        run: python3 scripts/ci/libdav1d_elf.py
       - name: Locked workspace doctests
         if: matrix.shard == 1
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
@@ -316,6 +304,7 @@ jobs:
         with:
           profile: debug
           vendor-reuse: true
+          install-tool-packages: false
       - name: Locked all-target Clippy
         run: python3 scripts/ci/metrics.py measure --name clippy --directory "$RUNNER_TEMP/ci-metrics" -- cargo clippy --locked --workspace --all-targets --timings -- -D warnings
       - name: Summarize CI measurements
@@ -374,7 +363,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select verified Xcode 26.3 before cache identity
+      - name: Select installed Xcode 26 or later before cache identity
         if: runner.os == 'macOS'
         run: python3 scripts/release/workflow.py select-xcode
       - name: Prepare Rust and restore bounded dependencies
@@ -595,48 +584,7 @@ jobs:
         # The same records as in rust-debug, for Arch's libdav1d, in every
         # shard: the two containers upgrade separately, so each prints the
         # library its own tests met.
-        run: |
-          set -euo pipefail
-          for tool in readelf objdump; do
-            if ! command -v "$tool" >/dev/null; then echo "::error::$tool is missing"; exit 1; fi
-          done
-          app="${CARGO_TARGET_DIR:-target}/debug/gitturtle"
-          echo "== readelf -d -W $app"
-          LC_ALL=C readelf -d -W "$app"
-          echo "== dav1d_* in its .dynsym"
-          LC_ALL=C readelf --dyn-syms -W "$app" | grep dav1d_ || echo "none"
-          if ! command -v pkg-config >/dev/null; then
-            echo "::notice::pkg-config is missing, so libdav1d's initializers are not printed"
-            exit 0
-          fi
-          lib="$(readlink -f -- "$(pkg-config --variable=libdir dav1d)/libdav1d.so.7")"
-          dynamic="$(LC_ALL=C readelf -d -W "$lib")"
-          echo "== readelf -d -W $lib"
-          echo "$dynamic"
-          tag() { awk -v tag="($1)" '$2 == tag { print $3; exit }' <<<"$dynamic"; }
-          init="$(tag INIT)" array="$(tag INIT_ARRAY)" size="$(tag INIT_ARRAYSZ)"
-          offset="$(LC_ALL=C readelf -S -W "$lib" | awk '{ for (i = 1; i < NF; i++) if ($i == ".init_array") { print $(i + 3); exit } }')"
-          relocations="$(LC_ALL=C readelf -r -W "$lib")"
-          targets=()
-          if [[ -n "$init" ]]; then targets+=("$init DT_INIT"); fi
-          if [[ -n "$array" && -n "$size" && -n "$offset" ]]; then
-            echo "== .init_array at $array, $size bytes: each entry's relocation and target"
-            for ((at = array; at < array + size; at += 8)); do
-              entry="$(printf '%016x' "$at")"
-              grep -F "$entry" <<<"$relocations" || echo "$entry: no relocation"
-              # A RELA relocation's addend, else the address stored in place (RELR).
-              target="$(awk -v entry="$entry" '$1 == entry && $3 ~ /_RELATIVE$/ { print $NF; exit }' <<<"$relocations")"
-              if [[ -z "$target" ]]; then
-                target="$(od -An -t x8 -j "$((16#$offset + at - array))" -N 8 -- "$lib" | tr -d ' ')"
-              fi
-              if [[ "$target" =~ ^[0-9a-f]+$ ]]; then targets+=("0x$target .init_array[$(((at - array) / 8))]"); fi
-            done
-          fi
-          for target in "${targets[@]}"; do
-            read -r address label <<<"$target"
-            echo "== $label: $address"
-            LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
-          done
+        run: python3 scripts/ci/libdav1d_elf.py
       - name: Locked workspace doctests
         if: matrix.shard == 1
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
@@ -674,6 +622,8 @@ jobs:
   # gate needs this job's result to be success: a failed, cancelled or timed
   # out shard fails the gate (docs/ci.md#image-privacy-scan).
   image-privacy:
+    needs: changes
+    if: needs.changes.outputs.has-images == 'true'
     name: Image privacy · ${{ matrix.shard }}/8
     runs-on: ubuntu-24.04
     # One 45-minute job was cancelled before it finished 735 images (quality
@@ -841,7 +791,7 @@ jobs:
   quality:
     name: Quality gate
     if: always()
-    needs: [changes, agent-tooling, rust-format, rust-debug, rust-clippy, rust-release, package-transfer, rust-arch, image-privacy, website]
+    needs: [changes, ci-tests, agent-tooling, rust-format, rust-debug, rust-clippy, rust-release, package-transfer, rust-arch, image-privacy, website]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
