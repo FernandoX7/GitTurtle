@@ -12018,6 +12018,30 @@ mod tests {
         (list, lines)
     }
 
+    /// The text sizes and window sizes the conversation list's reveals are walked at
+    /// ([`conversation_reveals_leave_no_line_cut_at_the_lists_edges_at`]), in the order one
+    /// test walked them: at 13 pt in windows 430 to 500 px wide, every 10 px, and 490 px
+    /// tall, then the same windows at 17 pt and at 18 pt, eight a text size. Each part of the
+    /// walk runs its own slice of this list, below, and one test the rows either side of each
+    /// change of text size.
+    fn list_edge_sizes() -> Vec<(u8, f32, f32)> {
+        [13, 17, 18]
+            .into_iter()
+            .flat_map(|size| {
+                (430..=500)
+                    .step_by(10)
+                    .map(move |width| (size, width as f32, 490.))
+            })
+            .collect()
+    }
+
+    /// The slice of [`list_edge_sizes`] each part of the walk runs, in the list's order, one
+    /// text size each; `the_parts_of_the_list_edge_walk_run_each_size_once` holds them to the
+    /// list, and each to its text size.
+    const LIST_EDGES_AT_13_PT: std::ops::Range<usize> = 0..8;
+    const LIST_EDGES_AT_17_PT: std::ops::Range<usize> = 8..16;
+    const LIST_EDGES_AT_18_PT: std::ops::Range<usize> = 16..24;
+
     /// Tab down through a PR's conversations on the offline fixture, at 13, 17 and 18 pt in
     /// windows 430 to 500 px wide, every 10 px, and 490 px tall, where the conversation list is
     /// shorter than its conversations: wherever Tab scrolls the list onto a conversation's actions,
@@ -12030,8 +12054,16 @@ mod tests {
     /// collected no lines of their own (FU15-D's review): they stopped wherever the block
     /// starts put them, and at 13 pt in a 480 × 490 window Tab onto the third conversation's
     /// actions left its permissions line, 274.5..294, cut at the list's foot, 279.5.
-    #[gpui::test]
-    async fn conversation_reveals_leave_no_line_cut_at_the_lists_edges(cx: &mut TestAppContext) {
+    ///
+    /// Walked at `sizes`, rows of [`list_edge_sizes`] in the list's order, on a panel of its
+    /// own: one test a text size, since the twenty-four walks in one test took 57.5 s on a
+    /// hosted runner, against the 120 s at which nextest ends a test. Each test's own walks
+    /// scroll the list onto actions once at least, which the one test asked of the
+    /// twenty-four together.
+    async fn conversation_reveals_leave_no_line_cut_at_the_lists_edges_at(
+        sizes: &[(u8, f32, f32)],
+        cx: &mut TestAppContext,
+    ) {
         let (_fixture, _app, panel, pull, cx) = fixture_panel(cx).await;
         let list_scroll = cx.read(|cx| panel.read(cx).conversations.list_scroll.clone());
         // The selectors of the first conversations' actions, made once for the whole test.
@@ -12039,12 +12071,7 @@ mod tests {
             .map(|index| &*format!("github-thread-actions-{index}").leak())
             .collect();
         let mut moves = 0;
-        let sizes = [13, 17, 18].into_iter().flat_map(|size| {
-            (430..=500)
-                .step_by(10)
-                .map(move |width| (size, width as f32, 490.))
-        });
-        for sizes in sizes {
+        for sizes in sizes.iter().copied() {
             let at = format!("{} pt in {} × {}", sizes.0, sizes.1, sizes.2);
             show_overview(&panel, &pull, sizes, cx);
             let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
@@ -12133,6 +12160,93 @@ mod tests {
             }
         }
         assert!(moves > 0, "Tab scrolls the conversation list onto actions");
+    }
+
+    /// [`conversation_reveals_leave_no_line_cut_at_the_lists_edges_at`] 13 pt, in each of the
+    /// eight windows ([`LIST_EDGES_AT_13_PT`]).
+    #[gpui::test]
+    async fn conversation_reveals_leave_no_line_cut_at_the_lists_edges_at_13_pt(
+        cx: &mut TestAppContext,
+    ) {
+        let sizes = &list_edge_sizes()[LIST_EDGES_AT_13_PT];
+        conversation_reveals_leave_no_line_cut_at_the_lists_edges_at(sizes, cx).await;
+    }
+
+    /// [`conversation_reveals_leave_no_line_cut_at_the_lists_edges_at`] 17 pt, in each of the
+    /// eight windows ([`LIST_EDGES_AT_17_PT`]).
+    #[gpui::test]
+    async fn conversation_reveals_leave_no_line_cut_at_the_lists_edges_at_17_pt(
+        cx: &mut TestAppContext,
+    ) {
+        let sizes = &list_edge_sizes()[LIST_EDGES_AT_17_PT];
+        conversation_reveals_leave_no_line_cut_at_the_lists_edges_at(sizes, cx).await;
+    }
+
+    /// [`conversation_reveals_leave_no_line_cut_at_the_lists_edges_at`] 18 pt, in each of the
+    /// eight windows ([`LIST_EDGES_AT_18_PT`]).
+    #[gpui::test]
+    async fn conversation_reveals_leave_no_line_cut_at_the_lists_edges_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        let sizes = &list_edge_sizes()[LIST_EDGES_AT_18_PT];
+        conversation_reveals_leave_no_line_cut_at_the_lists_edges_at(sizes, cx).await;
+    }
+
+    /// The conversation list's reveals follow a change of text size beneath a list already
+    /// drawn: one window walks the last window of a text size and then the first of the
+    /// next, 13 pt in 500 × 490 then 17 pt in 430 × 490, and 17 pt in 500 × 490 then 18 pt in
+    /// 430 × 490, rows of [`list_edge_sizes`] in the walk's order, each walked as a part walks
+    /// it ([`conversation_reveals_leave_no_line_cut_at_the_lists_edges_at`]). The walk was one
+    /// test in one window, its 17 and 18 pt windows drawn after its 13 pt ones; each of its
+    /// three tests now opens a window of its own at one text size, where what a text kept of
+    /// its lines at another text size (`review::TextLines`) is never read, so a list whose
+    /// texts kept the line height they first drew at passes all three, while its reveals at
+    /// 17 pt in a 430 × 490 window leave the third conversation's permissions line,
+    /// 336.5..362, cut at the list's foot, 356.
+    #[gpui::test]
+    async fn conversation_reveals_leave_no_line_cut_after_a_text_size_change_in_one_window(
+        cx: &mut TestAppContext,
+    ) {
+        let sizes = list_edge_sizes();
+        let steps = [
+            LIST_EDGES_AT_13_PT.end - 1,
+            LIST_EDGES_AT_17_PT.start,
+            LIST_EDGES_AT_17_PT.end - 1,
+            LIST_EDGES_AT_18_PT.start,
+        ]
+        .map(|step| sizes[step]);
+        assert!(
+            steps.chunks(2).all(|pair| pair[0].0 != pair[1].0),
+            "each second step changes the text size beneath the list: {steps:?}"
+        );
+        conversation_reveals_leave_no_line_cut_at_the_lists_edges_at(&steps, cx).await;
+    }
+
+    /// The three parts of the conversation list's walk run [`list_edge_sizes`] between them,
+    /// each size once and in the list's order, and each part runs the sizes of its own text
+    /// size, one at least: a size added to the list that no part takes fails here, as does
+    /// one two parts take, and one in the part named for another text size.
+    #[test]
+    fn the_parts_of_the_list_edge_walk_run_each_size_once() {
+        let sizes = list_edge_sizes();
+        let parts = [
+            (13, LIST_EDGES_AT_13_PT),
+            (17, LIST_EDGES_AT_17_PT),
+            (18, LIST_EDGES_AT_18_PT),
+        ];
+        for (text, part) in &parts {
+            let run = &sizes[part.clone()];
+            assert!(!run.is_empty(), "the part at {text} pt runs no size");
+            assert!(
+                run.iter().all(|size| size.0 == *text),
+                "the part at {text} pt runs another text size: {run:?}"
+            );
+        }
+        let run: Vec<_> = parts
+            .into_iter()
+            .flat_map(|(_, part)| sizes[part].iter().copied())
+            .collect();
+        assert_eq!(run, sizes);
     }
 
     /// The caret the last frame drew inside `view`, an editor's viewport, after a fresh draw:
@@ -18887,7 +19001,7 @@ mod tests {
     /// showed were the conversation list's own rows, scrolled out of the list below its foot or
     /// above its top, which the sweep counted as the body's because only the rows crossing the
     /// list's viewport counted as the list's; the list's reveals are
-    /// `conversation_reveals_leave_no_line_cut_at_the_lists_edges`'s, and the sweep now leaves
+    /// `conversation_reveals_leave_no_line_cut_at_the_lists_edges_at`'s, and the sweep now leaves
     /// whatever a list in the body holds to that list. No line outside the lists was never
     /// whole. The 19 left, traced in FU20-GH6 (2026-11-06), were three defects of the panel and
     /// three of the sweep's reading, each fixed; the sweep finds nothing since:
