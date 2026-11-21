@@ -1185,71 +1185,94 @@ class ArmTransferRouteTests(TransferRouteTests):
 
 
 class QualityUploadTests(unittest.TestCase):
-    """What quality.yml does with `prepare`'s answer; read as text (no YAML dependency)."""
+    """What quality.yml does with `prepare`'s answer: the release job's upload and hand-off, and the later job
+    that downloads the upload once and verifies it. Read as text (no YAML dependency); comments are not read."""
 
     ELIGIBLE = "steps.package.outputs.eligible == 'true'"
-    # A step's own `outcome` is its result before `continue-on-error` hides a failure from the job.
-    AFTER_FIRST = f"{ELIGIBLE} && steps.download-first.outcome == 'failure'"
-    AFTER_BOTH = f"{AFTER_FIRST} && steps.download-second.outcome == 'failure'"
-    CHAIN = ["Upload verified early-development CI package",
-             "Download this exact uploaded artifact from Actions",
-             "Wait about 15 s for the run's artifact listing and empty the download directory",
-             "Download this exact uploaded artifact from Actions, second attempt",
-             "Wait about 45 s more for the run's artifact listing and empty the download directory",
-             "Download this exact uploaded artifact from Actions, third and last attempt",
-             "Verify downloaded bytes and installation"]
+    PLANNED = "steps.plan.outputs.verify == 'true'"
+    # A step's own `outcome` is its result; `failure()` lets a step run once an earlier one has failed.
+    DOWNLOAD_FAILED = "failure() && steps.download.outcome == 'failure'"
+    CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+    UPLOAD = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2"
+    DOWNLOAD = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2"
+    RELEASE_LEGS = [("macos-26", "aarch64-apple-darwin"), ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
+                    ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu")]
+    TRANSFER_STEPS = ["uses: checkout", "Read what the release leg handed on and refuse anything malformed",
+                      "Install the runtime libraries and the desktop-entry tools",
+                      "Download the release leg's exact artifact from Actions", "Say what a failed download is",
+                      "Verify downloaded bytes and installation", "Summarize CI measurements",
+                      "Preserve CI measurements and sanitized diagnostics"]
 
-    def steps(self):
+    def job(self, name):
+        """A job's text without its comments, and its steps: each one's own keys, then the lines of its
+        `with:`, `env:` and `run:` blocks."""
         text = (packages.ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
-        job = re.split(r"^  ([a-z][a-z0-9-]*):\n", text.split("\njobs:\n", 1)[1], flags=re.M)
-        release = dict(zip(job[1::2], job[2::2]))["rust-release"]
-        return release, release.split("\n    steps:\n", 1)[1].split("\n      - ")
-
-    def chain(self):
-        """The steps from the upload to the verification, in the job's order: each one's own keys, then the
-        lines of its `with:`, `env:` and `run:` blocks. Comments are not read."""
-        release, steps = self.steps()
-        names = [step.splitlines()[0] for step in steps]
-        steps = steps[names.index(f"name: {self.CHAIN[0]}"):names.index(f"name: {self.CHAIN[-1]}") + 1]
-        read = []
-        for step in steps:
-            lines = [line for line in ("        " + step).splitlines() if not line.lstrip().startswith("#")]
+        blocks = re.split(r"^  ([a-z][a-z0-9-]*):\n", text.split("\njobs:\n", 1)[1], flags=re.M)
+        job = "\n".join(line for line in dict(zip(blocks[1::2], blocks[2::2]))[name].splitlines()
+                        if not line.lstrip().startswith("#"))
+        steps = []
+        for step in ("\n" + job.split("\n    steps:\n", 1)[1]).split("\n      - ")[1:]:
+            lines = ("        " + step).splitlines()
             own = dict(re.fullmatch(r"        ([a-z-]+):(?: (.*))?", line).groups() for line in lines if line[8:9].strip())
-            read.append((own, [line.strip() for line in lines if line.startswith("          ")]))
-        return release, read
+            steps.append((own, [line.strip() for line in lines if line.startswith("          ")]))
+        return job, steps
 
-    def test_only_prepare_decides_the_upload_and_its_summary_states_the_real_retention(self):
-        release, steps = self.steps()
-        gated = [step for step in steps if "outputs.eligible" in step]
+    def scripts(self, name):
+        """The shell text of each of a job's `run` steps: the one line, or the block under `run: |`."""
+        found = []
+        for own, lines in self.job(name)[1]:
+            if "run" in own:
+                # A step's `env:` block precedes its script; its entries are `NAME: value`.
+                block = [line for line in lines if not re.match(r"[A-Z][A-Z0-9_]*: ", line)]
+                found.append(own["run"] if own["run"] != "|" else "\n".join(block))
+        return found
+
+    @staticmethod
+    def named(steps):
+        return [own.get("name", "uses: " + own.get("uses", "").split("@")[0].split("/")[-1]) for own, _ in steps]
+
+    @staticmethod
+    def uploading():
+        """Each target whose platform uploads its package, with its label: the later job's legs."""
+        return {target: label for target, label in packages.TARGETS.items()
+                if packages.platform_of(target) in packages.HOSTED_UPLOAD_PLATFORMS}
+
+    @staticmethod
+    def outputs(job):
+        """A job's declared outputs, in its own order."""
+        block = re.search(r"^    outputs:\n((?:      .*\n)+)", job, re.M).group(1)
+        return [tuple(line.strip().split(": ", 1)) for line in block.splitlines()]
+
+    def test_only_prepare_decides_the_upload_and_the_hand_off_and_the_summary_states_the_real_retention(self):
+        release, steps = self.job("rust-release")
+        gated = [(own, lines) for own, lines in steps if "outputs.eligible" in own.get("if", "")]
         self.assertEqual(release.count("eligible =="), len(gated))
-        # The upload, then the download with its retries, then the verification: nothing else reads the answer.
-        self.assertEqual([step.splitlines()[0] for step in gated], [f"name: {name}" for name in self.CHAIN])
-        for step in gated:
-            with self.subTest(step=step.splitlines()[0]):
-                # Every one of them needs the answer; a retry also needs the earlier attempts' failures.
-                condition, = re.findall(r"^ +if: (.*)$", step, re.M)
-                self.assertIn(condition, (self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_BOTH))
-        upload = gated[0]
-        self.assertEqual(re.findall(r"^ +if: (.*)$", upload, re.M), [self.ELIGIBLE])
-        self.assertIn("\n          name: ${{ steps.package.outputs.artifact-name }}\n", upload)
+        # The upload, then the hand-off of its ID: nothing else in the job reads the answer.
+        self.assertEqual([own["name"] for own, _ in gated], ["Upload verified early-development CI package",
+                                                             "Hand the uploaded artifact's ID to the later job"])
+        self.assertEqual([own["if"] for own, _ in gated], [self.ELIGIBLE, self.ELIGIBLE])
+        upload, inputs = gated[0]
+        self.assertEqual((upload["id"], upload["uses"]), ("uploaded", self.UPLOAD))
         # Only the directory `prepare` fills for an eligible package is ever uploaded as a package.
-        self.assertEqual(re.findall(r"^ +path: (.*)$", upload, re.M), ["${{ runner.temp }}/ci-package/publish/*"])
-        self.assertEqual(re.findall(r"^ +retention-days: (.*)$", upload, re.M), [str(packages.UPLOAD_RETENTION_DAYS)])
+        self.assertEqual(inputs, ["name: ${{ steps.package.outputs.artifact-name }}",
+                                  "path: ${{ runner.temp }}/ci-package/publish/*",
+                                  f"retention-days: {packages.UPLOAD_RETENTION_DAYS}", "compression-level: 0",
+                                  "if-no-files-found: error", "include-hidden-files: false"])
         self.assertEqual(packages.UPLOAD_RETENTION_DAYS, 7)
-        # No run-time input reaches the decision: the job reads no workflow input or repository variable.
-        for override in ("inputs.", "vars.", "github.event.inputs"):
-            self.assertNotIn(override, release)
-        package = next(step for step in steps if "\n        id: package\n" in step)
-        self.assertEqual(sorted(set(re.findall(r"--[a-z-]+", package.split("packages.py prepare", 1)[1]))),
+        # No run-time input reaches the decision: neither job reads a workflow input or a repository variable.
+        for name in ("rust-release", "package-transfer"):
+            for override in ("inputs.", "vars.", "github.event.inputs"):
+                self.assertNotIn(override, self.job(name)[0])
+        package, = (lines for own, lines in steps if own.get("id") == "package")
+        self.assertEqual(sorted(set(re.findall(r"--[a-z-]+", " ".join(package).split("packages.py prepare", 1)[1]))),
                          ["--attempt", "--directory", "--event", "--output", "--report", "--revision", "--run-id",
                           "--summary", "--target"])
 
     def test_every_declared_target_has_one_release_leg_on_its_own_architecture(self):
-        release, _ = self.steps()
+        release, steps = self.job("rust-release")
         self.assertIn("\n    name: Rust release · ${{ matrix.os }}\n    runs-on: ${{ matrix.os }}\n", "\n" + release)
         legs = re.findall(r"^          - os: (\S+)\n            target: (\S+)$", release, re.M)
-        self.assertEqual(legs, [("macos-26", "aarch64-apple-darwin"), ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
-                                ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu")])
+        self.assertEqual(legs, self.RELEASE_LEGS)
         # The names the release preflight requires of a Quality run.
         self.assertEqual([f"Rust release · {runner}" for runner, _ in legs],
                          ["Rust release · macos-26", "Rust release · ubuntu-24.04", "Rust release · ubuntu-24.04-arm"])
@@ -1258,78 +1281,168 @@ class QualityUploadTests(unittest.TestCase):
         # A failed leg keeps the others' results, and no leg waits for another.
         self.assertIn("\n      fail-fast: false\n", release)
         self.assertEqual(re.findall(r"^      max-parallel: (\d+)$", release, re.M), [str(len(legs))])
-        # Each leg builds, packages and bounds the cache of its own matrix target.
-        self.assertEqual(release.count("PACKAGE_TARGET: ${{ matrix.target }}"), 3)
+        # Each leg installs, builds, packages and hands on its own matrix target, and bounds that target's cache.
+        self.assertEqual(release.count("PACKAGE_TARGET: ${{ matrix.target }}"), 4)
         self.assertEqual(re.findall(r"^          target: (.*)$", release, re.M), ["${{ matrix.target }}"])
         # Nothing but the Xcode selection depends on the runner, so the AArch64 Linux leg skips no step that
-        # the x86-64 one runs: the same setup, build, strict notices, package, upload and verification.
-        # The download's retries wait on that download's own failures, which no runner is named in.
-        self.assertEqual(sorted(set(re.findall(r"^        if: (.*)$", release, re.M))),
-                         ["always()", "runner.os == 'macOS'", self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_BOTH])
-        for selector in ("runner.arch ==", "runner.arch !=", "matrix.os ==", "matrix.os !=", "matrix.target ==",
-                         "matrix.target !=", "contains(matrix.", "startsWith(matrix."):
-            self.assertNotIn(selector, release)
+        # the x86-64 one runs: the same setup, build, strict notices, package, upload and hand-off.
+        self.assertEqual(sorted({own["if"] for own, _ in steps if "if" in own}),
+                         ["always()", "runner.os == 'macOS'", self.ELIGIBLE])
+        # Neither job tells its legs apart in an expression: a per-target value is written by packages.py
+        # under the target's label, from the target the leg passes it.
+        selectors = ("runner.arch ==", "runner.arch !=", "matrix.os ==", "matrix.os !=", "matrix.target ==",
+                     "matrix.target !=", "contains(matrix.", "startsWith(matrix.")
+        for name, barred in (("rust-release", selectors), ("package-transfer", (*selectors, "runner.os ==", "runner.os !="))):
+            for selector in barred:
+                self.assertNotIn(selector, self.job(name)[0], name)
         # The two Linux legs share a job id and an OS: only the architecture keeps their diagnostics apart.
         self.assertEqual(re.findall(r"^          name: (ci-diagnostics-.*)$", release, re.M),
                          ["ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-"
                           "${{ github.run_id }}-${{ github.run_attempt }}"])
 
-    def test_every_download_attempt_takes_the_uploaded_id_alone_with_the_same_pinned_action(self):
-        release, chain = self.chain()
-        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
-        attempts = [(own, inputs) for own, inputs in chain if "uses" in own][1:]
-        self.assertEqual([own["name"] for own, _ in attempts], self.CHAIN[1::2])
-        for own, inputs in attempts:
-            with self.subTest(step=own["name"]):
-                self.assertEqual(own["uses"],
-                                 "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2")
-                # One exact ID and a refused digest mismatch on every attempt; no name, pattern, run or token input.
-                self.assertEqual(inputs, ["artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}",
-                                          "path: ${{ runner.temp }}/ci-package-download",
-                                          "merge-multiple: true", "digest-mismatch: error"])
-        # That ID is the output of this job's one upload, and nothing else in the job downloads an artifact.
-        upload, _ = chain[0]
-        self.assertEqual((upload["id"], upload["uses"]),
-                         ("uploaded", "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2"))
-        ids = re.findall(r"^        id: (.*)$", release, re.M)
-        self.assertEqual(sorted(ids), sorted(set(ids)))
-        self.assertEqual(len(re.findall(r"^ +(?:- )?uses: .*download-artifact", release, re.M)), len(attempts))
+    def test_a_release_leg_hands_on_its_own_labels_three_outputs_through_the_helper_alone(self):
+        release, steps = self.job("rust-release")
+        labels = list(self.uploading().values())
+        self.assertEqual(labels, ["linux-x86_64", "linux-aarch64"])
+        # Six outputs: an answer and a provenance digest from `prepare`, an artifact ID from the hand-off.
+        self.assertEqual(self.outputs(release), [
+            (f"{label}-{name}", f"${{{{ steps.{step}.outputs.{label}-{name} }}}}") for label in labels
+            for name, step in (("eligible", "package"), ("provenance-sha256", "package"), ("artifact-id", "handoff"))])
+        # The hand-off directly follows the upload and passes the uploaded ID through the environment.
+        names = self.named(steps)
+        upload = names.index("Upload verified early-development CI package")
+        own, lines = steps[upload + 1]
+        self.assertEqual(own, {"name": "Hand the uploaded artifact's ID to the later job", "id": "handoff",
+                               "if": self.ELIGIBLE, "env": None,
+                               "run": 'python3 scripts/ci/packages.py hand-off --target "$PACKAGE_TARGET" '
+                                      '--artifact-id "$PACKAGE_ARTIFACT_ID" --output "$GITHUB_OUTPUT"'})
+        self.assertEqual(lines, ["PACKAGE_TARGET: ${{ matrix.target }}",
+                                 "PACKAGE_ARTIFACT_ID: ${{ steps.uploaded.outputs.artifact-id }}"])
+        # No step's script holds an expression: every value reaches a command through `env`.
+        for name, count in (("rust-release", 7), ("package-transfer", 5)):
+            scripts = self.scripts(name)
+            self.assertEqual(len(scripts), count, name)
+            for script in scripts:
+                self.assertNotIn("${{", script)
+                self.assertRegex(script, r"\A(?:python3 scripts/|printf |rustup |mkdir )")
+        self.assertEqual([own["id"] for own, _ in steps if "id" in own], ["package", "uploaded", "handoff"])
 
-    def test_a_later_download_attempt_follows_only_failures_its_wait_and_an_emptied_directory(self):
-        _, chain = self.chain()
-        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
-        # At once; the second only after the first failed; the third only after both did. A wait runs with
-        # the attempt it precedes, and the conditions name the two attempts whose failure they read.
-        self.assertEqual([own["if"] for own, _ in chain[1:6]],
-                         [self.ELIGIBLE, self.AFTER_FIRST, self.AFTER_FIRST, self.AFTER_BOTH, self.AFTER_BOTH])
-        self.assertEqual([own.get("id") for own, _ in chain[1:6]], ["download-first", None, "download-second", None, None])
-        # About 15 s, then about 45 s more. Each wait also removes the directory that every attempt downloads
-        # into and the verification reads, so a failed attempt leaves nothing for the next one or for the verifier.
-        for (own, script), seconds in ((chain[2], 15), (chain[4], 45)):
-            with self.subTest(step=own["name"]):
-                self.assertEqual(sorted(own), ["if", "name", "run"])
-                self.assertEqual(script, [f"sleep {seconds}", 'rm -rf -- "$RUNNER_TEMP/ci-package-download"'])
-        for own, inputs in chain[1:6:2]:
-            self.assertIn("path: ${{ runner.temp }}/ci-package-download", inputs)
-        self.assertIn('--directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \\', chain[6][1])
+    def test_the_later_job_is_the_uploading_release_legs_and_nothing_it_does_not_need(self):
+        transfer, steps = self.job("package-transfer")
+        # Everything above its outputs: it needs the release job, follows the product lane as that job does,
+        # runs each leg on the label in its name, and its matrix is two `include` entries and nothing else.
+        self.assertEqual(transfer.split("    outputs:\n", 1)[0],
+                         "    needs: [changes, rust-release]\n    if: needs.changes.outputs.product == 'true'\n"
+                         "    name: Package transfer · ${{ matrix.os }}\n    runs-on: ${{ matrix.os }}\n"
+                         "    timeout-minutes: 30\n    strategy:\n      fail-fast: false\n      matrix:\n        include:\n"
+                         "          - os: ubuntu-24.04\n            target: x86_64-unknown-linux-gnu\n"
+                         "          - os: ubuntu-24.04-arm\n            target: aarch64-unknown-linux-gnu\n")
+        # A leg for each release leg whose platform uploads its package, on the label that built it.
+        legs = re.findall(r"^          - os: (\S+)\n            target: (\S+)$", transfer, re.M)
+        self.assertEqual(legs, [(runner, target) for runner, target in self.RELEASE_LEGS if target in self.uploading()])
+        self.assertEqual(self.RELEASE_LEGS, re.findall(r"^          - os: (\S+)\n            target: (\S+)$",
+                                                       self.job("rust-release")[0], re.M))
+        # Its word under each label: the verification's, else the plan's for a held package.
+        self.assertEqual(self.outputs(transfer), [
+            (f"{label}-transfer", f"${{{{ steps.verify.outputs.{label}-transfer || steps.plan.outputs.{label}-transfer }}}}")
+            for label in self.uploading().values()])
+        # The inherited read-only token, no credential, no cache, no setup action, no container, no job-wide variable.
+        for absent in ("permissions:", "secrets", "token", "cache", "./.github/actions/", "container:", "\n    env:\n",
+                       "max-parallel:", "defaults:"):
+            self.assertNotIn(absent, transfer, absent)
+        self.assertEqual([own["uses"] for own, _ in steps if "uses" in own], [self.CHECKOUT, self.DOWNLOAD, self.UPLOAD])
+        self.assertEqual(steps[0], ({"uses": self.CHECKOUT, "with": None}, ["persist-credentials: false"]))
 
-    def test_only_the_last_download_attempt_can_fail_the_job_and_the_verification_is_unchanged(self):
-        release, chain = self.chain()
-        self.assertEqual([own["name"] for own, _ in chain], self.CHAIN)
-        # The first two attempts may fail; the upload, both waits, the last attempt and the verification may not.
-        self.assertEqual([own.get("continue-on-error") for own, _ in chain], [None, "true", None, "true", None, None, None])
-        # Nothing else in the job tolerates a failure, and the job itself does not.
-        self.assertEqual(len(re.findall(r"^ +continue-on-error:", release, re.M)), 2)
-        # The verification runs on the answer alone, so on every eligible job that no step failed, and its
-        # command is the one that ran before the download had retries.
-        own, lines = chain[6]
-        self.assertEqual(own, {"name": self.CHAIN[6], "if": self.ELIGIBLE, "env": None, "run": "|"})
+    def test_the_later_jobs_steps_follow_the_plan_which_alone_reads_what_was_handed_on(self):
+        transfer, steps = self.job("package-transfer")
+        self.assertEqual(self.named(steps), self.TRANSFER_STEPS)
+        self.assertEqual([own.get("id") for own, _ in steps], [None, "plan", None, "download", None, "verify", None, None])
+        # The installation, the download and the verification run on the plan's answer; the last two always.
+        self.assertEqual([own.get("if") for own, _ in steps],
+                         [None, None, self.PLANNED, self.PLANNED, self.DOWNLOAD_FAILED, self.PLANNED, "always()", "always()"])
+        for function, count in (("failure()", 1), ("always()", 2), ("cancelled()", 0), ("success()", 0)):
+            self.assertEqual(transfer.count(function), count, function)
+        # The plan is the first step after the checkout, so it refuses before the download action runs. It
+        # reads the release job's outputs and its own target through the environment and nothing else.
+        own, lines = steps[1]
+        self.assertEqual(own, {"name": self.TRANSFER_STEPS[1], "id": "plan", "env": None,
+                               "run": 'python3 scripts/ci/packages.py plan --target "$PACKAGE_TARGET" '
+                                      '--output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"'})
+        self.assertEqual(lines, [f"{packages.RELEASE_OUTPUTS}: ${{{{ toJSON(needs.rust-release.outputs) }}}}",
+                                 "PACKAGE_TARGET: ${{ matrix.target }}"])
+        # No other step reads the release job: what the later steps take is the plan's validated output.
+        body = transfer.split("\n    steps:\n", 1)[1]
+        self.assertEqual(body.count("needs."), 1)
+        self.assertEqual(sorted(set(re.findall(r"steps\.([a-z]+)\.outputs\.([a-z0-9-]+)", body))),
+                         [("plan", "artifact-id"), ("plan", "provenance-sha256"), ("plan", "verify")])
+
+    def test_the_artifact_is_downloaded_once_by_the_validated_id_and_no_failure_is_tolerated_or_waited_on(self):
+        workflow = (packages.ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+        (release, release_steps), (transfer, steps) = self.job("rust-release"), self.job("package-transfer")
+        downloads = [(own, inputs) for own, inputs in steps if "download-artifact" in own.get("uses", "")]
+        (own, inputs), = downloads
+        self.assertEqual(own, {"name": self.TRANSFER_STEPS[3], "id": "download", "if": self.PLANNED, "uses": self.DOWNLOAD,
+                               "with": None})
+        # One exact ID, the plan's, and a refused digest mismatch; no name, pattern, run or token input.
+        self.assertEqual(inputs, ["artifact-ids: ${{ steps.plan.outputs.artifact-id }}",
+                                  "path: ${{ runner.temp }}/ci-package-download", "merge-multiple: true",
+                                  "digest-mismatch: error"])
+        # The release job downloads nothing, and nothing else in the workflow downloads an artifact.
+        self.assertEqual([own for own, _ in release_steps if "download-artifact" in own.get("uses", "")], [])
+        self.assertEqual(len(re.findall(r"^[^#\n]*download-artifact", workflow, re.M)), 1)
+        # In the two jobs together nothing tolerates a failure, waits or repeats a step.
+        for name, job, read in (("rust-release", release, release_steps), ("package-transfer", transfer, steps)):
+            with self.subTest(job=name):
+                self.assertNotIn("continue-on-error", job)
+                self.assertNotRegex(job, r"\bsleep\b")
+                named = [own["name"] for own, _ in read if "name" in own]
+                self.assertEqual(len(named), len(set(named)))
+                self.assertEqual([step for step in named if re.search(r"attempt|again|wait", step, re.I)], [])
+        self.assertEqual([own["name"] for own, _ in release_steps if "name" in own][-5:],
+                         ["Upload verified early-development CI package", "Hand the uploaded artifact's ID to the later job",
+                          "Prepare bounded successful-main cache save", "Summarize CI measurements",
+                          "Preserve CI measurements and sanitized diagnostics"])
+
+    def test_a_failed_download_alone_runs_the_step_that_says_what_it_is(self):
+        _, steps = self.job("package-transfer")
+        names = self.named(steps)
+        own, lines = steps[names.index("Say what a failed download is")]
+        # Directly after the download, on that step's own failure: not after a refused plan or a failed installation,
+        # which skip the download, and not when a later step fails.
+        self.assertEqual(names.index("Say what a failed download is"), names.index(self.TRANSFER_STEPS[3]) + 1)
+        self.assertEqual(own, {"name": "Say what a failed download is", "if": self.DOWNLOAD_FAILED,
+                               "run": 'python3 scripts/ci/packages.py download-failed --summary "$GITHUB_STEP_SUMMARY"'})
+        self.assertEqual(lines, [])
+        self.assertEqual(steps[names.index(self.TRANSFER_STEPS[3])][0]["id"], "download")
+
+    def test_the_full_verification_runs_in_the_later_job_under_the_collector_with_the_jobs_own_identity(self):
+        (release, release_steps), (transfer, steps) = self.job("rust-release"), self.job("package-transfer")
+        own, lines = steps[self.named(steps).index("Verify downloaded bytes and installation")]
+        self.assertEqual(own, {"name": "Verify downloaded bytes and installation", "id": "verify", "if": self.PLANNED,
+                               "env": None, "run": "|"})
+        # The job's own target, commit, run and attempt, and the plan's validated ID and digest: no token.
         self.assertEqual(lines, [
-            "PACKAGE_ARTIFACT_ID: ${{ steps.uploaded.outputs.artifact-id }}",
+            "PACKAGE_TARGET: ${{ matrix.target }}", "PACKAGE_REVISION: ${{ github.sha }}",
+            "PACKAGE_RUN_ID: ${{ github.run_id }}", "PACKAGE_ATTEMPT: ${{ github.run_attempt }}",
+            "PACKAGE_ARTIFACT_ID: ${{ steps.plan.outputs.artifact-id }}",
+            "PACKAGE_PROVENANCE_SHA256: ${{ steps.plan.outputs.provenance-sha256 }}",
             'python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \\',
-            'python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \\',
-            '--directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \\',
-            '--report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"'])
+            'python3 scripts/ci/packages.py verify --directory "$RUNNER_TEMP/ci-package-download" \\',
+            '--expected-sha256 "$PACKAGE_PROVENANCE_SHA256" --target "$PACKAGE_TARGET" --revision "$PACKAGE_REVISION" \\',
+            '--run-id "$PACKAGE_RUN_ID" --attempt "$PACKAGE_ATTEMPT" --artifact-id "$PACKAGE_ARTIFACT_ID" \\',
+            '--report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY" \\',
+            '--output "$GITHUB_OUTPUT"'])
+        # The directory is the one the download fills, and the release job neither verifies nor measures a download.
+        self.assertIn("path: ${{ runner.temp }}/ci-package-download", steps[3][1])
+        for moved in ("packages.py verify", "artifact-download-checks", "package-transfer.json", "ci-package-download"):
+            self.assertNotIn(moved, release, moved)
+            self.assertIn(moved, transfer, moved)
+        # The summary and the diagnostics upload are the release job's own two last steps, word for word; the
+        # artifact's name holds the job and the architecture, which keep the two legs' and the two jobs' apart.
+        self.assertEqual(steps[-2:], release_steps[-2:])
+        self.assertEqual(steps[-1][1][0], "name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-"
+                                          "${{ github.run_id }}-${{ github.run_attempt }}")
+        self.assertEqual([own.get("if") for own, _ in steps[-2:]], ["always()", "always()"])
 
 
 class CommandTests(unittest.TestCase):
