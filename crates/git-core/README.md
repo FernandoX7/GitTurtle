@@ -103,9 +103,10 @@ required pipe threads finish, so direct-child exit cannot bypass a deadline.
 A single passive command waits for that on events instead of a sleep: each
 reader reports that it ended, a panic included, and a helper thread reports the
 child's exit without reaping it. That report is a hint. The status is taken
-only with a wait that cannot block, and a report with no exit behind it, like a
-helper that cannot start, leaves the command asking every millisecond as it did
-before. Otherwise the command wakes on a timer only at its deadline, and every
+only with a wait that cannot block, and never before both streams have ended; a
+report with no exit behind it, like a helper that cannot start, leaves the
+command waking every millisecond, and asking only once they have ended.
+Otherwise the command wakes on a timer only at its deadline, and every
 millisecond while a cancellation token is installed. An exited child stays
 unreaped until its command completes or fails: the reap follows any kill of the
 child and its group and the helper's end, so no signal goes to a process ID

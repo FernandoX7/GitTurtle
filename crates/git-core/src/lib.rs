@@ -2381,11 +2381,10 @@ fn bounded_output_with(mut command: Command, timeout: Duration, seam: WaitSeam) 
         }
     };
     if result.is_err() {
-        // While a helper watched, no status was taken on the way here, so the
-        // reap is the last thing done to the child or to its group: it comes
-        // after both kills and after the helper has ended, and no signal goes
-        // to a process ID that the reap has freed. A wait that polled from
-        // its start keeps the order it had, and may hold the status already.
+        // No status was taken on the way here, whether a helper watched or
+        // the wait polled, so the reap is the last thing done to the child or
+        // to its group: it comes after both kills and after the helper has
+        // ended, and no signal goes to a process ID that the reap has freed.
         pipes.control.stop();
         terminate_process_group(&child);
         let _ = child.kill();
@@ -4642,10 +4641,12 @@ mod tests {
         }
     }
 
-    /// The reap is the last thing a read does to its child. One that has
-    /// exited while a descendant still holds its pipes stays unreaped, its
-    /// process ID and its group's still its own for a kill at the deadline,
-    /// until the read is complete; the polling wait reaped it within a tick.
+    /// The reap is the last thing a read does to its child, however it
+    /// learns of the exit: from its helper, by asking at every tick, or by
+    /// asking because its helper could not start. A child that has exited
+    /// while a descendant still holds its pipes stays unreaped, its process
+    /// ID and its group's still its own for a kill at the deadline, until the
+    /// read is complete; a wait that asked sooner reaped it within a tick.
     ///
     /// The descendant holds the pipes until this test lets it go, so the look
     /// races nothing: a tenth of a second after the exit, long after a wait
@@ -4656,29 +4657,46 @@ mod tests {
     #[test]
     fn a_passive_read_reaps_its_exited_child_only_once_it_is_complete() {
         use process_io::fixtures::{ChildState, child_state, written_line};
-        let temp = tempfile::tempdir().unwrap();
-        let (pid, release) = (temp.path().join("pid"), temp.path().join("release"));
-        let mut command = shell(
-            "echo $$ > \"$1\"; \
-             (i=0; while [ ! -e \"$2\" ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i+1)); done) & \
-             exit 0",
+        use process_io::{ExitWatch, Fault};
+        let modes = [
+            (ExitWatch::Readiness, None),
+            (ExitWatch::Poll, None),
+            (
+                ExitWatch::Readiness,
+                Some(Fault::CannotStart(WaitPart::Exit)),
+            ),
+        ];
+        let seen = modes.map(|(exit, fault)| {
+            let temp = tempfile::tempdir().unwrap();
+            let (pid, release) = (temp.path().join("pid"), temp.path().join("release"));
+            let mut command = shell(
+                "echo $$ > \"$1\"; \
+                 (i=0; while [ ! -e \"$2\" ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i+1)); done) & \
+                 exit 0",
+            );
+            command.arg(&pid).arg(&release);
+            let (seam, _) = seam(PASSIVE_WAIT_TICK, exit, fault);
+            let worker = thread::spawn(move || bounded_output_with(command, GIT_TIMEOUT, seam));
+            let child = written_line(&pid);
+            let started = Instant::now();
+            while child_state(&child) == ChildState::Running
+                && started.elapsed() < Duration::from_secs(3)
+            {
+                thread::sleep(Duration::from_millis(1));
+            }
+            thread::sleep(Duration::from_millis(100));
+            let held = child_state(&child);
+            std::fs::write(&release, "").unwrap();
+            let output = worker.join().unwrap().unwrap();
+            assert!(output.status.success(), "{exit:?}, {fault:?}");
+            (exit, fault, held, child_state(&child))
+        });
+        // Every way of waiting at once, so that a failure names each one
+        // that reaped its child early.
+        assert_eq!(
+            seen,
+            modes.map(|(exit, fault)| (exit, fault, ChildState::Exited, ChildState::Reaped))
         );
-        command.arg(&pid).arg(&release);
-        let worker = thread::spawn(move || bounded_output(command, GIT_TIMEOUT));
-        let child = written_line(&pid);
-        let started = Instant::now();
-        while child_state(&child) == ChildState::Running
-            && started.elapsed() < Duration::from_secs(3)
-        {
-            thread::sleep(Duration::from_millis(1));
-        }
-        thread::sleep(Duration::from_millis(100));
-        let held = child_state(&child);
-        std::fs::write(&release, "").unwrap();
-        let output = worker.join().unwrap().unwrap();
-        assert_eq!(held, ChildState::Exited);
-        assert!(output.status.success());
-        assert_eq!(child_state(&child), ChildState::Reaped);
     }
 
     /// The child that stays unreaped still leads its group, so the deadline's

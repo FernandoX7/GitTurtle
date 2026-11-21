@@ -207,7 +207,7 @@ impl WaitPart {
 pub(super) enum ExitWatch {
     /// A helper thread sees the exit without reaping it and reports it.
     Readiness,
-    /// The wait asks `try_wait` at every tick.
+    /// The wait asks `try_wait` at every tick, once both streams have ended.
     Poll,
     /// A report that arrives while the child still runs, as a helper's could
     /// where the platform answers for a stopped child.
@@ -425,21 +425,31 @@ impl ExitWatcher {
 
     /// The child's exit status, if it can be taken now.
     ///
-    /// While a helper watches, nothing is asked until the exit is reported
-    /// and `streams_ended`, so the status is taken only when it completes the
+    /// Nothing is asked until `streams_ended`, whether a helper watches or
+    /// the wait polls, and while a helper watches not until the exit is
+    /// reported either. So the status is taken only when it completes the
     /// wait: until then the unreaped child keeps its pid, and its group's,
-    /// from meaning anything else to a later kill. The helper is joined
-    /// first, so nothing of ours still names the pid once it is reaped. A
-    /// report with no status behind it turns the wait to polling, which asks
-    /// at every tick as every wait did before there was a helper.
+    /// from meaning anything else to a later kill, and the reap is the last
+    /// thing done to the child however the wait learns of its exit. The
+    /// helper is joined first, so nothing of ours still names the pid once it
+    /// is reaped. A report with no status behind it turns the wait to
+    /// polling, which asks at every tick from then on.
+    ///
+    /// A `try_wait` that fails is likewise seen only once the streams have
+    /// ended. Until then the wait's deadline is what bounds it: where the
+    /// status cannot be had and a stream stays open, the wait ends at its
+    /// deadline, with the deadline's error.
     pub(super) fn try_status(
         &mut self,
         child: &mut Child,
         events: &WaitEvents,
         streams_ended: bool,
     ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        if !streams_ended {
+            return Ok(None);
+        }
         if !self.polling {
-            if !(streams_ended && events.ended(WaitPart::Exit)) {
+            if !events.ended(WaitPart::Exit) {
                 return Ok(None);
             }
             self.join();
