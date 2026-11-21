@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod open_bench;
 mod repository_identity;
 #[cfg(test)]
 mod snapshot_bench;
