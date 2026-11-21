@@ -758,6 +758,15 @@ class Trust(unittest.TestCase):
         tests = sorted(name for name in produced if name.startswith("Rust tests · ") and "archlinux" not in name)
         self.assertEqual(tests, sorted(name for name in required if name.startswith("Rust tests · ")))
         self.assertEqual(len(tests), 4)
+        # The later job that downloads and verifies the Linux packages has names of its own, one a leg.
+        # The preflight's eleven names are unchanged and none of them is one of these: like the Arch Linux
+        # shards, that job is required through the Quality gate, which fails without it.
+        transfer = sorted(name for name in produced if name.startswith("Package transfer"))
+        self.assertEqual(transfer, ["Package transfer · ubuntu-24.04", "Package transfer · ubuntu-24.04-arm"])
+        self.assertEqual(sorted(required), sorted(REQUIRED))
+        self.assertEqual(len(required), 11)
+        self.assertFalse(required & set(transfer))
+        self.assertIn("Quality gate", required)
 
     def test_every_test_shard_is_required_and_no_unsharded_job_stands_in_for_one(self):
         shards = [name for name in REQUIRED if name.startswith("Rust tests · ")]

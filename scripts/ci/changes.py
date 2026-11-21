@@ -21,10 +21,22 @@ MAX_PATHS = 10000
 LANES = ("product", "tooling", "website")
 # Keep each independent required phase explicit. A successful debug (test)
 # matrix cannot compensate for a missing/cancelled Clippy matrix, release
-# matrix, formatter or the Arch Linux container job.
+# matrix, formatter or the Arch Linux container job, and a successful release
+# matrix cannot compensate for the later job that downloads and verifies what
+# its Linux legs uploaded.
 JOBS = {"rust-format": "product", "rust-debug": "product", "rust-clippy": "product",
-        "rust-release": "product", "rust-arch": "product", "agent-tooling": "tooling",
-        "website": "website"}
+        "rust-release": "product", "package-transfer": "product", "rust-arch": "product",
+        "agent-tooling": "tooling", "website": "website"}
+# A Linux release leg hands on `<label>-eligible` and its leg of the later job
+# `<label>-transfer` (scripts/ci/packages.py writes both). A package counts only
+# as one of these pairs, each with the line the gate prints for it. The labels
+# are those of the platforms packages.py uploads; a test holds them equal.
+RELEASE_JOB, TRANSFER_JOB = "rust-release", "package-transfer"
+TRANSFER_LABELS = ("linux-x86_64", "linux-aarch64")
+TRANSFER_PAIRS = {
+    ("true", "verified"): "uploaded by its release leg; downloaded and verified by the later job",
+    ("false", "held"): "held by its release leg; nothing uploaded and nothing verified",
+}
 # The image privacy job always runs and reports what it did. Only "scanned" is a
 # scan; the other results succeed without claiming one, and the gate says so.
 PRIVACY_JOB = "image-privacy"
@@ -71,9 +83,9 @@ def classify_paths(paths: list[bytes]) -> dict:
         # must exercise them before it reaches main.
         if path == "scripts/ci/tools.py":
             return full_plan("pinned-ci-tool")
-        # The package installation helper runs only inside the Rust jobs' setup
-        # and the Image privacy job, so a change of it must exercise them before
-        # it reaches main.
+        # The package installation helper runs only inside the Rust jobs' setup,
+        # the Image privacy job and the package transfer job, so a change of it
+        # must exercise them before it reaches main.
         if path == "scripts/ci/apt_install.py":
             return full_plan("package-installation-helper")
         # Every Rust job runs its commands under the collector, and the Rust
@@ -213,6 +225,36 @@ def validate_plan(plan: object) -> dict:
     return plan
 
 
+def transfer_results(needs: dict) -> list[str]:
+    """A line for each Linux package, from the pair of its release leg's answer and the later job's.
+
+    Called once both jobs' results are a success or a justified skip.
+    """
+    ran = [needs[job]["result"] == "success" for job in (RELEASE_JOB, TRANSFER_JOB)]
+    if not any(ran):
+        return []  # The product lane did not run, so no package was built.
+    if not all(ran):
+        raise PolicyError(f"{TRANSFER_JOB}: the release job and the later job did not both run")
+
+    def word(job: str, name: str, side: int) -> str:
+        """The word a job handed on under a name when it is one a pair knows; otherwise how a
+        refusal names what it found, since a value that is no such word is never printed."""
+        outputs = needs[job].get("outputs")
+        value = outputs.get(name) if isinstance(outputs, dict) else None
+        if isinstance(value, str) and value in {pair[side] for pair in TRANSFER_PAIRS}:
+            return value
+        return "missing" if value is None or value == "" else "unexpected"
+
+    results = []
+    for label in TRANSFER_LABELS:
+        pair = word(RELEASE_JOB, f"{label}-eligible", 0), word(TRANSFER_JOB, f"{label}-transfer", 1)
+        if pair not in TRANSFER_PAIRS:
+            raise PolicyError(f"{TRANSFER_JOB}: {label} is neither an uploaded and verified package nor a held one "
+                              f"(eligible: {pair[0]}; transfer: {pair[1]})")
+        results.append(f"{TRANSFER_JOB}: {label} {TRANSFER_PAIRS[pair]}")
+    return results
+
+
 def gate(needs: object) -> list[str]:
     if not isinstance(needs, dict) or set(needs) != {"changes", PRIVACY_JOB, *JOBS}:
         raise PolicyError("missing or unexpected job results")
@@ -236,6 +278,7 @@ def gate(needs: object) -> list[str]:
             results.append(f"{job}: not needed by classification")
         else:
             raise PolicyError(f"{job}: required result was not successful ({result!r})")
+    results += transfer_results(needs)
     entry = needs[PRIVACY_JOB]
     result = entry.get("result") if isinstance(entry, dict) else None
     outputs = entry.get("outputs") if isinstance(entry, dict) else None

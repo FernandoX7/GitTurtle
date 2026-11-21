@@ -23,7 +23,7 @@ import time
 # In 110 hosted Ubuntu job logs of 2026-11-16 to 2026-11-19 the fetch of
 # `apt-get update` took 2 s at the median, 18 s at p95 and 49 s at most, and the
 # fetch of `apt-get install` 5 s, 292 s and 640 s, that maximum for 19.2 MB from a
-# mirror serving about 30 kB/s. A job's own limit is 45 or 60 minutes.
+# mirror serving about 30 kB/s. A job's own limit is 30 minutes or more.
 UPDATE_SECONDS = 300
 INSTALL_SECONDS = 900
 # `timeout` sends TERM at the deadline and KILL this long after it.

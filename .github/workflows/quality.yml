@@ -352,6 +352,18 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+    # What the package-transfer job reads of each Linux package: the leg's
+    # answer, the SHA-256 of the provenance file it uploaded and the uploaded
+    # artifact's ID. packages.py writes each under its target's own label, so a
+    # leg sets its own three and leaves the other label's empty, and an empty
+    # value sets nothing: the other leg's values stand (docs/ci.md).
+    outputs:
+      linux-x86_64-eligible: ${{ steps.package.outputs.linux-x86_64-eligible }}
+      linux-x86_64-provenance-sha256: ${{ steps.package.outputs.linux-x86_64-provenance-sha256 }}
+      linux-x86_64-artifact-id: ${{ steps.handoff.outputs.linux-x86_64-artifact-id }}
+      linux-aarch64-eligible: ${{ steps.package.outputs.linux-aarch64-eligible }}
+      linux-aarch64-provenance-sha256: ${{ steps.package.outputs.linux-aarch64-provenance-sha256 }}
+      linux-aarch64-artifact-id: ${{ steps.handoff.outputs.linux-aarch64-artifact-id }}
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -408,64 +420,18 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           include-hidden-files: false
-      # The run's artifact listing can lag the upload: in Quality run
-      # 43747610529 the listing this download reads came back 0.45 s after the
-      # upload was finalized, without the new ID, and the step failed. The same
-      # download, by the same exact ID, is therefore attempted up to three
-      # times: at once, about 15 s later and about 45 s after that. A later
-      # attempt runs only when every earlier one failed, and starts without the
-      # download directory, as the first does. The first two may fail without
-      # failing the job; the last one fails it. No attempt downloads by name or
-      # pattern, so no other artifact can stand in for the uploaded one.
-      - name: Download this exact uploaded artifact from Actions
-        id: download-first
-        if: steps.package.outputs.eligible == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
-          path: ${{ runner.temp }}/ci-package-download
-          merge-multiple: true
-          digest-mismatch: error
-      - name: Wait about 15 s for the run's artifact listing and empty the download directory
-        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure'
-        run: |
-          sleep 15
-          rm -rf -- "$RUNNER_TEMP/ci-package-download"
-      - name: Download this exact uploaded artifact from Actions, second attempt
-        id: download-second
-        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure'
-        continue-on-error: true
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
-          path: ${{ runner.temp }}/ci-package-download
-          merge-multiple: true
-          digest-mismatch: error
-      - name: Wait about 45 s more for the run's artifact listing and empty the download directory
-        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure' && steps.download-second.outcome == 'failure'
-        run: |
-          sleep 45
-          rm -rf -- "$RUNNER_TEMP/ci-package-download"
-      - name: Download this exact uploaded artifact from Actions, third and last attempt
-        if: steps.package.outputs.eligible == 'true' && steps.download-first.outcome == 'failure' && steps.download-second.outcome == 'failure'
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ steps.uploaded.outputs.artifact-id }}
-          path: ${{ runner.temp }}/ci-package-download
-          merge-multiple: true
-          digest-mismatch: error
-      # Reached only when no step above failed the job, so only after one
-      # attempt succeeded; it refuses a missing or incomplete directory itself.
-      - name: Verify downloaded bytes and installation
+      # This job does not read its upload back: the run's artifact listing can
+      # lack a new ID for a moment after the upload. The package-transfer job,
+      # which needs this one, downloads the artifact by this exact ID and
+      # verifies it. packages.py checks the ID's form and writes it under this
+      # leg's own label.
+      - name: Hand the uploaded artifact's ID to the later job
+        id: handoff
         if: steps.package.outputs.eligible == 'true'
         env:
+          PACKAGE_TARGET: ${{ matrix.target }}
           PACKAGE_ARTIFACT_ID: ${{ steps.uploaded.outputs.artifact-id }}
-        run: |
-          python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \
-            python3 scripts/ci/packages.py verify --expected "$RUNNER_TEMP/ci-package/prepared.json" \
-              --directory "$RUNNER_TEMP/ci-package-download" --artifact-id "$PACKAGE_ARTIFACT_ID" \
-              --report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY"
+        run: python3 scripts/ci/packages.py hand-off --target "$PACKAGE_TARGET" --artifact-id "$PACKAGE_ARTIFACT_ID" --output "$GITHUB_OUTPUT"
       # All target/TRIPLE/release consumers must precede cache finish:
       # successful main jobs may clean outputs to keep the retained cache bounded.
       - name: Prepare bounded successful-main cache save
@@ -768,10 +734,114 @@ jobs:
       contents: read
     uses: ./.github/workflows/website.yml
 
+  # Downloads each Linux package its release leg uploaded, once and by the
+  # exact ID that leg handed on, and runs the full package verification on
+  # those bytes, on the runner label they were built on. A job that needs its
+  # uploader finds the artifact listed, which the uploading job itself may not
+  # for a moment after its upload, so nothing here is attempted twice. Its legs
+  # are the release legs of the platforms packages.py uploads. It builds
+  # nothing and restores no cache: it runs no Rust toolchain or cache step, and
+  # installs only the libraries and tools the checks run. Quality gate requires
+  # its result and, for each Linux label, the pair of the release leg's answer
+  # and this job's word (docs/ci-artifacts.md).
+  package-transfer:
+    needs: [changes, rust-release]
+    if: needs.changes.outputs.product == 'true'
+    name: Package transfer · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # The limit only backs up a hung step. The installation's two commands end
+    # within 300 s and 900 s, each with 10 s more to be stopped: 1,220 s. Inside
+    # the release job the download took about 2 s and the checks about 12 s in
+    # each Linux leg (Quality run 44667426966).
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    # A leg's word under its own label: `verified`, which only the verification
+    # writes, as its last act, or `held`, which the plan writes for a package
+    # its release leg did not upload. As in rust-release, a leg leaves the
+    # other label's value empty.
+    outputs:
+      linux-x86_64-transfer: ${{ steps.verify.outputs.linux-x86_64-transfer || steps.plan.outputs.linux-x86_64-transfer }}
+      linux-aarch64-transfer: ${{ steps.verify.outputs.linux-aarch64-transfer || steps.plan.outputs.linux-aarch64-transfer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before any action reads them: an upload must come with an artifact ID
+      # of at most fifteen digits without a leading zero and a whole SHA-256,
+      # and a held package with neither. Anything else fails here, by name.
+      - name: Read what the release leg handed on and refuse anything malformed
+        id: plan
+        env:
+          RELEASE_OUTPUTS_JSON: ${{ toJSON(needs.rust-release.outputs) }}
+          PACKAGE_TARGET: ${{ matrix.target }}
+        run: python3 scripts/ci/packages.py plan --target "$PACKAGE_TARGET" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+      # The four libraries the executable links beside the C and GCC runtime,
+      # and the package with the two desktop-entry commands the installer runs.
+      # The helper reads the image's own Ubuntu source file alone, as the setup
+      # action's install step does, and runs each command once under its deadline.
+      - name: Install the runtime libraries and the desktop-entry tools
+        if: steps.plan.outputs.verify == 'true'
+        run: |
+          python3 scripts/ci/apt_install.py \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -- \
+            desktop-file-utils libdav1d7 libxcb1 libxkbcommon0 libxkbcommon-x11-0
+      # One attempt, by the one validated ID: no name, pattern, run or token input.
+      - name: Download the release leg's exact artifact from Actions
+        id: download
+        if: steps.plan.outputs.verify == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.plan.outputs.artifact-id }}
+          path: ${{ runner.temp }}/ci-package-download
+          merge-multiple: true
+          digest-mismatch: error
+      # Only after that one attempt failed: fixed words on what a red here is.
+      - name: Say what a failed download is
+        if: failure() && steps.download.outcome == 'failure'
+        run: python3 scripts/ci/packages.py download-failed --summary "$GITHUB_STEP_SUMMARY"
+      # The provenance is hashed before it is read and must be the one the
+      # release leg handed on, of this job's own target, commit and run.
+      - name: Verify downloaded bytes and installation
+        id: verify
+        if: steps.plan.outputs.verify == 'true'
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+          PACKAGE_REVISION: ${{ github.sha }}
+          PACKAGE_RUN_ID: ${{ github.run_id }}
+          PACKAGE_ATTEMPT: ${{ github.run_attempt }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.plan.outputs.artifact-id }}
+          PACKAGE_PROVENANCE_SHA256: ${{ steps.plan.outputs.provenance-sha256 }}
+        run: |
+          python3 scripts/ci/metrics.py measure --name artifact-download-checks --directory "$RUNNER_TEMP/ci-metrics" -- \
+            python3 scripts/ci/packages.py verify --directory "$RUNNER_TEMP/ci-package-download" \
+              --expected-sha256 "$PACKAGE_PROVENANCE_SHA256" --target "$PACKAGE_TARGET" --revision "$PACKAGE_REVISION" \
+              --run-id "$PACKAGE_RUN_ID" --attempt "$PACKAGE_ATTEMPT" --artifact-id "$PACKAGE_ARTIFACT_ID" \
+              --report "$RUNNER_TEMP/ci-metrics/reports/package-transfer.json" --summary "$GITHUB_STEP_SUMMARY" \
+              --output "$GITHUB_OUTPUT"
+      - name: Summarize CI measurements
+        if: always()
+        run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/ci-metrics" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve CI measurements and sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/
+          retention-days: 3
+          if-no-files-found: warn
+          include-hidden-files: false
+
   quality:
     name: Quality gate
     if: always()
-    needs: [changes, agent-tooling, rust-format, rust-debug, rust-clippy, rust-release, rust-arch, image-privacy, website]
+    needs: [changes, agent-tooling, rust-format, rust-debug, rust-clippy, rust-release, package-transfer, rust-arch, image-privacy, website]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
