@@ -30,14 +30,41 @@ def workflow_jobs():
     return dict(zip(parts[1::2], parts[2::2]))
 
 
+LINUX_LABELS = ("linux-x86_64", "linux-aarch64")
+UPLOADED = "uploaded by its release leg; downloaded and verified by the later job"
+HELD = "held by its release leg; nothing uploaded and nothing verified"
+
+
+def packaged(eligible="true", transfer="verified", labels=LINUX_LABELS):
+    """The release job's and the later job's entries as a run leaves them, literally: for an upload each
+    Linux leg hands on its answer, its artifact's ID and its provenance digest, and the later job its word."""
+    release = {f"{label}-eligible": eligible for label in labels}
+    if eligible == "true":
+        release.update({f"{label}-artifact-id": "14598682882" for label in labels})
+        release.update({f"{label}-provenance-sha256": "5e" * 32 for label in labels})
+    return {"rust-release": {"result": "success", "outputs": release},
+            "package-transfer": {"result": "success", "outputs": {f"{label}-transfer": transfer for label in labels}}}
+
+
 def needs_for(plan):
-    return {
+    needs = {
         "changes": {"result": "success", "outputs": {
             "plan": json.dumps(plan), **{lane: str(plan[lane]).lower() for lane in changes.LANES}}},
-        **{job: {"result": "success" if plan[lane] else "skipped"}
+        **{job: {"result": "success" if plan[lane] else "skipped", "outputs": {}}
            for job, lane in changes.JOBS.items()},
         **privacy(),
     }
+    return {**needs, **packaged()} if plan["product"] else needs
+
+
+def expected_lines(results, privacy_line="image-privacy: added or changed images template-scanned; no match"):
+    """What the gate prints for literal job results: a line a job in the given order, then a line for each
+    Linux package when the release job ran, then the image privacy job's."""
+    lines = [f"{job}: {'success' if result == 'success' else 'not needed by classification'}"
+             for job, result in results.items()]
+    if results["rust-release"] == "success":
+        lines += [f"package-transfer: {label} {UPLOADED}" for label in LINUX_LABELS]
+    return [*lines, privacy_line]
 
 
 class ClassificationTests(unittest.TestCase):
@@ -127,19 +154,37 @@ class GateTests(unittest.TestCase):
         for case in cases:
             with self.subTest(case=case["name"]):
                 plan = changes.classify_paths([case["path"].encode()])
+                # A job that ran carries what a real run's does, so a refusal here is its result's alone.
+                ran = packaged()
                 needs = {"changes": needs_for(plan)["changes"], **privacy(),
-                         **{job: {"result": result} for job, result in case["results"].items()}}
+                         **{job: ran[job] if result == "success" and job in ran else {"result": result, "outputs": {}}
+                            for job, result in case["results"].items()}}
                 if case["accept"]:
-                    self.assertEqual(len(changes.gate(needs)), 8)
+                    self.assertEqual(changes.gate(needs), expected_lines(case["results"]))
                 else:
                     with self.assertRaises(changes.PolicyError):
                         changes.gate(needs)
+        # The fixture names the later job in every case that names the release job, and fails it each way.
+        self.assertEqual([case["name"] for case in cases if "rust-release" in case["results"]
+                          and "package-transfer" not in case["results"]], ["missing package transfer result cannot pass"])
+        self.assertEqual(sorted(case["results"]["package-transfer"] for case in cases
+                                if case["name"].startswith("package-transfer ")), ["cancelled", "failure", "skipped"])
 
     def test_required_lanes_pass_and_justified_skips_pass(self):
-        for paths in [[b"docs/user-guide.md"], [b"website/check.py"], [b"scripts/ci/executed_tests.py"],
-                      [b"scripts/ci/metrics.py"], [b"crates/app/src/main.rs"]]:
+        jobs = ["rust-format", "rust-debug", "rust-clippy", "rust-release", "package-transfer", "rust-arch",
+                "agent-tooling", "website"]
+        lanes = {"product": jobs[:6], "tooling": jobs[6:7], "website": jobs[7:]}
+        for paths, required in [([b"docs/user-guide.md"], set()), ([b"website/check.py"], {"website"}),
+                                ([b"scripts/ci/executed_tests.py"], {"tooling"}),
+                                ([b"scripts/ci/metrics.py"], {"product", "tooling", "website"}),
+                                ([b"crates/app/src/main.rs"], {"product", "tooling", "website"})]:
             with self.subTest(paths=paths):
-                self.assertEqual(len(changes.gate(needs_for(changes.classify_paths(paths)))), 8)
+                results = {job: "success" if lane in required else "skipped" for job in jobs
+                           for lane, members in lanes.items() if job in members}
+                # Eleven lines when the product lane ran, two of them the Linux packages'; nine when it did not.
+                lines = changes.gate(needs_for(changes.classify_paths(paths)))
+                self.assertEqual(lines, expected_lines(results))
+                self.assertEqual(len(lines), 11 if "product" in required else 9)
 
     def test_required_failure_cancellation_and_skip_each_fail(self):
         baseline = needs_for(changes.full_plan("full"))
@@ -153,7 +198,7 @@ class GateTests(unittest.TestCase):
 
     def test_unneeded_failure_is_not_silently_ignored(self):
         baseline = needs_for(changes.classify_paths([b"README.md"]))
-        for job in ["rust-clippy", "rust-release", "rust-arch"]:
+        for job in ["rust-clippy", "rust-release", "package-transfer", "rust-arch"]:
             for result in ["failure", "cancelled"]:
                 with self.subTest(job=job, result=result):
                     needs = copy.deepcopy(baseline)
@@ -177,7 +222,111 @@ class GateTests(unittest.TestCase):
         needs = needs_for(changes.classify_paths([b"README.md"]))
         for job in changes.JOBS:
             needs[job]["result"] = "success"
-        self.assertEqual(len(changes.gate(needs)), 8)
+        # A release job that ran although no lane asked for it is judged as any other: with its packages.
+        with self.assertRaisesRegex(changes.PolicyError, "package-transfer: linux-x86_64 is neither"):
+            changes.gate(needs)
+        needs.update(packaged())
+        lines = changes.gate(needs)
+        self.assertEqual(lines, expected_lines({job: "success" for job in changes.JOBS}))
+        self.assertEqual(len(lines), 11)
+
+    def test_each_linux_package_is_judged_as_the_pair_of_its_release_leg_and_the_later_job(self):
+        baseline = needs_for(changes.full_plan("full"))
+        jobs = [f"{job}: success" for job in changes.JOBS]
+        privacy_line = changes.PRIVACY_RESULTS["scanned"]
+        # Uploaded and verified, held on both sides, and one of each: a line a package either way.
+        self.assertEqual(changes.gate(baseline), [*jobs, f"package-transfer: linux-x86_64 {UPLOADED}",
+                                                  f"package-transfer: linux-aarch64 {UPLOADED}", privacy_line])
+        self.assertEqual(changes.gate({**baseline, **packaged("false", "held")}),
+                         [*jobs, f"package-transfer: linux-x86_64 {HELD}", f"package-transfer: linux-aarch64 {HELD}",
+                          privacy_line])
+        mixed = copy.deepcopy(baseline)
+        mixed["rust-release"]["outputs"] = {"linux-x86_64-eligible": "true", "linux-aarch64-eligible": "false"}
+        mixed["package-transfer"]["outputs"] = {"linux-x86_64-transfer": "verified", "linux-aarch64-transfer": "held"}
+        self.assertEqual(changes.gate(mixed)[len(jobs):-1], [f"package-transfer: linux-x86_64 {UPLOADED}",
+                                                             f"package-transfer: linux-aarch64 {HELD}"])
+        # Every other pair is refused for either label alone, the other label's pair being whole.
+        absent = object()
+        wrong = [("true", "held"), ("false", "verified"), ("true", ""), ("true", absent), ("true", None), ("", "verified"),
+                 (absent, "verified"), (None, "verified"), (absent, absent), ("", ""), ("false", ""), ("false", absent),
+                 (absent, "held"), ("TRUE", "verified"), ("true", "Verified"), ("true", "verified\n"), (" true", "verified"),
+                 ("yes", "verified"), ("true", "success"), ("true", "passed"), (True, "verified"), ("true", True),
+                 ("true", ["verified"]), (["true"], "verified"), ("true", {"verified": True}), ("held", "false"),
+                 ("verified", "true")]
+        for label in LINUX_LABELS:
+            for eligible, transfer in wrong:
+                with self.subTest(label=label, eligible=eligible, transfer=transfer):
+                    needs = copy.deepcopy(baseline)
+                    for job, name, value in (("rust-release", f"{label}-eligible", eligible),
+                                             ("package-transfer", f"{label}-transfer", transfer)):
+                        if value is absent:
+                            del needs[job]["outputs"][name]
+                        else:
+                            needs[job]["outputs"][name] = value
+                    with self.assertRaisesRegex(changes.PolicyError, f"package-transfer: {label} is neither an uploaded and "
+                                                                     "verified package nor a held one"):
+                        changes.gate(needs)
+
+    def test_a_package_pair_needs_both_jobs_outputs_and_both_jobs_to_have_run(self):
+        baseline = needs_for(changes.full_plan("full"))
+        absent = object()
+        for job in ("rust-release", "package-transfer"):
+            for outputs in (absent, None, {}, [], "verified", {"linux-x86_64-transfer": "verified"}):
+                with self.subTest(job=job, outputs=outputs):
+                    needs = copy.deepcopy(baseline)
+                    if outputs is absent:
+                        del needs[job]["outputs"]
+                    else:
+                        needs[job]["outputs"] = outputs
+                    with self.assertRaisesRegex(changes.PolicyError, "is neither an uploaded and verified package"):
+                        changes.gate(needs)
+        # A skipped later job while the product lane ran, whatever its outputs still say.
+        skipped = copy.deepcopy(baseline)
+        skipped["package-transfer"]["result"] = "skipped"
+        with self.assertRaisesRegex(changes.PolicyError, r"package-transfer: required result was not successful \('skipped'\)"):
+            changes.gate(skipped)
+        # Where no lane asked for the product jobs, the two still stand or fall together.
+        unasked = needs_for(changes.classify_paths([b"README.md"]))
+        self.assertEqual(changes.gate(unasked)[3:5], ["rust-release: not needed by classification",
+                                                     "package-transfer: not needed by classification"])
+        for ran in ("rust-release", "package-transfer"):
+            with self.subTest(ran=ran):
+                needs = {**unasked, ran: packaged()[ran]}
+                with self.assertRaisesRegex(changes.PolicyError,
+                                            "package-transfer: the release job and the later job did not both run"):
+                    changes.gate(needs)
+
+    def test_a_refused_pair_is_named_without_printing_what_was_handed_on(self):
+        baseline = needs_for(changes.full_plan("full"))
+        marker = "VALUE-7f3a"
+        for job, name, shown in (("rust-release", "linux-aarch64-eligible", "eligible: unexpected; transfer: verified"),
+                                 ("package-transfer", "linux-aarch64-transfer", "eligible: true; transfer: unexpected")):
+            with self.subTest(job=job):
+                needs = copy.deepcopy(baseline)
+                needs[job]["outputs"][name] = marker
+                with self.assertRaises(changes.PolicyError) as refused:
+                    changes.gate(needs)
+                self.assertEqual(str(refused.exception), "package-transfer: linux-aarch64 is neither an uploaded and "
+                                                         f"verified package nor a held one ({shown})")
+                del needs[job]["outputs"][name]
+                with self.assertRaises(changes.PolicyError) as refused:
+                    changes.gate(needs)
+                self.assertIn(shown.replace("unexpected", "missing"), str(refused.exception))
+
+    def test_the_gate_reads_the_labels_and_words_that_the_package_helper_writes(self):
+        spec = importlib.util.spec_from_file_location("ci_packages_for_gate", SCRIPT.with_name("packages.py"))
+        packages = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(packages)
+        # A label for each target of a platform whose package is uploaded: today the two Linux targets.
+        uploaded = [label for target, label in packages.TARGETS.items()
+                    if packages.platform_of(target) in packages.HOSTED_UPLOAD_PLATFORMS]
+        self.assertEqual(list(changes.TRANSFER_LABELS), uploaded)
+        self.assertEqual(uploaded, list(LINUX_LABELS))
+        self.assertEqual(set(changes.TRANSFER_PAIRS), {("true", packages.VERIFIED), ("false", packages.HELD)})
+        self.assertEqual((packages.VERIFIED, packages.HELD), ("verified", "held"))
+        self.assertEqual(changes.TRANSFER_PAIRS, {("true", "verified"): UPLOADED, ("false", "held"): HELD})
+        self.assertEqual((changes.RELEASE_JOB, changes.TRANSFER_JOB), ("rust-release", "package-transfer"))
+        self.assertEqual(changes.JOBS[changes.RELEASE_JOB], changes.JOBS[changes.TRANSFER_JOB])
 
     def test_absent_and_unknown_jobs_fail(self):
         baseline = needs_for(changes.full_plan("full"))
