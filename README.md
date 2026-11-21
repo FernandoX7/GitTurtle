@@ -129,7 +129,7 @@ Since version 4.5, Omarchy supports Apple Silicon MacBooks natively ([omarchy.or
 
 ## Get started
 
-GitTurtle is in early development and has no published downloads yet: **build it from source**. Prebuilt releases will be announced on [GitHub Releases](https://github.com/FernandoX7/GitTurtle/releases). You need Git and [Rust through rustup](https://rustup.rs/); the checkout's `rust-toolchain.toml` selects Rust **1.99.0** for you.
+GitTurtle is in early development and has no published downloads yet: **build it from source**. Prebuilt releases will be announced on [GitHub Releases](https://github.com/FernandoX7/GitTurtle/releases). You need Git and [Rust through rustup](https://rustup.rs/); the checkout's `rust-toolchain.toml` selects Rust **1.100.0** for you.
 
 ```sh
 git clone https://github.com/FernandoX7/GitTurtle.git

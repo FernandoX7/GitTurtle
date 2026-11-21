@@ -103,7 +103,7 @@ The application retains opaque theme surfaces after a real native Liquid Glass p
 
 ## Run from source
 
-Use Rust 1.99 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
+Use Rust 1.100 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
 
 For Linux prerequisites and a user-local executable, icon and application launcher, see [Build and install locally on Linux](linux.md).
 
@@ -209,7 +209,7 @@ The [Git service documentation](../crates/git-core/README.md) describes passive-
 
 ## Development and measurement
 
-[The quality workflow](../.github/workflows/quality.yml) configures locked workspace tests (sharded across macOS 15, Ubuntu 24.04, and Arch Linux), strict all-target Clippy (macOS 15 and Ubuntu 24.04), release builds and package checks on macOS 26, Ubuntu 24.04 x86-64, and Ubuntu 24.04 ARM64, plus `package-transfer` artifact verification, using Rust 1.99.0. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See [docs/ci.md](ci.md) for current CI architecture and hosted run records; configured jobs and local passes do not establish physical desktop acceptance.
+[The quality workflow](../.github/workflows/quality.yml) configures locked workspace tests (sharded across macOS 15, Ubuntu 24.04, and Arch Linux), strict all-target Clippy (macOS 15 and Ubuntu 24.04), release builds and package checks on macOS 26, Ubuntu 24.04 x86-64, and Ubuntu 24.04 ARM64, plus `package-transfer` artifact verification, using Rust 1.100.0. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See [docs/ci.md](ci.md) for current CI architecture and hosted run records; configured jobs and local passes do not establish physical desktop acceptance.
 
 ```sh
 cargo fmt --all -- --check
