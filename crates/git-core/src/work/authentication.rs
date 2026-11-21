@@ -494,6 +494,7 @@ fn askpass_exchange(socket: &Path, prompt: &str) -> Result<Vec<u8>> {
 struct AskpassServer {
     directory: PathBuf,
     socket: PathBuf,
+    control: OperationControl,
     stop: Arc<AtomicBool>,
     wake_writer: std::os::unix::net::UnixStream,
     worker: Option<thread::JoinHandle<()>>,
@@ -523,11 +524,12 @@ impl AskpassServer {
             let (wake_reader, wake_writer) = UnixStream::pair()?;
             let stop = Arc::new(AtomicBool::new(false));
             let stopped = Arc::clone(&stop);
+            let worker_control = control.clone();
             let worker = thread::Builder::new()
                 .name("git-askpass".into())
                 .spawn(move || {
                     use rustix::event::{PollFd, PollFlags, poll};
-                    while !stopped.load(Ordering::Acquire) && !control.is_cancelled() {
+                    while !stopped.load(Ordering::Acquire) && !worker_control.is_cancelled() {
                         match listener.accept() {
                             Ok((mut stream, _)) => {
                                 let mut handle = || -> Result<()> {
@@ -542,8 +544,8 @@ impl AskpassServer {
                                     ensure!(size <= PROMPT_LIMIT, "Prompt too long");
                                     let mut prompt = vec![0; size];
                                     stream.read_exact(&mut prompt)?;
-                                    let response =
-                                        control.request(String::from_utf8(prompt)?, &stopped);
+                                    let response = worker_control
+                                        .request(String::from_utf8(prompt)?, &stopped);
                                     if let Some(response) = response {
                                         stream.write_all(&(response.len() as u32).to_be_bytes())?;
                                         stream.write_all(response.as_bytes())?;
@@ -574,6 +576,7 @@ impl AskpassServer {
             Ok(Self {
                 directory: directory.clone(),
                 socket: socket.clone(),
+                control,
                 stop,
                 wake_writer,
                 worker: Some(worker),
@@ -590,6 +593,7 @@ impl AskpassServer {
 impl Drop for AskpassServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.control.0.changed.notify_all();
         let _ = self.wake_writer.shutdown(std::net::Shutdown::Write);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -2253,6 +2257,7 @@ sys.stderr.flush()
         let output = run_controlled(control.clone(), || {
             let mut command = Command::new("git");
             command
+                .env("LC_ALL", "C")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .args(["clone", "--progress"])
@@ -2281,8 +2286,9 @@ sys.stderr.flush()
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        // Outlast the 10 ms accept poll so the server holds the connection before any
-        // prompt bytes exist, then split the frame the way a slow helper could.
+        // Pause before writing the frame so the server accepts the connection
+        // before any prompt bytes exist, then split the frame the way a slow
+        // helper could.
         let prompt = "Password for 'https://example.invalid/repo': ";
         thread::sleep(Duration::from_millis(100));
         stream

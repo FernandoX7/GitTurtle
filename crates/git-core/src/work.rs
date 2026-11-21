@@ -2972,6 +2972,8 @@ mod tests {
                 0,
             ),
             ("cat", Some(b"piped-input".to_vec()), "piped-input", 0),
+            ("cat", Some(Vec::new()), "", 0),
+            ("exit 0", Some(vec![b'x'; 2 * 1024 * 1024]), "", 0),
         ] {
             let (seam, owned) = write_seam(long, process_io::ExitWatch::Readiness, None);
             let started = Instant::now();
