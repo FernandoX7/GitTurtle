@@ -179,7 +179,15 @@ def cmd_rm(args: argparse.Namespace) -> int:
         if wt_path.is_symlink():
             raise WorktreeError(f"refusing to remove symlinked worktree path: {wt_path}")
         if not args.force:
-            dirty = run_git(wt_path, "status", "--porcelain", "--untracked-files=normal")
+            dirty = run_git(
+                wt_path,
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+                "--",
+                ".",
+                ":(exclude).local/target",
+            )
             if dirty.stdout.strip():
                 raise WorktreeError(
                     f"worktree {wt_path} has uncommitted or untracked files; pass --force to remove"
@@ -193,6 +201,9 @@ def cmd_rm(args: argparse.Namespace) -> int:
             raise WorktreeError(f"refusing to remove symlinked target path: {target_dir}")
         if target_dir.exists():
             shutil.rmtree(target_dir)
+        local_dir = wt_path / ".local"
+        if local_dir.is_dir() and not local_dir.is_symlink() and not any(local_dir.iterdir()):
+            local_dir.rmdir()
         rm_args = ["worktree", "remove"]
         if args.force:
             rm_args.append("--force")

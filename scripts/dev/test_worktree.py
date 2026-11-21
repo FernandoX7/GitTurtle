@@ -80,6 +80,9 @@ class WorktreeTests(unittest.TestCase):
             self.assertFalse((wt / "docs" / "evidence" / "shot.png").exists())
             self.assertFalse((wt / "docs" / "benchmarks" / "bench.json").exists())
             self.assertTrue((wt / ".local" / "target").is_dir())
+            # Simulate a populated CoW-cloned target dir even on non-reflink /tmp
+            # (matches macOS APFS where stamp.txt is cloned into .local/target).
+            (wt / ".local" / "target" / "stamp.txt").write_text("warm\n", encoding="utf-8")
 
             # Full checkout includes docs/evidence and docs/benchmarks.
             buf_full = io.StringIO()
