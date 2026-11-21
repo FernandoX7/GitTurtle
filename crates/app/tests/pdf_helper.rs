@@ -558,13 +558,13 @@ mod filter {
     #[test]
     fn an_x32_call_kills_with_sigsys() {
         const X32: c_long = 0x4000_0000;
-        // SAFETY: getpid's x32 number; harmless had it been allowed.
-        assert_eq!(
-            calling(&|| unsafe {
+        let call = || {
+            // SAFETY: getpid's x32 number; harmless had it been allowed.
+            unsafe {
                 syscall(X32 | libc::SYS_getpid);
-            }),
-            SIGSYS
-        );
+            }
+        };
+        assert_eq!(calling(&call), SIGSYS);
     }
 }
 
