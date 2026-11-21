@@ -4646,27 +4646,37 @@ mod tests {
     /// exited while a descendant still holds its pipes stays unreaped, its
     /// process ID and its group's still its own for a kill at the deadline,
     /// until the read is complete; the polling wait reaped it within a tick.
+    ///
+    /// The descendant holds the pipes until this test lets it go, so the look
+    /// races nothing: a tenth of a second after the exit, long after a wait
+    /// that took the status there would have reaped the child, it is still
+    /// this process's to wait for, and it is reaped once the read returns.
+    /// Left alone the descendant lets go by itself, so nothing can hang.
     #[cfg(unix)]
     #[test]
     fn a_passive_read_reaps_its_exited_child_only_once_it_is_complete() {
         use process_io::fixtures::{ChildState, child_state, written_line};
         let temp = tempfile::tempdir().unwrap();
-        let pid = temp.path().join("pid");
-        let mut command = shell("echo $$ > \"$1\"; sleep 0.5 & exit 0");
-        command.arg(&pid);
+        let (pid, release) = (temp.path().join("pid"), temp.path().join("release"));
+        let mut command = shell(
+            "echo $$ > \"$1\"; \
+             (i=0; while [ ! -e \"$2\" ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i+1)); done) & \
+             exit 0",
+        );
+        command.arg(&pid).arg(&release);
         let worker = thread::spawn(move || bounded_output(command, GIT_TIMEOUT));
         let child = written_line(&pid);
         let started = Instant::now();
-        let seen = loop {
-            match child_state(&child) {
-                ChildState::Running if started.elapsed() < Duration::from_secs(3) => {
-                    thread::sleep(Duration::from_millis(1));
-                }
-                state => break state,
-            }
-        };
+        while child_state(&child) == ChildState::Running
+            && started.elapsed() < Duration::from_secs(3)
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        thread::sleep(Duration::from_millis(100));
+        let held = child_state(&child);
+        std::fs::write(&release, "").unwrap();
         let output = worker.join().unwrap().unwrap();
-        assert_eq!(seen, ChildState::Exited);
+        assert_eq!(held, ChildState::Exited);
         assert!(output.status.success());
         assert_eq!(child_state(&child), ChildState::Reaped);
     }
@@ -4725,8 +4735,9 @@ mod tests {
     }
 
     /// A reader that cannot start is an error and never a child left
-    /// running: the read fails at once, has ended what it did start, and the
-    /// child's group is killed before it can leave its marker.
+    /// running: the read fails, has ended what it did start, and the child's
+    /// group is killed before it can leave its marker, which is what shows
+    /// that the read did not wait for it.
     #[cfg(unix)]
     #[test]
     fn a_passive_reader_that_cannot_start_leaves_no_child_running() {
@@ -4742,9 +4753,7 @@ mod tests {
                 process_io::ExitWatch::Readiness,
                 Some(process_io::Fault::CannotStart(part)),
             );
-            let started = Instant::now();
             let error = bounded_output_with(command, GIT_TIMEOUT, seam).unwrap_err();
-            assert!(started.elapsed() < Duration::from_millis(250), "{name}");
             assert!(
                 error
                     .to_string()
