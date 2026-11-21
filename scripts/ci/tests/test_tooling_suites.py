@@ -798,7 +798,7 @@ class PlanTests(unittest.TestCase):
         jobs, listing = suites.plan(Path("/records"))
         self.assertEqual([job.name for job in jobs],
                          ["agent-tooling-1-of-3", "agent-tooling-2-of-3", "agent-tooling-3-of-3",
-                          "native-qa-tooling", "operator-tooling", "ci-tests"])
+                          "native-qa-tooling", "operator-tooling", "dev-tooling", "ci-tests"])
         discovery = ("-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py")
         for index, job in enumerate(jobs[:3]):
             self.assertEqual(job.command, (sys.executable, str(DRIVER), "group", "--index", str(index), "--of", "3",
@@ -807,15 +807,16 @@ class PlanTests(unittest.TestCase):
         self.assertEqual([job.command for job in jobs[3:]], [
             (sys.executable, "-m", "unittest", "discover", "-s", "scripts/native_qa", "-t", "scripts", "-p", "test_*.py"),
             (sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/operator", "-p", "test_*.py"),
+            (sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-p", "test_*.py"),
             (sys.executable, "-m", "unittest", "discover", "-s", "scripts/ci/tests", "-p", "test_*.py")])
-        self.assertEqual([job.record for job in jobs[3:]], [None, None, None])
+        self.assertEqual([job.record for job in jobs[3:]], [None, None, None, None])
         self.assertEqual(listing.command, (sys.executable, str(DRIVER), "ids", "--record", "/records/discovery.json", *discovery))
         # Every name is one the collector accepts, and the records sort by suite in its summary.
         metrics = suites.collector()
         for job in (*jobs, listing):
             self.assertTrue(metrics.NAME.fullmatch(job.name), job.name)
         # A start folder that is where the tests say it is: a renamed suite must not leave a group of nothing.
-        for folder in ("scripts/agent_loop", "scripts/native_qa", "scripts/operator", "scripts/ci/tests"):
+        for folder in ("scripts/agent_loop", "scripts/native_qa", "scripts/operator", "scripts/dev", "scripts/ci/tests"):
             self.assertTrue(any((ROOT / folder).glob("test_*.py")), folder)
 
 
@@ -843,14 +844,23 @@ class WorkflowTests(unittest.TestCase):
             "name: Check CI collector syntax and help",
             "name: Summarize CI measurements",
             "name: Preserve CI measurements and sanitized diagnostics"])
-        # The whole step: its name and its command, with no condition, limit, retry or shell of its own.
-        self.assertEqual(steps[3], "name: Test development, native-QA, operator and CI tooling side by side\n"
-                                   f"        run: {STEP}")
+        # On Linux the parallel ci-tests job already runs scripts/ci/tests, so
+        # agent-tooling passes --skip-ci-tests there and runs all suites on macOS.
+        self.assertEqual(
+            steps[3],
+            "name: Test development, native-QA, operator and CI tooling side by side\n"
+            "        run: |\n"
+            '          if [ "${{ runner.os }}" = "Linux" ]; then\n'
+            '            python3 scripts/ci/tooling_suites.py run --skip-ci-tests --directory "$RUNNER_TEMP/ci-metrics"\n'
+            "          else\n"
+            f"            {STEP}\n"
+            "          fi",
+        )
         for word in ("continue-on-error", "retry", "|| true", "unittest discover"):
             self.assertNotIn(word, job, word)
         # Only the summary and the artifact run after a failure; nothing else is conditional.
         self.assertEqual(re.findall(r"^        if: (.*)$", job, re.M), ["always()", "always()"])
-        self.assertEqual(job.count("scripts/ci/tooling_suites.py"), 1)
+        self.assertEqual(job.count("scripts/ci/tooling_suites.py"), 2)
 
 
 if __name__ == "__main__":

@@ -111,9 +111,11 @@ PRIVACY_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 RUST_SPAN = re.compile(r"--> ([^\s:]+):(\d+):(\d+)")
 PANIC_AT = re.compile(r"panicked at ([^\s:]+):(\d+):(\d+)")
 TYPOS_LINE = re.compile(r"^([^\s:]+):(\d+):(\d+): ")
-# nextest 0.9.145 prints `FAIL [   0.014s] (1/1) gitturtle-core path::to::test`;
-# older versions omit the `(n/m)` counter.
-NEXTEST_STATUS = re.compile(r"^\s*([A-Z][A-Z0-9 /]*?)\s+\[\s*[0-9.]+s\]\s+(?:\(\d+/\d+\)\s+)?(\S+)\s+(\S+)\s*$")
+# nextest 0.9.145+ prints `FAIL [   0.014s] (  1/100) gitturtle-core path::to::test`
+# with space-padded counters; older versions omit the `(n/m)` counter.
+NEXTEST_STATUS = re.compile(
+    r"^\s*([A-Z][A-Z0-9 /]*?)\s+\[\s*[0-9.]+s\]\s+(?:\(\s*\d+/\s*\d+\)\s+)?(\S+)\s+(\S+)\s*$"
+)
 NEXTEST_BLOCK = re.compile(r"^(?:--- (?:STDOUT|STDERR):|\s*(?:stdout|stderr) ─)")
 NEXTEST_RULE = re.compile(r"^\s*(?:-{6,}|─{6,})\s*$")
 CARGO_TEST_FAILED = re.compile(r"^test (\S+) \.\.\. FAILED$")

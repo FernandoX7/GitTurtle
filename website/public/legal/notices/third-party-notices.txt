@@ -108,7 +108,7 @@ by the OS/user; distribution of those components would require a separate review
   (Rosé Pine and Rosé Pine Dawn), Dracula (Dracula and its Alucard light variant),
   and Kanagawa (Kanagawa Wave and Kanagawa Lotus) are shipped palette adaptations
   with adjusted native UI colors, selected in the
-  [palette research note](docs/development/2026-09-17-theme-palettes.md). Each is
+  [palette research note](crates/app/tests/fixtures/2026-09-17-theme-palettes.md). Each is
   MIT; the copyright and permission notices are preserved for
   [Solarized](docs/licenses/assets/solarized-LICENSE),
   [One](docs/licenses/assets/atom-one-LICENSE.md),

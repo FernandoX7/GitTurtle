@@ -18,65 +18,84 @@ passes, failures, routing behavior and the remaining cache/performance evidence.
 ## Events and required results
 
 Quality owns normal validation: one `pull_request` run per opened, reopened or
-synchronized PR, pushes to `main`, and explicit `workflow_dispatch`. Branch pushes
-do not also start Quality. A branch without a PR can use manual dispatch. PR runs
-test GitHub's generated **merge commit**, including its interaction with the base;
-they do not claim a separate branch-head build. Main/manual runs test the selected
-checkout. Main pushes and manual dispatch request all lanes; manual dispatch does
-not replace PR-associated required checks. See GitHub's [event semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
+synchronized PR, pushes to `main`, weekly scheduled cache-seed runs on `main`,
+and explicit `workflow_dispatch`. Branch pushes do not also start Quality. A
+branch without a PR can use manual dispatch. PR runs test GitHub's generated
+**merge commit**, including its interaction with the base; they do not claim a
+separate branch-head build. Main/manual runs test the selected checkout. Product
+merges to `main`, scheduled cache seeds and manual dispatch request all lanes,
+while pure docs/records/website/tooling merges to `main` run only their
+affected lanes without rebuilding Rust. Manual dispatch does not replace
+PR-associated required checks. See GitHub's [event semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
 
-The concurrency group is specific to the PR number. A newer update cancels the
-older run for that PR; unrelated PRs remain independent. Main pushes and manual
-runs use unique run IDs and do not cancel each other or PR validation. A cancelled
-run cannot satisfy the successful aggregate. These are the configured
+The concurrency group is specific to the PR number (or branch ref for non-`main`
+manual dispatches). A newer update cancels the older run for that PR; unrelated
+PRs remain independent. Main pushes, scheduled seeds and `main` manual runs use
+unique run IDs and do not cancel each other or PR validation. A cancelled run
+cannot satisfy the successful aggregate. These are the configured
 [concurrency semantics](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
 pending real superseding-run evidence at C1.
 
 ### Conservative change routing
 
-The mandatory `Changes and CI policy` job checks guidance, all focused CI helper
-fixtures and every checked-in Actions workflow with the pinned linter, fetched in
-[one attempt that names its failure](#the-actionlint-fetch-in-quality). The
-[classifier](../scripts/ci/changes.py) then produces boolean product, tooling and
-website outputs plus a versioned JSON plan. Downstream jobs consume those flags;
-the final gate verifies the same recorded plan and actual job results.
+The mandatory `Changes and CI policy` job runs a blobless checkout, validates
+guidance and the fast `test_changes.py` check, lints every checked-in Actions
+workflow with the pinned linter fetched in
+[one attempt that names its failure](#the-actionlint-fetch-in-quality), and
+classifies the diff. The full CI helper test suite (`scripts/ci/tests`) runs in
+parallel in the mandatory `CI policy tests` (`ci-tests`) job so downstream jobs
+start as soon as classification finishes. The
+[classifier](../scripts/ci/changes.py) produces boolean `product`, `tooling`,
+`website` and `has-images` outputs plus a versioned JSON plan. Downstream jobs
+consume those flags; the final gate verifies the same recorded plan and actual
+job results.
 
 For pull requests:
 
-- Documentation and documentation images under `docs/`, plus the listed top-level
-  contributor/design documents, use the mandatory inexpensive checks.
+- Documentation and documentation images under `docs/` (excluding packaged
+  notices under `docs/licenses/`), benchmark data files under `docs/benchmarks/`,
+  pure crate/AUR Markdown docs (`crates/app/docs/*.md`,
+  `crates/git-core/README.md`, `packaging/aur/README.md`), and the listed
+  top-level contributor/design documents use the mandatory inexpensive checks.
 - `website/` changes also call Website's existing Python input check and JavaScript
   syntax check. Website is a reusable validation workflow with separate manual
   dispatch; Quality owns its PR/main triggers, avoiding another duplicate run.
-- CI helpers, development-controller files, agent guides and development contracts
-  also run the existing macOS and Ubuntu development-tooling matrix, including all
-  CI helper tests. Four CI helpers are run by the product jobs themselves and
+- CI helpers, `scripts/dev/` helpers, development-controller files, agent guides
+  and development contracts also run the macOS and Ubuntu development-tooling
+  matrix (Linux skips `ci-tests` because the parallel `CI policy tests` job
+  already runs it). Five CI helpers are run by the product jobs themselves and
   select **all** lanes instead, so a change of one exercises the jobs that run it
   before it reaches main: `scripts/ci/packages.py` (package delivery),
   `scripts/ci/tools.py` (the pinned nextest installer),
   `scripts/ci/apt_install.py`
   ([package installation on Ubuntu](#package-installation-on-ubuntu), which only
-  the Rust jobs' setup, the `Image privacy` job and the package transfer job run) and
+  the Rust jobs' setup, the `Image privacy` job and the package transfer job run),
   `scripts/ci/metrics.py` (the CI collector, under which every Rust job runs its
-  commands and with which the Rust cache action writes its records).
+  commands and with which the Rust cache action writes its records), and
+  `scripts/ci/libdav1d_elf.py` (the Linux ELF linkage and initializer inspector).
 - Claude Code configuration (`.claude/**` and any file named `CLAUDE.md`) routes
   like `AGENTS.md` and `.agents/`. No build or package reads it: the guidance check
   validates its agents, skills, settings structure, hook paths and syntax and links,
   and the agent-loop suite in the tooling lane runs the path-protection hook
-  (`test_claude_hooks`) and the controller's Claude adapter. A change that also
-  touches `crates/`, `vendor/` (other than its guides), a manifest or `.github/`
-  still runs all lanes.
-- Rust, manifests, the lockfile/toolchain, native assets, vendored inputs, build or
-  package scripts, workflow/repository-policy changes and unrecognized paths run
-  **all** lanes. Rust keeps formatting, locked workspace tests and doctests,
-  strict all-target Clippy, release compilation, both platform package checks
-  and the [Arch Linux container tests](#arch-linux-container-job).
+  (`test_claude_hooks`) and the controller's Claude adapter.
+- Pure product edits (`crates/`, `vendor/` outside `AGENTS.md`/`CLAUDE.md`,
+  `assets/`, `.cargo/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
+  `deny.toml`, `typos.toml`) run the full `product` lane (formatting, locked
+  workspace tests and doctests across 3 macOS, 2 Ubuntu and 2 Arch shards,
+  strict all-target Clippy, release compilation, and both platform package
+  checks) plus mandatory `ci-tests`, without starting unrelated `agent-tooling`
+  or `website` jobs so all 5 macOS jobs fit within GitHub's 5-macOS concurrency
+  cap. Build/packaging scripts, `docs/licenses/`, workflow/repository-policy
+  changes and unrecognized paths fail closed and run **all** lanes.
 
 Routing uses complete local Git diffs after `checkout` fetches history, avoiding
 GitHub path-filter/API changed-file limits. PR classification checks the observed
 merge parents against event base/head identities, compares the merge-base to the
 PR head and also the base to the exercised merge tree. Main pushes validate the
-event's before/after identities and request full coverage, including packages. A deleted or moved product file still requests product
+event's before/after identities, run full coverage (including packages and cache
+saves) whenever `product` is true or `before` is absent, and skip the Rust
+product rebuild when a `main` merge touches only docs, records, website or
+development tooling. A deleted or moved product file still requests product
 coverage: `--no-renames` reports both sides of moves, including deletions.
 Missing objects, stale/malformed event data, empty comparisons, unknown events,
 ambiguous paths or comparisons above 10,000 paths/4 MiB select full validation.
@@ -114,10 +133,11 @@ see [the package transfer job](ci-artifacts.md#find-and-verify-a-download). Each
 `fail-fast: false` so one platform failure does not discard the other platform's
 diagnostics. A checkout/evaluator failure also leaves the gate unsuccessful.
 
-The actual platform work is named `Rust tests · <platform> · <shard>/2`,
+The actual platform work is named `Rust tests · <platform> · <shard>/<total>`,
 `Rust Clippy · <platform>`, `Rust release · <platform>` and, for the two Linux
 release platforms, `Package transfer · <platform>`. The test platforms are
-`macos-15`, `ubuntu-24.04` and `archlinux`, each in [two shards](#test-shards)
+`macos-15` (three shards: `1/3`..`3/3`), `ubuntu-24.04` (two shards: `1/2`, `2/2`)
+and `archlinux` (two shards: `1/2`, `2/2`) under [test shards](#test-shards)
 (until November 3, 2026 tests and Clippy were one `Rust tests and Clippy · <platform>`
 job, and until November 19, 2026 each platform's tests were one `Rust tests · <platform>`
 job). `Rust formatting` checks the workspace once on Ubuntu. The aggregate cannot pass a product change unless
@@ -187,7 +207,11 @@ is capped at 1 MiB per image, and an image over the cap fails as not fully
 checked. Pixels need template matching against the private strings themselves,
 which no tracked file may hold.
 
-The `Image privacy` job runs on every Quality event. [`image_privacy.py`](../scripts/ci/image_privacy.py)
+The `Image privacy` job runs whenever `changes` reports `has-images == 'true'`
+(any added or changed PNG, JPEG, GIF or WebP file, or any comparison failure
+falling back closed). When `has-images` is `false`, the job is skipped and
+`Quality gate` records `no-images` (or `no-comparison` for manual/scheduled/initial
+main runs). [`image_privacy.py`](../scripts/ci/image_privacy.py)
 lists the PNG, JPEG, GIF and WebP files the event adds or changes, using the
 classifier's verified comparisons (the merge-base to the PR head and the base to
 the merge commit; a main push's before/after) with deletions excluded. When the

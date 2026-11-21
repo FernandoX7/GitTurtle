@@ -221,10 +221,10 @@ def quality_evidence(api, commit, run_id):
         raise Error("Quality run is not a successful trusted main run for the exact source")
     attempt = positive(run.get("run_attempt"))
     jobs = api.pages(prefix + f"/attempts/{attempt}/jobs", "jobs")
-    # Each platform's tests run in two shards; a run that lacks one, or in
-    # which one did not succeed, did not run that platform's whole suite.
+    # macOS tests run in three shards and Ubuntu tests in two; a run that lacks
+    # one, or in which one did not succeed, did not run that platform's whole suite.
     required = {"Quality gate", "Rust formatting",
-                "Rust tests · macos-15 · 1/2", "Rust tests · macos-15 · 2/2",
+                "Rust tests · macos-15 · 1/3", "Rust tests · macos-15 · 2/3", "Rust tests · macos-15 · 3/3",
                 "Rust tests · ubuntu-24.04 · 1/2", "Rust tests · ubuntu-24.04 · 2/2",
                 "Rust Clippy · macos-15", "Rust Clippy · ubuntu-24.04",
                 "Rust release · macos-26", "Rust release · ubuntu-24.04",

@@ -61,6 +61,7 @@ GROUPS = 3
 SUITES = (
     ("native-qa-tooling", ("-m", "unittest", "discover", "-s", "scripts/native_qa", "-t", "scripts", "-p", "test_*.py")),
     ("operator-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/operator", "-p", "test_*.py")),
+    ("dev-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-p", "test_*.py")),
     ("ci-tests", ("-m", "unittest", "discover", "-s", "scripts/ci/tests", "-p", "test_*.py")),
 )
 HEARTBEAT = 30.0
@@ -448,8 +449,9 @@ def run(directory, jobs, listing, cwd=ROOT, beat=HEARTBEAT, deadline=DEADLINE, g
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="mode", required=True)
-    step = sub.add_parser("run", help="run the six processes at once and fail when any of them does")
+    step = sub.add_parser("run", help="run the tooling suites side by side and fail when any of them does")
     step.add_argument("--directory", required=True, help="where `metrics.py measure` keeps each process's log and timing record")
+    step.add_argument("--skip-ci-tests", action="store_true", help="omit ci-tests when a sibling Ubuntu job already runs scripts/ci/tests")
     for mode, text in (("group", "run one group of a discovered suite and record its test ids"),
                        ("ids", "record the test ids a discovery finds, without running them")):
         child = sub.add_parser(mode, help=text)
@@ -462,8 +464,9 @@ def main(argv=None):
             child.add_argument("--of", type=int, required=True, help="the number of groups")
     args = parser.parse_args(argv)
     if args.mode == "run":
+        selected_suites = tuple(item for item in SUITES if not (args.skip_ci_tests and item[0] == "ci-tests"))
         with tempfile.TemporaryDirectory(prefix="tooling-suites-") as records:
-            return run(Path(args.directory).resolve(), *plan(Path(records)))
+            return run(Path(args.directory).resolve(), *plan(Path(records), suites=selected_suites))
     if args.mode == "group":
         if not 0 <= args.index < args.of:
             parser.error("--index must be at least 0 and less than --of")

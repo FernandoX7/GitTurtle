@@ -446,6 +446,30 @@ class CacheFixture(unittest.TestCase):
                 self.file(self.root / path, b"changed " + path.encode())
                 self.assertNotEqual(before, self.prepared()["CI_RUST_CACHE_KEY"])
 
+    def test_vendor_pure_doc_files_neither_change_key_nor_get_rewound(self):
+        self.init_git()
+        before = self.prepared()["CI_RUST_CACHE_KEY"]
+        for doc in (
+            "vendor/AGENTS.md",
+            "vendor/CLAUDE.md",
+            "vendor/tool/GITTURTLE-PATCH.md",
+            "vendor/tool/CHANGELOG.md",
+        ):
+            self.file(self.root / doc, b"doc v1\n")
+            subprocess.run(["git", "-C", str(self.root), "add", doc], check=True)
+        after_add = self.prepared()
+        self.assertEqual(after_add["CI_RUST_CACHE_KEY"], before)
+        self.assertEqual(int(after_add["CI_RUST_CACHE_VENDOR_MTIMES"]), 7)
+        for doc in (
+            "vendor/AGENTS.md",
+            "vendor/CLAUDE.md",
+            "vendor/tool/GITTURTLE-PATCH.md",
+            "vendor/tool/CHANGELOG.md",
+        ):
+            self.assertNotEqual((self.root / doc).stat().st_mtime_ns, cache.VENDOR_MTIME_NS)
+            self.file(self.root / doc, b"doc v2\n")
+        self.assertEqual(self.prepared()["CI_RUST_CACHE_KEY"], before)
+
     def test_both_upstream_steps_root_at_crates_and_keep_members_out(self):
         steps = (ROOT / ".github/actions/setup-rust/action.yml").read_text().split("uses: Swatinem/rust-cache@")[1:]
         self.assertEqual(len(steps), 2)
@@ -1068,7 +1092,7 @@ class CacheFixture(unittest.TestCase):
             env = dict(line.strip().split(": ", 1) for line in lines[start:] if line.startswith("        "))
             return condition, env
 
-        main = "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'"
+        main = "(github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'"
         # No event, ref or repository condition: pull requests, manual runs and the release workflow's build job compare too.
         condition, env = fields("compare")
         self.assertEqual(condition, "if: inputs.phase == 'finish'")
@@ -2558,16 +2582,21 @@ class UbuntuPackages(unittest.TestCase):
 
     def test_install_line_names_only_build_packages_and_tools(self):
         text = (ROOT / ".github/actions/setup-rust/action.yml").read_text()
-        # The step hands the names to the package helper after `--`.
-        command = re.search(r"python3 scripts/ci/apt_install\.py ((?:[^\n]*\\\n)+[^\n]*)\n", text).group(1)
-        installed = command.replace("\\", " ").split(" -- ", 1)[1].split()
-        self.assertEqual(len(installed), len(set(installed)))
-        self.assertEqual(text.count("apt_install.py"), 1)
+        # The step hands the names to the package helper after `--`: full list
+        # with optional tool packages, and minimal list for lint-only jobs.
+        commands = re.findall(r"python3 scripts/ci/apt_install\.py ((?:[^\n]*\\\n)+[^\n]*)\n", text)
+        self.assertEqual(len(commands), 2)
+        installed_full = commands[0].replace("\\", " ").split(" -- ", 1)[1].split()
+        installed_minimal = commands[1].replace("\\", " ").split(" -- ", 1)[1].split()
+        self.assertEqual(len(installed_full), len(set(installed_full)))
+        self.assertEqual(len(installed_minimal), len(set(installed_minimal)))
+        self.assertEqual(text.count("apt_install.py"), 2)
         build, tools = set(cache.UBUNTU_BUILD_PACKAGES), set(cache.UBUNTU_TOOL_PACKAGES)
         # Every installed name is in exactly one of the two lists, and a root
         # the action does not install would fail the step.
         self.assertFalse(build & tools)
-        self.assertEqual(set(installed), build | tools)
+        self.assertEqual(set(installed_full), build | tools)
+        self.assertEqual(set(installed_minimal), (build | tools) - {"python3-pil", "desktop-file-utils", "xdg-utils"})
         # The helper owns the install command; its own tests hold the whole line.
         self.assertIn('"--no-install-recommends"', (ROOT / "scripts/ci/apt_install.py").read_text())
         self.assertEqual(len(cache.UBUNTU_BUILD_PACKAGES), 11)
@@ -3243,6 +3272,11 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                                                   "-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources",
                                                   "-o", "Dir::Etc::sourceparts=-", "--"])
             self.assertEqual(set(ran[0].split()[7:]), {*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES})
+            calls.unlink()
+            minimal = subprocess.run(["bash", "-c", script], env={**environment, "CACHE_INSTALL_TOOL_PACKAGES": "false"}, capture_output=True, text=True)
+            self.assertEqual(minimal.returncode, 0, minimal.stderr)
+            ran_min = calls.read_text().splitlines()
+            self.assertEqual(set(ran_min[0].split()[7:]), ({*cache.UBUNTU_BUILD_PACKAGES, *cache.UBUNTU_TOOL_PACKAGES} - {"python3-pil", "desktop-file-utils", "xdg-utils"}))
             calls.unlink()
             for name, value in (("SYSTEM_DEPS_DAV1D_BUILD_INTERNAL", "always"), ("SYSTEM_DEPS_LINK", "static"), ("SYSTEM_DEPS_X", "")):
                 with self.subTest(variable=name):
