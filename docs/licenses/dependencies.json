@@ -247,6 +247,26 @@
     ]
   },
   {
+    "name": "hayro-font",
+    "version": "0.5.0",
+    "license": "Apache-2.0 OR MIT",
+    "repository": "LaurenzV/hayro",
+    "revision": "3f3825c3e50bb41ed6ec6c3f4b6007978bd13def",
+    "files": [
+      {
+        "path": "texts/38bd105a4a722da1d7138b78d88e6ca9de0aadd3c40fe386de7704f67a33d118.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/3f3825c3e50bb41ed6ec6c3f4b6007978bd13def/NOTICE.md",
+        "sha256": "38bd105a4a722da1d7138b78d88e6ca9de0aadd3c40fe386de7704f67a33d118"
+      },
+      {
+        "path": "texts/64f39491107e41bcdf3f6bf9f68c7c1a6fd157fabb9f54291f4a3ba0f03802a0.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/3f3825c3e50bb41ed6ec6c3f4b6007978bd13def/hayro-font/assets/README.md",
+        "sha256": "64f39491107e41bcdf3f6bf9f68c7c1a6fd157fabb9f54291f4a3ba0f03802a0"
+      }
+    ],
+    "note": "The repository NOTICE.md (including PDFBox standard-font encoding maps) is not in the published crate, and assets/README.md records the embedded Foxit standard-font substitutes' PDFium/Foxit copyright notice alongside assets/LICENSE_FOXIT."
+  },
+  {
     "name": "hayro-interpret",
     "version": "0.9.0",
     "license": "Apache-2.0 OR MIT",
@@ -269,7 +289,7 @@
         "sha256": "f68d76f2fc90d5b7ce3a503dce3ae231f8850ec4edcb3fd23ea948c4cfd02609"
       }
     ],
-    "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate. The embedded CMYK profile's CC0-1.0 text is in assets/CGATS_LICENSE.txt, a name the collector does not match, and assets/README.md records the embedded Foxit fonts' PDFium origin and the generated LAB profile."
+    "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate. The embedded CMYK profile's CC0-1.0 text is in assets/CGATS_LICENSE.txt, a name the collector does not match, and assets/README.md records the generated LAB profile."
   },
   {
     "name": "hayro-syntax",

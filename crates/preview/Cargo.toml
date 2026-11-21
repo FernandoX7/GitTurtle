@@ -32,7 +32,7 @@ zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 # pinned exactly because its C struct layouts are written by hand, so a version
 # change needs a layout review; it is direct only for reading `dav1d_version`.
 # `moxcms` is the version `image` and `hayro-jpeg2000` already use, direct only
-# for converting an AVIF's ICC profile in `avif.rs`; it adds no features.
+# for converting an AVIF's or JPEG 2000's RGB ICC profile in `image_helper.rs`; it adds no features.
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 hayro = { version = "=0.9.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 hayro-jpeg2000 = { version = "=0.5.0", default-features = false, features = ["std", "simd", "image"] }

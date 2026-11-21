@@ -917,7 +917,6 @@ mod helper {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        // SAFETY: reads into a local.
         // SAFETY: writes the current stack limit into a local.
         let rc = unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut stack) };
         assert_eq!(rc, 0);
@@ -1504,7 +1503,6 @@ mod client {
             tv_sec: 0,
             tv_nsec: 0,
         };
-        // SAFETY: writes into a local.
         // SAFETY: writes into a local.
         let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
         assert_eq!(rc, 0);

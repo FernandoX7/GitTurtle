@@ -62,9 +62,9 @@ decode both formats with ImageIO.
 - `hayro-jpeg2000` 0.5.0 (`Apache-2.0 OR MIT`) decodes JPEG 2000; it already
   reached Linux builds through hayro and now adds its `image` integration.
 - `moxcms` 0.8.1 (`BSD-3-Clause OR Apache-2.0`, with its own license files)
-  converts an AVIF's embedded ICC profile to sRGB. It already reached every
-  build through `image`, with the same features; on these Linux targets the
-  AVIF decoder also calls it directly.
+  converts an AVIF's or JPEG 2000's embedded RGB ICC profile to sRGB. It
+  already reached every build through `image`, with the same features; on these
+  Linux targets the confined image helper calls it directly.
 
 Some published crates omit their license files. [Supplemental notices](docs/licenses/README.md)
 preserve inspected upstream texts with immutable source URLs and hashes. Four
@@ -133,9 +133,9 @@ by the OS/user; distribution of those components would require a separate review
   faces unmodified and unrenamed, and do not sell them by themselves. macOS builds
   embed no font and use installed system fonts. Linux builds for x86-64 and
   AArch64 also link the hayro PDF renderer (`Apache-2.0 OR MIT`), which embeds Foxit's standard-font
-  substitutes extracted from PDFium (BSD-3-Clause, `assets/LICENSE_FOXIT` in
-  `hayro-interpret`), Adobe's predefined CMaps (BSD-3-Clause, `assets/LICENSE.txt`
-  in `hayro-cmap`) and CC0-1.0 ICC profiles. hayro's `NOTICE.md` records code
+  substitutes extracted from PDFium (BSD-3-Clause, `assets/LICENSE_FOXIT` and
+  `assets/README.md` in `hayro-font`), Adobe's predefined CMaps (BSD-3-Clause,
+  `assets/LICENSE.txt` in `hayro-cmap`) and CC0-1.0 ICC profiles. hayro's `NOTICE.md` records code
   adapted from PDFBox, pdf.js and the png crate under Apache-2.0. The collector
   copies the notices the crates ship, and the [supplements](docs/licenses/README.md)
   add `NOTICE.md` and the CMYK profile's CC0 text, which the published crates

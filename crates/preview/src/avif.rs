@@ -3157,8 +3157,13 @@ mod tests {
             if !path.ends_with("/avif.rs") && !path.ends_with("/lib.rs") {
                 assert!(!text.contains(["dav1d", "::"].concat().as_str()), "{path}");
             }
-            if !path.ends_with("/image_helper.rs") && !path.ends_with("/avif.rs") {
-                for (index, line) in text.lines().enumerate() {
+            if !path.ends_with("/image_helper.rs") {
+                let checked = if path.ends_with("/avif.rs") {
+                    std::borrow::Cow::Owned(product_code(text))
+                } else {
+                    std::borrow::Cow::Borrowed(text.as_str())
+                };
+                for (index, line) in checked.lines().enumerate() {
                     assert!(!names_moxcms(line), "{path}:{} names moxcms", index + 1);
                 }
             }

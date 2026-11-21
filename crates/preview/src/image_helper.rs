@@ -549,8 +549,9 @@ pub(crate) fn elapsed_us(start: Instant) -> u32 {
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 /// Converts `rgba` in place from an embedded RGB ICC profile to sRGB in
-/// bounded chunks; returns `false` without mutating pixels if the profile is
-/// oversized, non-RGB, or rejected by moxcms.
+/// bounded chunks; returns `false` if the profile is oversized, non-RGB, or
+/// rejected by moxcms (returning before mutating pixels when validation or
+/// transform setup fails).
 pub(crate) fn apply_rgb_icc_profile(rgba: &mut RgbaImage, icc: &[u8]) -> bool {
     // RGB display and working-space profiles take kilobytes and LUT-based ones
     // hundreds; a larger profile is skipped without being parsed (moxcms's own

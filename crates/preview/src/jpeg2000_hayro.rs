@@ -4,10 +4,9 @@
 //!
 //! The entry is `Image::new` with GitTurtle's own settings followed by its
 //! `ImageDecoder` reads; the crate's reader-based decoder and its process-wide
-//! `image` hook stay unused (a source test in `avif.rs` holds that). 0.4.1 has no
-//! memory budget (#1549) and panics on some inputs (#1409, #1649): the preflight
-//! refuses the known cases before the tile vector is allocated, the helper turns
-//! a panic into an error kind, and its data limit and deadline bound the rest.
+//! `image` hook stay unused (a source test in `avif.rs` holds that). Preflight
+//! refuses oversized inputs before tile vectors are allocated, the helper turns
+//! any panic into an error kind, and its data limit and deadline bound the rest.
 //!
 //! An image that may skip resolution levels (1 × 1 sampling, no palette) is
 //! decoded at the deepest level still at least the output's size. When the
@@ -59,7 +58,7 @@ pub(crate) fn decode(
 
 /// hayro-jpeg2000's image at the resolution level the budget allows for
 /// `target`, and that level. It skips the levels that keep both sides at least
-/// the target's when 0.4.1 decodes them correctly (1 × 1 sampling, #1409, and
+/// the target's when reduced-resolution decoding applies (1 × 1 sampling and
 /// no palette), and when the budget refuses that level, one more: a smaller
 /// image scaled up to the output beats a refusal. That is refused in turn
 /// (`DecodedTooLarge`) when the codestream has no deeper level, or the budget
