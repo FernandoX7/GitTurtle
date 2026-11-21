@@ -20,8 +20,9 @@
       "Bash(git merge-base *)",
       "Bash(python3 scripts/gate.py *)",
       "Bash(python3 scripts/check-agent-guidance.py*)",
-      "Bash(python3 scripts/agent-loop.py validate*)",
-      "Bash(python3 scripts/agent-loop.py status *)"
+      "Bash(python3 scripts/check-docs-sync.py*)",
+      "Bash(python3 scripts/dev/worktree.py *)",
+      "Bash(python3 scripts/dev/sync_adapters.py *)"
     ],
     "deny": [
       "Bash(git push --force*)",
@@ -74,7 +75,7 @@
     ],
     "SubagentStop": [
       {
-        "matcher": "implementer|implementer-hard",
+        "matcher": "implementer",
         "hooks": [
           {
             "type": "command",

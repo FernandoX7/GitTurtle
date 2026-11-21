@@ -54,14 +54,14 @@ import unittest
 HERE = Path(__file__).resolve()
 ROOT = HERE.parents[2]
 METRICS = ROOT / "scripts/ci/metrics.py"
-# The agent-loop suite's discovery, as its own step always ran it.
-AGENT_LOOP = ("-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py")
-GROUPS = 3
-# The other suites: the measurement's name and the interpreter arguments its step always had.
+# Sharded group count (0 when no suite requires multi-group sharding).
+AGENT_LOOP = ()
+GROUPS = 0
+# Tooling suites: the measurement's name and the interpreter arguments.
 SUITES = (
+    ("dev-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-t", "scripts", "-p", "test_*.py")),
+    ("gate-tooling", ("-B", "-m", "unittest", "scripts/test_gate.py", "scripts/test_claude_rm_hook.py")),
     ("native-qa-tooling", ("-m", "unittest", "discover", "-s", "scripts/native_qa", "-t", "scripts", "-p", "test_*.py")),
-    ("operator-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/operator", "-p", "test_*.py")),
-    ("dev-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-p", "test_*.py")),
     ("ci-tests", ("-m", "unittest", "discover", "-s", "scripts/ci/tests", "-p", "test_*.py")),
 )
 HEARTBEAT = 30.0
@@ -187,7 +187,7 @@ def prove(discovered, groups):
 # The processes.
 
 def plan(records, discovery=AGENT_LOOP, count=GROUPS, suites=SUITES):
-    """The step's processes in the order their output is printed, and the driver's own discovery."""
+    """The step's processes in the order their output is printed, and optional sharded discovery."""
     jobs = []
     for index in range(count):
         record = records / f"group-{index + 1}.json"
@@ -195,6 +195,8 @@ def plan(records, discovery=AGENT_LOOP, count=GROUPS, suites=SUITES):
                         (sys.executable, str(HERE), "group", "--index", str(index), "--of", str(count),
                          "--record", str(record), *discovery), record))
     jobs += [Job(name, (sys.executable, *arguments), None) for name, arguments in suites]
+    if not count:
+        return jobs, None
     record = records / "discovery.json"
     return jobs, Job("agent-tooling-discovery",
                      (sys.executable, str(HERE), "ids", "--record", str(record), *discovery), record)

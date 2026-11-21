@@ -116,15 +116,20 @@ def classify_paths(paths: list[bytes], *, has_images: bool | None = None) -> dic
         # Linux Rust test shards run this ELF inspector directly.
         if path == "scripts/ci/libdav1d_elf.py":
             return full_plan("elf-link-check", has_images=images)
+        if path == ".github/copilot-instructions.md":
+            selected.add("tooling")
+            continue
         if path.startswith(".github/"):
             return full_plan("workflow-or-repository-policy", has_images=images)
-        # Claude Code configuration is development guidance like .agents/ and
-        # .codex/: the guidance check and the tooling suite exercise it.
-        if (path.startswith(("scripts/ci/", "scripts/dev/", "scripts/agent_loop/",
-                             "scripts/native_qa/", "scripts/operator/",
-                             ".agents/", ".codex/", ".claude/", "docs/development/"))
-                or path in ("scripts/agent-loop.py", "scripts/check-agent-guidance.py")
-                or parts[-1] in ("AGENTS.md", "CLAUDE.md")):
+        # Development guidance, hooks, tooling scripts and dev helpers are
+        # validated by the guidance check and the tooling suite.
+        if (path.startswith(("scripts/ci/", "scripts/dev/", "scripts/native_qa/",
+                             ".agents/", ".codex/", ".claude/", ".githooks/",
+                             "docs/development/"))
+                or path in ("scripts/check-agent-guidance.py", "scripts/check-docs-sync.py",
+                            "scripts/gate.py", "scripts/test_gate.py",
+                            "scripts/test_claude_rm_hook.py")
+                or parts[-1] in ("AGENTS.md", "CLAUDE.md", "GEMINI.md")):
             selected.add("tooling")
         elif path.startswith("website/"):
             selected.add("website")

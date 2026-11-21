@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+env -u RUSTUP_TOOLCHAIN cargo fmt --all -- --check
+
+if command -v typos >/dev/null 2>&1; then
+  typos --format brief
+fi
+
+python3 scripts/check-agent-guidance.py
+
+if [ -f scripts/check-docs-sync.py ]; then
+  python3 scripts/check-docs-sync.py
+fi
+
+if command -v actionlint >/dev/null 2>&1; then
+  existing=()
+  while IFS= read -r wf; do
+    [ -n "$wf" ] && [ -f "$wf" ] && existing+=("$wf")
+  done < <(git diff --name-only origin/main...HEAD -- '.github/workflows/*.yml' '.github/workflows/*.yaml' 2>/dev/null || true)
+  if [ "${#existing[@]}" -gt 0 ]; then
+    actionlint "${existing[@]}"
+  fi
+fi

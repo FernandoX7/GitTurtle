@@ -6,7 +6,7 @@ import sys
 if sys.version_info < (3, 11):
     raise SystemExit("check-agent-guidance.py requires Python 3.11 or newer")
 
-from agent_loop.guidance import main
+from dev.guidance import main
 
 
 if __name__ == "__main__":
