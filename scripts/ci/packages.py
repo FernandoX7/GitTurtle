@@ -613,7 +613,8 @@ def verify(args):
     write_json(args.report, report)
     if args.summary:
         with args.summary.open("a") as stream:
-            stream.write(f"\nActual Actions artifact `{args.artifact_id}`, uploaded by attempt {uploaded} of this run, "
+            stream.write(f"### {label} package transfer\n\n"
+                         f"Actual Actions artifact `{args.artifact_id}`, uploaded by attempt {uploaded} of this run, "
                          f"downloaded once and verified in attempt {args.attempt}: `{expected['archive_sha256']}`. "
                          "Package checks passed; native desktop acceptance remains separate.\n")
     # The last act, after every check, the report and the summary: the one place

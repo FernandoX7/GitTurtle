@@ -930,8 +930,10 @@ class TransferVerifyTests(TransferFixture, unittest.TestCase):
         self.assertEqual(json.loads(self.report.read_text()),
                          {**self.record, "hosted_transfer": "passed", "artifact_id": ARTIFACT, "native_smoke": "not-performed",
                           "provenance_sha256": self.handed, "verified_run_attempt": self.VERIFIED_IN})
+        # The later job's summary starts with this: the heading a held package's plan writes too.
         self.assertEqual(self.summary.read_text(),
-                         f"\nActual Actions artifact `{ARTIFACT}`, uploaded by attempt 1 of this run, downloaded once and "
+                         f"### {self.LABEL} package transfer\n\n"
+                         f"Actual Actions artifact `{ARTIFACT}`, uploaded by attempt 1 of this run, downloaded once and "
                          f"verified in attempt 2: `{self.record['archive_sha256']}`. Package checks passed; native desktop "
                          "acceptance remains separate.\n")
         self.assertEqual(self.output.read_text(), f"{self.LABEL}-transfer=verified\n")
