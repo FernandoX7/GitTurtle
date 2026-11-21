@@ -167,12 +167,13 @@ x86-64 job of Quality run 43747610529 (November 15, 2026) it came back 0.45 s
 after the upload was finalized, with seven artifacts and without the new ID,
 and the step failed with `None of the provided artifact IDs were found`,
 although the package had been built, verified and uploaded. A check that needs
-a retry has a fault to find. A measurement run of November 21, 2026
-(44841956480) showed the lag and where it ends: of 44 jobs that asked for
-their artifact in the step after their upload, 19 did not find it, 0.20 to
-0.48 s after the upload was finalized, and all 88 jobs that needed their
-uploader found it listed at their one attempt, the earliest 4.85 s after. In
-Quality the later job starts after every release leg has ended. So the
+a retry has a fault to find. A measurement of November 21, 2026, three runs an
+hour apart (44841956480, 44848668672 and 44854676626), showed the lag and where
+it ends: of 132 jobs that asked for their artifact in the step after their
+upload, 49 did not find it, 0.19 to 0.48 s after the upload was finalized, and
+all 264 jobs that needed their uploader found it listed at their one attempt,
+the earliest 4.34 s after. In Quality the later job starts only when every
+release leg has succeeded, minutes after the uploads. So the
 download is one step with no retry, no wait and no tolerated failure, and the
 release job downloads nothing.
 
