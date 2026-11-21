@@ -77,8 +77,8 @@ class ClassificationTests(unittest.TestCase):
                 changes.validate_plan(plan)
 
     def test_the_package_installation_helper_selects_the_full_plan_for_its_own_reason(self):
-        # Only the Rust jobs' setup and the Image privacy job run it, so the
-        # tooling lane alone would let a change of it reach main unexercised.
+        # Only the Rust jobs' setup, the Image privacy job and the package transfer job run
+        # it, so the tooling lane alone would let a change of it reach main unexercised.
         plan = changes.classify_paths([b"scripts/ci/apt_install.py"])
         self.assertEqual(plan, changes.full_plan("package-installation-helper"))
         changes.validate_plan(plan)
