@@ -3,16 +3,13 @@
 > Strictly `<= 60` lines (enforced by `scripts/check-agent-guidance.py`). Overwrite on task close; never append session logs here. Graduate durable lessons into `.agents/skills/` or `docs/decisions/`.
 
 - **Updated:** 2026-11-21
-- **Latest green `main`:** `63514472` (PR #236 — free-tier CI cache/sharding/routing & CoW worktree tooling merged; prior Phase 0 PRs #234 and #235 merged)
+- **Latest green `main`:** `28d6a579` (PR #237 — Rust 1.100.0, `cargo-deny 0.21.0`, `jiff 1.0.2`, standalone crate bumps, `[workspace.lints]`, `git-core` `#![forbid(unsafe_code)]`; prior PRs #234, #235, #236 merged)
 - **Active branch:** `chore/platform-agnostic-ai-arch` (Phase 3A — platform-agnostic `.agents/` architecture, retired `scripts/agent_loop/` & `scripts/operator/`, `.githooks/`, `STATE.md`, compacted `AGENTS.md`/`vendor/AGENTS.md`/`crates/preview/AGENTS.md`)
-- **Staged worktrees:**
-  - `.local/wt/phase2-deps` (`deps/rust-1.100-jiff-workspace-lints`) — rebased cleanly on `main`, verified locally (Rust 1.100.0, `cargo-deny 0.21.0`, `jiff 1.0.2`, standalone crate bumps, `[workspace.lints]`, `git-core` `#![forbid(unsafe_code)]`, `hayro-font` Foxit notice retained)
-  - `.local/wt/phase3a-ai-arch` (`chore/platform-agnostic-ai-arch`) — in progress
+- **Staged worktree:** `.local/wt/phase3b-docs-freshness` (`docs/freshness-design-split-archive` — DESIGN.md split, Sept 2026 doc archive, validation monthly split, website legal-notice generator & orphan-asset cleanup, `docs/doc-manifest.json` + `scripts/check-docs-sync.py`)
 
 ## Next concrete steps
-1. Merge Phase 2 PR (`deps/rust-1.100-jiff-workspace-lints`) once `main` post-merge run `44953250030` clears macOS slots; re-warm `.local/target-base` on Rust 1.100.0 with `debug = false`.
-2. Merge Phase 3A PR (`chore/platform-agnostic-ai-arch`) and Phase 3B PR (DESIGN.md split, Sept 2026 doc archive, public docs/website fixes, `scripts/check-docs-sync.py` + `docs/doc-manifest.json`).
-3. Execute Phase 4 (`gpui-kit 0.6.0 -> 0.10.0`, `gpui-pre 0.3.4 -> 0.3.12`, `notify 7.0 -> 8.2`, dropping ~19 upstreamed vendor patches).
+1. Merge Phase 3A PR (`chore/platform-agnostic-ai-arch`) and Phase 3B PR (`docs/freshness-design-split-archive`).
+2. Execute Phase 4 (`gpui-kit 0.6.0 -> 0.10.0`, `gpui-pre 0.3.4 -> 0.3.12`, `notify 7.0 -> 8.2`, dropping ~19 upstreamed vendor patches).
 
 ## Deferred manual desktop checks (owner-driven)
 - `QA-146` interactive macOS/Linux visual sanity on passive/write readiness waits (#234/#235).
