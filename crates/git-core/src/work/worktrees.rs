@@ -36,6 +36,12 @@ pub(crate) fn inspection_cancelled() -> bool {
     })
 }
 
+/// Whether this thread's reads can be cancelled at all: a token is installed,
+/// cancelled or not. A wait without one has no cancellation to look for.
+pub(crate) fn inspection_cancellable() -> bool {
+    INSPECTION_CANCELLATION.with_borrow(Option::is_some)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorktreeDetails {
     pub tree: Worktree,

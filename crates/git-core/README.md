@@ -100,6 +100,17 @@ writer starts; readiness polling also watches a shared local socket whose EOF
 wakes every blocked pipe on cancellation or cleanup. Idle traversals need no
 periodic polling wakeups. A command is complete only after its direct child and
 required pipe threads finish, so direct-child exit cannot bypass a deadline.
+A single passive command waits for that on events instead of a sleep: each
+reader reports that it ended, a panic included, and a helper thread reports the
+child's exit without reaping it. That report is a hint. The status is taken
+only with a wait that cannot block, and a report with no exit behind it, like a
+helper that cannot start, leaves the command asking every millisecond as it did
+before. Otherwise the command wakes on a timer only at its deadline, and every
+millisecond while a cancellation token is installed. An exited child stays
+unreaped until its command completes or fails: the reap follows any kill of the
+child and its group and the helper's end, so no signal goes to a process ID
+that the reap has freed. A reader that cannot start fails the command with its
+child killed and reaped.
 Cleanup stops and joins GitTurtle's I/O threads even if an external wrapper has
 detached a child into another session while retaining a pipe. The app does not
 claim to terminate independently daemonized programs outside Git's process group.

@@ -22,7 +22,7 @@ pub use preview_assets::*;
 pub use work::*;
 
 use anyhow::{Context, Result, bail, ensure};
-use process_io::{ChildPipes, PipeControl, StopPipe};
+use process_io::{ChildPipes, ExitWatcher, PipeControl, StopPipe, WaitPart, WaitSeam, WaitStep};
 use sha2::{Digest, Sha256};
 use similar::{Algorithm, TextDiff};
 use std::{
@@ -2253,69 +2253,159 @@ fn run_git_output(target: GitTarget<'_>, args: &[&str]) -> Result<Output> {
     bounded_output(command, GIT_TIMEOUT)
 }
 
-fn bounded_output(mut command: Command, timeout: Duration) -> Result<Output> {
+/// How often the passive wait wakes to look, while it has something to look
+/// for: a cancellation where a token is installed, the exit where nothing
+/// reports it.
+const PASSIVE_WAIT_TICK: Duration = Duration::from_millis(1);
+
+fn bounded_output(command: Command, timeout: Duration) -> Result<Output> {
+    bounded_output_with(command, timeout, WaitSeam::new(PASSIVE_WAIT_TICK))
+}
+
+/// The passive wait's own order, judged after every wake whatever woke it: a
+/// cancelled read is cancelled even where it had completed, a failed wait
+/// comes before completion, and the deadline ends only a read that is not
+/// complete.
+fn passive_wait_step(
+    cancelled: bool,
+    wait_failed: bool,
+    complete: bool,
+    timed_out: bool,
+) -> WaitStep {
+    if cancelled {
+        WaitStep::Cancelled
+    } else if wait_failed {
+        WaitStep::WaitFailed
+    } else if complete {
+        WaitStep::Complete
+    } else if timed_out {
+        WaitStep::TimedOut
+    } else {
+        WaitStep::Wait
+    }
+}
+
+/// [`bounded_output`], run with `seam`'s tick and way of seeing the exit.
+///
+/// The calling thread blocks in one timed wait, which a reader's end and the
+/// reported exit end at once. Its timeout is the time left to the deadline,
+/// and no more than a tick only while there is something to look for: a
+/// cancellation, where a token is installed, or the exit, where nothing
+/// reports it.
+fn bounded_output_with(mut command: Command, timeout: Duration, seam: WaitSeam) -> Result<Output> {
     ensure!(
         !work::inspection_cancelled(),
         "Repository inspection cancelled"
     );
+    // Sampled once, on the calling thread: the token is its thread-local, and
+    // no thread this wait owns reads one.
+    let cancellable = work::inspection_cancellable();
     isolate_process_group(&mut command);
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("Unable to start Git; install Git and ensure it is on PATH")?;
+    // Where this fails it has killed and reaped the child itself. From here to
+    // the last join nothing returns early: every ending takes the one
+    // clean-up path below.
     let pipes = ChildPipes::take(&mut child)?;
-    let read = |pipe: Box<dyn Read + Send>, limit: usize| {
-        thread::spawn(move || -> std::io::Result<Vec<u8>> {
+    let (signals, mut events) = process_io::wait_events(&seam);
+    let read = |part, pipe: Option<Box<dyn Read + Send>>, limit: usize| {
+        let pipe = pipe.ok_or_else(|| std::io::Error::other("its pipe is missing"))?;
+        signals.start(part, move || -> std::io::Result<Vec<u8>> {
             let mut bytes = Vec::new();
             pipe.take(limit as u64 + 1).read_to_end(&mut bytes)?;
             Ok(bytes)
         })
     };
-    let stdout = read(Box::new(pipes.output), MAX_COMMAND_OUTPUT);
+    let stdout = read(
+        WaitPart::Output,
+        Some(Box::new(pipes.output)),
+        MAX_COMMAND_OUTPUT,
+    );
     let stderr = read(
-        Box::new(pipes.error.expect("Requested Git error pipe")),
+        WaitPart::Error,
+        pipes
+            .error
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
         128 * 1024,
     );
+    // A reader that cannot start must not leave the child running: the read
+    // fails through the same clean-up as a deadline.
+    let unstarted = [&stdout, &stderr]
+        .into_iter()
+        .find_map(|reader| reader.as_ref().err())
+        .map(|error| anyhow::anyhow!("Unable to start a Git pipe reader: {error}"));
+    let mut exit = ExitWatcher::start(&child, signals, &seam);
     let start = Instant::now();
     let mut status = None;
-    let result = loop {
-        if work::inspection_cancelled() {
-            break Err(anyhow::anyhow!("Repository inspection cancelled"));
-        }
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(value) => status = value,
-                Err(error) => break Err(error.into()),
+    let result = if let Some(error) = unstarted {
+        Err(error)
+    } else {
+        loop {
+            let cancelled = work::inspection_cancelled();
+            let streams_ended = events.ended(WaitPart::Output) && events.ended(WaitPart::Error);
+            // A cancelled read asks for no status, so that its kill comes
+            // before the reap.
+            let waited = if cancelled || status.is_some() {
+                Ok(())
+            } else {
+                exit.try_status(&mut child, &events, streams_ended)
+                    .map(|taken| status = taken)
+            };
+            let left = timeout.saturating_sub(start.elapsed());
+            let step = passive_wait_step(
+                cancelled,
+                waited.is_err(),
+                status.is_some() && streams_ended,
+                left.is_zero(),
+            );
+            match (step, status, waited) {
+                (WaitStep::Wait, ..) => {}
+                (WaitStep::Complete, Some(status), _) => break Ok(status),
+                (WaitStep::Cancelled, ..) => {
+                    break Err(anyhow::anyhow!("Repository inspection cancelled"));
+                }
+                (WaitStep::TimedOut, ..) => {
+                    break Err(anyhow::anyhow!(
+                        "Git read exceeded its {} second time limit",
+                        timeout.as_secs()
+                    ));
+                }
+                (_, _, Err(error)) => break Err(error.into()),
+                _ => break Err(anyhow::anyhow!("Git ended without an exit status")),
             }
+            let looking = cancellable || exit.polling();
+            events.next(if looking { left.min(seam.tick) } else { left });
         }
-        if let Some(status) = status
-            && stdout.is_finished()
-            && stderr.is_finished()
-        {
-            break Ok(status);
-        }
-        if start.elapsed() >= timeout {
-            break Err(anyhow::anyhow!(
-                "Git read exceeded its {} second time limit",
-                timeout.as_secs()
-            ));
-        }
-        thread::sleep(Duration::from_millis(1));
     };
     if result.is_err() {
+        // While a helper watched, no status was taken on the way here, so the
+        // reap is the last thing done to the child or to its group: it comes
+        // after both kills and after the helper has ended, and no signal goes
+        // to a process ID that the reap has freed. A wait that polled from
+        // its start keeps the order it had, and may hold the status already.
         pipes.control.stop();
         terminate_process_group(&child);
         let _ = child.kill();
+        exit.join();
         let _ = child.wait();
     }
     // Join both before propagating an error from either pipe, and retain the
     // deadline/cancellation error instead of the resulting stopped-pipe error.
-    let stdout = stdout.join();
-    let stderr = stderr.join();
+    let stdout = stdout.ok().map(JoinHandle::join);
+    let stderr = stderr.ok().map(JoinHandle::join);
     let status = result?;
-    let stdout = stdout.map_err(|_| anyhow::anyhow!("Git output reader stopped"))??;
-    let stderr = stderr.map_err(|_| anyhow::anyhow!("Git error reader stopped"))??;
+    let joined = |reader: Option<thread::Result<std::io::Result<Vec<u8>>>>,
+                  stopped: &'static str|
+     -> Result<Vec<u8>> {
+        Ok(reader
+            .context(stopped)?
+            .map_err(|_| anyhow::anyhow!(stopped))??)
+    };
+    let stdout = joined(stdout, "Git output reader stopped")?;
+    let stderr = joined(stderr, "Git error reader stopped")?;
     ensure!(
         stdout.len() <= MAX_COMMAND_OUTPUT && stderr.len() <= 128 * 1024,
         "Git command output exceeded its memory limit"
@@ -4402,6 +4492,278 @@ mod tests {
         thread::sleep(Duration::from_millis(350));
         assert!(!after_deadline.exists());
         assert!(!after_cancel.exists());
+    }
+
+    /// The order of the passive wait, as its doc says it: the columns are
+    /// cancelled, a failed wait, complete and past the deadline.
+    #[test]
+    fn the_passive_wait_judges_a_cancel_then_its_failure_then_completion_then_the_deadline() {
+        use WaitStep::{Cancelled, Complete, TimedOut, Wait, WaitFailed};
+        for ((cancelled, wait_failed, complete, timed_out), step) in [
+            ((false, false, false, false), Wait),
+            ((false, false, false, true), TimedOut),
+            ((false, false, true, false), Complete),
+            ((false, false, true, true), Complete),
+            ((false, true, false, false), WaitFailed),
+            ((false, true, false, true), WaitFailed),
+            ((false, true, true, false), WaitFailed),
+            ((false, true, true, true), WaitFailed),
+            ((true, false, false, false), Cancelled),
+            ((true, false, false, true), Cancelled),
+            ((true, false, true, false), Cancelled),
+            ((true, false, true, true), Cancelled),
+            ((true, true, false, false), Cancelled),
+            ((true, true, false, true), Cancelled),
+            ((true, true, true, false), Cancelled),
+            ((true, true, true, true), Cancelled),
+        ] {
+            assert_eq!(
+                passive_wait_step(cancelled, wait_failed, complete, timed_out),
+                step,
+                "cancelled {cancelled}, wait failed {wait_failed}, complete {complete}, past the deadline {timed_out}"
+            );
+        }
+    }
+
+    /// A seam for one wait and the count its owned threads hold: 1 once every
+    /// one of them has ended.
+    #[cfg(unix)]
+    fn seam(
+        tick: Duration,
+        exit: process_io::ExitWatch,
+        fault: Option<process_io::Fault>,
+    ) -> (WaitSeam, Arc<()>) {
+        let seam = WaitSeam {
+            exit,
+            fault,
+            ..WaitSeam::new(tick)
+        };
+        let owned = Arc::clone(&seam.owned);
+        (seam, owned)
+    }
+
+    /// A read with no cancellation to look for wakes for nothing but its
+    /// events: with its tick and its deadline both at ten seconds it still
+    /// ends as its child and both streams do, whichever ends last. A child
+    /// that exits at once, one that closes both streams and exits later, and
+    /// one whose descendant keeps the streams after it and then lets go.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_read_ends_with_its_child_and_streams_at_no_tick() {
+        let long = Duration::from_secs(10);
+        for (script, shown, code) in [
+            ("printf done; exit 3", "done", 3),
+            ("printf early; exec >&- 2>&-; sleep 0.2", "early", 0),
+            ("(sleep 0.2; printf late) & printf first", "firstlate", 0),
+        ] {
+            let (seam, owned) = seam(long, process_io::ExitWatch::Readiness, None);
+            let started = Instant::now();
+            let output = bounded_output_with(shell(script), long, seam).unwrap();
+            let elapsed = started.elapsed();
+            assert!(elapsed < Duration::from_secs(2), "{script}: {elapsed:?}");
+            assert_eq!(output.status.code(), Some(code), "{script}");
+            assert_eq!(text(&output.stdout), shown, "{script}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{script}");
+        }
+    }
+
+    /// An exit report is a hint. One with no exit behind it, like no helper
+    /// to report at all, leaves the wait asking at every tick, and the status
+    /// it returns is still the child's own.
+    #[cfg(unix)]
+    #[test]
+    fn a_false_exit_report_leaves_the_wait_polling_for_the_status() {
+        use process_io::{ExitWatch, Fault};
+        for (exit, fault) in [
+            (ExitWatch::ReportsEarly, None),
+            (ExitWatch::Poll, None),
+            (
+                ExitWatch::Readiness,
+                Some(Fault::CannotStart(WaitPart::Exit)),
+            ),
+        ] {
+            let (seam, owned) = seam(PASSIVE_WAIT_TICK, exit, fault);
+            let started = Instant::now();
+            let command = shell("printf kept; exec >&- 2>&-; sleep 0.2; exit 3");
+            let output = bounded_output_with(command, GIT_TIMEOUT, seam).unwrap();
+            let elapsed = started.elapsed();
+            assert!(elapsed < Duration::from_secs(2), "{exit:?}: {elapsed:?}");
+            assert_eq!(output.status.code(), Some(3), "{exit:?}");
+            assert_eq!(text(&output.stdout), "kept", "{exit:?}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{exit:?}");
+        }
+    }
+
+    /// A report that arrives while the child is only stopped, as one platform
+    /// is said to give, is never taken for an exit to block on: the wait runs
+    /// to its deadline, and the child is killed and reaped then. With the
+    /// real helper the same holds, whether or not it reports the stop.
+    #[cfg(unix)]
+    #[test]
+    fn a_report_for_a_stopped_child_leaves_the_wait_to_its_deadline() {
+        use process_io::fixtures::{still_a_child, written_line};
+        use rustix::process::{Pid, Signal, kill_process};
+        for exit in [
+            process_io::ExitWatch::ReportsEarly,
+            process_io::ExitWatch::Readiness,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let pid = temp.path().join("pid");
+            let mut command = shell("echo $$ > \"$1\"; exec >&- 2>&-; kill -STOP $$; sleep 10");
+            command.arg(&pid);
+            // A wait that blocked on the stopped child would never return:
+            // at this test's limit the child is killed, which ends it.
+            let (returned, limit) = mpsc::channel::<()>();
+            let release = {
+                let pid = pid.clone();
+                thread::spawn(move || {
+                    if limit.recv_timeout(Duration::from_secs(5))
+                        == Err(mpsc::RecvTimeoutError::Timeout)
+                        && let Some(child) = Pid::from_raw(written_line(&pid).parse().unwrap())
+                    {
+                        let _ = kill_process(child, Signal::KILL);
+                    }
+                })
+            };
+            let (seam, owned) = seam(PASSIVE_WAIT_TICK, exit, None);
+            let started = Instant::now();
+            let result = bounded_output_with(command, Duration::from_millis(400), seam);
+            let elapsed = started.elapsed();
+            drop(returned);
+            release.join().unwrap();
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "Git read exceeded its 0 second time limit",
+                "{exit:?}"
+            );
+            assert!(elapsed < Duration::from_secs(2), "{exit:?}: {elapsed:?}");
+            assert!(!still_a_child(&written_line(&pid)), "{exit:?}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{exit:?}");
+        }
+    }
+
+    /// The reap is the last thing a read does to its child. One that has
+    /// exited while a descendant still holds its pipes stays unreaped, its
+    /// process ID and its group's still its own for a kill at the deadline,
+    /// until the read is complete; the polling wait reaped it within a tick.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_read_reaps_its_exited_child_only_once_it_is_complete() {
+        use process_io::fixtures::{ChildState, child_state, written_line};
+        let temp = tempfile::tempdir().unwrap();
+        let pid = temp.path().join("pid");
+        let mut command = shell("echo $$ > \"$1\"; sleep 0.5 & exit 0");
+        command.arg(&pid);
+        let worker = thread::spawn(move || bounded_output(command, GIT_TIMEOUT));
+        let child = written_line(&pid);
+        let started = Instant::now();
+        let seen = loop {
+            match child_state(&child) {
+                ChildState::Running if started.elapsed() < Duration::from_secs(3) => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                state => break state,
+            }
+        };
+        let output = worker.join().unwrap().unwrap();
+        assert_eq!(seen, ChildState::Exited);
+        assert!(output.status.success());
+        assert_eq!(child_state(&child), ChildState::Reaped);
+    }
+
+    /// Every thread a read started has ended when it returns, after a
+    /// deadline that left a helper in another session holding both pipes and
+    /// after a cancel with the child alive, as after a success.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_read_has_ended_every_thread_it_started_when_it_returns() {
+        let (fixture, command) = process_io::fixtures::DetachedPipeHolder::command(false);
+        let (waited, owned) = seam(PASSIVE_WAIT_TICK, process_io::ExitWatch::Readiness, None);
+        let error = bounded_output_with(command, Duration::from_millis(300), waited).unwrap_err();
+        let held = Arc::strong_count(&owned);
+        fixture.wait_ready();
+        assert!(error.to_string().contains("time limit"), "{error}");
+        assert_eq!(held, 1);
+
+        let (waited, owned) = seam(PASSIVE_WAIT_TICK, process_io::ExitWatch::Readiness, None);
+        let cancellation = HistoryCancellation::default();
+        let trigger = {
+            let cancellation = cancellation.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(30));
+                cancellation.cancel();
+            })
+        };
+        let started = Instant::now();
+        let error = run_cancellable_inspection(cancellation, || {
+            bounded_output_with(shell("sleep 10"), GIT_TIMEOUT, waited)
+        })
+        .unwrap_err();
+        let held = Arc::strong_count(&owned);
+        trigger.join().unwrap();
+        assert_eq!(error.to_string(), "Repository inspection cancelled");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(held, 1);
+    }
+
+    /// A reader that cannot start is an error and never a child left
+    /// running: the read fails at once, has ended what it did start, and the
+    /// child's group is killed before it can leave its marker.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_reader_that_cannot_start_leaves_no_child_running() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut markers = Vec::new();
+        for (name, part) in [("output", WaitPart::Output), ("error", WaitPart::Error)] {
+            let marker = temp.path().join(name);
+            let mut command = shell("sleep 0.3; touch \"$1\"");
+            command.arg(&marker);
+            markers.push(marker);
+            let (seam, owned) = seam(
+                PASSIVE_WAIT_TICK,
+                process_io::ExitWatch::Readiness,
+                Some(process_io::Fault::CannotStart(part)),
+            );
+            let started = Instant::now();
+            let error = bounded_output_with(command, GIT_TIMEOUT, seam).unwrap_err();
+            assert!(started.elapsed() < Duration::from_millis(250), "{name}");
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("Unable to start a Git pipe reader: "),
+                "{name}: {error}"
+            );
+            assert_eq!(Arc::strong_count(&owned), 1, "{name}");
+        }
+        thread::sleep(Duration::from_millis(350));
+        for marker in markers {
+            assert!(!marker.exists(), "{}", marker.display());
+        }
+    }
+
+    /// A reader that panics says that it ended as one that returns does, so
+    /// the read ends with its child instead of at its deadline, ten seconds
+    /// away here with no tick before it, and reports the reader.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_reader_s_panic_ends_the_read_and_is_its_error() {
+        let long = Duration::from_secs(10);
+        for (part, stopped) in [
+            (WaitPart::Output, "Git output reader stopped"),
+            (WaitPart::Error, "Git error reader stopped"),
+        ] {
+            let (seam, owned) = seam(
+                long,
+                process_io::ExitWatch::Readiness,
+                Some(process_io::Fault::Panics(part)),
+            );
+            let started = Instant::now();
+            let error = bounded_output_with(shell("sleep 0.2"), long, seam).unwrap_err();
+            let elapsed = started.elapsed();
+            assert_eq!(error.to_string(), stopped);
+            assert!(elapsed < Duration::from_secs(2), "{stopped}: {elapsed:?}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{stopped}");
+        }
     }
 }
 
