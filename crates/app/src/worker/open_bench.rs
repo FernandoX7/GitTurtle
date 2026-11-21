@@ -43,14 +43,10 @@
 //! profile's two and the remotes' three are write-policy reads; with no
 //! remote the working read starts seven.
 //!
-//! A window starts more to open a repository:
-//! `docs/development/ci-cleanup.md` counts 33 for a bare open, of a
-//! repository with no remote. This reaches 17 of those, the open's ten and
-//! one working read's seven. It leaves out what the window asks besides:
-//! the changed files of the commit History selects (`Job::Changes`), the
-//! local watcher's Git directories (`check_local_watcher`), and the working
-//! reads of its quiet refreshes (`Job::QuietRefresh`), which read the
-//! working state again.
+//! A window starts more than this to open a repository. Left out are what
+//! it asks besides: the changed files of the commit History selects
+//! (`Job::Changes`), the local watcher's Git directories
+//! (`check_local_watcher`), and its further reads of the working state.
 
 use super::*;
 use futures::executor::block_on;
