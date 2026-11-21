@@ -24,6 +24,7 @@ PROTECTED_PREFIXES = (
     "scripts/dev/",
     "scripts/check-agent-guidance.py",
     "scripts/check-docs-sync.py",
+    "docs/doc-manifest.json",
     "scripts/gate.py",
     "docs/development/tasks.json",
     "docs/development/task.schema.json",

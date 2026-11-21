@@ -12,8 +12,10 @@ Living specification for keyboard navigation, once-per-press write protection, m
 
 ## Menus, popovers, and tooltips
 
-- Menus size to their longest row up to `500 px`, clamped strictly inside the window minus an `8 px` margin on every side (counting the `1 px` drawn edge, snapped to whole device pixels) and above any application bottom inset.
+- Menus size to their longest row up to `500 px`, clamped strictly inside the window minus an `8 px` margin on every side (counting the `1 px` drawn edge, snapped to whole device pixels) and above any application bottom inset, with a `4 px` base gap at `13 pt` scaled through `Theme::popup_gap` and device-pixel snapped.
+- Open menus trap `Tab` and `Shift+Tab` (moving nothing), open popovers wrap focus within their own interactive stops, and keyboard-opened menus initialize selection on their first actionable item.
 - Long menu rows truncate to one line with an ellipsis while retaining full text as their accessible name. Capped scrolling menus preserve whole visible rows and an always-visible scrollbar.
+- Command Palette rows measure `54 px` scaled with interface text, sizing adaptively from 1 to 7 rows and highlighting the first runnable command when opened or filtered.
 - Menu section labels render at `11 px` medium in plain secondary text (`Role::Label`, skipped by `Up`/`Down`/`Home`/`End`), distinct from actionable items (`11.4 px` regular) and disabled items.
 - **Keyboard cursor vs pointer hover:** Keyboard navigation draws a `selected` fill plus a `2 px` leading `accent` marker (`>= 3:1`); pointer hover draws the quieter `hover` fill without a marker. When a menu opens or rebuilds beneath a resting pointer, the resting pointer never steals selection until it moves.
 - Disabled items explaining why an action is blocked (`reason_stated`) remain reachable by keyboard arrows so screen-reader and keyboard users hear the explanation, while `Enter` and click do nothing.

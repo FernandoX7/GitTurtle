@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Render the first-party guide and reference pages. Use --check to detect drift."""
 import argparse
+import hashlib
 import json
 from html import escape
 from pathlib import Path
@@ -106,36 +107,72 @@ def render(template, route, title, description, body):
 
 
 REPO_ROOT = ROOT.parent
-LOCAL_MD_LINK = re.compile(r'\[([^\]]+)\]\((?!https?://|mailto:|#)([^)]+)\)')
+LOCAL_MD_LINK = re.compile(r'(?<!\!)\[([^\]]+)\]\((?!https?://|mailto:|#)([^)]+)\)', re.IGNORECASE)
+
+
+def _read_regular_text(path: Path, label: str) -> str:
+    if path.is_symlink():
+        raise ValueError(f'Refusing symlinked legal source {label}: {path}')
+    return path.read_text(encoding='utf-8')
+
+
+def _rewrite_local_md_link(match: re.Match) -> str:
+    label, target = match.group(1), match.group(2)
+    if label.strip('`').strip() == target.strip():
+        return label
+    return f'{label} ({target})'
 
 
 def render_legal_notices(repo_root=REPO_ROOT):
     """Generate website/public/legal/notices/* deterministically from repository legal sources."""
-    license_text = (repo_root / 'LICENSE').read_text(encoding='utf-8')
-    raw_third_party = (repo_root / 'THIRD_PARTY_NOTICES.md').read_text(encoding='utf-8')
+    repo_root = Path(repo_root).resolve()
+    public_root = repo_root / 'website' / 'public'
+    license_text = _read_regular_text(repo_root / 'LICENSE', 'LICENSE')
+    raw_third_party = _read_regular_text(repo_root / 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')
     # Rewrite relative repository Markdown links into plain readable references for standalone .txt serving.
-    third_party_text = LOCAL_MD_LINK.sub(r'\1 (\2)', raw_third_party)
+    third_party_text = LOCAL_MD_LINK.sub(_rewrite_local_md_link, raw_third_party)
 
     assets_dir = repo_root / 'docs' / 'licenses' / 'assets'
+    sources_path = assets_dir / 'sources.json'
+    sources = json.loads(_read_regular_text(sources_path, 'docs/licenses/assets/sources.json'))
+    if not isinstance(sources, list) or not sources:
+        raise ValueError('docs/licenses/assets/sources.json must be a non-empty list')
+    expected_names = set()
     sections = [
         'GitTurtle artwork, theme, font and native-library notices',
         '',
         'Each section reproduces a notice from the source checkout.',
     ]
-    for path in sorted(assets_dir.iterdir()):
-        if not path.is_file() or path.name == 'sources.json':
-            continue
+    for entry in sorted(sources, key=lambda item: item['file']):
+        name = entry['file']
+        if not isinstance(name, str) or '/' in name or '\\' in name or name in {'', '.', '..'}:
+            raise ValueError(f'Invalid notice filename in sources.json: {name!r}')
+        expected_names.add(name)
+        path = assets_dir / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f'Missing or symlinked notice file: docs/licenses/assets/{name}')
+        data = path.read_bytes()
+        expected_sha = entry.get('sha256')
+        if expected_sha and hashlib.sha256(data).hexdigest() != expected_sha:
+            raise ValueError(f'SHA-256 mismatch for docs/licenses/assets/{name}')
         sections.extend([
             '',
-            f'===== docs/licenses/assets/{path.name} =====',
+            f'===== docs/licenses/assets/{name} =====',
             '',
-            path.read_text(encoding='utf-8').rstrip('\n'),
+            data.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n').rstrip('\n'),
         ])
+    unexpected = sorted(
+        p.name for p in assets_dir.iterdir()
+        if not p.name.startswith('.') and p.name != 'sources.json' and p.name not in expected_names
+    )
+    if unexpected:
+        raise ValueError('Unexpected unmanifested files in docs/licenses/assets/: ' + ', '.join(unexpected))
     artwork_text = '\n'.join(sections) + '\n'
+    notices_dir = public_root / 'legal' / 'notices'
     return {
-        PUBLIC / 'legal' / 'notices' / 'gitturtle-license.txt': license_text,
-        PUBLIC / 'legal' / 'notices' / 'third-party-notices.txt': third_party_text,
-        PUBLIC / 'legal' / 'notices' / 'artwork-themes-fonts.txt': artwork_text,
+        notices_dir / 'gitturtle-license.txt': license_text,
+        notices_dir / 'third-party-notices.txt': third_party_text,
+        notices_dir / 'artwork-themes-fonts.txt': artwork_text,
     }
 
 
@@ -151,6 +188,9 @@ def main():
         target = PUBLIC / route.strip('/') / 'index.html'
         outputs.add(target)
         html = render(template, route, *content)
+        if target.is_symlink():
+            problems.append(f'Refusing symlinked generated file {target.relative_to(ROOT)}')
+            continue
         if target.exists() and target.read_text(encoding='utf-8') == html:
             continue
         if args.check:
@@ -159,10 +199,13 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(html, encoding='utf-8')
     for target in PUBLIC.rglob('index.html'):
-        if target not in outputs and MARKER in target.read_text(encoding='utf-8'):
+        if target not in outputs and not target.is_symlink() and MARKER in target.read_text(encoding='utf-8'):
             problems.append(f'Remove the obsolete generated file {target.relative_to(ROOT)}')
     notices = render_legal_notices()
     for target, text in notices.items():
+        if target.is_symlink():
+            problems.append(f'Refusing symlinked legal notice {target.relative_to(ROOT)}')
+            continue
         if target.exists() and target.read_text(encoding='utf-8') == text:
             continue
         if args.check:

@@ -24,7 +24,7 @@ Native visual verification and build-specific results belong in [docs/validation
 | Commit action | `36 px` height | Working Changes commit button |
 | Corner radii | `7 px` / `12 px` | `7 px` shared controls and rows; `12 px` large surfaces, cards, dialogs |
 | Focus ring | `2 px` accent, `1 px` outset | Drawn outside control bounds (`3 px` clip clearance, snapped to whole device pixels) |
-| Contrast floors | `4.5:1` / `3:1` / `2:1` | `4.5:1` primary/secondary text & syntax; `3:1` glyphs, focus rings, dialog/secondary edges; `1.5:1+` disabled edges; `1.4:1+` popup hairlines |
+| Contrast floors | `4.5:1` / `3:1` / `2:1` | `4.5:1` primary/secondary text, syntax & hovered scrollbar thumbs; `3:1` glyphs, focus rings, dialog/secondary edges; `2:1` resting scrollbar thumbs; `1.5:1+` disabled edges; `1.4:1+` popup hairlines |
 | Transitions | `120–180 ms` ease-out | Only for user-caused changes (row staging flight `150 ms`; toolkit dialog `250 ms` / dropdown `150 ms`); disabled immediately under Reduce motion |
 
 ## Shared control contract

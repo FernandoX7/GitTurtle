@@ -24,14 +24,15 @@ class DocsSyncTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         self.write("rust-toolchain.toml", '[toolchain]\nchannel = "1.100.0"\n')
+        self.write("Cargo.toml", '[workspace.package]\nrust-version = "1.100"\n')
         self.write("Cargo.lock", '[[package]]\nname = "ufbx"\nversion = "0.11.5"\n')
         self.write(".github/workflows/quality.yml", "name: Quality\n")
         self.write(".github/workflows/release.yml", "name: Release\n")
-        self.write("crates/app/src/appearance.rs", "pub const ALL: [Self; 20] = [];\n")
+        self.write("crates/app/src/appearance.rs", "impl ThemeChoice {\n    pub const ALL: [Self; 20] = [];\n}\n")
         self.write("crates/app/src/prefs.rs", "pub const MAX_CUSTOM: usize = 32;\nconst MAX_BYTES: usize = 64 * 1024 * 1024;\n")
         self.write("crates/app/src/included.txt", "ok\n")
         self.write("crates/app/src/lib.rs", 'const DATA: &str = include_str!("included.txt");\n')
-        self.write("README.md", "Selects Rust **1.100.0**. Twenty built-in themes and up to 32 custom themes, 64 MiB max.\n")
+        self.write("README.md", "Selects Rust **1.100.0**. Minimum Rust 1.100. Twenty built-in themes and up to 32 custom themes, 64 MiB max.\n")
         self.write("CONTRIBUTING.md", "Workflows: `quality.yml`, `release.yml`. Uses Rust 1.100.0.\n")
         self.write("docs/previews.md", "See https://docs.rs/ufbx/0.11.5/ufbx/ for details.\n")
         self.write(
@@ -40,6 +41,7 @@ class DocsSyncTests(unittest.TestCase):
                 {
                     "version": 1,
                     "rust_toolchain_docs": ["README.md", "CONTRIBUTING.md"],
+                    "rust_version_docs": ["README.md"],
                     "lockfile_crate_mentions": [
                         {
                             "crate": "ufbx",
@@ -52,7 +54,7 @@ class DocsSyncTests(unittest.TestCase):
                             "name": "built_in_themes",
                             "source": "crates/app/src/appearance.rs",
                             "kind": "regex_int",
-                            "pattern": r"pub const ALL:\s*\[Self;\s*(\d+)\]",
+                            "pattern": r"impl ThemeChoice\s*\{[\s\S]*?pub const ALL:\s*\[Self;\s*(\d+)\]",
                             "docs": [
                                 {"path": "README.md", "pattern": r"\b{word_value} built-in themes\b", "ignore_case": True}
                             ],
@@ -118,11 +120,29 @@ class DocsSyncTests(unittest.TestCase):
     def test_missing_and_escaping_include_str_fail(self):
         self.write(
             "crates/app/src/lib.rs",
-            'const A: &str = include_str!("absent.txt");\nconst B: &str = include_str!("../../../../etc/hosts");\n',
+            'const A: &str = include_str!("absent.txt");\n'
+            'const B: &str = include_str!("../../../../etc/hosts");\n'
+            'const C: &str = include_str!("/etc/passwd");\n',
         )
         msg = self.messages()
         self.assertIn("include_str! target missing: 'absent.txt'", msg)
         self.assertIn("include_str! escapes repo:", msg)
+        self.assertIn("include_str! uses absolute path outside repo: '/etc/passwd'", msg)
+
+    def test_msrv_and_stale_workflow_citation_and_number_words(self):
+        self.write("README.md", "Selects Rust **1.100.0**. Minimum Rust 1.99. Twenty-one built-in themes and up to 32 custom themes, 64 MiB max.\n")
+        self.write("crates/app/src/appearance.rs", "impl ThemeChoice {\n    pub const ALL: [Self; 21] = [];\n}\n")
+        self.write("CONTRIBUTING.md", "Workflows: `quality.yml`, `release.yml`, `ghost.yml`. Uses Rust 1.100.0.\n")
+        msg = self.messages()
+        self.assertIn("stale Rust MSRV mention(s) 1.99 (Cargo.toml pins 1.100)", msg)
+        self.assertIn("cited workflow 'ghost.yml' does not exist", msg)
+        self.assertNotIn("built_in_themes", msg)
+
+    def test_missing_website_script_fails_closed(self):
+        manifest = json.loads((self.root / "docs/doc-manifest.json").read_text(encoding="utf-8"))
+        manifest["check_website_guides"] = True
+        self.write("docs/doc-manifest.json", json.dumps(manifest))
+        self.assertIn("cannot verify website guides", self.messages())
 
     def test_website_guides_check_failure_is_reported(self):
         manifest = json.loads((self.root / "docs/doc-manifest.json").read_text(encoding="utf-8"))
@@ -130,6 +150,12 @@ class DocsSyncTests(unittest.TestCase):
         self.write("docs/doc-manifest.json", json.dumps(manifest))
         self.write("website/build_guides.py", "import sys\nprint('stale guide', file=sys.stderr)\nsys.exit(1)\n")
         self.assertIn("generated website guides/notices out of date: stale guide", self.messages())
+
+    def test_changed_since_rejects_option_injection_and_invalid_ref(self):
+        with self.assertRaises(ValueError):
+            docs_sync.affected_surfaces(self.root, "--output=/tmp/evil")
+        self.assertEqual(docs_sync.main(["--root", str(self.root), "--changed-since=--output=/tmp/evil"]), 1)
+        self.assertEqual(docs_sync.main(["--root", str(self.root), "--changed-since", "nonexistent-ref"]), 1)
 
     def test_changed_since_reports_affected_surfaces(self):
         git = ["git", "-C", str(self.root), "-c", "core.hooksPath=/dev/null"]

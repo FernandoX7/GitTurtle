@@ -119,7 +119,7 @@ by the OS/user; distribution of those components would require a separate review
   inspected `atom/one-light-syntax` revision is byte-identical to One Dark's, so
   the One notice covers both. The upstream values are recorded, with each
   repository, file and revision, in
-  `crates/app/src/appearance/sources.rs` (crates/app/src/appearance/sources.rs).
+  `crates/app/src/appearance/sources.rs`.
   MIT asks for nothing beyond those notices; theme names are used descriptively
   and imply no endorsement.
 - Linux builds embed DejaVu Sans Mono 2.37 (Regular, Bold, Oblique and Bold

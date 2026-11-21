@@ -10,11 +10,20 @@
     "website/guides/reference/install/macos.html",
     "website/guides/reference/install/ubuntu.html"
   ],
+  "rust_version_docs": [
+    "docs/linux.md",
+    "docs/user-guide.md"
+  ],
   "lockfile_crate_mentions": [
     {
       "crate": "ufbx",
       "doc": "docs/file-previews.md",
       "pattern": "docs\\.rs/ufbx/([0-9]+\\.[0-9]+\\.[0-9]+)"
+    },
+    {
+      "crate": "stl_io",
+      "doc": "docs/file-previews.md",
+      "pattern": "docs\\.rs/stl_io/([0-9]+\\.[0-9]+\\.[0-9]+)"
     }
   ],
   "constants": [
@@ -22,7 +31,7 @@
       "name": "built_in_themes",
       "source": "crates/app/src/appearance.rs",
       "kind": "regex_int",
-      "pattern": "pub const ALL:\\s*\\[Self;\\s*(\\d+)\\]",
+      "pattern": "impl ThemeChoice\\s*\\{[\\s\\S]*?pub const ALL:\\s*\\[Self;\\s*(\\d+)\\]",
       "docs": [
         { "path": "README.md", "pattern": "\\b{word_value} built-in\\b", "ignore_case": true },
         { "path": "docs/user-guide.md", "pattern": "\\b{word_value} built-in themes\\b", "ignore_case": true },
@@ -48,7 +57,8 @@
       "docs": [
         { "path": "README.md", "pattern": "\\bup to {word_value} repository and worktree tabs\\b", "ignore_case": true },
         { "path": "docs/user-guide.md", "pattern": "\\bup to {word_value} repository/worktree tabs\\b", "ignore_case": true },
-        { "path": "docs/user-guide.md", "pattern": "Command-Option-1 through {value}\\b" }
+        { "path": "docs/user-guide.md", "pattern": "Command-Option-1 through {value}\\b" },
+        { "path": "website/guides/docs/first-repository.html", "pattern": "\\bup to {word_value} repositories or linked worktrees in tabs\\b", "ignore_case": true }
       ]
     },
     {
@@ -83,7 +93,7 @@
   "check_website_guides": true,
   "surface_map": [
     {
-      "code_prefixes": ["rust-toolchain.toml"],
+      "code_prefixes": ["rust-toolchain.toml", "Cargo.toml"],
       "docs": [
         "README.md",
         "CONTRIBUTING.md",
@@ -94,7 +104,7 @@
       ]
     },
     {
-      "code_prefixes": ["crates/app/src/appearance"],
+      "code_prefixes": ["crates/app/src/appearance.rs", "crates/app/src/appearance/"],
       "docs": [
         "DESIGN.md",
         "docs/design/tokens-and-palettes.md",
@@ -111,7 +121,17 @@
       ]
     },
     {
-      "code_prefixes": ["crates/preview/", "crates/app/src/pdf", "crates/app/src/preview"],
+      "code_prefixes": [
+        "crates/preview/",
+        "crates/app/src/rich_preview.rs",
+        "crates/app/src/system_preview.rs",
+        "crates/app/src/system_preview/",
+        "crates/app/src/markdown_view.rs",
+        "crates/app/src/model_view.rs",
+        "crates/app/src/model_view/",
+        "crates/app/src/image_compare.rs",
+        "crates/app/src/pdf_view.rs"
+      ],
       "docs": [
         "docs/file-previews.md",
         "crates/preview/AGENTS.md",

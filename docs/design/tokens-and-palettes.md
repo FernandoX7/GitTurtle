@@ -17,6 +17,7 @@ Living specification for GitTurtle's color tokens, 20 built-in palettes, live Om
 - **Syntax & highlight fitting:** Keywords take `renamed`, strings `added`, numbers/constants `warning`, types `modified`, functions `hunk`, tags/properties/links `accent`, comments `muted`, variables/operators `text`. Each syntax role mixes toward `text` until reaching `4.75:1` (`4.5:1` minimum) on canvas, panel, and diff line tints. Selection, Find matches, and changed-word highlights are fitted from `selected`/`accent`/tints to stay `>= 0.04 ΔEOK` from their line while preserving `>= 4.5:1` contrast for all syntax colors.
 - **Floating surfaces & edges:** Menus, popovers, tooltips, and pickers sit on the lightest page surface with a `1 px` edge holding `>= 1.4:1` (`>= 1.3:1` rendered after antialiasing), painted above shadows. Dialog backdrops dim pages by the smallest opacity (`20–60%` dark, `5–60%` light) keeping dialogs `>= 1.05:1` lighter than dimmed surfaces; dialog borders and Cancel edges hold `>= 3:1` against both the dialog and dimmed page.
 - **Disabled tokens:** Disabled filled controls keep a `1 px` edge at `>= 1.5:1` off page surfaces and their own fill (`Theme::disabled_edge`). Disabled labels sit at half strength (or first step up to `75%` reaching `3:1`, capped at `<= 60%` of enabled secondary text contrast).
+- **Scrollbar thumbs:** `Palette::scrollbar_thumb` holds `>= 2:1` against `canvas`, `panel`, `subtle`, and raised surfaces at rest, stepping to `>= 4.5:1` when hovered.
 
 ## More contrast transform
 

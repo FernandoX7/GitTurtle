@@ -325,8 +325,13 @@ def check_site(root=ROOT, write_sitemap=False):
                 continue
             resolved_asset = asset.resolve()
             rel_url = "/" + asset.relative_to(public).as_posix()
-            if resolved_asset not in referenced_assets and not any(rel_url in txt or asset.name in txt for txt in js_texts):
+            if resolved_asset not in referenced_assets and not any(rel_url in txt for txt in js_texts):
                 errors.append(f"orphaned public asset unreferenced by HTML/CSS/JS: {asset.relative_to(public)}")
+    notices_dir = public / "legal" / "notices"
+    if notices_dir.is_dir():
+        for notice in sorted(notices_dir.glob("*.txt")):
+            if notice.is_file() and notice.resolve() not in referenced_assets:
+                errors.append(f"orphaned legal notice unreferenced by HTML: {notice.relative_to(public)}")
     for item in json.loads((root / "asset-provenance.json").read_text())["assets"]:
         target = (root / item["site_path"]).resolve()
         if not target.is_relative_to(public):

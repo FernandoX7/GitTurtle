@@ -13,6 +13,7 @@ import argparse
 import ast
 from dataclasses import dataclass
 import html
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -41,17 +42,56 @@ CONFLICT_MARKER = re.compile(r"^(?:<{7} |\|{7} |>{7} )")
 ROOT_AGENTS_MAX_BYTES = 8192
 STATE_MAX_LINES = 60
 DESIGN_MAX_BYTES = 25600
+DESIGN_SPEC_MAX_BYTES = 25600
 DESIGN_MAX_LINE_BYTES = 1200
 TEST_REF = re.compile(r"::tests::")
-HTML_LINK = re.compile(
-    r"""<(?:a\b[^>]*?\bhref|img\b[^>]*?\bsrc)\s*=\s*(?:"([^"]+)"|'([^']+)')""",
-    re.IGNORECASE,
-)
 SHIM_MAX_LINES = {
     "CLAUDE.md": 15,
     "GEMINI.md": 10,
     ".github/copilot-instructions.md": 10,
 }
+
+
+class _HtmlLinkExtractor(HTMLParser):
+    """Extract local href/src/srcset destinations from HTML tags with line numbers."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.links: list[tuple[int, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        line = self.getpos()[0]
+        if tag == "a":
+            for name, value in attrs:
+                if name.lower() == "href" and value and value.strip():
+                    self.links.append((line, value.strip()))
+        elif tag == "img":
+            for name, value in attrs:
+                low = name.lower()
+                if low == "src" and value and value.strip():
+                    self.links.append((line, value.strip()))
+                elif low == "srcset" and value:
+                    self._add_srcset(line, value)
+        elif tag == "source":
+            for name, value in attrs:
+                if name.lower() == "srcset" and value:
+                    self._add_srcset(line, value)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def _add_srcset(self, line: int, value: str) -> None:
+        for candidate in value.split(","):
+            part = candidate.strip().split()
+            if part and part[0]:
+                self.links.append((line, part[0]))
+
+
+def _add_non_symlink_files(paths: set[Path], candidates) -> None:
+    for path in candidates:
+        if path.is_file() and not path.is_symlink():
+            paths.add(path)
 
 
 def guidance_files(root: Path) -> list[Path]:
@@ -63,9 +103,12 @@ def guidance_files(root: Path) -> list[Path]:
         "GEMINI.md", ".github/copilot-instructions.md",
         "README.md", "SUPPORT.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md",
         "DESIGN.md", "CODE_OF_CONDUCT.md",
+        "crates/git-core/README.md", "scripts/native_qa/README.md",
+        "website/guides/README.md", "docs/licenses/README.md",
+        "packaging/aur/README.md", "assets/icons/README.md",
     ):
         candidate = root / optional
-        if candidate.is_file():
+        if candidate.is_file() and not candidate.is_symlink():
             paths.add(candidate)
     for directory, children, files in os.walk(root, followlinks=False):
         children[:] = [name for name in children if name not in {
@@ -73,19 +116,21 @@ def guidance_files(root: Path) -> list[Path]:
         } and not (Path(directory) / name).is_symlink()]
         for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             if name in files:
-                paths.add(Path(directory) / name)
-    paths.update((root / "docs").glob("*.md"))
-    paths.update((root / "docs/design").glob("*.md"))
-    paths.update((root / "docs/decisions").glob("*.md"))
-    paths.update((root / "docs/validation").glob("*.md"))
-    paths.update((root / "docs/archive").glob("**/*.md"))
-    paths.update((root / "docs/development").glob("*.md"))
-    paths.update((root / "website").glob("*.md"))
-    paths.update((root / "crates").glob("*/docs/*.md"))
-    paths.update((root / ".agents/skills").glob("**/*.md"))
-    paths.update((root / ".agents/roles").glob("*.md"))
-    paths.update((root / ".agents/workflows").glob("*.md"))
-    paths.update((root / ".codex/agents").glob("*.toml"))
+                candidate = Path(directory) / name
+                if not candidate.is_symlink():
+                    paths.add(candidate)
+    _add_non_symlink_files(paths, (root / "docs").glob("*.md"))
+    _add_non_symlink_files(paths, (root / "docs/design").glob("**/*.md"))
+    _add_non_symlink_files(paths, (root / "docs/decisions").glob("*.md"))
+    _add_non_symlink_files(paths, (root / "docs/validation").glob("*.md"))
+    _add_non_symlink_files(paths, (root / "docs/archive").glob("**/*.md"))
+    _add_non_symlink_files(paths, (root / "docs/development").glob("**/*.md"))
+    _add_non_symlink_files(paths, (root / "website").glob("*.md"))
+    _add_non_symlink_files(paths, (root / "crates").glob("*/docs/*.md"))
+    _add_non_symlink_files(paths, (root / ".agents/skills").glob("**/*.md"))
+    _add_non_symlink_files(paths, (root / ".agents/roles").glob("*.md"))
+    _add_non_symlink_files(paths, (root / ".agents/workflows").glob("*.md"))
+    _add_non_symlink_files(paths, (root / ".codex/agents").glob("*.toml"))
     paths.update(claude_files(root))
     return sorted(paths)
 
@@ -113,7 +158,7 @@ def _blank(value: str) -> str:
     return "".join("\n" if char == "\n" else " " for char in value)
 
 
-def _without_fences(text: str) -> str:
+def _without_fences_only(text: str) -> str:
     lines = []
     fence = ""
     for line in text.splitlines(keepends=True):
@@ -128,8 +173,15 @@ def _without_fences(text: str) -> str:
             lines.append(_blank(line))
         else:
             lines.append(line)
-    return re.sub(r"<!--.*?-->", lambda match: _blank(match[0]),
-                  "".join(lines), flags=re.DOTALL)
+    return "".join(lines)
+
+
+def _without_comments(text: str) -> str:
+    return re.sub(r"<!--.*?-->", lambda match: _blank(match[0]), text, flags=re.DOTALL)
+
+
+def _without_fences(text: str) -> str:
+    return _without_comments(_without_fences_only(text))
 
 
 def _without_inline_code(text: str) -> str:
@@ -167,8 +219,9 @@ def _destination(text: str) -> str | None:
 
 
 def markdown_links(text: str) -> list[tuple[int, str]]:
-    """Extract inline, reference, and HTML a/img links, excluding code examples."""
-    visible = _without_inline_code(_without_fences(text))
+    """Extract inline, reference, and HTML a/img/source links, excluding code examples."""
+    # Blank inline code before HTML comments so `<!--` ... `-->` spans do not swallow real links.
+    visible = _without_comments(_without_inline_code(_without_fences_only(text)))
     links = []
     # Check definitions once. Shortcut/reference uses need no duplicate report.
     for match in re.finditer(r"(?m)^ {0,3}\[[^\]\n]+\]:\s*(.*)$", visible):
@@ -180,10 +233,10 @@ def markdown_links(text: str) -> list[tuple[int, str]]:
         destination = _destination(visible[match.end():])
         if destination is not None:
             links.append((visible.count("\n", 0, match.start()) + 1, destination))
-    for match in HTML_LINK.finditer(visible):
-        destination = (match.group(1) or match.group(2) or "").strip()
-        if destination:
-            links.append((visible.count("\n", 0, match.start()) + 1, destination))
+    parser = _HtmlLinkExtractor()
+    parser.feed(visible)
+    parser.close()
+    links.extend(parser.links)
     links.sort(key=lambda item: item[0])
     return links
 
@@ -280,6 +333,10 @@ def _budget_issues(root: Path, path: Path, text: str) -> list[Issue]:
         size = len(text.encode("utf-8"))
         if size > DESIGN_MAX_BYTES:
             issues.append(Issue(path, 1, f"DESIGN.md exceeds {DESIGN_MAX_BYTES} bytes ({size} bytes)"))
+    elif rel.startswith("docs/design/"):
+        size = len(text.encode("utf-8"))
+        if size > DESIGN_SPEC_MAX_BYTES:
+            issues.append(Issue(path, 1, f"{rel} exceeds {DESIGN_SPEC_MAX_BYTES} bytes ({size} bytes)"))
     if rel == "DESIGN.md" or rel.startswith("docs/design/"):
         for index, line in enumerate(text.splitlines(), start=1):
             line_bytes = len(line.encode("utf-8"))

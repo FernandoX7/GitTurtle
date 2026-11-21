@@ -21,6 +21,7 @@ Living specification for responsive chrome decay, edge alignment, narrow half-ti
 ## Tab strip, header, and compact chrome
 
 - The repository tab strip is the window's top row and computes its height from snapped `28 px` tabs plus rounded-up device-pixel ring clearance above and below (`tab_strip_height`), never slicing a focused tab's outer ring at fractional scales (`1.25×`, `1.5×`, `1.75×`).
+- The collapsible Project List sidebar (`Cmd+Shift+B` / `Ctrl+Shift+B`) exposes a single Tab stop (`Role::Tree`) with arrow navigation and a `2 px` leading accent cursor; Settings collapses its multi-column layout to a single column below `1060 px` page width.
 - In narrow windows, header chrome yields secondary labels by icons (keeping `Menu` labeled and compacting `Workspaces` to its icon) without creating extra stacked rows that steal vertical space from History or Compare.
 - Long status messages drop optional timing tails before ellipsizing, keeping full status text in tooltips and assistive-technology nodes. Active writes replace the status text in place with their progress label and explicit `Cancel` control instead of inserting an extra header band.
 
