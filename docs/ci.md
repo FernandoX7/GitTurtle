@@ -281,7 +281,10 @@ job's outputs hold every leg's own values in whatever order the legs end.
 `scripts/ci/packages.py` writes each name from the target the leg passes it;
 no expression in the workflow tells one leg from another. The gate reads the
 pairs from `needs.rust-release.outputs` and `needs.package-transfer.outputs`.
-No hosted run of these outputs is recorded here yet.
+In the first two hosted runs, Quality 44855240815 (the pull request's own) and
+44857735574 (`main`'s on its merge), both of November 21, 2026, each transfer
+leg's plan step received all six release outputs, three for each label, and
+the gate printed both pairs.
 
 With all eight shards successful, every slice was scanned clean and every shard
 says `scanned`, whichever sets the output last. With one failed, cancelled,

@@ -246,14 +246,18 @@ step returned, validated before the action reads it, and its
 Source tests and workflow lint establish the helper's refusal and routing behavior.
 They do not establish a successful Actions upload/download, a complete license
 inventory, or native desktop behavior. The Linux upload and the AArch64 Linux
-leg are in source since November 15, 2026; no hosted run with either is recorded
-here. The package transfer job is in source in place of the release job's
-same-job download and its retries; no hosted run of it is recorded here, and
-its first is the run of the pull request that adds it. The two runs named
+leg are in source since November 15, 2026. The package transfer job has stood
+in place of the release job's same-job download and its retries since November
+21, 2026, and two hosted runs of it are recorded. In the run of the pull
+request that added it (Quality 44855240815) both transfer legs, x86-64 and
+ARM64, received the six per-label outputs, listed their package at the one
+attempt, 103.9 and 129.8 s after its upload was finalized, downloaded it with
+the expected SHA-256 and verified it, and the gate printed both pairs. In
+`main`'s run on the merge (44857735574) the legs did the same for the two
+`main` packages, 76.6 and 157.8 s after their uploads. The two runs named
 [above](#find-and-verify-a-download) are the failure and the measurement that
-led to it, not evidence for it. Still to be observed in a hosted run: a
-transfer leg on the ARM64 runner, the two matrices' per-label outputs as the
-later job and the gate read them, and a re-run of the later job alone. The
+led to the job, not evidence for it. Still to be observed in a hosted run: a
+re-run of the later job alone. The
 hosted Linux runners have no display, so neither Linux
 leg is a desktop check of its build. Before closing C3, record the actual run and
 artifact IDs, archive hashes, source commit, OS/architecture, signing state, transfer
