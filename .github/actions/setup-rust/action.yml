@@ -19,6 +19,9 @@ inputs:
   run-as:
     description: Unprivileged account that runs the helper and Cargo when the job starts as root (required with container); it must own the checkout
     default: ""
+  install-tool-packages:
+    description: true installs optional Linux tool packages (python3-pil, desktop-file-utils, xdg-utils); false skips them for lint-only jobs such as rust-clippy
+    default: "true"
 outputs:
   cache-hit:
     description: True only for an exact restored entry; false also includes fallback or unavailable cache
@@ -35,10 +38,12 @@ runs:
         CACHE_VENDOR_REUSE: ${{ inputs.vendor-reuse }}
         CACHE_CONTAINER: ${{ inputs.container }}
         CACHE_RUN_AS: ${{ inputs.run-as }}
+        CACHE_INSTALL_TOOL_PACKAGES: ${{ inputs.install-tool-packages }}
       run: |
         set -euo pipefail
         case "$CACHE_PHASE" in setup|finish) ;; *) exit 2 ;; esac
         case "$CACHE_VENDOR_REUSE" in true|false) ;; *) exit 2 ;; esac
+        case "$CACHE_INSTALL_TOOL_PACKAGES" in true|false) ;; *) exit 2 ;; esac
         case "$CACHE_PROFILE" in debug|release|debug-release) ;; *) exit 2 ;; esac
         case "$CACHE_TARGET" in "") ;; [!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) exit 2 ;; esac
         case "$CACHE_CONTAINER" in ""|archlinux) ;; *) exit 2 ;; esac
@@ -47,6 +52,8 @@ runs:
     - name: Install Linux native build dependencies
       if: inputs.phase == 'setup' && runner.os == 'Linux' && inputs.container == ''
       shell: bash
+      env:
+        CACHE_INSTALL_TOOL_PACKAGES: ${{ inputs.install-tool-packages }}
       run: |
         set -euo pipefail
         # A SYSTEM_DEPS_ variable can make dav1d-sys git-clone dav1d and link
@@ -58,12 +65,21 @@ runs:
         # The helper looks up the hosts of the image's own Ubuntu source file,
         # then runs `apt-get update --error-on=any` and `apt-get install` as
         # root with this one selection, each once and under its own deadline.
-        python3 scripts/ci/apt_install.py \
-          -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -- \
-          build-essential clang pkg-config git openssh-client ca-certificates \
-          libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-          libssl-dev libzstd-dev libvulkan-dev libdav1d-dev \
-          python3 python3-pil desktop-file-utils xdg-utils
+        if [ "${CACHE_INSTALL_TOOL_PACKAGES:-true}" = "true" ]; then
+          python3 scripts/ci/apt_install.py \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -- \
+            build-essential clang pkg-config git openssh-client ca-certificates \
+            libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev libvulkan-dev libdav1d-dev \
+            python3 python3-pil desktop-file-utils xdg-utils
+        else
+          python3 scripts/ci/apt_install.py \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -- \
+            build-essential clang pkg-config git openssh-client ca-certificates \
+            libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev libvulkan-dev libdav1d-dev \
+            python3
+        fi
         pkg-config --exists xkbcommon-x11 x11-xcb dav1d
         echo "libdav1d $(pkg-config --modversion dav1d) in $(pkg-config --variable=libdir dav1d)"
     # A container job installs the toolchain as its build account first.
@@ -157,7 +173,7 @@ runs:
         CACHE_RUN_AS: ${{ inputs.run-as }}
       run: python3 .github/actions/setup-rust/cache.py compare
     - name: Bound dependency cache after successful validation
-      if: inputs.phase == 'finish' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
+      if: inputs.phase == 'finish' && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
       id: bounded
       shell: bash
       env:
@@ -167,7 +183,7 @@ runs:
         CACHE_IDENTITY: ${{ steps.identity.outputs.identity }}
       run: python3 .github/actions/setup-rust/cache.py bound
     - name: Register successful main cache save
-      if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
+      if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
       continue-on-error: true
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:

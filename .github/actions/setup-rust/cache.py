@@ -36,6 +36,11 @@ LIBRARY_SUFFIXES = {".rlib", ".rmeta", ".a", ".so", ".dylib", ".dll"}
 # under this prefix is in the key. Their sources are rewound to Cargo's own
 # deterministic registry timestamp (2006-07-24) before any Cargo command.
 VENDOR_PREFIX = "vendor/"
+# Pure documentation files under vendor/ that are never compiled or included
+# via include_str! in any library target; excluding them avoids invalidating
+# all Rust caches on patch-note or guidance edits while preserving the invariant
+# that every rewound vendor file's bytes are hashed into the key.
+VENDOR_DOC_NAMES = frozenset({"AGENTS.md", "CLAUDE.md", "GITTURTLE-PATCH.md", "CHANGELOG.md"})
 VENDOR_MTIME_NS = 1_153_704_088 * 10**9
 # The Arch container's inputs to compiled output, by pacman package: the C
 # toolchain and its headers, then the libraries that build scripts probe or
@@ -240,6 +245,8 @@ def keyed_inputs(root):
     for raw in sorted(filter(None, names)):
         name = raw.decode("utf-8", errors="surrogateescape")
         path = Path(name)
+        if name.startswith(VENDOR_PREFIX) and path.name in VENDOR_DOC_NAMES:
+            continue
         if (name.startswith(VENDOR_PREFIX) or name.startswith(".github/actions/setup-rust/")
                 or path.name in {"Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain", "rust-toolchain.toml"}
                 or name in {".cargo/config", ".cargo/config.toml"}):

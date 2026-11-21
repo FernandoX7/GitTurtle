@@ -266,7 +266,7 @@ class Deadlines(HelperFixture):
         self.assertEqual(status, 0, lines)
         selection = self.selection()
         self.assertEqual(commands.ran[3:], [
-            ["sudo", "timeout", "--kill-after=10", "300", "apt-get", *selection, "update", "--error-on=any"],
+            ["sudo", "timeout", "--kill-after=10", "300", "apt-get", *selection, "update", "-o", "Acquire::Languages=none", "--error-on=any"],
             ["sudo", "timeout", "--kill-after=10", "900", "apt-get", *selection, "install", "-y", "--no-install-recommends",
              "pkg-config", "libdav1d-dev"]])
         self.assertEqual(lines[4:], ["apt-get update, deadline 300 s", "apt-get update ended in 3 s",
@@ -384,11 +384,14 @@ class Callers(unittest.TestCase):
         quality = (ROOT / ".github/workflows/quality.yml").read_text()
         privacy = quality.split("\n  image-privacy:\n", 1)[1].split("\n  website:\n", 1)[0]
         transfer = quality.split("\n  package-transfer:\n", 1)[1].split("\n  quality:\n", 1)[0]
-        (build,), (pillow,), (runtime,) = helper_calls(action), helper_calls(privacy), helper_calls(transfer)
+        (build, build_minimal), (pillow,), (runtime,) = helper_calls(action), helper_calls(privacy), helper_calls(transfer)
         # The selection is written once in each step, and nothing else is passed: no deadline, no other option.
         self.assertEqual(build[:5], self.SELECTION)
+        self.assertEqual(build_minimal[:5], self.SELECTION)
         self.assertEqual(pillow, [*self.SELECTION, "python3-pil"])
         self.assertEqual([word for word in build[5:] if not apt_install.PACKAGE.fullmatch(word)], [])
+        self.assertEqual([word for word in build_minimal[5:] if not apt_install.PACKAGE.fullmatch(word)], [])
+        self.assertEqual(set(build[5:]) - set(build_minimal[5:]), {"python3-pil", "desktop-file-utils", "xdg-utils"})
         # The package transfer job runs a built executable and its installer and builds nothing: the libraries
         # the executable names and the package with the installer's two desktop-entry commands.
         self.assertEqual(runtime, [*self.SELECTION, "desktop-file-utils", "libdav1d7", "libxcb1", "libxkbcommon0",
@@ -454,7 +457,7 @@ class CommandLine(unittest.TestCase):
             "  azure.archive.ubuntu.com: did not resolve in <tenths> s", "  archive.ubuntu.com: resolved in <tenths> s",
             "  security.ubuntu.com: resolved in <tenths> s",
             "::warning::1 of the 3 hosts apt reads did not resolve within 5 s: azure.archive.ubuntu.com; apt-get goes on under its deadlines",
-            "apt-get update, deadline 300 s", f"{apt} update --error-on=any", "Get:1 http://archive.ubuntu.com/ubuntu noble InRelease",
+            "apt-get update, deadline 300 s", f"{apt} update -o Acquire::Languages=none --error-on=any", "Get:1 http://archive.ubuntu.com/ubuntu noble InRelease",
             "apt-get update ended in <whole> s", "apt-get install, deadline 900 s", f"{apt} install -y --no-install-recommends pkg-config",
             "apt-get install ended in <whole> s"])
 
@@ -463,7 +466,7 @@ class CommandLine(unittest.TestCase):
         status, lines, apt = self.run_helper()
         self.assertEqual(status, 1, lines)
         self.assertEqual(lines[5:], [
-            "apt-get update, deadline 300 s", f"{apt} update --error-on=any", "Get:1 http://archive.ubuntu.com/ubuntu noble InRelease",
+            "apt-get update, deadline 300 s", f"{apt} update -o Acquire::Languages=none --error-on=any", "Get:1 http://archive.ubuntu.com/ubuntu noble InRelease",
             "::error::apt-get update did not end within its 300 s deadline and was stopped; hosts: "
             "azure.archive.ubuntu.com (did not resolve), archive.ubuntu.com (resolved), security.ubuntu.com (resolved)"])
 
