@@ -4671,6 +4671,24 @@ mod tests {
         assert_eq!(child_state(&child), ChildState::Reaped);
     }
 
+    /// The child that stays unreaped still leads its group, so the deadline's
+    /// kill reaches the descendant that outlived it: the descendant never
+    /// leaves its marker, and the child is reaped after that kill.
+    #[cfg(unix)]
+    #[test]
+    fn a_passive_deadline_kills_the_descendants_of_a_child_that_has_exited() {
+        use process_io::fixtures::{ChildState, child_state, written_line};
+        let temp = tempfile::tempdir().unwrap();
+        let (pid, marker) = (temp.path().join("pid"), temp.path().join("marker"));
+        let mut command = shell("echo $$ > \"$1\"; (sleep 0.4; touch \"$2\") & exit 0");
+        command.arg(&pid).arg(&marker);
+        let error = bounded_output(command, Duration::from_millis(150)).unwrap_err();
+        assert!(error.to_string().contains("time limit"), "{error}");
+        assert_eq!(child_state(&written_line(&pid)), ChildState::Reaped);
+        thread::sleep(Duration::from_millis(450));
+        assert!(!marker.exists());
+    }
+
     /// Every thread a read started has ended when it returns, after a
     /// deadline that left a helper in another session holding both pipes and
     /// after a cancel with the child alive, as after a success.
