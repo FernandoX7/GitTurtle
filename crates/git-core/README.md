@@ -115,8 +115,13 @@ child killed and reaped.
 Cleanup stops and joins GitTurtle's I/O threads even if an external wrapper has
 detached a child into another session while retaining a pipe. The app does not
 claim to terminate independently daemonized programs outside Git's process group.
-The explicit-write runner retains its separate authentication, progress,
-cancellation and uncertain-outcome policy. See the
+The explicit-write runner uses the same `process_io` nonblocking readiness wait
+(including optional stdin writers and event-driven `AskpassServer` accept
+polling) while retaining its separate authentication, progress, cancellation
+and uncertain-outcome policy. Live progress is framed per child stderr reader
+into `\r`/`\n`-terminated segments with a 4 KiB carry bound (dropping overlong
+segments and unterminated tails) and validated against Git's numeric transfer
+grammar before whole-segment redaction. See the
 [passive process audit and release measurements](../../docs/security-git-audit.md).
 
 Ordinary application history uses `history_traversal` and `HistoryTraversal::next_page`: one topological Git process walks captured local tips once, with no growing-prefix or `--skip` replay. Pages contain at most 500 commits / 32 MiB of retained metadata; a 2 MiB record bound and eight 8 KiB pipe chunks bound read-ahead. Backpressure pauses the producer between requests. Cancellation and the 15-second page deadline close/reap the process and invalidate the cursor; a retry starts the visible captured scope again. The caller owns retention and closes idle traversals when leaving a tab. Git's internal revision-walk allocation is separate from the metadata/pipe bounds; these are not a process RSS cap.

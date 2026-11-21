@@ -1856,19 +1856,56 @@ fn checked_write_output(
     Ok(output)
 }
 
-#[cfg(unix)]
-fn make_pipe_nonblocking(pipe: &impl std::os::fd::AsFd) -> Result<()> {
-    let flags = rustix::fs::fcntl_getfl(pipe)?;
-    rustix::fs::fcntl_setfl(pipe, flags | rustix::fs::OFlags::NONBLOCK)?;
-    Ok(())
+/// How often the write wait wakes to look, while it has something to look for:
+/// an explicit cancellation token on a controlled operation, or the exit where
+/// nothing reports it.
+const WRITE_WAIT_TICK: Duration = Duration::from_millis(1);
+
+/// The write wait's own order, judged after every wake whatever woke it: a
+/// cancelled operation is cancelled even where it had completed, a failed wait
+/// comes before completion, and the deadline ends only a write that is not
+/// complete.
+fn write_wait_step(
+    cancelled: bool,
+    wait_failed: bool,
+    complete: bool,
+    timed_out: bool,
+) -> WaitStep {
+    if cancelled {
+        WaitStep::Cancelled
+    } else if wait_failed {
+        WaitStep::WaitFailed
+    } else if complete {
+        WaitStep::Complete
+    } else if timed_out {
+        WaitStep::TimedOut
+    } else {
+        WaitStep::Wait
+    }
 }
 
 /// Drain pipes concurrently, retaining bounded output. Observe pipe completion as
 /// well as child exit so hooks/SSH descendants cannot hold the UI operation open.
 fn bounded_write_output(
+    command: Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Output> {
+    bounded_write_output_with(command, input, timeout, WaitSeam::new(WRITE_WAIT_TICK))
+}
+
+/// [`bounded_write_output`], run with `seam`'s tick and way of seeing the exit.
+///
+/// The calling thread blocks in one timed wait, which a pipe worker's end and
+/// the reported exit end at once. Its timeout is the time left to the deadline,
+/// and no more than a tick only while there is something to look for: explicit
+/// cancellation on a controlled operation, or the exit where nothing reports
+/// it.
+fn bounded_write_output_with(
     mut command: Command,
     input: Option<Vec<u8>>,
     timeout: Duration,
+    seam: WaitSeam,
 ) -> Result<Output> {
     let control = authentication::current_control();
     if control.as_ref().is_some_and(OperationControl::is_cancelled) {
@@ -1883,46 +1920,24 @@ fn bounded_write_output(
         .stderr(Stdio::piped())
         .spawn()
         .context("Unable to start Git; install Git and ensure it is on PATH")?;
-    let stdout_pipe = child.stdout.take().expect("piped Git stdout");
-    let stderr_pipe = child.stderr.take().expect("piped Git stderr");
-    let stdin_pipe = child.stdin.take();
     // A helper can create a new session and retain our pipe descriptors. Killing
     // Git's process group then cannot close those descriptors. Nonblocking I/O
-    // lets every owned reader/writer observe shutdown and be joined promptly.
-    #[cfg(unix)]
-    if let Err(error) = (|| -> Result<()> {
-        make_pipe_nonblocking(&stdout_pipe)?;
-        make_pipe_nonblocking(&stderr_pipe)?;
-        if let Some(pipe) = &stdin_pipe {
-            make_pipe_nonblocking(pipe)?;
-        }
-        Ok(())
-    })() {
-        terminate_process_group(&child);
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error.context("Unable to configure bounded Git pipe I/O"));
-    }
-    let io_stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let read = |mut pipe: Box<dyn Read + Send>, progress: Option<OperationControl>| {
-        let stopped = Arc::clone(&io_stopped);
-        thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
+    // with readiness polling lets every owned reader/writer observe shutdown and
+    // be joined promptly. Where `ChildPipes::take` fails it kills and reaps the
+    // child itself; from here to the last join nothing returns early.
+    let pipes = ChildPipes::take(&mut child).context("Unable to configure bounded Git pipe I/O")?;
+    let (signals, mut events) = process_io::wait_events(&seam);
+    let read = |part, pipe: Option<Box<dyn Read + Send>>, progress: Option<OperationControl>| {
+        let mut pipe = pipe.ok_or_else(|| std::io::Error::other("its pipe is missing"))?;
+        signals.start(part, move || -> std::io::Result<(Vec<u8>, bool)> {
             let mut bytes = Vec::new();
             let mut overflow = false;
             let mut chunk = [0u8; 8192];
             let mut scanner = progress
                 .as_ref()
                 .map(|_| authentication::ProgressScanner::default());
-            while !stopped.load(std::sync::atomic::Ordering::Acquire) {
-                let count = match pipe.read(&mut chunk) {
-                    Ok(count) => count,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2));
-                        continue;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error),
-                };
+            loop {
+                let count = pipe.read(&mut chunk)?;
                 if count == 0 {
                     break;
                 }
@@ -1936,87 +1951,129 @@ fn bounded_write_output(
             Ok((bytes, overflow))
         })
     };
-    let stdout = read(Box::new(stdout_pipe), None);
-    let stderr = read(Box::new(stderr_pipe), control.clone());
+    let stdout = read(WaitPart::Output, Some(Box::new(pipes.output)), None);
+    let stderr = read(
+        WaitPart::Error,
+        pipes
+            .error
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+        control.clone(),
+    );
+    let has_input = input.is_some();
     let stdin = input.map(|bytes| {
-        let mut pipe = stdin_pipe.expect("piped Git stdin");
-        let stopped = Arc::clone(&io_stopped);
-        thread::spawn(move || -> std::io::Result<()> {
+        let mut pipe = pipes
+            .input
+            .ok_or_else(|| std::io::Error::other("its pipe is missing"))?;
+        signals.start(WaitPart::Input, move || -> std::io::Result<()> {
             let mut written = 0;
-            while written < bytes.len() && !stopped.load(std::sync::atomic::Ordering::Acquire) {
+            while written < bytes.len() {
                 let end = (written + 8192).min(bytes.len());
-                match pipe.write(&bytes[written..end]) {
-                    Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-                    Ok(count) => written += count,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2))
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(error) => return Err(error),
+                match pipe.write(&bytes[written..end])? {
+                    0 => return Err(std::io::ErrorKind::WriteZero.into()),
+                    count => written += count,
                 }
             }
             Ok(())
         })
     });
+    // A reader or writer that cannot start must not leave the child running:
+    // the operation fails through the same clean-up as a deadline.
+    let unstarted = stdout
+        .as_ref()
+        .err()
+        .or_else(|| stderr.as_ref().err())
+        .map(|error| anyhow::anyhow!("Unable to start a Git pipe reader: {error}"))
+        .or_else(|| {
+            stdin
+                .as_ref()
+                .and_then(|writer| writer.as_ref().err())
+                .map(|error| anyhow::anyhow!("Unable to start a Git pipe writer: {error}"))
+        });
+    let mut exit = ExitWatcher::start(&child, signals, &seam);
     let start = Instant::now();
     let mut status = None;
-    let mut failure = None;
-    loop {
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(value) => status = value,
-                Err(error) => {
-                    failure = Some(anyhow::Error::from(error));
-                    break;
+    let result = if let Some(error) = unstarted {
+        Err(error)
+    } else {
+        loop {
+            let cancelled = control.as_ref().is_some_and(OperationControl::is_cancelled);
+            let streams_ended = events.ended(WaitPart::Output)
+                && events.ended(WaitPart::Error)
+                && (!has_input || events.ended(WaitPart::Input));
+            // A cancelled operation asks for no status, so that its kill comes
+            // before the reap.
+            let waited = if cancelled || status.is_some() {
+                Ok(())
+            } else {
+                exit.try_status(&mut child, &events, streams_ended)
+                    .map(|taken| status = taken)
+            };
+            let left = timeout.saturating_sub(start.elapsed());
+            let step = write_wait_step(
+                cancelled,
+                waited.is_err(),
+                status.is_some() && streams_ended,
+                left.is_zero(),
+            );
+            match (step, status, waited) {
+                (WaitStep::Wait, ..) => {}
+                (WaitStep::Complete, Some(status), _) => break Ok(status),
+                (WaitStep::Cancelled, ..) => {
+                    break Err(anyhow::anyhow!(
+                        "Git operation cancelled. Its result may have applied partially or remotely; inspect local state and explicitly check the remote before retrying. It was not retried."
+                    ));
                 }
+                (WaitStep::TimedOut, ..) => {
+                    break Err(anyhow::anyhow!(
+                        "Git operation exceeded its {} second time limit. Its result may have applied partially or remotely; refresh and inspect before retrying. It was not retried.",
+                        timeout.as_secs()
+                    ));
+                }
+                (_, _, Err(error)) => break Err(error.into()),
+                _ => break Err(anyhow::anyhow!("Missing Git exit status")),
             }
+            let looking = control.is_some() || exit.polling();
+            events.next(if looking { left.min(seam.tick) } else { left });
         }
-        if status.is_some()
-            && stdout.is_finished()
-            && stderr.is_finished()
-            && stdin.as_ref().is_none_or(|t| t.is_finished())
-        {
-            break;
-        }
-        if control.as_ref().is_some_and(OperationControl::is_cancelled) {
-            failure = Some(anyhow::anyhow!(
-                "Git operation cancelled. Its result may have applied partially or remotely; inspect local state and explicitly check the remote before retrying. It was not retried."
-            ));
-            break;
-        }
-        if start.elapsed() >= timeout {
-            failure = Some(anyhow::anyhow!(
-                "Git operation exceeded its {} second time limit. Its result may have applied partially or remotely; refresh and inspect before retrying. It was not retried.",
-                timeout.as_secs()
-            ));
-            break;
-        }
-        thread::sleep(Duration::from_millis(2));
-    }
-    if failure.is_some() {
-        io_stopped.store(true, std::sync::atomic::Ordering::Release);
+    };
+    if result.is_err() {
+        // No status was taken on the way here, whether a helper watched or the
+        // wait polled, so the reap is the last thing done to the child or to
+        // its group: it comes after both kills and after the helper has ended.
+        pipes.control.stop();
         terminate_process_group(&child);
         let _ = child.kill();
+        exit.join();
         let _ = child.wait();
     }
-    let stdout = stdout
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git output reader stopped"))??;
-    let stderr = stderr
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git error reader stopped"))??;
+    // Join every started thread before propagating any error, and retain the
+    // deadline/cancellation/wait error instead of the resulting stopped-pipe
+    // error.
+    let stdout = stdout.ok().map(JoinHandle::join);
+    let stderr = stderr.ok().map(JoinHandle::join);
+    let stdin = stdin
+        .and_then(std::result::Result::ok)
+        .map(JoinHandle::join);
+    let status = result?;
+    type PipeRead = std::io::Result<(Vec<u8>, bool)>;
+    let joined = |reader: Option<thread::Result<PipeRead>>,
+                  stopped: &'static str|
+     -> Result<(Vec<u8>, bool)> {
+        Ok(reader
+            .context(stopped)?
+            .map_err(|_| anyhow::anyhow!(stopped))??)
+    };
+    let stdout = joined(stdout, "Git output reader stopped")?;
+    let stderr = joined(stderr, "Git error reader stopped")?;
     if let Some(stdin) = stdin {
-        let _ = stdin.join();
+        let _ = stdin.map_err(|_| anyhow::anyhow!("Git input writer stopped"))?;
     } // Rejected Git may close stdin early; stderr is authoritative.
-    if let Some(error) = failure {
-        return Err(error);
-    }
     ensure!(
         !stdout.1 && !stderr.1,
         "Git output exceeded its limit. The operation may have completed; refresh and inspect before retrying."
     );
     Ok(Output {
-        status: status.context("Missing Git exit status")?,
+        status,
         stdout: stdout.0,
         stderr: stderr.0,
     })
@@ -2849,5 +2906,363 @@ mod tests {
         for path in ["../escape", "/absolute", "", "a/../b"] {
             assert!(path_input(&[PathBuf::from(path)]).is_err());
         }
+    }
+
+    /// The order of the write wait, matching the passive wait's table:
+    /// cancelled, a failed wait, complete, and past the deadline.
+    #[test]
+    fn the_write_wait_judges_a_cancel_then_its_failure_then_completion_then_the_deadline() {
+        use WaitStep::{Cancelled, Complete, TimedOut, Wait, WaitFailed};
+        for ((cancelled, wait_failed, complete, timed_out), step) in [
+            ((false, false, false, false), Wait),
+            ((false, false, false, true), TimedOut),
+            ((false, false, true, false), Complete),
+            ((false, false, true, true), Complete),
+            ((false, true, false, false), WaitFailed),
+            ((false, true, false, true), WaitFailed),
+            ((false, true, true, false), WaitFailed),
+            ((false, true, true, true), WaitFailed),
+            ((true, false, false, false), Cancelled),
+            ((true, false, false, true), Cancelled),
+            ((true, false, true, false), Cancelled),
+            ((true, false, true, true), Cancelled),
+            ((true, true, false, false), Cancelled),
+            ((true, true, false, true), Cancelled),
+            ((true, true, true, false), Cancelled),
+            ((true, true, true, true), Cancelled),
+        ] {
+            assert_eq!(
+                write_wait_step(cancelled, wait_failed, complete, timed_out),
+                step,
+                "cancelled {cancelled}, wait failed {wait_failed}, complete {complete}, past the deadline {timed_out}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_seam(
+        tick: Duration,
+        exit: process_io::ExitWatch,
+        fault: Option<process_io::Fault>,
+    ) -> (WaitSeam, Arc<()>) {
+        let seam = WaitSeam {
+            exit,
+            fault,
+            ..WaitSeam::new(tick)
+        };
+        let owned = Arc::clone(&seam.owned);
+        (seam, owned)
+    }
+
+    /// An uncontrolled write with no polling wakes only on its events: with
+    /// both its tick and its deadline at ten seconds it still completes as its
+    /// child, streams, and optional stdin finish.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_ends_with_its_child_and_streams_at_no_tick() {
+        use crate::process_io::fixtures::shell;
+        let long = Duration::from_secs(10);
+        for (script, input, shown, code) in [
+            ("printf done; exit 3", None, "done", 3),
+            ("printf early; exec >&- 2>&-; sleep 0.2", None, "early", 0),
+            (
+                "(sleep 0.2; printf late) & printf first",
+                None,
+                "firstlate",
+                0,
+            ),
+            ("cat", Some(b"piped-input".to_vec()), "piped-input", 0),
+        ] {
+            let (seam, owned) = write_seam(long, process_io::ExitWatch::Readiness, None);
+            let started = Instant::now();
+            let output = bounded_write_output_with(shell(script), input, long, seam).unwrap();
+            let elapsed = started.elapsed();
+            assert!(elapsed < Duration::from_secs(2), "{script}: {elapsed:?}");
+            assert_eq!(output.status.code(), Some(code), "{script}");
+            assert_eq!(String::from_utf8_lossy(&output.stdout), shown, "{script}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{script}");
+        }
+    }
+
+    /// A false exit report, polling mode, or an exit helper that cannot start
+    /// falls back to polling for the child's status and still returns its code.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_false_exit_report_leaves_the_wait_polling_for_the_status() {
+        use crate::process_io::{ExitWatch, Fault, fixtures::shell};
+        for (exit, fault) in [
+            (ExitWatch::ReportsEarly, None),
+            (ExitWatch::Poll, None),
+            (
+                ExitWatch::Readiness,
+                Some(Fault::CannotStart(WaitPart::Exit)),
+            ),
+        ] {
+            let (seam, owned) = write_seam(WRITE_WAIT_TICK, exit, fault);
+            let started = Instant::now();
+            let command = shell("printf kept; exec >&- 2>&-; sleep 0.2; exit 3");
+            let output = bounded_write_output_with(command, None, WRITE_TIMEOUT, seam).unwrap();
+            let elapsed = started.elapsed();
+            assert!(elapsed < Duration::from_secs(2), "{exit:?}: {elapsed:?}");
+            assert_eq!(output.status.code(), Some(3), "{exit:?}");
+            assert_eq!(String::from_utf8_lossy(&output.stdout), "kept", "{exit:?}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{exit:?}");
+        }
+    }
+
+    /// A stopped child never blocks the write wait: the wait runs to its
+    /// deadline, kills and reaps the child, and joins every owned thread.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_report_for_a_stopped_child_leaves_the_wait_to_its_deadline() {
+        use crate::process_io::fixtures::{shell, still_a_child, written_line};
+        use rustix::process::{Pid, Signal, kill_process};
+        for exit in [
+            process_io::ExitWatch::ReportsEarly,
+            process_io::ExitWatch::Readiness,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let pid = temp.path().join("pid");
+            let mut command = shell("echo $$ > \"$1\"; exec >&- 2>&-; kill -STOP $$; sleep 10");
+            command.arg(&pid);
+            let (returned, limit) = mpsc::channel::<()>();
+            let release = {
+                let pid = pid.clone();
+                thread::spawn(move || {
+                    if limit.recv_timeout(Duration::from_secs(5))
+                        == Err(mpsc::RecvTimeoutError::Timeout)
+                        && let Some(child) = Pid::from_raw(written_line(&pid).parse().unwrap())
+                    {
+                        let _ = kill_process(child, Signal::KILL);
+                    }
+                })
+            };
+            let (seam, owned) = write_seam(WRITE_WAIT_TICK, exit, None);
+            let started = Instant::now();
+            let result = bounded_write_output_with(command, None, Duration::from_millis(400), seam);
+            let elapsed = started.elapsed();
+            drop(returned);
+            release.join().unwrap();
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "Git operation exceeded its 0 second time limit. Its result may have applied partially or remotely; refresh and inspect before retrying. It was not retried.",
+                "{exit:?}"
+            );
+            assert!(elapsed < Duration::from_secs(2), "{exit:?}: {elapsed:?}");
+            assert!(!still_a_child(&written_line(&pid)), "{exit:?}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{exit:?}");
+        }
+    }
+
+    /// The write wait keeps an exited child unreaped until every required
+    /// stream has ended, across readiness, poll, and helper-start failure.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_reaps_its_exited_child_only_once_it_is_complete() {
+        use crate::process_io::{
+            ExitWatch, Fault,
+            fixtures::{ChildState, child_state, shell, written_line},
+        };
+        let modes = [
+            (ExitWatch::Readiness, None),
+            (ExitWatch::Poll, None),
+            (
+                ExitWatch::Readiness,
+                Some(Fault::CannotStart(WaitPart::Exit)),
+            ),
+        ];
+        let seen = modes.map(|(exit, fault)| {
+            let temp = tempfile::tempdir().unwrap();
+            let (pid, release) = (temp.path().join("pid"), temp.path().join("release"));
+            let mut command = shell(
+                "echo $$ > \"$1\"; \
+                 (i=0; while [ ! -e \"$2\" ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i+1)); done) & \
+                 exit 0",
+            );
+            command.arg(&pid).arg(&release);
+            let (seam, _) = write_seam(WRITE_WAIT_TICK, exit, fault);
+            let worker = thread::spawn(move || {
+                bounded_write_output_with(command, None, WRITE_TIMEOUT, seam)
+            });
+            let child = written_line(&pid);
+            let started = Instant::now();
+            while child_state(&child) == ChildState::Running
+                && started.elapsed() < Duration::from_secs(3)
+            {
+                thread::sleep(Duration::from_millis(1));
+            }
+            thread::sleep(Duration::from_millis(100));
+            let held = child_state(&child);
+            std::fs::write(&release, "").unwrap();
+            let output = worker.join().unwrap().unwrap();
+            assert!(output.status.success(), "{exit:?}, {fault:?}");
+            (exit, fault, held, child_state(&child))
+        });
+        assert_eq!(
+            seen,
+            modes.map(|(exit, fault)| (exit, fault, ChildState::Exited, ChildState::Reaped))
+        );
+    }
+
+    /// An exited child stays unreaped until the deadline's group kill finishes,
+    /// so descendants outliving the child are terminated before reap.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_deadline_kills_the_descendants_of_a_child_that_has_exited() {
+        use crate::process_io::fixtures::{ChildState, child_state, shell, written_line};
+        let temp = tempfile::tempdir().unwrap();
+        let (pid, marker) = (temp.path().join("pid"), temp.path().join("marker"));
+        let mut command = shell("echo $$ > \"$1\"; (sleep 0.4; touch \"$2\") & exit 0");
+        command.arg(&pid).arg(&marker);
+        let error = bounded_write_output(command, None, Duration::from_millis(150)).unwrap_err();
+        assert!(error.to_string().contains("time limit"), "{error}");
+        assert_eq!(child_state(&written_line(&pid)), ChildState::Reaped);
+        thread::sleep(Duration::from_millis(450));
+        assert!(!marker.exists());
+    }
+
+    /// Every owned thread has ended before `bounded_write_output_with` returns,
+    /// after deadlines with detached output or input holders and after cancel.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_has_ended_every_thread_it_started_when_it_returns() {
+        use crate::process_io::fixtures::{DetachedPipeHolder, shell};
+        for input_held in [false, true] {
+            let (fixture, command) = DetachedPipeHolder::command(input_held);
+            let (waited, owned) =
+                write_seam(WRITE_WAIT_TICK, process_io::ExitWatch::Readiness, None);
+            let error = bounded_write_output_with(
+                command,
+                input_held.then(|| vec![b'x'; 1024 * 1024]),
+                Duration::from_millis(300),
+                waited,
+            )
+            .unwrap_err();
+            let held = Arc::strong_count(&owned);
+            fixture.wait_ready();
+            assert!(error.to_string().contains("time limit"), "{error}");
+            assert_eq!(held, 1, "input_held={input_held}");
+        }
+
+        let (waited, owned) = write_seam(WRITE_WAIT_TICK, process_io::ExitWatch::Readiness, None);
+        let control = OperationControl::default();
+        let trigger = {
+            let control = control.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(30));
+                control.cancel();
+            })
+        };
+        let started = Instant::now();
+        let error = run_controlled(control, || {
+            bounded_write_output_with(shell("sleep 10"), None, WRITE_TIMEOUT, waited)
+        })
+        .unwrap_err();
+        let held = Arc::strong_count(&owned);
+        trigger.join().unwrap();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(held, 1);
+    }
+
+    /// A reader or writer that cannot start kills and reaps the child and ends
+    /// every thread that did start.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_worker_that_cannot_start_leaves_no_child_running() {
+        use crate::process_io::fixtures::shell;
+        let temp = tempfile::tempdir().unwrap();
+        let mut markers = Vec::new();
+        for (name, part, input, expected_prefix) in [
+            (
+                "output",
+                WaitPart::Output,
+                None,
+                "Unable to start a Git pipe reader: ",
+            ),
+            (
+                "error",
+                WaitPart::Error,
+                None,
+                "Unable to start a Git pipe reader: ",
+            ),
+            (
+                "input",
+                WaitPart::Input,
+                Some(b"payload".to_vec()),
+                "Unable to start a Git pipe writer: ",
+            ),
+        ] {
+            let marker = temp.path().join(name);
+            let mut command = shell("sleep 0.3; touch \"$1\"");
+            command.arg(&marker);
+            markers.push(marker);
+            let (seam, owned) = write_seam(
+                WRITE_WAIT_TICK,
+                process_io::ExitWatch::Readiness,
+                Some(process_io::Fault::CannotStart(part)),
+            );
+            let error = bounded_write_output_with(command, input, WRITE_TIMEOUT, seam).unwrap_err();
+            assert!(
+                error.to_string().starts_with(expected_prefix),
+                "{name}: {error}"
+            );
+            assert_eq!(Arc::strong_count(&owned), 1, "{name}");
+        }
+        thread::sleep(Duration::from_millis(350));
+        for marker in markers {
+            assert!(!marker.exists(), "{}", marker.display());
+        }
+    }
+
+    /// A panicking reader or writer signals its end through its drop guard so
+    /// the write completes promptly and reports that worker.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_worker_s_panic_ends_the_wait_and_is_its_error() {
+        use crate::process_io::fixtures::shell;
+        let long = Duration::from_secs(10);
+        for (part, input, stopped) in [
+            (WaitPart::Output, None, "Git output reader stopped"),
+            (WaitPart::Error, None, "Git error reader stopped"),
+            (
+                WaitPart::Input,
+                Some(b"payload".to_vec()),
+                "Git input writer stopped",
+            ),
+        ] {
+            let (seam, owned) = write_seam(
+                long,
+                process_io::ExitWatch::Readiness,
+                Some(process_io::Fault::Panics(part)),
+            );
+            let started = Instant::now();
+            let error =
+                bounded_write_output_with(shell("sleep 0.2"), input, long, seam).unwrap_err();
+            let elapsed = started.elapsed();
+            assert_eq!(error.to_string(), stopped);
+            assert!(elapsed < Duration::from_secs(2), "{stopped}: {elapsed:?}");
+            assert_eq!(Arc::strong_count(&owned), 1, "{stopped}");
+        }
+    }
+
+    /// Output up to `WRITE_OUTPUT_LIMIT` is retained whole; one byte past it
+    /// drains to completion and fails with the uncertain-outcome message.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_keeps_output_up_to_its_limit_and_refuses_overflow() {
+        use crate::process_io::fixtures::shell;
+        let kept =
+            bounded_write_output(shell("head -c 4194304 /dev/zero"), None, WRITE_TIMEOUT).unwrap();
+        assert!(kept.status.success());
+        assert_eq!(kept.stdout.len(), WRITE_OUTPUT_LIMIT);
+
+        let error =
+            bounded_write_output(shell("head -c 4194305 /dev/zero >&2"), None, WRITE_TIMEOUT)
+                .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Git output exceeded its limit. The operation may have completed; refresh and inspect before retrying."
+        );
     }
 }

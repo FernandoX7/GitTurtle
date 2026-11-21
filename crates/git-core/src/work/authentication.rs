@@ -495,12 +495,16 @@ struct AskpassServer {
     directory: PathBuf,
     socket: PathBuf,
     stop: Arc<AtomicBool>,
+    wake_writer: std::os::unix::net::UnixStream,
     worker: Option<thread::JoinHandle<()>>,
 }
 #[cfg(unix)]
 impl AskpassServer {
     fn new(control: OperationControl) -> Result<Self> {
-        use std::os::unix::{fs::DirBuilderExt, net::UnixListener};
+        use std::os::unix::{
+            fs::DirBuilderExt,
+            net::{UnixListener, UnixStream},
+        };
         static NEXT: AtomicU64 = AtomicU64::new(0);
         // Short path also avoids macOS's small sockaddr_un path limit.
         let directory = PathBuf::from("/tmp").join(format!(
@@ -513,65 +517,80 @@ impl AskpassServer {
         ));
         std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
         let socket = directory.join("askpass");
-        let listener = match UnixListener::bind(&socket) {
-            Ok(listener) => listener,
-            Err(error) => {
-                let _ = std::fs::remove_dir(&directory);
-                return Err(error.into());
-            }
-        };
-        listener.set_nonblocking(true)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::clone(&stop);
-        let worker = thread::spawn(move || {
-            while !stopped.load(Ordering::Acquire) && !control.is_cancelled() {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let handle = || -> Result<()> {
-                            // macOS accept(2) inherits the listener's O_NONBLOCK, which
-                            // would drop a prompt the helper has not finished writing.
-                            stream.set_nonblocking(false)?;
-                            stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-                            stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-                            let mut size = [0; 4];
-                            stream.read_exact(&mut size)?;
-                            let size = u32::from_be_bytes(size) as usize;
-                            ensure!(size <= PROMPT_LIMIT, "Prompt too long");
-                            let mut prompt = vec![0; size];
-                            stream.read_exact(&mut prompt)?;
-                            let response = control.request(String::from_utf8(prompt)?, &stopped);
-                            if let Some(response) = response {
-                                stream.write_all(&(response.len() as u32).to_be_bytes())?;
-                                stream.write_all(response.as_bytes())?;
-                            } else {
-                                stream.write_all(&u32::MAX.to_be_bytes())?;
+        let setup = (|| -> Result<Self> {
+            let listener = UnixListener::bind(&socket)?;
+            listener.set_nonblocking(true)?;
+            let (wake_reader, wake_writer) = UnixStream::pair()?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::clone(&stop);
+            let worker = thread::Builder::new()
+                .name("git-askpass".into())
+                .spawn(move || {
+                    use rustix::event::{PollFd, PollFlags, poll};
+                    while !stopped.load(Ordering::Acquire) && !control.is_cancelled() {
+                        match listener.accept() {
+                            Ok((mut stream, _)) => {
+                                let mut handle = || -> Result<()> {
+                                    // macOS accept(2) inherits the listener's O_NONBLOCK, which
+                                    // would drop a prompt the helper has not finished writing.
+                                    stream.set_nonblocking(false)?;
+                                    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+                                    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+                                    let mut size = [0; 4];
+                                    stream.read_exact(&mut size)?;
+                                    let size = u32::from_be_bytes(size) as usize;
+                                    ensure!(size <= PROMPT_LIMIT, "Prompt too long");
+                                    let mut prompt = vec![0; size];
+                                    stream.read_exact(&mut prompt)?;
+                                    let response =
+                                        control.request(String::from_utf8(prompt)?, &stopped);
+                                    if let Some(response) = response {
+                                        stream.write_all(&(response.len() as u32).to_be_bytes())?;
+                                        stream.write_all(response.as_bytes())?;
+                                    } else {
+                                        stream.write_all(&u32::MAX.to_be_bytes())?;
+                                    }
+                                    Ok(())
+                                };
+                                let _ = handle();
                             }
-                            Ok(())
-                        };
-                        let _ = {
-                            let mut handle = handle;
-                            handle()
-                        };
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                let mut fds = [
+                                    PollFd::new(&listener, PollFlags::IN),
+                                    PollFd::new(&wake_reader, PollFlags::IN),
+                                ];
+                                match poll(&mut fds, None) {
+                                    Ok(_) | Err(rustix::io::Errno::INTR) => continue,
+                                    Err(_) => break,
+                                }
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                                continue;
+                            }
+                            Err(_) => break,
+                        }
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(10))
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Ok(Self {
-            directory,
-            socket,
-            stop,
-            worker: Some(worker),
-        })
+                })?;
+            Ok(Self {
+                directory: directory.clone(),
+                socket: socket.clone(),
+                stop,
+                wake_writer,
+                worker: Some(worker),
+            })
+        })();
+        if setup.is_err() {
+            let _ = std::fs::remove_file(&socket);
+            let _ = std::fs::remove_dir(&directory);
+        }
+        setup
     }
 }
 #[cfg(unix)]
 impl Drop for AskpassServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        let _ = self.wake_writer.shutdown(std::net::Shutdown::Write);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -2302,6 +2321,22 @@ sys.stderr.flush()
         control.cancel();
         assert!(helper.join().unwrap().is_err());
         drop(server);
+    }
+
+    /// Dropping an idle `AskpassServer` wakes its `poll()` loop immediately
+    /// via its wake socket without waiting on any polling sleep.
+    #[cfg(unix)]
+    #[test]
+    fn askpass_server_drops_promptly_from_poll_wait() {
+        let started = Instant::now();
+        for _ in 0..8 {
+            let control = OperationControl::default();
+            let server = AskpassServer::new(control).unwrap();
+            let directory = server.directory.clone();
+            drop(server);
+            assert!(!directory.exists());
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     /// `command` run as a controlled operation's own failing step, off the

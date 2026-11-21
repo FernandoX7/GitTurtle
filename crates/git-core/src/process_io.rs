@@ -183,6 +183,7 @@ impl ChildPipes {
 /// One of the threads a wait owns, as that wait's events name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WaitPart {
+    Input,
     Output,
     Error,
     Exit,
@@ -191,6 +192,7 @@ pub(super) enum WaitPart {
 impl WaitPart {
     fn thread_name(self) -> &'static str {
         match self {
+            Self::Input => "git-stdin",
             Self::Output => "git-stdout",
             Self::Error => "git-stderr",
             Self::Exit => "git-exit",
