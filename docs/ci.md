@@ -357,8 +357,8 @@ After classification, the selected jobs have no build dependencies on each other
   These checks do not establish an interactive native desktop or notarized build.
 - `Package transfer · ubuntu-24.04` and `· ubuntu-24.04-arm` need the release
   job, so they start only when all three release legs have succeeded (a failed
-  leg, the macOS one included, skips both, and the gate is then red on the
-  release job), each on the runner
+  leg, the macOS one included, skips both, and the gate is then red), each on
+  the runner
   label its package was built on. A leg first refuses anything malformed in what
   its release leg handed on, then installs the runtime libraries the executable
   names and the desktop-entry tools through the

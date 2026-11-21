@@ -128,7 +128,7 @@ ubuntu-24.04` and `Package transfer · ubuntu-24.04-arm`: one leg for each Linux
 release leg, on the runner label that built the package. The job needs the
 release job, so it starts only when all three release legs have succeeded: if
 one fails, the macOS leg included, both transfer legs are skipped, no Linux
-package of that run is verified, and the gate is red on the release job. It builds
+package of that run is verified, and the gate is red. It builds
 nothing, restores no cache and reads no secret, and it has no `permissions`
 block of its own: the workflow's `contents: read` applies.
 
