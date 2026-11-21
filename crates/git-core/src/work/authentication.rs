@@ -1778,6 +1778,54 @@ mod tests {
         assert!(!directory.exists());
     }
 
+    /// Git's progress reaches `update_progress` in whatever pieces its pipe
+    /// gave, so one text is fed here split in two at every byte, through
+    /// multi-byte characters too. No split panics, and no piece shows whole
+    /// the answered secret or the marked one that the unsplit line hides.
+    #[test]
+    fn progress_split_at_any_byte_neither_panics_nor_shows_a_secret_whole() {
+        let answered = "ephemeral-fixture-token";
+        let marked = "marked-s3cret";
+        let lines = [
+            "Counting objects: 3, done.\r".to_owned(),
+            format!("Receiving objects:  50% (1/2) é🐢 {answered} token={marked}\r"),
+            "Receiving objects: 100% (2/2), done.\n".to_owned(),
+        ];
+        let controlled = || {
+            let control = OperationControl::default();
+            control
+                .0
+                .state
+                .lock()
+                .unwrap()
+                .secrets
+                .push(answered.to_owned());
+            control
+        };
+        let hidden = |progress: &str, at: &str| {
+            assert!(!progress.contains(answered), "{at}: {progress}");
+            assert!(!progress.contains(marked), "{at}: {progress}");
+        };
+        let unsplit = controlled();
+        unsplit.update_progress(lines[1].as_bytes());
+        let shown = unsplit.progress().unwrap();
+        assert_eq!(
+            shown,
+            "Receiving objects:  50% (1/2) é🐢 [redacted] token=[redacted]"
+        );
+        let text = lines.concat();
+        let bytes = text.as_bytes();
+        for split in 0..=bytes.len() {
+            let control = controlled();
+            for piece in [&bytes[..split], &bytes[split..]] {
+                control.update_progress(piece);
+                if let Some(progress) = control.progress() {
+                    hidden(&progress, &format!("split at {split}"));
+                }
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn askpass_server_waits_for_a_prompt_written_after_accept() {

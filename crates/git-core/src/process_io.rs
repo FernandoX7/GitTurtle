@@ -1,5 +1,9 @@
 //! Stop-aware passive process pipes. Killing a process group cannot close pipe
 //! descriptors retained by a helper which has started a separate session.
+//!
+//! Also what a bounded wait for one child is built from: the guard by which
+//! an owned thread says that it ended, the helper that sees the child's exit
+//! without reaping it, and the one timed wait that either of them ends.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -176,6 +180,314 @@ impl ChildPipes {
     }
 }
 
+/// One of the threads a wait owns, as that wait's events name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WaitPart {
+    Output,
+    Error,
+    Exit,
+}
+
+impl WaitPart {
+    fn thread_name(self) -> &'static str {
+        match self {
+            Self::Output => "git-stdout",
+            Self::Error => "git-stderr",
+            Self::Exit => "git-exit",
+        }
+    }
+
+    fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// How a wait learns that its child has exited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExitWatch {
+    /// A helper thread sees the exit without reaping it and reports it.
+    Readiness,
+    /// The wait asks `try_wait` at every tick, once both streams have ended.
+    Poll,
+    /// A report that arrives while the child still runs, as a helper's could
+    /// where the platform answers for a stopped child.
+    #[cfg(test)]
+    ReportsEarly,
+}
+
+/// What a test makes of one owned thread, as an exhausted host or a defect
+/// in the thread's own work would.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Fault {
+    CannotStart(WaitPart),
+    Panics(WaitPart),
+}
+
+/// What one wait runs with. The waits pass their own tick and nothing else;
+/// a test passes a tick, a way of seeing the exit and a fault of its own.
+pub(super) struct WaitSeam {
+    /// How often a wait that has to look wakes to look: for a cancellation
+    /// while a token is installed, for the exit while nothing reports it.
+    pub(super) tick: Duration,
+    pub(super) exit: ExitWatch,
+    /// Held by every thread the wait owns and by nothing else of the wait's,
+    /// so that whoever keeps a clone counts 1 once they have all ended.
+    pub(super) owned: Arc<()>,
+    #[cfg(test)]
+    pub(super) fault: Option<Fault>,
+}
+
+impl WaitSeam {
+    pub(super) fn new(tick: Duration) -> Self {
+        Self {
+            tick,
+            exit: if cfg!(unix) {
+                ExitWatch::Readiness
+            } else {
+                ExitWatch::Poll
+            },
+            owned: Arc::new(()),
+            #[cfg(test)]
+            fault: None,
+        }
+    }
+}
+
+/// What a wait does next, as its own order judged what it saw after a wake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WaitStep {
+    Cancelled,
+    WaitFailed,
+    Complete,
+    TimedOut,
+    Wait,
+}
+
+/// Starts the threads one wait owns. The exit watcher, started last, takes it,
+/// so that once the wait begins only those threads keep its events open.
+pub(super) struct WaitSignals {
+    events: mpsc::Sender<WaitPart>,
+    owned: Arc<()>,
+    #[cfg(test)]
+    fault: Option<Fault>,
+}
+
+/// Says that the thread holding it has ended, however it ended: a return and
+/// a panic drop it alike.
+struct Ended {
+    part: WaitPart,
+    events: mpsc::Sender<WaitPart>,
+    _owned: Arc<()>,
+}
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        let _ = self.events.send(self.part);
+    }
+}
+
+/// The events of one wait: which of its owned threads have ended.
+pub(super) struct WaitEvents {
+    events: mpsc::Receiver<WaitPart>,
+    ended: u8,
+    closed: bool,
+}
+
+pub(super) fn wait_events(seam: &WaitSeam) -> (WaitSignals, WaitEvents) {
+    let (sender, receiver) = mpsc::channel();
+    (
+        WaitSignals {
+            events: sender,
+            owned: Arc::clone(&seam.owned),
+            #[cfg(test)]
+            fault: seam.fault,
+        },
+        WaitEvents {
+            events: receiver,
+            ended: 0,
+            closed: false,
+        },
+    )
+}
+
+impl WaitSignals {
+    fn ended(&self, part: WaitPart) -> Ended {
+        Ended {
+            part,
+            events: self.events.clone(),
+            _owned: Arc::clone(&self.owned),
+        }
+    }
+
+    /// Starts `run` as the wait's `part`. The thread keeps its result in its
+    /// handle and reports only that it ended. One that cannot start is an
+    /// error for the wait to clean up after, never a panic beside a live
+    /// child; it counts as ended.
+    pub(super) fn start<T: Send + 'static>(
+        &self,
+        part: WaitPart,
+        run: impl FnOnce() -> T + Send + 'static,
+    ) -> std::io::Result<JoinHandle<T>> {
+        let ended = self.ended(part);
+        #[cfg(test)]
+        let panics = self.fault == Some(Fault::Panics(part));
+        #[cfg(test)]
+        if self.fault == Some(Fault::CannotStart(part)) {
+            return Err(std::io::Error::other("the fixture starts no such thread"));
+        }
+        thread::Builder::new()
+            .name(part.thread_name().into())
+            .spawn(move || {
+                let _ended = ended;
+                #[cfg(test)]
+                assert!(!panics, "the fixture panics this thread");
+                run()
+            })
+    }
+}
+
+impl WaitEvents {
+    pub(super) fn ended(&self, part: WaitPart) -> bool {
+        self.ended & part.bit() != 0
+    }
+
+    /// Blocks until an owned thread ends or `timeout` passes, whichever is
+    /// first, and takes in every event that has arrived by then. Once every
+    /// owned thread has ended no event can come: the wait then only lets
+    /// `timeout` pass, which the caller keeps to a tick.
+    pub(super) fn next(&mut self, timeout: Duration) {
+        if self.closed {
+            thread::sleep(timeout);
+            return;
+        }
+        match self.events.recv_timeout(timeout) {
+            Ok(part) => self.ended |= part.bit(),
+            Err(mpsc::RecvTimeoutError::Timeout) => return,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.closed = true;
+                return;
+            }
+        }
+        loop {
+            match self.events.try_recv() {
+                Ok(part) => self.ended |= part.bit(),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.closed = true;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Learns of a child's exit for one wait. Its report is a hint and never a
+/// status: the status is only ever taken with `Child::try_wait`, which cannot
+/// block, and a report that turns out false leaves the wait polling.
+pub(super) struct ExitWatcher {
+    helper: Option<JoinHandle<()>>,
+    polling: bool,
+}
+
+impl ExitWatcher {
+    /// Starts watching `child` as the seam says, as the last of the wait's
+    /// owned threads. Where no helper can run (it could not start, or the
+    /// platform has none) the wait polls.
+    pub(super) fn start(child: &Child, signals: WaitSignals, seam: &WaitSeam) -> Self {
+        match seam.exit {
+            ExitWatch::Readiness => {
+                let helper = watch_exit(child.id(), &signals);
+                Self {
+                    polling: helper.is_none(),
+                    helper,
+                }
+            }
+            ExitWatch::Poll => Self {
+                helper: None,
+                polling: true,
+            },
+            #[cfg(test)]
+            ExitWatch::ReportsEarly => {
+                drop(signals.ended(WaitPart::Exit));
+                Self {
+                    helper: None,
+                    polling: false,
+                }
+            }
+        }
+    }
+
+    /// Whether the wait has to ask for the exit itself, at every tick.
+    pub(super) fn polling(&self) -> bool {
+        self.polling
+    }
+
+    /// The child's exit status, if it can be taken now.
+    ///
+    /// Nothing is asked until `streams_ended`, whether a helper watches or
+    /// the wait polls, and while a helper watches not until the exit is
+    /// reported either. So the status is taken only when it completes the
+    /// wait: until then the unreaped child keeps its pid, and its group's,
+    /// from meaning anything else to a later kill, and the reap is the last
+    /// thing done to the child however the wait learns of its exit. The
+    /// helper is joined first, so nothing of ours still names the pid once it
+    /// is reaped. A report with no status behind it turns the wait to
+    /// polling, which asks at every tick from then on.
+    ///
+    /// A `try_wait` that fails is likewise seen only once the streams have
+    /// ended. Until then the wait's deadline is what bounds it: where the
+    /// status cannot be had and a stream stays open, the wait ends at its
+    /// deadline, with the deadline's error.
+    pub(super) fn try_status(
+        &mut self,
+        child: &mut Child,
+        events: &WaitEvents,
+        streams_ended: bool,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        if !streams_ended {
+            return Ok(None);
+        }
+        if !self.polling {
+            if !events.ended(WaitPart::Exit) {
+                return Ok(None);
+            }
+            self.join();
+        }
+        let status = child.try_wait()?;
+        self.polling |= status.is_none();
+        Ok(status)
+    }
+
+    /// Waits for the helper to end, which it does once the child has exited:
+    /// after its report, or after the child was killed.
+    pub(super) fn join(&mut self) {
+        if let Some(helper) = self.helper.take() {
+            let _ = helper.join();
+        }
+    }
+}
+
+/// A thread that blocks until `pid`, a child of this process, has exited, and
+/// leaves it unreaped. Whatever ends its wait (a status, no such child, any
+/// other error) is the same report: the child may have exited.
+#[cfg(unix)]
+fn watch_exit(pid: u32, signals: &WaitSignals) -> Option<JoinHandle<()>> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let pid = Pid::from_raw(i32::try_from(pid).ok()?)?;
+    let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+    signals
+        .start(WaitPart::Exit, move || {
+            while matches!(waitid(WaitId::Pid(pid), peek), Err(rustix::io::Errno::INTR)) {}
+        })
+        .ok()
+}
+
+#[cfg(not(unix))]
+fn watch_exit(_pid: u32, _signals: &WaitSignals) -> Option<JoinHandle<()>> {
+    None
+}
+
 #[cfg(all(test, unix))]
 pub(super) mod fixtures {
     use super::*;
@@ -233,6 +545,61 @@ os._exit(0)
             {
                 let _ = kill_process(pid, Signal::KILL);
             }
+        }
+    }
+
+    /// `/bin/sh` running `script`, whose `$1` is the next argument added.
+    pub(crate) fn shell(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script, "fixture"]);
+        command
+    }
+
+    /// The line a fixture's shell wrote to `path` (`echo $$ > "$1"`), once it
+    /// is whole.
+    pub(crate) fn written_line(path: &Path) -> String {
+        let started = Instant::now();
+        loop {
+            if let Ok(line) = std::fs::read_to_string(path)
+                && line.ends_with('\n')
+            {
+                return line.trim().to_owned();
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "{} was never written",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Whether this process still has the child `pid` to wait for, running or
+    /// exited: a reaped child is no longer one. Looking leaves it as it was.
+    pub(crate) fn still_a_child(pid: &str) -> bool {
+        child_state(pid) != ChildState::Reaped
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum ChildState {
+        Running,
+        /// Exited and not yet waited for: its process ID is still its own.
+        Exited,
+        Reaped,
+    }
+
+    /// What `pid` is to this process, which the look leaves unchanged.
+    pub(crate) fn child_state(pid: &str) -> ChildState {
+        use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+        let pid = Pid::from_raw(pid.trim().parse().unwrap()).unwrap();
+        match waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        ) {
+            Ok(None) => ChildState::Running,
+            Ok(Some(_)) => ChildState::Exited,
+            Err(rustix::io::Errno::CHILD) => ChildState::Reaped,
+            Err(error) => panic!("waitid({pid:?}): {error}"),
         }
     }
 }
