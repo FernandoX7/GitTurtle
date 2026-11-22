@@ -129,9 +129,9 @@ def build(path: str, revision: str) -> dict:
 
 class SpecTest(unittest.TestCase):
     def test_text_sizes_match_the_app(self) -> None:
-        source = HERE.parents[1] / "crates" / "app" / "src" / "appearance.rs"
+        source = HERE.parents[1] / "crates" / "theme" / "src" / "lib.rs"
         if not source.is_file():
-            self.skipTest("app source not present")
+            self.skipTest("theme source not present")
         found = re.search(r"INTERFACE_TEXT_RANGE: std::ops::RangeInclusive<u8> = (\d+)..=(\d+);", source.read_text())
         self.assertEqual((int(found[1]), int(found[2]) + 1), (scenario.TEXT_SIZES.start, scenario.TEXT_SIZES.stop))
 

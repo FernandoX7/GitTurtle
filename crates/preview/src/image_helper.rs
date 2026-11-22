@@ -210,8 +210,26 @@ impl ImageErrorKind {
     ];
 
     fn code(self) -> u8 {
-        // The wire code is the position in `ALL`, plus one.
-        Self::ALL.iter().position(|kind| *kind == self).unwrap() as u8 + 1
+        match self {
+            Self::Request => 1,
+            Self::InputTooLarge => 2,
+            Self::FormatMismatch => 3,
+            Self::InvalidDimensions => 4,
+            Self::EdgeLimit => 5,
+            Self::PixelLimit => 6,
+            Self::DecodedTooLarge => 7,
+            Self::DecoderFailed => 8,
+            Self::AvifUnreadable => 9,
+            Self::AvifGrid => 10,
+            Self::AvifNoStill => 11,
+            Self::AvifSizeMismatch => 12,
+            Self::Dav1dTooOld => 13,
+            Self::Jpeg2000Unreadable => 14,
+            Self::Jpeg2000TooManyTiles => 15,
+            Self::Jpeg2000TooManyComponents => 16,
+            Self::Jpeg2000TooDeep => 17,
+            Self::JpxNotJp2Compatible => 18,
+        }
     }
 
     fn from_code(code: u8) -> Option<Self> {

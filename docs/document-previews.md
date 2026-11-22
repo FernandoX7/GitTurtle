@@ -36,7 +36,7 @@ the page is no longer wanted. A first page is prepared by the repository
 worker's read, which a newer read (another file or commit), a tab switch or
 close, or closing the window cancels. Back from Compare cancels the
 comparison's preview read, its own (“Loading preview…”, `PREVIEW_LABEL` in
-[`main.rs`](../crates/app/src/main.rs)) and that of a captured comparison
+[`lib.rs`](../crates/app/src/lib.rs)) and that of a captured comparison
 restored with its tab (“Restoring captured comparison…”,
 `RESTORED_PREVIEW_LABEL`) alike, so its helper is killed then rather than
 at its 10-second deadline; the file is read again when it is chosen. A later

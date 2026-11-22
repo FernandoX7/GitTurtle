@@ -441,4 +441,135 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn confirmed_reply_completion_replaces_only_the_submitted_context() {
+        use crate::github::{
+            Repository,
+            conversations::CapturedThread,
+            drafts::{Draft, ReplyDraft, load_at, save_at, save_batch_at},
+            review::fixture_pull,
+        };
+        let reply = |body: &str| ReplyDraft {
+            target: CapturedThread {
+                pull: fixture_pull(false)
+                    .capture(Repository::parse("gitturtle-fixture/native-review").unwrap()),
+                account: "offline-reviewer".into(),
+                account_id: "U_fixture_reviewer".into(),
+                repository_id: "R_fixture_repository".into(),
+                pull_id: "PR_fixture_42".into(),
+                thread_id: "PRRT_fixture_7".into(),
+                path: "docs/界面:review.md".into(),
+                root_comment_id: Some("PRRC_fixture_70".into()),
+                original_commit_id: Some("a".repeat(40)),
+            },
+            body: body.into(),
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let original = reply("Successfully posted reply\n");
+        let mut other = reply("Unfinished reply in another conversation\n");
+        other.target.thread_id = "PRRT_another_thread".into();
+        save_at(&path, Draft::Reply(other.clone())).unwrap();
+        let executor = crate::operations::SerialExecutor::new("reply-completion-draft-test");
+        let saver = CoalescingSaver::<String, Draft>::default();
+        let (started, waiting) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let mut first_save = true;
+        let destination = path.clone();
+        let pending = Draft::Reply(original.clone());
+        let response = saver
+            .queue_with(&executor, pending.key(), pending, move |batch| {
+                if first_save {
+                    first_save = false;
+                    started.send(())?;
+                    gate.recv()?;
+                }
+                save_batch_at(&destination, batch.values().cloned())
+            })
+            .unwrap();
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let completed = Draft::Reply(ReplyDraft {
+            body: String::new(),
+            ..original
+        });
+        assert!(
+            saver
+                .queue_with(&executor, completed.key(), completed, |_| {
+                    panic!("completion must join the accepted save")
+                })
+                .is_none()
+        );
+        release.send(()).unwrap();
+        futures::executor::block_on(response).unwrap().unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), 1);
+        assert_eq!(reopened.entries[0].text(), other.body);
+    }
+
+    #[test]
+    fn a_confirmed_creation_joins_the_save_of_its_draft_and_removes_it() {
+        use crate::github::{
+            NewPull, Repository,
+            drafts::{Change, Draft, load_at, save_at, save_batch_at},
+        };
+        let creation = |repository: &str, head: &str, base: &str, body: &str| NewPull {
+            repository: Repository::parse(repository).unwrap(),
+            title: "Title".into(),
+            body: body.into(),
+            head: head.into(),
+            base: base.into(),
+            draft: true,
+            expected_head: None,
+            expected_base: None,
+        };
+        let sent = |draft: &NewPull| NewPull {
+            expected_head: Some("1".repeat(40)),
+            expected_base: Some("2".repeat(40)),
+            ..draft.clone()
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("drafts.json");
+        let own = creation("fixture/repo", "feature", "main", "Sent");
+        let other = creation("fixture/repo", "other", "main", "Unfinished");
+        save_at(&path, Draft::Pull(other)).unwrap();
+        let executor = crate::operations::SerialExecutor::new("creation-draft-test");
+        let saver = CoalescingSaver::<String, Change>::default();
+        let (started, waiting) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let mut first_save = true;
+        let destination = path.clone();
+        let pending = Draft::Pull(own.clone());
+        let key = pending.key();
+        let response = saver
+            .queue_with(&executor, key.clone(), pending.into(), move |batch| {
+                if first_save {
+                    first_save = false;
+                    started.send(())?;
+                    gate.recv()?;
+                }
+                save_batch_at(&destination, batch.values().cloned())
+            })
+            .unwrap();
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            saver
+                .queue_with(
+                    &executor,
+                    key,
+                    Change::Created(Box::new(sent(&own))),
+                    |_| { panic!("the removal must join the accepted save") }
+                )
+                .is_none()
+        );
+        release.send(()).unwrap();
+        futures::executor::block_on(response).unwrap().unwrap();
+        let reopened = load_at(&path).unwrap();
+        assert_eq!(reopened.entries.len(), 1);
+        assert_eq!(reopened.entries[0].text(), "Unfinished");
+    }
 }

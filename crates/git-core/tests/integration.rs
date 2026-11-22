@@ -146,12 +146,10 @@ fn merge_plan_reports_divergence_and_manual_resolution_preserves_unrelated_work(
     let expected = repo.operation_state().unwrap().unwrap();
     assert_eq!(expected.kind, OperationKind::Merge);
     assert!(
-        repo.execute_integration(&IntegrationCommand::Continue {
-            expected: expected.clone()
-        })
-        .unwrap_err()
-        .to_string()
-        .contains("Resolve and stage")
+        repo.execute_integration(&IntegrationCommand::Continue { expected })
+            .unwrap_err()
+            .to_string()
+            .contains("Resolve and stage")
     );
     repo.execute_integration(&IntegrationCommand::Resolve {
         expected: Arc::new(preview),

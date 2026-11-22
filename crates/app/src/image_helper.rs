@@ -18,8 +18,10 @@
 //! once their helpers have run for one deadline in total (requirement 17).
 //!
 //! The module depends only on std, `anyhow`, `gitturtle-preview` and
-//! `crate::pdf_helper`: `tests/image_helper.rs` compiles both as its own
-//! modules.
+//! `crate::pdf_helper`, and is exposed `#[doc(hidden)]` from `gitturtle` on
+//! Linux x86-64/AArch64 so `tests/image_helper.rs` and
+//! `tests/image_decode_bench.rs` use it directly without recompiling the source
+//! file.
 
 #[cfg(all(
     target_os = "linux",
@@ -55,7 +57,7 @@ use crate::pdf_helper::{Outcome, Runner};
 /// parent-death signal follows it); `check` runs at least every 25 ms while
 /// it waits for a slot or the helper, and a failed check kills the helper and
 /// returns the check's own error.
-pub(crate) fn decode(
+pub fn decode(
     bytes: &[u8],
     name: &str,
     edge: u32,
@@ -85,7 +87,7 @@ pub(crate) fn decode(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-pub(crate) fn decode_with(
+pub fn decode_with(
     client: &Client<'_>,
     bytes: &[u8],
     name: &str,
@@ -107,7 +109,7 @@ pub(crate) fn decode_with(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-pub(crate) const AFTER_EARLIER_IMAGES: &str = "Earlier images in this document stopped the image decoder or used its 10 seconds, so this one was not decoded.";
+pub const AFTER_EARLIER_IMAGES: &str = "Earlier images in this document stopped the image decoder or used its 10 seconds, so this one was not decoded.";
 
 /// One document's images, decoded in turn as [`decode`] decodes each. The
 /// document's later confined images are not sent to a helper, and each
@@ -122,7 +124,7 @@ pub(crate) const AFTER_EARLIER_IMAGES: &str = "Earlier images in this document s
 /// start until it is reaped, never the wait for a slot. Other images decode
 /// as before. Only a flag and a sum: nothing is scanned.
 #[derive(Default)]
-pub(crate) struct DocumentImages {
+pub struct DocumentImages {
     /// A confined image of this document timed out or stopped its helper.
     #[cfg(all(
         target_os = "linux",
@@ -139,7 +141,7 @@ pub(crate) struct DocumentImages {
 
 impl DocumentImages {
     /// The document's next image, as [`decode`] decodes it.
-    pub(crate) fn decode(
+    pub fn decode(
         &mut self,
         bytes: &[u8],
         name: &str,
@@ -169,7 +171,7 @@ impl DocumentImages {
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
-    pub(crate) fn decode_with(
+    pub fn decode_with(
         &mut self,
         client: &Client<'_>,
         bytes: &[u8],
@@ -202,11 +204,11 @@ impl DocumentImages {
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 fn with_client<T>(bytes: &[u8], use_client: impl FnOnce(&Client<'_>) -> T) -> T {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         use_client(&named::client(bytes))
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     {
         let _ = bytes;
         use_client(&Client::new())
@@ -216,11 +218,11 @@ fn with_client<T>(bytes: &[u8], use_client: impl FnOnce(&Client<'_>) -> T) -> T 
 /// The helpers tests name for images' bytes, as `pdf_view`'s tests name the
 /// PDF helper for a document's.
 #[cfg(all(
-    test,
+    any(test, feature = "test-support"),
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-pub(crate) mod named {
+pub mod named {
     use std::sync::{Arc, Mutex, OnceLock, PoisonError};
     use std::time::Duration;
 
@@ -232,7 +234,7 @@ pub(crate) mod named {
 
     /// From now on, `bytes` decode through `command`, stopped at `deadline`,
     /// with two helper slots of their own.
-    pub(crate) fn name(bytes: &[u8], command: HelperCommand, deadline: Duration) {
+    pub fn name(bytes: &[u8], command: HelperCommand, deadline: Duration) {
         let slots: &'static Slots = Box::leak(Box::new(Slots::new(2)));
         let client = Client::with(Runner::with(command, deadline, slots));
         NAMED
@@ -287,7 +289,7 @@ fn worded(failure: Failure) -> anyhow::Error {
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-pub(crate) struct Client<'a> {
+pub struct Client<'a> {
     runner: Runner<'a>,
 }
 
@@ -298,21 +300,7 @@ pub(crate) struct Client<'a> {
 impl Client<'static> {
     /// This executable as the helper, with the 10 s deadline and the two
     /// helper slots the app's PDF pages also use.
-    #[cfg_attr(
-        test,
-        expect(
-            clippy::allow_attributes,
-            reason = "used by tests/image_helper.rs, unused by the app's own tests"
-        )
-    )]
-    #[cfg_attr(
-        test,
-        allow(
-            dead_code,
-            reason = "the app's tests decode through named helpers; tests/image_helper.rs checks this one"
-        )
-    )]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             runner: Runner::new(),
         }
@@ -323,21 +311,26 @@ impl Client<'static> {
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
+impl Default for Client<'static> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 impl<'a> Client<'a> {
     /// A client for tests, on another runner.
-    #[cfg(test)]
-    pub(crate) fn with(runner: Runner<'a>) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with(runner: Runner<'a>) -> Self {
         Self { runner }
     }
 
     /// The runner a client uses.
-    #[cfg(test)]
-    #[expect(
-        clippy::allow_attributes,
-        reason = "used by tests/image_helper.rs, unused by bin tests"
-    )]
-    #[allow(dead_code, reason = "only tests/image_helper.rs reads it")]
-    pub(crate) fn runner(&self) -> &Runner<'a> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn runner(&self) -> &Runner<'a> {
         &self.runner
     }
 
@@ -348,7 +341,7 @@ impl<'a> Client<'a> {
     /// is checked against. The reply may hold at most an `edge` × `edge`
     /// image, so a longer one is killed as it arrives. An edge of 0 is
     /// refused, as `decode_image` refuses it.
-    pub(crate) fn decode(
+    pub fn decode(
         &self,
         bytes: &[u8],
         format: ConfinedFormat,
@@ -384,7 +377,7 @@ impl<'a> Client<'a> {
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 #[derive(Debug)]
-pub(crate) enum Failure {
+pub enum Failure {
     /// The caller's check failed; a helper that had started was killed and
     /// reaped first.
     Cancelled(anyhow::Error),
@@ -396,17 +389,7 @@ pub(crate) enum Failure {
     TimedOut,
     /// The helper died on `signal`, or exited without a valid reply. The
     /// signal is for tests and diagnostics, never wording.
-    Stopped {
-        #[expect(
-            clippy::allow_attributes,
-            reason = "read by tests/image_helper.rs, unused by bin"
-        )]
-        #[allow(
-            dead_code,
-            reason = "never worded; only tests/image_helper.rs reads which signal ended the helper"
-        )]
-        signal: Option<i32>,
-    },
+    Stopped { signal: Option<i32> },
     /// The reply was malformed, for another frame or format, out of bounds,
     /// larger than the request's cap or followed by more bytes.
     Unreadable,
@@ -474,16 +457,11 @@ impl std::error::Error for Failure {}
 /// [`classify`] for a helper that ended with `status`, so tests can cover the
 /// signals that would make a fake helper dump core.
 #[cfg(all(
-    test,
+    any(test, feature = "test-support"),
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-#[expect(
-    clippy::allow_attributes,
-    reason = "called by tests/image_helper.rs, unused by bin"
-)]
-#[allow(dead_code, reason = "only tests/image_helper.rs calls it")]
-pub(crate) fn classify_exit(
+pub fn classify_exit(
     status: std::process::ExitStatus,
     reply: &[u8],
     format: ConfinedFormat,

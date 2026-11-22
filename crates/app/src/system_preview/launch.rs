@@ -425,7 +425,7 @@ fn query(
     environment: Vec<(OsString, OsString)>,
     wait: Duration,
 ) -> Result<String, String> {
-    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::fd::OwnedFd;
     let mut child = Command::new(program)
         .args(arguments)
         .env_clear()
@@ -441,18 +441,15 @@ fn query(
         .stdout
         .take()
         .ok_or_else(|| format!("{tool} gave no answer, so nothing was opened."))?;
-    // SAFETY: `F_GETFL`/`F_SETFL` on a valid pipe descriptor we own.
-    unsafe {
-        let flags = libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL);
-        if flags >= 0 {
-            let _ = libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
+    if let Ok(flags) = rustix::fs::fcntl_getfl(&stdout) {
+        let _ = rustix::fs::fcntl_setfl(&stdout, flags | rustix::fs::OFlags::NONBLOCK);
     }
-    // SAFETY: `pidfd_open` creates a close-on-exec fd readable when `child` exits.
-    let mut pidfd: Option<OwnedFd> = unsafe {
-        let raw = libc::syscall(libc::SYS_pidfd_open, child.id() as libc::pid_t, 0u32);
-        (raw >= 0).then(|| OwnedFd::from_raw_fd(raw as libc::c_int))
-    };
+    let child_pid = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw);
+    let mut pidfd: Option<OwnedFd> = child_pid.and_then(|pid| {
+        rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok()
+    });
     let deadline = Instant::now() + wait;
     let mut answer = Vec::new();
     let mut stdout_done = false;
@@ -475,8 +472,12 @@ fn query(
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(error) => {
-                        // SAFETY: child is unreaped; negative PID targets its process group.
-                        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+                        if let Some(pid) = child_pid {
+                            let _ = rustix::process::kill_process_group(
+                                pid,
+                                rustix::process::Signal::KILL,
+                            );
+                        }
                         let _ = child.wait();
                         return Err(format!("{tool}'s answer could not be read: {error}."));
                     }
@@ -497,46 +498,46 @@ fn query(
         }
         let now = Instant::now();
         if now >= deadline {
-            // SAFETY: the child is not yet reaped, so its process group
-            // id still names the group it leads.
-            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            if let Some(pid) = child_pid {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
             let _ = child.wait();
             return Err(format!(
                 "{tool} did not answer in time, so nothing was opened."
             ));
         }
         let remaining = deadline - now;
-        let wait_ms = if stdout_done && pidfd.is_none() {
-            remaining.min(Duration::from_millis(5)).as_millis()
+        let wait_dur = if stdout_done && pidfd.is_none() {
+            remaining.min(Duration::from_millis(5))
         } else {
-            remaining.as_millis()
+            remaining
         }
-        .clamp(1, i32::MAX as u128) as libc::c_int;
-        let mut poll_fds = [
-            libc::pollfd {
-                fd: if stdout_done { -1 } else { stdout.as_raw_fd() },
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: if exit_ready {
-                    -1
-                } else {
-                    pidfd.as_ref().map_or(-1, |fd| fd.as_raw_fd())
-                },
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        // SAFETY: `poll_fds` is a valid stack array of 2 `pollfd` entries.
-        let ready = unsafe {
-            libc::poll(
-                poll_fds.as_mut_ptr(),
-                poll_fds.len() as libc::nfds_t,
-                wait_ms,
-            )
+        .max(Duration::from_millis(1));
+        let mut poll_fds: Vec<rustix::event::PollFd<'_>> = Vec::with_capacity(2);
+        if !stdout_done {
+            poll_fds.push(rustix::event::PollFd::new(
+                &stdout,
+                rustix::event::PollFlags::IN,
+            ));
+        }
+        let exit_slot = if !exit_ready {
+            pidfd.as_ref().map(|fd| {
+                let index = poll_fds.len();
+                poll_fds.push(rustix::event::PollFd::new(fd, rustix::event::PollFlags::IN));
+                index
+            })
+        } else {
+            None
         };
-        if ready > 0 && poll_fds[1].revents != 0 {
+        let timeout = rustix::event::Timespec {
+            tv_sec: wait_dur.as_secs().min(i64::MAX as u64) as _,
+            tv_nsec: wait_dur.subsec_nanos() as _,
+        };
+        if let Ok(ready) = rustix::event::poll(&mut poll_fds, Some(&timeout))
+            && ready > 0
+            && let Some(slot) = exit_slot
+            && !poll_fds[slot].revents().is_empty()
+        {
             exit_ready = true;
         }
     };

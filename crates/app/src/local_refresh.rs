@@ -1762,7 +1762,7 @@ mod tests {
             private_git: main.join(".git"),
             common_git: main.join(".git"),
         };
-        for roots in [ordinary, fixture.roots.clone()] {
+        for roots in [ordinary, fixture.roots] {
             fs::write(
                 roots.worktree.join(".gitignore"),
                 ".*\nrefs/\ninfo/\nrebase-merge/\nsequencer/\n",

@@ -6,7 +6,7 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 
 | Concern | Source | Regression fixtures |
 | --- | --- | --- |
-| Repository discovery, refs/worktrees, object reads, patches, local LFS | `src/lib.rs` | `tests/repository.rs`, `tests/local_directories.rs` |
+| Repository discovery, refs/worktrees, object reads, patches, local LFS | `src/lib.rs`, `src/error.rs` (`CoreError`) | `tests/repository.rs`, `tests/local_directories.rs`, `tests/parser_proptests.rs` |
 | Bounded local-watch inclusion, tracked paths and ignore rules | `src/local_watch.rs` | `tests/local_directories.rs` |
 | Captured document local-image paths, revision/index/worktree assets | `src/preview_assets.rs` | `tests/preview_assets.rs` |
 | Streaming history, cancellable search and file history | `src/history.rs` | `tests/history.rs`, module unit tests |

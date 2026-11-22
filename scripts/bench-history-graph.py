@@ -15,7 +15,7 @@ def main():
     parser.add_argument('--fixture',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
-    source=(ROOT/'crates/app/src/graph.rs').read_text()
+    source=(ROOT/'crates/diff-model/src/graph.rs').read_text()
     engine=source[source.index('#[derive(Clone, Debug, PartialEq, Eq)]'):source.index('/// A shared horizontal lane viewport')]
     harness='''#![allow(dead_code)]
 use std::{collections::{HashMap,HashSet},io::{self,Read},sync::Arc,time::Instant,hint::black_box};

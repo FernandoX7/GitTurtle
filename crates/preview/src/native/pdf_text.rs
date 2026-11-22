@@ -7,7 +7,7 @@ use objc2::msg_send;
 use objc2::rc::{Allocated, Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2_foundation::{NSData, NSRange, NSString};
-use std::ptr::NonNull;
+use std::{ffi::c_void, ptr::NonNull};
 
 #[link(name = "PDFKit", kind = "framework")]
 unsafe extern "C" {

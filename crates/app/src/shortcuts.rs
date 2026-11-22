@@ -4462,10 +4462,12 @@ mod list_tests {
                 "{how} selects row {to}"
             );
             let entry = entry_reading(&rows, to).to_string();
+            #[cfg(target_os = "linux")]
+            let listed_entry = entry.clone();
             let own = if LIST_SPEAKS_SELECTION {
                 Vec::new()
             } else {
-                vec![entry.clone()]
+                vec![entry]
             };
             assert_eq!(
                 heard.take(),
@@ -4473,7 +4475,11 @@ mod list_tests {
                 "{how}: the app announces the entry only where the list does not"
             );
             #[cfg(target_os = "linux")]
-            assert_eq!(heard.take_listed(), [entry], "{how}: the list speaks it");
+            assert_eq!(
+                heard.take_listed(),
+                [listed_entry],
+                "{how}: the list speaks it"
+            );
         };
         let last = *found.last().unwrap();
         for (keys, to) in [
@@ -4544,10 +4550,12 @@ mod list_tests {
                 "{keys} selects row {to}"
             );
             let entry = entry_reading(&rows, to).to_string();
+            #[cfg(target_os = "linux")]
+            let listed_entry = entry.clone();
             let own = if LIST_SPEAKS_SELECTION {
                 Vec::new()
             } else {
-                vec![entry.clone()]
+                vec![entry]
             };
             assert_eq!(
                 heard.take(),
@@ -4557,7 +4565,7 @@ mod list_tests {
             #[cfg(target_os = "linux")]
             assert_eq!(
                 heard.take_listed(),
-                [entry],
+                [listed_entry],
                 "{keys}: the list reports its selection changed, and Orca speaks the entry"
             );
         }

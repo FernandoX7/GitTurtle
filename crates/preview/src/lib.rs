@@ -3,6 +3,7 @@
 //! Run these synchronous functions on a bounded worker pool. Source/output sizes
 //! are hard bounds; codec allocation limits are best effort, not a process memory
 //! sandbox or a wall-clock deadline. No repository path is opened by this crate.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use std::{
     io::Cursor,
@@ -15,6 +16,8 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use resvg::{tiny_skia, usvg};
 
 pub mod animation;
+pub mod error;
+pub use error::PreviewError;
 // Linux decodes AVIF with mp4parse and dav1d, and JPEG 2000 with
 // hayro-jpeg2000, only inside the same confined helper as PDF pages.
 #[cfg(all(
@@ -1462,6 +1465,23 @@ mod tests {
         ];
         for bytes in unread {
             assert_eq!(declared_dimensions(bytes), None);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5A17_F001_0004),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn proptest_svg_expansion_preflight_never_panics(body in ".{0,256}") {
+            let xml = format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{body}</svg>");
+            if let Ok(document) = roxmltree::Document::parse(&xml) {
+                let _ = svg_limits::check_expansion(&document);
+            }
         }
     }
 }

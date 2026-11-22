@@ -406,7 +406,9 @@ fn wav(bytes: &[u8], details: &mut Vec<String>) {
         let Some(header) = bytes.get(at..at.saturating_add(8)) else {
             break;
         };
-        let size = u32le(header, 4).unwrap() as usize;
+        let Some(size) = u32le(header, 4).map(|n| n as usize) else {
+            break;
+        };
         let Some(end) = at
             .checked_add(8)
             .and_then(|p| p.checked_add(size))
@@ -417,14 +419,20 @@ fn wav(bytes: &[u8], details: &mut Vec<String>) {
         };
         if &header[..4] == b"fmt " && size >= 16 {
             let data = &bytes[at + 8..end];
-            let codec = u16le(data, 0).unwrap();
-            details.push(format!(
-                "{} · {} Hz · {} bits/sample · WAV codec {}",
-                counted(u16le(data, 2).unwrap(), "channel", "channels"),
-                u32le(data, 4).unwrap(),
-                u16le(data, 14).unwrap(),
-                codec
-            ));
+            if let (Some(codec), Some(channels), Some(hz), Some(bits)) = (
+                u16le(data, 0),
+                u16le(data, 2),
+                u32le(data, 4),
+                u16le(data, 14),
+            ) {
+                details.push(format!(
+                    "{} · {} Hz · {} bits/sample · WAV codec {}",
+                    counted(channels, "channel", "channels"),
+                    hz,
+                    bits,
+                    codec
+                ));
+            }
             rate = u32le(data, 8).filter(|r| *r > 0);
         } else if &header[..4] == b"data" {
             data = Some(size);
@@ -451,7 +459,9 @@ fn zip(bytes: &[u8], result: &mut Metadata) {
         );
         return;
     };
-    let count = u16le(bytes, end + 10).unwrap();
+    let Some(count) = u16le(bytes, end + 10) else {
+        return;
+    };
     let Some(mut at) = u32le(bytes, end + 16).map(|n| n as usize) else {
         return;
     };

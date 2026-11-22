@@ -14,9 +14,9 @@ use gpui_kit::{
 mod manager_tests;
 #[cfg(test)]
 mod menu_tests;
-mod store;
 use crate::focus_reveal::{FocusReveal, Trigger};
 use crate::native_accessibility::{MenuReasons, MenuWait};
+pub(crate) use gitturtle_prefs::profiles as store;
 use store::{Definition, Mutation, Signing, Store};
 
 /// Presses a profile's Apply…, whose review opens once its preparation

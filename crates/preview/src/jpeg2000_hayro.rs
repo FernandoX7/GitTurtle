@@ -1021,7 +1021,7 @@ mod tests {
         set(&mut five_components, 40, &5u16.to_be_bytes());
         let mut seventeen_bits = rgb.clone();
         seventeen_bits[42] = 16;
-        let mut origin = rgb.clone();
+        let mut origin = rgb;
         set(&mut origin, 16, &64u32.to_be_bytes());
         let jp2 = fixture("jpeg2000-rgb.jp2");
         let mut jpx = jp2.clone();

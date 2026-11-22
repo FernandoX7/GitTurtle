@@ -90,7 +90,10 @@ pub(super) fn dimensions(bytes: &[u8]) -> Result<Option<Dimensions>> {
                     if &kind == b"ihdr" {
                         ensure!(header_dimensions.is_none(), "Duplicate JP2 image header");
                         ensure!(payload.len() == 14, "Invalid JP2 image header length");
-                        let size = (be_u32(&payload[4..8]), be_u32(&payload[..4]));
+                        let size = (
+                            be_u32([payload[4], payload[5], payload[6], payload[7]]),
+                            be_u32([payload[0], payload[1], payload[2], payload[3]]),
+                        );
                         check_dimensions(size.0, size.1)?;
                         header_dimensions = Some(size);
                     }
@@ -113,12 +116,15 @@ pub(super) fn dimensions(bytes: &[u8]) -> Result<Option<Dimensions>> {
 fn next_box<'a>(remaining: &mut &'a [u8]) -> Result<([u8; 4], &'a [u8])> {
     let bytes = *remaining;
     ensure!(bytes.len() >= 8, "Truncated JP2 box header");
-    let kind = bytes[4..8].try_into().unwrap();
-    let (length, header_length) = match be_u32(&bytes[..4]) {
+    let kind = [bytes[4], bytes[5], bytes[6], bytes[7]];
+    let (length, header_length) = match be_u32([bytes[0], bytes[1], bytes[2], bytes[3]]) {
         0 => (bytes.len(), 8), // A final box may extend through EOF.
         1 => {
-            ensure!(bytes.len() >= 16, "Truncated extended JP2 box header");
-            let length = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+            let ext: [u8; 8] = bytes
+                .get(8..16)
+                .and_then(|slice| slice.try_into().ok())
+                .context("Truncated extended JP2 box header")?;
+            let length = u64::from_be_bytes(ext);
             (
                 usize::try_from(length).context("JP2 box length overflow")?,
                 16,
@@ -139,18 +145,26 @@ fn codestream_dimensions(bytes: &[u8]) -> Result<Dimensions> {
         bytes.starts_with(CODESTREAM_SIGNATURE) && bytes.len() >= 42,
         "Missing or truncated JPEG 2000 SIZ marker"
     );
-    let segment_length = usize::from(u16::from_be_bytes(bytes[4..6].try_into().unwrap()));
-    let components = usize::from(u16::from_be_bytes(bytes[40..42].try_into().unwrap()));
+    let segment_length = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
+    let components = usize::from(u16::from_be_bytes([bytes[40], bytes[41]]));
     ensure!(
         components > 0 && segment_length == 38 + 3 * components,
         "Invalid JPEG 2000 SIZ component table"
     );
     let segment_end = 4 + segment_length;
     ensure!(segment_end <= bytes.len(), "Truncated JPEG 2000 SIZ marker");
-    let x_size = be_u32(&bytes[8..12]);
-    let y_size = be_u32(&bytes[12..16]);
-    let x_origin = be_u32(&bytes[16..20]);
-    let y_origin = be_u32(&bytes[20..24]);
+    let u32_at = |offset: usize| {
+        be_u32([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    let x_size = u32_at(8);
+    let y_size = u32_at(12);
+    let x_origin = u32_at(16);
+    let y_origin = u32_at(20);
     let width = x_size
         .checked_sub(x_origin)
         .context("Invalid JPEG 2000 image origin")?;
@@ -158,10 +172,10 @@ fn codestream_dimensions(bytes: &[u8]) -> Result<Dimensions> {
         .checked_sub(y_origin)
         .context("Invalid JPEG 2000 image origin")?;
     check_dimensions(width, height)?;
-    let tile_width = be_u32(&bytes[24..28]);
-    let tile_height = be_u32(&bytes[28..32]);
-    let tile_x = be_u32(&bytes[32..36]);
-    let tile_y = be_u32(&bytes[36..40]);
+    let tile_width = u32_at(24);
+    let tile_height = u32_at(28);
+    let tile_x = u32_at(32);
+    let tile_y = u32_at(36);
     ensure!(
         tile_width > 0
             && tile_height > 0
@@ -230,8 +244,8 @@ fn gcd(mut left: u32, mut right: u32) -> u32 {
     left
 }
 
-fn be_u32(bytes: &[u8]) -> u32 {
-    u32::from_be_bytes(bytes.try_into().unwrap())
+fn be_u32(bytes: [u8; 4]) -> u32 {
+    u32::from_be_bytes(bytes)
 }
 
 /// The most tiles a codestream may declare: SOT's tile index is 16 bits, and
@@ -525,7 +539,10 @@ pub(super) fn preflight(
         if header.len() != 14 {
             return Err(Jpeg2000Unreadable);
         }
-        let size = (be_u32(&header[4..8]), be_u32(&header[..4]));
+        let size = (
+            be_u32([header[4], header[5], header[6], header[7]]),
+            be_u32([header[0], header[1], header[2], header[3]]),
+        );
         let palette = palette.map(|palette| (palette, mapping));
         (
             codestream.ok_or(Jpeg2000Unreadable)?,
@@ -553,7 +570,15 @@ pub(super) fn preflight(
     if segment_length != 38 + 3 * components || segment_end > codestream.len() {
         return Err(Jpeg2000Unreadable);
     }
-    let field = |index: usize| be_u32(&codestream[8 + index * 4..12 + index * 4]);
+    let field = |index: usize| {
+        let at = 8 + index * 4;
+        be_u32([
+            codestream[at],
+            codestream[at + 1],
+            codestream[at + 2],
+            codestream[at + 3],
+        ])
+    };
     let (x_size, y_size, x_origin, y_origin) = (field(0), field(1), field(2), field(3));
     let (tile_width, tile_height, tile_x, tile_y) = (field(4), field(5), field(6), field(7));
     // hayro-jpeg2000 subtracts the origin unchecked (C2).
@@ -839,5 +864,29 @@ mod tests {
         assert!(size.image_dimensions(Some(64), Some(61)).is_err());
         assert!(size.image_dimensions(Some(63), Some(62)).is_err());
         assert!(size.image_dimensions(Some(0), None).is_err());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5A17_F001_0003),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn proptest_jpeg2000_parsers_never_panic(
+            prefix in proptest::prop_oneof![
+                proptest::strategy::Just(b"".to_vec()),
+                proptest::strategy::Just(JP2_SIGNATURE.to_vec()),
+                proptest::strategy::Just(CODESTREAM_SIGNATURE.to_vec()),
+            ],
+            tail in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256),
+        ) {
+            let mut bytes = prefix;
+            bytes.extend_from_slice(&tail);
+            let _ = dimensions(&bytes);
+            let _ = codestream_dimensions(&bytes);
+        }
     }
 }

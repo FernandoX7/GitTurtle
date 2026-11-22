@@ -613,7 +613,7 @@ impl Answer {
         let id = self.id;
         div()
             .id(("open-note", id))
-            .debug_selector(move || key.clone())
+            .debug_selector(move || key)
             .when_some(self.drawn.clone(), |line, drawn| {
                 use gpui_kit::base::ElementExt as _;
                 line.on_prepaint(move |bounds, window, cx| drawn(id, bounds, window, cx))

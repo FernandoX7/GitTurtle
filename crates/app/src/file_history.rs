@@ -1785,6 +1785,12 @@ impl GitTurtle {
             && self.error.is_none()
         {
             self.read_selected_preview(window, cx);
+        } else if self.page == AppPage::Repository
+            && self.mode != WorkspaceMode::History
+            && !self.blame.is_visible()
+            && self.content.is_some()
+        {
+            self.prepare_editor(false, window, cx);
         }
         // Page transitions and explicit writes may close this pane too. Wait
         // until their current handler finishes before resuming queued changes.
@@ -1835,7 +1841,7 @@ impl GitTurtle {
                 if this.generation != generation {
                     return;
                 }
-                let Some(lineage) = this.file_history.lineage.as_mut() else {
+                let Some(lineage) = this.workspace.file_history.lineage.as_mut() else {
                     return;
                 };
                 if this.path.as_ref() != Some(&repository)
@@ -1846,7 +1852,7 @@ impl GitTurtle {
                 {
                     return;
                 }
-                this.file_history.task = None;
+                this.workspace.file_history.task = None;
                 let selected = match result {
                     Ok(Output::FileHistory(page)) => {
                         if lineage.accept(request, page) {
@@ -1893,7 +1899,7 @@ impl GitTurtle {
 
     fn select_file_revision(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.close_blame(window, cx);
-        let Some(lineage) = self.file_history.lineage.as_mut() else {
+        let Some(lineage) = self.workspace.file_history.lineage.as_mut() else {
             return;
         };
         if lineage.pending.is_some() || self.page != AppPage::Repository {

@@ -1,0 +1,33 @@
+[package]
+name = "gitturtle-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+gitturtle-core = { path = "../crates/git-core" }
+gitturtle-preview = { path = "../crates/preview" }
+
+[[bin]]
+name = "preview_parsers"
+path = "fuzz_targets/preview_parsers.rs"
+doc = false
+
+[[bin]]
+name = "model3d_parsers"
+path = "fuzz_targets/model3d_parsers.rs"
+doc = false
+
+[[bin]]
+name = "git_parsers"
+path = "fuzz_targets/git_parsers.rs"
+doc = false
+
+[[bin]]
+name = "secret_redaction"
+path = "fuzz_targets/secret_redaction.rs"
+doc = false

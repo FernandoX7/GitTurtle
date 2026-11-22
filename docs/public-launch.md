@@ -7,7 +7,7 @@ settings from the remaining requirements for a public binary release.
 ## Source publication and repository settings
 
 - [x] Apply the owner-approved [MIT license](../LICENSE) to GitTurtle-owned code
-  and all three workspace manifests. Preserve [third-party terms](../THIRD_PARTY_NOTICES.md).
+  and all workspace manifests. Preserve [third-party terms](../THIRD_PARTY_NOTICES.md).
 - [x] Prepare the README, contributor/support guidance, issue forms, PR template,
   and code of conduct. Issues are enabled. Existing `bug`, `enhancement`, and
   `question` labels distinguish defects, requests, and support; `documentation`,

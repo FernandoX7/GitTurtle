@@ -2,43 +2,12 @@
 use crate::*;
 use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::FluentBuilder;
-use serde::{Deserialize, Serialize};
-use std::{
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
+use std::path::Path;
+
+use gitturtle_prefs::activity::{
+    BYTE_LIMIT, Entry, LIMIT, Outcome, now, read_entries, retained_explanation, safe,
 };
 
-const LIMIT: usize = 200;
-const BYTE_LIMIT: u64 = 2 * 1024 * 1024;
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-enum Outcome {
-    Running,
-    Success,
-    Failure,
-    Cancelled,
-    Uncertain,
-}
-impl Outcome {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Running => "In progress",
-            Self::Success => "Succeeded",
-            Self::Failure => "Failed",
-            Self::Cancelled => "Cancelled · inspect state",
-            Self::Uncertain => "Outcome uncertain",
-        }
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Entry {
-    id: u64,
-    time: i64,
-    repository: String,
-    operation: String,
-    target: String,
-    outcome: Outcome,
-    explanation: String,
-}
 #[derive(Default)]
 pub(super) struct State {
     entries: Vec<Entry>,
@@ -49,66 +18,10 @@ pub(super) struct State {
     retry: Option<Task<()>>,
 }
 
-fn safe(value: &str, limit: usize) -> String {
-    gitturtle_core::redact_diagnostic(value)
-        .chars()
-        .take(limit)
-        .collect()
-}
-fn retained_explanation(
-    success: bool,
-    cancelled: bool,
-    uncertain: bool,
-    diagnostic: &str,
-) -> &'static str {
-    if success {
-        return "Git reported that the requested operation completed.";
-    }
-    if cancelled {
-        return "Cancellation was requested. Some changes may have completed; inspect current state before another action.";
-    }
-    if uncertain {
-        return "The operation ended without a confirmed result. Inspect local state; verifying a remote outcome requires an explicit network action.";
-    }
-    let diagnostic = diagnostic.to_ascii_lowercase();
-    if diagnostic.contains("authenticat")
-        || diagnostic.contains("credential")
-        || diagnostic.contains("permission denied (publickey)")
-    {
-        "Authentication failed or was unavailable. Check the configured credential helper or SSH agent before another attempt."
-    } else if diagnostic.contains("signing") || diagnostic.contains("gpg") {
-        "Configured signing did not complete. Check the signing tool and key; GitTurtle did not fall back to an unsigned operation."
-    } else if diagnostic.contains("conflict") {
-        "Git reported conflicts or unresolved paths. Inspect Working Changes and the current operation before continuing."
-    } else if diagnostic.contains("changed after")
-        || diagnostic.contains("review again")
-        || diagnostic.contains("stale")
-        || diagnostic.contains("changed since")
-    {
-        "The reviewed target changed. Refresh and review the operation again."
-    } else if diagnostic.contains("missing object")
-        || diagnostic.contains("object is unavailable")
-        || diagnostic.contains("object failed")
-        || diagnostic.contains("verification")
-    {
-        "A required object was missing or failed verification. Inspect the selected object and source."
-    } else if diagnostic.contains("permission denied") || diagnostic.contains("read-only file") {
-        "Filesystem permissions prevented the operation. Inspect the destination and current repository state."
-    } else {
-        "Git reported a failure. Inspect current state and the repository's error details before retrying; GitTurtle does not retry writes automatically."
-    }
-}
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
-}
 impl State {
     /// Called before constructing GPUI, alongside the preference store.
     pub(super) fn load() -> Self {
-        match Self::read() {
+        match read_entries() {
             Ok(entries) => Self {
                 entries,
                 ..Self::default()
@@ -118,35 +31,6 @@ impl State {
                 ..Self::default()
             },
         }
-    }
-    fn read() -> anyhow::Result<Vec<Entry>> {
-        let path = preferences::settings_path()?.with_file_name("activity.json");
-        let bytes = match preferences::read_store(&path, BYTE_LIMIT) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-            Err(e) => return Err(e.into()),
-        };
-        let mut entries: Vec<Entry> = serde_json::from_slice(&bytes)?;
-        if entries.len() > LIMIT {
-            entries.drain(..entries.len() - LIMIT);
-        }
-        for entry in &mut entries {
-            entry.repository = safe(&entry.repository, 4096);
-            entry.operation = safe(&entry.operation, 160);
-            entry.target = safe(&entry.target, 2048);
-            entry.explanation = retained_explanation(
-                entry.outcome == Outcome::Success,
-                entry.outcome == Outcome::Cancelled,
-                entry.outcome == Outcome::Uncertain,
-                &entry.explanation,
-            )
-            .into();
-            if entry.outcome == Outcome::Running {
-                entry.outcome = Outcome::Uncertain;
-                entry.explanation="The application ended before this operation's result was recorded. Inspect current local state; any remote verification needs an explicit network action.".into();
-            }
-        }
-        Ok(entries)
     }
     pub(super) fn begin(&mut self, repository: &Path, operation: &str, target: &str) -> u64 {
         let id = now().max(
@@ -467,7 +351,7 @@ mod tests {
 
     /// How many entries of the stored list record `operation`.
     fn stored(operation: &str) -> usize {
-        State::read()
+        super::read_entries()
             .unwrap()
             .iter()
             .filter(|entry| entry.operation == operation)

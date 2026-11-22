@@ -8,10 +8,18 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Enables helper test hooks for crates/app/tests/* integration suites; off in production builds.
+test-support = []
+
 [dependencies]
 gpui-kit = { version = "=0.10.0", features = ["tree-sitter-diff", "tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-javascript", "tree-sitter-css", "tree-sitter-markdown", "tree-sitter-yaml", "tree-sitter-toml", "tree-sitter-html", "tree-sitter-python", "tree-sitter-go", "tree-sitter-bash"] }
 gitturtle-core = { path = "../git-core" }
+gitturtle-diff-model = { path = "../diff-model" }
+gitturtle-github = { path = "../github" }
+gitturtle-prefs = { path = "../prefs" }
 gitturtle-preview = { path = "../preview" }
+gitturtle-theme = { path = "../theme" }
 anyhow = "1"
 jiff = "1.0"
 image = { version = "0.25", default-features = false }
@@ -27,8 +35,10 @@ markdown = "=1.0.0"
 # Match the locked toolkit dependency for grapheme-safe message presentation.
 unicode-segmentation = "=1.13.3"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["event", "fs", "process"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "=3.7.0"
 block2 = "=0.6.2"
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSWorkspace", "NSAccessibility"] }
@@ -40,17 +50,16 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 # portal; the version matches the toolkit's own portal client, which already
 # enables `open_uri`.
 ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "settings", "open_uri"] }
-# Keeps the GitHub account in the desktop keyring through the Secret Service.
-# The version and features match the toolkit's own oo7 client, so the shipped
-# binary already holds it and the lock gains no package.
-oo7 = { version = "=0.6.0", default-features = false, features = ["async-std", "native_crypto"] }
-# Times the keyring calls' bounds; the reactor oo7 and the toolkit already run.
-async-io = "=2.6.0"
+rustix = { version = "1.1", features = ["stdio", "thread"] }
 
 [dev-dependencies]
+gitturtle = { path = ".", features = ["test-support"] }
 gpui-kit = { version = "=0.10.0", features = ["test-support"] }
 # A stand-in LFS download plan: the tests cannot run Git LFS to prepare one.
 gitturtle-core = { path = "../git-core", features = ["test-support"] }
+gitturtle-github = { path = "../github", features = ["test-support"] }
+gitturtle-prefs = { path = "../prefs", features = ["test-support"] }
+gitturtle-theme = { path = "../theme", features = ["test-support"] }
 # The tree model and filter under every AccessKit platform adapter, already in
 # the graph on each platform; the accessibility tests walk a tree through it.
 accesskit_consumer = "=0.38.0"
@@ -63,6 +72,11 @@ gpui-pre-wgpu = "=0.3.12"
 # the graph and patched in vendor/; the state-set test maps nodes through it.
 accesskit_atspi_common = "=0.19.1"
 
+[lib]
+name = "gitturtle"
+path = "src/lib.rs"
+
 [[bin]]
 name = "gitturtle"
 path = "src/main.rs"
+doc = false

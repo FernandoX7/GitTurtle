@@ -764,7 +764,7 @@ mod tests {
             })
         );
         let absent_truncated = absent_text(true);
-        let mut absent_with_text = absent.clone();
+        let mut absent_with_text = absent;
         absent_with_text[page + 27..page + 31].copy_from_slice(&1u32.to_le_bytes());
         absent_with_text.push(b'a');
         let failed = page_reply(2, 2, Err(ErrorKind::RendererFailed));
@@ -776,7 +776,7 @@ mod tests {
         failed_truncated[page + 26] = 1;
         let mut unknown_text_error = failed.clone();
         unknown_text_error[page + 25] = 99;
-        let mut other_text_error = failed.clone();
+        let mut other_text_error = failed;
         other_text_error[page + 25] = ErrorKind::Locked.code().0;
         let mut not_utf8 = valid.clone();
         let last = not_utf8.len() - 1;

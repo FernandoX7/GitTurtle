@@ -1,7 +1,15 @@
 [workspace]
-members = ["crates/app", "crates/git-core", "crates/preview"]
+members = [
+    "crates/app",
+    "crates/diff-model",
+    "crates/git-core",
+    "crates/github",
+    "crates/prefs",
+    "crates/preview",
+    "crates/theme",
+]
 default-members = ["crates/app"]
-exclude = ["vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common", "vendor/accesskit_unix"]
+exclude = ["fuzz", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common", "vendor/accesskit_unix"]
 resolver = "3"
 
 [workspace.package]
@@ -21,9 +29,12 @@ allow_attributes = "warn"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
+cloned_instead_of_copied = "warn"
 explicit_iter_loop = "warn"
 inefficient_to_string = "warn"
+large_futures = "warn"
 manual_let_else = "warn"
+redundant_clone = "warn"
 uninlined_format_args = "warn"
 
 [profile.dev]

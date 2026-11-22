@@ -534,7 +534,9 @@ async fn a_plain_text_dialog_title_is_read_by_its_text(cx: &mut TestAppContext) 
         .node("dialog", dialog, None)
         .node("title", heading, Some("dialog"))
         .tree(window, Some("dialog"));
-    let read: Vec<Option<String>> = reachable(tree.clone())
+    #[cfg(target_os = "linux")]
+    let linux_tree = tree.clone();
+    let read: Vec<Option<String>> = reachable(tree)
         .into_iter()
         .filter(|node| node.role == Role::Label)
         .map(|node| node.name)
@@ -544,7 +546,7 @@ async fn a_plain_text_dialog_title_is_read_by_its_text(cx: &mut TestAppContext) 
     {
         use crate::native_accessibility::atspi_state_tests::reached;
         use accesskit_atspi_common::Role as AtspiRole;
-        let served: Vec<String> = reached(tree)
+        let served: Vec<String> = reached(linux_tree)
             .into_iter()
             .filter(|node| node.role == AtspiRole::Label)
             .map(|node| node.name)

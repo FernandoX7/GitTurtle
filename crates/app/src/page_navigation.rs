@@ -5291,7 +5291,7 @@ mod tests {
                     )
                     .expect("tracked paths");
                 let entry = paths.entries.first().expect("the file").clone();
-                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+                app.show_tracked_file(paths.scope, entry, window, cx);
             })
         });
         settle(&app, cx).await;
@@ -5436,7 +5436,7 @@ mod tests {
                     )
                     .expect("tracked paths");
                 let entry = paths.entries.first().expect("the file").clone();
-                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+                app.show_tracked_file(paths.scope, entry, window, cx);
             })
         });
         settle(&app, cx).await;

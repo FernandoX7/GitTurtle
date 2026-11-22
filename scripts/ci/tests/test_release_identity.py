@@ -257,7 +257,7 @@ class Repository(unittest.TestCase):
             self.verify()
 
     def test_unreviewed_workspace_and_implicit_path_members_fail_clearly(self):
-        self.replace("Cargo.toml", '"crates/preview"]', '"crates/*"]')
+        self.replace("Cargo.toml", '"crates/preview"', '"crates/*"')
         self.retag()
         with self.assertRaisesRegex(identity.IdentityError, "workspace membership"):
             self.verify()

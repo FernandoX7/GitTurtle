@@ -25,7 +25,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GRAPH_PATH = "crates/app/src/graph.rs"
+GRAPH_PATH = "crates/diff-model/src/graph.rs"
 
 
 def command(*args):

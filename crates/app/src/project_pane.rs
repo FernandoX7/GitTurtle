@@ -1579,7 +1579,7 @@ impl GitTurtle {
                 }
             })
             // A write's start or end builds the open menu again.
-            .follows_writes(owner.clone())
+            .follows_writes(owner)
             .into_any_element()
     }
 

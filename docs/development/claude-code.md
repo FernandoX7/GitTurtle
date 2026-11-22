@@ -45,7 +45,7 @@ minutes; repeating a capture set costs an hour.
 
 Every launch gets its own seeded preference store addressed by an **absolute** `XDG_CONFIG_HOME`, written
 before that launch rather than once per session. GitTurtle ignores a relative value
-(`absolute_environment_path` in `crates/app/src/preferences.rs`) and falls back to `~/.config/gitturtle`,
+(`absolute_environment_path` in `crates/prefs/src/preferences.rs`) and falls back to `~/.config/gitturtle`,
 which is the operator's real store; the themes run's capture helper therefore refuses a launch whose seeded
 store is not where the app will look. Record the executable identity, display, scale factor, window size and
 fixture with the captures, and register evidence in the order the runbook fixes for

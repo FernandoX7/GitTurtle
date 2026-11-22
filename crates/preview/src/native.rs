@@ -3,211 +3,87 @@
 //! Every retained native reference stays on this worker stack. The public model
 //! contains only owned pixels/text; no UI-thread decoder or native PDF state.
 use super::*;
-use std::{ffi::c_void, ptr};
+use objc2_core_foundation::{
+    CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFType, CGPoint, CGRect, CGSize,
+};
+use objc2_core_graphics::{
+    CGBitmapContextCreate, CGColorSpace, CGContext, CGDataProvider, CGImage, CGPDFBox,
+    CGPDFDocument, CGPDFPage,
+};
+use std::ptr::NonNull;
 
 mod pdf_text;
 pub(super) use pdf_text::decode_pdf_page_text;
 
-type Ref = *const c_void;
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Point {
-    x: f64,
-    y: f64,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Size {
-    width: f64,
-    height: f64,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Rect {
-    origin: Point,
-    size: Size,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Transform {
-    a: f64,
-    b: f64,
-    c: f64,
-    d: f64,
-    tx: f64,
-    ty: f64,
-}
-fn rect(width: u32, height: u32) -> Rect {
-    Rect {
-        origin: Point { x: 0., y: 0. },
-        size: Size {
+fn rect(width: u32, height: u32) -> CGRect {
+    CGRect {
+        origin: CGPoint { x: 0., y: 0. },
+        size: CGSize {
             width: f64::from(width),
             height: f64::from(height),
         },
     }
 }
 
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFDataCreate(allocator: Ref, bytes: *const u8, length: isize) -> Ref;
-    fn CFRelease(value: Ref);
-    fn CFDictionaryCreate(
-        allocator: Ref,
-        keys: *const Ref,
-        values: *const Ref,
-        count: isize,
-        key_callbacks: Ref,
-        value_callbacks: Ref,
-    ) -> Ref;
-    fn CFDictionaryGetValue(dictionary: Ref, key: Ref) -> Ref;
-    fn CFNumberCreate(allocator: Ref, kind: isize, value: *const c_void) -> Ref;
-    fn CFNumberGetValue(number: Ref, kind: isize, value: *mut c_void) -> bool;
-    fn CFGetTypeID(value: Ref) -> usize;
-    fn CFNumberGetTypeID() -> usize;
-    static kCFBooleanTrue: Ref;
-    static kCFBooleanFalse: Ref;
-}
 #[link(name = "ImageIO", kind = "framework")]
 unsafe extern "C" {
-    fn CGImageSourceCreateWithData(data: Ref, options: Ref) -> Ref;
-    fn CGImageSourceCopyPropertiesAtIndex(source: Ref, index: usize, options: Ref) -> Ref;
-    fn CGImageSourceCreateThumbnailAtIndex(source: Ref, index: usize, options: Ref) -> Ref;
+    fn CGImageSourceCreateWithData(
+        data: &CFData,
+        options: &CFDictionary<CFType, CFType>,
+    ) -> Option<NonNull<CFType>>;
+    fn CGImageSourceCopyPropertiesAtIndex(
+        source: &CFType,
+        index: usize,
+        options: &CFDictionary<CFType, CFType>,
+    ) -> Option<NonNull<CFDictionary<CFType, CFType>>>;
+    fn CGImageSourceCreateThumbnailAtIndex(
+        source: &CFType,
+        index: usize,
+        options: &CFDictionary<CFType, CFType>,
+    ) -> Option<NonNull<CGImage>>;
     #[cfg(test)]
-    fn CGImageSourceCreateImageAtIndex(source: Ref, index: usize, options: Ref) -> Ref;
-    static kCGImageSourceShouldCache: Ref;
-    static kCGImageSourceCreateThumbnailFromImageAlways: Ref;
-    static kCGImageSourceCreateThumbnailWithTransform: Ref;
-    static kCGImageSourceThumbnailMaxPixelSize: Ref;
-    static kCGImagePropertyPixelWidth: Ref;
-    static kCGImagePropertyPixelHeight: Ref;
-    static kCGImagePropertyOrientation: Ref;
-}
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGDataProviderCreateWithCFData(data: Ref) -> Ref;
-    fn CGDataProviderRelease(provider: Ref);
-    fn CGPDFDocumentCreateWithProvider(provider: Ref) -> Ref;
-    fn CGPDFDocumentRelease(document: Ref);
-    fn CGPDFDocumentIsEncrypted(document: Ref) -> bool;
-    fn CGPDFDocumentIsUnlocked(document: Ref) -> bool;
-    fn CGPDFDocumentGetNumberOfPages(document: Ref) -> usize;
-    fn CGPDFDocumentGetPage(document: Ref, index: usize) -> Ref;
-    fn CGPDFPageGetBoxRect(page: Ref, box_type: i32) -> Rect;
-    fn CGPDFPageGetRotationAngle(page: Ref) -> i32;
-    fn CGPDFPageGetDrawingTransform(
-        page: Ref,
-        box_type: i32,
-        rect: Rect,
-        rotate: i32,
-        preserve: bool,
-    ) -> Transform;
-    fn CGColorSpaceCreateDeviceRGB() -> Ref;
-    fn CGColorSpaceRelease(space: Ref);
-    fn CGBitmapContextCreate(
-        data: *mut c_void,
-        width: usize,
-        height: usize,
-        bits: usize,
-        row: usize,
-        space: Ref,
-        info: u32,
-    ) -> Ref;
-    fn CGContextRelease(context: Ref);
-    fn CGContextSetRGBFillColor(context: Ref, r: f64, g: f64, b: f64, a: f64);
-    fn CGContextFillRect(context: Ref, rect: Rect);
-    fn CGContextConcatCTM(context: Ref, transform: Transform);
-    fn CGContextDrawPDFPage(context: Ref, page: Ref);
-    fn CGContextDrawImage(context: Ref, rect: Rect, image: Ref);
-    fn CGImageGetWidth(image: Ref) -> usize;
-    fn CGImageGetHeight(image: Ref) -> usize;
-    fn CGImageRelease(image: Ref);
+    fn CGImageSourceCreateImageAtIndex(
+        source: &CFType,
+        index: usize,
+        options: &CFDictionary<CFType, CFType>,
+    ) -> Option<NonNull<CGImage>>;
+    static kCGImageSourceShouldCache: &'static CFType;
+    static kCGImageSourceCreateThumbnailFromImageAlways: &'static CFType;
+    static kCGImageSourceCreateThumbnailWithTransform: &'static CFType;
+    static kCGImageSourceThumbnailMaxPixelSize: &'static CFType;
+    static kCGImagePropertyPixelWidth: &'static CFType;
+    static kCGImagePropertyPixelHeight: &'static CFType;
+    static kCGImagePropertyOrientation: &'static CFType;
 }
 
-struct Owned {
-    raw: Ref,
-    release: unsafe extern "C" fn(Ref),
-}
-impl Owned {
-    fn new(raw: Ref, release: unsafe extern "C" fn(Ref), message: &str) -> Result<Self> {
-        ensure!(!raw.is_null(), "{message}");
-        Ok(Self { raw, release })
-    }
-}
-impl Drop for Owned {
-    fn drop(&mut self) {
-        // SAFETY: each create/copy reference is released exactly once, after dependent uses.
-        unsafe { (self.release)(self.raw) }
-    }
+fn number(dictionary: &CFDictionary<CFType, CFType>, key: &CFType) -> Option<i64> {
+    dictionary
+        .get(key)
+        .and_then(|value| value.downcast::<CFNumber>().ok())
+        .and_then(|number| number.as_i64())
 }
 
-fn data(bytes: &[u8]) -> Result<Owned> {
-    // SAFETY: CFDataCreate copies this bounded slice and accepts a null default allocator.
-    unsafe {
-        Owned::new(
-            CFDataCreate(ptr::null(), bytes.as_ptr(), bytes.len() as isize),
-            CFRelease,
-            "Cannot copy native preview input",
-        )
-    }
-}
-fn dictionary(keys: &[Ref], values: &[Ref]) -> Result<Owned> {
-    assert_eq!(keys.len(), values.len());
-    // SAFETY: arrays contain live CF references. Null callbacks make this a non-owning
-    // dictionary; all referenced keys/values outlive it in the calling stack frame.
-    unsafe {
-        Owned::new(
-            CFDictionaryCreate(
-                ptr::null(),
-                keys.as_ptr(),
-                values.as_ptr(),
-                keys.len() as isize,
-                ptr::null(),
-                ptr::null(),
-            ),
-            CFRelease,
-            "Cannot create native preview options",
-        )
-    }
-}
-fn number(dictionary: Ref, key: Ref) -> Option<i64> {
-    // SAFETY: dictionary and key are live CF objects; validate the value's type
-    // before asking CFNumber to write a correctly sized signed 64-bit value.
-    unsafe {
-        let value = CFDictionaryGetValue(dictionary, key);
-        if value.is_null() || CFGetTypeID(value) != CFNumberGetTypeID() {
-            return None;
-        }
-        let mut result = 0i64;
-        CFNumberGetValue(value, 4, (&mut result as *mut i64).cast()).then_some(result)
-    }
-}
-fn canvas(width: u32, height: u32, rgba: &mut [u8]) -> Result<Owned> {
+fn canvas(width: u32, height: u32, rgba: &mut [u8]) -> Result<CFRetained<CGContext>> {
     ensure!(
         rgba.len() == width as usize * height as usize * 4,
         "Invalid native canvas buffer"
     );
-    // SAFETY: the output vector has exact dimensions and outlives the context.
-    // Bitmap info is byte-order-32-big | premultiplied-alpha-last (RGBA8).
+    let space = CGColorSpace::new_device_rgb().context("Cannot create RGB color space")?;
+    // SAFETY: the output slice has exact `width * height * 4` byte length and
+    // callers drop the returned `CGContext` before reading or dropping `rgba`.
+    // Bitmap info 0x4001 is byte-order-32-big | premultiplied-alpha-last (RGBA8).
     unsafe {
-        let space = Owned::new(
-            CGColorSpaceCreateDeviceRGB(),
-            CGColorSpaceRelease,
-            "Cannot create RGB color space",
-        )?;
-        Owned::new(
-            CGBitmapContextCreate(
-                rgba.as_mut_ptr().cast(),
-                width as usize,
-                height as usize,
-                8,
-                width as usize * 4,
-                space.raw,
-                0x4001,
-            ),
-            CGContextRelease,
-            "Cannot allocate native drawing context",
+        CGBitmapContextCreate(
+            rgba.as_mut_ptr().cast(),
+            width as usize,
+            height as usize,
+            8,
+            width as usize * 4,
+            Some(&space),
+            0x4001,
         )
     }
+    .context("Cannot allocate native drawing context")
 }
 
 pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<ImagePreview> {
@@ -216,86 +92,88 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
     // native decoding; the codec still owns color interpretation and pixels.
     let header_dimensions = jpeg2000::dimensions(bytes)
         .with_context(|| format!("Invalid {format} source dimensions"))?;
-    let data = data(bytes)?;
-    // SAFETY: framework option constants have static lifetime. The CFData and
-    // non-owning option dictionary stay live while the source is inspected.
-    unsafe {
-        let options = dictionary(&[kCGImageSourceShouldCache], &[kCFBooleanFalse])?;
-        let source = Owned::new(
-            CGImageSourceCreateWithData(data.raw, options.raw),
-            CFRelease,
-            "This macOS ImageIO installation cannot read this image format",
-        )?;
-        let properties = Owned::new(
-            CGImageSourceCopyPropertiesAtIndex(source.raw, 0, options.raw),
-            CFRelease,
-            "Cannot read ImageIO dimensions; corrupt or unsupported codec",
-        )?;
+    let data = CFData::from_bytes(bytes);
+    let cf_false: &CFType = CFBoolean::new(false).as_ref();
+    let cf_true: &CFType = CFBoolean::new(true).as_ref();
+    // SAFETY: ImageIO framework statics have static lifetime; every non-null
+    // Create/Copy return transfers ownership to `CFRetained::from_raw`.
+    let (source, properties, metadata_width, metadata_height, orientation) = unsafe {
+        let options =
+            CFDictionary::<CFType, CFType>::from_slices(&[kCGImageSourceShouldCache], &[cf_false]);
+        let source = CGImageSourceCreateWithData(&data, &options)
+            .map(|raw| CFRetained::from_raw(raw))
+            .context("This macOS ImageIO installation cannot read this image format")?;
+        let properties = CGImageSourceCopyPropertiesAtIndex(&source, 0, &options)
+            .map(|raw| CFRetained::from_raw(raw))
+            .context("Cannot read ImageIO dimensions; corrupt or unsupported codec")?;
         let metadata_width =
-            number(properties.raw, kCGImagePropertyPixelWidth).and_then(|v| u32::try_from(v).ok());
+            number(&properties, kCGImagePropertyPixelWidth).and_then(|v| u32::try_from(v).ok());
         let metadata_height =
-            number(properties.raw, kCGImagePropertyPixelHeight).and_then(|v| u32::try_from(v).ok());
-        let (width, height) = if let Some(dimensions) = header_dimensions {
-            dimensions.image_dimensions(metadata_width, metadata_height)?
-        } else {
-            (
-                metadata_width.with_context(|| format!("Missing {format} image width"))?,
-                metadata_height.with_context(|| format!("Missing {format} image height"))?,
-            )
-        };
-        check_dimensions(width, height)?;
-        let orientation = number(properties.raw, kCGImagePropertyOrientation).unwrap_or(1);
-        let (original_width, original_height) = if (5..=8).contains(&orientation) {
-            (height, width)
-        } else {
-            (width, height)
-        };
-        let edge = i64::from(max_edge.min(width.max(height)));
-        let edge_number = Owned::new(
-            CFNumberCreate(ptr::null(), 4, (&edge as *const i64).cast()),
-            CFRelease,
-            "Cannot create image size option",
-        )?;
-        let options = dictionary(
+            number(&properties, kCGImagePropertyPixelHeight).and_then(|v| u32::try_from(v).ok());
+        let orientation = number(&properties, kCGImagePropertyOrientation).unwrap_or(1);
+        (
+            source,
+            properties,
+            metadata_width,
+            metadata_height,
+            orientation,
+        )
+    };
+    drop(properties);
+    let (width, height) = if let Some(dimensions) = header_dimensions {
+        dimensions.image_dimensions(metadata_width, metadata_height)?
+    } else {
+        (
+            metadata_width.with_context(|| format!("Missing {format} image width"))?,
+            metadata_height.with_context(|| format!("Missing {format} image height"))?,
+        )
+    };
+    check_dimensions(width, height)?;
+    let (original_width, original_height) = if (5..=8).contains(&orientation) {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let edge_number = CFNumber::new_i64(i64::from(max_edge.min(width.max(height))));
+    let edge_ref: &CFType = edge_number.as_ref();
+    // SAFETY: `source` and `options` are live retained CF objects; a non-null
+    // `CGImage` returned from CreateThumbnail transfers ownership to `CFRetained`.
+    let image = unsafe {
+        let options = CFDictionary::<CFType, CFType>::from_slices(
             &[
                 kCGImageSourceShouldCache,
                 kCGImageSourceCreateThumbnailFromImageAlways,
                 kCGImageSourceCreateThumbnailWithTransform,
                 kCGImageSourceThumbnailMaxPixelSize,
             ],
-            &[
-                kCFBooleanFalse,
-                kCFBooleanTrue,
-                kCFBooleanTrue,
-                edge_number.raw,
-            ],
-        )?;
-        let image = Owned::new(
-            CGImageSourceCreateThumbnailAtIndex(source.raw, 0, options.raw),
-            CGImageRelease,
-            &format!("The installed macOS codec cannot decode this {format} image"),
-        )?;
-        let width = u32::try_from(CGImageGetWidth(image.raw))?;
-        let height = u32::try_from(CGImageGetHeight(image.raw))?;
-        ensure!(
-            width <= max_edge && height <= max_edge,
-            "Native decoder exceeded the requested output limit"
+            &[cf_false, cf_true, cf_true, edge_ref],
         );
-        check_dimensions(width, height)?;
-        let mut rgba = vec![0; width as usize * height as usize * 4];
-        let context = canvas(width, height, &mut rgba)?;
-        CGContextDrawImage(context.raw, rect(width, height), image.raw);
-        drop(context);
-        unpremultiply(&mut rgba);
-        Ok(ImagePreview {
-            width,
-            height,
-            original_width,
-            original_height,
-            rgba,
-            format: format!("{format} · first image · macOS codec"),
-        })
-    }
+        CGImageSourceCreateThumbnailAtIndex(&source, 0, &options)
+            .map(|raw| CFRetained::from_raw(raw))
+            .with_context(|| {
+                format!("The installed macOS codec cannot decode this {format} image")
+            })?
+    };
+    let width = u32::try_from(CGImage::width(Some(&image)))?;
+    let height = u32::try_from(CGImage::height(Some(&image)))?;
+    ensure!(
+        width <= max_edge && height <= max_edge,
+        "Native decoder exceeded the requested output limit"
+    );
+    check_dimensions(width, height)?;
+    let mut rgba = vec![0; width as usize * height as usize * 4];
+    let context = canvas(width, height, &mut rgba)?;
+    CGContext::draw_image(Some(&context), rect(width, height), Some(&image));
+    drop(context);
+    unpremultiply(&mut rgba);
+    Ok(ImagePreview {
+        width,
+        height,
+        original_width,
+        original_height,
+        rgba,
+        format: format!("{format} · first image · macOS codec"),
+    })
 }
 
 /// Independently probe direct ImageIO decoding of the fixed 64 × 64 raw J2K
@@ -303,27 +181,26 @@ pub(super) fn decode_image(bytes: &[u8], format: &str, max_edge: u32) -> Result<
 #[cfg(test)]
 pub(super) fn raw_jpeg2000_fixture_is_supported() -> Result<bool> {
     const FIXTURE: &[u8; 548] = include_bytes!("../tests/fixtures/half-red-blue.j2k");
-    let data = data(FIXTURE)?;
-    // SAFETY: only the compiled, known-small fixture reaches this direct decode.
-    // All CF/CG references remain live on this stack and release exactly once.
-    unsafe {
-        let options = dictionary(&[kCGImageSourceShouldCache], &[kCFBooleanFalse])?;
-        let source = Owned::new(
-            CGImageSourceCreateWithData(data.raw, options.raw),
-            CFRelease,
-            "Cannot create the independent raw JPEG 2000 capability source",
-        )?;
-        let raw_image = CGImageSourceCreateImageAtIndex(source.raw, 0, options.raw);
-        if raw_image.is_null() {
+    let data = CFData::from_bytes(FIXTURE);
+    let cf_false: &CFType = CFBoolean::new(false).as_ref();
+    // SAFETY: only the compiled, known-small fixture reaches this direct decode;
+    // every Create return transfers ownership to `CFRetained::from_raw`.
+    let image = unsafe {
+        let options =
+            CFDictionary::<CFType, CFType>::from_slices(&[kCGImageSourceShouldCache], &[cf_false]);
+        let source = CGImageSourceCreateWithData(&data, &options)
+            .map(|raw| CFRetained::from_raw(raw))
+            .context("Cannot create the independent raw JPEG 2000 capability source")?;
+        let Some(raw_image) = CGImageSourceCreateImageAtIndex(&source, 0, &options) else {
             return Ok(false);
-        }
-        let image = Owned::new(raw_image, CGImageRelease, "Cannot retain capability image")?;
-        ensure!(
-            CGImageGetWidth(image.raw) == 64 && CGImageGetHeight(image.raw) == 64,
-            "The raw JPEG 2000 capability fixture must decode to 64 × 64 pixels"
-        );
-        Ok(true)
-    }
+        };
+        CFRetained::from_raw(raw_image)
+    };
+    ensure!(
+        CGImage::width(Some(&image)) == 64 && CGImage::height(Some(&image)) == 64,
+        "The raw JPEG 2000 capability fixture must decode to 64 × 64 pixels"
+    );
+    Ok(true)
 }
 
 pub(super) fn decode_pdf_page(
@@ -331,83 +208,77 @@ pub(super) fn decode_pdf_page(
     page_index: usize,
     check: impl Fn() -> Result<()>,
 ) -> Result<DocumentPreview> {
-    let data = data(bytes)?;
-    // SAFETY: provider/document creation uses only owned CFData. Borrowed pages
-    // never escape this document or thread. All dimensions are checked before
-    // allocation. CGContext draws page graphics, without PDF actions or scripts.
-    unsafe {
-        let provider = Owned::new(
-            CGDataProviderCreateWithCFData(data.raw),
-            CGDataProviderRelease,
-            "Cannot create PDF byte provider",
-        )?;
-        let document = Owned::new(
-            CGPDFDocumentCreateWithProvider(provider.raw),
-            CGPDFDocumentRelease,
-            "Cannot read PDF; corrupt or unsupported document",
-        )?;
+    let data = CFData::from_bytes(bytes);
+    let provider =
+        CGDataProvider::with_cf_data(Some(&data)).context("Cannot create PDF byte provider")?;
+    let document = CGPDFDocument::with_provider(Some(&provider))
+        .context("Cannot read PDF; corrupt or unsupported document")?;
+    ensure!(
+        !CGPDFDocument::is_encrypted(Some(&document))
+            || CGPDFDocument::is_unlocked(Some(&document)),
+        "PDF is password protected; use explicit external inspection to unlock it"
+    );
+    let page_count = CGPDFDocument::number_of_pages(Some(&document));
+    ensure!(page_count > 0, "PDF contains no pages");
+    ensure!(
+        page_count <= MAX_PDF_PAGES,
+        "PDF page count exceeds the 100,000-page navigation bound"
+    );
+    ensure!(
+        page_index < page_count,
+        "PDF page {} is outside this document's {}",
+        page_index.saturating_add(1),
+        crate::metadata::counted(page_count, "page", "pages")
+    );
+    let mut pages = Vec::new();
+    {
+        let index = page_index + 1;
+        check()?;
+        let page = CGPDFDocument::page(Some(&document), index)
+            .with_context(|| format!("PDF page {index} is unavailable"))?;
+        // Crop box, falling back to media box in CoreGraphics.
+        let bounds = CGPDFPage::box_rect(Some(&page), CGPDFBox::CropBox);
         ensure!(
-            !CGPDFDocumentIsEncrypted(document.raw) || CGPDFDocumentIsUnlocked(document.raw),
-            "PDF is password protected; use explicit external inspection to unlock it"
+            bounds.size.width.is_finite()
+                && bounds.size.height.is_finite()
+                && bounds.size.width > 0.
+                && bounds.size.height > 0.,
+            "Invalid PDF page dimensions"
         );
-        let page_count = CGPDFDocumentGetNumberOfPages(document.raw);
-        ensure!(page_count > 0, "PDF contains no pages");
-        ensure!(
-            page_count <= MAX_PDF_PAGES,
-            "PDF page count exceeds the 100,000-page navigation bound"
+        let (mut original_width, mut original_height) = (
+            bounds.size.width.ceil() as u32,
+            bounds.size.height.ceil() as u32,
         );
-        ensure!(
-            page_index < page_count,
-            "PDF page {} is outside this document's {}",
-            page_index.saturating_add(1),
-            crate::metadata::counted(page_count, "page", "pages")
-        );
-        let mut pages = Vec::new();
-        {
-            let index = page_index + 1;
-            check()?;
-            let page = CGPDFDocumentGetPage(document.raw, index);
-            ensure!(!page.is_null(), "PDF page {index} is unavailable");
-            let bounds = CGPDFPageGetBoxRect(page, 1); // crop box, falling back to media box in CoreGraphics
-            ensure!(
-                bounds.size.width.is_finite()
-                    && bounds.size.height.is_finite()
-                    && bounds.size.width > 0.
-                    && bounds.size.height > 0.,
-                "Invalid PDF page dimensions"
-            );
-            let (mut original_width, mut original_height) = (
-                bounds.size.width.ceil() as u32,
-                bounds.size.height.ceil() as u32,
-            );
-            check_dimensions(original_width, original_height)?;
-            if CGPDFPageGetRotationAngle(page).rem_euclid(180) == 90 {
-                std::mem::swap(&mut original_width, &mut original_height);
-            }
-            let (width, height) =
-                scaled_dimensions(original_width, original_height, PDF_PREVIEW_EDGE);
-            let mut rgba = vec![255; width as usize * height as usize * 4];
-            let context = canvas(width, height, &mut rgba)?;
-            CGContextSetRGBFillColor(context.raw, 1., 1., 1., 1.);
-            CGContextFillRect(context.raw, rect(width, height));
-            CGContextConcatCTM(
-                context.raw,
-                CGPDFPageGetDrawingTransform(page, 1, rect(width, height), 0, true),
-            );
-            CGContextDrawPDFPage(context.raw, page);
-            drop(context);
-            check()?;
-            pages.push(ImagePreview {
-                width,
-                height,
-                original_width,
-                original_height,
-                rgba,
-                format: format!("PDF page {index}"),
-            });
+        check_dimensions(original_width, original_height)?;
+        if CGPDFPage::rotation_angle(Some(&page)).rem_euclid(180) == 90 {
+            std::mem::swap(&mut original_width, &mut original_height);
         }
-        Ok(DocumentPreview { pages, page_count })
+        let (width, height) = scaled_dimensions(original_width, original_height, PDF_PREVIEW_EDGE);
+        let mut rgba = vec![255; width as usize * height as usize * 4];
+        let context = canvas(width, height, &mut rgba)?;
+        CGContext::set_rgb_fill_color(Some(&context), 1., 1., 1., 1.);
+        CGContext::fill_rect(Some(&context), rect(width, height));
+        let transform = CGPDFPage::drawing_transform(
+            Some(&page),
+            CGPDFBox::CropBox,
+            rect(width, height),
+            0,
+            true,
+        );
+        CGContext::concat_ctm(Some(&context), transform);
+        CGContext::draw_pdf_page(Some(&context), Some(&page));
+        drop(context);
+        check()?;
+        pages.push(ImagePreview {
+            width,
+            height,
+            original_width,
+            original_height,
+            rgba,
+            format: format!("PDF page {index}"),
+        });
     }
+    Ok(DocumentPreview { pages, page_count })
 }
 
 #[cfg(test)]

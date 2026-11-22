@@ -37,7 +37,7 @@ Targeted checks and final source identities are recorded below as they complete;
 - `cargo test --locked -p gitturtle saving_a_session_preserves -- --nocapture`: 1 passed.
 - `cargo test --locked -p gitturtle github::transport -- --include-ignored --nocapture`: 6 passed, including the installed CLI origin-isolation and process stdout-lifetime fixtures. The loopback fixture completed with all external traffic refused and its private configuration removed.
 
-The relevant implementation entry points are [the shared store reader](../../../crates/app/src/preferences.rs), [draft batches and attempt records](../../../crates/app/src/github/drafts.rs), [session validation before save](../../../crates/app/src/repository_tabs.rs), and [API configuration/process ownership](../../../crates/app/src/github/transport.rs). Final file SHA-256 values from this increment, before coordinator integration:
+The relevant implementation entry points are [the shared store reader](../../../crates/app/src/preferences.rs), [draft batches and attempt records](../../../crates/github/src/drafts.rs), [session validation before save](../../../crates/app/src/repository_tabs.rs), and [API configuration/process ownership](../../../crates/github/src/transport.rs). Final file SHA-256 values from this increment, before coordinator integration:
 
 | Source | SHA-256 |
 | --- | --- |

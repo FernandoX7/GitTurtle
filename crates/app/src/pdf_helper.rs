@@ -14,9 +14,10 @@
 //! deadline and two slots. The contract is section 6 of the
 //! [architecture review](../../../docs/development/2026-11-02-linux-pdf-pages-architecture.md).
 //!
-//! The module depends only on std, `libc`, `anyhow` and `gitturtle-preview`:
-//! `tests/pdf_helper.rs` compiles it as its own module to drive the filter and
-//! the real binary.
+//! The module depends only on std, `libc`, `rustix`, `anyhow` and
+//! `gitturtle-preview`, and is exposed `#[doc(hidden)]` from `gitturtle` so
+//! `tests/pdf_helper.rs` and `tests/pdf_pages_bench.rs` drive the filter and
+//! the real binary directly without recompiling the source file.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -24,11 +25,11 @@ use std::fs::File;
 use std::hash::RandomState;
 use std::io::{self, Read, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -37,40 +38,43 @@ use gitturtle_preview::pdf_helper::{
     ErrorKind, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PROTOCOL_VERSION, PageReply, encode_request,
     read_reply, serve, serve_buffer,
 };
+use rustix::event::{PollFd, PollFlags, Timespec};
+use rustix::fs::{FileType, MemfdFlags, OFlags, SealFlags, SeekFrom};
+use rustix::process::{DumpableBehavior, Pid, PidfdFlags, Resource, Rlimit, Signal};
 
 /// The first argument that makes this binary the helper.
-pub(crate) const HELPER_FLAG: &str = "--gitturtle-pdf-helper";
+pub const HELPER_FLAG: &str = "--gitturtle-pdf-helper";
 
 /// The helper's fixed exit codes, besides 0 once the reply is written. Every
 /// code but [`exit::REPLY`] means the helper stopped before reading input.
-pub(crate) mod exit {
+pub mod exit {
     /// The version or parent pid argument is malformed or another version.
-    pub(crate) const ARGUMENTS: i32 = 120;
+    pub const ARGUMENTS: i32 = 120;
     /// The parent-death signal is unset, or the parent is not the one named.
-    pub(crate) const PARENT: i32 = 121;
+    pub const PARENT: i32 = 121;
     /// A process setting, descriptor or resource limit could not be applied.
-    pub(crate) const SETUP: i32 = 122;
+    pub const SETUP: i32 = 122;
     /// seccomp is unavailable or refused the filter: confinement unavailable.
-    pub(crate) const CONFINEMENT: i32 = 123;
+    pub const CONFINEMENT: i32 = 123;
     /// Writing the reply failed.
-    pub(crate) const REPLY: i32 = 124;
+    pub const REPLY: i32 = 124;
 }
 
 const MIB: u64 = 1024 * 1024;
 /// The helper's resource limits as (resource, soft, hard). A limit already
 /// lower stays: the helper only ever tightens one.
-const LIMITS: [(libc::__rlimit_resource_t, u64, u64); 8] = [
-    (libc::RLIMIT_CORE, 0, 0),
-    (libc::RLIMIT_FSIZE, 0, 0),
-    (libc::RLIMIT_NPROC, 0, 0),
-    (libc::RLIMIT_NOFILE, 3, 3),
+const LIMITS: [(Resource, u64, u64); 8] = [
+    (Resource::Core, 0, 0),
+    (Resource::Fsize, 0, 0),
+    (Resource::Nproc, 0, 0),
+    (Resource::Nofile, 3, 3),
     // `RLIMIT_DATA` does not count the stack.
-    (libc::RLIMIT_STACK, 8 * MIB, 8 * MIB),
+    (Resource::Stack, 8 * MIB, 8 * MIB),
     // The client stops the helper at 10 s of wall-clock time first.
-    (libc::RLIMIT_CPU, 10, 11),
-    (libc::RLIMIT_DATA, 1024 * MIB, 1024 * MIB),
+    (Resource::Cpu, 10, 11),
+    (Resource::Data, 1024 * MIB, 1024 * MIB),
     // A backstop above the address space the helper starts with.
-    (libc::RLIMIT_AS, 2048 * MIB, 2048 * MIB),
+    (Resource::As, 2048 * MIB, 2048 * MIB),
 ];
 /// The helper's own wall-clock backstop, after the client's 10 s kill and the
 /// 11 s CPU limit.
@@ -99,7 +103,7 @@ pub(crate) fn run_if_requested() {
 }
 
 /// ASCII decimal without a sign or leading zero, in 1..=`i32::MAX`.
-fn parent_pid(argument: &OsStr) -> Option<libc::pid_t> {
+fn parent_pid(argument: &OsStr) -> Option<Pid> {
     let digits = argument.as_bytes();
     if digits.is_empty()
         || digits.len() > 10
@@ -109,7 +113,8 @@ fn parent_pid(argument: &OsStr) -> Option<libc::pid_t> {
         return None;
     }
     let value: u64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
-    libc::pid_t::try_from(value).ok()
+    let raw = i32::try_from(value).ok()?;
+    Pid::from_raw(raw)
 }
 
 /// Read-only `mmap` of a fully sealed `memfd` passed on fd 0. Has no `Drop`
@@ -135,28 +140,24 @@ impl AsRef<[u8]> for MappedInput {
     }
 }
 
-const REQUIRED_MEMFD_SEALS: libc::c_int =
-    libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+const REQUIRED_MEMFD_SEALS: SealFlags = SealFlags::WRITE
+    .union(SealFlags::SHRINK)
+    .union(SealFlags::GROW)
+    .union(SealFlags::SEAL);
 
 /// Maps fd 0 read-only before seccomp is installed ONLY when fd 0 is a regular
 /// file within [`MAX_REQUEST_BYTES`] carrying all four immutability seals.
 /// Pipes and unsealed files return `None` and use the plain `read()` path.
 fn map_sealed_stdin() -> Option<MappedInput> {
+    let stdin = rustix::stdio::stdin();
     // Verify immutability seals FIRST so the size read from `fstat` cannot
     // race with a concurrent resize or write before `mmap`.
-    // SAFETY: `F_GET_SEALS` queries memfd seals on fd 0; fails with EINVAL on
-    // non-memfd files and returns the bitmask on sealed memfds.
-    let seals = unsafe { libc::fcntl(0, libc::F_GET_SEALS) };
-    if seals < 0 || (seals & REQUIRED_MEMFD_SEALS) != REQUIRED_MEMFD_SEALS {
+    let seals = rustix::fs::fcntl_get_seals(stdin).ok()?;
+    if !seals.contains(REQUIRED_MEMFD_SEALS) {
         return None;
     }
-    // SAFETY: `libc::stat` is a plain C struct valid when zero-initialized.
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: queries metadata for fd 0 into a local `stat` struct.
-    if unsafe { libc::fstat(0, &mut stat) } != 0 {
-        return None;
-    }
-    if (stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
+    let stat = rustix::fs::fstat(stdin).ok()?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
         return None;
     }
     let len = usize::try_from(stat.st_size).ok()?;
@@ -184,7 +185,7 @@ fn map_sealed_stdin() -> Option<MappedInput> {
     })
 }
 
-fn run_helper(parent: libc::pid_t) -> i32 {
+fn run_helper(parent: Pid) -> i32 {
     let mapped = match confine(parent) {
         Ok(mapped) => mapped,
         Err(code) => return code,
@@ -212,29 +213,26 @@ fn run_helper(parent: libc::pid_t) -> i32 {
 /// Section 6's steps (a), (e), (b) to (d), then (f) to (j), before the first
 /// input byte. Every failure is a fixed exit code; only the OOM score is
 /// best effort.
-fn confine(parent: libc::pid_t) -> Result<Option<MappedInput>, i32> {
-    // SAFETY: (a) a process flag and a query, with no pointers.
-    unsafe {
-        // Die with the spawning thread, and only for the parent named.
-        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
-            || libc::getppid() != parent
-        {
-            return Err(exit::PARENT);
-        }
+fn confine(parent: Pid) -> Result<Option<MappedInput>, i32> {
+    // (a) Die with the spawning thread, and only for the parent named.
+    if rustix::process::set_parent_process_death_signal(Some(Signal::KILL)).is_err()
+        || rustix::process::getppid() != Some(parent)
+    {
+        return Err(exit::PARENT);
     }
     // (e) The kernel picks the helper first when memory runs out. It comes
     // before (b): once the process is not dumpable, the file belongs to root
     // and the write fails.
     let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
-    // SAFETY: process settings on the single-threaded helper,
-    // with valid pointers to locals and static strings.
+    // (b) No core file or ptrace by the same user; a recognizable name.
+    if rustix::process::set_dumpable_behavior(DumpableBehavior::NotDumpable).is_err()
+        || rustix::thread::set_name(c"gitturtle-pdf").is_err()
+    {
+        return Err(exit::SETUP);
+    }
+    // SAFETY: signal disposition resets on the single-threaded helper with
+    // valid pointers to locals.
     unsafe {
-        // (b) No core file or ptrace by the same user; a recognizable name.
-        if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
-            || libc::prctl(libc::PR_SET_NAME, c"gitturtle-pdf".as_ptr(), 0, 0, 0) != 0
-        {
-            return Err(exit::SETUP);
-        }
         // (c) Ignored dispositions survive exec: the time limits must kill.
         for (signal, action) in [
             (libc::SIGALRM, libc::SIG_DFL),
@@ -260,8 +258,8 @@ fn confine(parent: libc::pid_t) -> Result<Option<MappedInput>, i32> {
     }
     prepare_runtime();
     let mapped = map_sealed_stdin();
-    // SAFETY: (i) a process flag with no pointers.
-    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+    // (i) Prevent privilege escalation before installing seccomp.
+    if rustix::thread::set_no_new_privs(true).is_err() {
         return Err(exit::SETUP);
     }
     // (j)
@@ -292,31 +290,44 @@ fn close_inherited() -> Result<(), i32> {
 }
 
 /// (g) Lowers `resource` to `soft` and `hard`, keeping a lower current value.
-fn tighten(resource: libc::__rlimit_resource_t, soft: u64, hard: u64) -> Result<(), i32> {
+fn tighten(resource: Resource, soft: u64, hard: u64) -> Result<(), i32> {
+    let raw = match resource {
+        Resource::Core => libc::RLIMIT_CORE,
+        Resource::Fsize => libc::RLIMIT_FSIZE,
+        Resource::Nproc => libc::RLIMIT_NPROC,
+        Resource::Nofile => libc::RLIMIT_NOFILE,
+        Resource::Stack => libc::RLIMIT_STACK,
+        Resource::Cpu => libc::RLIMIT_CPU,
+        Resource::Data => libc::RLIMIT_DATA,
+        Resource::As => libc::RLIMIT_AS,
+        _ => return Err(exit::SETUP),
+    };
     let mut current = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: reads into a local.
-    if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
+    // SAFETY: `current` is an initialized rlimit struct; checking the return
+    // value explicitly ensures an outer seccomp EPERM/ENOSYS fails closed with
+    // `exit::SETUP` rather than assuming `prlimit64` is infallible.
+    if unsafe { libc::getrlimit(raw, &mut current) } != 0 {
         return Err(exit::SETUP);
     }
-    let lowered_hard = hard.min(current.rlim_max);
-    let lowered_soft = soft.min(current.rlim_cur).min(lowered_hard);
-    let limit = libc::rlimit {
-        rlim_cur: lowered_soft,
+    let current_max = (current.rlim_max != libc::RLIM_INFINITY).then_some(current.rlim_max);
+    let current_cur = (current.rlim_cur != libc::RLIM_INFINITY).then_some(current.rlim_cur);
+    let lowered_hard = current_max.map_or(hard, |max| hard.min(max));
+    let lowered_soft = current_cur
+        .map_or(soft, |cur| soft.min(cur))
+        .min(lowered_hard);
+    let limit = Rlimit {
+        current: Some(lowered_soft),
         // Soft equals hard except where the targets differ (CPU time).
-        rlim_max: if soft == hard {
+        maximum: Some(if soft == hard {
             lowered_soft
         } else {
             lowered_hard
-        },
+        }),
     };
-    // SAFETY: a local limit no higher than the current hard limit.
-    if unsafe { libc::setrlimit(resource, &limit) } != 0 {
-        return Err(exit::SETUP);
-    }
-    Ok(())
+    rustix::process::setrlimit(resource, limit).map_err(|_| exit::SETUP)
 }
 
 /// (h) Sets up, before the filter, what the runtime would otherwise set up
@@ -423,7 +434,7 @@ const ALLOWED: &[(libc::c_long, &[Check])] = &[
 ];
 
 /// The helper's seccomp program: the architecture check, then [`ALLOWED`].
-pub(crate) struct Filter {
+pub struct Filter {
     program: Vec<libc::sock_filter>,
     /// Instructions that compare with the installing process's pid.
     own_pid: Vec<usize>,
@@ -431,7 +442,7 @@ pub(crate) struct Filter {
 }
 
 impl Filter {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let mut filter = Self {
             program: Vec::new(),
             own_pid: Vec::new(),
@@ -499,9 +510,8 @@ impl Filter {
     /// with its own pid as the only process `tgkill` may signal. Needs
     /// `PR_SET_NO_NEW_PRIVS` first. Allocates nothing, so a child forked from
     /// a multithreaded process may call it.
-    pub(crate) fn install(&mut self) -> io::Result<()> {
-        // SAFETY: getpid has no preconditions.
-        let pid = unsafe { libc::getpid() } as u32;
+    pub fn install(&mut self) -> io::Result<()> {
+        let pid = rustix::process::getpid().as_raw_nonzero().get() as u32;
         for &at in &self.own_pid {
             self.program[at].k = pid;
         }
@@ -528,18 +538,24 @@ impl Filter {
     }
 }
 
+impl Default for Filter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The wall-clock time a helper gets for one page, from its start.
-pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
+pub const DEADLINE: Duration = Duration::from_secs(10);
 /// The longest the client goes without running the caller's check.
 const TICK: Duration = Duration::from_millis(25);
 /// Helpers running at once across the app: requests come from each window's
 /// reader and the shared page lane.
-pub(crate) static HELPERS: Slots = Slots::new(2);
+pub static HELPERS: Slots = Slots::new(2);
 
 /// Why a page request returned no page. Its wording is fixed: nothing the
 /// helper sends reaches it, only a count the client has validated.
 #[derive(Debug)]
-pub(crate) enum Failure {
+pub enum Failure {
     /// The caller's check failed; a helper that had started was killed and
     /// reaped first.
     Cancelled(anyhow::Error),
@@ -551,17 +567,7 @@ pub(crate) enum Failure {
     TimedOut,
     /// The helper died on `signal`, stopped in the renderer or exited without
     /// a valid reply. The signal is for tests and diagnostics, never wording.
-    Stopped {
-        #[expect(
-            clippy::allow_attributes,
-            reason = "read by tests/pdf_helper.rs, unused by bin"
-        )]
-        #[allow(
-            dead_code,
-            reason = "never worded; only tests/pdf_helper.rs reads which signal ended the helper"
-        )]
-        signal: Option<i32>,
-    },
+    Stopped { signal: Option<i32> },
     /// The reply was malformed, out of bounds, short, larger than the cap or
     /// followed by more bytes.
     Unreadable,
@@ -618,28 +624,28 @@ impl std::error::Error for Failure {}
 
 /// A limit on helpers running at once. A waiting request keeps running its
 /// check, so cancelling it never waits for a slot.
-pub(crate) struct Slots {
+pub struct Slots {
     running: Mutex<usize>,
     freed: Condvar,
     limit: usize,
     /// [`Slots::waiting`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     waiting: AtomicUsize,
 }
 
 impl Slots {
-    pub(crate) const fn new(limit: usize) -> Self {
+    pub const fn new(limit: usize) -> Self {
         Self {
             running: Mutex::new(0),
             freed: Condvar::new(),
             limit,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             waiting: AtomicUsize::new(0),
         }
     }
 
     fn acquire(&self, check: &dyn Fn() -> anyhow::Result<()>) -> anyhow::Result<Slot<'_>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let mut waiting = None;
         loop {
             check()?;
@@ -652,7 +658,7 @@ impl Slots {
                 *running += 1;
                 return Ok(Slot(self));
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             waiting.get_or_insert_with(|| Waiting::count(&self.waiting));
         }
     }
@@ -660,25 +666,17 @@ impl Slots {
     /// Requests that found every slot taken for a whole tick and have since
     /// neither taken a slot nor been cancelled, so tests observe a waiting
     /// request rather than sleep while it waits.
-    #[cfg(test)]
-    #[expect(
-        clippy::allow_attributes,
-        reason = "observed by integration tests, unused by bin tests"
-    )]
-    #[allow(
-        dead_code,
-        reason = "tests/image_helper.rs and tests/pdf_helper.rs observe it; the app's own tests do not"
-    )]
-    pub(crate) fn waiting(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn waiting(&self) -> usize {
         self.waiting.load(Ordering::SeqCst)
     }
 }
 
 /// One request counted in [`Slots::waiting`] until it leaves `acquire`.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct Waiting<'a>(&'a AtomicUsize);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl<'a> Waiting<'a> {
     fn count(waiting: &'a AtomicUsize) -> Self {
         waiting.fetch_add(1, Ordering::SeqCst);
@@ -686,7 +684,7 @@ impl<'a> Waiting<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for Waiting<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
@@ -707,7 +705,7 @@ impl Drop for Slot<'_> {
 }
 
 /// The program and arguments that start a helper.
-pub(crate) struct HelperCommand {
+pub struct HelperCommand {
     program: OsString,
     arguments: Vec<OsString>,
 }
@@ -715,7 +713,7 @@ pub(crate) struct HelperCommand {
 impl HelperCommand {
     /// This running executable as the helper of this process, even after a
     /// package upgrade replaced its file.
-    pub(crate) fn current() -> Self {
+    pub fn current() -> Self {
         Self {
             program: "/proc/self/exe".into(),
             arguments: vec![
@@ -727,8 +725,8 @@ impl HelperCommand {
     }
 
     /// Any program as the helper: the real binary or a shell fake.
-    #[cfg(test)]
-    pub(crate) fn new<A: Into<OsString>>(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new<A: Into<OsString>>(
         program: impl Into<OsString>,
         arguments: impl IntoIterator<Item = A>,
     ) -> Self {
@@ -739,8 +737,8 @@ impl HelperCommand {
     }
 
     /// The program, then its arguments.
-    #[cfg(test)]
-    pub(crate) fn argv(&self) -> Vec<&OsStr> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn argv(&self) -> Vec<&OsStr> {
         std::iter::once(self.program.as_os_str())
             .chain(self.arguments.iter().map(OsString::as_os_str))
             .collect()
@@ -771,67 +769,37 @@ fn create_sealed_memfd(
     if total == 0 || total > MAX_REQUEST_BYTES {
         return Ok(None);
     }
-    // MFD_NOEXEC_SEAL (0x0008, Linux 6.3+) avoids kernel dmesg warnings when
+    // MFD_NOEXEC_SEAL (Linux 6.3+) avoids kernel dmesg warnings when
     // vm.memfd_noexec=1; fall back to MFD_CLOEXEC | MFD_ALLOW_SEALING on older kernels.
-    const MFD_NOEXEC_SEAL: libc::c_uint = 0x0008;
-    let base_flags = libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING;
-    // SAFETY: `memfd_create` creates a new close-on-exec anonymous fd.
-    let mut raw = unsafe {
-        libc::syscall(
-            libc::SYS_memfd_create,
-            c"gitturtle-helper".as_ptr(),
-            base_flags | MFD_NOEXEC_SEAL,
-        )
-    };
-    if raw < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
-        // SAFETY: fallback flags supported since Linux 3.17.
-        raw = unsafe {
-            libc::syscall(
-                libc::SYS_memfd_create,
-                c"gitturtle-helper".as_ptr(),
-                base_flags,
-            )
+    let base_flags = MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING;
+    let fd =
+        match rustix::fs::memfd_create(c"gitturtle-helper", base_flags | MemfdFlags::NOEXEC_SEAL) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::INVAL) => {
+                let Ok(fd) = rustix::fs::memfd_create(c"gitturtle-helper", base_flags) else {
+                    return Ok(None);
+                };
+                fd
+            }
+            Err(_) => return Ok(None),
         };
-    }
-    let Ok(raw_fd) = libc::c_int::try_from(raw) else {
-        return Ok(None);
-    };
-    if raw_fd < 0 {
-        return Ok(None);
-    }
-    // SAFETY: `raw_fd` is a fresh owned fd from `memfd_create`.
-    let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
     for slice in request {
         let mut offset = 0;
         while offset < slice.len() {
             check()?;
             let end = (offset + 2 * 1024 * 1024).min(slice.len());
-            // SAFETY: writes from a valid in-bounds slice into our owned memfd.
-            let n = unsafe {
-                libc::write(
-                    fd.as_raw_fd(),
-                    slice[offset..end].as_ptr().cast(),
-                    end - offset,
-                )
-            };
-            if n < 0 {
-                if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                    continue;
-                }
-                return Ok(None);
+            match rustix::io::write(&fd, &slice[offset..end]) {
+                Ok(0) => return Ok(None),
+                Ok(n) => offset += n,
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return Ok(None),
             }
-            if n == 0 {
-                return Ok(None);
-            }
-            offset += n as usize;
         }
     }
-    // SAFETY: rewind our owned memfd to offset 0 before passing it as fd 0.
-    if unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) } != 0 {
+    if rustix::fs::seek(&fd, SeekFrom::Start(0)) != Ok(0) {
         return Ok(None);
     }
-    // SAFETY: seal against any writes, resizes, or future seal changes.
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, REQUIRED_MEMFD_SEALS) } != 0 {
+    if rustix::fs::fcntl_add_seals(&fd, REQUIRED_MEMFD_SEALS).is_err() {
         return Ok(None);
     }
     Ok(Some(fd))
@@ -840,7 +808,7 @@ fn create_sealed_memfd(
 /// Runs one request in a new confined helper, for every frame: the helper
 /// program, its deadline and the slots it shares. [`Client`] renders PDF
 /// pages through it and `crate::image_helper::Client` decodes images.
-pub(crate) struct Runner<'a> {
+pub struct Runner<'a> {
     command: HelperCommand,
     deadline: Duration,
     slots: &'a Slots,
@@ -849,7 +817,7 @@ pub(crate) struct Runner<'a> {
 impl Runner<'static> {
     /// This executable as the helper, with the 10 s deadline and the app's
     /// two helper slots.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             command: HelperCommand::current(),
             deadline: DEADLINE,
@@ -858,16 +826,22 @@ impl Runner<'static> {
     }
 }
 
+impl Default for Runner<'static> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> Runner<'a> {
     /// The helper command, deadline and slots a runner uses.
-    #[cfg(test)]
-    pub(crate) fn parts(&self) -> (&HelperCommand, Duration, &'a Slots) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn parts(&self) -> (&HelperCommand, Duration, &'a Slots) {
         (&self.command, self.deadline, self.slots)
     }
 
     /// A runner for tests: another helper, a shorter deadline, own slots.
-    #[cfg(test)]
-    pub(crate) fn with(command: HelperCommand, deadline: Duration, slots: &'a Slots) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with(command: HelperCommand, deadline: Duration, slots: &'a Slots) -> Self {
         Self {
             command,
             deadline,
@@ -880,7 +854,7 @@ impl<'a> Runner<'a> {
     /// waits for, kills and reaps the helper: the parent-death signal follows
     /// the thread that spawned it. `check` runs at least every 25 ms, also
     /// while waiting for a slot; the deadline counts from the helper's start.
-    pub(crate) fn run(
+    pub fn run(
         &self,
         request: [&[u8]; 2],
         cap: usize,
@@ -893,7 +867,7 @@ impl<'a> Runner<'a> {
     /// helper's start until it ended and was reaped, or zero when none
     /// started, so the wait for a slot never counts. A Markdown document
     /// totals its images' times (`crate::image_helper::DocumentImages`).
-    pub(crate) fn run_timed(
+    pub fn run_timed(
         &self,
         request: [&[u8]; 2],
         cap: usize,
@@ -927,14 +901,14 @@ impl<'a> Runner<'a> {
     }
 
     /// The wall-clock time one helper gets, from its start.
-    pub(crate) fn deadline(&self) -> Duration {
+    pub fn deadline(&self) -> Duration {
         self.deadline
     }
 }
 
 /// How a helper run ended, the same for every frame: a reply counts only
 /// after exit status 0, and the frame's own reader decides the rest.
-pub(crate) enum Outcome {
+pub enum Outcome {
     /// The helper exited with status 0 after writing this, at most the cap.
     Replied(Vec<u8>),
     /// The caller's check failed; a helper that had started was killed and
@@ -981,37 +955,43 @@ impl Outcome {
     /// The outcome of a helper that ended with `status` after writing
     /// `reply`, so tests can cover the signals that would make a fake helper
     /// dump core.
-    #[cfg(test)]
-    pub(crate) fn exited(status: ExitStatus, reply: &[u8]) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn exited(status: ExitStatus, reply: &[u8]) -> Self {
         Self::of(Ending::Exited(status), reply.to_vec())
     }
 }
 
 /// Renders PDF pages in confined helper processes, one per request.
-pub(crate) struct Client<'a> {
+pub struct Client<'a> {
     runner: Runner<'a>,
 }
 
 impl Client<'static> {
     /// This executable as the helper, with the 10 s deadline and the app's
     /// two helper slots.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             runner: Runner::new(),
         }
     }
 }
 
+impl Default for Client<'static> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> Client<'a> {
     /// The helper command, deadline and slots a client uses.
-    #[cfg(test)]
-    pub(crate) fn parts(&self) -> (&HelperCommand, Duration, &'a Slots) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn parts(&self) -> (&HelperCommand, Duration, &'a Slots) {
         self.runner.parts()
     }
 
     /// A client for tests: another helper, a shorter deadline, own slots.
-    #[cfg(test)]
-    pub(crate) fn with(command: HelperCommand, deadline: Duration, slots: &'a Slots) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with(command: HelperCommand, deadline: Duration, slots: &'a Slots) -> Self {
         Self {
             runner: Runner::with(command, deadline, slots),
         }
@@ -1019,7 +999,7 @@ impl<'a> Client<'a> {
 
     /// Zero-based `page` of `pdf` and its text, from a new helper through
     /// [`Runner::run`], with the page frame's cap.
-    pub(crate) fn render(
+    pub fn render(
         &self,
         pdf: &[u8],
         page: usize,
@@ -1073,9 +1053,9 @@ impl Running {
             child,
         };
         if let Some(input) = running.input.as_ref() {
-            non_blocking(input.as_raw_fd()).ok()?;
+            non_blocking(input.as_fd()).ok()?;
         }
-        non_blocking(running.output.as_ref()?.as_raw_fd()).ok()?;
+        non_blocking(running.output.as_ref()?.as_fd()).ok()?;
         Some(running)
     }
 
@@ -1115,33 +1095,38 @@ impl Running {
                     Err(_) => return (self.kill(Kill::Unwaitable), reply),
                 }
             }
-            let mut polled = [
-                pollfd(
-                    self.output
-                        .as_ref()
-                        .filter(|_| reading)
-                        .map(AsRawFd::as_raw_fd),
-                    libc::POLLIN,
-                ),
-                pollfd(self.input.as_ref().map(AsRawFd::as_raw_fd), libc::POLLOUT),
-                pollfd(
-                    self.exited
-                        .as_ref()
-                        .filter(|_| !reading)
-                        .map(AsRawFd::as_raw_fd),
-                    libc::POLLIN,
-                ),
-            ];
-            let millis = libc::c_int::try_from(wait.as_millis().max(1)).unwrap_or(25);
-            // SAFETY: polls the entries of a local array.
-            if unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, millis) } < 0
-            {
-                continue;
-            }
-            if polled[1].revents != 0 {
+            let (input_ready, output_ready) = {
+                let mut polled = Vec::with_capacity(3);
+                let output_idx = if reading {
+                    self.output.as_ref().map(|fd| {
+                        let idx = polled.len();
+                        polled.push(PollFd::new(fd, PollFlags::IN));
+                        idx
+                    })
+                } else {
+                    None
+                };
+                let input_idx = self.input.as_ref().map(|fd| {
+                    let idx = polled.len();
+                    polled.push(PollFd::new(fd, PollFlags::OUT));
+                    idx
+                });
+                if !reading && let Some(fd) = self.exited.as_ref() {
+                    polled.push(PollFd::new(fd, PollFlags::IN));
+                }
+                let timeout = Timespec::try_from(wait.max(Duration::from_millis(1))).ok();
+                if rustix::event::poll(&mut polled, timeout.as_ref()).is_err() {
+                    continue;
+                }
+                (
+                    input_idx.is_some_and(|idx| !polled[idx].revents().is_empty()),
+                    output_idx.is_some_and(|idx| !polled[idx].revents().is_empty()),
+                )
+            };
+            if input_ready {
                 self.write(request, &mut written);
             }
-            if polled[0].revents != 0 && !self.read(&mut reply, cap, &mut chunk, &mut reading) {
+            if output_ready && !self.read(&mut reply, cap, &mut chunk, &mut reading) {
                 return (self.kill(Kill::Oversized), reply);
             }
         }
@@ -1226,42 +1211,19 @@ impl Drop for Running {
 
 /// A pidfd for `pid`, a child not yet waited for, so the pid is still ours.
 fn pidfd(pid: u32) -> Option<OwnedFd> {
-    let pid = libc::pid_t::try_from(pid).ok()?;
-    // SAFETY: opens a new descriptor; pidfds are close-on-exec.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-    let fd = RawFd::try_from(fd).ok().filter(|&fd| fd >= 0)?;
-    // SAFETY: the descriptor was just opened and nothing else owns it.
-    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+    let pid = Pid::from_raw(i32::try_from(pid).ok()?)?;
+    rustix::process::pidfd_open(pid, PidfdFlags::empty()).ok()
 }
 
-fn pollfd(fd: Option<RawFd>, events: libc::c_short) -> libc::pollfd {
-    libc::pollfd {
-        // A negative descriptor is skipped.
-        fd: fd.unwrap_or(-1),
-        events,
-        revents: 0,
-    }
-}
-
-fn non_blocking(fd: RawFd) -> io::Result<()> {
-    // SAFETY: reads and sets the status flags of a pipe this process owns.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
+fn non_blocking(fd: BorrowedFd<'_>) -> io::Result<()> {
+    let flags = rustix::fs::fcntl_getfl(fd).map_err(io::Error::from)?;
+    rustix::fs::fcntl_setfl(fd, flags | OFlags::NONBLOCK).map_err(io::Error::from)
 }
 
 /// [`classify`] for a helper that ended with `status`, so tests can cover the
 /// signals that would make a fake helper dump core.
-#[cfg(test)]
-pub(crate) fn classify_exit(
-    status: ExitStatus,
-    reply: &[u8],
-    page: usize,
-) -> Result<PageReply, Failure> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn classify_exit(status: ExitStatus, reply: &[u8], page: usize) -> Result<PageReply, Failure> {
     classify(Outcome::exited(status, reply), page)
 }
 

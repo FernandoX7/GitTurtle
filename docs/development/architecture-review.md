@@ -21,7 +21,7 @@ Keep APIs narrow enough that callers cannot bypass the invariant they are meant 
 
 ## Make lifetime and resource ownership explicit
 
-For new retained state, identify whether it belongs to a window, repository, worktree, tab, inspection or durable store. Specify what happens on replacement, cancellation, tab switch, close, cold restore and repository replacement where applicable. In particular, adding a field to [GitTurtle](../../crates/app/src/main.rs) can also affect [warm-tab capture/restore](../../crates/app/src/repository_tabs.rs), inspection retention and byte accounting.
+For new retained state, identify whether it belongs to a window, repository, worktree, tab, inspection or durable store. Specify what happens on replacement, cancellation, tab switch, close, cold restore and repository replacement where applicable. In particular, adding a field to [GitTurtle / RepositoryWorkspace](../../crates/app/src/lib.rs) can also affect [warm-tab capture/restore](../../crates/app/src/repository_tabs.rs), inspection retention and byte accounting.
 
 For asynchronous work, name the executor, concurrency/queue bound, captured identity and stale-result check. Cancellation must account for underlying work; dropping a receiver only stops observing its reply. Accepted writes have different semantics and must survive view changes. The [app ownership map](../../crates/app/AGENTS.md) distinguishes window-owned executors from shared renderer lanes and application observers.
 

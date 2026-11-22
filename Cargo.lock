@@ -2264,11 +2264,15 @@ dependencies = [
  "accesskit_consumer",
  "anyhow",
  "ashpd",
- "async-io",
  "block2 0.6.2",
  "futures",
+ "gitturtle",
  "gitturtle-core",
+ "gitturtle-diff-model",
+ "gitturtle-github",
+ "gitturtle-prefs",
  "gitturtle-preview",
+ "gitturtle-theme",
  "gpui-kit",
  "gpui-pre-wgpu",
  "image",
@@ -2279,9 +2283,8 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
- "oo7",
  "rust-embed",
- "security-framework",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -2295,9 +2298,51 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ignore",
+ "proptest",
  "rustix",
  "sha2 0.11.1",
  "similar 3.2.1",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "gitturtle-diff-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gitturtle-core",
+]
+
+[[package]]
+name = "gitturtle-github"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-io",
+ "futures",
+ "gitturtle-core",
+ "gitturtle-prefs",
+ "oo7",
+ "rustix",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+]
+
+[[package]]
+name = "gitturtle-prefs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gitturtle-core",
+ "gitturtle-diff-model",
+ "gitturtle-theme",
+ "libc",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -2306,6 +2351,7 @@ name = "gitturtle-preview"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "dav1d",
  "dav1d-sys",
  "hayro",
@@ -2316,15 +2362,28 @@ dependencies = [
  "moxcms",
  "mp4parse",
  "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "proptest",
  "resvg 0.50.0",
  "roxmltree 0.21.2",
  "serde",
  "serde_json",
  "stl_io",
  "tempfile",
+ "thiserror 2.0.20",
  "ufbx",
  "zip",
+]
+
+[[package]]
+name = "gitturtle-theme"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]

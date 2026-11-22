@@ -199,9 +199,8 @@ impl TextureImage {
             height,
             pixels: pixels.into_boxed_slice(),
         }];
-        while levels.last().is_some_and(|l| l.width > 1 || l.height > 1) {
+        while let Some(source) = levels.last().filter(|l| l.width > 1 || l.height > 1) {
             check()?;
-            let source = levels.last().unwrap();
             let (width, height) = ((source.width / 2).max(1), (source.height / 2).max(1));
             let mut pixels = Vec::with_capacity(width * height);
             for y in 0..height {

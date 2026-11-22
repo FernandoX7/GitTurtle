@@ -1423,7 +1423,7 @@ mod tests {
         };
         // As many entries as the bound: only the primary's and the alpha
         // item's associations are kept.
-        let mut entries = vec![primary.clone(), alpha.clone()];
+        let mut entries = vec![primary.clone(), alpha];
         entries.extend(
             (3..)
                 .take(MAX_IPMA_ENTRIES as usize - 2)
@@ -3439,5 +3439,22 @@ int main(void) {
             offset_of!(Dav1dPicture, n_itut_t34)
         );
         assert_eq!(c.len(), rust.len() + 4);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5A17_F001_0002),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn proptest_avif_box_properties_parser_never_panics(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+        ) {
+            let _ = split_box(&bytes);
+            let _ = Properties::parse(&bytes);
+        }
     }
 }

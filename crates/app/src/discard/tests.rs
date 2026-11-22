@@ -504,7 +504,7 @@ async fn working_path_tooltip_wraps_and_yields_to_the_discard_menu(cx: &mut Test
         .iter()
         .position(|entry| entry.path == relative)
         .unwrap();
-    let (app, cx) = app_window(cx, fixture.repo.clone());
+    let (app, cx) = app_window(cx, fixture.repo);
     cx.simulate_resize(size(px(1000.), px(680.)));
     app.update(cx, |app, cx| {
         app.mode = WorkspaceMode::Working;

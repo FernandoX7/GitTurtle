@@ -89,7 +89,7 @@ impl FocusRing {
         canvas(
             |_, _, _| (),
             move |_, _, window, _| {
-                let keyboard = keyboard.clone();
+                let keyboard = keyboard;
                 window.on_mouse_event(move |_: &MouseDownEvent, phase, window, _| {
                     if phase == DispatchPhase::Capture && keyboard.replace(false) {
                         window.refresh();

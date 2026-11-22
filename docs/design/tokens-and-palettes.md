@@ -4,8 +4,8 @@ Living specification for GitTurtle's color tokens, 20 built-in palettes, live Om
 
 ## Built-in palettes and system appearance
 
-- [`crates/app/src/appearance.rs`](../../crates/app/src/appearance.rs) owns 20 built-in palettes (`Midnight` default dark, `Braden` original light with `daylight` storage ID, `Graphite`, `Tokyo Night`, `Catppuccin Mocha`, `Nord`, `Solarized Dark/Light`, `One Dark/Light`, `Rosé Pine/Dawn`, `Dracula/Alucard`, `Kanagawa Wave/Lotus`, `Porcelain`, `Sandstone`, `Deep Sea`, `Ember`).
-- Upstream palette origins live in [`crates/app/src/appearance/sources.rs`](../../crates/app/src/appearance/sources.rs) and [`crates/app/tests/fixtures/2026-09-17-theme-palettes.md`](../../crates/app/tests/fixtures/2026-09-17-theme-palettes.md).
+- [`crates/theme/src/palette.rs`](../../crates/theme/src/palette.rs) (bridged to GPUI in [`crates/app/src/appearance.rs`](../../crates/app/src/appearance.rs)) owns 20 built-in palettes (`Midnight` default dark, `Braden` original light with `daylight` storage ID, `Graphite`, `Tokyo Night`, `Catppuccin Mocha`, `Nord`, `Solarized Dark/Light`, `One Dark/Light`, `Rosé Pine/Dawn`, `Dracula/Alucard`, `Kanagawa Wave/Lotus`, `Porcelain`, `Sandstone`, `Deep Sea`, `Ember`).
+- Upstream palette origins live in [`crates/theme/src/sources.rs`](../../crates/theme/src/sources.rs) and [`crates/app/tests/fixtures/2026-09-17-theme-palettes.md`](../../crates/app/tests/fixtures/2026-09-17-theme-palettes.md).
 - **Follow system** selects `Braden` in light mode and the saved dark palette (`Midnight` fallback) in dark mode. It never overrides Linux Omarchy live theme sync.
 - Applying a theme updates `ThemeTokens` and `ThemeColor` together before `Theme::sync_base`, keeping native controls, custom canvas drawing, and code editors synchronized. Appearance, density, and text sizes stay global across Git profiles.
 

@@ -286,7 +286,7 @@ pub(super) fn triangulate(
     );
     let axis = (0..3)
         .max_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()))
-        .unwrap();
+        .unwrap_or(0);
     let projected: Vec<Point> = points
         .iter()
         .map(|p| [p[(axis + 1) % 3], p[(axis + 2) % 3], 0.])
