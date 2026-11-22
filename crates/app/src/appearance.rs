@@ -4,13 +4,11 @@
 
 #[cfg(any(target_os = "linux", test))]
 pub use gitturtle_theme::desktop_text_scale_value;
-#[cfg(target_os = "linux")]
-use gitturtle_theme::store_desktop_text_scale;
 pub use gitturtle_theme::{
     CODE_TEXT_RANGE, DEFAULT_CODE_TEXT_SIZE, DEFAULT_INTERFACE_TEXT_SIZE, Density,
     EditorHighlights, INTERFACE_TEXT_RANGE, Labels, Palette, REF_TINT_ALPHA, RgbaColor,
-    SyntaxRoles, ThemeChoice, code_text_size, custom, desktop_text_scale, interface_text_size,
-    store_text_sizes, ui_scale,
+    SyntaxRoles, ThemeChoice, code_text_size, custom, desktop_text_scale, store_text_sizes,
+    ui_scale,
 };
 #[cfg(test)]
 pub(crate) use gitturtle_theme::{
@@ -26,6 +24,8 @@ pub(crate) use gitturtle_theme::{
     },
     oklab, oklab_distance,
 };
+#[cfg(target_os = "linux")]
+use gitturtle_theme::{interface_text_size, store_desktop_text_scale};
 #[cfg(test)]
 pub(crate) use gitturtle_theme::{sources, test_palettes};
 
