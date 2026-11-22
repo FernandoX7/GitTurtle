@@ -731,6 +731,13 @@ def build_stages(
             note="workspace crates only; vendored packages are upstream code",
         )
     )
+    stages.append(
+        Stage(
+            "docs-sync",
+            [sys.executable, "scripts/check-docs-sync.py"],
+            reproduce="python3 scripts/check-docs-sync.py",
+        )
+    )
     if tier == "full":
         # Snapshot hygiene only finds `.snap.new` files already present:
         # base_env sets INSTA_UPDATE=no, so the test stages write none.

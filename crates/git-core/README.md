@@ -122,7 +122,7 @@ and uncertain-outcome policy. Live progress is framed per child stderr reader
 into `\r`/`\n`-terminated segments with a 4 KiB carry bound (dropping overlong
 segments and unterminated tails) and validated against Git's numeric transfer
 grammar before whole-segment redaction. See the
-[passive process audit and release measurements](../../docs/security-git-audit.md).
+[passive process audit and release measurements](../../docs/archive/2026-09/security-git-audit.md).
 
 Ordinary application history uses `history_traversal` and `HistoryTraversal::next_page`: one topological Git process walks captured local tips once, with no growing-prefix or `--skip` replay. Pages contain at most 500 commits / 32 MiB of retained metadata; a 2 MiB record bound and eight 8 KiB pipe chunks bound read-ahead. Backpressure pauses the producer between requests. Cancellation and the 15-second page deadline close/reap the process and invalidate the cursor; a retry starts the visible captured scope again. The caller owns retention and closes idle traversals when leaving a tab. Git's internal revision-walk allocation is separate from the metadata/pipe bounds; these are not a process RSS cap.
 

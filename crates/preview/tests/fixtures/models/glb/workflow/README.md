@@ -34,7 +34,7 @@ production decoder separately discloses its simplified core-PBR inspection.
 expanded-vertex expectations derived from closed-form skin, morph, TRS, slerp,
 and duration-scaled Hermite equations. These expectations do not read the GLB
 parser or production implementation. The
-[independent reference procedure](../../../../../../../docs/glb-workflow-reference.md)
+[independent reference procedure](../../../../../../../docs/archive/2026-09/glb-workflow-reference.md)
 compares these equations to Three.js and then compares every exported production
 coordinate, not just bounds or triangle counts.
 

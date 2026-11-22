@@ -62,10 +62,10 @@ cover current upstream x86-64 Omarchy.
      be selected or copied, because no read-only text in the app was selectable.
      Fixed: the commit message and its metadata select and copy like ordinary text,
      and list Copy works in History and the changed-file list
-     ([validation entry](../validation.md#october-26-selectable-commit-text-the-new-application-id-and-omarchy-polish)).
+     ([validation entry](../validation/2026-10.md#october-26-selectable-commit-text-the-new-application-id-and-omarchy-polish)).
      The owner confirmed copying and pasting with a physical keyboard on 2026-10-26.
      Working Changes and the file-history revision list followed on 2026-10-26
-     ([validation entry](../validation.md#october-26-list-copy-in-working-changes-and-file-history-and-select-all-everywhere)).
+     ([validation entry](../validation/2026-10.md#october-26-list-copy-in-working-changes-and-file-history-and-select-all-everywhere)).
    - **Lists.** Outside text fields, dispatched keys reach GitTurtle. Ctrl+C on a
      selected History commit or changed file copies nothing: the shortcut sheet lists
      "Copy Selected List Item" (Ctrl+C), but only Blame handles it. What a copied commit
@@ -90,7 +90,7 @@ cover current upstream x86-64 Omarchy.
    - **Approved by the owner on 2026-10-26, all to be done before distribution:**
      1. List Copy in Working Changes and the file-history revision list. Done: the
         selected files' paths, one per line in list order, and the revision's full
-        hash ([validation entry](../validation.md#october-26-list-copy-in-working-changes-and-file-history-and-select-all-everywhere)).
+        hash ([validation entry](../validation/2026-10.md#october-26-list-copy-in-working-changes-and-file-history-and-select-all-everywhere)).
      2. Omarchy 4.5's Super+A (which sends Ctrl+A) does something sensible on every
         surface: text fields, the commit message, Working Changes, and the lists.
         Done, checked natively with no code change: text fields, the focused message
@@ -103,20 +103,20 @@ cover current upstream x86-64 Omarchy.
      3. `omarchy font set` reaches GitTurtle's code text, checked natively and fixed if
         needed. Done: it reached code text only on the next focus; GitTurtle now
         follows the fontconfig directory and applies a change at once
-        ([validation entry](../validation.md#october-26-omarchy-font-set-reaches-code-text-at-once)).
+        ([validation entry](../validation/2026-10.md#october-26-omarchy-font-set-reaches-code-text-at-once)).
      4. Every stock Omarchy theme (22 on 4.0.4-mac.1, light and unusual ones included)
         reads well in History, Compare, Changes, Settings and dialogs; fix what does not.
         Done: eight fixes (`1adbdf4` to `7553ddb`) and two the re-sweep prompted (menu
         separators `9eb9a36`, the edge above the shadow `de4a8a2`), checked in all 22
-        themes ([validation entry](../validation.md#october-27-every-stock-omarchy-theme-after-the-contrast-fixes)).
+        themes ([validation entry](../validation/2026-10.md#october-27-every-stock-omarchy-theme-after-the-contrast-fixes)).
         Medium and heavier interface weights rendered as Regular on Linux, because
         `.SystemUIFont` is IBM Plex Sans there and it was not installed; the owner chose
         (2026-10-27) to fix it in the way best for Linux and the project, legally. Done:
         Linux builds embed IBM Plex Sans, `ad04939`
-        ([validation entry](../validation.md#october-27-the-linux-interface-draws-its-real-weights)).
+        ([validation entry](../validation/2026-10.md#october-27-the-linux-interface-draws-its-real-weights)).
      5. Open in Editor uses the person's Omarchy editor (`omarchy launch editor`) when
         no external editor is set. Done, `bb98a57`
-        ([validation entry](../validation.md#october-26-omarchy-editor-default-terminal-and-a-launch-or-focus-binding)).
+        ([validation entry](../validation/2026-10.md#october-26-omarchy-editor-default-terminal-and-a-launch-or-focus-binding)).
      6. An Open in Terminal action for the repository, in the desktop's default
         terminal. Done, `bb98a57`, with the editor, terminal and file-manager
         handoffs added to Linux's Menu, where only the command palette had them.
@@ -139,23 +139,23 @@ cover current upstream x86-64 Omarchy.
         sweep (item 4) found `switch-checked-knob-and-disabled-label`'s knob at 1.2–2.5:1
         in six themes. Done on this branch: `switch-checked-knob-and-disabled-label`
         (`1adbdf4`), `switch-focus-ring-and-hover` (`4401009`,
-        [validation entry](../validation.md#october-27-switches-show-focus-and-hover)) and
+        [validation entry](../validation/2026-10.md#october-27-switches-show-focus-and-hover)) and
         `settings-focus-reveal-and-steady-switch` (`959fe6b`,
-        [validation entry](../validation.md#october-27-settings-keeps-keyboard-focus-in-view-and-switches-still))
+        [validation entry](../validation/2026-10.md#october-27-settings-keeps-keyboard-focus-in-view-and-switches-still))
         and `markdown-diff-fence-colours` (`fd551c6`, `278b822`,
-        [validation entry](../validation.md#october-27-diff-fences-in-markdown-source-take-the-patch-colours))
+        [validation entry](../validation/2026-10.md#october-27-diff-fences-in-markdown-source-take-the-patch-colours))
         and `review-file-preparation-lifecycle` (`ff7fc3c`,
-        [validation entry](../validation.md#october-27-pr-review-files-prepare-without-a-copy-and-resume-on-reopen)),
+        [validation entry](../validation/2026-10.md#october-27-pr-review-files-prepare-without-a-copy-and-resume-on-reopen)),
         `review-arrow-buttons-hover` (`2ab3348`) and `menu-checked-items-accessible` (`f57a514`,
-        [validation entry](../validation.md#october-27-ghost-buttons-lift-on-hover-and-ticked-menu-items-are-check-items)),
+        [validation entry](../validation/2026-10.md#october-27-ghost-buttons-lift-on-hover-and-ticked-menu-items-are-check-items)),
         `builtin-light-hover-lift` (`63414e3`,
-        [validation entry](../validation.md#october-27-light-palettes-hover-stands-off-subtle-and-pressed-ghost-buttons-take-selected)),
+        [validation entry](../validation/2026-10.md#october-27-light-palettes-hover-stands-off-subtle-and-pressed-ghost-buttons-take-selected)),
         and, awaiting native evidence, `narrow-large-text-compact-chrome` (`d1299fb`) and
         `copy-actions-say-copied` (`2133809`).
      9. Any further UI or UX improvement found along the way: the owner wants a
         first-class Omarchy app, good enough to be featured. Done so far: the Changes
         status bar counts the working tree instead of History's files, `8f2e8da`
-        ([validation entry](../validation.md#october-27-the-changes-status-bar-counts-the-working-tree)),
+        ([validation entry](../validation/2026-10.md#october-27-the-changes-status-bar-counts-the-working-tree)),
         and the navigation's section labels are 11 px medium, `25433f7`. Owner
         decision, 2026-10-27: take the recommendation on every taste item from the
         theme sweep and the font reviews. Not started; each needs native evidence:
@@ -212,7 +212,7 @@ cover current upstream x86-64 Omarchy.
           Dawn, the Reflog's current entry, and the toolkit's own ghost controls.
         Found by the native reviews of 2026-10-27 late, handled the same way:
         - Linux wording: done, `5ce690b` and `69dc3de`
-          ([validation entry](../validation.md#october-27-a-linux-build-names-linux-keys-and-offers-no-mac-only-action)).
+          ([validation entry](../validation/2026-10.md#october-27-a-linux-build-names-linux-keys-and-offers-no-mac-only-action)).
           System preview is hidden on Linux, where it could only fail; whether Linux gets an
           `xdg-open` equivalent is the owner's call (not on this list). The rebase dialog's
           keyboard help is not on the accessibility bus.
@@ -351,7 +351,7 @@ cover current upstream x86-64 Omarchy.
           floor figures in DESIGN.md are macOS's; the review Changes list's 13th row is 35 of 40 px;
           the hint's baseline sits 4.5 px above the page buttons'; Changes and Source use different
           insets; the pill tooltip is still to capture.
-        Found by the native reviews of 2026-10-28 (frames `.local/item8-2026-10-27/tools/qa/{mn,wi2,hd,gr,nh3}-{0aca11e,48660d6}/`; [validation entries](../validation.md#october-28-menus-headings-at-11-px-the-original-diff-caption-as-state-1-match-and-menus-inside-a-narrow-window)):
+        Found by the native reviews of 2026-10-28 (frames `.local/item8-2026-10-27/tools/qa/{mn,wi2,hd,gr,nh3}-{0aca11e,48660d6}/`; [validation entries](../validation/2026-10.md#october-28-menus-headings-at-11-px-the-original-diff-caption-as-state-1-match-and-menus-inside-a-narrow-window)):
         - Working inspector: the filter's accessible name follows its fitted placeholder; the short
           composer's leftover height lands between the title field and the commit action (20, 18
           and 33 px against a scaled 4 px); the labelled Actions trigger is 39 px tall in AT-SPI
@@ -441,7 +441,7 @@ cover current upstream x86-64 Omarchy.
           needs a release History scroll measurement; History's commit list has no Shift-F10 menu
           and the trees no Menu key; "Up to date" and tracking-branch creation still use the
           window notice.
-        Found by the native reviews of 2026-10-28 night (frames `.local/item8-2026-10-27/tools/qa/{t2,f2,d2,g2,q3d,q3c,q3g,q4*,prg,prm}-{00f0add,91fb95e}/` and `{pre,prf,sp2*}-{91fb95e,7342c3e}/`; [validation entries](../validation.md#october-28-night-the-header-gives-way-by-icons-historys-search-is-named-by-its-label-and-rows-report-what-is-drawn)):
+        Found by the native reviews of 2026-10-28 night (frames `.local/item8-2026-10-27/tools/qa/{t2,f2,d2,g2,q3d,q3c,q3g,q4*,prg,prm}-{00f0add,91fb95e}/` and `{pre,prf,sp2*}-{91fb95e,7342c3e}/`; [validation entries](../validation/2026-10.md#october-28-night-the-header-gives-way-by-icons-historys-search-is-named-by-its-label-and-rows-report-what-is-drawn)):
         - Regressions (fix first): at 18 pt in 461 × 490 the Stashes dialog cuts its "Choose a
           stash…" line mid-line (`dd922c9` with `cb7fa2e`); the keyboard commit menu ends 2 px above
           the status bar instead of 8 (`71ab8a4`).
@@ -992,7 +992,7 @@ cover current upstream x86-64 Omarchy.
    runs the token check before the tag; the held Return with a composing input method
    stays post-launch, with no engine installed for it now. The token check ran the same
    day and found no token shape, and the app created a pull request end to end
-   ([record](../validation.md#november-16-a-live-github-sign-in-writes-no-token-and-the-app-creates-a-pull-request-end-to-end)).
+   ([record](../validation/2026-11.md#november-16-a-live-github-sign-in-writes-no-token-and-the-app-creates-a-pull-request-end-to-end)).
    Still the owner's: the x86-64 machine, and the first release's tag, environment and
    dispatch.
    Then add
@@ -1026,7 +1026,7 @@ cover current upstream x86-64 Omarchy.
    Record it in the validation matrix and update the README's support table.
 
    **Run on 2026-11-17, and nothing met the release bar**
-   ([record](../validation.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop)):
+   ([record](../validation/2026-11.md#november-17-the-ci-built-x86-64-archive-passes-the-omarchy-check-on-an-x86-64-omarchy-45-laptop)):
    on the owner's x86-64 machine (Omarchy 4.5.0-3, an AMD laptop at 1,366 × 768), with
    the CI-built archive of `a9d2fea4`, the commit to be released. Covered: install, the
    `gitturtle-bin` package build, first launch, 23 of 24 stock themes live with the five

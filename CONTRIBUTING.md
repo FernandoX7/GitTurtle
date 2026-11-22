@@ -8,10 +8,10 @@ Use your preferred editor and AI tools, if any. The same architecture, commit an
 
 ## Set up a checkout
 
-Fork the repository, clone your fork, and create a branch for your change. Install Git and [rustup](https://rustup.rs/). `rust-toolchain.toml` selects Rust 1.99.0, rustfmt and Clippy; keep `Cargo.lock` in use.
+Fork the repository, clone your fork, and create a branch for your change. Install Git and [rustup](https://rustup.rs/). `rust-toolchain.toml` selects Rust 1.100.0, rustfmt and Clippy; keep `Cargo.lock` in use.
 
-- **macOS:** install Xcode 26 or later and its Metal toolchain. The [packaging guide](docs/user-guide.md#package-locally-on-macos) describes local ad-hoc-signed builds.
-- **Linux:** follow the [Ubuntu 24.04 runtime and build prerequisites](docs/linux.md#build-from-source-on-ubuntu-2404). A desktop session and graphics drivers are required for native interaction; headless compilation is a separate check.
+- **macOS:** install Xcode 26 or later (including its Metal toolchain) and Python 3.11+. The [packaging guide](docs/user-guide.md#package-locally-on-macos) describes local ad-hoc-signed builds.
+- **Linux:** follow the [Arch/Omarchy](docs/linux.md#arch-linux-and-omarchy) or [Ubuntu 24.04 runtime and build prerequisites](docs/linux.md#build-from-source-on-ubuntu-2404). A desktop session and graphics drivers are required for native interaction; headless compilation is a separate check.
 
 From the repository root:
 
@@ -64,10 +64,10 @@ For packaging or performance work, also run `cargo build --release --locked -p g
 
 Docs-only changes need link, command and diff checks. Artwork changes need verification of their consumers and derived resources; see [asset conventions](assets/icons/README.md). Neither requires unrelated Rust tests.
 
-Development-tooling changes use `python3 scripts/check-agent-guidance.py`, `python3 -B -m unittest discover -s scripts/dev -t scripts -p 'test_*.py'`, and `python3 -B -m unittest scripts/test_gate.py scripts/test_claude_rm_hook.py`. Follow the [development workflow](docs/development/README.md) for roles, skills, and evidence; product checks apply when those changes also affect the client.
+Development-tooling changes use `python3 scripts/check-agent-guidance.py`, `python3 scripts/check-docs-sync.py`, `python3 -B -m unittest discover -s scripts/dev -t scripts -p 'test_*.py'`, `python3 -B -m unittest scripts/test_gate.py scripts/test_claude_rm_hook.py`, and `python3 -m unittest discover -s scripts/native_qa -t scripts -p 'test_*.py'`. Follow the [development workflow](docs/development/README.md) for roles, skills, and evidence; product checks apply when those changes also affect the client.
 
 CI changes also use `python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py'`
-and pinned actionlint 1.7.12 on both Quality and Website workflows. The
+and pinned actionlint 1.7.12 across all four workflows (`quality.yml`, `advisories.yml`, `release.yml`, and `website.yml`). The
 [CI guide](docs/ci.md#local-verification) records the download checksum and commands.
 
 ## Commit cohesive changes
@@ -101,19 +101,19 @@ required status check; its transitional per-platform mirrors were retired after
 the documented protection migration. Formatting reports independently; each platform runs
 workspace tests (including doctests) in a debug test job, strict all-target Clippy in
 a job beside it, and a separate optimized build/package job. A cache hit never skips
-validation. The [job graph and measurement boundary](docs/ci.md#parallel-validation-and-coverage)
-describe the retained coverage and pending hosted timing evidence. Do not change
+validation. The [CI guide](docs/ci.md#parallel-validation-and-coverage)
+describes the retained coverage, sharding, and recorded hosted run evidence. Do not change
 repository rules or bypass a failed requirement merely to obtain a green PR.
 
 Sanitize screenshots, logs and fixtures before posting: remove credentials, private remote URLs, personal paths, identities and proprietary repository content. For a suspected vulnerability, use [private security reporting](SECURITY.md) rather than an issue or public PR.
 
 ### Focused security review
 
-Use the dedicated [security reviewer](.codex/agents/security-reviewer.toml) for
+Use the dedicated [security reviewer](.agents/roles/security-reviewer.md) for
 changes to executable code, credentials, repository writes, external commands,
 dependencies, or CI/package/release trust boundaries. The
-[review procedure](docs/development/security-review.md) applies to interactive
-coordination and the development controller. Preserve the session's selected
+[review procedure](docs/development/security-review.md) applies to all interactive
+and delegated reviews. Preserve the session's selected
 model and effort. Reuse an unchanged review only while its candidate, base and
 relevant callers remain unchanged.
 

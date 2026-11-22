@@ -21,7 +21,7 @@ conflict-draft and cold History restart corrections passed native checks on
 `eb3dd264c3d03eda7a3e937d307bf100c603ef02` passed macOS/Linux gates, was installed
 at `/Applications/GitTurtle.app`, and passed the installed-path identity and
 Compare/Back/Settings smoke checks. Genuine app state and system settings were
-restored. See the [milestone record](../../native-polish-milestone.md),
+restored. See the [milestone record](../../archive/2026-09/native-polish-milestone.md),
 [final validation evidence](validation.json), and [unaltered visual comparison](visuals/README.md).
 
 The measurements below remain attached to source

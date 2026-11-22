@@ -12,7 +12,7 @@ retain their earlier `cc4ffac` identity. The native capture coordinator recorded
 the final package executable SHA-256 as
 `b2deab6aec9d33a77caab0fad7a814a927fbe862c7705f9effed3dcfdd70b610`
 and UUID `37B51CFC-5658-3D0D-A83A-0C87DC4FA564`. Package and installation checks
-are recorded in the [milestone ledger](../../../native-polish-milestone.md).
+are recorded in the [milestone ledger](../../../archive/2026-09/native-polish-milestone.md).
 Screenshot bytes alone do not establish an installed package identity or a
 performance gain.
 

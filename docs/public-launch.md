@@ -16,13 +16,14 @@ settings from the remaining requirements for a public binary release.
   findings below remain part of the record; publication does not erase earlier
   revisions or establish a new privacy audit. No history rewrite was requested
   or performed.
-- [x] Record current [native validation](public-launch-validation.md) and genuine
+- [x] Record current [native validation](archive/2026-09/public-launch-validation.md) and genuine
   README screenshots. Actual desktop checks remain separate from clean builds,
   headless checks, virtual X11/Wayland sessions, and historical macOS results.
 - [x] Configure repository description/topics, Dependabot alerts, full-commit
   pinning for Actions, and protection for `main`. Contributions require a pull
-  request, resolved conversations, an up-to-date branch and both GitHub Actions
-  checks: `Rust · macos-15` and `Rust · ubuntu-24.04`. Force pushes and branch
+  request, resolved conversations, an up-to-date branch and the required
+  `Quality gate` aggregate check (which replaced the earlier per-platform
+  `Rust · macos-15` and `Rust · ubuntu-24.04` rules). Force pushes and branch
   deletion are disabled. No approving review is required while this is a solo
   project; the owner's administrator override remains available.
 - [x] Enable [private vulnerability reporting](../SECURITY.md). The API reports it
@@ -51,9 +52,9 @@ settings from the remaining requirements for a public binary release.
 No additional email alias, funding enrollment or visibility action is needed.
 Use pull requests for future contributions and review their changes and checks
 before merging; enabling auto-merge does not automatically merge every PR.
-The owner retains administrator override for emergencies. The Quality workflow
-uses standard `ubuntu-24.04` and `macos-15` runners, whose execution is free for
-public repositories; earlier private runs used the account's allowance. See
+The owner retains administrator override for emergencies. The Quality workflow uses standard free public-repository runners
+(`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15`, and `macos-26`); earlier
+private runs used the account's allowance. See
 [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
 
 The owner should select **Watch → Custom → Security alerts** on GitHub and check
@@ -95,9 +96,7 @@ remain authoritative. The owner's machine was reinstalled with the validated
 `417b5e8` native build, preserving settings and a recoverable previous
 installation. Its executable hash remained unchanged. Use the native record's
 executable identity and package hashes rather than inferring them from a source
-commit or an earlier diagnostic prototype. The changes and evidence are now
-public on `main` through merge `483782d`; the resulting hosted CI run is pending,
-not a recorded pass.
+commit or an earlier diagnostic prototype. The initial launch changes landed on `main` through merge `483782d` and subsequent CI runs are recorded in [docs/ci.md](ci.md).
 
 The [website](../website/README.md) lives separately in `website/public/` and
 requires no native build or package-manager installation. It presents real app
@@ -108,9 +107,9 @@ checks, and the Cloudflare Pages deployment.
 Website publication was separately approved and completed:
 
 - [x] Publish the reviewed static assets to project `gitturtle` at
-  [gitturtle.pages.dev](https://gitturtle.pages.dev). Deployment
-  `b39cf661-dde0-4d54-bfc1-347c9f62893e` contains the exact `website/public/`
-  bytes from source `0db617969b94c565ec1f89d94a03055e705c1efb`.
+  [gitturtle.pages.dev](https://gitturtle.pages.dev) (initial September 14
+  deployment `b39cf661`; latest recorded production deployments live in
+  [website/README.md](../website/README.md#cloudflare-pages-deployment)).
 - [x] Create the approved `gitturtle.com` custom-domain binding and its apex
   CNAME to `gitturtle.pages.dev`. This was the only DNS record added.
 - [x] Confirm Cloudflare reports `gitturtle.com` active with verification and

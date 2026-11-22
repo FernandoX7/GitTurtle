@@ -85,6 +85,13 @@ class PageChecks(unittest.TestCase):
         self.assertTrue(any("missing anchor" in issue for issue in errors))
         self.assertTrue(any("GitHub link" in issue for issue in errors))
 
+    def test_orphaned_public_asset_is_rejected(self):
+        assets = self.public / "assets"
+        assets.mkdir()
+        (assets / "unused.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        errors = check_site(self.root)
+        self.assertTrue(any("orphaned public asset" in issue and "unused.png" in issue for issue in errors))
+
 
 if __name__ == "__main__":
     unittest.main()

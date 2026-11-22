@@ -127,6 +127,7 @@ def classify_paths(paths: list[bytes], *, has_images: bool | None = None) -> dic
                              ".agents/", ".codex/", ".claude/", ".githooks/",
                              "docs/development/"))
                 or path in ("scripts/check-agent-guidance.py", "scripts/check-docs-sync.py",
+                            "docs/doc-manifest.json",
                             "scripts/gate.py", "scripts/test_gate.py",
                             "scripts/test_claude_rm_hook.py")
                 or parts[-1] in ("AGENTS.md", "CLAUDE.md", "GEMINI.md")):

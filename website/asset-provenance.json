@@ -1,5 +1,5 @@
 {
-  "status": "All product pictures come from the repository README’s native captures in docs/screenshots/readme/. They show a disposable demo repository in a clean release build of 025eaf40bf3b1f565b4488bd4434e2e3b1c6c141 on Omarchy 4.5. Eight sources are single window grabs. Three are sheets composed from native frames. Ten site PNGs are byte-for-byte copies. The desktop sheet and three responsive tour WebPs are full-frame downscales. Each derivative records its source hash and method.",
+  "status": "All product pictures come from the repository README\u2019s native captures in docs/screenshots/readme/. They show a disposable demo repository in a clean release build of 025eaf40bf3b1f565b4488bd4434e2e3b1c6c141 on Omarchy 4.5. Five sources are single window grabs. One is a sheet composed from native frames. Five site PNGs are byte-for-byte copies. The desktop sheet and three responsive tour WebPs are full-frame downscales. Each derivative records its source hash and method.",
   "recorded_on": "2026-11-16",
   "assets": [
     {
@@ -9,18 +9,18 @@
       "sha256": "aff11743a10f630adad584ce07868e284e3e9a092240fdd642c3b5fe7b97884e",
       "bytes": 515200,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/tour-history.webp",
       "source": "docs/screenshots/readme/history.png",
       "source_sha256": "aff11743a10f630adad584ce07868e284e3e9a092240fdd642c3b5fe7b97884e",
-      "method": "Resize the complete 2960 × 1946 opaque sRGB capture to 1200 × 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
+      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
       "identity": "025eaf40bf3b1f565b4488bd4434e2e3b1c6c141, clean release, aarch64-unknown-linux-gnu, rustc 1.99.0; M2 Pro MacBook Pro, Omarchy 4.5.0-3, Hyprland 0.56.2 on native Wayland at scale 2; Omarchy theme following a stock Tokyo Night; History, project list on, ccb54bc selected with its seven changed files; window grab, 2960x1946",
       "sha256": "f77780c0f97f7e0f8b9a94243d1622296017553b1492e61e62d8a5297675cf0f",
       "bytes": 185746,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/compare.png",
@@ -29,18 +29,18 @@
       "sha256": "b88c9eabf3a7ebe561c92688a978fc5404e0d15b80079a228a3ebf868bbe7877",
       "bytes": 483122,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/tour-compare.webp",
       "source": "docs/screenshots/readme/compare.png",
       "source_sha256": "b88c9eabf3a7ebe561c92688a978fc5404e0d15b80079a228a3ebf868bbe7877",
-      "method": "Resize the complete 2960 × 1946 opaque sRGB capture to 1200 × 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
+      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
       "identity": "Same build, machine, desktop and theme as history.png; Compare, split view of src/App.tsx in ccb54bc; window grab, 2960x1946",
       "sha256": "d6a3dc90314a3df9f4ecbd942e32974b06b6f5861cbbb1b073b688fddfe45092",
       "bytes": 225920,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/changes.png",
@@ -49,27 +49,18 @@
       "sha256": "34e7a9e72bad3e98bef3f2c6cc9685374958b2058640e66c71505a683bc8bf0b",
       "bytes": 362466,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/tour-stage.webp",
       "source": "docs/screenshots/readme/changes.png",
       "source_sha256": "34e7a9e72bad3e98bef3f2c6cc9685374958b2058640e66c71505a683bc8bf0b",
-      "method": "Resize the complete 2960 × 1946 opaque sRGB capture to 1200 × 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
+      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
       "identity": "Same build, machine, desktop and theme as history.png; Changes, the unstaged diff of src/App.tsx with two hunks, two files staged, a message typed; window grab, 2960x1946",
       "sha256": "3604da6d6bbed6d6ee30b4d60de2f966e8144c697276bc0b63a87d04e5896e95",
       "bytes": 131982,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
-    },
-    {
-      "site_path": "public/assets/file-history.png",
-      "source": "docs/screenshots/readme/file-history.png",
-      "identity": "Same build, machine, desktop and theme as history.png; File history of src/theme.css, revision 2 of 5; window grab, 2960x1946",
-      "sha256": "690a979a01ebafc7ecb9e0c7dce61514d4a72879f3cfa36e193d5b1f59658883",
-      "bytes": 360627,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/image-compare.png",
@@ -78,25 +69,7 @@
       "sha256": "11eecd5ba31fe3c7aba7f91b735551a05c7841d2c1324236a5438979ebc5bf62",
       "bytes": 279580,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
-    },
-    {
-      "site_path": "public/assets/keyboard-shortcuts.png",
-      "source": "docs/screenshots/readme/keyboard-shortcuts.png",
-      "identity": "Same build, machine, desktop and theme as history.png; Keyboard Shortcuts over History, 64 shortcuts listed; window grab, 2960x1946",
-      "sha256": "deb090e33b9e75009aca6b878e5d85c4bb7ad7dc9422b9c07d9195554eaf8c41",
-      "bytes": 434420,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
-    },
-    {
-      "site_path": "public/assets/settings-themes.png",
-      "source": "docs/screenshots/readme/settings-themes.png",
-      "identity": "Same build, machine, desktop and theme as history.png; Settings, the Omarchy card selected and following Tokyo Night; window grab, 2960x1946",
-      "sha256": "c6b5dc65e5b5ea241dd07c85f4f41ce273674c85b9fd5530ed9f1294050683e5",
-      "bytes": 363935,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/theme-editor.png",
@@ -105,25 +78,7 @@
       "sha256": "bd5d124bcb8d88bf8a835cd8547491099d67900fef1f8fef0f1f1e3f06e41ba4",
       "bytes": 363980,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
-    },
-    {
-      "site_path": "public/assets/themes-builtin.png",
-      "source": "docs/screenshots/readme/themes-builtin.png",
-      "identity": "Same build, machine and desktop as history.png; a sheet composed from eight History frames, one per built-in theme chosen in Settings (Midnight, Catppuccin Mocha, Nord, Ember, Porcelain, Braden, Rosé Pine Dawn, Solarized Light), each reduced to a labeled 441-pixel tile on a transparent background; not a single grab; 1836x694",
-      "sha256": "b123a8d89c67b88aa7974ece1729a4791037b071ef9d0e9964ad1b4d95847fd4",
-      "bytes": 626592,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
-    },
-    {
-      "site_path": "public/assets/omarchy-themes.png",
-      "source": "docs/screenshots/readme/omarchy-themes.png",
-      "identity": "Same build, machine and desktop as history.png; a sheet composed from History frames under 23 stock Omarchy themes, eighteen dark and five light, each set with the desktop's omarchy-theme-set and reduced to a labeled 286-pixel tile on a transparent background; not a single grab; 1836x1002",
-      "sha256": "b0b9efdb2661a1b4d59cb79b72fac04ae834dde16055388b04ccc42af20d17cc",
-      "bytes": 948008,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/omarchy-desktop.png",
@@ -135,7 +90,7 @@
       "sha256": "41f721cb538e8c069712462f98040216d3a65f28c806715b5bd3cb10763a0f8f",
       "bytes": 1177156,
       "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
     },
     {
       "site_path": "public/assets/app-icon.png",
@@ -143,16 +98,6 @@
       "identity": "existing project artwork",
       "sha256": "c932e5c84eca7c3ac0c35c51da3facc2ca4a22dee34a79a0286641f12e42fdad",
       "bytes": 25906
-    },
-    {
-      "site_path": "public/assets/turtle.png",
-      "source": "assets/AppIcon.icon/Assets/turtle.png",
-      "source_sha256": "73262e257f69c3b474ad02356dc42d15e916183c539ebeb2ba5bb9c1e70bb9a1",
-      "source_bytes": 942906,
-      "method": "Project artwork, not an app capture: the whole picture scaled down from 1254x1254 to 540x540, three times its displayed size, with its alpha channel kept and no ancillary chunk written: ImageMagick 7.1.2-34, magick <source> -filter Lanczos -resize 540x -define png:include-chunk=none <site_path>",
-      "identity": "existing canonical project artwork, scaled down",
-      "sha256": "4acc96f40346ad54940d94cd112f90e4c923b9c0d461c0dfe27473ea29bee39b",
-      "bytes": 235756
     },
     {
       "site_path": "public/fonts/manrope-latin.a30ddcd34970.woff2",
@@ -166,7 +111,7 @@
       "source": "website/share-card.html",
       "source_sha256": "7c6fff207ce8588dea542e9905d5092374088b4eb1f067b12b7bb61d6880840f",
       "source_bytes": 2528,
-      "method": "Rendered website/share-card.html at 1200 × 630 CSS pixels and device scale 1 in Chromium 157 after the bundled Manrope font and both local images loaded.",
+      "method": "Rendered website/share-card.html at 1200 \u00d7 630 CSS pixels and device scale 1 in Chromium 157 after the bundled Manrope font and both local images loaded.",
       "identity": "Sharing artwork using the project app icon and the complete native History capture. The source assets and font have individual entries above.",
       "sha256": "cd8e0958362781d06cbbae80b81a37c7874cb0f229196c54d02db16d6cacd476",
       "bytes": 295959

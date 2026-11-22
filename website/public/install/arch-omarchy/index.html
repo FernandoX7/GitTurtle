@@ -56,7 +56,7 @@
 cd GitTurtle
 rustup show active-toolchain
 ./scripts/package-linux.sh</code></pre>
-<p>The checkout selects Rust 1.99.0. The packager builds the optimized app for the architecture of this machine. Keep <code>dav1d</code> installed after the build because the executable links to its shared library.</p>
+<p>The checkout selects Rust 1.100.0. The packager builds the optimized app for the architecture of this machine. Keep <code>dav1d</code> installed after the build because the executable links to its shared library.</p>
 <h2 id="install">Install and launch</h2>
 <pre><code>python3 dist/gitturtle-linux-$(uname -m)/install.py
 "$HOME/.local/bin/gitturtle" --build-info</code></pre>

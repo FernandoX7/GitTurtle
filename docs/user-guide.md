@@ -4,7 +4,7 @@
 
 GitTurtle is a native Git client built with Rust and GPUI for everyday Git work, history, code changes, and image comparisons. It uses your installed Git executable, with no Electron runtime or AI features. Browsing stays local; repository writes and network operations start from explicit actions.
 
-Native builds have been exercised on macOS; the [validation notes](validation.md) and [current milestone record](native-polish-milestone.md) identify the checked builds and limits. [Local Linux/aarch64 workspace tests, strict Clippy and release builds](benchmarks/native-polish-20260910/validation.json) were exercised for this milestone. A [Linux x86-64 installation and Wayland startup check](validation.md#september-14-linux-installation-and-wayland-startup) now records a running Pop!_OS build and user-confirmed window appearance; the [Ubuntu readiness checks](benchmarks/linux-ubuntu-20260914/README.md) add clean Ubuntu build/runtime installation and virtual X11/Wayland workflow coverage. Actual Ubuntu GNOME desktop acceptance remains pending. The [quality workflow](../.github/workflows/quality.yml) runs on GitHub-hosted macOS and Linux runners, including an Arch Linux container; its [CI record](ci.md) describes the jobs and dated hosted results. Current source checks and exact identities are recorded separately. See [the design specification](../DESIGN.md) for the broader intended experience.
+Native builds have been exercised on macOS Apple Silicon and Linux (Omarchy 4.5 on x86-64 and AArch64, plus earlier Pop!_OS/Ubuntu startup checks); [docs/validation.md](validation.md) and its monthly logs identify every checked build, OS, backend, and limit. Actual physical Ubuntu GNOME desktop acceptance remains pending. The [quality workflow](../.github/workflows/quality.yml) runs on GitHub-hosted macOS (`macos-15`, `macos-26`) and Linux (`ubuntu-24.04`, `ubuntu-24.04-arm`, and an Arch Linux container) runners; [docs/ci.md](ci.md) describes current jobs and hosted run records. See [DESIGN.md](../DESIGN.md) for the living design system.
 
 ## Current source features
 
@@ -28,7 +28,7 @@ Native builds have been exercised on macOS; the [validation notes](validation.md
 - Twenty built-in themes: Midnight, Braden, Graphite, Tokyo Night, Catppuccin Mocha, Nord, Porcelain, Sandstone, Deep Sea, Ember, Solarized Dark, Solarized Light, One Dark, One Light, Rosé Pine, Rosé Pine Dawn, Dracula, Alucard, Kanagawa Wave, and Kanagawa Lotus, plus up to 32 custom themes of your own and, on Linux desktops running Omarchy, an Omarchy theme that follows the desktop's; follow-system appearance; independent interface/code text sizes; comfortable/compact density; configurable history columns; recent-project and startup preferences.
 - A searchable Command-Shift-P / Ctrl+Shift+P command palette, native macOS menus and a Linux Menu (F10), searchable shortcut help, and explicit repository handoff to the file manager, a terminal or a preferred editor.
 - Native PDF pages on demand with extracted text, rendered GFM Markdown with inline Mermaid and captured-revision images, and interactive linked or independent 3D cameras. [Document preview coverage](document-previews.md) describes the finite formats, resources and fallbacks.
-- Explicit GitHub account connection, stored in macOS Keychain or, on Linux, in your desktop keyring (pull-request review on Linux is covered by tests and the offline fixture; a live sign-in is still to be checked), PR discovery and creation, native changed-file review, inline lines/ranges, existing threads, and collected review submission with durable drafts. [GitHub collaboration](github-collaboration.md) records provider and verification limits.
+- Explicit GitHub account connection, stored in macOS Keychain or, on Linux, in your desktop keyring (live sign-in, disconnect/reconnect, and end-to-end PR creation passed on Omarchy 4.5 on [November 16](validation/2026-11.md#november-16-a-live-github-sign-in-writes-no-token-and-the-app-creates-a-pull-request-end-to-end); live commenting/review submission on Linux and live sign-in on macOS remain unchecked), PR discovery and creation, native changed-file review, inline lines/ranges, existing threads, and collected review submission with durable drafts. [GitHub collaboration](github-collaboration.md) records provider and verification limits.
 - Repository Git identity settings, resizable panes, keyboard navigation, and local refresh after filesystem changes or returning focus.
 
 ## Open a project and work with Git
@@ -99,11 +99,11 @@ History search matches literal text in messages, author names, and hashes beyond
 
 Image comparisons offer **Side by side**, **Overlay** and **Wipe**. Overlay adjusts After opacity; Wipe reveals Before on the left and After on the right. Zoom/pan and keyboard adjustment controls use shared source coordinates, retaining dimension differences and absent sides. The scale label distinguishes the bounded comparison preview from source resolution. [Feature semantics](macos-features.md) covers attribution, images and macOS conventions.
 
-The application retains opaque theme surfaces after a real native Liquid Glass prototype exposed a GPUI compositing limitation. The [investigation and captured prototype](liquid-glass-investigation.md) explain that result; native Liquid Glass is not advertised as an implemented appearance.
+The application retains opaque theme surfaces after a real native Liquid Glass prototype exposed a GPUI compositing limitation. The [investigation and captured prototype](archive/2026-09/liquid-glass-investigation.md) explain that result; native Liquid Glass is not advertised as an implemented appearance.
 
 ## Run from source
 
-Use Rust 1.99 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
+Use Rust 1.100 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
 
 For Linux prerequisites and a user-local executable, icon and application launcher, see [Build and install locally on Linux](linux.md).
 
@@ -177,7 +177,7 @@ Open **Help → Keyboard Shortcuts** on macOS or **Menu → Keyboard Shortcuts**
 | Command-H / Command-Option-H | Hide GitTurtle / Hide other applications |
 | Command-Q | Quit |
 
-For shared shortcuts, Linux uses **Ctrl** instead of **Command** and **Alt** instead of **Option**. Hide and Hide Other Applications are macOS-only. Linux Ctrl+Q and the visible window controls have [initial native evidence](validation.md#september-14-linux-icon-and-window-control-correction); the [validation record](validation.md) identifies further keyboard coverage by build and session. Text previews support selection and copying without editing repository content.
+For shared shortcuts, Linux uses **Ctrl** instead of **Command** and **Alt** instead of **Option**. Hide and Hide Other Applications are macOS-only. Linux Ctrl+Q and the visible window controls have [initial native evidence](validation/2026-09.md#september-14-linux-icon-and-window-control-correction); the [validation record](validation.md) identifies further keyboard coverage by build and session. Text previews support selection and copying without editing repository content.
 
 ## Repository operations
 
@@ -209,7 +209,7 @@ The [Git service documentation](../crates/git-core/README.md) describes passive-
 
 ## Development and measurement
 
-[The quality workflow](../.github/workflows/quality.yml) configures the following checks with Rust 1.99.0: workspace tests and strict Clippy on macOS 15 and Ubuntu 24.04, workspace tests on Arch Linux in a container, and release compilation and package checks on macOS 26 and Ubuntu 24.04. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See the [dated hosted results](benchmarks/2026-09-15-ci.md); configured jobs and local passes do not establish hosted or native acceptance.
+[The quality workflow](../.github/workflows/quality.yml) configures locked workspace tests (sharded across macOS 15, Ubuntu 24.04, and Arch Linux), strict all-target Clippy (macOS 15 and Ubuntu 24.04), release builds and package checks on macOS 26, Ubuntu 24.04 x86-64, and Ubuntu 24.04 ARM64, plus `package-transfer` artifact verification, using Rust 1.100.0. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See [docs/ci.md](ci.md) for current CI architecture and hosted run records; configured jobs and local passes do not establish physical desktop acceptance.
 
 ```sh
 cargo fmt --all -- --check

@@ -1,6 +1,6 @@
 # Omarchy theme: reread, switch and choice latency, 2026-09-28
 
-This is the release measurement that item D's contract asks for: the reread of the desktop's current Omarchy theme (read, parse, map, fit and readability check) and the latency from a switch to the frame that shows it. It uses the traces defined in [metrics](metrics.md): `gitturtle.omarchy_reread_ms`, `gitturtle.omarchy_apply_frame_ms` and, for choosing the card, `gitturtle.theme_apply_frame_ms`. Raw samples are in [the JSON](2026-09-28-omarchy-theme.json). The [validation entry](../validation.md#september-28-omarchy-theme-on-linux) covers the frames.
+This is the release measurement that item D's contract asks for: the reread of the desktop's current Omarchy theme (read, parse, map, fit and readability check) and the latency from a switch to the frame that shows it. It uses the traces defined in [metrics](metrics.md): `gitturtle.omarchy_reread_ms`, `gitturtle.omarchy_apply_frame_ms` and, for choosing the card, `gitturtle.theme_apply_frame_ms`. Raw samples are in [the JSON](2026-09-28-omarchy-theme.json). The [validation entry](../validation/2026-09.md#september-28-omarchy-theme-on-linux) covers the frames.
 
 ## Setup
 

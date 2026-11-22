@@ -44,35 +44,30 @@ The performance page identifies the source build, hardware, sample size and timi
 
 ### Screenshot provenance and replacement
 
-All product images come from the repository captures in `docs/screenshots/readme/`. Ten full-size PNGs are byte-for-byte copies. The desktop sheet and the three mobile tour previews are full-frame reductions. They are unaltered native captures of `gitturtle-025eaf4`, a clean release build of `025eaf40bf3b1f565b4488bd4434e2e3b1c6c141`, on an M2 Pro MacBook Pro running Omarchy 4.5.0-3 (Hyprland 0.56.2 on native Wayland, at scale 2). They show a disposable demo repository whose people, addresses and paths are invented. [The November 16 record](../docs/validation.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45) holds the build, the method, the fixture, each picture's state and hash, and the privacy check.
+All product images come from the repository captures in `docs/screenshots/readme/`. Five full-size PNGs are byte-for-byte copies. The desktop sheet and the three mobile tour previews are full-frame reductions. They are unaltered native captures of `gitturtle-025eaf4`, a clean release build of `025eaf40bf3b1f565b4488bd4434e2e3b1c6c141`, on an M2 Pro MacBook Pro running Omarchy 4.5.0-3 (Hyprland 0.56.2 on native Wayland, at scale 2). They show a disposable demo repository whose people, addresses and paths are invented. [The November 16 record](../docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45) holds the build, the method, the fixture, each picture's state and hash, and the privacy check.
 
 | Website asset | README picture | Shown state |
 | --- | --- | --- |
 | `public/assets/history.png` | `history.png` | History in the Omarchy theme following Tokyo Night, project list on, a commit selected with its seven changed files; 2960 × 1946. |
 | `public/assets/compare.png` | `compare.png` | Compare, the split view of `src/App.tsx` in the selected commit; 2960 × 1946. |
 | `public/assets/changes.png` | `changes.png` | Changes, the unstaged diff of `src/App.tsx` with two hunks, two files staged and a message typed; 2960 × 1946. |
-| `public/assets/file-history.png` | `file-history.png` | File history of `src/theme.css`, revision 2 of 5; 2960 × 1946. |
 | `public/assets/image-compare.png` | `image-compare.png` | Compare of a PNG, Side by side at Fit; 2960 × 1946. |
-| `public/assets/keyboard-shortcuts.png` | `keyboard-shortcuts.png` | Keyboard Shortcuts over History, 64 shortcuts listed; 2960 × 1946. |
-| `public/assets/settings-themes.png` | `settings-themes.png` | Settings, the Omarchy card selected and following Tokyo Night; 2960 × 1946. |
 | `public/assets/theme-editor.png` | `theme-editor.png` | The theme editor, an unsaved theme based on Midnight with its accent changed; 2960 × 1946. |
-| `public/assets/themes-builtin.png` | `themes-builtin.png` | A sheet: the History frame in eight built-in themes, four dark and four light; 1836 × 694. |
-| `public/assets/omarchy-themes.png` | `omarchy-themes.png` | A sheet: the History frame under 23 stock Omarchy themes, eighteen dark and five light; 1836 × 1002. |
 | `public/assets/omarchy-desktop.png` | `omarchy-desktop.png`, scaled down | A sheet: the whole monitor with the app tiled beside a terminal on Tokyo Night, and on Catppuccin Latte and Gruvbox at half size; 1728 × 1692, from 3456 × 3383. |
 
-The eight 2960 × 1946 pictures are single grabs of the app's window. The three sheets are composed from frames taken the same way and are not single grabs: the two theme sheets reduce each frame to a labeled tile on a transparent background, and the desktop sheet holds whole-monitor frames. All eleven come from Linux on Wayland: none is a macOS or X11 capture. They establish the displayed application state, not speed. `asset-provenance.json` records each picture's source path, bytes, SHA-256 and evidence; `check.py` compares the hashes, and a scaled-down picture's source hash too.
+The five 2960 × 1946 pictures are single grabs of the app's window; the desktop sheet holds composed whole-monitor frames. All six come from Linux on Wayland: none is a macOS or X11 capture. They establish the displayed application state, not speed. `asset-provenance.json` records each picture's source path, bytes, SHA-256 and evidence; `check.py` compares the hashes, checks scaled-down source hashes, and rejects unreferenced orphan files under `public/assets/`.
 
 On screens up to 710 CSS pixels wide, browsers that support WebP load 1200 × 789 previews of History, Compare and Stage. Each image still links to its full-size PNG.
 
 The README's `omarchy-desktop.png` is 2,405,054 bytes, more than the 2 MiB (2,097,152 bytes) that `smoke.py` allows one response, so the site carries the whole picture scaled to half size, 1,728 pixels wide, with ImageMagick's Lanczos filter and its alpha channel kept: 1,177,156 bytes. A 2,208-pixel copy weighed 1.73 MB, over the 1.5 MB allowed for this picture.
 
-Two of the README's pictures are not on the site: `command-palette.png` and `markdown.png` are not used by the page.
+README captures not referenced by the site (`command-palette.png`, `file-history.png`, `keyboard-shortcuts.png`, `markdown.png`, `omarchy-themes.png`, `settings-themes.png`, `themes-builtin.png`) stay in `docs/screenshots/readme/` only and are not duplicated into `public/assets/`.
 
 The first three pictures the site shipped, captures of preview source `013e3348a29735617982bfd217551fdf91e4c694` from September 14, 2026, were replaced on November 16, 2026. Their record remains in [the September preview evidence directory](../docs/benchmarks/native-preview-20260914).
 
 For later picture updates, copy the README's picture byte for byte. An app capture may be scaled down as a whole, never cropped, retouched or recolored, and the derivative's provenance entry names its source file, the source's sha256 and the method. Give each `img` its true `width` and `height` and a real alt text, and update this table, the provenance entries, the captions and the visible evidence link together. A short real recording may be added with visible playback controls, no autoplay, and a still-image fallback.
 
-The app icon and turtle use existing project artwork from `assets/branding/app-icon.png` and `assets/AppIcon.icon/Assets/turtle.png`. The turtle is artwork, not an app capture: the site's copy is the 1254 × 1254 original (942,906 bytes) scaled to 540 pixels wide (235,756 bytes), and its provenance entry names the source's hash and the method. Manrope Latin is self-hosted from Google Fonts (variable 400–800); its original SIL Open Font License is retained in `public/fonts/OFL.txt`. Typeface source: [Google Fonts Manrope](https://github.com/google/fonts/tree/main/ofl/manrope). No image-generation tool was used to alter product evidence.
+The app icon uses existing project artwork from `assets/branding/app-icon.png`. Manrope Latin is self-hosted from Google Fonts (variable 400–800); its original SIL Open Font License is retained in `public/fonts/OFL.txt`. Typeface source: [Google Fonts Manrope](https://github.com/google/fonts/tree/main/ofl/manrope). No image-generation tool was used to alter product evidence. `website/build_guides.py` also generates and verifies `public/legal/notices/` directly from root `LICENSE`, `THIRD_PARTY_NOTICES.md`, and `docs/licenses/assets/`.
 
 ## Cloudflare Pages deployment
 

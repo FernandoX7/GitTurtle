@@ -46,6 +46,8 @@ jobs:
           filter: blob:none
       - name: Check development guidance
         run: python3 scripts/check-agent-guidance.py
+      - name: Check documentation sync
+        run: python3 scripts/check-docs-sync.py
       - name: Test routing and gate policy
         run: python3 -B -m unittest scripts/ci/tests/test_changes.py
       - name: Validate Actions workflow with actionlint 1.7.12
@@ -104,6 +106,8 @@ jobs:
         run: python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11), "Python 3.11 or newer is required"'
       - name: Validate development guidance
         run: python3 scripts/ci/metrics.py measure --name guidance --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/check-agent-guidance.py
+      - name: Validate documentation sync
+        run: python3 scripts/ci/metrics.py measure --name docs-sync --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/check-docs-sync.py
       - name: Test development, gate, native-QA and CI tooling side by side
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then

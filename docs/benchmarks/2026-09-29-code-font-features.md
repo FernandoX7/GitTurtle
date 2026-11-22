@@ -89,7 +89,7 @@ Each timed line covers what GPUI's `layout_line_no_separators` does in cosmic-te
 ## Agreement with earlier figures
 
 - An earlier set of three runs by the performance reviewer on the same host, at 15:45 UTC with the pre-review driver (sha256 `a116ae94…`, rounding percentiles, working-tree corpus), gave p50 base 29.17, 29.48 and 29.21 µs against candidate 27.17, 27.25 and 27.05 µs, ratios of 0.931, 0.924 and 0.926. It agrees.
-- The [September 27 entry](../validation.md#september-27-code-text-without-ligatures) reported 23.8 to 26.5 µs per line at p50 for the same two lists, about 11% more with the features. That came from a different, uncommitted harness at a load average of about 1.3. It agrees in direction; the size here is about 7%.
+- The [September 27 entry](../validation/2026-09.md#september-27-code-text-without-ligatures) reported 23.8 to 26.5 µs per line at p50 for the same two lists, about 11% more with the features. That came from a different, uncommitted harness at a load average of about 1.3. It agrees in direction; the size here is about 7%.
 
 ## Not measured
 
