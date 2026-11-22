@@ -124,8 +124,10 @@ fn read_at(
                 .collect()
         };
         let expected: Vec<String> = lines.iter().map(|(_, name)| (*name).to_owned()).collect();
+        #[cfg(target_os = "linux")]
+        let linux_update = update.clone();
         let filtered = names(
-            reachable(update.clone())
+            reachable(update)
                 .into_iter()
                 .map(|node| (node.role == Role::Label, node.name))
                 .collect(),
@@ -136,7 +138,7 @@ fn read_at(
             use crate::native_accessibility::atspi_state_tests::reached;
             use accesskit_atspi_common::Role as AtspiRole;
             let served = names(
-                reached(update)
+                reached(linux_update)
                     .into_iter()
                     .map(|node| (node.role == AtspiRole::Label, Some(node.name)))
                     .collect(),

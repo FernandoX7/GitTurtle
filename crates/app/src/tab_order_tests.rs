@@ -2505,6 +2505,7 @@ async fn clean_working_changes_keep_their_empty_list_a_stop(cx: &mut TestAppCont
     prepare(&app, cx);
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
     settle(&app, cx).await;
+    crate::path_filter::filters_land(&app, cx);
     assert!(
         cx.debug_bounds("working-clean").is_some(),
         "the list draws its clean state"
