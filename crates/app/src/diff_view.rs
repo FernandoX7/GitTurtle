@@ -30,7 +30,7 @@ use gpui_kit::{
     div, fill, point, px, relative, rgb, size,
 };
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::BTreeSet,
     ops::Range,
     rc::Rc,
@@ -72,7 +72,13 @@ pub enum DiffViewEvent {
         diff: Arc<PartialDiff>,
         selection: PartialSelection,
     },
+    DiscardPartial {
+        diff: Arc<PartialDiff>,
+        selection: PartialSelection,
+    },
 }
+
+type SelectionChangeCallback = Rc<dyn Fn(&mut App)>;
 
 pub struct DiffView {
     editor: Entity<EditorState>,
@@ -84,6 +90,15 @@ pub struct DiffView {
     label: SharedString,
     partial: Option<Arc<PartialActions>>,
     selection: LineSelection,
+    /// Optional shared line selection when two DiffViews compose a SplitView
+    /// so Before/After selections submit as one combined PartialSelection.
+    shared_selection: Option<Rc<RefCell<LineSelection>>>,
+    /// Optional callback invoked whenever the line selection changes (used by
+    /// SplitView to redraw both sides and the shared selection bar).
+    on_selection_change: Option<SelectionChangeCallback>,
+    /// Suppresses this DiffView's own bottom selection bar when a parent
+    /// SplitView draws one shared bar across both sides.
+    suppress_bar: bool,
     partial_busy: bool,
     /// Whether the partial write this view asked for runs, or has ended and
     /// the read after it has yet to land here ([`Self::awaits_write`]): the
@@ -110,7 +125,7 @@ pub struct DiffView {
     /// window turns inactive ([`Presses::leave`]).
     presses: Presses,
     key_ups: u64,
-    _focus_moves: [Subscription; 4],
+    _focus_moves: [Subscription; 5],
     /// The control of Find's bar a press found focus on, whose focus moving
     /// out ends it too ([`Self::watch_find`]).
     find_focus: Option<(FocusHandle, Subscription)>,
@@ -122,11 +137,12 @@ pub struct DiffView {
     /// announce again.
     announcement: Option<(usize, SharedString)>,
     announcements: usize,
-    /// The selection bar's action, Stage N lines or Unstage N lines, and Clear, the
-    /// Tab stops after the text, whose press gives focus back to the text
-    /// ([`Self::render_partial_selection`]).
+    /// The selection bar's action, Stage N lines or Unstage N lines, Clear, and
+    /// Discard (for unstaged modifications), the Tab stops after the text, whose
+    /// press gives focus back to the text ([`Self::render_partial_selection`]).
     apply_focus: FocusHandle,
     clear_focus: FocusHandle,
+    discard_focus: FocusHandle,
     /// The focus of the Stage hunk (Unstage hunk) last pressed, which the
     /// button of the hunk header on `hunk_row` tracks: a press focuses it,
     /// as a pressed control takes focus, and the landing that takes its hunk
@@ -154,6 +170,7 @@ pub struct DiffView {
     viewport: Viewport,
     pending_scroll: Rc<PendingScroll>,
     gutter_origin: Rc<Cell<Option<Point<Pixels>>>>,
+    content_origin: Rc<Cell<Option<Point<Pixels>>>>,
     /// The other Split side's editor, which shares one Find bar with this
     /// view's, drawn across both sides, and which side this view is
     /// ([`Self::share_find_with`]).
@@ -278,6 +295,8 @@ struct KeyPress {
 enum Pressed {
     /// The Stage hunk (Unstage hunk) of the hunk header on this row.
     Hunk(usize),
+    /// The Discard hunk of the hunk header on this row.
+    DiscardHunk(usize),
     /// The checkbox of the changed line with this id.
     Line(usize),
 }
@@ -335,7 +354,73 @@ impl DiffView {
         self.focus_handle(cx).contains_focused(window, cx)
             || self.apply_focus.is_focused(window)
             || self.clear_focus.is_focused(window)
+            || self.discard_focus.is_focused(window)
             || self.hunk_focus.is_focused(window)
+    }
+
+    pub(crate) fn restore_after_cancel(&mut self, cx: &mut Context<Self>) {
+        self.partial_busy = false;
+        self.writing = false;
+        self.reviewing = false;
+        self.written.clear();
+        cx.notify();
+    }
+
+    pub(crate) fn configure_split_partial(
+        &mut self,
+        partial: Option<Arc<PartialActions>>,
+        shared_selection: Rc<RefCell<LineSelection>>,
+        on_selection_change: Rc<dyn Fn(&mut App)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.partial = partial;
+        self.shared_selection = Some(shared_selection);
+        self.on_selection_change = Some(on_selection_change);
+        self.suppress_bar = true;
+        self.partial_busy = false;
+        self.writing = false;
+        self.busy_look = false;
+        self.written.clear();
+        self.reviewing = false;
+        cx.notify();
+    }
+
+    pub(crate) fn set_split_busy(&mut self, busy: bool, writing: bool, cx: &mut Context<Self>) {
+        self.partial_busy = busy;
+        self.writing = writing;
+        cx.notify();
+    }
+
+    fn has_selected_lines(&self) -> bool {
+        match &self.shared_selection {
+            Some(shared) => !shared.borrow().ids.is_empty(),
+            None => !self.selection.ids.is_empty(),
+        }
+    }
+
+    fn is_line_selected(&self, id: usize) -> bool {
+        match &self.shared_selection {
+            Some(shared) => shared.borrow().ids.contains(&id),
+            None => self.selection.ids.contains(&id),
+        }
+    }
+
+    fn toggle_line_selection(&mut self, id: usize, checked: bool, extend: bool, cx: &mut App) {
+        match &self.shared_selection {
+            Some(shared) => {
+                shared.borrow_mut().toggle(id, checked, extend);
+                if let Some(notify) = &self.on_selection_change {
+                    notify(cx);
+                }
+            }
+            None => self.selection.toggle(id, checked, extend),
+        }
+    }
+
+    fn can_discard_partial(&self) -> bool {
+        self.partial
+            .as_ref()
+            .is_some_and(|partial| partial.diff.can_discard())
     }
 
     /// Whether the partial controls look refused: as they are suspended,
@@ -450,7 +535,10 @@ impl DiffView {
     /// How many changed lines are selected.
     #[cfg(test)]
     pub(crate) fn selected_lines(&self) -> usize {
-        self.selection.ids.len()
+        match &self.shared_selection {
+            Some(shared) => shared.borrow().ids.len(),
+            None => self.selection.ids.len(),
+        }
     }
 
     /// Selects every changed line, as their checkboxes would.
@@ -768,6 +856,19 @@ impl DiffView {
         }
     }
 
+    fn discard_hunk_went_down(
+        &mut self,
+        event: &gpui_kit::MouseDownEvent,
+        row: usize,
+        drawn: &Arc<PartialActions>,
+    ) {
+        if event.click_count > 1 && !self.first_press_shown {
+            self.pointer_press = None;
+        } else {
+            self.pointer_went_down(Pressed::DiscardHunk(row), drawn);
+        }
+    }
+
     /// Toggles every changed line the text selection draws, from its first
     /// row to its last, the caret's row alone where nothing is selected:
     /// all selected where any is not, else all cleared, as clicks on their
@@ -811,20 +912,38 @@ impl DiffView {
         };
         let select = changes
             .iter()
-            .any(|(_, id, ..)| !self.selection.ids.contains(id));
-        for (_, id, ..) in &changes {
-            if select {
-                self.selection.ids.insert(*id);
-            } else {
-                self.selection.ids.remove(id);
+            .any(|(_, id, ..)| !self.is_line_selected(*id));
+        let anchor = changes
+            .iter()
+            .find(|(row, ..)| *row == caret)
+            .map_or(last, |(_, id, ..)| *id);
+        match &self.shared_selection {
+            Some(shared) => {
+                let mut sel = shared.borrow_mut();
+                for (_, id, ..) in &changes {
+                    if select {
+                        sel.ids.insert(*id);
+                    } else {
+                        sel.ids.remove(id);
+                    }
+                }
+                sel.anchor = Some(anchor);
+                drop(sel);
+                if let Some(notify) = &self.on_selection_change {
+                    notify(cx);
+                }
+            }
+            None => {
+                for (_, id, ..) in &changes {
+                    if select {
+                        self.selection.ids.insert(*id);
+                    } else {
+                        self.selection.ids.remove(id);
+                    }
+                }
+                self.selection.anchor = Some(anchor);
             }
         }
-        self.selection.anchor = Some(
-            changes
-                .iter()
-                .find(|(row, ..)| *row == caret)
-                .map_or(last, |(_, id, ..)| *id),
-        );
         let action = self.action().to_lowercase();
         let state = if select {
             "selected"
@@ -1127,6 +1246,8 @@ impl DiffView {
         self.return_focus(&bar, window, cx);
         let clear = self.clear_focus.clone();
         self.return_focus(&clear, window, cx);
+        let discard = self.discard_focus.clone();
+        self.return_focus(&discard, window, cx);
         // So does focus on the Stage hunk the write was pressed on, whose
         // hunk the landed text no longer shows: left there, it fell to the
         // window frame with the button.
@@ -1228,10 +1349,18 @@ pub fn new_numbered(
                 cx.notify();
             }
         });
-        let (apply_focus, clear_focus) = (cx.focus_handle(), cx.focus_handle());
+        let (apply_focus, clear_focus, discard_focus) =
+            (cx.focus_handle(), cx.focus_handle(), cx.focus_handle());
         let hunk_focus = cx.focus_handle();
         let text_focus = gpui_kit::Focusable::focus_handle(editor.read(cx), cx);
-        let focus_moves = [&text_focus, &apply_focus, &clear_focus, &hunk_focus].map(|focus| {
+        let focus_moves = [
+            &text_focus,
+            &apply_focus,
+            &clear_focus,
+            &discard_focus,
+            &hunk_focus,
+        ]
+        .map(|focus| {
             cx.on_focus_out(focus, window, |this: &mut DiffView, _, window, cx| {
                 this.focus_moved(window, cx)
             })
@@ -1251,6 +1380,9 @@ pub fn new_numbered(
             label: label.into(),
             partial: None,
             selection: LineSelection::default(),
+            shared_selection: None,
+            on_selection_change: None,
+            suppress_bar: false,
             partial_busy: false,
             writing: false,
             written: BTreeSet::new(),
@@ -1265,6 +1397,7 @@ pub fn new_numbered(
             announcements: 0,
             apply_focus,
             clear_focus,
+            discard_focus,
             hunk_focus,
             hunk_row: None,
             pointer_press: None,
@@ -1274,6 +1407,7 @@ pub fn new_numbered(
             viewport,
             pending_scroll: Rc::default(),
             gutter_origin: Rc::default(),
+            content_origin: Rc::default(),
             find_partner: None,
             _subscription: subscription,
         }
@@ -1309,17 +1443,18 @@ impl Render for DiffView {
         // The selection bar's layout and, in the frame that brings it, the
         // text's reveal above it, asked for before the controls beside the
         // text are placed from the text's offset.
-        let bar = (!self.selection.ids.is_empty()).then(|| {
+        let bar = (!self.suppress_bar && !self.selection.ids.is_empty()).then(|| {
             let layout = bar_layout(
                 self.action(),
                 self.selection.ids.len(),
+                self.can_discard_partial(),
                 self.bar_room.width.get(),
                 window,
             );
             self.bar_room.reveal(layout.height, &self.editor, cx);
             layout
         });
-        let controls = self.render_partial_controls(width, caret, window, cx);
+        let (controls, hunk_discards) = self.render_partial_controls(width, caret, window, cx);
         let painted_room = Rc::clone(&self.bar_room);
         let find_partner = self.find_partner.clone();
         // The gutter and the partial actions stand beside the text under
@@ -1413,7 +1548,7 @@ impl Render for DiffView {
             .when(self.partial.is_some() && !self.partial_busy, |editor| {
                 editor.aria_description(line_keys_description(
                     self.action(),
-                    !self.selection.ids.is_empty(),
+                    self.has_selected_lines(),
                 ))
             })
             .text_size(crate::appearance::code_text());
@@ -1433,17 +1568,25 @@ impl Render for DiffView {
             .text_size(crate::appearance::code_text())
             .when(self.partial.is_some(), |el| {
                 // Prepainted before the text, once the frame is laid out.
-                let (room, state) = (Rc::clone(&self.bar_room), self.editor.clone());
+                let (room, state, content_origin) = (
+                    Rc::clone(&self.bar_room),
+                    self.editor.clone(),
+                    Rc::clone(&self.content_origin),
+                );
                 el.child(
                     canvas(
-                        move |column, _, cx| room.keep_caret_line(column, &state, cx),
+                        move |column, _, cx| {
+                            content_origin.set(Some(column.origin));
+                            room.keep_caret_line(column, &state, cx);
+                        },
                         |_, _, _, _| {},
                     )
                     .absolute()
                     .size_full(),
                 )
             })
-            .child(editor.beside(px(width), vec![gutter.into_any_element()]));
+            .child(editor.beside(px(width), vec![gutter.into_any_element()]))
+            .children(hunk_discards);
         div()
             .size_full()
             .relative()
@@ -1568,6 +1711,27 @@ impl DiffView {
         cx.notify();
     }
 
+    fn discard_partial(&mut self, ids: Vec<usize>, cx: &mut Context<Self>) {
+        if self.partial_busy || ids.is_empty() {
+            return;
+        }
+        let Some(partial) = &self.partial else {
+            return;
+        };
+        if !partial.diff.can_discard() {
+            return;
+        }
+        let diff = Arc::clone(&partial.diff);
+        self.partial_busy = true;
+        self.writing = true;
+        self.written = ids.iter().copied().collect();
+        cx.emit(DiffViewEvent::DiscardPartial {
+            diff,
+            selection: PartialSelection::Lines(ids),
+        });
+        cx.notify();
+    }
+
     /// The per-line checkboxes and each hunk's Stage hunk, over the gutter
     /// beside the text's visible rows, none of them a Tab stop: a long diff
     /// would make hundreds, and its lines are selected from the text
@@ -1579,9 +1743,9 @@ impl DiffView {
         caret: Option<usize>,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    ) -> (Vec<AnyElement>, Vec<AnyElement>) {
         let Some(partial) = &self.partial else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let accent = palette(cx).accent;
         let state = self.editor.read(cx);
@@ -1590,7 +1754,7 @@ impl DiffView {
             state.line_height(),
             state.visible_row_range(),
         ) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         // Placed from where the gutter last painted. Before its first paint
         // they fall back to the text's origin, which lies below the gutter's
@@ -1598,6 +1762,7 @@ impl DiffView {
         // moved, asks for the frame that draws them in place.
         let input = state.input_bounds();
         let origin = self.gutter_origin.get().unwrap_or(input.origin);
+        let content_origin = self.content_origin.get().unwrap_or(origin);
         // The text lays out this frame at its offset now, which a scroll
         // asked for since it painted has moved, as the bar's reveal does
         // ([`BarRoom::reveal`]): the controls stand where its rows will.
@@ -1607,6 +1772,7 @@ impl DiffView {
             .get()
             .map_or(px(0.), |painted| state.scroll_offset().y - painted);
         let top = bounds.origin.y - input.origin.y + shift;
+        let content_top = bounds.origin.y - content_origin.y + shift;
         // The rows the text shows at that offset: the ones it last showed,
         // moved by the rows it has scrolled since, a part of a row taking
         // one more. However far a scrollbar drag or a jump moved the text,
@@ -1637,13 +1803,17 @@ impl DiffView {
         // is whole (DESIGN.md: a Button rings on any focus, a pointer's
         // included). Inset 2 px, its sides were cut.
         let ring = crate::appearance::button_ring_room(cx);
+        let can_discard = partial.diff.can_discard();
         let mut elements = Vec::new();
+        let mut discard_overlays = Vec::new();
         for row in (first..end).chain(pressed) {
             let y = top + line_height * row as f32;
             match &partial.rows[row] {
                 PartialRow::None => {}
                 PartialRow::Hunk(ids) => {
                     let ids = Arc::clone(ids);
+                    let discard_ids = Arc::clone(&ids);
+                    let discard_clicked = Arc::clone(partial);
                     // The diff this frame draws, which each handler acts
                     // on only while the view still shows it
                     // ([`Self::still_shows`]).
@@ -1710,6 +1880,68 @@ impl DiffView {
                             )
                             .into_any_element(),
                     );
+                    if can_discard && y >= px(0.) && y + line_height <= input.size.height {
+                        let discard_count = discard_ids.len();
+                        let discard_down = Arc::clone(partial);
+                        let compact = input.size.width < crate::appearance::ui_size(340.);
+                        let discard_tip = self.live_tooltip(
+                            format!("partial-discard-hunk-{row}"),
+                            move |view| {
+                                view.said(&format!(
+                                    "Discard all {} in this hunk",
+                                    crate::counted(discard_count, "changed line", "changed lines")
+                                ))
+                            },
+                            cx,
+                        );
+                        let discard_btn = Button::new(("partial-discard-hunk", row))
+                            .debug_selector(move || format!("partial-discard-hunk-{row}"))
+                            .tab_stop(false)
+                            .small()
+                            .h(line_height - px(2.))
+                            .px_2()
+                            .rounded(px(3.))
+                            .text_size(crate::appearance::ui_text(10.))
+                            .label(if compact { "Discard" } else { "Discard hunk" })
+                            .accessibility_label(format!("Discard hunk at patch line {}", row + 1));
+                        discard_overlays.push(
+                            div()
+                                .absolute()
+                                .top(content_top + line_height * row as f32 + px(1.))
+                                .right(px(14.))
+                                .h(line_height - px(2.))
+                                .child(
+                                    crate::workspace::refusing(
+                                        discard_btn,
+                                        || format!("partial-discard-hunk-{row}"),
+                                        refused,
+                                        dimmed,
+                                    )
+                                    .tooltip_view(discard_tip)
+                                    .on_mouse_down(
+                                        gpui_kit::MouseButton::Left,
+                                        cx.listener(move |this, event, _, _| {
+                                            this.discard_hunk_went_down(event, row, &discard_down);
+                                        }),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, event, _, cx| {
+                                            if this.still_shows(&discard_clicked)
+                                                && this.pointer_began_on(
+                                                    event,
+                                                    Pressed::DiscardHunk(row),
+                                                )
+                                                && !this.refuses_click(event)
+                                                && this.click_matches_row(event, row, cx)
+                                            {
+                                                this.discard_partial(discard_ids.to_vec(), cx);
+                                            }
+                                        },
+                                    )),
+                                )
+                                .into_any_element(),
+                        );
+                    }
                 }
                 PartialRow::Change { id, added, line } => {
                     let id = *id;
@@ -1785,10 +2017,11 @@ impl DiffView {
                                             {
                                                 return;
                                             }
-                                            this.selection.toggle(
+                                            this.toggle_line_selection(
                                                 id,
                                                 *checked,
                                                 window.modifiers().shift,
+                                                cx,
                                             );
                                             // The checkbox says what its click did.
                                             this.announcement = None;
@@ -1804,17 +2037,20 @@ impl DiffView {
         }
         // Match the input's clipping region, including when editor find moves
         // the first visible source line down inside the outer comparison.
-        vec![
-            div()
-                .absolute()
-                .left_0()
-                .top(input.origin.y - origin.y)
-                .w(px(width))
-                .h(input.size.height)
-                .overflow_hidden()
-                .children(elements)
-                .into_any_element(),
-        ]
+        (
+            vec![
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(input.origin.y - origin.y)
+                    .w(px(width))
+                    .h(input.size.height)
+                    .overflow_hidden()
+                    .children(elements)
+                    .into_any_element(),
+            ],
+            discard_overlays,
+        )
     }
 
     /// The checkbox of the changed line `id`, `line` on its side, `added`
@@ -1842,7 +2078,7 @@ impl DiffView {
         Checkbox::new(("partial-line", id))
             .tab_stop(false)
             .small()
-            .checked(self.selection.ids.contains(&id))
+            .checked(self.is_line_selected(id))
             .disabled(dimmed)
             .accessibility_disabled(refused || dimmed)
             .accessibility_label(format!(
@@ -1925,6 +2161,28 @@ impl DiffView {
             this.apply_partial(this.selection.ids.iter().copied().collect(), cx)
         }));
         let action = described_action(action, self.action(), self.selection.ids.len(), window, cx);
+        let can_discard = self.can_discard_partial();
+        let discard = can_discard.then(|| {
+            crate::workspace::refusing(
+                discard_control(layout.icon)
+                    .track_focus(&self.discard_focus)
+                    .tooltip_view(self.live_tooltip(
+                        "discard-partial-selection".into(),
+                        |view| view.said(DISCARD_NAME),
+                        cx,
+                    )),
+                || "discard-partial-selection".into(),
+                refused,
+                dimmed,
+            )
+            .on_click(cx.listener(|this, event, window, cx| {
+                if this.refuses_click(event) {
+                    return;
+                }
+                this.return_focus(&this.discard_focus.clone(), window, cx);
+                this.discard_partial(this.selection.ids.iter().copied().collect(), cx)
+            }))
+        });
         div()
             .debug_selector(|| "partial-selection-bar".into())
             .flex_shrink_0()
@@ -1962,6 +2220,7 @@ impl DiffView {
                     cx.notify();
                 })),
             )
+            .children(discard)
             .into_any_element()
     }
 }
@@ -1990,47 +2249,60 @@ pub(crate) const BAR_GAP: f32 = 8.;
 
 /// What Clear's icon form is named and tooltipped.
 const CLEAR_NAME: &str = "Clear line selection";
+/// What Discard's icon form is named and tooltipped.
+const DISCARD_NAME: &str = "Discard selected lines";
 
 thread_local! {
-    /// The action's and Clear's labels as laid out, each for its font and
-    /// size ([`bar_layout`]).
+    /// The action's, Clear's, and Discard's labels as laid out, each for its
+    /// font and size ([`bar_layout`]).
     static ACTION_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static CLEAR_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static DISCARD_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// How the selection bar lays out ([`bar_layout`]).
 struct BarLayout {
     /// The action's label, "Stage 3 lines".
     label: String,
-    /// Whether Clear is its 28 px icon.
+    /// Whether secondary controls (Clear, and Discard when available) use their
+    /// 28 px icon form.
     icon: bool,
     /// The bar's height, its border included.
     height: Pixels,
 }
 
-/// How the selection bar lays out across a Diff view `width` wide, as it
-/// was last drawn, in the one responsive order (DESIGN.md), decided from
-/// the interface font before layout: the action and Clear's label on one
-/// row where both fit, else Clear as the shared 28 px icon control beside
-/// the action, else that icon wrapped below, whole. No frame at a settled
-/// width draws a part of it cut or wrapped first; the one frame that
-/// changes the width draws the form the old width chose and asks for the
-/// next, which lays it out across the new one. At 18 pt in a 461 × 490
-/// window the view is 243 px wide, where Clear's label beside a two-digit
-/// count wrapped below and took the text's room before it became an icon.
-/// A view not yet drawn lays it out on one row, labelled.
-fn bar_layout(action: &str, count: usize, width: Option<Pixels>, window: &Window) -> BarLayout {
+fn bar_layout(
+    action: &str,
+    count: usize,
+    can_discard: bool,
+    width: Option<Pixels>,
+    window: &Window,
+) -> BarLayout {
     let label = format!("{action} {}", crate::counted(count, "line", "lines"));
     let snap = |length: Pixels| window.pixel_snap(length);
     let control = snap(crate::appearance::ui_size(28.));
     let gap = snap(crate::appearance::ui_size(BAR_GAP));
     let room = width.map(|width| width - snap(crate::appearance::ui_size(BAR_INSET)) * 2.);
     let drawn = crate::text_button_width(&[label.as_str()], &ACTION_LABEL, window);
-    let fits = |clear: Pixels| room.is_none_or(|room| drawn + gap + clear <= room);
-    let (icon, rows) = if fits(crate::text_button_width(&["Clear"], &CLEAR_LABEL, window)) {
+    let clear_width = crate::text_button_width(&["Clear"], &CLEAR_LABEL, window);
+    let discard_label_extra = if can_discard {
+        gap + crate::text_button_width(&["Discard"], &DISCARD_LABEL, window)
+    } else {
+        px(0.)
+    };
+    let discard_icon_extra = if can_discard { gap + control } else { px(0.) };
+    let fits = |rest: Pixels| room.is_none_or(|room| drawn + gap + rest <= room);
+    let (icon, rows) = if fits(clear_width + discard_label_extra) {
         (false, 1.)
     } else {
-        (true, if fits(control) { 1. } else { 2. })
+        (
+            true,
+            if fits(control + discard_icon_extra) {
+                1.
+            } else {
+                2.
+            },
+        )
     };
     let padding = snap(crate::appearance::ui_size(BAR_PADDING));
     BarLayout {
@@ -2127,6 +2399,20 @@ fn clear_control(icon: bool) -> Button {
         crate::button("clear-partial-selection", "Clear", "", false).accessibility_label("Clear")
     };
     control.debug_selector(|| "clear-partial-selection".into())
+}
+
+fn discard_control(icon: bool) -> Button {
+    let control = if icon {
+        crate::views::compact_control_name(
+            crate::button("discard-partial-selection", "", "reset", false),
+            "discard-partial-selection",
+            DISCARD_NAME,
+        )
+    } else {
+        crate::button("discard-partial-selection", "Discard", "", false)
+            .accessibility_label("Discard selected lines")
+    };
+    control.debug_selector(|| "discard-partial-selection".into())
 }
 
 /// The room the selection bar takes under the text, read as each frame is
@@ -2254,12 +2540,17 @@ impl BarRoom {
 }
 
 #[derive(Default)]
-struct LineSelection {
-    ids: BTreeSet<usize>,
-    anchor: Option<usize>,
+pub(crate) struct LineSelection {
+    pub(crate) ids: BTreeSet<usize>,
+    pub(crate) anchor: Option<usize>,
 }
 
 impl LineSelection {
+    pub(crate) fn clear(&mut self) {
+        self.ids.clear();
+        self.anchor = None;
+    }
+
     fn toggle(&mut self, id: usize, checked: bool, extend: bool) {
         let anchor = self.anchor.filter(|_| extend).unwrap_or(id);
         for id in anchor.min(id)..=anchor.max(id) {

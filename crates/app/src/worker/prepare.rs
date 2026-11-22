@@ -167,6 +167,7 @@ pub(super) fn execute_metadata(
             scope,
             pinned,
             query,
+            filter,
             offset,
             limit,
             previous,
@@ -187,8 +188,13 @@ pub(super) fn execute_metadata(
                     None => gitturtle_core::HistoryScope::AllRefs,
                 }
             };
-            let page =
-                session.search_history_page(&repo, &pinned, &query, offset, limit, cancellation)?;
+            let page = session.search_history_page(
+                &repo,
+                &pinned,
+                (&query, &filter),
+                (offset, limit),
+                cancellation,
+            )?;
             cancellation.check()?;
             let retained_bytes = page
                 .commits
@@ -457,7 +463,7 @@ pub(super) fn execute_metadata(
             })?;
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
-            Ok(Output::Snapshot(snapshot))
+            Ok(Output::Snapshot(Box::new(snapshot)))
         }
         Job::Changes { repo, oid, parent } => {
             let changes = repo.changes_with_renames(&oid, parent)?;
@@ -705,14 +711,27 @@ fn prepare_working_preview(
     if let Content::Text {
         patch,
         presentation,
+        split,
+        split_partial,
         partial,
         partial_unavailable,
         ..
     } = &mut content
     {
         if let Some(diff) = partial_diff {
-            match crate::partial_view::prepare(patch, presentation, Arc::new(diff)) {
-                Ok(actions) => *partial = Some(Arc::new(actions)),
+            let diff = Arc::new(diff);
+            match crate::partial_view::prepare(patch, presentation, Arc::clone(&diff)) {
+                Ok(actions) => {
+                    *partial = Some(Arc::new(actions));
+                    if let Some(split_pres) = split.as_deref()
+                        && let Ok(split_actions) =
+                            gitturtle_diff_model::split_diff::prepare_split_partial(
+                                split_pres, diff,
+                            )
+                    {
+                        *split_partial = Some(Arc::new(split_actions));
+                    }
+                }
                 Err(error) => unavailable = Some(error.to_string()),
             }
         }
@@ -731,6 +750,15 @@ fn prepare_preview(
     cache: &mut PreviewCache,
     cancellation: &Cancellation,
 ) -> Result<Arc<Content>> {
+    if origins.new == Some(gitturtle_core::PreviewAssetScope::Worktree) {
+        return prepare_revision_vs_working_preview(
+            repo,
+            file,
+            origins,
+            prepare_split,
+            cancellation,
+        );
+    }
     let key = PreviewKey::with_origins(repo.path(), file, origins.clone());
     if let Some(content) = cache.get(&key) {
         if prepare_split
@@ -768,6 +796,65 @@ fn prepare_preview(
         cache.insert(key, Arc::clone(&content));
     }
     Ok(content)
+}
+
+fn prepare_revision_vs_working_preview(
+    repo: &GitRepository,
+    file: &FileChange,
+    origins: &crate::markdown_view::Origins,
+    prepare_split: bool,
+    cancellation: &Cancellation,
+) -> Result<Arc<Content>> {
+    cancellation.check()?;
+    let preview = repo.preview_revision_vs_working(file)?;
+    cancellation.check()?;
+    let file = preview.file;
+    let mut lfs = LfsSides::default();
+    let mut content = if let Some(content) =
+        supplied_nontext_content(repo, &file, &preview.old, &preview.new, cancellation)?
+    {
+        content
+    } else if let Some(content) = resolved_lfs_text_content(
+        repo,
+        &file,
+        &preview.old,
+        &preview.new,
+        &mut lfs,
+        prepare_split,
+        cancellation,
+    )? {
+        content
+    } else {
+        match preview.preview {
+            TextPreview::Patch(patch) => prepared_text(
+                patch,
+                String::from_utf8(preview.old)?,
+                String::from_utf8(preview.new)?,
+                prepare_split,
+            ),
+            TextPreview::Binary => {
+                Content::Notice("Binary file · no text comparison is available.".into())
+            }
+            TextPreview::TooLarge {
+                old_bytes,
+                new_bytes,
+            } => Content::Notice(format!(
+                "Text preview exceeds the display budget · before {} · after {}.",
+                crate::counted(old_bytes, "byte", "bytes"),
+                crate::counted(new_bytes, "byte", "bytes")
+            )),
+            TextPreview::Submodule { old_oid, new_oid } => Content::Notice(format!(
+                "Submodule · {} → {}",
+                old_oid.as_deref().unwrap_or("absent"),
+                new_oid.as_deref().unwrap_or("absent")
+            )),
+        }
+    };
+    lfs.mark(&mut content);
+    cancellation.check()?;
+    attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
+    attach_markdown_assets(&mut content, repo, &file, origins, cancellation)?;
+    Ok(Arc::new(content))
 }
 
 fn commit_metadata_bytes(commit: &Commit) -> usize {
@@ -820,55 +907,60 @@ pub(super) fn read_snapshot(
         Some(oid) => gitturtle_core::HistoryScope::FromCommit(oid.to_owned()),
         None => gitturtle_core::HistoryScope::AllRefs,
     };
-    // The tag read needs nothing from the history page, so one scoped thread
-    // reads the tags and prepares every commit's references while this one
-    // reads the page: a snapshot runs at most one Git read beside its page,
-    // and the scope joins it, whatever the page's outcome, before returning.
-    let ((commits, graph, graph_notice, history_scope, history_next_offset), refs) =
-        std::thread::scope(|threads| -> Result<_> {
-            let references = || history_references(&repository, &branches, cancellation);
-            let beside = std::thread::Builder::new()
-                .name("gitturtle-tags".into())
-                .spawn_scoped(threads, references)
-                .ok();
-            let page = if limit == 0 {
-                (Vec::new(), Vec::new(), None, scope, None)
-            } else {
-                // An explicit or quiet refresh captures new tips and starts a
-                // new traversal. Ordinary subsequent pages use the immutable
-                // returned scope.
-                session.history = None;
-                let result = session.history_page(&repository, &scope, 0, limit, cancellation)?;
-                let pinned = session
-                    .history
-                    .as_ref()
-                    .expect("Live history traversal")
-                    .traversal
-                    .scope()
-                    .clone();
-                (
-                    result.page.commits,
-                    result.graph,
-                    result.graph_notice,
-                    pinned,
-                    result.page.next_offset,
-                )
-            };
-            cancellation.check()?;
-            let refs = match beside {
-                Some(read) => read
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                // A thread the system cannot start reads them after the page.
-                None => references(),
-            };
-            Ok((page, refs?))
-        })?;
+    // The tag and stash reads need nothing from the history page, so one scoped
+    // thread reads tags, bounded stashes, and commit references while this one
+    // reads the page: a snapshot runs at most one auxiliary thread beside its
+    // page, and the scope joins it, whatever the page's outcome, before returning.
+    let (
+        (commits, graph, graph_notice, history_scope, history_next_offset),
+        (refs, tags, tags_truncated, stashes),
+    ) = std::thread::scope(|threads| -> Result<_> {
+        let references = || snapshot_sidebar_refs(&repository, &branches, cancellation);
+        let beside = std::thread::Builder::new()
+            .name("gitturtle-tags".into())
+            .spawn_scoped(threads, references)
+            .ok();
+        let page = if limit == 0 {
+            (Vec::new(), Vec::new(), None, scope, None)
+        } else {
+            // An explicit or quiet refresh captures new tips and starts a
+            // new traversal. Ordinary subsequent pages use the immutable
+            // returned scope.
+            session.history = None;
+            let result = session.history_page(&repository, &scope, 0, limit, cancellation)?;
+            let pinned = session
+                .history
+                .as_ref()
+                .expect("Live history traversal")
+                .traversal
+                .scope()
+                .clone();
+            (
+                result.page.commits,
+                result.graph,
+                result.graph_notice,
+                pinned,
+                result.page.next_offset,
+            )
+        };
+        cancellation.check()?;
+        let refs = match beside {
+            Some(read) => read
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            // A thread the system cannot start reads them after the page.
+            None => references(),
+        };
+        Ok((page, refs?))
+    })?;
     cancellation.check()?;
     Ok(Snapshot {
         repository,
         branches,
         worktrees,
+        tags,
+        tags_truncated,
+        stashes,
         commits,
         history_scope,
         history_offset: 0,
@@ -889,24 +981,39 @@ pub(super) fn worker_shallow(mut snapshot: Snapshot, repo: &GitRepository) -> Sn
     snapshot
 }
 
-/// Each commit's references in Git's order, HEAD's branch first, then its
-/// tags: History shows the first one in its badge and in narrow History's
-/// pill. A tag list Git cannot give leaves History without tags rather than
-/// without history; the Tags page reports why. The read is the Tags page's
-/// own passive one, within its deadline, and a newer request stops and reaps
-/// its Git process.
-pub(super) fn history_references(
+const SIDEBAR_STASH_LIMIT: usize = 50;
+
+type SidebarRefs = (
+    HistoryReferences,
+    Vec<gitturtle_core::Tag>,
+    bool,
+    Vec<gitturtle_core::StashEntry>,
+);
+
+fn snapshot_sidebar_refs(
     repository: &GitRepository,
     branches: &[Branch],
     cancellation: &Cancellation,
-) -> Result<HistoryReferences> {
-    let tags = gitturtle_core::run_cancellable_inspection(cancellation.history.clone(), || {
-        repository.tags()
-    })
-    .map(|list| list.tags)
-    .unwrap_or_default();
+) -> Result<SidebarRefs> {
+    let (tags, tags_truncated) =
+        gitturtle_core::run_cancellable_inspection(cancellation.history.clone(), || {
+            repository.tags()
+        })
+        .map(|list| (list.tags, list.truncated))
+        .unwrap_or_default();
     cancellation.check()?;
-    Ok(HistoryReferences::new(branches, &tags))
+    let stashes = if repository.is_bare() {
+        Vec::new()
+    } else {
+        gitturtle_core::run_cancellable_inspection(cancellation.history.clone(), || {
+            repository.stash_list(0, SIDEBAR_STASH_LIMIT)
+        })
+        .map(|page| page.entries)
+        .unwrap_or_default()
+    };
+    cancellation.check()?;
+    let refs = HistoryReferences::new(branches, &tags);
+    Ok((refs, tags, tags_truncated, stashes))
 }
 
 #[cfg(test)]
@@ -1277,6 +1384,7 @@ pub(super) fn prepared_text(
         new,
         presentation,
         split,
+        split_partial: None,
         partial: None,
         partial_unavailable: None,
         lfs_missing: [false; 2],
@@ -1297,6 +1405,7 @@ fn ensure_split_in_content(content: &Arc<Content>) -> Option<Arc<Content>> {
         new,
         presentation,
         split: None,
+        split_partial: _,
         partial,
         partial_unavailable,
         lfs_missing,
@@ -1310,6 +1419,11 @@ fn ensure_split_in_content(content: &Arc<Content>) -> Option<Arc<Content>> {
         new,
         presentation,
     ));
+    let split_partial = partial.as_ref().and_then(|actions| {
+        gitturtle_diff_model::split_diff::prepare_split_partial(&split, Arc::clone(&actions.diff))
+            .ok()
+            .map(Arc::new)
+    });
     Some(Arc::new(Content::Text {
         diagrams: diagrams.clone(),
         markdown: markdown.clone(),
@@ -1318,6 +1432,7 @@ fn ensure_split_in_content(content: &Arc<Content>) -> Option<Arc<Content>> {
         new: new.clone(),
         presentation: Arc::clone(presentation),
         split: Some(split),
+        split_partial,
         partial: partial.clone(),
         partial_unavailable: partial_unavailable.clone(),
         lfs_missing: *lfs_missing,

@@ -2,12 +2,14 @@
 use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{
-    CommitRecoveryPlan, MAX_RECOVERY_MESSAGE_BYTES, OperationKind, RecoveryCommand, RecoveryKind,
+    CheckoutDetachedPlan, CommitRecoveryPlan, ComparisonMode, HistoryCancellation,
+    MAX_RECOVERY_MESSAGE_BYTES, OperationKind, RecoveryCommand, RecoveryKind, ResetMode, ResetPlan,
     StashEntry, StashPage, StashSnapshot, WriteCommand,
 };
 use gpui_kit::component::{
     WindowExt,
     checkbox::Checkbox,
+    dialog::{Cancel, Confirm, DialogKind},
     menu::{PopupMenu, PopupMenuItem},
     scroll::{Scrollbar, ScrollbarMode},
 };
@@ -140,6 +142,7 @@ pub(super) struct State {
 
 pub(super) struct CommitTarget {
     oid: String,
+    subject: String,
     parents: Vec<String>,
 }
 
@@ -154,12 +157,15 @@ impl AsRef<str> for CommitTarget {
 pub(super) fn commit_target(commit: &Commit) -> Arc<CommitTarget> {
     Arc::new(CommitTarget {
         oid: commit.oid.clone(),
+        subject: commit.subject.clone(),
         parents: commit.parents.clone(),
     })
 }
 
 enum Prepared {
     Amend(Arc<CommitRecoveryPlan>),
+    Reset(Arc<ResetPlan>),
+    CheckoutDetached(Arc<CheckoutDetachedPlan>),
     Confirmation {
         title: String,
         explanation: String,
@@ -482,6 +488,27 @@ impl GitTurtle {
                 }
                 match result {
                     Ok(Prepared::Amend(plan)) => this.show_amend_form(plan, window, cx),
+                    Ok(Prepared::Reset(plan)) => this.show_reset_dialog(plan, window, cx),
+                    Ok(Prepared::CheckoutDetached(plan)) => {
+                        let explanation = format!(
+                            "Check out {} ({}) in detached HEAD mode.\n\nCurrent HEAD: {}{}\n\nNo branch will be moved; existing commits remain reachable by their branches and reflog.",
+                            short_oid(&plan.target_oid),
+                            plan.target_subject,
+                            plan.current_branch.as_deref().unwrap_or("detached HEAD"),
+                            plan.current_head
+                                .as_deref()
+                                .map(|oid| format!(" at {}", short_oid(oid)))
+                                .unwrap_or_default(),
+                        );
+                        this.confirm_git_write(
+                            "Checkout commit (detached HEAD)".into(),
+                            explanation,
+                            "Checkout detached",
+                            WriteCommand::CheckoutDetached(plan),
+                            window,
+                            cx,
+                        );
+                    }
                     Ok(Prepared::Confirmation {
                         title,
                         explanation,
@@ -722,8 +749,8 @@ impl GitTurtle {
         commit_actions_trigger(labelled)
             .ml_auto()
             .disabled(self.operation_shown().is_some())
-            .app_menu(move |menu, _, cx| {
-                Self::recovery_context_menu(menu, &owner, &repository, &commit, cx)
+            .app_menu(move |menu, window, cx| {
+                Self::recovery_context_menu(menu, &owner, &repository, &commit, window, cx)
             })
             // A write's start or end builds the open menu again, as does the
             // commit becoming or no longer being HEAD.
@@ -737,13 +764,42 @@ impl GitTurtle {
         owner: &WeakEntity<Self>,
         repository: &Option<PathBuf>,
         commit: &Arc<CommitTarget>,
-        cx: &App,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
         let Some(this) = owner.upgrade() else {
             return menu;
         };
-        let (paused, wait, current) = this.read(cx).commit_menu_state(commit);
-        commit_menu(menu, owner, repository, commit, (paused, wait), current)
+        let (paused, wait, current, compare_with) = {
+            let this = this.read(cx);
+            let (paused, wait, current) = this.commit_menu_state(commit);
+            let compare_with = this.compare_partner_for(&commit.oid);
+            (paused, wait, current, compare_with)
+        };
+        commit_menu(
+            menu,
+            owner,
+            repository,
+            commit,
+            (paused, wait),
+            current,
+            compare_with,
+            window,
+            cx,
+        )
+    }
+
+    fn compare_partner_for(&self, commit_oid: &str) -> Option<String> {
+        let marked = self.selected_compare_commit.as_deref()?;
+        if marked != commit_oid {
+            Some(marked.to_owned())
+        } else {
+            self.selected_commit
+                .and_then(|i| self.commits.get(i))
+                .map(|c| c.oid.as_str())
+                .filter(|selected| *selected != commit_oid)
+                .map(str::to_owned)
+        }
     }
 
     /// The commit's menu as a right-click builds it, for the keyboard to
@@ -755,10 +811,22 @@ impl GitTurtle {
         owner: WeakEntity<Self>,
         repository: Option<PathBuf>,
         commit: Arc<CommitTarget>,
-    ) -> impl Fn(PopupMenu, &GitTurtle) -> PopupMenu + 'static {
-        move |menu, app| {
+    ) -> impl Fn(PopupMenu, &GitTurtle, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static
+    {
+        move |menu, app, window, cx| {
             let (paused, wait, current) = app.commit_menu_state(&commit);
-            commit_menu(menu, &owner, &repository, &commit, (paused, wait), current)
+            let compare_with = app.compare_partner_for(&commit.oid);
+            commit_menu(
+                menu,
+                &owner,
+                &repository,
+                &commit,
+                (paused, wait),
+                current,
+                compare_with,
+                window,
+                cx,
+            )
         }
     }
 
@@ -902,6 +970,202 @@ impl GitTurtle {
         show_amend(form, window, cx);
     }
 
+    pub(super) fn open_reset_commit(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.read_recovery(
+            move |repo| Ok(Prepared::Reset(Arc::new(repo.reset_plan(&oid)?))),
+            None,
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn open_checkout_detached(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.read_recovery(
+            move |repo| {
+                Ok(Prepared::CheckoutDetached(Arc::new(
+                    repo.checkout_detached_plan(&oid)?,
+                )))
+            },
+            None,
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn copy_commit_patch(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let repository = repo.path().to_owned();
+        let short = short_oid(&oid);
+        let response = self
+            .operations
+            .submit_read(move || repo.commit_patch(&oid, &HistoryCancellation::default()));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Patch export was interrupted.")));
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.path.as_ref() != Some(&repository) {
+                    return;
+                }
+                match result {
+                    Ok(patch) => {
+                        copy_feedback::copy(window, cx, None, "commit patch", patch);
+                        this.status = format!("Copied patch for {short}");
+                    }
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn show_reset_dialog(
+        &mut self,
+        plan: Arc<ResetPlan>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let repository = self.path.clone();
+        let form = cx.new(|_| ResetForm {
+            plan: Arc::clone(&plan),
+            mode: ResetMode::Mixed,
+        });
+        let submitted = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hard_requested = std::rc::Rc::new(std::cell::Cell::new(false));
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let mode = form.read(cx).mode;
+            let is_hard = mode == ResetMode::Hard;
+            let requires_explicit = is_hard || !plan.known_published_refs.is_empty();
+            let form_view = form.clone();
+            let form_ok = form.clone();
+            let owner = owner.clone();
+            let repository = repository.clone();
+            let plan = Arc::clone(&plan);
+            let submitted = submitted.clone();
+            let req = hard_requested.clone();
+            let req_key = hard_requested.clone();
+            let req_ok = hard_requested.clone();
+            let action_label = match mode {
+                ResetMode::Soft => "Reset --soft",
+                ResetMode::Mixed => "Reset --mixed",
+                ResetMode::Hard => "Reset --hard",
+            };
+            dialog
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title(
+                    "reset-branch-title",
+                    format!(
+                        "Reset {} to {}",
+                        plan.current.branch,
+                        short_oid(&plan.target.oid)
+                    ),
+                ))
+                .width(appearance::dialog_width(px(580.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(form_view)
+                .footer(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            crate::tags::dialog_cancel("cancel-reset-branch", "Cancel")
+                                .debug_selector(|| "cancel-reset-branch".into())
+                                .on_action(|_: &Confirm, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                }),
+                        )
+                        .child(
+                            button("confirm-reset-branch", action_label, "", !is_hard)
+                                .debug_selector(|| "confirm-reset-branch".into())
+                                .when(is_hard, |btn| btn.danger())
+                                .on_action(move |_: &Confirm, _, cx| {
+                                    req_key.set(true);
+                                    cx.propagate();
+                                })
+                                .on_click(move |_, window, cx| {
+                                    req.set(true);
+                                    window.dispatch_action(
+                                        Box::new(Confirm { secondary: false }),
+                                        cx,
+                                    );
+                                }),
+                        ),
+                )
+                .on_ok(move |_, window, cx| {
+                    let mode = form_ok.read(cx).mode;
+                    if requires_explicit && !req_ok.replace(false) {
+                        return false;
+                    }
+                    req_ok.set(false);
+                    if submitted.replace(true) {
+                        return true;
+                    }
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.path == repository
+                            && this.page == AppPage::Repository
+                            && this.operation_busy.is_none()
+                        {
+                            this.write(
+                                WriteCommand::Recovery(
+                                    RecoveryCommand::Reset {
+                                        plan: (*plan).clone(),
+                                        mode,
+                                    }
+                                    .into(),
+                                ),
+                                "Resetting branch…",
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                    true
+                })
+        });
+    }
+
+    pub(super) fn open_stash_selected(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || paths.is_empty() {
+            return;
+        }
+        let path = self.path.clone();
+        let owner = cx.entity().downgrade();
+        let form = cx.new(|cx| StashForm::new_with_paths(owner, path, Some(paths), window, cx));
+        self.recovery.stash = Some(form.clone());
+        show_stash_form(form, window, cx);
+    }
+
     fn open_stash_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_some() {
             return;
@@ -911,7 +1175,10 @@ impl GitTurtle {
             .recovery
             .stash
             .as_ref()
-            .filter(|form| form.read(cx).repository == path)
+            .filter(|form| {
+                let form = form.read(cx);
+                form.repository == path && form.selected_paths.is_none()
+            })
             .cloned()
             .unwrap_or_else(|| {
                 let owner = cx.entity().downgrade();
@@ -1211,6 +1478,7 @@ fn working_item(
     })
 }
 
+#[expect(clippy::too_many_arguments)]
 fn commit_menu(
     mut menu: PopupMenu,
     owner: &WeakEntity<GitTurtle>,
@@ -1218,6 +1486,9 @@ fn commit_menu(
     commit: &Arc<CommitTarget>,
     (paused, wait): (bool, Option<native_accessibility::MenuWait>),
     current: bool,
+    compare_with: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     for (label, kind) in [
         ("Revert this commit…", RecoveryKind::Revert),
@@ -1256,7 +1527,162 @@ fn commit_menu(
             );
         }
     }
-    menu
+    let owner_more = owner.clone();
+    let repo_more = repository.clone();
+    let commit_more = Arc::clone(commit);
+    menu.separator()
+        .submenu("More actions", window, cx, move |mut sub, _, _| {
+            {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Reset branch here…",
+                    paused,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| this.open_reset_commit(oid.clone(), window, cx),
+                );
+            }
+            {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Create branch here…",
+                    paused,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| this.open_create_branch_at(oid.clone(), window, cx),
+                );
+            }
+            {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Create tag here…",
+                    paused,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| this.open_create_tag_at(Some(oid.clone()), window, cx),
+                );
+            }
+            {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Checkout detached…",
+                    paused,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| this.open_checkout_detached(oid.clone(), window, cx),
+                );
+            }
+            {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Interactive rebase…",
+                    paused,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| {
+                        this.open_interactive_rebase(Some(oid.clone()), window, cx)
+                    },
+                );
+            }
+            sub = sub.separator();
+            if !current {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Compare with HEAD",
+                    false,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| {
+                        this.compare_revisions_direct(
+                            oid.clone(),
+                            "HEAD".into(),
+                            ComparisonMode::Endpoints,
+                            window,
+                            cx,
+                        )
+                    },
+                );
+            }
+            {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Compare with working tree",
+                    false,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| {
+                        this.compare_revision_with_working(oid.clone(), window, cx)
+                    },
+                );
+            }
+            if let Some(other) = &compare_with {
+                let oid = commit_more.oid.clone();
+                let other = other.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Compare selected",
+                    false,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| {
+                        this.compare_revisions_direct(
+                            other.clone(),
+                            oid.clone(),
+                            ComparisonMode::Endpoints,
+                            window,
+                            cx,
+                        )
+                    },
+                );
+            }
+            sub = sub.separator();
+            {
+                let oid = commit_more.oid.clone();
+                sub = sub.item(
+                    PopupMenuItem::new("Copy hash").on_click(move |_, window, cx| {
+                        copy_feedback::copy(window, cx, None, "commit hash", oid.clone());
+                    }),
+                );
+            }
+            {
+                let subject = commit_more.subject.clone();
+                sub = sub.item(PopupMenuItem::new("Copy subject").on_click(
+                    move |_, window, cx| {
+                        copy_feedback::copy(window, cx, None, "commit subject", subject.clone());
+                    },
+                ));
+            }
+            {
+                let owner = owner_more.clone();
+                let repository = repo_more.clone();
+                let oid = commit_more.oid.clone();
+                sub = sub.item(
+                    PopupMenuItem::new("Copy patch").on_click(move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            if this.path == repository && this.page == AppPage::Repository {
+                                this.copy_commit_patch(oid.clone(), window, cx);
+                            }
+                        });
+                    }),
+                );
+            }
+            sub
+        })
 }
 
 fn append_paths(explanation: &mut String, paths: &[PathBuf]) {
@@ -1554,9 +1980,128 @@ fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
     });
 }
 
+struct ResetForm {
+    plan: Arc<ResetPlan>,
+    mode: ResetMode,
+}
+
+impl Render for ResetForm {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = palette(cx);
+        let mode_detail = match self.mode {
+            ResetMode::Soft => {
+                "Moves HEAD only. Keeps all staged index changes and working tree files intact."
+            }
+            ResetMode::Mixed => {
+                "Moves HEAD and resets the index. Keeps your working tree changes as unstaged edits."
+            }
+            ResetMode::Hard => {
+                "Moves HEAD, resets the index, and permanently discards uncommitted changes in tracked working files."
+            }
+        };
+        let dirty_summary = if self.plan.dirty_staged == 0 && self.plan.dirty_unstaged == 0 {
+            "Working tree has no tracked staged or unstaged edits.".to_owned()
+        } else {
+            format!(
+                "Current working tree: {} staged, {} unstaged.",
+                crate::counted(self.plan.dirty_staged, "file", "files"),
+                crate::counted(self.plan.dirty_unstaged, "file", "files"),
+            )
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .text_size(crate::appearance::ui_text(12.))
+            .text_color(rgb(p.text))
+            .child(
+                div()
+                    .p_2p5()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(p.border))
+                    .bg(rgb(p.panel))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(format!(
+                        "Branch {} · current HEAD {}",
+                        gitturtle_core::strip_bidi_controls(&self.plan.current.branch),
+                        short_oid(&self.plan.current.head)
+                    ))
+                    .child(format!(
+                        "Target {} · {}",
+                        short_oid(&self.plan.target.oid),
+                        gitturtle_core::strip_bidi_controls(&self.plan.target.subject)
+                    ))
+                    .child(
+                        div()
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(p.muted))
+                            .child(dirty_summary),
+                    ),
+            )
+            .when(!self.plan.known_published_refs.is_empty(), |el| {
+                el.child(
+                    div()
+                        .p_2p5()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(p.warning))
+                        .bg(rgb(p.panel))
+                        .text_size(crate::appearance::ui_text(11.))
+                        .child(format!(
+                            "Locally known remote references containing current HEAD: {}. Resetting will rewrite history relative to them.",
+                            self.plan
+                                .known_published_refs
+                                .iter()
+                                .map(|reference| {
+                                    gitturtle_core::strip_bidi_controls(&reference.name)
+                                        .into_owned()
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1p5()
+                    .children([
+                        (ResetMode::Soft, "reset-mode-soft", "Soft", "Reset mode: Soft"),
+                        (ResetMode::Mixed, "reset-mode-mixed", "Mixed", "Reset mode: Mixed"),
+                        (ResetMode::Hard, "reset-mode-hard", "Hard", "Reset mode: Hard"),
+                    ].into_iter().map(|(mode, id, label, a11y)| {
+                        button(id, label, "", self.mode == mode)
+                            .debug_selector(move || id.into())
+                            .accessibility_label(a11y)
+                            .toggled(self.mode == mode)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.mode = mode;
+                                cx.notify();
+                            }))
+                    })),
+            )
+            .child(
+                div()
+                    .text_size(crate::appearance::ui_text(11.))
+                    .text_color(if self.mode == ResetMode::Hard {
+                        rgb(p.warning)
+                    } else {
+                        rgb(p.muted)
+                    })
+                    .child(mode_detail),
+            )
+    }
+}
+
 struct StashForm {
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
+    selected_paths: Option<Vec<PathBuf>>,
     name: Entity<InputState>,
     include_untracked: bool,
     error: Option<String>,
@@ -1575,11 +2120,21 @@ impl StashForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_paths(owner, repository, None, window, cx)
+    }
+    fn new_with_paths(
+        owner: WeakEntity<GitTurtle>,
+        repository: Option<PathBuf>,
+        selected_paths: Option<Vec<PathBuf>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let name = cx
             .new(|cx| InputState::new(window, cx).placeholder("Describe the work you are pausing"));
         Self {
             owner,
             repository,
+            selected_paths,
             name,
             include_untracked: false,
             error: None,
@@ -1596,6 +2151,7 @@ impl StashForm {
             return false;
         }
         let include_untracked = self.include_untracked;
+        let selected_paths = self.selected_paths.clone();
         let form = cx.entity();
         let failure: Failure = Box::new(move |error, window, cx| {
             form.update(cx, |form, cx| {
@@ -1607,9 +2163,18 @@ impl StashForm {
         self.owner.update(cx, |this, cx| {
             if this.path != self.repository { return false; }
             this.read_recovery(move |repo| {
-                let plan = repo.stash_create_plan(include_untracked)?;
-                let mut explanation = format!("Save “{name}” from {}. Tracked staged and unstaged changes will be saved separately, then removed from this working copy. {}", plan.current.branch,
-                    if include_untracked { "Untracked files are included and removed from the working copy. Ignored files remain." } else { "Untracked and ignored files remain in the working copy." });
+                let plan = repo.stash_create_plan_for_paths(include_untracked, selected_paths.as_deref())?;
+                let scope_note = if let Some(paths) = &plan.selected_paths {
+                    format!(
+                        "Only the {} chosen will be stashed and cleared from this working copy; other files stay intact.",
+                        crate::counted(paths.len(), "selected file", "selected files")
+                    )
+                } else if include_untracked {
+                    "Tracked staged/unstaged changes and untracked files are saved and removed from this working copy. Ignored files remain.".to_owned()
+                } else {
+                    "Tracked staged and unstaged changes will be saved separately, then removed from this working copy. Untracked and ignored files remain.".to_owned()
+                };
+                let mut explanation = format!("Save “{name}” from {}. {scope_note}", plan.current.branch);
                 append_paths(&mut explanation, &plan.affected_paths);
                 Ok(Prepared::Confirmation { title: "Save changes to stash".into(), explanation, action: "Save stash", command: RecoveryCommand::CreateStash { plan, name }.into() })
             }, Some(failure), window, cx)
@@ -1620,7 +2185,15 @@ impl Render for StashForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         div().flex().flex_col().gap_3()
-            .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Pause the current work and keep a named snapshot you can inspect before restoring."))
+            .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(
+                match &self.selected_paths {
+                    Some(paths) => format!(
+                        "Pause {} in a named snapshot while keeping other working files untouched.",
+                        crate::counted(paths.len(), "selected file", "selected files")
+                    ),
+                    None => "Pause the current work and keep a named snapshot you can inspect before restoring.".to_owned(),
+                }
+            ))
             .child(div().flex().flex_col().gap_1().child("Stash name").child(Input::new(&self.name).aria_label("Stash name")))
             .child(Checkbox::new("stash-include-untracked").label("Include untracked files").checked(self.include_untracked)
                 .on_click(cx.listener(|this, checked, _, cx| { this.include_untracked = *checked; cx.notify(); })))

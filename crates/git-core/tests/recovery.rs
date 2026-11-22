@@ -1537,3 +1537,101 @@ fn a_cut_inside_a_character_is_not_a_failure_of_the_message() {
         .to_string();
     assert!(refused.contains("not UTF-8"), "{refused}");
 }
+
+#[test]
+fn reset_soft_mixed_hard_and_stash_selected_paths_preserve_invariants() {
+    use gitturtle_core::ResetMode;
+    // 1. Reset --soft, --mixed, --hard
+    for mode in [ResetMode::Soft, ResetMode::Mixed, ResetMode::Hard] {
+        let f = Fixture::new();
+        let base = f.base();
+        f.write("file.txt", "second\n");
+        let second = f.commit("second");
+        f.write("independent.txt", "dirty work\n");
+        let plan = f.repo().reset_plan(&base).unwrap();
+        assert_eq!(plan.current.head, second);
+        assert_eq!(plan.target.oid, base);
+        assert_eq!(plan.dirty_unstaged, 1);
+        f.recover(RecoveryCommand::Reset { plan, mode }).unwrap();
+        assert_eq!(f.head(), base);
+        match mode {
+            ResetMode::Soft => {
+                assert_eq!(f.staged("file.txt"), b"second\n");
+                assert_eq!(f.read("independent.txt"), b"dirty work\n");
+            }
+            ResetMode::Mixed => {
+                assert_eq!(f.staged("file.txt"), b"base\n");
+                assert_eq!(f.read("file.txt"), b"second\n");
+                assert_eq!(f.read("independent.txt"), b"dirty work\n");
+            }
+            ResetMode::Hard => {
+                assert_eq!(f.staged("file.txt"), b"base\n");
+                assert_eq!(f.read("file.txt"), b"base\n");
+                assert_eq!(f.read("independent.txt"), b"independent base\n");
+            }
+        }
+    }
+
+    // 2. Stash selected paths leaves unselected edits untouched.
+    let f = Fixture::new();
+    f.base();
+    f.write("file.txt", "stash me\n");
+    f.write("independent.txt", "keep me\n");
+    f.write("notes.txt", "untracked stash me\n");
+    let selected = vec![PathBuf::from("file.txt"), PathBuf::from("notes.txt")];
+    let plan = f
+        .repo()
+        .stash_create_plan_for_paths(false, Some(&selected))
+        .unwrap();
+    assert!(plan.include_untracked);
+    assert_eq!(plan.selected_paths.as_deref(), Some(selected.as_slice()));
+    f.recover(RecoveryCommand::CreateStash {
+        plan,
+        name: "Selected files".into(),
+    })
+    .unwrap();
+    assert_eq!(f.read("file.txt"), b"base\n");
+    assert!(!f.root.join("notes.txt").exists());
+    assert_eq!(f.read("independent.txt"), b"keep me\n");
+}
+
+#[test]
+fn reset_hard_refuses_dirty_byte_edits_after_review_and_colliding_untracked_files() {
+    use gitturtle_core::ResetMode;
+    // 1. Concurrent modification of an already-dirty tracked file invalidates ResetPlan.
+    let f = Fixture::new();
+    let base = f.base();
+    f.write("file.txt", "second\n");
+    let second = f.commit("second");
+    f.write("independent.txt", "reviewed dirty bytes\n");
+    let plan = f.repo().reset_plan(&base).unwrap();
+    f.write("independent.txt", "UNREVIEWED dirty bytes\n");
+    let err = f
+        .recover(RecoveryCommand::Reset {
+            plan,
+            mode: ResetMode::Hard,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("changed"), "{err}");
+    assert_eq!(f.head(), second);
+    assert_eq!(f.read("independent.txt"), b"UNREVIEWED dirty bytes\n");
+
+    // 2. Untracked file colliding with a tracked path in target commit is refused before Reset --hard.
+    let g = Fixture::new();
+    let g_base = g.base();
+    g.git(&["rm", "file.txt"]);
+    let removed = g.commit("remove file.txt");
+    g.write("file.txt", "precious untracked file\n");
+    let plan = g.repo().reset_plan(&g_base).unwrap();
+    let err = g
+        .recover(RecoveryCommand::Reset {
+            plan,
+            mode: ResetMode::Hard,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("collides"), "{err}");
+    assert_eq!(g.head(), removed);
+    assert_eq!(g.read("file.txt"), b"precious untracked file\n");
+}

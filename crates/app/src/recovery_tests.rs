@@ -258,6 +258,7 @@ async fn the_mainline_dialog_fills_no_choice_and_borders_cancel(cx: &mut gpui_ki
     draw(cx);
     let merge = Arc::new(CommitTarget {
         oid: "1".repeat(40),
+        subject: "Merge branch".into(),
         parents: vec!["2".repeat(40), "3".repeat(40)],
     });
     const CANCEL: &str = "dialog-ok: Cancel";
@@ -7618,4 +7619,78 @@ async fn the_amend_form_reopens_refused_while_paused(cx: &mut gpui::TestAppConte
 #[gpui::test]
 async fn the_stash_form_reopens_refused_while_paused(cx: &mut gpui::TestAppContext) {
     reopened_refused_while_paused(cx, PausedForm::Stash).await;
+}
+
+#[gpui::test]
+async fn reset_dialog_guards_hard_enter_and_executes_soft_reset(cx: &mut gpui_kit::TestAppContext) {
+    use crate::tags::tests::{draw, git, tagged_repository, window};
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = tagged_repository(fixture.path());
+    let base_oid = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    std::fs::write(repo.path().join("second.txt"), "second commit\n").unwrap();
+    git(repo.path(), &["add", "second.txt"]);
+    git(repo.path(), &["commit", "--quiet", "-m", "Second commit"]);
+
+    let (app, cx) = window(cx, &repo);
+    draw(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_reset_commit(base_oid.clone(), window, cx)
+        })
+    });
+    crate::views::tests::wait_until(cx, &app, "reset dialog opens", |app| {
+        app.recovery.task.is_none()
+    });
+    draw(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "reset dialog opened"
+    );
+
+    // Selecting Hard mode suppresses accidental bare Enter confirmation.
+    let hard = cx
+        .debug_bounds("reset-mode-hard")
+        .expect("Hard mode toggle drawn");
+    cx.simulate_click(hard.center(), gpui::Modifiers::none());
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "bare Enter does not submit Hard reset"
+    );
+
+    // Switching to Soft and clicking Confirm resets HEAD while preserving staged files.
+    let soft = cx
+        .debug_bounds("reset-mode-soft")
+        .expect("Soft mode toggle drawn");
+    cx.simulate_click(soft.center(), gpui::Modifiers::none());
+    draw(cx);
+    let confirm = cx
+        .debug_bounds("confirm-reset-branch")
+        .expect("reset confirm button drawn");
+    cx.simulate_click(confirm.center(), gpui::Modifiers::none());
+    crate::views::tests::wait_until(cx, &app, "soft reset finishes", |app| {
+        app.operation_busy.is_none() && app.commits.first().is_some_and(|c| c.oid == base_oid)
+    });
+
+    let status = repo.status().unwrap();
+    assert!(
+        status
+            .entries
+            .iter()
+            .any(|e| e.path == std::path::Path::new("second.txt") && e.staged.is_some()),
+        "soft reset preserves second.txt as staged"
+    );
 }

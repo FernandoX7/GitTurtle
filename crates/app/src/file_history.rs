@@ -1048,6 +1048,7 @@ pub(super) struct ReturnContext {
     patch_view: Option<Entity<diff_view::DiffView>>,
     partial_subscription: Option<Subscription>,
     split_view: Option<Entity<split_diff::SplitView>>,
+    split_partial_subscription: Option<Subscription>,
     markdown_view: Option<Entity<markdown_view::View>>,
     before_editor: Option<Entity<EditorState>>,
     after_editor: Option<Entity<EditorState>>,
@@ -1284,6 +1285,7 @@ impl GitTurtle {
             patch_view: self.patch_view.take(),
             partial_subscription: self.partial_subscription.take(),
             split_view: self.split_view.take(),
+            split_partial_subscription: self.split_partial_subscription.take(),
             markdown_view: self.markdown_view.take(),
             before_editor: self.before_editor.take(),
             after_editor: self.after_editor.take(),
@@ -1544,6 +1546,7 @@ impl GitTurtle {
         self.patch_view = retained.patch_view;
         self.partial_subscription = retained.partial_subscription;
         self.split_view = retained.split_view;
+        self.split_partial_subscription = retained.split_partial_subscription;
         self.markdown_view = retained.markdown_view;
         self.before_editor = retained.before_editor;
         self.after_editor = retained.after_editor;

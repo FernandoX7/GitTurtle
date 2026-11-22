@@ -85,6 +85,7 @@ async fn assistive_technology_reaches_only_the_settings_drawn(cx: &mut TestAppCo
             "custom-themes-new",
             "custom-themes-import",
             "save-external-editor",
+            "save-external-terminal",
             "save-default-branch",
         ]
         .map(str::to_owned),

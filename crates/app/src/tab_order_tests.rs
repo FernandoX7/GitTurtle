@@ -376,6 +376,7 @@ fn page_names(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Names {
         .region("current-branch", "the branch picker")
         .region("edge-add-remote", "Add remote")
         .region("git-actions-toggle", "Targets")
+        .region("history-search-filters-toggle", "History search filters")
         .region("previous-text-change", "Previous change")
         .region("next-text-change", "Next change")
         .region("hide-whitespace-changes", "Hide whitespace")
@@ -493,6 +494,7 @@ fn history_stops() -> Vec<&'static str> {
         "a scope control",
         "a scope control",
         "the search",
+        "History search filters",
         "the commit list",
     ]);
     stops.extend(["a message control"; 3]);

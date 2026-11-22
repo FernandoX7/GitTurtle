@@ -2,10 +2,13 @@
 //! the serialized worker; confirmations retain the exact repository and plan.
 use crate::*;
 use focus_reveal::{FocusReveal, Trigger};
-use gitturtle_core::{BranchCommand, BranchPlan, RemoteConfig, WriteCommand};
+use gitturtle_core::{
+    BranchCommand, BranchPlan, DeleteRemoteBranchPlan, RemoteConfig, WriteCommand,
+};
 use gpui_kit::component::{
     WindowExt,
     checkbox::Checkbox,
+    dialog::{Cancel, Confirm},
     menu::{PopupMenu, PopupMenuItem},
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -319,6 +322,9 @@ enum Prepared {
         choices: Arc<Vec<BranchChoice>>,
     },
     Local(Arc<BranchPlan>),
+    Rename(Arc<BranchPlan>),
+    ForceDelete(Arc<BranchPlan>),
+    DeleteRemoteBranch(Arc<DeleteRemoteBranchPlan>),
     Remote {
         reference: String,
         oid: String,
@@ -341,6 +347,9 @@ enum MenuAction {
     Rebase,
     InteractiveRebase,
     Remotes,
+    FetchPrune,
+    FetchAll,
+    FetchAllPrune,
     Tags,
     Worktrees,
     CompareRevisions,
@@ -745,6 +754,44 @@ impl GitTurtle {
                     &path,
                     wait,
                 );
+                if !this.remotes.is_empty() {
+                    let remote_name = this.remote_name.read(cx).value().trim().to_owned();
+                    let prune_label: SharedString = if remote_name.is_empty() {
+                        "Fetch remote (prune)".into()
+                    } else {
+                        format!("Fetch {remote_name} (prune)").into()
+                    };
+                    menu = menu.separator();
+                    let owner_prune = owner.clone();
+                    let path_prune = path.clone();
+                    menu = menu.item(
+                        native_accessibility::waiting_item(prune_label, false, wait).on_click(
+                            move |_, window, cx| {
+                                let _ = owner_prune.update(cx, |this, cx| {
+                                    if this.path == path_prune && this.page == AppPage::Repository {
+                                        this.branch_menu_action(MenuAction::FetchPrune, window, cx);
+                                    }
+                                });
+                            },
+                        ),
+                    );
+                    menu = add_menu_action(
+                        menu,
+                        "Fetch all remotes",
+                        MenuAction::FetchAll,
+                        &owner,
+                        &path,
+                        wait,
+                    );
+                    menu = add_menu_action(
+                        menu,
+                        "Fetch all remotes (prune)",
+                        MenuAction::FetchAllPrune,
+                        &owner,
+                        &path,
+                        wait,
+                    );
+                }
                 add_menu_action(
                     menu,
                     "Manage remotes…",
@@ -785,6 +832,9 @@ impl GitTurtle {
             }
             MenuAction::InteractiveRebase => self.open_interactive_rebase(None, window, cx),
             MenuAction::Remotes => self.open_remote_manager(window, cx),
+            MenuAction::FetchPrune => self.fetch_remote_with_prune(true, window, cx),
+            MenuAction::FetchAll => self.fetch_all_remotes(false, window, cx),
+            MenuAction::FetchAllPrune => self.fetch_all_remotes(true, window, cx),
             MenuAction::Tags => self.open_tags(window, cx),
             MenuAction::Activity => self.open_activity(window, cx),
             MenuAction::CompareRevisions => self.open_revision_comparison(window, cx),
@@ -990,6 +1040,13 @@ impl GitTurtle {
                 command,
             } => self.confirm_git_write(title, explanation, action, command, window, cx),
             Prepared::Local(plan) => self.show_local_branch(plan, window, cx),
+            Prepared::Rename(plan) => {
+                self.open_branch_form(BranchFormMode::Rename(plan), window, cx)
+            }
+            Prepared::ForceDelete(plan) => self.confirm_branch_force_delete(plan, window, cx),
+            Prepared::DeleteRemoteBranch(plan) => {
+                self.confirm_remote_branch_delete(plan, window, cx)
+            }
             Prepared::Remote { reference, oid } => {
                 self.show_remote_branch(reference, oid, window, cx)
             }
@@ -1119,12 +1176,32 @@ impl GitTurtle {
             let upstream = Arc::clone(&plan);
             let clear_upstream = Arc::clone(&plan);
             let delete = Arc::clone(&plan);
+            let force_delete = Arc::clone(&plan);
+            let force_delete_refused = (!plan.checked_out_in.is_empty()).then(|| {
+                format!(
+                    "Checked out in {}. Switch that worktree to another branch before force deleting.",
+                    path_list(&plan.checked_out_in)
+                )
+            });
+            let show_force_delete = !can_delete;
             let source = format!("refs/heads/{}", plan.name);
             let mut actions = div().flex().flex_wrap().gap_2()
                 .child(dialog_action("rename-branch", "Rename…", &owner, &path, rename_refused.clone(), move |this, window, cx| this.open_branch_form(BranchFormMode::Rename(Arc::clone(&rename)), window, cx)))
                 .child(dialog_action("choose-upstream", "Change upstream…", &owner, &path, upstream_refused.clone(), move |this, window, cx| this.choose_branch(ChoicePurpose::Upstream(Arc::clone(&upstream)), window, cx)))
                 .child(dialog_action("remove-upstream", "Remove upstream…", &owner, &path, clear_refused.clone(), move |this, window, cx| this.prepare_upstream(Arc::clone(&clear_upstream), None, window, cx)))
-                .child(dialog_action("delete-branch", "Delete branch…", &owner, &path, delete_refused.clone(), move |this, window, cx| this.prepare_branch_delete(Arc::clone(&delete), window, cx)));
+                .child(dialog_action("delete-branch", "Delete branch…", &owner, &path, delete_refused.clone(), move |this, window, cx| this.prepare_branch_delete(Arc::clone(&delete), window, cx)))
+                .when(show_force_delete, |actions| {
+                    actions.child(dialog_action(
+                        "force-delete-branch",
+                        "Force delete branch…",
+                        &owner,
+                        &path,
+                        force_delete_refused.clone(),
+                        move |this, window, cx| {
+                            this.prepare_branch_force_delete(Arc::clone(&force_delete), window, cx)
+                        },
+                    ))
+                });
             if !current && plan.current_branch.is_some() {
                 let merge_source = source.clone();
                 actions = actions.child(dialog_action("merge-selected-branch", "Merge into current…", &owner, &path, None, move |this, window, cx| this.prepare_integration(merge_source.clone(), false, window, cx)))
@@ -1160,11 +1237,13 @@ impl GitTurtle {
             .and_then(|status| status.branch.as_ref())
             .is_none()
             .then(|| DETACHED.to_owned());
+        let delete_target = self.split_remote_branch_ref(&reference);
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let p = palette(cx);
             let tracking_ref = reference.clone();
             let merge_ref = reference.clone();
             let rebase_ref = reference.clone();
+            let delete_target = delete_target.clone();
             let actions = div()
                 .flex()
                 .flex_wrap()
@@ -1202,7 +1281,24 @@ impl GitTurtle {
                     move |this, window, cx| {
                         this.prepare_integration(rebase_ref.clone(), true, window, cx)
                     },
-                ));
+                ))
+                .when_some(delete_target, |actions, (remote, branch)| {
+                    actions.child(dialog_action(
+                        "delete-remote-branch",
+                        "Delete remote branch…",
+                        &owner,
+                        &path,
+                        None,
+                        move |this, window, cx| {
+                            this.prepare_remote_branch_delete(
+                                remote.clone(),
+                                branch.clone(),
+                                window,
+                                cx,
+                            )
+                        },
+                    ))
+                });
             let content = div()
                 .flex()
                 .flex_col()
@@ -1236,6 +1332,7 @@ impl GitTurtle {
         let path = self.path.clone();
         let initial = match &mode {
             BranchFormMode::Rename(plan) => plan.name.clone(),
+            BranchFormMode::CreateAt(_) => String::new(),
             BranchFormMode::Track(reference) => {
                 let branch = reference.strip_prefix("refs/remotes/").unwrap_or(reference);
                 self.remotes
@@ -1274,6 +1371,498 @@ impl GitTurtle {
                 explanation: format!("Delete the local branch label {} at {}. Its commits are retained by {target}. Working files and remote branches remain available.", plan.name, short_oid(&plan.oid)),
                 action: "Delete branch", command: WriteCommand::Branch(BranchCommand::Delete { plan }.into()) })
         }, window, cx);
+    }
+
+    fn prepare_branch_force_delete(
+        &mut self,
+        expected: Arc<BranchPlan>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.read_branch_action(move |repo| {
+            let plan = repo.branch_plan(&expected.name)?;
+            anyhow::ensure!(plan == *expected, "This branch changed; open its actions again.");
+            anyhow::ensure!(
+                plan.checked_out_in.is_empty(),
+                "This branch is checked out in a worktree; switch that worktree to another branch before force deleting it."
+            );
+            Ok(Prepared::ForceDelete(Arc::new(plan)))
+        }, window, cx);
+    }
+
+    pub(super) fn split_remote_branch_ref(&self, reference: &str) -> Option<(String, String)> {
+        let stripped = reference.strip_prefix("refs/remotes/").unwrap_or(reference);
+        if let Some((remote, branch)) = self
+            .remotes
+            .iter()
+            .filter_map(|remote| {
+                stripped
+                    .strip_prefix(&format!("{}/", remote.name))
+                    .filter(|branch| !branch.is_empty())
+                    .map(|branch| (remote.name.len(), remote.name.clone(), branch.to_owned()))
+            })
+            .max_by_key(|(len, _, _)| *len)
+            .map(|(_, remote, branch)| (remote, branch))
+        {
+            return Some((remote, branch));
+        }
+        stripped
+            .split_once('/')
+            .filter(|(remote, branch)| !remote.is_empty() && !branch.is_empty())
+            .map(|(remote, branch)| (remote.to_owned(), branch.to_owned()))
+    }
+
+    pub(super) fn prepare_named_integration(
+        &mut self,
+        branch: String,
+        rebase: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prepare_integration(format!("refs/heads/{branch}"), rebase, window, cx);
+    }
+
+    pub(super) fn open_create_branch_at(
+        &mut self,
+        start_point: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || self.page != AppPage::Repository {
+            return;
+        }
+        self.open_branch_form(BranchFormMode::CreateAt(start_point), window, cx);
+    }
+
+    pub(super) fn open_branch_rename_named(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.read_branch_action(
+            move |repo| Ok(Prepared::Rename(Arc::new(repo.branch_plan(&name)?))),
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn open_branch_delete_named(
+        &mut self,
+        name: String,
+        force: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.read_branch_action(
+            move |repo| {
+                let plan = repo.branch_plan(&name)?;
+                anyhow::ensure!(
+                    plan.checked_out_in.is_empty(),
+                    "This branch is checked out in a worktree; switch that worktree to another branch before deleting it."
+                );
+                if force || plan.unmerged_commits != Some(0) {
+                    Ok(Prepared::ForceDelete(Arc::new(plan)))
+                } else {
+                    let target = plan
+                        .merge_target
+                        .as_ref()
+                        .map_or("HEAD", |target| short_reference(&target.name));
+                    Ok(Prepared::Confirmation {
+                        title: format!("Delete local branch {}", plan.name),
+                        explanation: format!(
+                            "Delete the local branch label {} at {}. Its commits are retained by {target}. Working files and remote branches remain available.",
+                            plan.name,
+                            short_oid(&plan.oid)
+                        ),
+                        action: "Delete branch",
+                        command: WriteCommand::Branch(BranchCommand::Delete { plan }.into()),
+                    })
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn open_remote_branch_track_named(
+        &mut self,
+        reference: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let full = if reference.starts_with("refs/remotes/") {
+            reference
+        } else {
+            format!("refs/remotes/{reference}")
+        };
+        self.open_branch_form(BranchFormMode::Track(full), window, cx);
+    }
+
+    pub(super) fn prepare_remote_branch_delete(
+        &mut self,
+        remote: String,
+        remote_branch: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.read_branch_action(
+            move |repo| {
+                Ok(Prepared::DeleteRemoteBranch(Arc::new(
+                    repo.delete_remote_branch_plan(&remote, &remote_branch)?,
+                )))
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn confirm_branch_force_delete(
+        &mut self,
+        plan: Arc<BranchPlan>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use std::{cell::Cell, rc::Rc};
+        let owner = cx.entity().downgrade();
+        let path = self.path.clone();
+        let requested = Rc::new(Cell::new(false));
+        let submitted = Rc::new(Cell::new(false));
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let owner = owner.clone();
+            let path = path.clone();
+            let plan = Arc::clone(&plan);
+            let requested = requested.clone();
+            let request_click = requested.clone();
+            let submitted = submitted.clone();
+            let copy_oid = plan.oid.clone();
+            let oid_mark = copy_feedback::Mark::new("copy-force-delete-oid", plan.oid.as_str());
+            let unmerged_summary = match plan.unmerged_commits {
+                Some(count) if count > 0 => format!(
+                    "{} not reachable from {} (for example, after a squash merge or unpushed local work).",
+                    crate::counted(count, "commit is", "commits are"),
+                    plan.merge_target
+                        .as_ref()
+                        .map_or("HEAD", |target| short_reference(&target.name))
+                ),
+                Some(0) => "All commits are already reachable from its merge target.".into(),
+                _ => "No merge target is available to verify reachability.".into(),
+            };
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .text_size(crate::appearance::ui_text(12.))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(p.warning))
+                        .bg(rgb(p.panel))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            native_accessibility::text(
+                                "force-delete-warning",
+                                format!("Force delete '{}' (git branch -D)", plan.name),
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(native_accessibility::text(
+                            "force-delete-unmerged",
+                            unmerged_summary,
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    native_accessibility::text(
+                                        "force-delete-tip-oid",
+                                        format!("Tip commit · {}", short_oid(&plan.oid)),
+                                    )
+                                    .min_w_0()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(p.muted)),
+                                )
+                                .child(
+                                    copy_feedback::copy_button(oid_mark.clone(), "Copy SHA", "", cx)
+                                        .on_click(move |_, window, cx| {
+                                            copy_feedback::copy(
+                                                window,
+                                                cx,
+                                                Some(oid_mark.clone()),
+                                                "tip SHA",
+                                                copy_oid.clone(),
+                                            );
+                                        }),
+                                ),
+                        ),
+                )
+                .child(
+                    native_accessibility::text(
+                        "force-delete-reflog-note",
+                        "Commits remain recoverable via Git reflog until garbage collection. Working files and remote branches are unchanged.",
+                    )
+                    .text_color(rgb(p.muted)),
+                );
+            let submit_owner = owner.clone();
+            let submit_path = path.clone();
+            let submit_plan = Arc::clone(&plan);
+            let request_key = request_click.clone();
+            dialog
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title(
+                    "force-delete-branch-title",
+                    format!("Force delete local branch {}?", plan.name),
+                ))
+                .width(appearance::dialog_width(px(580.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(content)
+                .footer(
+                    gpui_kit::component::dialog::DialogFooter::new()
+                        .child(
+                            crate::tags::dialog_cancel("cancel-force-delete-branch", "Cancel")
+                                .debug_selector(|| "cancel-force-delete-branch".into())
+                                .on_action(|_: &Confirm, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx);
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx);
+                                }),
+                        )
+                        .child(crate::workspace::dialog_refusing(
+                            owner,
+                            path,
+                            move |refused, dimmed| {
+                                let req_key = request_key.clone();
+                                let req_click = request_click;
+                                button(
+                                    "confirm-force-delete-branch",
+                                    "Force delete branch",
+                                    "",
+                                    false,
+                                )
+                                .danger()
+                                .debug_selector(|| "confirm-force-delete-branch".into())
+                                .map(|btn| {
+                                    crate::workspace::refusing(
+                                        btn,
+                                        || "confirm-force-delete-branch".into(),
+                                        refused,
+                                        dimmed,
+                                    )
+                                })
+                                .on_action(move |_: &Confirm, _, cx| {
+                                    if !refused {
+                                        req_key.set(true);
+                                        cx.propagate();
+                                    }
+                                })
+                                .on_click(move |_, window, cx| {
+                                    if !refused {
+                                        req_click.set(true);
+                                        window.dispatch_action(
+                                            Box::new(Confirm { secondary: false }),
+                                            cx,
+                                        );
+                                    }
+                                })
+                                .into_any_element()
+                            },
+                        )),
+                )
+                .on_ok(move |_, window, cx| {
+                    if !requested.replace(false) || submitted.get() {
+                        return false;
+                    }
+                    submitted.set(true);
+                    let _ = submit_owner.update(cx, |this, cx| {
+                        if this.path == submit_path
+                            && this.page == AppPage::Repository
+                            && this.operation_busy.is_none()
+                        {
+                            this.write(
+                                WriteCommand::Branch(
+                                    BranchCommand::ForceDelete {
+                                        plan: (*submit_plan).clone(),
+                                    }
+                                    .into(),
+                                ),
+                                "Force deleting branch…",
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                    true
+                })
+        });
+    }
+
+    fn confirm_remote_branch_delete(
+        &mut self,
+        plan: Arc<DeleteRemoteBranchPlan>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use std::{cell::Cell, rc::Rc};
+        let owner = cx.entity().downgrade();
+        let path = self.path.clone();
+        let requested = Rc::new(Cell::new(false));
+        let submitted = Rc::new(Cell::new(false));
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let owner = owner.clone();
+            let path = path.clone();
+            let plan = Arc::clone(&plan);
+            let requested = requested.clone();
+            let request_click = requested.clone();
+            let submitted = submitted.clone();
+            let display_url = crate::workspace::display_remote_url(&plan.remote_url);
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .text_size(crate::appearance::ui_text(12.))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(p.warning))
+                        .bg(rgb(p.panel))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            native_accessibility::text(
+                                "delete-remote-branch-target",
+                                format!("{}/{}", plan.remote, plan.remote_branch),
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            native_accessibility::text(
+                                "delete-remote-branch-url",
+                                format!("Destination · {display_url}"),
+                            )
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(p.muted)),
+                        )
+                        .child(
+                            native_accessibility::text(
+                                "delete-remote-branch-lease",
+                                format!("Expected remote tip · {}", plan.expected_remote_oid),
+                            )
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(p.muted)),
+                        ),
+                )
+                .child(
+                    native_accessibility::text(
+                        "delete-remote-branch-note",
+                        "This explicit network action deletes the branch on the remote only if it still points to the reviewed commit (exact lease). Local branches and working files are unchanged.",
+                    )
+                    .text_color(rgb(p.muted)),
+                );
+            let submit_owner = owner.clone();
+            let submit_path = path.clone();
+            let submit_plan = Arc::clone(&plan);
+            let request_key = request_click.clone();
+            dialog
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title(
+                    "delete-remote-branch-title",
+                    format!("Delete remote branch {}/{}?", plan.remote, plan.remote_branch),
+                ))
+                .width(appearance::dialog_width(px(580.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(content)
+                .footer(
+                    gpui_kit::component::dialog::DialogFooter::new()
+                        .child(
+                            crate::tags::dialog_cancel("cancel-delete-remote-branch", "Cancel")
+                                .debug_selector(|| "cancel-delete-remote-branch".into())
+                                .on_action(|_: &Confirm, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx);
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx);
+                                }),
+                        )
+                        .child(crate::workspace::dialog_refusing(
+                            owner,
+                            path,
+                            move |refused, dimmed| {
+                                let req_key = request_key.clone();
+                                let req_click = request_click;
+                                button(
+                                    "confirm-delete-remote-branch",
+                                    "Delete remote branch",
+                                    "",
+                                    false,
+                                )
+                                .danger()
+                                .debug_selector(|| "confirm-delete-remote-branch".into())
+                                .map(|btn| {
+                                    crate::workspace::refusing(
+                                        btn,
+                                        || "confirm-delete-remote-branch".into(),
+                                        refused,
+                                        dimmed,
+                                    )
+                                })
+                                .on_action(move |_: &Confirm, _, cx| {
+                                    if !refused {
+                                        req_key.set(true);
+                                        cx.propagate();
+                                    }
+                                })
+                                .on_click(move |_, window, cx| {
+                                    if !refused {
+                                        req_click.set(true);
+                                        window.dispatch_action(
+                                            Box::new(Confirm { secondary: false }),
+                                            cx,
+                                        );
+                                    }
+                                })
+                                .into_any_element()
+                            },
+                        )),
+                )
+                .on_ok(move |_, window, cx| {
+                    if !requested.replace(false) || submitted.get() {
+                        return false;
+                    }
+                    submitted.set(true);
+                    let _ = submit_owner.update(cx, |this, cx| {
+                        if this.path == submit_path
+                            && this.page == AppPage::Repository
+                            && this.operation_busy.is_none()
+                        {
+                            this.write(
+                                WriteCommand::Branch(
+                                    BranchCommand::DeleteRemote {
+                                        plan: (*submit_plan).clone(),
+                                    }
+                                    .into(),
+                                ),
+                                "Deleting remote branch…",
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                    true
+                })
+        });
     }
 
     fn prepare_upstream(
@@ -1527,6 +2116,7 @@ fn show_branch_form(form: Entity<BranchForm>, window: &mut Window, cx: &mut App)
     let title = match &form.read(cx).mode {
         BranchFormMode::Rename(_) => "Rename branch",
         BranchFormMode::Track(_) => "Create tracking branch",
+        BranchFormMode::CreateAt(_) => "Create branch",
     };
     window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
@@ -1773,6 +2363,7 @@ impl Render for BranchChooser {
 enum BranchFormMode {
     Rename(Arc<BranchPlan>),
     Track(String),
+    CreateAt(String),
 }
 
 struct BranchForm {
@@ -1870,6 +2461,22 @@ impl BranchForm {
                     let explanation = format!("Create local branch {name} at {} and track {}.{} The locally available remote tip is used; this action does not fetch.", short_oid(&plan.remote_oid), short_reference(&reference), if checkout { " Git will also switch this worktree to the new branch and preserve unrelated work." } else { " The current branch stays selected." });
                     Ok(Prepared::Confirmation { title: format!("Create tracking branch {name}"), explanation, action: if checkout { "Create and switch" } else { "Create branch" }, command: WriteCommand::Branch(BranchCommand::CreateTracking { plan }.into()) })
                 }
+                BranchFormMode::CreateAt(start_point) => {
+                    let resolved = repo.resolve_revision(&start_point)?;
+                    let explanation = format!(
+                        "Create and switch to local branch {name} starting at {}. Existing commits and unrelated working changes stay intact.",
+                        short_oid(&resolved)
+                    );
+                    Ok(Prepared::Confirmation {
+                        title: format!("Create branch {name}"),
+                        explanation,
+                        action: "Create and switch",
+                        command: WriteCommand::CreateBranch {
+                            name,
+                            start_point: Some(resolved),
+                        },
+                    })
+                }
             }, Some(recover), window, cx)
         }).unwrap_or(false);
         if !accepted {
@@ -1885,6 +2492,9 @@ impl Render for BranchForm {
         let target = match &self.mode {
             BranchFormMode::Rename(plan) => format!("{} · {}", plan.name, short_oid(&plan.oid)),
             BranchFormMode::Track(reference) => format!("Track {}", short_reference(reference)),
+            BranchFormMode::CreateAt(start_point) => {
+                format!("Start at {}", short_oid(start_point))
+            }
         };
         div()
             .flex()

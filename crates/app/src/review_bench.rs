@@ -232,6 +232,7 @@ fn prepared_review_and_cached_paths_release_benchmark() {
         new: new.clone(),
         presentation: Arc::clone(&presentation),
         split,
+        split_partial: None,
         partial: None,
         partial_unavailable: None,
         lfs_missing: [false; 2],

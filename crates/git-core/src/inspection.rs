@@ -178,6 +178,7 @@ pub struct RevisionComparison {
     pub after: ResolvedRevision,
     pub base_oid: String,
     pub mode: ComparisonMode,
+    pub after_working: bool,
     pub files: Vec<FileChange>,
 }
 
@@ -300,6 +301,50 @@ impl GitRepository {
             after,
             base_oid,
             mode,
+            after_working: false,
+            files,
+        })
+    }
+
+    /// Passive read comparing one local commit revision against the current working tree.
+    pub fn compare_revision_with_working(
+        &self,
+        before: &str,
+        cancellation: &HistoryCancellation,
+    ) -> Result<RevisionComparison> {
+        ensure!(
+            !self.bare,
+            "Bare repositories do not have a working tree to compare against."
+        );
+        let before = self.resolve_inspection_revision(before, cancellation)?;
+        // Passive diff against the working tree must disable repo-local
+        // clean/process filters and avoid descending into dirty submodules.
+        let mut command = crate::work::passive_status_command(self.target())?;
+        command.args([
+            "diff",
+            "--raw",
+            "--no-abbrev",
+            "-z",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=dirty",
+            "--find-renames=50%",
+            "-l1000",
+            &before.oid,
+            "--",
+        ]);
+        let bytes = inspection_read(command, cancellation, MAX_INSPECTION_BYTES)?;
+        let files = parse_changes(&bytes)?;
+        let base_oid = before.oid.clone();
+        Ok(RevisionComparison {
+            before,
+            after: ResolvedRevision {
+                expression: "Working tree".into(),
+                oid: String::new(),
+            },
+            base_oid,
+            mode: ComparisonMode::Endpoints,
+            after_working: true,
             files,
         })
     }
@@ -608,6 +653,71 @@ impl GitRepository {
             "This file has unresolved conflicts; open it in Working Changes"
         );
         crate::work::read_worktree_file(&self.path, &entry.path, &entry.mode)
+    }
+
+    /// Resolve a user-entered commit hash, branch, tag, or revision expression
+    /// (for example `HEAD~3`, `v1.0`, or a short SHA) to a full commit OID.
+    /// Passive read only; rejects flags and control characters.
+    pub fn resolve_revision(&self, spec: &str) -> Result<String> {
+        let trimmed = spec.trim();
+        ensure!(
+            !trimmed.is_empty()
+                && trimmed.len() <= 4096
+                && !trimmed.starts_with('-')
+                && !trimmed.contains(['\0', '\r', '\n']),
+            "Enter a commit hash, branch name, tag, or revision expression."
+        );
+        let bytes = run_git(
+            self.target(),
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{trimmed}^{{commit}}"),
+            ],
+        )
+        .with_context(|| format!("No commit matches '{trimmed}'"))?;
+        let oid = text(trim_line(&bytes));
+        validate_oid(&oid)?;
+        Ok(oid)
+    }
+
+    /// Format one commit as a bounded plain-text patch suitable for clipboard
+    /// copy. Passive read only; never invokes external diff drivers or textconv.
+    pub fn commit_patch(&self, oid: &str, cancellation: &HistoryCancellation) -> Result<String> {
+        const MAX_COPY_PATCH_BYTES: usize = 4 * 1024 * 1024;
+        validate_oid(oid)?;
+        cancellation.check()?;
+        let commit = self.recovery_commit(oid)?;
+        let mut command = git_command(self.target());
+        if commit.parents.len() > 1 {
+            command.args([
+                "diff-tree",
+                "-m",
+                "--first-parent",
+                "--patch",
+                "--no-notes",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                oid,
+            ]);
+        } else {
+            command.args([
+                "format-patch",
+                "--stdout",
+                "-1",
+                "--no-stat",
+                "--no-signature",
+                "--no-notes",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                oid,
+            ]);
+        }
+        let bytes = inspection_read(command, cancellation, MAX_COPY_PATCH_BYTES)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 

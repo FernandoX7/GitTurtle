@@ -6050,6 +6050,7 @@ mod waiting_menus {
             app.update(cx, |app, cx| {
                 let fetch = gitturtle_core::WriteCommand::Fetch {
                     remote: "origin".into(),
+                    prune: false,
                 };
                 app.write(fetch, FETCHING, window, cx)
             })
@@ -8089,16 +8090,17 @@ async fn a_keyboard_row_menu_rests_on_an_item_that_says_why_it_is_unavailable(
         "the cursor stays on Ignore…"
     );
 
+    let menu_items = [NOTES_ITEMS[0], NOTES_ITEMS[1], NOTES_ITEMS[2], "More"];
     for (key, on) in [
         ("down", "Discard changes…"),
         ("up", IGNORE),
         ("home", "Stage"),
-        ("end", "Discard changes…"),
+        ("end", "More"),
         ("down", "Stage"),
     ] {
         cx.simulate_keystrokes(key);
         next_frame(cx);
-        assert_eq!(cursor_among(cx, &NOTES_ITEMS), [on], "after {key}");
+        assert_eq!(cursor_among(cx, &menu_items), [on], "after {key}");
     }
     cx.simulate_keystrokes("escape");
     next_frame(cx);

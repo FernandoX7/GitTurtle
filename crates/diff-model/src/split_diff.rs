@@ -1,8 +1,11 @@
 //! Pure side-by-side split-diff row alignment and per-side presentation.
 
 use crate::gutter::LineNumbers;
+use crate::partial_view::PartialRow;
 use crate::patch::{PatchPresentation, WordBudget, word_changes};
-use std::{mem::size_of, ops::Range, sync::Arc};
+use anyhow::{Result, ensure};
+use gitturtle_core::{PartialDiff, PartialHunk, PartialLineKind};
+use std::{collections::HashMap, mem::size_of, ops::Range, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Row {
@@ -47,6 +50,158 @@ pub struct SplitPresentation {
     pub sides: [SplitSide; 2],
     pub first_change: usize,
     pub change_rows: Arc<[usize]>,
+    pub row_changed: Arc<[bool]>,
+}
+
+/// One contiguous changed block in an aligned split view, anchored at its
+/// first aligned row (`start_row`) and holding the exact core change IDs
+/// across both Before and After sides.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SplitChangeBlock {
+    pub start_row: usize,
+    pub row_count: usize,
+    pub ids: Arc<[usize]>,
+}
+
+/// Worker-prepared partial-staging and partial-discard actions aligned to an
+/// [`SplitPresentation`]. Selection IDs come from the core snapshot, never
+/// from copied editor text.
+pub struct SplitPartialActions {
+    pub diff: Arc<PartialDiff>,
+    pub sides: [Arc<[PartialRow]>; 2],
+    pub blocks: Arc<[SplitChangeBlock]>,
+}
+
+impl SplitPartialActions {
+    pub fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + size_of::<PartialDiff>()
+            + self.diff.bytes()
+            + self
+                .sides
+                .iter()
+                .map(|rows| std::mem::size_of_val(rows.as_ref()) + 2 * size_of::<usize>())
+                .sum::<usize>()
+            + std::mem::size_of_val(self.blocks.as_ref())
+            + 2 * size_of::<usize>()
+            + self
+                .blocks
+                .iter()
+                .map(|block| std::mem::size_of_val(block.ids.as_ref()) + 2 * size_of::<usize>())
+                .sum::<usize>()
+    }
+
+    pub fn block_at_row(&self, row: usize) -> Option<&SplitChangeBlock> {
+        self.blocks
+            .binary_search_by_key(&row, |block| block.start_row)
+            .ok()
+            .map(|index| &self.blocks[index])
+    }
+}
+
+/// Map `diff`'s captured change IDs onto every aligned row and contiguous
+/// change block of `split`. Fails closed if any displayed changed line
+/// disagrees with the core snapshot.
+pub fn prepare_split_partial(
+    split: &SplitPresentation,
+    diff: Arc<PartialDiff>,
+) -> Result<SplitPartialActions> {
+    let (sides, blocks) = prepare_split_rows(split, &diff.hunks)?;
+    Ok(SplitPartialActions {
+        diff,
+        sides,
+        blocks,
+    })
+}
+
+type SplitPartialMapping = ([Arc<[PartialRow]>; 2], Arc<[SplitChangeBlock]>);
+
+fn prepare_split_rows(
+    split: &SplitPresentation,
+    hunks: &[PartialHunk],
+) -> Result<SplitPartialMapping> {
+    let mut changes = HashMap::new();
+    for line in hunks.iter().flat_map(|hunk| &hunk.lines) {
+        let (Some(id), Some(number)) = (line.change_id, line.old_line.or(line.new_line)) else {
+            continue;
+        };
+        changes.insert(
+            (line.kind == PartialLineKind::Addition, number),
+            (id, line.text.as_str()),
+        );
+    }
+    let expected = changes.len();
+    let row_count = split.row_changed.len();
+    let rendered = [
+        split.sides[0]
+            .text
+            .split_inclusive('\n')
+            .collect::<Vec<_>>(),
+        split.sides[1]
+            .text
+            .split_inclusive('\n')
+            .collect::<Vec<_>>(),
+    ];
+    let mut side_rows = [
+        vec![PartialRow::None; split.sides[0].numbers.len()],
+        vec![PartialRow::None; split.sides[1].numbers.len()],
+    ];
+    let mut blocks = Vec::new();
+    let mut selected = 0usize;
+    let mut row = 0usize;
+    while row < row_count {
+        if !split.row_changed[row] {
+            row += 1;
+            continue;
+        }
+        let start_row = row;
+        let mut block_ids = Vec::new();
+        while row < row_count && split.row_changed[row] {
+            for side in 0..2 {
+                let Some(number) = split.sides[side]
+                    .numbers
+                    .get(row)
+                    .and_then(|numbers| numbers.old)
+                else {
+                    continue;
+                };
+                let added = side == 1;
+                let line_number = number as usize;
+                let Some((id, source)) = changes.remove(&(added, line_number)) else {
+                    anyhow::bail!(
+                        "Changed lines no longer match the working snapshot. Refresh to select lines."
+                    );
+                };
+                let actual = rendered[side].get(row).copied().unwrap_or_default();
+                ensure!(
+                    actual == source
+                        || (!source.ends_with('\n') && actual.strip_suffix('\n') == Some(source)),
+                    "Changed text no longer matches the working snapshot. Refresh to select lines."
+                );
+                side_rows[side][row] = PartialRow::Change {
+                    id,
+                    added,
+                    line: line_number,
+                };
+                block_ids.push(id);
+                selected += 1;
+            }
+            row += 1;
+        }
+        if !block_ids.is_empty() {
+            blocks.push(SplitChangeBlock {
+                start_row,
+                row_count: row - start_row,
+                ids: block_ids.into(),
+            });
+        }
+    }
+    ensure!(
+        selected > 0 && selected == expected && changes.is_empty(),
+        "The complete set of changed lines is unavailable. Use the whole-file action."
+    );
+    let [before_rows, after_rows] = side_rows;
+    Ok(([before_rows.into(), after_rows.into()], blocks.into()))
 }
 
 impl SplitPresentation {
@@ -78,8 +233,14 @@ impl SplitPresentation {
             .filter_map(|(i, row)| (row.changed && (i == 0 || !rows[i - 1].changed)).then_some(i))
             .collect::<Vec<_>>()
             .into();
+        let row_changed: Arc<[bool]> = rows
+            .iter()
+            .map(|row| row.changed)
+            .collect::<Vec<_>>()
+            .into();
         Self {
             change_rows,
+            row_changed,
             first_change: rows.iter().position(|row| row.changed).unwrap_or(0),
             sides: std::array::from_fn(|side| {
                 let mut text = String::new();
@@ -129,6 +290,8 @@ impl SplitPresentation {
     pub fn retained_bytes(&self) -> usize {
         size_of::<Self>()
             + std::mem::size_of_val(self.change_rows.as_ref())
+            + 2 * size_of::<usize>()
+            + std::mem::size_of_val(self.row_changed.as_ref())
             + 2 * size_of::<usize>()
             + self
                 .sides
@@ -222,4 +385,111 @@ pub fn align_rows(sources: &[Vec<&str>; 2], patch: &PatchPresentation) -> Vec<Ro
         cursor[1] += 1;
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gitturtle_core::PartialLine;
+
+    fn change(id: usize, added: bool, number: usize, text: &str) -> PartialLine {
+        PartialLine {
+            kind: if added {
+                PartialLineKind::Addition
+            } else {
+                PartialLineKind::Deletion
+            },
+            old_line: (!added).then_some(number),
+            new_line: added.then_some(number),
+            text: text.into(),
+            change_id: Some(id),
+        }
+    }
+
+    #[test]
+    fn maps_replacements_additions_and_blocks_across_both_split_sides() {
+        let old = "ctx\nold1\nkeep\nold2";
+        let new = "ctx\nnew1\nnew2\nkeep\nnew3";
+        let patch = "--- a/f\n+++ b/f\n@@ -1,4 +1,5 @@\n ctx\n-old1\n+new1\n+new2\n keep\n-old2\n+new3\n\\ No newline at end of file\n";
+        let presentation = PatchPresentation::prepare(patch);
+        let split = SplitPresentation::prepare(old, new, &presentation);
+        let hunks = [PartialHunk {
+            header: "@@ -1,4 +1,5 @@".into(),
+            lines: vec![
+                change(0, false, 2, "old1\n"),
+                change(1, true, 2, "new1\n"),
+                change(2, true, 3, "new2\n"),
+                change(3, false, 4, "old2"),
+                change(4, true, 5, "new3"),
+            ],
+        }];
+        let (sides, blocks) = prepare_split_rows(&split, &hunks).unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].start_row, 1);
+        assert_eq!(blocks[0].row_count, 2);
+        assert_eq!(blocks[0].ids.as_ref(), &[0, 1, 2]);
+        assert_eq!(blocks[1].start_row, 4);
+        assert_eq!(blocks[1].row_count, 1);
+        assert_eq!(blocks[1].ids.as_ref(), &[3, 4]);
+        assert_eq!(
+            sides[0][1],
+            PartialRow::Change {
+                id: 0,
+                added: false,
+                line: 2
+            }
+        );
+        assert_eq!(sides[0][2], PartialRow::None);
+        assert_eq!(
+            sides[1][1],
+            PartialRow::Change {
+                id: 1,
+                added: true,
+                line: 2
+            }
+        );
+        assert_eq!(
+            sides[1][2],
+            PartialRow::Change {
+                id: 2,
+                added: true,
+                line: 3
+            }
+        );
+        assert_eq!(
+            sides[0][4],
+            PartialRow::Change {
+                id: 3,
+                added: false,
+                line: 4
+            }
+        );
+        assert_eq!(
+            sides[1][4],
+            PartialRow::Change {
+                id: 4,
+                added: true,
+                line: 5
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_split_partial_when_text_or_ids_mismatch() {
+        let old = "a\n";
+        let new = "b\n";
+        let patch = "@@ -1 +1 @@\n-a\n+b\n";
+        let split = SplitPresentation::prepare(old, new, &PatchPresentation::prepare(patch));
+        let wrong_text = [PartialHunk {
+            header: String::new(),
+            lines: vec![change(0, false, 1, "x\n"), change(1, true, 1, "b\n")],
+        }];
+        assert!(prepare_split_rows(&split, &wrong_text).is_err());
+
+        let missing_id = [PartialHunk {
+            header: String::new(),
+            lines: vec![change(0, false, 1, "a\n")],
+        }];
+        assert!(prepare_split_rows(&split, &missing_id).is_err());
+    }
 }

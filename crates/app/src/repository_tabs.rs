@@ -1068,6 +1068,28 @@ impl GitTurtle {
                 })
                 .sum::<usize>()
             + self
+                .tags
+                .iter()
+                .map(|tag| {
+                    std::mem::size_of::<gitturtle_core::Tag>()
+                        + tag.name.capacity()
+                        + tag.oid.capacity()
+                        + tag.target_oid.capacity()
+                        + tag.target_kind.capacity()
+                        + tag.tagger.capacity()
+                })
+                .sum::<usize>()
+            + self
+                .stashes
+                .iter()
+                .map(|stash| {
+                    std::mem::size_of::<gitturtle_core::StashEntry>()
+                        + stash.selector.capacity()
+                        + stash.oid.capacity()
+                        + stash.name.capacity()
+                })
+                .sum::<usize>()
+            + self
                 .worktrees
                 .iter()
                 .map(|worktree| {
@@ -2724,7 +2746,11 @@ impl GitTurtle {
             self.visible.clear();
             self.files.clear();
             self.selected_commit = None;
+            self.selected_compare_commit = None;
             self.selected_file = None;
+            self.tags.clear();
+            self.tags_truncated = false;
+            self.stashes.clear();
             self.history_list_layout = None;
             self.file_list_layout = None;
             self.repository = None;

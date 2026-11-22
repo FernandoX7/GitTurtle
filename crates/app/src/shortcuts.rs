@@ -39,6 +39,8 @@ pub(super) enum ShortcutId {
     #[cfg(target_os = "macos")]
     HideOthers,
     Refresh,
+    JumpToHead,
+    JumpToRevision,
     FindInComparison,
     Search,
     Sidebar,
@@ -175,6 +177,22 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         "Repository",
         "primary-shift-c",
         CompareRevisions,
+        APP
+    ),
+    shortcut!(
+        JumpToHead,
+        "Jump to HEAD",
+        "Repository",
+        "primary-shift-h",
+        JumpToHead,
+        APP
+    ),
+    shortcut!(
+        JumpToRevision,
+        "Jump to Commit or Ref",
+        "Repository",
+        "primary-g",
+        JumpToRevision,
         APP
     ),
     shortcut!(

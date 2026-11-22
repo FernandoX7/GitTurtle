@@ -431,6 +431,7 @@ fn configured_ssh_agent_fetches_over_loopback_and_rejects_unknown_hosts() {
     f.repo
         .execute(&WriteCommand::Fetch {
             remote: "fixture".into(),
+            prune: false,
         })
         .unwrap();
     assert_eq!(
@@ -446,6 +447,7 @@ fn configured_ssh_agent_fetches_over_loopback_and_rejects_unknown_hosts() {
         .repo
         .execute(&WriteCommand::Fetch {
             remote: "fixture".into(),
+            prune: false,
         })
         .unwrap_err()
         .to_string();

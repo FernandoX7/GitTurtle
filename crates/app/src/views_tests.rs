@@ -14343,6 +14343,7 @@ async fn compact_controls_carry_their_accessible_names(cx: &mut TestAppContext) 
                 ("history-newest", "Latest"),
                 ("history-previous", "Previous"),
                 ("load-more", "Older"),
+                ("history-search-filters-toggle", "History search filters"),
                 // The 240 px inspector's message toolbar holds the
                 // commit's Actions beside its copy controls as icons.
                 ("copy-message", "Copy full commit message"),
@@ -23652,17 +23653,21 @@ async fn working_row_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
             "{at}: the condition {detail:?} after the command {command:?} at the end of {ignore:?}"
         );
         assert!(!focused(cx), "{at}: the menu takes the keys");
-        // Below the cursor row, from its leading edge where the menu
-        // fits there, and kept inside the window where it does not, as
-        // beside the 156 px inspector at 18 pt.
+        // Below the cursor row where the menu fits there, or flipped wholly
+        // above it in a cramped 18 pt viewport, and kept inside the window
+        // horizontally.
         let first = cx.debug_bounds(STAGE).unwrap();
+        let last = cx
+            .debug_bounds("menu-item: More · MenuItem")
+            .unwrap_or_else(|| cx.debug_bounds(DISCARD).unwrap());
+        let below = first.top() >= row.bottom() && first.top() < row.bottom() + row.size.height;
+        let above = narrow && first.top() >= px(0.) && last.bottom() <= row.top();
         assert!(
-            first.top() >= row.bottom()
-                && first.top() < row.bottom() + row.size.height
+            (below || above)
                 && first.left() >= px(0.)
                 && first.right() <= px(width)
                 && (narrow || first.left() >= row.left()),
-            "{at}: the menu's first item {first:?} below the row {row:?}"
+            "{at}: the menu's first item {first:?} / last item {last:?} beside the row {row:?}"
         );
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -32584,7 +32589,7 @@ pub(crate) fn fixture_repository(path: impl AsRef<std::path::Path>) -> GitReposi
 
 /// Draw, advancing simulated time past debounces, until `done` holds
 /// while the reader and operation executors answer on their threads.
-fn wait_until(
+pub(crate) fn wait_until(
     cx: &mut VisualTestContext,
     app: &Entity<GitTurtle>,
     what: &str,
@@ -33135,6 +33140,7 @@ async fn the_operation_error_banner_draws_the_failing_line(cx: &mut TestAppConte
     let fetch = repository
         .execute(&gitturtle_core::WriteCommand::Fetch {
             remote: "nope".into(),
+            prune: false,
         })
         .expect_err("no such remote");
     let fetch_report = format!("{fetch:#}");
@@ -33145,6 +33151,7 @@ async fn the_operation_error_banner_draws_the_failing_line(cx: &mut TestAppConte
     let contexted = repository
         .execute(&gitturtle_core::WriteCommand::Fetch {
             remote: "nope".into(),
+            prune: false,
         })
         .expect_err("no such remote")
         .context("The fetch did not run");
@@ -33265,6 +33272,7 @@ async fn a_failed_write_draws_its_failing_line(cx: &mut TestAppContext) {
             "an SSH refusal",
             gitturtle_core::WriteCommand::Fetch {
                 remote: "guarded".into(),
+                prune: false,
             },
             "Permission denied (publickey).",
             "fatal: Could not read from remote repository.".to_owned(),
@@ -33588,4 +33596,151 @@ async fn working_list_copy_takes_the_selected_paths(cx: &mut TestAppContext) {
     choose(cx, "notes.txt", ChangeArea::Staged, true);
     choose(cx, "dir/東京 notes.txt", ChangeArea::Unstaged, true);
     assert_eq!(copy_chord(cx), "notes.txt\ndir/東京 notes.txt");
+}
+
+pub(crate) async fn opened_repository_window<'a>(
+    cx: &'a mut TestAppContext,
+    repo: &gitturtle_core::GitRepository,
+) -> (Entity<GitTurtle>, &'a mut VisualTestContext) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    init_app(cx);
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let initial = repo.path().to_owned();
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                repository_tabs::Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            )
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    cx.simulate_resize(size(px(1000.), px(680.)));
+    settle(&app, cx).await;
+    app.read_with(cx, |app, _| app.file_paths.drain());
+    land_recent_saves_for_test(&app, cx);
+    (app, cx)
+}
+
+#[gpui::test]
+async fn sidebar_tags_and_stashes_collapse_by_default_and_expand_on_toggle_or_filter(
+    cx: &mut TestAppContext,
+) {
+    use crate::tags::tests::{git, tagged_repository};
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = tagged_repository(fixture.path());
+    git(repo.path(), &["tag", "v1.2.3"]);
+    std::fs::write(repo.path().join("notes.txt"), "stashed edit\n").unwrap();
+    git(
+        repo.path(),
+        &["stash", "push", "--include-untracked", "-m", "wip-sidebar"],
+    );
+
+    let (app, cx) = opened_repository_window(cx, &repo).await;
+    draw(cx);
+
+    let initial_rows = app.read_with(cx, |app, _| app.nav_rows.len());
+    let has_tag_toggle = app.read_with(cx, |app, _| {
+        app.nav_rows.iter().any(|row| {
+            matches!(
+                row,
+                crate::NavRow::SectionToggle {
+                    key: "section:tags",
+                    expanded: false,
+                    ..
+                }
+            )
+        })
+    });
+    let has_stash_toggle = app.read_with(cx, |app, _| {
+        app.nav_rows.iter().any(|row| {
+            matches!(
+                row,
+                crate::NavRow::SectionToggle {
+                    key: "section:stashes",
+                    expanded: false,
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        has_tag_toggle,
+        "TAGS section appears collapsed by default (tags={}, stashes={}, commits={}, error={:?}, loading={:?})",
+        app.read_with(cx, |a, _| a.tags.len()),
+        app.read_with(cx, |a, _| a.stashes.len()),
+        app.read_with(cx, |a, _| a.commits.len()),
+        app.read_with(cx, |a, _| a.error.clone()),
+        app.read_with(cx, |a, _| a.loading),
+    );
+    assert!(
+        has_stash_toggle,
+        "STASHES section appears collapsed by default"
+    );
+    assert!(
+        app.read_with(cx, |app, _| {
+            !app.nav_rows
+                .iter()
+                .any(|row| matches!(row, crate::NavRow::Tag(_) | crate::NavRow::Stash(_)))
+        }),
+        "collapsed sections hide child tag/stash rows"
+    );
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.expanded_folders.insert("section:tags".into());
+            app.expanded_folders.insert("section:stashes".into());
+            app.rebuild_navigation(cx);
+            cx.notify();
+        });
+    });
+    draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.nav_rows.len() > initial_rows),
+        "expanding adds tag and stash rows"
+    );
+    assert!(
+        app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .any(|row| matches!(row, crate::NavRow::Tag(_)))
+                && app
+                    .nav_rows
+                    .iter()
+                    .any(|row| matches!(row, crate::NavRow::Stash(_)))
+        }),
+        "expanded sidebar lists tag and stash items"
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.expanded_folders.remove("section:tags");
+            app.expanded_folders.remove("section:stashes");
+            app.nav_search
+                .update(cx, |input, cx| input.set_value("v1.2.3", window, cx));
+            app.rebuild_navigation(cx);
+            cx.notify();
+        });
+    });
+    draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .any(|row| matches!(row, crate::NavRow::Tag(i) if app.tags[*i].name == "v1.2.3"))
+        }),
+        "sidebar search auto-expands matching tag"
+    );
 }

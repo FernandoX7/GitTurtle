@@ -81,6 +81,17 @@ impl RemoteConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteRemoteBranchPlan {
+    pub remote: String,
+    pub remote_branch: String,
+    pub remote_ref: String,
+    pub tracking_ref: String,
+    pub expected_remote_oid: String,
+    pub remote_url: String,
+    root: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BranchCommand {
     CreateTracking {
         plan: TrackingBranchPlan,
@@ -91,6 +102,12 @@ pub enum BranchCommand {
     },
     Delete {
         plan: BranchPlan,
+    },
+    ForceDelete {
+        plan: BranchPlan,
+    },
+    DeleteRemote {
+        plan: DeleteRemoteBranchPlan,
     },
     SetUpstream {
         plan: UpstreamPlan,
@@ -267,6 +284,33 @@ impl GitRepository {
         })
     }
 
+    /// Capture one remote-tracking branch's local tip and single push URL for
+    /// exact-lease remote deletion (`git push --force-with-lease=<ref>:<oid>
+    /// -- <remote> :refs/heads/<branch>`). Passive: never contacts the network.
+    pub fn delete_remote_branch_plan(
+        &self,
+        remote: &str,
+        remote_branch: &str,
+    ) -> Result<DeleteRemoteBranchPlan> {
+        ensure!(!self.bare, "Open a working copy to delete remote branches.");
+        self.validate_remote(remote)?;
+        self.validate_branch(remote_branch)?;
+        let remote_url = self.single_push_url(remote)?;
+        let tracking_ref = format!("refs/remotes/{remote}/{remote_branch}");
+        let record = self.management_ref(&tracking_ref)?.context(
+            "This remote branch is no longer available locally; refresh and fetch before deleting it.",
+        )?;
+        Ok(DeleteRemoteBranchPlan {
+            remote: remote.into(),
+            remote_branch: remote_branch.into(),
+            remote_ref: format!("refs/heads/{remote_branch}"),
+            tracking_ref,
+            expected_remote_oid: record.oid,
+            remote_url,
+            root: self.path.clone(),
+        })
+    }
+
     pub fn remote_configs(&self) -> Result<Vec<RemoteConfig>> {
         let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").args(["remote"]);
@@ -351,6 +395,7 @@ impl GitRepository {
             "Open a working copy to manage branches and remotes."
         );
         let mut command = normal_command(self.target());
+        let mut timeout = WRITE_TIMEOUT;
         let message = match operation {
             BranchCommand::CreateTracking { plan } => {
                 ensure!(
@@ -410,6 +455,54 @@ impl GitRepository {
                 command.args(["branch", "--delete", "--", &plan.name]);
                 format!("Deleted local branch '{}'", plan.name)
             }
+            BranchCommand::ForceDelete { plan } => {
+                self.check_branch_plan(plan)?;
+                ensure!(
+                    plan.checked_out_in.is_empty(),
+                    "This branch is checked out in a worktree; switch that worktree to another branch before force deleting it."
+                );
+                command.args(["branch", "--delete", "--force", "--", &plan.name]);
+                let short = plan.oid.get(..8).unwrap_or(&plan.oid);
+                format!(
+                    "Force deleted local branch '{}' (tip {short}; recoverable from reflog)",
+                    plan.name
+                )
+            }
+            BranchCommand::DeleteRemote { plan } => {
+                ensure!(
+                    plan.root == self.path,
+                    "This remote branch plan belongs to another working copy; refresh and review again."
+                );
+                ensure!(
+                    self.delete_remote_branch_plan(&plan.remote, &plan.remote_branch)? == *plan,
+                    "The remote branch state or push destination changed after review; refresh and review the deletion again."
+                );
+                configure_network(&mut command, self)?;
+                command.args([
+                    "-c",
+                    &format!("remote.{}.mirror=false", plan.remote),
+                    "-c",
+                    "push.followTags=false",
+                    "push",
+                    "--porcelain",
+                    "--progress",
+                    "--no-force",
+                    "--no-follow-tags",
+                    "--recurse-submodules=no",
+                    &format!(
+                        "--force-with-lease={}:{}",
+                        plan.remote_ref, plan.expected_remote_oid
+                    ),
+                    "--",
+                    &plan.remote,
+                    &format!(":{}", plan.remote_ref),
+                ]);
+                timeout = NETWORK_TIMEOUT;
+                format!(
+                    "Deleted remote branch '{}/{}'",
+                    plan.remote, plan.remote_branch
+                )
+            }
             BranchCommand::SetUpstream { plan } => {
                 ensure!(
                     plan.branch.root == self.path
@@ -461,7 +554,7 @@ impl GitRepository {
                 )
             }
         };
-        let output = checked_write_output(command, None, WRITE_TIMEOUT)?;
+        let output = checked_write_output(command, None, timeout)?;
         let diagnostic = text(&output.stderr);
         Ok(WriteOutcome {
             message: if diagnostic.trim().is_empty() {

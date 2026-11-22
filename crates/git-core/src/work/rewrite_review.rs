@@ -306,7 +306,7 @@ impl GitRepository {
         Ok(series)
     }
 
-    fn single_push_url(&self, remote: &str) -> Result<String> {
+    pub(super) fn single_push_url(&self, remote: &str) -> Result<String> {
         self.validate_remote(remote)?;
         let mut command = normal_command(self.target());
         command

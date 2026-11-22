@@ -676,3 +676,137 @@ fn a_scan_budget_returns_continuation_before_claiming_an_empty_search() {
     assert_eq!(rest.stop, HistorySearchStop::Exhausted);
     assert_eq!(rest.next_offset, None);
 }
+
+#[test]
+fn structured_history_search_supports_pickaxe_author_path_regex_and_merge_flags() {
+    use gitturtle_core::{HistorySearchFilter, PickaxeMode};
+    let f = Fixture::new();
+    let repo_dir = f.path.as_path();
+    fs::write(repo_dir.join("alpha.txt"), "magic_token_42\n").unwrap();
+    f.git(&["add", "alpha.txt"]);
+    f.git(&[
+        "-c",
+        "user.name=Alice Smith",
+        "-c",
+        "user.email=alice@example.invalid",
+        "commit",
+        "-m",
+        "Introduce alpha feature",
+    ]);
+    fs::write(repo_dir.join("beta.txt"), "other_value_99\n").unwrap();
+    f.git(&["add", "beta.txt"]);
+    f.git(&[
+        "-c",
+        "user.name=Bob Jones",
+        "-c",
+        "user.email=bob@example.invalid",
+        "commit",
+        "-m",
+        "Add beta module 123",
+    ]);
+    // Also test a dash-prefixed pickaxe pattern (no flag injection).
+    fs::write(repo_dir.join("-flag.txt"), "--needle-flag\n").unwrap();
+    f.git(&["add", "--", "-flag.txt"]);
+    f.git(&[
+        "-c",
+        "user.name=Alice Smith",
+        "-c",
+        "user.email=alice@example.invalid",
+        "commit",
+        "-m",
+        "Flag literal test",
+    ]);
+    // Merge commit to verify --no-merges and --first-parent.
+    f.git(&["switch", "-c", "side"]);
+    fs::write(repo_dir.join("side.txt"), "side branch\n").unwrap();
+    f.git(&["add", "side.txt"]);
+    f.git(&["commit", "-m", "Side commit"]);
+    f.git(&["switch", "main"]);
+    f.git(&["merge", "--no-ff", "--no-edit", "side"]);
+
+    let repo = f.repo();
+    let cancel = HistoryCancellation::default();
+
+    // Pickaxe -S literal
+    let s_filter = HistorySearchFilter {
+        pickaxe: Some((PickaxeMode::String, "--needle-flag".into())),
+        ..Default::default()
+    };
+    let page = repo
+        .search_history_filtered(&HistoryScope::AllRefs, "", &s_filter, 0, 20, &cancel)
+        .unwrap();
+    assert_eq!(page.commits.len(), 1);
+    assert_eq!(page.commits[0].subject, "Flag literal test");
+
+    // Pickaxe -G regex
+    let g_filter = HistorySearchFilter {
+        pickaxe: Some((PickaxeMode::Regex, "magic_token_[0-9]+".into())),
+        ..Default::default()
+    };
+    let page = repo
+        .search_history_filtered(&HistoryScope::AllRefs, "", &g_filter, 0, 20, &cancel)
+        .unwrap();
+    assert_eq!(page.commits.len(), 1);
+    assert_eq!(page.commits[0].subject, "Introduce alpha feature");
+
+    // Author + Path filter
+    let ap_filter = HistorySearchFilter {
+        author: Some("bob".into()),
+        paths: vec![PathBuf::from("beta.txt")],
+        ..Default::default()
+    };
+    let page = repo
+        .search_history_filtered(&HistoryScope::AllRefs, "", &ap_filter, 0, 20, &cancel)
+        .unwrap();
+    assert_eq!(page.commits.len(), 1);
+    assert_eq!(page.commits[0].subject, "Add beta module 123");
+
+    // Regex message search + --no-merges
+    let rx_filter = HistorySearchFilter {
+        regex: true,
+        no_merges: true,
+        ..Default::default()
+    };
+    let page = repo
+        .search_history_filtered(
+            &HistoryScope::AllRefs,
+            "module [0-9]+$",
+            &rx_filter,
+            0,
+            20,
+            &cancel,
+        )
+        .unwrap();
+    assert_eq!(page.commits.len(), 1);
+    assert_eq!(page.commits[0].subject, "Add beta module 123");
+
+    // --first-parent excludes side branch commits
+    let fp_filter = HistorySearchFilter {
+        first_parent: true,
+        no_merges: true,
+        ..Default::default()
+    };
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let page = repo
+        .search_history_filtered(
+            &HistoryScope::FromCommit(head),
+            "",
+            &fp_filter,
+            0,
+            20,
+            &cancel,
+        )
+        .unwrap();
+    assert!(page.commits.iter().all(|c| c.subject != "Side commit"));
+    assert!(page.commits.iter().all(|c| c.parents.len() <= 1));
+
+    // Rejects parent traversal path filter
+    let bad = HistorySearchFilter {
+        paths: vec![PathBuf::from("../escape")],
+        ..Default::default()
+    };
+    assert!(
+        repo.search_history_filtered(&HistoryScope::AllRefs, "", &bad, 0, 10, &cancel)
+            .is_err()
+    );
+}

@@ -41,6 +41,7 @@ pub(crate) const QUICK_SOURCE_FOCUS_PATH: &str = "quick-source-focus";
 #[derive(Default)]
 pub(super) struct State {
     active: Option<Box<Inspection>>,
+    direct_compare_generation: u64,
 }
 struct Inspection {
     context: file_history::ReturnContext,
@@ -187,6 +188,14 @@ const WORKING_SCOPE_ID: &str = "revision-scope";
 impl GitTurtle {
     pub(super) fn inspection_preview_origins(&self) -> Option<markdown_view::Origins> {
         match &self.revision_inspection.active.as_ref()?.target {
+            Target::Comparison(comparison) if comparison.after_working => {
+                Some(markdown_view::Origins {
+                    old: Some(gitturtle_core::PreviewAssetScope::Revision(
+                        comparison.base_oid.clone(),
+                    )),
+                    new: Some(gitturtle_core::PreviewAssetScope::Worktree),
+                })
+            }
             Target::Comparison(comparison) => Some(markdown_view::Origins::revisions(
                 Some(comparison.base_oid.clone()),
                 Some(comparison.after.oid.clone()),
@@ -206,6 +215,104 @@ impl GitTurtle {
     }
     pub(super) fn open_revision_comparison(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_compare_form(window, cx);
+    }
+
+    pub(super) fn compare_revisions_direct(
+        &mut self,
+        before: String,
+        after: String,
+        mode: ComparisonMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Repository || self.operation_busy.is_some() {
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        self.revision_inspection.direct_compare_generation = self
+            .revision_inspection
+            .direct_compare_generation
+            .wrapping_add(1);
+        let compare_gen = self.revision_inspection.direct_compare_generation;
+        let repository = repo.path().to_owned();
+        let response = self.operations.submit_read(move || {
+            repo.compare_revisions(
+                &before,
+                &after,
+                mode,
+                &gitturtle_core::HistoryCancellation::default(),
+            )
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Revision comparison was interrupted.")));
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.revision_inspection.direct_compare_generation != compare_gen
+                    || this.path.as_ref() != Some(&repository)
+                    || this.page != AppPage::Repository
+                {
+                    return;
+                }
+                match result {
+                    Ok(comparison) => this.show_revision_comparison(comparison, window, cx),
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn compare_revision_with_working(
+        &mut self,
+        before: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Repository || self.operation_busy.is_some() {
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        self.revision_inspection.direct_compare_generation = self
+            .revision_inspection
+            .direct_compare_generation
+            .wrapping_add(1);
+        let compare_gen = self.revision_inspection.direct_compare_generation;
+        let repository = repo.path().to_owned();
+        let response = self.operations.submit_read(move || {
+            repo.compare_revision_with_working(
+                &before,
+                &gitturtle_core::HistoryCancellation::default(),
+            )
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!("Working tree comparison was interrupted."))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.revision_inspection.direct_compare_generation != compare_gen
+                    || this.path.as_ref() != Some(&repository)
+                    || this.page != AppPage::Repository
+                {
+                    return;
+                }
+                match result {
+                    Ok(comparison) => this.show_revision_comparison(comparison, window, cx),
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Opens Compare local revisions, as [`Self::open_revision_comparison`]
@@ -230,7 +337,11 @@ impl GitTurtle {
         {
             Some(Target::Comparison(c)) => (
                 c.before.expression.clone(),
-                c.after.expression.clone(),
+                if c.after_working {
+                    "HEAD".into()
+                } else {
+                    c.after.expression.clone()
+                },
                 c.mode,
             ),
             _ => ("HEAD~1".into(), "HEAD".into(), ComparisonMode::Endpoints),
@@ -1144,18 +1255,24 @@ impl GitTurtle {
         match &self.revision_inspection.active.as_ref()?.target {
             Target::Comparison(c) => {
                 let before = self.text_mode == TextMode::Before || file.new_path.is_none();
-                Some(BlameTarget::Committed {
-                    oid: if before {
-                        c.base_oid.clone()
-                    } else {
-                        c.after.oid.clone()
-                    },
-                    path: if before {
-                        file.old_path.clone()?
-                    } else {
-                        file.new_path.clone()?
-                    },
-                })
+                if !before && c.after_working {
+                    Some(BlameTarget::Working {
+                        path: file.new_path.clone()?,
+                    })
+                } else {
+                    Some(BlameTarget::Committed {
+                        oid: if before {
+                            c.base_oid.clone()
+                        } else {
+                            c.after.oid.clone()
+                        },
+                        path: if before {
+                            file.old_path.clone()?
+                        } else {
+                            file.new_path.clone()?
+                        },
+                    })
+                }
             }
             Target::File {
                 scope: PathScope::Worktree,
@@ -1219,17 +1336,23 @@ impl GitTurtle {
             Target::Comparison(c) => (
                 SharedString::new_static("Revision comparison"),
                 format!(
-                    "Before: {}\n{}\n\nAfter: {}\n{}\n\n{}{}",
+                    "Before: {}\n{}\n\nAfter: {}{}\n\n{}{}",
                     c.before.expression,
                     c.before.oid,
                     c.after.expression,
-                    c.after.oid,
-                    if c.mode == ComparisonMode::Endpoints {
+                    if c.after_working {
+                        String::new()
+                    } else {
+                        format!("\n{}", c.after.oid)
+                    },
+                    if c.after_working {
+                        "Commit → current working tree"
+                    } else if c.mode == ComparisonMode::Endpoints {
                         "Endpoints · Before → After"
                     } else {
                         "Changes since branching · merge base → After"
                     },
-                    if c.mode == ComparisonMode::SinceBranching {
+                    if !c.after_working && c.mode == ComparisonMode::SinceBranching {
                         format!("\nMerge base: {}", c.base_oid)
                     } else {
                         String::new()

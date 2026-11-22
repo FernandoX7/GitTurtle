@@ -94,10 +94,56 @@ pub struct StashSnapshot {
     pub untracked: Vec<FileChange>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetMode {
+    /// Move HEAD only; keep index and working tree unchanged.
+    Soft,
+    /// Move HEAD and reset index; keep working tree changes unstaged.
+    Mixed,
+    /// Move HEAD, reset index, and overwrite tracked working-tree changes.
+    Hard,
+}
+
+impl ResetMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Soft => "Soft",
+            Self::Mixed => "Mixed",
+            Self::Hard => "Hard",
+        }
+    }
+
+    fn git_flag(self) -> &'static str {
+        match self {
+            Self::Soft => "--soft",
+            Self::Mixed => "--mixed",
+            Self::Hard => "--hard",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetPlan {
+    pub current: RecoveryHead,
+    pub target: RecoveryCommit,
+    /// Containment of the current tip in locally available remote-tracking
+    /// refs only. No network check is performed.
+    pub known_published_refs: Vec<BranchReference>,
+    pub dirty_staged: usize,
+    pub dirty_unstaged: usize,
+    pub untracked: usize,
+    /// Bounded SHA-256 digest covering dirty tracked working entries so
+    /// concurrent edits between review and confirmation refuse a reset.
+    worktree_token: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StashCreatePlan {
     pub current: RecoveryHead,
     pub include_untracked: bool,
+    /// When `Some`, stash only these selected paths (expanded for renames);
+    /// when `None`, stash all eligible working changes.
+    pub selected_paths: Option<Vec<PathBuf>>,
     pub affected_paths: Vec<PathBuf>,
     worktree_token: String,
 }
@@ -134,6 +180,10 @@ pub enum RecoveryCommand {
     },
     CherryPick {
         plan: CommitRecoveryPlan,
+    },
+    Reset {
+        plan: ResetPlan,
+        mode: ResetMode,
     },
 }
 
@@ -273,16 +323,55 @@ impl GitRepository {
     }
 
     pub fn stash_create_plan(&self, include_untracked: bool) -> Result<StashCreatePlan> {
+        self.stash_create_plan_for_paths(include_untracked, None)
+    }
+
+    pub fn stash_create_plan_for_paths(
+        &self,
+        include_untracked: bool,
+        selected_paths: Option<&[PathBuf]>,
+    ) -> Result<StashCreatePlan> {
         let (current, status) = self.recovery_head()?;
-        let entries: Vec<_> = status
-            .entries
-            .iter()
-            .filter(|entry| !entry.untracked || include_untracked)
-            .collect();
+        let normalized_selected = match selected_paths {
+            Some(paths) => {
+                ensure!(
+                    !paths.is_empty(),
+                    "Select at least one changed file to stash."
+                );
+                for path in paths {
+                    validate_path(path)?;
+                }
+                Some(sorted_paths(paths.to_vec()))
+            }
+            None => None,
+        };
+        let entries: Vec<_> = match normalized_selected.as_deref() {
+            Some(paths) => status
+                .entries
+                .iter()
+                .filter(|entry| {
+                    paths.iter().any(|path| {
+                        entry.path == *path
+                            || entry.original_path.as_deref() == Some(path.as_path())
+                    })
+                })
+                .collect(),
+            None => status
+                .entries
+                .iter()
+                .filter(|entry| !entry.untracked || include_untracked)
+                .collect(),
+        };
         ensure!(
             !entries.is_empty(),
-            "There are no changes to stash with this untracked-file choice"
+            if normalized_selected.is_some() {
+                "None of the selected files have changes to stash."
+            } else {
+                "There are no changes to stash with this untracked-file choice"
+            }
         );
+        let include_untracked = include_untracked
+            || (normalized_selected.is_some() && entries.iter().any(|entry| entry.untracked));
         ensure!(
             !entries.iter().any(|entry| entry.index_mode == "160000"
                 || entry.head_mode == "160000"
@@ -304,7 +393,42 @@ impl GitRepository {
         Ok(StashCreatePlan {
             current,
             include_untracked,
+            selected_paths: normalized_selected,
             affected_paths,
+            worktree_token,
+        })
+    }
+
+    /// Capture the current branch tip, target commit, locally known
+    /// publication state, and dirty-tree counts for an explicit branch reset.
+    pub fn reset_plan(&self, target_oid: &str) -> Result<ResetPlan> {
+        let (current, status) = self.recovery_head()?;
+        self.require_recovery_branch(&current)?;
+        let target = self.recovery_commit(target_oid)?;
+        let known_published_refs = self.recovery_published_refs(&current.head)?;
+        let dirty_staged = status
+            .entries
+            .iter()
+            .filter(|entry| entry.staged.is_some())
+            .count();
+        let dirty_unstaged = status
+            .entries
+            .iter()
+            .filter(|entry| entry.unstaged.is_some())
+            .count();
+        let untracked = status
+            .entries
+            .iter()
+            .filter(|entry| entry.untracked)
+            .count();
+        let worktree_token = self.reset_worktree_token(&status.entries)?;
+        Ok(ResetPlan {
+            current,
+            target,
+            known_published_refs,
+            dirty_staged,
+            dirty_unstaged,
+            untracked,
             worktree_token,
         })
     }
@@ -350,14 +474,26 @@ impl GitRepository {
                     "Use one line for the stash name"
                 );
                 ensure!(
-                    self.stash_create_plan(plan.include_untracked)? == *plan,
+                    self.stash_create_plan_for_paths(
+                        plan.include_untracked,
+                        plan.selected_paths.as_deref()
+                    )? == *plan,
                     "The branch, index, or included working files changed. Review the stash contents again."
                 );
-                command.args(["stash", "push", "--message", name]);
-                if plan.include_untracked {
-                    command.arg("--include-untracked");
+                if plan.selected_paths.is_some() {
+                    command.args(["--literal-pathspecs", "stash", "push", "--message", name]);
+                    if plan.include_untracked {
+                        command.arg("--include-untracked");
+                    }
+                    command.args(["--pathspec-from-file=-", "--pathspec-file-nul"]);
+                    input = Some(path_input(&plan.affected_paths)?);
+                } else {
+                    command.args(["stash", "push", "--message", name]);
+                    if plan.include_untracked {
+                        command.arg("--include-untracked");
+                    }
+                    command.arg("--");
                 }
-                command.arg("--");
                 creates_commit = false;
             }
             RecoveryCommand::ApplyStash { plan } => {
@@ -415,6 +551,22 @@ impl GitRepository {
                 }
                 command.arg("--").arg(&plan.target.oid);
                 creates_commit = true;
+            }
+            RecoveryCommand::Reset { plan, mode } => {
+                ensure!(
+                    plan.current.root == self.path,
+                    "This reset plan belongs to a different worktree."
+                );
+                ensure!(
+                    self.reset_plan(&plan.target.oid)? == *plan,
+                    "The branch tip, working changes, or locally known publication state changed. Review the reset again."
+                );
+                if *mode == ResetMode::Hard {
+                    let status = self.status()?;
+                    self.protect_untracked_from_reset_target(&status, &plan.target.oid)?;
+                }
+                command.args(["reset", mode.git_flag(), &plan.target.oid, "--"]);
+                creates_commit = false;
             }
         }
         let output = if let RecoveryCommand::ApplyStash { plan } = operation {
@@ -599,7 +751,7 @@ impl GitRepository {
         Ok(())
     }
 
-    pub(super) fn recovery_commit(&self, oid: &str) -> Result<RecoveryCommit> {
+    pub(crate) fn recovery_commit(&self, oid: &str) -> Result<RecoveryCommit> {
         validate_oid(oid)?;
         let bytes = self.read_object(oid, "commit")?;
         let (parents, start) = recovery_commit_parts(&bytes)?;
@@ -934,6 +1086,104 @@ impl GitRepository {
             digest.update([0]);
         }
         Ok(crate::lower_hex(digest.finalize()))
+    }
+
+    fn reset_worktree_token(&self, entries: &[StatusEntry]) -> Result<String> {
+        let mut digest = Sha256::new();
+        let mut total = 0usize;
+        let mut tracked: Vec<&StatusEntry> = entries
+            .iter()
+            .filter(|entry| entry.staged.is_some() || entry.unstaged.is_some())
+            .collect();
+        tracked.sort_by(|a, b| {
+            a.path
+                .as_os_str()
+                .as_encoded_bytes()
+                .cmp(b.path.as_os_str().as_encoded_bytes())
+        });
+        for entry in tracked {
+            validate_path(&entry.path)?;
+            digest.update(entry.path.as_os_str().as_encoded_bytes());
+            digest.update([0]);
+            if let Some(orig) = &entry.original_path {
+                digest.update(orig.as_os_str().as_encoded_bytes());
+            }
+            digest.update([0]);
+            match std::fs::symlink_metadata(self.path.join(&entry.path)) {
+                Ok(metadata) if metadata.is_dir() => {
+                    digest.update(b"dir");
+                }
+                Ok(metadata) => {
+                    let (mode, bytes) = read_worktree_file(
+                        &self.path,
+                        &entry.path,
+                        if metadata.file_type().is_symlink() {
+                            "120000"
+                        } else {
+                            "100644"
+                        },
+                    )?;
+                    total = total.saturating_add(bytes.len());
+                    ensure!(
+                        total <= MAX_RECOVERY_WORK_BYTES,
+                        "Dirty working files exceed the 256 MiB reset review budget. Reset using Git directly."
+                    );
+                    digest.update(mode.as_bytes());
+                    digest.update([0]);
+                    digest.update((bytes.len() as u64).to_le_bytes());
+                    digest.update(&bytes);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    digest.update(b"absent");
+                }
+                Err(error) => return Err(error).context("Unable to inspect a dirty working path"),
+            }
+            digest.update([0]);
+        }
+        Ok(crate::lower_hex(digest.finalize()))
+    }
+
+    fn protect_untracked_from_reset_target(
+        &self,
+        status: &RepositoryStatus,
+        target_oid: &str,
+    ) -> Result<()> {
+        let untracked: Vec<&Path> = status
+            .entries
+            .iter()
+            .filter(|entry| entry.untracked)
+            .map(|entry| entry.path.as_path())
+            .collect();
+        if untracked.is_empty() {
+            return Ok(());
+        }
+        validate_oid(target_oid)?;
+        let bytes = run_git(
+            self.target(),
+            &["ls-tree", "-r", "-z", "--name-only", target_oid],
+        )?;
+        for record in bytes.split(|byte| *byte == 0).filter(|r| !r.is_empty()) {
+            let target_path = path_from_bytes(record);
+            for untracked_path in &untracked {
+                let trimmed_untracked = untracked_path
+                    .to_str()
+                    .and_then(|s| s.strip_suffix('/'))
+                    .map(Path::new)
+                    .unwrap_or(untracked_path);
+                if target_path == *untracked_path
+                    || target_path == trimmed_untracked
+                    || target_path.starts_with(trimmed_untracked)
+                    || trimmed_untracked.starts_with(&target_path)
+                {
+                    bail!(
+                        "Untracked path '{}' collides with tracked path '{}' in target commit. Move, delete, or stash it before running Reset --hard.",
+                        untracked_path.display(),
+                        target_path.display()
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 

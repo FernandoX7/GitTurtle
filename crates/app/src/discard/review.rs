@@ -212,4 +212,473 @@ impl GitTurtle {
                 })
         });
     }
+
+    pub(super) fn confirm_multi_discard(
+        &mut self,
+        repository: PathBuf,
+        plan: MultiDiscardPlan,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let plan = Arc::new(plan);
+        let submitted = Rc::new(Cell::new(false));
+        let requested = Rc::new(Cell::new(false));
+        let total = plan.items.len();
+        let tracked = plan.tracked_count();
+        let untracked = plan.untracked_count();
+        let title = format!(
+            "Discard changes in {}?",
+            crate::counted(total, "file", "files")
+        );
+        let action: &'static str = if tracked == 0 {
+            "Delete untracked files"
+        } else {
+            "Discard selected files"
+        };
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let colors = palette(cx);
+            let request = requested.clone();
+            let keyboard_request = requested.clone();
+            let requested = requested.clone();
+            let submitted = submitted.clone();
+            let owner = owner.clone();
+            let repository = repository.clone();
+            let plan = Arc::clone(&plan);
+            let summary = match (tracked, untracked) {
+                (t, 0) => format!(
+                    "{} will be restored to HEAD in both the index and the working folder.",
+                    crate::counted(t, "tracked file", "tracked files")
+                ),
+                (0, u) => format!(
+                    "{} will be permanently deleted from the working folder.",
+                    crate::counted(u, "untracked file", "untracked files")
+                ),
+                (t, u) => format!(
+                    "{} will be restored to HEAD and {} will be permanently deleted.",
+                    crate::counted(t, "tracked file", "tracked files"),
+                    crate::counted(u, "untracked file", "untracked files")
+                ),
+            };
+            let listed: Vec<String> = plan
+                .items
+                .iter()
+                .take(12)
+                .map(|item| {
+                    let raw = item.entry.path.display().to_string();
+                    let cleaned = gitturtle_core::strip_bidi_controls(&raw);
+                    if item.entry.untracked {
+                        format!("{cleaned} (delete untracked)")
+                    } else {
+                        cleaned.into_owned()
+                    }
+                })
+                .collect();
+            let overflow = total.saturating_sub(listed.len());
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(colors.text))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(colors.warning))
+                        .bg(rgb(colors.panel))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            label("multi-discard-summary", summary)
+                                .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .children(listed.into_iter().enumerate().map(|(i, line)| {
+                            div()
+                                .id(("multi-discard-item", i))
+                                .text_size(appearance::ui_text(11.))
+                                .text_color(rgb(colors.muted))
+                                .child(line)
+                        }))
+                        .when(overflow > 0, |el| {
+                            el.child(
+                                div()
+                                    .text_size(appearance::ui_text(11.))
+                                    .text_color(rgb(colors.muted))
+                                    .child(format!("… and {overflow} more")),
+                            )
+                        }),
+                )
+                .child(
+                    label(
+                        "multi-discard-note",
+                        "Unselected files and the branch stay unchanged. If any selected file or HEAD changes before execution, the batch stops safely.",
+                    )
+                    .text_color(rgb(colors.muted)),
+                );
+            dialog
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title(
+                    "multi-discard-title",
+                    title.clone(),
+                ))
+                .width(appearance::dialog_width(px(580.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(content)
+                .footer(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            crate::tags::dialog_cancel("cancel-multi-discard", "Cancel")
+                                .debug_selector(|| "cancel-multi-discard".into())
+                                .on_action(|_: &Confirm, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                }),
+                        )
+                        .child(
+                            button("confirm-multi-discard", action, "", false)
+                                .danger()
+                                .debug_selector(|| "confirm-multi-discard".into())
+                                .on_action(move |_: &Confirm, _, cx| {
+                                    keyboard_request.set(true);
+                                    cx.propagate();
+                                })
+                                .on_click(move |_, window, cx| {
+                                    request.set(true);
+                                    window.dispatch_action(
+                                        Box::new(Confirm { secondary: false }),
+                                        cx,
+                                    );
+                                }),
+                        ),
+                )
+                .on_ok(move |_, window, cx| {
+                    if !requested.replace(false) {
+                        return false;
+                    }
+                    if submitted.replace(true) {
+                        return true;
+                    }
+                    let _ = owner.update(cx, |owner, cx| {
+                        if owner.discard_actions.generation == generation
+                            && owner.path.as_ref() == Some(&repository)
+                            && owner.page == AppPage::Repository
+                            && owner.operation_busy.is_none()
+                        {
+                            owner.write(
+                                WriteCommand::DiscardMany(Arc::clone(&plan)),
+                                "Discarding selected files…",
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                    true
+                })
+        });
+    }
+
+    pub(crate) fn confirm_partial_discard(
+        &mut self,
+        diff: Arc<PartialDiff>,
+        selection: PartialSelection,
+        on_cancel: impl Fn(&mut GitTurtle, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let repository = self.path.clone();
+        let submitted = Rc::new(Cell::new(false));
+        let requested = Rc::new(Cell::new(false));
+        let on_cancel = Rc::new(on_cancel);
+        let line_count = match &selection {
+            PartialSelection::Lines(ids) => ids.len(),
+            PartialSelection::Hunks(hunks) => hunks
+                .iter()
+                .filter_map(|i| diff.hunks.get(*i))
+                .flat_map(|h| &h.lines)
+                .filter(|l| l.change_id.is_some())
+                .count(),
+        };
+        let title = format!(
+            "Discard {} in {}?",
+            crate::counted(line_count, "selected line", "selected lines"),
+            diff.path.display()
+        );
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let colors = palette(cx);
+            let request = requested.clone();
+            let keyboard_request = requested.clone();
+            let requested = requested.clone();
+            let submitted_ok = submitted.clone();
+            let submitted_cancel = submitted.clone();
+            let owner_ok = owner.clone();
+            let owner_cancel = owner.clone();
+            let on_cancel = on_cancel.clone();
+            let repository = repository.clone();
+            let diff = Arc::clone(&diff);
+            let selection = selection.clone();
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(colors.text))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(colors.warning))
+                        .bg(rgb(colors.panel))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            label(
+                                "partial-discard-summary",
+                                format!(
+                                    "Revert {} in {} back to the staged/HEAD snapshot.",
+                                    crate::counted(line_count, "unstaged line", "unstaged lines"),
+                                    diff.path.display()
+                                ),
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            label(
+                                "partial-discard-warning",
+                                "Discarded unstaged edits cannot be recovered from Git.",
+                            )
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(colors.muted)),
+                        ),
+                )
+                .child(
+                    label(
+                        "partial-discard-preserved",
+                        "Unselected hunks, staged changes in the index, and all other files stay unchanged.",
+                    )
+                    .text_color(rgb(colors.muted)),
+                );
+            dialog
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title(
+                    "partial-discard-title",
+                    title.clone(),
+                ))
+                .width(appearance::dialog_width(px(540.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(content)
+                .footer(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            crate::tags::dialog_cancel("cancel-partial-discard", "Cancel")
+                                .debug_selector(|| "cancel-partial-discard".into())
+                                .on_action(|_: &Confirm, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                }),
+                        )
+                        .child(
+                            button("confirm-partial-discard", "Discard changes", "", false)
+                                .danger()
+                                .debug_selector(|| "confirm-partial-discard".into())
+                                .on_action(move |_: &Confirm, _, cx| {
+                                    keyboard_request.set(true);
+                                    cx.propagate();
+                                })
+                                .on_click(move |_, window, cx| {
+                                    request.set(true);
+                                    window.dispatch_action(
+                                        Box::new(Confirm { secondary: false }),
+                                        cx,
+                                    );
+                                }),
+                        ),
+                )
+                .on_cancel({
+                    let on_cancel = on_cancel.clone();
+                    move |_, _, cx| {
+                        if !submitted_cancel.get() {
+                            let _ = owner_cancel.update(cx, |this, cx| on_cancel(this, cx));
+                        }
+                        true
+                    }
+                })
+                .on_ok({
+                    let on_cancel = on_cancel;
+                    move |_, window, cx| {
+                        if !requested.replace(false) {
+                            return false;
+                        }
+                        if submitted_ok.replace(true) {
+                            return true;
+                        }
+                        let _ = owner_ok.update(cx, |owner, cx| {
+                            if owner.path == repository
+                                && owner.page == AppPage::Repository
+                                && owner.operation_busy.is_none()
+                            {
+                                owner.write(
+                                    WriteCommand::DiscardPartial {
+                                        diff: Arc::clone(&diff),
+                                        selection: selection.clone(),
+                                    },
+                                    "Discarding selected changes…",
+                                    window,
+                                    cx,
+                                );
+                            } else {
+                                on_cancel(owner, cx);
+                            }
+                        });
+                        true
+                    }
+                })
+        });
+    }
+
+    pub(super) fn confirm_restore_file(
+        &mut self,
+        repository: PathBuf,
+        plan: RestoreFilePlan,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let plan = Arc::new(plan);
+        let submitted = Rc::new(Cell::new(false));
+        let requested = Rc::new(Cell::new(false));
+        let short = short_oid(&plan.revision_oid);
+        let title = format!("Restore {} to {short}?", plan.path.display());
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let colors = palette(cx);
+            let request = requested.clone();
+            let keyboard_request = requested.clone();
+            let requested = requested.clone();
+            let submitted = submitted.clone();
+            let owner = owner.clone();
+            let repository = repository.clone();
+            let plan = Arc::clone(&plan);
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(colors.text))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(colors.warning))
+                        .bg(rgb(colors.panel))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(path_field("restore-file-path", "File", &plan.path, colors))
+                        .child(
+                            label(
+                                "restore-file-revision",
+                                format!("Source revision · {}", plan.revision_oid),
+                            )
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(colors.muted)),
+                        ),
+                )
+                .child(label(
+                    "restore-file-effect",
+                    "The working copy of this file will be replaced with its contents from that commit. Uncommitted working edits to this file will be overwritten; the index and all other files stay unchanged.",
+                ))
+                .child(
+                    label(
+                        "restore-file-revalidation",
+                        "If the working file changes before execution, the restore stops so you can review it again.",
+                    )
+                    .text_color(rgb(colors.muted)),
+                );
+            dialog
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title(
+                    "restore-file-title",
+                    title.clone(),
+                ))
+                .width(appearance::dialog_width(px(560.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(content)
+                .footer(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            crate::tags::dialog_cancel("cancel-restore-file", "Cancel")
+                                .debug_selector(|| "cancel-restore-file".into())
+                                .on_action(|_: &Confirm, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx)
+                                }),
+                        )
+                        .child(
+                            button("confirm-restore-file", "Restore file", "", false)
+                                .danger()
+                                .debug_selector(|| "confirm-restore-file".into())
+                                .on_action(move |_: &Confirm, _, cx| {
+                                    keyboard_request.set(true);
+                                    cx.propagate();
+                                })
+                                .on_click(move |_, window, cx| {
+                                    request.set(true);
+                                    window.dispatch_action(
+                                        Box::new(Confirm { secondary: false }),
+                                        cx,
+                                    );
+                                }),
+                        ),
+                )
+                .on_ok(move |_, window, cx| {
+                    if !requested.replace(false) {
+                        return false;
+                    }
+                    if submitted.replace(true) {
+                        return true;
+                    }
+                    let _ = owner.update(cx, |owner, cx| {
+                        if owner.discard_actions.generation == generation
+                            && owner.path.as_ref() == Some(&repository)
+                            && owner.page == AppPage::Repository
+                            && owner.operation_busy.is_none()
+                        {
+                            owner.write(
+                                WriteCommand::RestoreFile(Arc::clone(&plan)),
+                                "Restoring file…",
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                    true
+                })
+        });
+    }
 }

@@ -407,11 +407,17 @@ impl GitTurtle {
             self.dismiss_file_menu(window, cx);
             return;
         };
-        let changed = (*entry != target.entry).then(|| entry.clone());
+        let entry = entry.clone();
+        let selected_paths = self.selected_working_paths_for(&entry.path, target.area());
+        let changed = (entry != target.entry || selected_paths != target.selected_paths)
+            .then_some((entry, selected_paths));
         let rebuild =
             changed.is_some() || followed.wait != self.menu_wait() || followed.waiting.is_some();
-        if let (Some(entry), Some(followed)) = (changed, self.file_menu_row.as_mut()) {
+        if let (Some((entry, selected_paths)), Some(followed)) =
+            (changed, self.file_menu_row.as_mut())
+        {
             followed.target.entry = entry;
+            followed.target.selected_paths = selected_paths;
         }
         let items = if rebuild {
             self.working_menu_items(cx)
@@ -671,6 +677,18 @@ impl GitTurtle {
         let entry = self.work_status.as_ref()?.entries.get(index)?;
         Some(entry.path.to_string_lossy().into_owned())
     }
+    pub(super) fn selected_working_paths_for(&self, path: &Path, area: ChangeArea) -> Vec<PathBuf> {
+        let key = Key::new(path.to_path_buf(), area);
+        if self.working_selection.selected.contains(&key) {
+            let visible = self.visible_working_keys();
+            let paths = self.working_selection.paths(&visible);
+            if paths.len() > 1 {
+                return paths.into_iter().map(Path::to_path_buf).collect();
+            }
+        }
+        vec![path.to_path_buf()]
+    }
+
     /// Whether the shown row of `index` in `area` is among the selected
     /// files; `index` is in the shown rows' status.
     pub(super) fn working_is_selected(&self, index: usize, area: ChangeArea) -> bool {

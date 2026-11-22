@@ -23,6 +23,11 @@ pub(super) enum CommandId {
     Changes,
     QuickOpen,
     Compare,
+    JumpToHead,
+    JumpToRevision,
+    FetchPrune,
+    FetchAll,
+    FetchAllPrune,
     Branch,
     Worktrees,
     Tags,
@@ -164,6 +169,36 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         "Compare revisions…",
         "diff branch tag commit before after",
         Some(ShortcutId::Compare)
+    ),
+    command!(
+        JumpToHead,
+        "Jump to HEAD",
+        "head current commit tip jump",
+        Some(ShortcutId::JumpToHead)
+    ),
+    command!(
+        JumpToRevision,
+        "Jump to commit or ref…",
+        "goto sha hash branch tag revision commit",
+        Some(ShortcutId::JumpToRevision)
+    ),
+    command!(
+        FetchPrune,
+        "Fetch remote (prune)",
+        "fetch remote prune stale tracking branches",
+        None
+    ),
+    command!(
+        FetchAll,
+        "Fetch all remotes",
+        "fetch all remotes sync network",
+        None
+    ),
+    command!(
+        FetchAllPrune,
+        "Fetch all remotes (prune)",
+        "fetch all remotes prune stale tracking branches",
+        None
     ),
     command!(
         Branch,
@@ -361,6 +396,11 @@ impl CommandId {
             self,
             Self::QuickOpen
                 | Self::Compare
+                | Self::JumpToHead
+                | Self::JumpToRevision
+                | Self::FetchPrune
+                | Self::FetchAll
+                | Self::FetchAllPrune
                 | Self::Branch
                 | Self::Worktrees
                 | Self::GitHub
@@ -441,6 +481,9 @@ impl CommandId {
                     | Self::Reflog
                     | Self::RewriteReview
                     | Self::Profiles
+                    | Self::FetchPrune
+                    | Self::FetchAll
+                    | Self::FetchAllPrune
             )
         {
             return Some(crate::branch_actions::UNAVAILABLE_REASON);
@@ -571,7 +614,7 @@ fn matches(query: &str) -> Vec<usize> {
     matches
         .into_iter()
         .map(|(_, index)| index)
-        .take(40)
+        .take(COMMANDS.len().max(64))
         .collect()
 }
 /// The position in `results` of the first command `availability` allows, or
@@ -842,6 +885,11 @@ impl GitTurtle {
             CommandId::Changes => self.show_working(window, cx),
             CommandId::QuickOpen => self.open_quick_file(window, cx),
             CommandId::Compare => self.open_revision_comparison(window, cx),
+            CommandId::JumpToHead => self.jump_to_head(window, cx),
+            CommandId::JumpToRevision => self.open_jump_to_revision(window, cx),
+            CommandId::FetchPrune => self.fetch_remote_with_prune(true, window, cx),
+            CommandId::FetchAll => self.fetch_all_remotes(false, window, cx),
+            CommandId::FetchAllPrune => self.fetch_all_remotes(true, window, cx),
             CommandId::Branch => {
                 if let Some(branch) = self.palette_branch().map(str::to_owned) {
                     self.open_contextual_branch(branch, false, window, cx);
@@ -1627,6 +1675,8 @@ impl Render for Palette {
             .on_action(|_: &ShowSettings, _, cx| cx.stop_propagation())
             .on_action(|_: &Refresh, _, cx| cx.stop_propagation())
             .on_action(|_: &CompareRevisions, _, cx| cx.stop_propagation())
+            .on_action(|_: &JumpToHead, _, cx| cx.stop_propagation())
+            .on_action(|_: &JumpToRevision, _, cx| cx.stop_propagation())
             .on_action(|_: &ShowActivity, _, cx| cx.stop_propagation())
             .on_action(|_: &OpenRepository, _, cx| cx.stop_propagation())
             .on_action(|_: &BackHistory, _, cx| cx.stop_propagation())
@@ -1798,7 +1848,7 @@ mod tests {
         }
         assert!(matches("profiles totallyunrelatedterm").is_empty());
         assert!(matches(&"a".repeat(4097)).is_empty());
-        assert!(matches("").len() <= 40);
+        assert_eq!(matches("").len(), COMMANDS.len());
     }
     #[test]
     fn availability_distinguishes_hub_busy_selection_and_recovery_states() {

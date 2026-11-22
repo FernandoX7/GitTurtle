@@ -472,6 +472,7 @@ pub(super) struct ActiveSearch {
     path: PathBuf,
     scope: gitturtle_core::HistoryScope,
     query: String,
+    filter: gitturtle_core::HistorySearchFilter,
     cursor: gitturtle_core::HistorySearch,
 }
 
@@ -729,9 +730,8 @@ impl RepositorySession {
         &mut self,
         repo: &GitRepository,
         pinned: &gitturtle_core::HistoryScope,
-        query: &str,
-        offset: usize,
-        limit: usize,
+        (query, filter): (&str, &gitturtle_core::HistorySearchFilter),
+        (offset, limit): (usize, usize),
         cancellation: &Cancellation,
     ) -> Result<gitturtle_core::HistorySearchPage> {
         let initial_order = self.preferred_order(repo);
@@ -739,13 +739,15 @@ impl RepositorySession {
             active.path == repo.path()
                 && active.scope == *pinned
                 && active.query == query
+                && active.filter == *filter
                 && active.cursor.offset() == offset
         });
         if !matches {
             self.search = None;
-            let cursor = repo.history_search_in_order(
+            let cursor = repo.history_search_filtered_in_order(
                 pinned,
                 query,
+                filter,
                 offset,
                 initial_order,
                 &cancellation.history,
@@ -755,6 +757,7 @@ impl RepositorySession {
                 path: repo.path().to_owned(),
                 scope: cursor_scope,
                 query: query.to_owned(),
+                filter: filter.clone(),
                 cursor,
             });
         }

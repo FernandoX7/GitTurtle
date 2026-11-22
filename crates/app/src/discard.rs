@@ -1,7 +1,10 @@
 //! Contextual single-file discard: review the exact entry, then revert it to
 //! HEAD or delete the reviewed untracked file through the operation executor.
 use crate::*;
-use gitturtle_core::{ChangeStatus, DiscardPlan, StatusEntry, WriteCommand};
+use gitturtle_core::{
+    ChangeStatus, DiscardPlan, MultiDiscardPlan, PartialDiff, PartialSelection, RestoreFilePlan,
+    StatusEntry, WriteCommand,
+};
 
 mod review;
 
@@ -69,6 +72,130 @@ impl GitTurtle {
                 match result {
                     Ok(plan) => {
                         this.confirm_discard(repository, plan, generation, window, cx);
+                    }
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error))
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Prepare a fresh multi-file discard batch from one status snapshot, then
+    /// open an Enter-suppressed Alert confirmation dialog.
+    pub(super) fn open_multi_discard(
+        &mut self,
+        entries: Vec<StatusEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || self.page != AppPage::Repository || entries.is_empty() {
+            return;
+        }
+        if entries.len() == 1 {
+            self.open_discard(
+                entries.into_iter().next().expect("checked non-empty"),
+                window,
+                cx,
+            );
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let repository = repo.path().to_owned();
+        self.cancel_discard_action();
+        let generation = self.discard_actions.generation;
+        self.operation_busy = Some(PREPARING);
+        self.operation_error = None;
+        let response = self
+            .operations
+            .submit_read(move || repo.multi_discard_plan(&entries));
+        self.discard_actions.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Multi-file discard preparation was interrupted. Review the selection again."
+                ))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.discard_actions.generation != generation {
+                    return;
+                }
+                if this.operation_busy == Some(PREPARING) {
+                    this.operation_busy = None;
+                }
+                this.read_deferred_working(window, cx);
+                if this.path.as_ref() != Some(&repository)
+                    || this.repository.as_ref().map(|repo| repo.path())
+                        != Some(repository.as_path())
+                    || this.page != AppPage::Repository
+                {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(plan) => {
+                        this.confirm_multi_discard(repository, plan, generation, window, cx);
+                    }
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error))
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Prepare a fresh single-file restore from `revision_oid`, then confirm.
+    pub(super) fn open_restore_file(
+        &mut self,
+        revision_oid: String,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || self.page != AppPage::Repository {
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let repository = repo.path().to_owned();
+        self.cancel_discard_action();
+        let generation = self.discard_actions.generation;
+        self.operation_busy = Some(PREPARING);
+        self.operation_error = None;
+        let response = self
+            .operations
+            .submit_read(move || repo.restore_file_plan(&revision_oid, &path));
+        self.discard_actions.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "File restore preparation was interrupted. Review the file again."
+                ))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.discard_actions.generation != generation {
+                    return;
+                }
+                if this.operation_busy == Some(PREPARING) {
+                    this.operation_busy = None;
+                }
+                this.read_deferred_working(window, cx);
+                if this.path.as_ref() != Some(&repository)
+                    || this.repository.as_ref().map(|repo| repo.path())
+                        != Some(repository.as_path())
+                    || this.page != AppPage::Repository
+                {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(plan) => {
+                        this.confirm_restore_file(repository, plan, generation, window, cx);
                     }
                     Err(error) => {
                         this.operation_error = Some(crate::views::OperationFailure::of(&error))

@@ -52,6 +52,7 @@ pub struct AppSettings {
     pub theme: ThemeSelection,
     pub follow_system: bool,
     pub external_editor: String,
+    pub external_terminal: String,
     pub columns: ColumnSettings,
     pub density: Density,
     pub graph_spacing: u8,
@@ -83,6 +84,7 @@ impl Default for AppSettings {
             theme: ThemeSelection::default(),
             follow_system: false,
             external_editor: String::new(),
+            external_terminal: String::new(),
             columns: ColumnSettings::default(),
             density: Density::default(),
             graph_spacing: 20,
@@ -231,6 +233,11 @@ impl AppSettings {
             self.external_editor.len() <= 4096
                 && !self.external_editor.contains(['\0', '\n', '\r']),
             "Editor must be an application name or executable path of at most 4,096 bytes"
+        );
+        ensure!(
+            self.external_terminal.len() <= 4096
+                && !self.external_terminal.contains(['\0', '\n', '\r']),
+            "Terminal must be an application name or executable path of at most 4,096 bytes"
         );
         let branch = &self.default_branch;
         ensure!(
@@ -3481,5 +3488,28 @@ mod tests {
             settings.resolved_theme(false, &themes),
             ResolvedTheme::built_in(ThemeChoice::Midnight)
         );
+    }
+
+    #[test]
+    fn external_terminal_roundtrips_and_validates() {
+        let legacy: AppSettings = serde_json::from_str(r#"{"external_editor":"code"}"#).unwrap();
+        assert_eq!(legacy.external_editor, "code");
+        assert!(legacy.external_terminal.is_empty());
+        legacy.validate().unwrap();
+
+        let mut custom = legacy;
+        custom.external_terminal = "ghostty".into();
+        custom.validate().unwrap();
+        let encoded = serde_json::to_string(&custom).unwrap();
+        let decoded: AppSettings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.external_terminal, "ghostty");
+
+        let mut bad_control = custom.clone();
+        bad_control.external_terminal = "ghostty\nrm".into();
+        assert!(bad_control.validate().is_err());
+
+        let mut bad_length = custom;
+        bad_length.external_terminal = "a".repeat(4097);
+        assert!(bad_length.validate().is_err());
     }
 }
