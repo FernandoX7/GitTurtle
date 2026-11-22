@@ -2011,4 +2011,40 @@ mod hostile {
             );
         }
     }
+
+    #[test]
+    fn unsealed_regular_file_stdin_falls_back_safely_without_mmap_or_seccomp_fault() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("unsealed.req");
+        let source = page(b"BT /F1 12 Tf 12 40 Td (Hello) Tj ET", None);
+        let header = gitturtle_preview::pdf_helper::encode_request(0, &source).unwrap();
+        let mut req = Vec::with_capacity(header.len() + source.len());
+        req.extend_from_slice(&header);
+        req.extend_from_slice(&source);
+        std::fs::write(&input_path, &req).unwrap();
+        let file = std::fs::File::open(&input_path).unwrap();
+
+        let output = std::process::Command::new(BINARY)
+            .args([
+                HELPER_FLAG,
+                &PROTOCOL_VERSION.to_string(),
+                &std::process::id().to_string(),
+            ])
+            .stdin(std::process::Stdio::from(file))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "helper failed on unsealed regular file stdin: status={:?}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply = gitturtle_preview::pdf_helper::read_reply(&output.stdout[..])
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.page_count, 1);
+        assert_eq!(reply.page, 0);
+    }
 }

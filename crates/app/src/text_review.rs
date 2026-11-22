@@ -85,6 +85,17 @@ pub struct State {
     failed: Option<String>,
 }
 
+impl State {
+    /// When the unmodified original preview is upgraded with a lazy
+    /// `SplitPresentation`, retain the upgraded `Arc` so resetting review
+    /// options later keeps the prepared split data.
+    pub(super) fn upgrade_original(&mut self, content: &Arc<Content>) {
+        if self.options == Options::default() && self.original.is_some() {
+            self.original = Some(Arc::clone(content));
+        }
+    }
+}
+
 /// Called on the read worker. No Git command, filesystem read, mutation, or
 /// network access is needed to adjust a captured comparison's presentation.
 pub fn prepare(
@@ -144,7 +155,7 @@ pub fn prepare(
     checkpoint()?;
     // Full source rows remain literal and aligned; suppressed changes have no
     // diff highlight. Before/After and split copy retain their original bytes.
-    let split = Arc::new(SplitPresentation::from_rows(&sources, &rows));
+    let split = Some(Arc::new(SplitPresentation::from_rows(&sources, &rows)));
     checkpoint()?;
     Ok(Arc::new(Content::Text {
         diagrams: diagrams.clone(),
@@ -323,6 +334,7 @@ impl GitTurtle {
             Job::ReviewText {
                 content: original,
                 options,
+                prepare_split: self.text_mode == TextMode::Split,
             },
             "Preparing text review…",
             window,
@@ -365,7 +377,11 @@ impl GitTurtle {
                 });
             }
             if let Some(view) = &self.split_view {
-                view.update(cx, |view, cx| view.refresh(Arc::clone(split), window, cx));
+                if let Some(split) = split {
+                    view.update(cx, |view, cx| view.refresh(Arc::clone(split), window, cx));
+                } else {
+                    self.split_view = None;
+                }
             }
         }
         self.content = Some(content);
@@ -1083,7 +1099,11 @@ mod tests {
         let old = String::from_utf8(preview.old).unwrap();
         let new = String::from_utf8(preview.new).unwrap();
         let presentation = Arc::new(PatchPresentation::prepare(&patch));
-        let split = Arc::new(SplitPresentation::prepare(&old, &new, &presentation));
+        let split = Some(Arc::new(SplitPresentation::prepare(
+            &old,
+            &new,
+            &presentation,
+        )));
         let diff = Arc::new(preview.partial.unwrap());
         let partial = Arc::new(
             crate::partial_view::prepare(&patch, &presentation, Arc::clone(&diff)).unwrap(),
@@ -1138,7 +1158,11 @@ mod tests {
     }
     fn content(old: &str, new: &str, patch: &str) -> Arc<Content> {
         let presentation = Arc::new(PatchPresentation::prepare(patch));
-        let split = Arc::new(SplitPresentation::prepare(old, new, &presentation));
+        let split = Some(Arc::new(SplitPresentation::prepare(
+            old,
+            new,
+            &presentation,
+        )));
         Arc::new(Content::Text {
             diagrams: None,
             markdown: None,

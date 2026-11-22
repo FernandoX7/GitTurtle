@@ -3440,6 +3440,7 @@ impl GitTurtle {
                 repo,
                 file,
                 origins,
+                prepare_split: self.text_mode == TextMode::Split,
             },
             RESTORED_PREVIEW_LABEL,
             window,
@@ -6245,7 +6246,7 @@ pub(crate) mod tests {
         settle(&app, cx).await;
         let (name, way_back, list) = app.read_with(cx, |app, cx| {
             (
-                app.identity_name.focus_handle(cx),
+                app.identity_name_for_test().focus_handle(cx),
                 app.mark_way_back.clone(),
                 app.focus.clone(),
             )
@@ -7261,7 +7262,7 @@ pub(crate) mod tests {
         for name in ["enter", "space"] {
             cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
             settle(&app, cx).await;
-            let field = app.read_with(cx, |app, cx| app.identity_name.focus_handle(cx));
+            let field = app.read_with(cx, |app, cx| app.identity_name_for_test().focus_handle(cx));
             cx.update(|window, cx| window.focus(&field, cx));
             draw(cx);
             key(cx, name, Some(false));
@@ -7357,7 +7358,7 @@ pub(crate) mod tests {
         for name in ["enter", "space"] {
             cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
             settle(&app, cx).await;
-            let field = app.read_with(cx, |app, cx| app.identity_name.focus_handle(cx));
+            let field = app.read_with(cx, |app, cx| app.identity_name_for_test().focus_handle(cx));
             cx.update(|window, cx| window.focus(&field, cx));
             draw(cx);
             key(cx, name, Some(false));

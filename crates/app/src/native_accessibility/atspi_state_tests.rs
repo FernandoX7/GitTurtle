@@ -976,7 +976,7 @@ fn orca_reads_the_identity_fields_by_their_values(cx: &mut gpui::TestAppContext)
     settle(cx);
     let (name, email) = cx.read(|cx| {
         let app = app.read(cx);
-        (app.identity_name.clone(), app.identity_email.clone())
+        (app.identity_name_for_test(), app.identity_email_for_test())
     });
     let reads = |values: [&str; 2], cx: &mut VisualTestContext| {
         for (field, value) in [(&name, values[0]), (&email, values[1])] {

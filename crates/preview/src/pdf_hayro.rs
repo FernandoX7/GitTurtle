@@ -49,18 +49,26 @@ const WORD_GAP: f64 = 0.2;
 const LINE_GAP: f64 = 0.5;
 
 pub(crate) fn prepare(pdf: Vec<u8>, page: usize) -> Result<PageReply, ErrorKind> {
+    prepare_with(hayro::hayro_syntax::PdfData::from(pdf), page, extract_text)
+}
+
+pub(crate) fn prepare_data(
+    pdf: hayro::hayro_syntax::PdfData,
+    page: usize,
+) -> Result<PageReply, ErrorKind> {
     prepare_with(pdf, page, extract_text)
 }
 
 fn prepare_with(
-    pdf: Vec<u8>,
+    pdf: hayro::hayro_syntax::PdfData,
     page_index: usize,
     text: impl FnOnce(&Page<'_>) -> PdfPageText,
 ) -> Result<PageReply, ErrorKind> {
-    if pdf.len() > MAX_INPUT_BYTES {
+    let bytes: &[u8] = pdf.as_ref();
+    if bytes.len() > MAX_INPUT_BYTES {
         return Err(ErrorKind::InputTooLarge);
     }
-    if !pdf.starts_with(b"%PDF-") {
+    if !bytes.starts_with(b"%PDF-") {
         return Err(ErrorKind::NotPdf);
     }
     if page_index >= MAX_PDF_PAGES {
@@ -565,7 +573,7 @@ mod tests {
             Err(ErrorKind::RendererFailed)
         );
         // A text panic keeps the rendered page.
-        let reply = prepare_with(pdf(1), 0, |_| panic!("injected text panic")).unwrap();
+        let reply = prepare_with(pdf(1).into(), 0, |_| panic!("injected text panic")).unwrap();
         assert_eq!(pixel(&reply, 0, 0), RED);
         assert_eq!(reply.text, Err(ErrorKind::RendererFailed));
     }

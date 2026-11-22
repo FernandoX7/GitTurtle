@@ -183,14 +183,26 @@ impl CommitReferences {
     }
 }
 
+/// Decoded image metadata retained alongside the BGRA [`RenderImage`].
+/// Pixel bytes live solely in `RenderImage`, avoiding a second full-resolution
+/// RGBA buffer in the preview cache.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageMetadata {
+    pub width: u32,
+    pub height: u32,
+    pub original_width: u32,
+    pub original_height: u32,
+    pub format: String,
+}
+
 pub struct ImageSide {
     pub animation: Option<Arc<crate::gif_playback::Timeline>>,
     pub captured: Option<Arc<[u8]>>,
     /// Whether the captured bytes offer the open action, decided with them.
     pub system_preview: Option<crate::system_preview::Offer>,
     pub literal_source: Option<Arc<str>>,
-    pub image: Option<ImagePreview>,
-    /// BGRA conversion happens on the worker; the UI only shares this allocation.
+    pub image: Option<ImageMetadata>,
+    /// BGRA conversion happens in place on the worker; the UI only shares this allocation.
     pub render: Option<Arc<RenderImage>>,
     pub message: Option<String>,
     pub bytes: usize,
@@ -217,7 +229,7 @@ pub enum Content {
         old: String,
         new: String,
         presentation: Arc<PatchPresentation>,
-        split: Arc<crate::split_diff::SplitPresentation>,
+        split: Option<Arc<crate::split_diff::SplitPresentation>>,
         partial: Option<Arc<crate::partial_view::PartialActions>>,
         partial_unavailable: Option<String>,
         /// Which sides, old then new, are Git LFS pointers whose object the
@@ -299,7 +311,7 @@ impl Content {
                     + old.capacity()
                     + new.capacity()
                     + presentation.retained_bytes()
-                    + split.retained_bytes()
+                    + split.as_ref().map_or(0, |split| split.retained_bytes())
                     + partial.as_ref().map_or(0, |p| p.bytes())
                     + partial_unavailable.as_ref().map_or(0, String::capacity)
             }
@@ -310,7 +322,7 @@ impl Content {
                         + side
                             .image
                             .as_ref()
-                            .map_or(0, |image| image.rgba.capacity() + image.format.capacity())
+                            .map_or(0, |image| image.format.capacity())
                         + side.render.as_ref().map_or(0, |render| {
                             (0..render.frame_count())
                                 .map(|frame| render.as_bytes(frame).map_or(0, <[u8]>::len))
@@ -387,6 +399,11 @@ pub enum Job {
     ReviewText {
         content: Arc<Content>,
         options: crate::text_review::Options,
+        prepare_split: bool,
+    },
+    PrepareSplit {
+        content: Arc<Content>,
+        cache_key: Option<PreviewKey>,
     },
     CompareRevisions {
         repo: GitRepository,
@@ -446,6 +463,7 @@ pub enum Job {
         entry: gitturtle_core::StatusEntry,
         area: gitturtle_core::ChangeArea,
         head: Option<String>,
+        prepare_split: bool,
     },
     Open {
         path: PathBuf,
@@ -473,6 +491,7 @@ pub enum Job {
         repo: GitRepository,
         file: FileChange,
         origins: crate::markdown_view::Origins,
+        prepare_split: bool,
     },
 }
 
@@ -480,6 +499,7 @@ pub enum Output {
     HistoryReleased,
     HistoryPage(HistoryPageResult),
     ReviewText(Arc<Content>, Duration),
+    SplitPrepared(Arc<Content>),
     RevisionComparison(gitturtle_core::RevisionComparison),
     RevisionTargets(Vec<String>),
     TrackedPaths(gitturtle_core::TrackedPaths),
@@ -586,6 +606,7 @@ pub struct WorkingSelection {
     pub area: gitturtle_core::ChangeArea,
     pub file: Option<FileChange>,
     pub content: Option<Arc<Content>>,
+    pub prepare_split: bool,
 }
 
 pub struct QuietRefresh {
@@ -1852,7 +1873,7 @@ impl Drop for Worker {
 /// Both filenames affect text patch headers and the image decoder hint. Store
 /// byte-safe paths as structured fields instead of concatenating display strings.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct PreviewKey {
+pub(crate) struct PreviewKey {
     repository: PathBuf,
     old_oid: Option<String>,
     new_oid: Option<String>,
@@ -1879,6 +1900,17 @@ impl PreviewKey {
         }
     }
 
+    pub(crate) fn with_origins(
+        repository: &Path,
+        file: &FileChange,
+        origins: crate::markdown_view::Origins,
+    ) -> Self {
+        Self {
+            origins,
+            ..Self::new(repository, file)
+        }
+    }
+
     /// The key of a comparison preview (`Job::Preview`), the whole of what
     /// it reads, as its cache entry is keyed.
     fn of(job: &Job) -> Option<Self> {
@@ -1886,14 +1918,12 @@ impl PreviewKey {
             repo,
             file,
             origins,
+            ..
         } = job
         else {
             return None;
         };
-        Some(Self {
-            origins: origins.clone(),
-            ..Self::new(repo.path(), file)
-        })
+        Some(Self::with_origins(repo.path(), file, origins.clone()))
     }
 }
 
@@ -1975,9 +2005,35 @@ fn execute(
         } => session
             .history_page(&repo, &scope, offset, limit, cancellation)
             .map(Output::HistoryPage),
-        Job::ReviewText { content, options } => {
-            let content = crate::text_review::prepare(&content, options, || cancellation.check())?;
+        Job::ReviewText {
+            content,
+            options,
+            prepare_split,
+        } => {
+            let mut content =
+                crate::text_review::prepare(&content, options, || cancellation.check())?;
+            if prepare_split
+                && options == crate::text_review::Options::default()
+                && let Some(upgraded) = ensure_split_in_content(&content)
+            {
+                cancellation.check()?;
+                content = upgraded;
+            }
             Ok(Output::ReviewText(content, start.elapsed()))
+        }
+        Job::PrepareSplit { content, cache_key } => {
+            let upgraded = if let Some(upgraded) = ensure_split_in_content(&content) {
+                cancellation.check()?;
+                if let Some(key) = cache_key
+                    && cache.entries.contains_key(&key)
+                {
+                    cache.insert(key, Arc::clone(&upgraded));
+                }
+                upgraded
+            } else {
+                content
+            };
+            Ok(Output::SplitPrepared(upgraded))
         }
         Job::CompareRevisions {
             repo,
@@ -2028,6 +2084,7 @@ fn execute(
                                 _ => None,
                             },
                         ),
+                        prepare_split: false,
                     },
                     cache,
                     cancellation,
@@ -2051,7 +2108,7 @@ fn execute(
             {
                 content
             } else if let Some(content) =
-                resolved_lfs_text_content(&repo, &file, &[], &bytes, &mut lfs, cancellation)?
+                resolved_lfs_text_content(&repo, &file, &[], &bytes, &mut lfs, false, cancellation)?
             {
                 content
             } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
@@ -2066,7 +2123,7 @@ fn execute(
                 let source = String::from_utf8(bytes)?;
                 // Quick Open is a source inspection, so no synthetic staged
                 // patch or selected-edit actions are manufactured.
-                prepared_text(String::new(), String::new(), source)
+                prepared_text(String::new(), String::new(), source, false)
             };
             lfs.mark(&mut content);
             attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
@@ -2246,6 +2303,7 @@ fn execute(
                      area: previous_area,
                      file: previous_file,
                      content: previous_content,
+                     prepare_split,
                  }| {
                     let Some(entry) = working
                         .status
@@ -2270,6 +2328,7 @@ fn execute(
                             entry: entry.clone(),
                             area,
                             head: working.status.head.clone(),
+                            prepare_split,
                         },
                         cache,
                         cancellation,
@@ -2315,6 +2374,7 @@ fn execute(
                                 entry: fresh_entry,
                                 area: fresh_area,
                                 head: working.status.head.clone(),
+                                prepare_split,
                             },
                             cache,
                             cancellation,
@@ -2367,6 +2427,7 @@ fn execute(
             entry,
             area,
             head,
+            prepare_split,
         } => {
             if entry.conflicted {
                 let presentation =
@@ -2394,6 +2455,7 @@ fn execute(
                 &preview.old,
                 &preview.new,
                 &mut lfs,
+                prepare_split,
                 cancellation,
             )? {
                 partial_diff = None;
@@ -2405,6 +2467,7 @@ fn execute(
                         patch,
                         String::from_utf8(preview.old)?,
                         String::from_utf8(preview.new)?,
+                        prepare_split,
                     ),
                     TextPreview::Binary => {
                         Content::Notice("Binary file · no text comparison is available.".into())
@@ -2504,14 +2567,22 @@ fn execute(
             repo,
             file,
             origins,
+            prepare_split,
         } => {
-            let mut key = PreviewKey::new(repo.path(), &file);
-            key.origins = origins.clone();
+            let key = PreviewKey::with_origins(repo.path(), &file, origins.clone());
             if let Some(content) = cache.get(&key) {
+                if prepare_split
+                    && matches!(content.as_ref(), Content::Text { split: None, .. })
+                    && let Some(upgraded) = ensure_split_in_content(&content)
+                {
+                    cancellation.check()?;
+                    cache.insert(key, Arc::clone(&upgraded));
+                    return Ok(Output::Preview(upgraded, start.elapsed()));
+                }
                 return Ok(Output::Preview(content, start.elapsed()));
             }
             let mut lfs = LfsSides::default();
-            let mut content = text_content(&repo, &file, &mut lfs, cancellation)?;
+            let mut content = text_content(&repo, &file, &mut lfs, prepare_split, cancellation)?;
             attach_markdown_assets(&mut content, &repo, &file, &origins, cancellation)?;
             let cacheable = !lfs.store_can_change()
                 && match &content {
@@ -3007,13 +3078,15 @@ fn nontext_history_content(
     })))
 }
 
-fn prepared_text(patch: String, old: String, new: String) -> Content {
+fn prepared_text(patch: String, old: String, new: String, prepare_split: bool) -> Content {
     let presentation = Arc::new(PatchPresentation::prepare(&patch));
-    let split = Arc::new(crate::split_diff::SplitPresentation::prepare(
-        &old,
-        &new,
-        &presentation,
-    ));
+    let split = prepare_split.then(|| {
+        Arc::new(crate::split_diff::SplitPresentation::prepare(
+            &old,
+            &new,
+            &presentation,
+        ))
+    });
     Content::Text {
         diagrams: None,
         markdown: None,
@@ -3027,6 +3100,47 @@ fn prepared_text(patch: String, old: String, new: String) -> Content {
         lfs_missing: [false; 2],
         lfs_failed: [None; 2],
     }
+}
+
+/// Builds an upgraded `Content::Text` with `split: Some(...)` from one whose
+/// split presentation was deferred until Split mode was chosen. Returning a new
+/// `Arc<Content>` keeps cached `Content` values immutable so `PreviewCache::bytes`
+/// stays exact across upgrades and evictions.
+fn ensure_split_in_content(content: &Arc<Content>) -> Option<Arc<Content>> {
+    let Content::Text {
+        diagrams,
+        markdown,
+        patch,
+        old,
+        new,
+        presentation,
+        split: None,
+        partial,
+        partial_unavailable,
+        lfs_missing,
+        lfs_failed,
+    } = content.as_ref()
+    else {
+        return None;
+    };
+    let split = Arc::new(crate::split_diff::SplitPresentation::prepare(
+        old,
+        new,
+        presentation,
+    ));
+    Some(Arc::new(Content::Text {
+        diagrams: diagrams.clone(),
+        markdown: markdown.clone(),
+        patch: patch.clone(),
+        old: old.clone(),
+        new: new.clone(),
+        presentation: Arc::clone(presentation),
+        split: Some(split),
+        partial: partial.clone(),
+        partial_unavailable: partial_unavailable.clone(),
+        lfs_missing: *lfs_missing,
+        lfs_failed: *lfs_failed,
+    }))
 }
 
 /// What the local store said of each side's Git LFS object
@@ -3201,15 +3315,13 @@ fn content_unchanged(previous: &Content, next: &Content) -> bool {
                 a.bytes == b.bytes
                     && a.captured == b.captured
                     && a.message == b.message
-                    && match (&a.image, &b.image) {
+                    && a.image == b.image
+                    && match (&a.render, &b.render) {
                         (None, None) => true,
                         (Some(a), Some(b)) => {
-                            a.width == b.width
-                                && a.height == b.height
-                                && a.original_width == b.original_width
-                                && a.original_height == b.original_height
-                                && a.format == b.format
-                                && a.rgba == b.rgba
+                            a.frame_count() == b.frame_count()
+                                && (0..a.frame_count())
+                                    .all(|frame| a.as_bytes(frame) == b.as_bytes(frame))
                         }
                         _ => false,
                     }
@@ -3225,6 +3337,7 @@ fn text_content(
     repo: &GitRepository,
     file: &FileChange,
     lfs: &mut LfsSides,
+    prepare_split: bool,
     cancellation: &Cancellation,
 ) -> Result<Content> {
     let sources = match repo.text_preview_with_sources(file) {
@@ -3269,15 +3382,26 @@ fn text_content(
     {
         return Ok(content);
     }
-    if let Some(mut content) =
-        resolved_lfs_text_content(repo, file, &sources.old, &sources.new, lfs, cancellation)?
-    {
+    if let Some(mut content) = resolved_lfs_text_content(
+        repo,
+        file,
+        &sources.old,
+        &sources.new,
+        lfs,
+        prepare_split,
+        cancellation,
+    )? {
         lfs.mark(&mut content);
         attach_mermaid(&mut content, file, lfs.pointers, cancellation)?;
         return Ok(content);
     }
     let mut content = match sources.preview {
-        TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
+        TextPreview::Patch(patch) => prepared_text(
+            patch,
+            String::from_utf8(sources.old)?,
+            String::from_utf8(sources.new)?,
+            prepare_split,
+        ),
         TextPreview::Binary => Content::Notice(
             "Binary or non-UTF-8 file changed. Raw object IDs and file metadata are available above.".into(),
         ),
@@ -3304,6 +3428,7 @@ fn resolved_lfs_text_content(
     old: &[u8],
     new: &[u8],
     lfs: &mut LfsSides,
+    prepare_split: bool,
     cancellation: &Cancellation,
 ) -> Result<Option<Content>> {
     let resolved = repo.resolved_lfs_text(file, old, new)?;
@@ -3328,7 +3453,12 @@ fn resolved_lfs_text_content(
         return Ok(Some(content));
     }
     Ok(Some(match sources.preview {
-        TextPreview::Patch(patch) => prepared_text(patch, String::from_utf8(sources.old)?, String::from_utf8(sources.new)?),
+        TextPreview::Patch(patch) => prepared_text(
+            patch,
+            String::from_utf8(sources.old)?,
+            String::from_utf8(sources.new)?,
+            prepare_split,
+        ),
         TextPreview::Binary => Content::Notice("Verified LFS object downloaded. Its content is binary or not UTF-8 and has no text preview.".into()),
         TextPreview::TooLarge { old_bytes, new_bytes } => Content::Notice(format!("Verified LFS content exceeds the text display limit · {old_bytes} → {new_bytes} bytes.")),
         TextPreview::Submodule { .. } => Content::Notice("Submodules do not have an LFS text preview.".into()),
@@ -3360,7 +3490,7 @@ fn working_image_side(
     let mut stays_pointer = false;
     let mut animation = None;
     let mut preview_notice = None;
-    let result = (|| -> Result<(ImagePreview, Arc<RenderImage>, usize)> {
+    let result = (|| -> Result<(ImageMetadata, Arc<RenderImage>, usize)> {
         cancellation.check()?;
         ensure!(
             bytes.len() <= MAX_INPUT_BYTES,
@@ -3415,8 +3545,8 @@ fn working_image_side(
             decode()?
         };
         cancellation.check()?;
-        let render = render_image(&decoded)?;
-        Ok((decoded, render, bytes.len()))
+        let (metadata, render) = render_image_with_metadata(decoded)?;
+        Ok((metadata, render, bytes.len()))
     })();
     let literal_source = (bytes.len() <= gitturtle_preview::MAX_SVG_BYTES)
         .then(|| std::str::from_utf8(&bytes).ok().map(Arc::<str>::from))
@@ -3476,17 +3606,31 @@ fn decoded_in_process(bytes: &[u8]) -> bool {
     }
 }
 
-pub(super) fn render_image(preview: &ImagePreview) -> Result<Arc<RenderImage>> {
+pub(super) fn render_image(mut preview: ImagePreview) -> Result<Arc<RenderImage>> {
     // GPUI RenderImage expects BGRA although image::Frame names the buffer RGBA.
-    let mut bgra = preview.rgba.clone();
-    let (pixels, remainder) = bgra.as_chunks_mut::<4>();
+    // Swizzle in place so large images do not duplicate their decoded pixel buffer.
+    let (pixels, remainder) = preview.rgba.as_chunks_mut::<4>();
     ensure!(remainder.is_empty(), "Invalid preview pixel buffer");
     for pixel in pixels {
         pixel.swap(0, 2);
     }
-    let buffer = image::RgbaImage::from_raw(preview.width, preview.height, bgra)
+    let buffer = image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba)
         .ok_or_else(|| anyhow!("Invalid preview dimensions"))?;
     Ok(Arc::new(RenderImage::new([image::Frame::new(buffer)])))
+}
+
+fn render_image_with_metadata(
+    mut preview: ImagePreview,
+) -> Result<(ImageMetadata, Arc<RenderImage>)> {
+    let metadata = ImageMetadata {
+        width: preview.width,
+        height: preview.height,
+        original_width: preview.original_width,
+        original_height: preview.original_height,
+        format: std::mem::take(&mut preview.format),
+    };
+    let render = render_image(preview)?;
+    Ok((metadata, render))
 }
 
 #[cfg(test)]
@@ -3683,7 +3827,7 @@ mod tests {
             old,
             new,
             presentation,
-            split,
+            split: Some(split),
             partial: None,
             partial_unavailable: None,
             lfs_missing: [false; 2],
@@ -4116,6 +4260,7 @@ mod image_tests {
                 repo: repo.clone(),
                 entry,
                 area: gitturtle_core::ChangeArea::Unstaged,
+                prepare_split: false,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -4335,6 +4480,7 @@ mod image_tests {
                     area: gitturtle_core::ChangeArea::Unstaged,
                     file: Some(file.clone()),
                     content: Some(Arc::clone(content)),
+                    prepare_split: false,
                 }),
             },
             &mut cache,
@@ -4637,7 +4783,7 @@ mod image_tests {
     }
 
     #[test]
-    fn render_pixels_are_bgra_without_changing_source_alpha_or_rgba() {
+    fn render_pixels_are_bgra_in_place_without_retaining_duplicate_rgba() {
         let preview = ImagePreview {
             width: 2,
             height: 1,
@@ -4646,23 +4792,22 @@ mod image_tests {
             rgba: vec![255, 30, 10, 128, 5, 70, 200, 0],
             format: "test".into(),
         };
-        let rendered = render_image(&preview).unwrap();
+        let (metadata, rendered) = render_image_with_metadata(preview).unwrap();
         assert_eq!(
             rendered.as_bytes(0).unwrap(),
             &[10, 30, 255, 128, 200, 70, 5, 0]
         );
-        assert_eq!(preview.rgba, [255, 30, 10, 128, 5, 70, 200, 0]);
-        let expected_bytes = preview.rgba.capacity()
-            + preview.format.capacity()
-            + 8
-            + 2 * std::mem::size_of::<ImageSide>();
+        assert_eq!(metadata.width, 2);
+        assert_eq!(metadata.height, 1);
+        assert_eq!(metadata.format, "test");
+        let expected_bytes = metadata.format.capacity() + 8 + 2 * std::mem::size_of::<ImageSide>();
         let content = Content::Images {
             old: ImageSide {
                 animation: None,
                 captured: None,
                 system_preview: None,
                 literal_source: None,
-                image: Some(preview),
+                image: Some(metadata),
                 render: Some(rendered),
                 message: None,
                 bytes: 8,
@@ -4712,6 +4857,7 @@ mod image_tests {
                 new_mode: "100644".into(),
             },
             origins: Default::default(),
+            prepare_split: false,
         };
         let shown = |output: Output| match output {
             Output::Preview(content, _) => match &*content {
@@ -4837,6 +4983,7 @@ mod image_tests {
                 new_mode: "100644".into(),
             },
             origins: Default::default(),
+            prepare_split: false,
         };
         // "capture.md" stands for a document whose images are captured: it
         // watches only the token, for up to ten seconds, and reports whether
@@ -4929,6 +5076,7 @@ mod image_tests {
                 origins: Default::default(),
                 repo: repo.clone(),
                 file,
+                prepare_split: false,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -4970,9 +5118,10 @@ mod image_tests {
         let rendered_bytes: usize = (0..render.frame_count())
             .map(|frame| render.as_bytes(frame).unwrap().len())
             .sum();
+        assert!(content.bytes() >= bytes.len() + rendered_bytes);
         assert!(
             content.bytes()
-                >= bytes.len() + rendered_bytes + new.image.as_ref().unwrap().rgba.len()
+                < bytes.len() + rendered_bytes + render.as_bytes(0).unwrap().len() + 2048
         );
     }
 
@@ -5129,6 +5278,7 @@ mod image_tests {
                     repo: repo.clone(),
                     entry,
                     area: gitturtle_core::ChangeArea::Unstaged,
+                    prepare_split: false,
                 },
                 &mut cache,
                 &active(),
@@ -5177,6 +5327,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file: file.clone(),
+                    prepare_split: false,
                 },
                 &mut cache,
                 &active(),
@@ -5257,6 +5408,7 @@ mod image_tests {
                         repo: repo.clone(),
                         file: file.clone(),
                         origins: Default::default(),
+                        prepare_split: false,
                     },
                     &mut cache,
                     &active(),
@@ -5414,6 +5566,7 @@ mod image_tests {
                     entry,
                     area: gitturtle_core::ChangeArea::Unstaged,
                     head: None,
+                    prepare_split: false,
                 },
                 &mut cache,
                 &active(),
@@ -5555,6 +5708,7 @@ mod image_tests {
                 repo: repo.clone(),
                 entry: repo.status().unwrap().entries.remove(0),
                 area: gitturtle_core::ChangeArea::Unstaged,
+                prepare_split: false,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -5723,6 +5877,7 @@ mod image_tests {
                 repo: repo.clone(),
                 entry,
                 area: gitturtle_core::ChangeArea::Unstaged,
+                prepare_split: false,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -5936,6 +6091,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file: file.clone(),
+                    prepare_split: false,
                 },
                 &mut cache,
                 &active(),
@@ -5977,6 +6133,7 @@ mod image_tests {
                 origins: Default::default(),
                 repo,
                 file,
+                prepare_split: false,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -6035,6 +6192,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file,
+                    prepare_split: false,
                 },
                 cache,
                 &active(),
@@ -6136,6 +6294,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file,
+                    prepare_split: false,
                 },
                 &mut PreviewCache::default(),
                 &active(),
@@ -6245,6 +6404,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file,
+                    prepare_split: false,
                 },
                 &mut PreviewCache::default(),
                 &active(),
@@ -6368,6 +6528,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file,
+                    prepare_split: false,
                 },
                 &mut PreviewCache::default(),
                 &active(),
@@ -6450,6 +6611,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file,
+                    prepare_split: false,
                 },
                 &mut PreviewCache::default(),
                 &active(),
@@ -6484,7 +6646,7 @@ mod image_tests {
     fn a_change_in_how_an_lfs_side_failed_is_a_content_change() {
         use gitturtle_core::LfsObjectFailure::{Corrupt, TooLarge};
         let text = |failed: [Option<gitturtle_core::LfsObjectFailure>; 2]| {
-            let mut content = prepared_text("patch".into(), "old".into(), "new".into());
+            let mut content = prepared_text("patch".into(), "old".into(), "new".into(), false);
             LfsSides {
                 missing: [false; 2],
                 failed,
@@ -6550,6 +6712,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file: file.clone(),
+                    prepare_split: false,
                 },
                 &mut PreviewCache::default(),
                 &active(),
@@ -6609,6 +6772,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repository.clone(),
                     file: file.clone(),
+                    prepare_split: false,
                 },
                 &mut cache,
                 &active(),
@@ -6687,6 +6851,7 @@ mod image_tests {
                 origins: Default::default(),
                 repo: repo.clone(),
                 file: file.clone(),
+                prepare_split: false,
             },
             &mut cache,
             &active(),
@@ -6709,6 +6874,7 @@ mod image_tests {
                 repo,
                 file,
                 origins: Default::default(),
+                prepare_split: false,
             },
             &mut cache,
             &active(),
@@ -6759,6 +6925,7 @@ mod image_tests {
                 origins: Default::default(),
                 repo,
                 file,
+                prepare_split: false,
             },
             &mut cache,
             &active(),
@@ -6815,6 +6982,7 @@ mod image_tests {
                     origins: Default::default(),
                     repo: repo.clone(),
                     file: file.clone(),
+                    prepare_split: false,
                 },
                 cache,
                 &active(),
@@ -6884,6 +7052,7 @@ mod image_tests {
                 repo,
                 entry,
                 area: gitturtle_core::ChangeArea::Unstaged,
+                prepare_split: false,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -6956,7 +7125,7 @@ mod image_tests {
     #[test]
     fn a_change_in_which_lfs_object_is_missing_is_a_content_change() {
         let text = |missing: [bool; 2]| {
-            let mut content = prepared_text("patch".into(), "old".into(), "new".into());
+            let mut content = prepared_text("patch".into(), "old".into(), "new".into(), false);
             LfsSides {
                 missing,
                 ..Default::default()
@@ -8936,5 +9105,136 @@ pub(crate) mod helper_image_tests {
                 .iter()
                 .all(|row| row.width == 1 && row.edges.is_empty())
         );
+    }
+
+    #[test]
+    fn lazy_split_defers_allocation_until_requested_and_keeps_cache_bytes_exact() {
+        use super::{Cancellation, PreviewCache, PreviewKey, RepositorySession, execute};
+        use std::sync::atomic::AtomicU64;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .env("GIT_AUTHOR_NAME", "Tester")
+                .env("GIT_AUTHOR_EMAIL", "tester@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Tester")
+                .env("GIT_COMMITTER_EMAIL", "tester@example.invalid")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(path.join("notes.txt"), "one\ntwo\nthree\n").unwrap();
+        run(&["add", "notes.txt"]);
+        run(&["commit", "-q", "-m", "initial"]);
+        std::fs::write(path.join("notes.txt"), "one\ntwo updated\nthree\n").unwrap();
+        run(&["add", "notes.txt"]);
+        run(&["commit", "-q", "-m", "update"]);
+
+        let repo = GitRepository::open(path).unwrap();
+        let head = repo.history(2).unwrap().into_iter().next().unwrap();
+        let file = repo.changes_with_renames(&head.oid, 0).unwrap().remove(0);
+        let key = PreviewKey::with_origins(repo.path(), &file, Default::default());
+        let mut cache = PreviewCache::default();
+        let mut session = RepositorySession::default();
+        let cancel = Cancellation {
+            generation: 1,
+            latest: Arc::new(AtomicU64::new(1)),
+            history: gitturtle_core::HistoryCancellation::default(),
+            preparation: None,
+        };
+
+        // 1. Unified preview leaves split uncomputed and accounts exact bytes.
+        let Output::Preview(unified, _) = execute(
+            Job::Preview {
+                repo: repo.clone(),
+                file: file.clone(),
+                origins: Default::default(),
+                prepare_split: false,
+            },
+            &mut cache,
+            &cancel,
+            &mut session,
+        )
+        .unwrap() else {
+            panic!("expected Preview");
+        };
+        assert!(matches!(
+            unified.as_ref(),
+            Content::Text { split: None, .. }
+        ));
+        assert_eq!(cache.bytes, unified.bytes());
+
+        // 2. Job::PrepareSplit upgrades the cached entry and updates cache.bytes cleanly.
+        let Output::SplitPrepared(upgraded) = execute(
+            Job::PrepareSplit {
+                content: Arc::clone(&unified),
+                cache_key: Some(key.clone()),
+            },
+            &mut cache,
+            &cancel,
+            &mut session,
+        )
+        .unwrap() else {
+            panic!("expected SplitPrepared");
+        };
+        assert!(matches!(
+            upgraded.as_ref(),
+            Content::Text { split: Some(_), .. }
+        ));
+        assert!(upgraded.bytes() > unified.bytes());
+        assert_eq!(cache.bytes, upgraded.bytes());
+
+        // 3. Eviction returns cache.bytes to 0 without underflow.
+        cache.remove(&key);
+        assert_eq!(cache.bytes, 0);
+
+        // 4. PrepareSplit on an evicted/uncacheable key must not re-insert into cache.
+        let Output::SplitPrepared(evicted_upgrade) = execute(
+            Job::PrepareSplit {
+                content: Arc::clone(&unified),
+                cache_key: Some(key.clone()),
+            },
+            &mut cache,
+            &cancel,
+            &mut session,
+        )
+        .unwrap() else {
+            panic!("expected SplitPrepared");
+        };
+        assert!(matches!(
+            evicted_upgrade.as_ref(),
+            Content::Text { split: Some(_), .. }
+        ));
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.bytes, 0);
+
+        // 5. Cache hit with prepare_split=true upgrades an un-upgraded entry in place.
+        cache.insert(key.clone(), Arc::clone(&unified));
+        assert_eq!(cache.bytes, unified.bytes());
+        let Output::Preview(hit_upgraded, _) = execute(
+            Job::Preview {
+                repo,
+                file,
+                origins: Default::default(),
+                prepare_split: true,
+            },
+            &mut cache,
+            &cancel,
+            &mut session,
+        )
+        .unwrap() else {
+            panic!("expected Preview");
+        };
+        assert!(matches!(
+            hit_upgraded.as_ref(),
+            Content::Text { split: Some(_), .. }
+        ));
+        assert_eq!(cache.bytes, hit_upgraded.bytes());
+        cache.remove(&key);
+        assert_eq!(cache.bytes, 0);
     }
 }

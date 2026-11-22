@@ -176,6 +176,16 @@ struct RowFill {
     imported: bool,
 }
 
+/// Settings-only views and text fields, created lazily on first entry to
+/// Settings so cold startup into a repository allocates none of them.
+pub(super) struct SettingsUi {
+    pub(super) page: Entity<SettingsPage>,
+    pub(super) branch: Entity<InputState>,
+    pub(super) editor: Entity<InputState>,
+    pub(super) identity_name: Entity<InputState>,
+    pub(super) identity_email: Entity<InputState>,
+}
+
 /// Baselines distinguish a saved value moving externally from an unfinished edit.
 pub(super) struct DraftState {
     branch: String,
@@ -290,6 +300,10 @@ impl GitTurtle {
         // rest of the app has moved (`reconcile_settings_page`).
         self.subscriptions
             .push(cx.observe_in(&cx.entity(), window, |this, _, window, cx| {
+                if this.page == AppPage::Settings {
+                    this.ensure_settings_ui(window, cx);
+                    this.ensure_theme_cards(cx);
+                }
                 this.sync_settings_drafts(window, cx);
                 this.reconcile_settings_page(cx);
                 if this.page == AppPage::Settings {
@@ -305,6 +319,136 @@ impl GitTurtle {
         // nothing outside the page that shows an unsaved value. Return in a
         // field saves from the page's key-down listener
         // (`Self::settings_field_enter`).
+    }
+
+    /// Lazily constructs the Settings page view and its four text inputs on
+    /// first entry to Settings.
+    pub(super) fn ensure_settings_ui(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> &SettingsUi {
+        if self.settings_ui.is_none() {
+            let identity_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
+            let identity_email =
+                cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
+            let default_branch = self.settings.default_branch.clone();
+            let branch = cx.new(|cx| InputState::new(window, cx).default_value(default_branch));
+            let external_editor = self.settings.external_editor.clone();
+            let editor = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(external_editor)
+                    .placeholder(if cfg!(target_os = "macos") {
+                        "Visual Studio Code"
+                    } else {
+                        "code"
+                    })
+            });
+            let owner = cx.entity().downgrade();
+            let page = cx.new(|cx| {
+                SettingsPage::new(
+                    owner,
+                    [&branch, &editor, &identity_name, &identity_email],
+                    cx,
+                )
+            });
+            self.settings_ui = Some(SettingsUi {
+                page,
+                branch,
+                editor,
+                identity_name,
+                identity_email,
+            });
+        }
+        self.settings_ui
+            .as_ref()
+            .expect("settings_ui was just initialized")
+    }
+
+    /// Lazily constructs the retained theme picker miniatures, card bodies, and
+    /// card focus handles on first entry to Settings.
+    pub(super) fn ensure_theme_cards(&mut self, cx: &mut Context<Self>) {
+        if self.theme_cards_ready {
+            return;
+        }
+        self.theme_previews = ThemeChoice::ALL
+            .into_iter()
+            .map(|choice| (ThemeSelection::BuiltIn(choice), choice.palette()))
+            .chain(
+                self.custom_themes
+                    .iter()
+                    .map(|theme| (ThemeSelection::Custom(theme.id), theme.palette)),
+            )
+            .map(|(selection, palette)| (selection, cx.new(|_| ThemePreviewBody::new(palette))))
+            .collect();
+        self.theme_card_bodies = self
+            .theme_previews
+            .iter()
+            .map(|(selection, miniature)| {
+                let miniature = miniature.entity_id();
+                (*selection, cx.new(|_| ThemeCardBody::new(miniature)))
+            })
+            .collect();
+        self.theme_card_focus = ThemeChoice::ALL
+            .into_iter()
+            .map(ThemeSelection::BuiltIn)
+            .chain(
+                self.custom_themes
+                    .iter()
+                    .map(|theme| ThemeSelection::Custom(theme.id)),
+            )
+            .map(|selection| (selection, cx.focus_handle()))
+            .collect();
+        self.theme_cards_ready = true;
+        #[cfg(target_os = "linux")]
+        {
+            let _ = self.sync_omarchy_card(cx);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settings_page_for_test(&self) -> Entity<SettingsPage> {
+        self.settings_ui
+            .as_ref()
+            .expect("settings UI initialized before accessing settings_page")
+            .page
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn identity_name_for_test(&self) -> Entity<InputState> {
+        self.settings_ui
+            .as_ref()
+            .expect("settings UI initialized before accessing identity_name")
+            .identity_name
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn identity_email_for_test(&self) -> Entity<InputState> {
+        self.settings_ui
+            .as_ref()
+            .expect("settings UI initialized before accessing identity_email")
+            .identity_email
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settings_branch_for_test(&self) -> Entity<InputState> {
+        self.settings_ui
+            .as_ref()
+            .expect("settings UI initialized before accessing settings_branch")
+            .branch
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settings_editor_for_test(&self) -> Entity<InputState> {
+        self.settings_ui
+            .as_ref()
+            .expect("settings UI initialized before accessing settings_editor")
+            .editor
+            .clone()
     }
 
     /// Return in the Default branch field saves it, and in Name or Email the
@@ -338,15 +482,15 @@ impl GitTurtle {
         {
             return;
         }
-        let Some((index, field)) = [
-            &self.settings_branch,
-            &self.identity_name,
-            &self.identity_email,
-        ]
-        .into_iter()
-        .map(|field| field.read(cx).focus_handle(cx))
-        .enumerate()
-        .find(|(_, field)| field.is_focused(window)) else {
+        let Some(ui) = &self.settings_ui else {
+            return;
+        };
+        let Some((index, field)) = [&ui.branch, &ui.identity_name, &ui.identity_email]
+            .into_iter()
+            .map(|field| field.read(cx).focus_handle(cx))
+            .enumerate()
+            .find(|(_, field)| field.is_focused(window))
+        else {
             return;
         };
         if gpui_kit::base::enter_press_is_repeat(window, cx)
@@ -366,27 +510,31 @@ impl GitTurtle {
     /// collects accessibility nodes only while an element is prepainted, so
     /// while assistive technology is reading the window the page is embedded
     /// uncached and built every frame.
-    pub(super) fn settings_page_element(&self, window: &Window) -> AnyElement {
+    pub(super) fn settings_page_element(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.ensure_theme_cards(cx);
+        let ui = self.ensure_settings_ui(window, cx);
         let page = if window.is_a11y_active() {
-            self.settings_page.clone().into_any_element()
+            ui.page.clone().into_any_element()
         } else {
-            self.settings_page
+            ui.page
                 .clone()
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element()
         };
+        let anchors = [
+            ui.editor.entity_id(),
+            ui.branch.entity_id(),
+            ui.identity_name.entity_id(),
+            ui.identity_email.entity_id(),
+        ];
         div()
             .size_full()
             .child(page)
-            .children(
-                [
-                    &self.settings_editor,
-                    &self.settings_branch,
-                    &self.identity_name,
-                    &self.identity_email,
-                ]
-                .map(|input| ViewNodeAnchor::new(input.entity_id())),
-            )
+            .children(anchors.map(ViewNodeAnchor::new))
             .child(CardLayer {
                 slots: self.picker_cards.clone(),
             })
@@ -402,7 +550,9 @@ impl GitTurtle {
     /// This notifies the page's entity without leasing it, so it is safe from
     /// any app method, including ones the page's own render calls.
     pub(super) fn notify_settings_page(&self, cx: &mut App) {
-        App::notify(cx, self.settings_page.entity_id());
+        if let Some(ui) = &self.settings_ui {
+            App::notify(cx, ui.page.entity_id());
+        }
     }
 
     /// Page Up and Page Down move the Settings page by most of its viewport,
@@ -453,9 +603,12 @@ impl GitTurtle {
         if self.page != AppPage::Settings {
             return;
         }
+        let Some(ui) = &self.settings_ui else {
+            return;
+        };
         let key = self.settings_page_key();
-        if self
-            .settings_page
+        if ui
+            .page
             .read(cx)
             .seen
             .as_ref()
@@ -466,6 +619,8 @@ impl GitTurtle {
     }
 
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_settings_ui(window, cx);
+        self.ensure_theme_cards(cx);
         if self.page != AppPage::Settings {
             self.page_origin = self.page;
             self.theme_editor.settings_entered();
@@ -584,10 +739,11 @@ impl GitTurtle {
         else {
             return;
         };
-        for (input, value) in [
-            (&self.identity_name, &read.0),
-            (&self.identity_email, &read.1),
-        ] {
+        let Some(ui) = &self.settings_ui else {
+            return;
+        };
+        let inputs = [ui.identity_name.clone(), ui.identity_email.clone()];
+        for (input, value) in inputs.iter().zip([&read.0, &read.1]) {
             input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
         }
         self.settings_drafts.reset_identity(Some(&path), read);
@@ -601,12 +757,12 @@ impl GitTurtle {
         if self.page != AppPage::Settings {
             return;
         }
+        let branch = self.ensure_settings_ui(window, cx).branch.clone();
         if let Some(value) = self.settings_drafts.branch_update(
             &self.settings.default_branch,
-            self.settings_branch.read(cx).value().as_ref(),
+            branch.read(cx).value().as_ref(),
         ) {
-            self.settings_branch
-                .update(cx, |input, cx| input.set_value(value, window, cx));
+            branch.update(cx, |input, cx| input.set_value(value, window, cx));
         }
         self.sync_identity_fields(window, cx);
     }
@@ -624,6 +780,10 @@ impl GitTurtle {
     /// and Save wrote that Email over the one configured since (the code
     /// re-check of FU44-D11).
     fn withhold_identity_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = &self.settings_ui else {
+            return;
+        };
+        let fields = [ui.identity_name.clone(), ui.identity_email.clone()];
         let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
             return;
         };
@@ -642,10 +802,7 @@ impl GitTurtle {
             .profile
             .as_ref()
             .map(|profile| (profile.name.clone(), profile.email.clone()));
-        for (index, field) in [&self.identity_name, &self.identity_email]
-            .into_iter()
-            .enumerate()
-        {
+        for (index, field) in fields.iter().enumerate() {
             let value = field.read(cx).value();
             if !value.is_empty() && DraftState::was_read(&baseline, read.as_ref(), index, &value) {
                 field.update(cx, |input, cx| input.set_value("", window, cx));
@@ -672,13 +829,16 @@ impl GitTurtle {
     ///   unfinished edit (`DraftState::identity_update`).
     fn sync_identity_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.withhold_identity_fields(window, cx);
+        let Some(ui) = &self.settings_ui else {
+            return;
+        };
+        let fields = [ui.identity_name.clone(), ui.identity_email.clone()];
         let Some(path) = self.repository.as_ref().map(|repository| repository.path()) else {
             return;
         };
         let loaded = self
             .loaded_identity()
             .map(|profile| (profile.name.clone(), profile.email.clone()));
-        let fields = [&self.identity_name, &self.identity_email];
         // A field given the value it holds would only draw the window again.
         let set = |index: usize, value: &str, window: &mut Window, cx: &mut Context<Self>| {
             if fields[index].read(cx).value().as_ref() != value {
@@ -725,7 +885,10 @@ impl GitTurtle {
 
     /// Whether Settings' Name or Email holds keyboard focus.
     pub(super) fn identity_field_focused(&self, window: &Window, cx: &App) -> bool {
-        [&self.identity_name, &self.identity_email]
+        let Some(ui) = &self.settings_ui else {
+            return false;
+        };
+        [&ui.identity_name, &ui.identity_email]
             .into_iter()
             .any(|field| field.focus_handle(cx).is_focused(window))
     }
@@ -1270,6 +1433,11 @@ impl GitTurtle {
     /// This is the only writer of `custom_themes`, so a custom card is never
     /// drawn without its miniature.
     pub(super) fn set_custom_themes(&mut self, themes: Vec<CustomTheme>, cx: &mut Context<Self>) {
+        if !self.theme_cards_ready {
+            self.custom_themes = themes;
+            self.notify_settings_page(cx);
+            return;
+        }
         let kept = |drawn: &ThemeSelection| match drawn {
             ThemeSelection::BuiltIn(_) | ThemeSelection::Omarchy => true,
             ThemeSelection::Custom(id) => themes.iter().any(|theme| theme.id == *id),
@@ -1323,6 +1491,9 @@ impl GitTurtle {
     #[cfg(target_os = "linux")]
     fn sync_omarchy_card(&mut self, cx: &mut Context<Self>) -> Option<appearance::omarchy::Card> {
         let card = appearance::omarchy::card(cx)?;
+        if !self.theme_cards_ready {
+            return Some(card);
+        }
         let selection = ThemeSelection::Omarchy;
         let retained = self
             .theme_previews
@@ -1496,8 +1667,11 @@ impl GitTurtle {
     }
 
     fn save_default_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = &self.settings_ui else {
+            return;
+        };
         let mut edited = self.settings.clone();
-        edited.default_branch = self.settings_branch.read(cx).value().to_string();
+        edited.default_branch = ui.branch.read(cx).value().to_string();
         if let Err(error) = edited.validate() {
             self.operation_error = Some(format!("Default branch: {error:#}").into());
             cx.notify();
@@ -1547,8 +1721,11 @@ impl GitTurtle {
             return;
         }
         self.sync_identity_fields(window, cx);
-        let name = self.identity_name.read(cx).value().trim().to_owned();
-        let email = self.identity_email.read(cx).value().trim().to_owned();
+        let Some(ui) = &self.settings_ui else {
+            return;
+        };
+        let name = ui.identity_name.read(cx).value().trim().to_owned();
+        let email = ui.identity_email.read(cx).value().trim().to_owned();
         let Some(unchanged) = self
             .loaded_identity()
             .map(|loaded| loaded.name == name && loaded.email == email)
@@ -1802,6 +1979,9 @@ impl GitTurtle {
     /// self-observer) and in every build of the page, and the frame that
     /// shows a change builds only the bodies it altered.
     pub(super) fn sync_theme_cards(&self, cx: &mut App) {
+        if !self.theme_cards_ready {
+            return;
+        }
         let active = palette(cx);
         let selected = self.selected_theme_card(cx);
         for (_, _, cards) in self.theme_card_groups(cx) {
@@ -2727,6 +2907,9 @@ impl GitTurtle {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let Some(ui) = &self.settings_ui else {
+            return div().into_any_element();
+        };
         // A control the keyboard has focused scrolls into view in this frame.
         self.theme_editor.page().reveal(window, cx);
         let p = palette(cx);
@@ -2749,7 +2932,7 @@ impl GitTurtle {
             4
         };
         let branch_edited =
-            self.settings_branch.read(cx).value().as_ref() != self.settings.default_branch.as_str();
+            ui.branch.read(cx).value().as_ref() != self.settings.default_branch.as_str();
         // Against the identity loaded for the repository shown: with none
         // loaded there is no edit to save or reset, whatever the fields
         // hold. Asked of the window's identity alone, every field counted
@@ -2762,8 +2945,8 @@ impl GitTurtle {
         // Name and Email notifying it after that frame
         // (`theme_editor::tests::state_from_other_features_builds_the_page_through_the_reconciler`).
         let (name, email) = (
-            self.identity_name.read(cx).value(),
-            self.identity_email.read(cx).value(),
+            ui.identity_name.read(cx).value(),
+            ui.identity_email.read(cx).value(),
         );
         let identity_edited = loaded
             .is_some_and(|profile| name.trim() != profile.name || email.trim() != profile.email);
@@ -2916,21 +3099,26 @@ impl GitTurtle {
                 // width drew only a centred dim label while disabled.
                 .child(div()
                     .on_children_prepainted(self.keep_in_view(
-                        vec![Some(self.settings_editor.focus_handle(cx)), Some(save_editor.clone())],
+                        vec![Some(ui.editor.focus_handle(cx)), Some(save_editor.clone())],
                         cx,
                     ))
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(div().debug_selector(|| "settings-editor-field".into()).flex_1().min_w_0()
-                        .child(Input::new(&self.settings_editor).aria_label("External editor")))
+                        .child(Input::new(&ui.editor).aria_label("External editor")))
                     .child(Button::new("save-external-editor")
                         .track_focus(&save_editor)
                         .debug_selector(|| "save-external-editor".into())
                         .label("Save editor")
-                        .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)
+                        .disabled(ui.editor.read(cx).value().trim() == self.settings.external_editor)
                         .tooltip("Save the editor that opens repositories")
-                        .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); })))))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(ui) = &this.settings_ui {
+                                this.settings.external_editor = ui.editor.read(cx).value().trim().to_owned();
+                                this.save_preferences(window, cx);
+                            }
+                        })))))
             .child(
                 div()
                     .on_children_prepainted(self.keep_in_view(vec![Some(reopen_last.clone())], cx))
@@ -2994,7 +3182,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .on_children_prepainted(self.keep_in_view(
-                                vec![Some(self.settings_branch.focus_handle(cx)), Some(save_branch.clone())],
+                                vec![Some(ui.branch.focus_handle(cx)), Some(save_branch.clone())],
                                 cx,
                             ))
                             .flex()
@@ -3004,7 +3192,7 @@ impl GitTurtle {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(Input::new(&self.settings_branch).aria_label("Default branch")),
+                                    .child(Input::new(&ui.branch).aria_label("Default branch")),
                             )
                             .child(
                                 Button::new("save-default-branch")
@@ -3080,8 +3268,8 @@ impl GitTurtle {
             };
             let mut kept = vec![
                 None,
-                Some(self.identity_name.focus_handle(cx)),
-                Some(self.identity_email.focus_handle(cx)),
+                Some(ui.identity_name.focus_handle(cx)),
+                Some(ui.identity_email.focus_handle(cx)),
             ];
             kept.extend((!marked).then_some(None));
             kept.push(None);
@@ -3133,8 +3321,8 @@ impl GitTurtle {
                 // write (decided 2026-11-12). There they draw no value read
                 // before the mark (`sync_identity_fields`), say why as the
                 // line does and leave the Tab order (decided 2026-11-14).
-                .child(settings_field("Name", &self.identity_name, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
-                .child(settings_field("Email", &self.identity_email, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
+                .child(settings_field("Name", &ui.identity_name, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
+                .child(settings_field("Email", &ui.identity_email, (busy || marked, looks_busy || marked), marked.then(|| line.clone()), cx))
                 .when(!marked, |card| {
                     let signing = match loaded {
                         Some(profile) if profile.signing => "Commit signing is enabled in Git. GitTurtle uses your configured signer.",
@@ -3514,6 +3702,7 @@ impl Render for SettingsPage {
             // This build's placeholders record the cards again, when the
             // page below is prepainted.
             app.picker_cards.0.borrow_mut().clear();
+            app.ensure_theme_cards(cx);
             app.sync_theme_cards(cx);
             app.settings_page_key()
         });
@@ -5846,7 +6035,11 @@ mod theme_apply_tests {
         let new = old.replace("row 120\n", "row 120 turtle\n");
         let patch = "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -120,3 +120,3 @@\n row 119\n-row 120\n+row 120 turtle\n row 121\n";
         let presentation = Arc::new(PatchPresentation::prepare(patch));
-        let split = Arc::new(SplitPresentation::prepare(&old, &new, &presentation));
+        let split = Some(Arc::new(SplitPresentation::prepare(
+            &old,
+            &new,
+            &presentation,
+        )));
         Arc::new(Content::Text {
             diagrams: None,
             markdown: None,
@@ -8192,7 +8385,7 @@ mod picker_tests {
         // An edit, so Save and Reset edits take focus.
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.identity_name
+                app.identity_name_for_test()
                     .update(cx, |input, cx| input.set_value("Another Name", window, cx))
             })
         });
@@ -8572,10 +8765,10 @@ mod picker_tests {
         let fields = cx.read(|cx| {
             let app = app.read(cx);
             [
-                ("External editor", app.settings_editor.clone()),
-                ("Default branch", app.settings_branch.clone()),
-                ("Name", app.identity_name.clone()),
-                ("Email", app.identity_email.clone()),
+                ("External editor", app.settings_editor_for_test()),
+                ("Default branch", app.settings_branch_for_test()),
+                ("Name", app.identity_name_for_test()),
+                ("Email", app.identity_email_for_test()),
             ]
         });
         let handles: Vec<FocusHandle> = cx.read(|cx| {
@@ -8626,7 +8819,7 @@ mod picker_tests {
     fn the_default_branch_field_is_named_by_its_title(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         assert!(page_shows(cx, "save-default-branch"));
-        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        let field = cx.read(|cx| app.read(cx).settings_branch_for_test());
         crate::native_accessibility::written::forget();
         assert!(page_shows(cx, "save-default-branch"));
         let read: Vec<_> = crate::native_accessibility::written::labels()
@@ -8679,7 +8872,7 @@ mod picker_tests {
         std::fs::write(&lock, "").unwrap();
         let (name, email) = cx.read(|cx| {
             let app = app.read(cx);
-            (app.identity_name.clone(), app.identity_email.clone())
+            (app.identity_name_for_test(), app.identity_email_for_test())
         });
         cx.update(|window, cx| {
             name.update(cx, |input, cx| {
@@ -8799,7 +8992,7 @@ mod picker_tests {
             std::fs::remove_file(&store).unwrap();
         }
         std::fs::create_dir(&store).unwrap();
-        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        let field = cx.read(|cx| app.read(cx).settings_branch_for_test());
         cx.update(|window, cx| {
             field.update(cx, |input, cx| input.set_value("trunk", window, cx));
             field.read(cx).focus_handle(cx).focus(window, cx);
@@ -8866,7 +9059,7 @@ mod picker_tests {
             std::fs::remove_file(&store).unwrap();
         }
         std::fs::create_dir(&store).unwrap();
-        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        let field = cx.read(|cx| app.read(cx).settings_branch_for_test());
         cx.update(|window, cx| {
             field.update(cx, |input, cx| input.set_value("trunk", window, cx));
             field.read(cx).focus_handle(cx).focus(window, cx);

@@ -3516,7 +3516,7 @@ pub(crate) mod tests {
 
     /// Builds of the cached Settings page so far (`settings::SettingsPage`).
     fn page_renders(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> usize {
-        cx.read(|cx| app.read(cx).settings_page.read(cx).renders())
+        cx.read(|cx| app.read(cx).settings_page_for_test().read(cx).renders())
     }
 
     /// Builds of the open editor's form so far.
@@ -10541,7 +10541,7 @@ pub(crate) mod tests {
         assert_eq!(offset(cx), Pixels::ZERO);
         assert_eq!(picker(cx), resting);
         cx.update(|window, cx| {
-            let input = app.read(cx).identity_name.focus_handle(cx);
+            let input = app.read(cx).identity_name_for_test().focus_handle(cx);
             window.focus(&input, cx);
         });
         cx.simulate_keystrokes("pagedown end");
@@ -11857,7 +11857,7 @@ pub(crate) mod tests {
     fn typing_and_a_caret_blink_in_a_settings_input_build_the_page(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         cx.update(|window, _| window.activate_window());
-        let input = cx.read(|cx| app.read(cx).settings_branch.clone());
+        let input = cx.read(|cx| app.read(cx).settings_branch_for_test());
         cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
         settle(cx);
         // The first key after pointer input refreshes the whole window

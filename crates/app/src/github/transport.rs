@@ -414,7 +414,11 @@ fn run(
     let mut child = command
         .spawn()
         .map_err(|_| anyhow!("Could not start GitHub CLI"))?;
+    let mut exit_watcher: Option<std::thread::JoinHandle<()>> = None;
+    let mut reaped = false;
     let result = (|| {
+        use std::os::fd::{AsRawFd, OwnedFd};
+        use std::os::unix::net::UnixStream;
         let mut stdin = Some(
             child
                 .stdin
@@ -432,25 +436,35 @@ fn run(
         nonblocking(stdin.as_ref().expect("input pipe"))?;
         nonblocking(&stdout)?;
         nonblocking(&stderr)?;
+        let (cancel_r, cancel_w) =
+            UnixStream::pair().map_err(|_| anyhow!("GitHub cancellation signal unavailable"))?;
+        nonblocking(&cancel_r)?;
+        let _cancel_guard = control.on_cancel(move || {
+            let _ = cancel_w.shutdown(std::net::Shutdown::Write);
+        });
+        let mut exit_fd: Option<OwnedFd> = spawn_child_exit_fd(child.id(), &mut exit_watcher);
         let input = input.unwrap_or_default();
         let mut sent = 0;
         let mut output = Vec::new();
         let mut stderr_bytes = 0;
         let mut stdout_done = false;
         let mut stderr_done = false;
+        let mut exit_ready = false;
         let start = Instant::now();
-        let mut status = None;
         loop {
             ensure!(!control.is_cancelled(), "GitHub operation cancelled");
+            let remaining = deadline.saturating_sub(start.elapsed());
             ensure!(
-                start.elapsed() < deadline,
+                !remaining.is_zero(),
                 "GitHub operation exceeded its deadline"
             );
             if let Some(pipe) = stdin.as_mut() {
-                if sent < input.len() {
+                while sent < input.len() {
                     match pipe.write(&input[sent..]) {
+                        Ok(0) => bail!("GitHub request input was interrupted"),
                         Ok(count) => sent += count,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                         Err(_) => bail!("GitHub request input was interrupted"),
                     }
                 }
@@ -460,55 +474,172 @@ fn run(
             }
             let mut buffer = [0u8; 16384];
             if !stdout_done {
-                match stdout.read(&mut buffer) {
-                    Ok(0) => stdout_done = true,
-                    Ok(count) => {
-                        ensure!(
-                            output.len() + count <= limit,
-                            "GitHub response exceeds the bounded output limit"
-                        );
-                        output.extend_from_slice(&buffer[..count]);
+                loop {
+                    match stdout.read(&mut buffer) {
+                        Ok(0) => {
+                            stdout_done = true;
+                            break;
+                        }
+                        Ok(count) => {
+                            ensure!(
+                                output.len() + count <= limit,
+                                "GitHub response exceeds the bounded output limit"
+                            );
+                            output.extend_from_slice(&buffer[..count]);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => bail!("GitHub response stream was interrupted"),
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => bail!("GitHub response stream was interrupted"),
                 }
             }
             if !stderr_done {
-                match stderr.read(&mut buffer) {
-                    Ok(0) => stderr_done = true,
-                    Ok(count) => {
-                        stderr_bytes += count;
-                        ensure!(
-                            stderr_bytes <= 64 * 1024,
-                            "GitHub diagnostic output exceeded its limit"
-                        );
+                loop {
+                    match stderr.read(&mut buffer) {
+                        Ok(0) => {
+                            stderr_done = true;
+                            break;
+                        }
+                        Ok(count) => {
+                            stderr_bytes += count;
+                            ensure!(
+                                stderr_bytes <= 64 * 1024,
+                                "GitHub diagnostic output exceeded its limit"
+                            );
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => bail!("GitHub diagnostic stream was interrupted"),
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => bail!("GitHub diagnostic stream was interrupted"),
                 }
             }
-            if status.is_none() {
-                status = child.try_wait()?;
+            // Wait until both streams end before reaping so a descendant
+            // holding a pipe open cannot trigger PID reuse before kill(-pid).
+            if stdout_done && stderr_done && (exit_ready || exit_fd.is_none()) {
+                if let Some(watcher) = exit_watcher.take() {
+                    let _ = watcher.join();
+                }
+                if let Some(status) = child.try_wait()? {
+                    reaped = true;
+                    return Ok((status.success(), output));
+                }
+                if exit_ready {
+                    // The exit descriptor fired before `try_wait` saw a zombie;
+                    // drop it so `wait_ms` falls back to 5 ms polling.
+                    exit_fd = None;
+                }
             }
-            if let Some(status) = status
-                && stdout_done
-                && stderr_done
-            {
-                return Ok((status.success(), output));
+            let mut poll_fds = [
+                libc::pollfd {
+                    fd: cancel_r.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: stdin.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if stdout_done { -1 } else { stdout.as_raw_fd() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if stderr_done { -1 } else { stderr.as_raw_fd() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if stdout_done && stderr_done && !exit_ready {
+                        exit_fd.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+                    } else {
+                        -1
+                    },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let wait_ms = if stdout_done && stderr_done && exit_fd.is_none() {
+                remaining.min(Duration::from_millis(5)).as_millis()
+            } else {
+                remaining.as_millis()
             }
-            std::thread::sleep(Duration::from_millis(5));
+            .clamp(1, i32::MAX as u128) as libc::c_int;
+            // SAFETY: `poll_fds` is a valid stack array of 5 `pollfd` entries.
+            let ready = unsafe {
+                libc::poll(
+                    poll_fds.as_mut_ptr(),
+                    poll_fds.len() as libc::nfds_t,
+                    wait_ms,
+                )
+            };
+            if ready > 0 && poll_fds[4].revents != 0 {
+                exit_ready = true;
+            }
         }
     })();
-    if result.is_err() {
-        // SAFETY: the child was started in its own process group. Negative PID
-        // targets that group, so pipe-holding descendants are stopped as well.
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+    if !reaped {
+        if result.is_err() {
+            // SAFETY: the child was started in its own process group and has
+            // not been reaped yet, so negative PID safely targets its group.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
         }
-        let _ = child.kill();
+        if let Some(watcher) = exit_watcher.take() {
+            let _ = watcher.join();
+        }
+        let _ = child.wait();
+    } else if let Some(watcher) = exit_watcher.take() {
+        let _ = watcher.join();
     }
-    let _ = child.wait();
     result
+}
+
+#[cfg(unix)]
+fn spawn_child_exit_fd(
+    pid: u32,
+    watcher_slot: &mut Option<std::thread::JoinHandle<()>>,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::OwnedFd;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::FromRawFd;
+        // SAFETY: `pidfd_open` creates a new close-on-exec descriptor for `pid`.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0u32) };
+        if raw >= 0 {
+            // SAFETY: `raw` is a valid freshly allocated fd owned by us.
+            return Some(unsafe { OwnedFd::from_raw_fd(raw as libc::c_int) });
+        }
+    }
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let (read_end, write_end) = std::os::unix::net::UnixStream::pair().ok()?;
+    let handle = std::thread::Builder::new()
+        .name("gh-exit".into())
+        .spawn(move || {
+            // SAFETY: `libc::siginfo_t` is a C struct overwritten by `waitid`.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            loop {
+                // SAFETY: `waitid` with `WNOWAIT` peeks child exit without reaping.
+                let rc = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOWAIT,
+                    )
+                };
+                if rc == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    break;
+                }
+            }
+            let _ = write_end.shutdown(std::net::Shutdown::Write);
+        })
+        .ok()?;
+    *watcher_slot = Some(handle);
+    Some(OwnedFd::from(read_end))
 }
 #[cfg(not(unix))]
 fn run(

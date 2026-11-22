@@ -185,7 +185,7 @@ fn content_dimensions(content: &Arc<Content>) -> Value {
     else {
         panic!("text result required")
     };
-    json!({"patch_bytes": patch.len(), "patch_fnv1a64": fingerprint(patch.as_bytes()), "old_bytes": old.len(), "new_bytes": new.len(), "changes": presentation.change_rows.len(), "patch_metadata_bytes": presentation.retained_bytes(), "split_retained_bytes": split.retained_bytes()})
+    json!({"patch_bytes": patch.len(), "patch_fnv1a64": fingerprint(patch.as_bytes()), "old_bytes": old.len(), "new_bytes": new.len(), "changes": presentation.change_rows.len(), "patch_metadata_bytes": presentation.retained_bytes(), "split_retained_bytes": split.as_ref().map_or(0, |split| split.retained_bytes())})
 }
 fn index_dimensions(index: &path_filter::Index) -> Value {
     json!({"paths": index.len(), "normalized_bytes": index.iter().flat_map(|entry| entry.iter()).map(String::len).sum::<usize>()})
@@ -219,7 +219,11 @@ fn prepared_review_and_cached_paths_release_benchmark() {
     let (old, new, patch) = text_fixture();
     let presentation = Arc::new(PatchPresentation::prepare(&patch));
     assert_eq!(presentation.change_rows.len(), 201);
-    let split = Arc::new(SplitPresentation::prepare(&old, &new, &presentation));
+    let split = Some(Arc::new(SplitPresentation::prepare(
+        &old,
+        &new,
+        &presentation,
+    )));
     let original = Arc::new(Content::Text {
         diagrams: None,
         markdown: None,

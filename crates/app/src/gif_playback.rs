@@ -3,11 +3,11 @@ use crate::gpui::{
     AnyElement, Bounds, Corners, ImageId, IntoElement, RenderImage, Styled, canvas, point, px, size,
 };
 use anyhow::{Result, ensure};
-use gitturtle_preview::{ImagePreview, animation};
+use gitturtle_preview::animation;
 use std::{sync::Arc, time::Instant};
 
 pub(super) struct Prepared {
-    pub image: ImagePreview,
+    pub image: crate::worker::ImageMetadata,
     pub render: Arc<RenderImage>,
     pub timeline: Arc<Timeline>,
 }
@@ -72,16 +72,22 @@ impl Timeline {
 
 pub(super) fn prepare(bytes: &[u8], check: impl Fn() -> Result<()>) -> Result<Prepared> {
     let decoded = animation::decode_gif(bytes, animation::MAX_EDGE, &check)?;
-    let mut image = decoded.frames[0].image.clone();
-    image.format = format!(
-        "GIF · {}{}",
-        crate::counted(decoded.frames.len(), "frame", "frames"),
-        if decoded.truncated {
-            " · bounded animation segment"
-        } else {
-            ""
-        }
-    );
+    let first = &decoded.frames[0].image;
+    let image = crate::worker::ImageMetadata {
+        width: first.width,
+        height: first.height,
+        original_width: first.original_width,
+        original_height: first.original_height,
+        format: format!(
+            "GIF · {}{}",
+            crate::counted(decoded.frames.len(), "frame", "frames"),
+            if decoded.truncated {
+                " · bounded animation segment"
+            } else {
+                ""
+            }
+        ),
+    };
     let mut end_ms = Vec::with_capacity(decoded.frames.len());
     let mut frames = Vec::with_capacity(decoded.frames.len());
     let mut elapsed = 0u64;
@@ -177,7 +183,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
     #[test]
-    fn prepares_all_bgra_frames_once_and_keeps_original_rgba_and_timing() {
+    fn prepares_all_bgra_frames_once_and_keeps_metadata_and_timing() {
         let mut bytes = Vec::new();
         {
             let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
@@ -196,7 +202,8 @@ mod tests {
         assert_eq!(prepared.render.frame_count(), 2);
         assert_eq!(prepared.render.as_bytes(0).unwrap()[..4], [0, 0, 255, 255]);
         assert_eq!(prepared.render.as_bytes(1).unwrap()[..4], [0, 255, 0, 255]);
-        assert_eq!(prepared.image.rgba[..4], [255, 0, 0, 255]);
+        assert_eq!((prepared.image.width, prepared.image.height), (2, 1));
+        assert_eq!(prepared.image.format, "GIF · 2 frames");
         assert_eq!(prepared.timeline.end_ms, [80, 160]);
     }
     #[test]

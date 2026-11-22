@@ -1145,6 +1145,49 @@ impl Reported {
     /// Git's answer from `requested`, unconfined; a folder inside a work
     /// tree reports that work tree.
     fn by_git(requested: &Path) -> Result<Self> {
+        let args = [
+            "rev-parse",
+            "--is-bare-repository",
+            "--absolute-git-dir",
+            "--show-toplevel",
+        ];
+        let output = run_git_output(GitTarget::unconfined(requested), &args)?;
+        if output.status.success() {
+            let trimmed = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+            let mut parts = trimmed.split(|byte| *byte == b'\n');
+            if let (Some(bare_raw), Some(git_dir_raw), Some(root_raw), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+                && bare_raw == b"false"
+            {
+                return Ok(Self {
+                    bare: false,
+                    git_dir: path_from_bytes(trim_line(git_dir_raw)),
+                    root: path_from_bytes(trim_line(root_raw)),
+                });
+            }
+            return Self::by_git_separate(requested);
+        }
+        if let Some(rest) = output.stdout.strip_prefix(b"true\n") {
+            let git_dir_raw = trim_line(rest);
+            if !git_dir_raw.is_empty()
+                && !git_dir_raw.contains(&b'\n')
+                && reported(&output.stderr).contains("must be run in a work tree")
+            {
+                let git_dir = path_from_bytes(git_dir_raw);
+                return Ok(Self {
+                    bare: true,
+                    root: git_dir.clone(),
+                    git_dir,
+                });
+            }
+            return Self::by_git_separate(requested);
+        }
+        checked_git_output(&args, output)?;
+        bail!("Git did not report the repository's Git directory")
+    }
+
+    /// Two-spawn fallback for paths containing embedded newlines.
+    fn by_git_separate(requested: &Path) -> Result<Self> {
         let reported = run_git(
             GitTarget::unconfined(requested),
             &["rev-parse", "--is-bare-repository", "--absolute-git-dir"],
@@ -1627,14 +1670,33 @@ impl GitRepository {
     /// Linked worktrees have a private HEAD/index but share refs and objects.
     /// These passive reads never create or update Git metadata.
     pub fn git_directories(&self) -> Result<(PathBuf, PathBuf)> {
-        let private = path_from_bytes(trim_line(&run_git(
+        let combined = run_git(
             self.target(),
-            &["rev-parse", "--absolute-git-dir"],
-        )?));
-        let common = path_from_bytes(trim_line(&run_git(
-            self.target(),
-            &["rev-parse", "--git-common-dir"],
-        )?));
+            &[
+                "rev-parse",
+                "--absolute-git-dir",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+        )?;
+        let trimmed = combined.strip_suffix(b"\n").unwrap_or(&combined);
+        let mut lines = trimmed.split(|byte| *byte == b'\n');
+        let (private, common) = match (lines.next(), lines.next(), lines.next()) {
+            (Some(private), Some(common), None) => (
+                path_from_bytes(trim_line(private)),
+                path_from_bytes(trim_line(common)),
+            ),
+            _ => (
+                path_from_bytes(trim_line(&run_git(
+                    self.target(),
+                    &["rev-parse", "--absolute-git-dir"],
+                )?)),
+                path_from_bytes(trim_line(&run_git(
+                    self.target(),
+                    &["rev-parse", "--git-common-dir"],
+                )?)),
+            ),
+        };
         let absolute = |path: PathBuf| -> Result<PathBuf> {
             let path = if path.is_absolute() {
                 path
@@ -2400,7 +2462,7 @@ fn bounded_output_with(mut command: Command, timeout: Duration, seam: WaitSeam) 
     );
     // Sampled once, on the calling thread: the token is its thread-local, and
     // no thread this wait owns reads one.
-    let cancellable = work::inspection_cancellable();
+    let cancellation = work::inspection_cancellation();
     isolate_process_group(&mut command);
     let mut child = command
         .stdout(Stdio::piped())
@@ -2412,6 +2474,12 @@ fn bounded_output_with(mut command: Command, timeout: Duration, seam: WaitSeam) 
     // clean-up path below.
     let pipes = ChildPipes::take(&mut child)?;
     let (signals, mut events) = process_io::wait_events(&seam);
+    let _cancel = cancellation.as_ref().map(|token| {
+        let sender = signals.cancel_sender();
+        token.on_cancel(move || {
+            let _ = sender.send(WaitPart::Cancelled);
+        })
+    });
     let read = |part, pipe: Option<Box<dyn Read + Send>>, limit: usize| {
         let pipe = pipe.ok_or_else(|| std::io::Error::other("its pipe is missing"))?;
         signals.start(part, move || -> std::io::Result<Vec<u8>> {
@@ -2477,10 +2545,11 @@ fn bounded_output_with(mut command: Command, timeout: Duration, seam: WaitSeam) 
                 (_, _, Err(error)) => break Err(error.into()),
                 _ => break Err(anyhow::anyhow!("Git ended without an exit status")),
             }
-            let looking = cancellable || exit.polling();
+            let looking = exit.polling();
             events.next(if looking { left.min(seam.tick) } else { left });
         }
     };
+    drop(_cancel);
     if result.is_err() {
         // No status was taken on the way here, whether a helper watched or
         // the wait polled, so the reap is the last thing done to the child or

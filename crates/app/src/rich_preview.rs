@@ -386,11 +386,8 @@ pub(super) fn prepare_mermaid(
             for (index, diagram) in document.diagrams.into_iter().enumerate() {
                 check()?;
                 let (render, width, height) = if let Some(image) = diagram.image {
-                    (
-                        Some(worker::render_image(&image)?),
-                        image.width,
-                        image.height,
-                    )
+                    let (width, height) = (image.width, image.height);
+                    (Some(worker::render_image(image)?), width, height)
                 } else {
                     (None, 1, 1)
                 };

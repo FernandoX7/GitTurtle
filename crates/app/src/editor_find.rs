@@ -2241,6 +2241,8 @@ mod bar_tests {
                 cx.notify();
             })
         });
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.run_until_parked();
         crate::width_walk::frame(cx);
         crate::width_walk::frame(cx);
         let editor = cx.update(|_, cx| {

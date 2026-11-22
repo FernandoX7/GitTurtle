@@ -338,8 +338,9 @@ Play/Pause and frame stepping share one time position across Before/After; a
 shorter side holds its last frame until both loop. Painting selects an existing
 BGRA frame and requests the next native frame only for active playback in an
 active window. Hidden and paused canvases schedule no animation loop; retained
-navigation clones freeze playback. Cache accounting includes every frame,
-timeline metadata, first-frame RGBA and captured compressed bytes. The static
+navigation clones freeze playback. Cache accounting includes every BGRA frame,
+timeline metadata, image metadata and captured compressed bytes (RGBA pixels are
+swizzled to BGRA in place rather than retained alongside `RenderImage`). The static
 `decode_image` API and secondary static image surfaces still show frame one.
 
 The preview cache counts retained source buffers, patch metadata and CPU image allocations. UI-held `Arc`s, editors and GPU textures may outlive eviction; its budget is not a total-memory cap. Changes to `Content` must keep `Content::bytes` accurate.

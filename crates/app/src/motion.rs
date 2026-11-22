@@ -12696,7 +12696,7 @@ mod tests {
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.show_settings(window, cx);
-                app.identity_name
+                app.identity_name_for_test()
                     .update(cx, |input, cx| input.set_value("Another Name", window, cx));
             })
         });

@@ -620,7 +620,7 @@ fn page_bounds(
     cx: &mut VisualTestContext,
     selector: &'static str,
 ) -> Option<gpui::Bounds<gpui::Pixels>> {
-    let page = app.read_with(cx, |app, _| app.settings_page.clone());
+    let page = app.read_with(cx, |app, _| app.settings_page_for_test());
     cx.update(|window, cx| {
         page.update(cx, |_, cx| cx.notify());
         window.draw(cx).clear(cx);
@@ -786,7 +786,7 @@ async fn settings_identity_fields_and_line_say_the_mark(cx: &mut TestAppContext)
         })
     });
     let (name, email) = app.read_with(cx, |app, _| {
-        (app.identity_name.clone(), app.identity_email.clone())
+        (app.identity_name_for_test(), app.identity_email_for_test())
     });
     let current =
         "settings-identity-line: Current identity: Fixture Person <person@example.invalid>";
@@ -952,7 +952,7 @@ async fn settings_identity_fields_draw_no_value_read_before_the_mark(cx: &mut Te
         })
     });
     let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
+        [app.identity_name_for_test(), app.identity_email_for_test()]
     });
     let field = |name: &str, value: &str, placeholder: &str, state| {
         (
@@ -1089,7 +1089,7 @@ async fn settings_identity_typing_stays_as_typed_on_a_marked_tab(cx: &mut TestAp
         })
     });
     let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
+        [app.identity_name_for_test(), app.identity_email_for_test()]
     });
     cx.update(|window, cx| fields[0].read(cx).focus_handle(cx).focus(window, cx));
     draw(cx);
@@ -1156,7 +1156,7 @@ async fn settings_identity_fields_draw_no_value_an_earlier_read_filled(cx: &mut 
     };
     set(&app, cx, |app| read(app, "Bob", "bob@example.invalid"));
     let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
+        [app.identity_name_for_test(), app.identity_email_for_test()]
     });
     let field = |name: &str, value: &str, placeholder: &str, state| {
         (
@@ -1217,7 +1217,7 @@ async fn settings_identity_an_empty_read_on_a_marked_tab_gives_nothing_back(
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
     let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
+        [app.identity_name_for_test(), app.identity_email_for_test()]
     });
     let field = |name: &str, value: &str, placeholder: &str, state| {
         (
@@ -1344,9 +1344,6 @@ async fn settings_identity_waits_after_an_in_place_clear(
             String::from_utf8_lossy(&output.stdout).trim().to_owned()
         })
     };
-    let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
-    });
     let field = |name: &str, value: &str, placeholder: &str| {
         (
             Some(name.to_owned()),
@@ -1355,10 +1352,16 @@ async fn settings_identity_waits_after_an_in_place_clear(
             (true, false),
         )
     };
+    let read_fields = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            [app.identity_name_for_test(), app.identity_email_for_test()]
+        })
+    };
     land_identity(&app, cx, ("Before Mark", "before@example.invalid"), false);
     if shown_before {
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
         settle(&app, cx).await;
+        let fields = read_fields(cx);
         assert_eq!(
             drawn_fields(cx, &fields),
             [
@@ -1376,6 +1379,7 @@ async fn settings_identity_waits_after_an_in_place_clear(
     mark(&app, cx, None);
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
+    let fields = read_fields(cx);
     assert_eq!(
         drawn_fields(cx, &fields),
         [
@@ -1451,7 +1455,7 @@ async fn settings_identity_shown_through_an_in_place_clear_waits_for_its_read(
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
     let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
+        [app.identity_name_for_test(), app.identity_email_for_test()]
     });
     let field = |name: &str, value: &str, placeholder: &str, state| {
         (
@@ -1566,8 +1570,8 @@ fn identity_writes(
 fn identity_values(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> (String, String) {
     app.read_with(cx, |app, cx| {
         (
-            app.identity_name.read(cx).value().to_string(),
-            app.identity_email.read(cx).value().to_string(),
+            app.identity_name_for_test().read(cx).value().to_string(),
+            app.identity_email_for_test().read(cx).value().to_string(),
         )
     })
 }
@@ -1805,11 +1809,11 @@ async fn settings_identity_waits_on_a_cold_tab(cx: &mut TestAppContext, read_fai
     let (fixture, app, cx) = history_window(cx).await;
     hold_quiet_reads_for_test(&app, cx);
     let other = other_identity(&fixture);
-    let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
-    });
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name_for_test(), app.identity_email_for_test()]
+    });
     type_into(cx, &fields[0], " Typed");
     assert_eq!(
         identity_values(&app, cx),
@@ -1943,9 +1947,6 @@ struct TabSwitch {
 async fn settings_identity_waits_through_a_tab_switch(cx: &mut TestAppContext, route: TabSwitch) {
     use crate::workspace::{NOT_READ_REASON, READING_WORKING_TREE};
     let (fixture, app, cx, [root, _other]) = two_identities(cx).await;
-    let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
-    });
     if route.opened_before {
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
         settle(&app, cx).await;
@@ -1991,6 +1992,9 @@ async fn settings_identity_waits_through_a_tab_switch(cx: &mut TestAppContext, r
     };
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name_for_test(), app.identity_email_for_test()]
+    });
     let (writes, _counting) = identity_writes(&app, cx);
     assert_eq!(
         identity_values(&app, cx),
@@ -2121,11 +2125,11 @@ async fn settings_identity_waits_through_the_read_after_the_mark(
     let (fixture, app, cx) = history_window(cx).await;
     hold_quiet_reads_for_test(&app, cx);
     let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
-    let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
-    });
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name_for_test(), app.identity_email_for_test()]
+    });
     assert!(
         page_bounds(
             &app,
@@ -2230,12 +2234,12 @@ async fn settings_identity_of_another_tab_never_follows_into_a_marked_one(
 ) {
     use crate::workspace::refusals::{self, Refusal};
     let (fixture, app, cx, [root, _other]) = two_identities(cx).await;
-    let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
-    });
     switch_tab(&app, cx, 1).await;
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name_for_test(), app.identity_email_for_test()]
+    });
     if typed {
         type_into(cx, &fields[0], " Typed");
     }
@@ -2327,11 +2331,11 @@ async fn settings_identity_typed_before_a_mark_behind_history(
     let (fixture, app, cx) = history_window(cx).await;
     hold_quiet_reads_for_test(&app, cx);
     let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
-    let fields = app.read_with(cx, |app, _| {
-        [app.identity_name.clone(), app.identity_email.clone()]
-    });
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
     settle(&app, cx).await;
+    let fields = app.read_with(cx, |app, _| {
+        [app.identity_name_for_test(), app.identity_email_for_test()]
+    });
     type_into(cx, &fields[typed], "x");
     let mut expected = ["Fixturex", "fixture@example.invalid"];
     if typed == 1 {
@@ -2409,8 +2413,8 @@ async fn settings_identity_fields_leave_the_tab_order_on_a_marked_tab(cx: &mut T
     settle(&app, cx).await;
     let fields = app.read_with(cx, |app, cx| {
         [
-            app.identity_name.focus_handle(cx),
-            app.identity_email.focus_handle(cx),
+            app.identity_name_for_test().focus_handle(cx),
+            app.identity_email_for_test().focus_handle(cx),
         ]
     });
     // Whether Tab, pressed round the whole window from where focus is,
@@ -2481,9 +2485,9 @@ async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
     let edit = |cx: &mut VisualTestContext| {
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.identity_name
+                app.identity_name_for_test()
                     .update(cx, |input, cx| input.set_value("Another Name", window, cx));
-                app.identity_email.update(cx, |input, cx| {
+                app.identity_email_for_test().update(cx, |input, cx| {
                     input.set_value("another@example.invalid", window, cx)
                 });
             })
@@ -2563,8 +2567,8 @@ async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
     });
     let fields = app.read_with(cx, |app, _| {
         [
-            (app.identity_name.clone(), "Name"),
-            (app.identity_email.clone(), "Email"),
+            (app.identity_name_for_test(), "Name"),
+            (app.identity_email_for_test(), "Email"),
         ]
     });
     let mut asked = Vec::new();
@@ -2601,7 +2605,9 @@ async fn settings_identity_actions_say_the_mark(cx: &mut TestAppContext) {
         cx.simulate_click(control.center(), gpui::Modifiers::default());
     };
     let name = |cx: &mut VisualTestContext| {
-        app.read_with(cx, |app, cx| app.identity_name.read(cx).value().to_string())
+        app.read_with(cx, |app, cx| {
+            app.identity_name_for_test().read(cx).value().to_string()
+        })
     };
     click(cx, SAVE);
     app.read_with(cx, |app, _| app.operations.drain());
@@ -2676,9 +2682,9 @@ async fn settings_identity_save_pressed_before_the_mark_writes_nothing(cx: &mut 
     // the mark did not refuse would save it.
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
-            app.identity_name
+            app.identity_name_for_test()
                 .update(cx, |input, cx| input.set_value("Pressed Name", window, cx));
-            app.identity_email.update(cx, |input, cx| {
+            app.identity_email_for_test().update(cx, |input, cx| {
                 input.set_value("pressed@example.invalid", window, cx)
             });
         })

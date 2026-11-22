@@ -44,6 +44,7 @@ struct Shared {
     sequence: AtomicU64,
     state: Mutex<State>,
     changed: Condvar,
+    waiters: crate::history::CancelWaiters,
 }
 /// Explicit cancellation is separate from dropping a reply: accepted writes
 /// still run exactly once unless the user requests cancellation.
@@ -54,9 +55,18 @@ impl OperationControl {
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Release);
         self.0.changed.notify_all();
+        self.0.waiters.wake_all();
     }
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
+    }
+    /// Registers a wake callback invoked immediately if already cancelled or
+    /// when [`Self::cancel`] is called. Dropped [`crate::CancelGuard`] unregisters it.
+    pub fn on_cancel(
+        &self,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> crate::history::CancelGuard {
+        self.0.waiters.register(&self.0.cancelled, wake)
     }
     pub fn take_prompt(&self) -> Option<AuthenticationPrompt> {
         let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
