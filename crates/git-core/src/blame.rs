@@ -106,8 +106,13 @@ impl GitRepository {
                 let source = bounded_text(&bytes)?;
                 check_cancel(cancellation)?;
                 let base = if let Some(oid) = &status.head {
-                    if self.blame_blob(oid, base_path, cancellation)?.is_some() {
-                        self.committed_blame(oid, base_path, cancellation)?
+                    if let Some(base_source) = self.blame_blob(oid, base_path, cancellation)? {
+                        self.committed_blame_with_source(
+                            oid,
+                            base_path,
+                            &base_source,
+                            cancellation,
+                        )?
                     } else {
                         Vec::new()
                     }
@@ -130,7 +135,7 @@ impl GitRepository {
         oid: &str,
         path: &Path,
         cancellation: &HistoryCancellation,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<String>> {
         validate_oid(oid)?;
         validate_blame_path(path)?;
         let mut command = git_command(self.target());
@@ -160,8 +165,8 @@ impl GitRepository {
         );
         check_cancel(cancellation)?;
         let bytes = self.blob(blob)?;
-        bounded_text(&bytes)?;
-        Ok(Some(bytes))
+        let source = bounded_text(&bytes)?.to_owned();
+        Ok(Some(source))
     }
 
     fn committed_blame(
@@ -171,6 +176,16 @@ impl GitRepository {
         cancellation: &HistoryCancellation,
     ) -> Result<Vec<BlameLine>> {
         let source = self.blame_blob(oid, path, cancellation)?.context("This file is absent at the selected commit. Choose its previous revision to inspect attribution")?;
+        self.committed_blame_with_source(oid, path, &source, cancellation)
+    }
+
+    fn committed_blame_with_source(
+        &self,
+        oid: &str,
+        path: &Path,
+        source: &str,
+        cancellation: &HistoryCancellation,
+    ) -> Result<Vec<BlameLine>> {
         if source.is_empty() {
             return Ok(Vec::new());
         }
@@ -181,7 +196,7 @@ impl GitRepository {
                 "-c",
                 "blame.ignoreRevsFile=",
                 "blame",
-                "--line-porcelain",
+                "--porcelain",
                 "--no-textconv",
                 "--encoding=UTF-8",
                 oid,
@@ -189,7 +204,7 @@ impl GitRepository {
             ])
             .arg(path);
         let bytes = read_attribution(command, cancellation, MAX_BLAME_OUTPUT)?;
-        parse_blame(&bytes, bounded_text(&source)?, cancellation)
+        parse_blame(&bytes, source, cancellation)
     }
 
     /// Trace one committed line along first parents, with Git's rename/line
@@ -212,7 +227,7 @@ impl GitRepository {
             .blame_blob(oid, path, cancellation)?
             .context("The line's file is absent at this revision")?;
         ensure!(
-            line <= bounded_text(&source)?.split_inclusive('\n').count(),
+            line <= source.split_inclusive('\n').count(),
             "The selected line no longer exists at this revision"
         );
         let mut range = OsString::from(format!("{line},{line}:"));
@@ -337,6 +352,13 @@ fn map_working_lines(
     Ok(lines)
 }
 
+struct CachedCommit {
+    author: String,
+    timestamp: i64,
+    subject: String,
+    attribution: Arc<Attribution>,
+}
+
 fn parse_blame(
     bytes: &[u8],
     source: &str,
@@ -345,18 +367,24 @@ fn parse_blame(
     let mut records = bytes.split(|byte| *byte == b'\n').peekable();
     let mut source_lines = source.split_inclusive('\n');
     let mut lines = Vec::new();
+    let mut commits: HashMap<String, CachedCommit> = HashMap::new();
     let mut interned: HashMap<(String, PathBuf), Arc<Attribution>> = HashMap::new();
     while let Some(header) = records.next() {
         if header.is_empty() && records.peek().is_none() {
             break;
         }
         check_cancel(cancellation)?;
-        let fields: Vec<_> = header.split(|byte| *byte == b' ').collect();
-        ensure!(fields.len() >= 3, "Malformed attribution header");
-        let oid = std::str::from_utf8(fields[0])?.to_owned();
-        validate_oid(&oid)?;
-        let original_line = std::str::from_utf8(fields[1])?.parse()?;
-        let final_line: usize = std::str::from_utf8(fields[2])?.parse()?;
+        let mut fields = header.split(|byte| *byte == b' ');
+        let (Some(oid_bytes), Some(orig_bytes), Some(final_bytes)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            anyhow::bail!("Malformed attribution header");
+        };
+        let _group_count = fields.next();
+        ensure!(fields.next().is_none(), "Malformed attribution header");
+        let oid_str = std::str::from_utf8(oid_bytes)?;
+        let original_line = std::str::from_utf8(orig_bytes)?.parse()?;
+        let final_line: usize = std::str::from_utf8(final_bytes)?.parse()?;
         ensure!(
             final_line == lines.len() + 1,
             "Attribution line sequence changed"
@@ -373,30 +401,67 @@ fn parse_blame(
             }
             if let Some(value) = record.strip_prefix(b"author ") {
                 author = Some(text(value));
-            }
-            if let Some(value) = record.strip_prefix(b"author-time ") {
+            } else if let Some(value) = record.strip_prefix(b"author-time ") {
                 timestamp = Some(std::str::from_utf8(value)?.parse()?);
-            }
-            if let Some(value) = record.strip_prefix(b"summary ") {
+            } else if let Some(value) = record.strip_prefix(b"summary ") {
                 subject = Some(text(value));
-            }
-            if let Some(value) = record.strip_prefix(b"filename ") {
+            } else if let Some(value) = record.strip_prefix(b"filename ") {
                 path = Some(porcelain_path(value)?);
             }
         }
         ensure!(ended, "Incomplete attribution record");
-        let path = path.context("Missing attribution path")?;
-        let attribution = Attribution {
-            oid: oid.clone(),
-            path: path.clone(),
-            author: author.context("Missing attribution author")?,
-            timestamp: timestamp.context("Missing attribution time")?,
-            subject: subject.context("Missing attribution subject")?,
+        let attribution = if let Some(cached) = commits.get(oid_str) {
+            if author.is_none()
+                && timestamp.is_none()
+                && subject.is_none()
+                && path.as_ref().is_none_or(|p| p == &cached.attribution.path)
+            {
+                Arc::clone(&cached.attribution)
+            } else {
+                let resolved_path = path.unwrap_or_else(|| cached.attribution.path.clone());
+                let oid = oid_str.to_owned();
+                let resolved_author = author.unwrap_or_else(|| cached.author.clone());
+                let resolved_timestamp = timestamp.unwrap_or(cached.timestamp);
+                let resolved_subject = subject.unwrap_or_else(|| cached.subject.clone());
+                interned
+                    .entry((oid.clone(), resolved_path.clone()))
+                    .or_insert_with(|| {
+                        Arc::new(Attribution {
+                            oid,
+                            path: resolved_path,
+                            author: resolved_author,
+                            timestamp: resolved_timestamp,
+                            subject: resolved_subject,
+                        })
+                    })
+                    .clone()
+            }
+        } else {
+            validate_oid(oid_str)?;
+            let oid = oid_str.to_owned();
+            let path = path.context("Missing attribution path")?;
+            let author = author.context("Missing attribution author")?;
+            let timestamp = timestamp.context("Missing attribution time")?;
+            let subject = subject.context("Missing attribution subject")?;
+            let arc = Arc::new(Attribution {
+                oid: oid.clone(),
+                path: path.clone(),
+                author: author.clone(),
+                timestamp,
+                subject: subject.clone(),
+            });
+            interned.insert((oid.clone(), path), Arc::clone(&arc));
+            commits.insert(
+                oid,
+                CachedCommit {
+                    author,
+                    timestamp,
+                    subject,
+                    attribution: Arc::clone(&arc),
+                },
+            );
+            arc
         };
-        let attribution = interned
-            .entry((oid, path))
-            .or_insert_with(|| Arc::new(attribution))
-            .clone();
         lines.push(BlameLine {
             text: source_lines
                 .next()

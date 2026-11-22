@@ -194,17 +194,47 @@ impl GitRepository {
     /// Git directory. This never runs a hook, filter, or network operation.
     pub fn operation_state(&self) -> Result<Option<OperationState>> {
         ensure!(!self.bare, "A bare repository has no operation in progress");
-        let directory = path_from_bytes(trim_line(&run_git(
-            self.target(),
-            &["rev-parse", "--absolute-git-dir"],
-        )?));
+        let directory = if matches!(self.verify_at_path()?, FoundAtPath::Same) {
+            self.git_dir().to_owned()
+        } else {
+            path_from_bytes(trim_line(&run_git(
+                self.target(),
+                &["rev-parse", "--absolute-git-dir"],
+            )?))
+        };
+        let rebase = if operation_directory(&directory, "rebase-merge")? {
+            Some("rebase-merge")
+        } else if operation_directory(&directory, "rebase-apply")? {
+            Some("rebase-apply")
+        } else {
+            None
+        };
+        let merge_head = operation_file(&directory, Path::new("MERGE_HEAD"))?;
+        let cherry_pick_head = operation_file(&directory, Path::new("CHERRY_PICK_HEAD"))?;
+        let revert_head = operation_file(&directory, Path::new("REVERT_HEAD"))?;
+        let sequencer_todo = operation_file(&directory, Path::new("sequencer/todo"))?;
+        if rebase.is_none()
+            && merge_head.is_none()
+            && cherry_pick_head.is_none()
+            && revert_head.is_none()
+            && sequencer_todo.is_none()
+        {
+            return Ok(None);
+        }
         let mut files = Vec::new();
+        for (name, existing) in [
+            ("MERGE_HEAD", merge_head),
+            ("CHERRY_PICK_HEAD", cherry_pick_head),
+            ("REVERT_HEAD", revert_head),
+            ("sequencer/todo", sequencer_todo),
+        ] {
+            if let Some(bytes) = existing {
+                files.push((name, bytes));
+            }
+        }
         for path in [
-            "MERGE_HEAD",
             "MERGE_MSG",
             "AUTO_MERGE",
-            "CHERRY_PICK_HEAD",
-            "REVERT_HEAD",
             "ORIG_HEAD",
             "rebase-merge/head-name",
             "rebase-merge/onto",
@@ -225,7 +255,6 @@ impl GitRepository {
             "rebase-apply/next",
             "rebase-apply/last",
             "sequencer/head",
-            "sequencer/todo",
         ] {
             if let Some(bytes) = operation_file(&directory, Path::new(path))? {
                 files.push((path, bytes));
@@ -236,13 +265,6 @@ impl GitRepository {
                 .iter()
                 .find(|(path, _)| *path == name)
                 .map(|(_, bytes)| text(trim_line(bytes)))
-        };
-        let rebase = if operation_directory(&directory, "rebase-merge")? {
-            Some("rebase-merge")
-        } else if operation_directory(&directory, "rebase-apply")? {
-            Some("rebase-apply")
-        } else {
-            None
         };
         let kind = if rebase.is_some() {
             OperationKind::Rebase

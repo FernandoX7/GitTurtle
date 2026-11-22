@@ -535,6 +535,12 @@ impl GitTurtle {
             } else {
                 self.read_selected_preview(window, cx);
             }
+        } else if self.page == AppPage::Repository
+            && self.mode != WorkspaceMode::History
+            && !self.blame.is_visible()
+            && self.content.is_some()
+        {
+            self.prepare_editor(false, window, cx);
         }
         let owner = cx.entity().downgrade();
         window.on_next_frame(move |window, cx| {

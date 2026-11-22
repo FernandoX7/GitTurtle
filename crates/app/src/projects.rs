@@ -51,6 +51,16 @@ enum ProjectMode {
     Create,
 }
 
+/// Clone/Create form inputs, constructed lazily when the user enters Clone or
+/// Create mode so launching directly into a repository or browsing recent
+/// projects allocates none of them.
+struct FormInputs {
+    source: Entity<InputState>,
+    parent: Entity<InputState>,
+    name: Entity<InputState>,
+    branch: Entity<InputState>,
+}
+
 pub struct ProjectHub {
     recent: Vec<PathBuf>,
     names: HashMap<PathBuf, String>,
@@ -60,11 +70,8 @@ pub struct ProjectHub {
     /// The recent list's count and its accessible label, with what they
     /// were built from ([`Self::count_text`]).
     count_text: RefCell<Option<CountText>>,
-    search: Entity<InputState>,
-    source: Entity<InputState>,
-    parent: Entity<InputState>,
-    name: Entity<InputState>,
-    branch: Entity<InputState>,
+    search: Option<Entity<InputState>>,
+    form_inputs: Option<FormInputs>,
     branch_edited: bool,
     pending_default_branch: Option<String>,
     // Displaying a path must not lose filename bytes selected by the native picker.
@@ -115,36 +122,20 @@ impl ProjectHub {
         recent: Vec<PathBuf>,
         names: HashMap<PathBuf, String>,
         default_branch: String,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Find a project by name or folder"));
-        let source =
-            cx.new(|cx| InputState::new(window, cx).placeholder("https://host/owner/project.git"));
-        let parent = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Choose where your project will live")
-        });
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("my-project"));
-        let branch = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("main")
-                .default_value(default_branch)
-        });
         let recent = unique_recent(recent);
-        let mut this = Self {
+        Self {
             filtered: recent.clone(),
             recent,
             names,
             row_text: RefCell::default(),
             count_text: RefCell::default(),
-            search: search.clone(),
-            source: source.clone(),
-            parent: parent.clone(),
-            name: name.clone(),
-            branch: branch.clone(),
+            search: None,
+            form_inputs: None,
             branch_edited: false,
-            pending_default_branch: None,
+            pending_default_branch: Some(default_branch),
             picked_parent: None,
             suggested_name: None,
             mode: ProjectMode::Open,
@@ -166,8 +157,16 @@ impl ProjectHub {
             parent_field_focus: cx.focus_handle(),
             submit_focus: cx.focus_handle(),
             subscriptions: Vec::new(),
-        };
-        this.subscriptions.push(cx.subscribe_in(
+        }
+    }
+
+    fn ensure_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some(search) = &self.search {
+            return search.clone();
+        }
+        let search = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Find a project by name or folder"));
+        self.subscriptions.push(cx.subscribe_in(
             &search,
             window,
             // Return opens from the hub's key-down listener
@@ -179,34 +178,79 @@ impl ProjectHub {
                 }
             },
         ));
-        this.subscriptions.push(
-            cx.subscribe_in(&source, window, |this, _, event, window, cx| {
-                if let InputEvent::Change = event {
-                    this.error = None;
-                    this.suggest_project_name(window, cx);
-                    cx.notify();
-                }
-            }),
-        );
-        for input in [&parent, &name] {
-            this.subscriptions
-                .push(cx.subscribe_in(input, window, |this, _, event, _, cx| {
+        self.search = Some(search.clone());
+        search
+    }
+
+    fn ensure_form_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &FormInputs {
+        if self.form_inputs.is_none() {
+            let source = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("https://host/owner/project.git")
+            });
+            let parent = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Choose where your project will live")
+            });
+            let name = cx.new(|cx| InputState::new(window, cx).placeholder("my-project"));
+            let default_branch = self
+                .pending_default_branch
+                .take()
+                .unwrap_or_else(|| "main".into());
+            let branch = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("main")
+                    .default_value(default_branch)
+            });
+            self.subscriptions.push(cx.subscribe_in(
+                &source,
+                window,
+                |this, _, event, window, cx| {
                     if let InputEvent::Change = event {
+                        this.error = None;
+                        this.suggest_project_name(window, cx);
+                        cx.notify();
+                    }
+                },
+            ));
+            for input in [&parent, &name] {
+                self.subscriptions
+                    .push(cx.subscribe_in(input, window, |this, _, event, _, cx| {
+                        if let InputEvent::Change = event {
+                            this.error = None;
+                            cx.notify();
+                        }
+                    }));
+            }
+            self.subscriptions
+                .push(cx.subscribe_in(&branch, window, |this, _, event, _, cx| {
+                    if let InputEvent::Change = event {
+                        this.branch_edited = true;
+                        this.pending_default_branch = None;
                         this.error = None;
                         cx.notify();
                     }
                 }));
+            self.form_inputs = Some(FormInputs {
+                source,
+                parent,
+                name,
+                branch,
+            });
         }
-        this.subscriptions
-            .push(cx.subscribe_in(&branch, window, |this, _, event, _, cx| {
-                if let InputEvent::Change = event {
-                    this.branch_edited = true;
-                    this.pending_default_branch = None;
-                    this.error = None;
-                    cx.notify();
-                }
-            }));
-        this
+        self.form_inputs
+            .as_ref()
+            .expect("form_inputs was just initialized")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inputs_allocated(&self) -> bool {
+        self.search.is_some() || self.form_inputs.is_some()
+    }
+
+    #[cfg(test)]
+    fn form_for_test(&self) -> &FormInputs {
+        self.form_inputs
+            .as_ref()
+            .expect("Projects form inputs initialized")
     }
 
     pub fn set_recent(&mut self, recent: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -390,7 +434,8 @@ impl ProjectHub {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.search.update(cx, |input, cx| {
+        let search = self.ensure_search(window, cx);
+        search.update(cx, |input, cx| {
             input.set_value(query.to_owned(), window, cx)
         });
         self.filter_recent(cx);
@@ -433,7 +478,11 @@ impl ProjectHub {
     }
 
     fn filter_recent(&mut self, cx: &mut Context<Self>) {
-        let query = self.search.read(cx).value().trim().to_lowercase();
+        let query = self
+            .search
+            .as_ref()
+            .map(|search| search.read(cx).value().trim().to_lowercase())
+            .unwrap_or_default();
         self.filtered = self
             .recent
             .iter()
@@ -451,7 +500,8 @@ impl ProjectHub {
         if self.unavailable() {
             return;
         }
-        self.search.update(cx, |input, cx| {
+        let search = self.ensure_search(window, cx);
+        search.update(cx, |input, cx| {
             input.set_value("", window, cx);
             input.focus(window, cx);
         });
@@ -459,13 +509,16 @@ impl ProjectHub {
     }
 
     fn suggest_project_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self.name.read(cx).value();
+        let Some(form) = &self.form_inputs else {
+            return;
+        };
+        let (source, name_input) = (form.source.clone(), form.name.clone());
+        let current = name_input.read(cx).value();
         if !current.is_empty() && self.suggested_name.as_deref() != Some(current.as_ref()) {
             return;
         }
-        if let Some(name) = suggested_project_name(self.source.read(cx).value().as_ref()) {
-            self.name
-                .update(cx, |input, cx| input.set_value(name.clone(), window, cx));
+        if let Some(name) = suggested_project_name(source.read(cx).value().as_ref()) {
+            name_input.update(cx, |input, cx| input.set_value(name.clone(), window, cx));
             self.suggested_name = Some(name);
         }
     }
@@ -498,13 +551,20 @@ impl ProjectHub {
     /// The recent search's focus, for a test.
     #[cfg(test)]
     pub(crate) fn search_focus(&self, cx: &App) -> FocusHandle {
-        self.search.read(cx).focus_handle(cx)
+        self.search
+            .as_ref()
+            .expect("Projects search initialized")
+            .read(cx)
+            .focus_handle(cx)
     }
 
     /// The recent search, for a test to compose in.
     #[cfg(test)]
     pub(crate) fn search_field(&self) -> Entity<InputState> {
-        self.search.clone()
+        self.search
+            .as_ref()
+            .expect("Projects search initialized")
+            .clone()
     }
 
     /// Whether the selected action tab holds focus.
@@ -526,9 +586,18 @@ impl ProjectHub {
         self.mode = mode;
         self.error = None;
         match mode {
-            ProjectMode::Open => self.search.update(cx, |input, cx| input.focus(window, cx)),
-            ProjectMode::Clone => self.source.update(cx, |input, cx| input.focus(window, cx)),
-            ProjectMode::Create => self.name.update(cx, |input, cx| input.focus(window, cx)),
+            ProjectMode::Open => {
+                let search = self.ensure_search(window, cx);
+                search.update(cx, |input, cx| input.focus(window, cx));
+            }
+            ProjectMode::Clone => {
+                let source = self.ensure_form_inputs(window, cx).source.clone();
+                source.update(cx, |input, cx| input.focus(window, cx));
+            }
+            ProjectMode::Create => {
+                let name = self.ensure_form_inputs(window, cx).name.clone();
+                name.update(cx, |input, cx| input.focus(window, cx));
+            }
         }
         cx.notify();
     }
@@ -538,7 +607,8 @@ impl ProjectHub {
     /// the search: the Enter going down then commits the composition.
     fn open_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui::EntityInputHandler as _;
-        let composing = self.search.update(cx, |search, cx| {
+        let search = self.ensure_search(window, cx);
+        let composing = search.update(cx, |search, cx| {
             search.marked_text_range(window, cx).is_some()
         });
         if !composing && let Some(path) = self.filtered.first().cloned() {
@@ -599,11 +669,13 @@ impl ProjectHub {
                             this.emit_operation(ProjectEvent::Open(path), cx);
                         } else {
                             let display = path.to_string_lossy().into_owned();
-                            this.parent.update(cx, |input, cx| {
+                            let form = this.ensure_form_inputs(window, cx);
+                            let (parent, name) = (form.parent.clone(), form.name.clone());
+                            parent.update(cx, |input, cx| {
                                 input.set_value(display.clone(), window, cx)
                             });
                             this.picked_parent = Some((display, path));
-                            this.name.update(cx, |input, cx| input.focus(window, cx));
+                            name.update(cx, |input, cx| input.focus(window, cx));
                         }
                     }
                     Ok(None) => {}
@@ -616,14 +688,17 @@ impl ProjectHub {
     }
 
     fn destination(&self, cx: &App) -> Result<PathBuf, String> {
-        let value = self.parent.read(cx).value();
+        let Some(form) = &self.form_inputs else {
+            return Err("Choose a destination folder.".into());
+        };
+        let value = form.parent.read(cx).value();
         let parent = self
             .picked_parent
             .as_ref()
             .filter(|(display, _)| display == value.as_ref())
             .map(|(_, path)| path.clone())
             .unwrap_or_else(|| PathBuf::from(value.as_ref()));
-        validate_destination(&parent, self.name.read(cx).value().as_ref())
+        validate_destination(&parent, form.name.read(cx).value().as_ref())
     }
 
     /// Return in the recent search opens the first project it lists
@@ -667,26 +742,32 @@ impl ProjectHub {
         {
             return;
         }
-        let search = self.search.read(cx).focus_handle(cx);
-        let Some(field) = [
-            &self.search,
-            &self.source,
-            &self.parent,
-            &self.name,
-            &self.branch,
-        ]
-        .into_iter()
-        .map(|field| field.read(cx).focus_handle(cx))
-        .find(|field| field.is_focused(window)) else {
+        let search = self
+            .search
+            .as_ref()
+            .map(|field| field.read(cx).focus_handle(cx));
+        let mut candidates: [Option<FocusHandle>; 5] = [search.clone(), None, None, None, None];
+        if let Some(form) = &self.form_inputs {
+            candidates[1] = Some(form.source.read(cx).focus_handle(cx));
+            candidates[2] = Some(form.parent.read(cx).focus_handle(cx));
+            candidates[3] = Some(form.name.read(cx).focus_handle(cx));
+            candidates[4] = Some(form.branch.read(cx).focus_handle(cx));
+        }
+        let Some(field) = candidates
+            .into_iter()
+            .flatten()
+            .find(|field| field.is_focused(window))
+        else {
             return;
         };
-        if (field == search && modifiers.shift)
+        let is_search = search.as_ref() == Some(&field);
+        if (is_search && modifiers.shift)
             || gpui_kit::base::enter_press_is_repeat(window, cx)
             || !gpui_kit::base::enter_press_began_on(&field, window, cx)
         {
             return;
         }
-        if field == search {
+        if is_search {
             self.open_first_match(window, cx);
         } else {
             self.submit(cx);
@@ -697,11 +778,14 @@ impl ProjectHub {
         if self.unavailable() || self.mode == ProjectMode::Open {
             return;
         }
+        let Some(form) = &self.form_inputs else {
+            return;
+        };
         let operation = (|| {
             let destination = self.destination(cx)?;
             match self.mode {
                 ProjectMode::Clone => {
-                    let source = self.source.read(cx).value().trim().to_string();
+                    let source = form.source.read(cx).value().trim().to_string();
                     validate_source(&source)?;
                     Ok(ProjectEvent::Clone {
                         source,
@@ -709,7 +793,7 @@ impl ProjectHub {
                     })
                 }
                 ProjectMode::Create => {
-                    let branch = self.branch.read(cx).value().trim().to_string();
+                    let branch = form.branch.read(cx).value().trim().to_string();
                     validate_branch(&branch)?;
                     Ok(ProjectEvent::Create {
                         destination,
@@ -863,8 +947,11 @@ impl ProjectHub {
     }
 
     fn render_recent(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+        let Some(search) = &self.search else {
+            return div().into_any_element();
+        };
         let colors = Theme::global(cx).colors;
-        let query = self.search.read(cx).value();
+        let query = search.read(cx).value();
         let searching = !query.trim().is_empty();
         let count = self.count_text(searching);
         // The list clips its rows to its bounds, so it keeps the focus ring's
@@ -905,7 +992,7 @@ impl ProjectHub {
                             .text_color(colors.muted_foreground),
                     ),
             )
-            .child(Input::new(&self.search).aria_label("Find a recent project by name or folder").disabled(self.unavailable()).prefix(Icon::default().path("icons/search.svg").size(px(15.)))
+            .child(Input::new(search).aria_label("Find a recent project by name or folder").disabled(self.unavailable()).prefix(Icon::default().path("icons/search.svg").size(px(15.)))
                 .when(!query.is_empty(), |input| input.suffix(
                     Button::new("hub-clear-search-input")
                         .icon(Icon::default().path("icons/close.svg"))
@@ -1304,6 +1391,9 @@ impl ProjectHub {
                     )
             })
             .when(self.mode != ProjectMode::Open, |panel| {
+                let Some(form) = &self.form_inputs else {
+                    return panel;
+                };
                 panel
                     .child(
                         div()
@@ -1313,14 +1403,14 @@ impl ProjectHub {
                             .flex()
                             .flex_col()
                             .gap_4()
-                            .when(self.mode == ProjectMode::Clone, |form| {
-                                form.child(self.field(
+                            .when(self.mode == ProjectMode::Clone, |form_el| {
+                                form_el.child(self.field(
                                     "Repository URL or local path",
-                                    &self.source,
+                                    &form.source,
                                     cx,
                                 ))
                             })
-                            .child(self.field("Project folder name", &self.name, cx))
+                            .child(self.field("Project folder name", &form.name, cx))
                             .child(
                                 div()
                                     .on_children_prepainted(
@@ -1344,7 +1434,7 @@ impl ProjectHub {
                                             .gap_2()
                                             .child(
                                                 div().flex_1().min_w_0().child(
-                                                    Input::new(&self.parent)
+                                                    Input::new(&form.parent)
                                                         .aria_label("Parent folder")
                                                         .disabled(self.unavailable()),
                                                 ),
@@ -1366,8 +1456,8 @@ impl ProjectHub {
                                             ),
                                     ),
                             )
-                            .when(self.mode == ProjectMode::Create, |form| {
-                                form.child(self.field("Initial branch", &self.branch, cx))
+                            .when(self.mode == ProjectMode::Create, |form_el| {
+                                form_el.child(self.field("Initial branch", &form.branch, cx))
                             }),
                     )
                     .when_some(self.destination(cx).ok(), |panel, destination| {
@@ -1641,11 +1731,17 @@ fn reveal_feedback(
 
 impl Render for ProjectHub {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_search(window, cx);
+        if self.mode != ProjectMode::Open {
+            self.ensure_form_inputs(window, cx);
+        }
         // A form control focus has moved into scrolls into view in this
         // frame.
         self.body.reveal(window, cx);
-        if let Some(branch) = self.pending_default_branch.take() {
-            self.branch
+        if let Some(form) = &self.form_inputs
+            && let Some(branch) = self.pending_default_branch.take()
+        {
+            form.branch
                 .update(cx, |input, cx| input.set_value(branch, window, cx));
         }
         let colors = Theme::global(cx).colors;
@@ -2401,28 +2497,52 @@ mod tests {
                 cx.simulate_keystrokes("tab");
                 settle(cx);
                 cx.update(|window, cx| {
-                    assert!(hub.read(cx).name.focus_handle(cx).is_focused(window))
+                    assert!(
+                        hub.read(cx)
+                            .form_for_test()
+                            .name
+                            .focus_handle(cx)
+                            .is_focused(window)
+                    )
                 });
                 assert_visible(cx, &hub, "Project folder name");
             }
             cx.simulate_keystrokes("tab");
             settle(cx);
             cx.update(|window, cx| {
-                assert!(hub.read(cx).parent.focus_handle(cx).is_focused(window))
+                assert!(
+                    hub.read(cx)
+                        .form_for_test()
+                        .parent
+                        .focus_handle(cx)
+                        .is_focused(window)
+                )
             });
             assert_visible(cx, &hub, "project-parent-field");
             cx.simulate_keystrokes("tab");
             settle(cx);
             cx.update(|window, cx| {
                 assert!(hub.read(cx).parent_field_focus.contains_focused(window, cx));
-                assert!(!hub.read(cx).parent.focus_handle(cx).is_focused(window));
+                assert!(
+                    !hub.read(cx)
+                        .form_for_test()
+                        .parent
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
             });
             assert_visible(cx, &hub, "project-parent-field");
             if mode == ProjectMode::Create {
                 cx.simulate_keystrokes("tab");
                 settle(cx);
                 cx.update(|window, cx| {
-                    assert!(hub.read(cx).branch.focus_handle(cx).is_focused(window))
+                    assert!(
+                        hub.read(cx)
+                            .form_for_test()
+                            .branch
+                            .focus_handle(cx)
+                            .is_focused(window)
+                    )
                 });
                 assert_visible(cx, &hub, "Initial branch");
             }
@@ -2587,7 +2707,15 @@ mod tests {
             Modifiers::default(),
         );
         settle(cx);
-        cx.update(|window, cx| assert!(hub.read(cx).name.focus_handle(cx).is_focused(window)));
+        cx.update(|window, cx| {
+            assert!(
+                hub.read(cx)
+                    .form_for_test()
+                    .name
+                    .focus_handle(cx)
+                    .is_focused(window)
+            )
+        });
         assert_clear(cx, &hub, "a click");
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
@@ -2639,7 +2767,7 @@ mod tests {
         // field, the press moved no focus and revealed nothing, whatever the
         // rule.
         cx.update(|window, cx| {
-            let parent = hub.read(cx).parent.clone();
+            let parent = hub.read(cx).form_for_test().parent.clone();
             parent.update(cx, |input, cx| input.focus(window, cx));
         });
         settle(cx);
@@ -2670,10 +2798,10 @@ mod tests {
         let low = point(field.center().x, field.bottom() - px(20.));
         assert!(low.y < viewport.bottom(), "{low:?} lies in {viewport:?}");
         cx.update(|window, cx| {
-            let hub = hub.read(cx);
+            let form = hub.read(cx).form_for_test();
             assert!(
-                hub.parent.focus_handle(cx).is_focused(window)
-                    && !hub.name.focus_handle(cx).is_focused(window),
+                form.parent.focus_handle(cx).is_focused(window)
+                    && !form.name.focus_handle(cx).is_focused(window),
                 "focus lies in the Parent folder field until the press"
             )
         });
@@ -2682,7 +2810,11 @@ mod tests {
         settle(cx);
         cx.update(|window, cx| {
             assert!(
-                hub.read(cx).name.focus_handle(cx).is_focused(window),
+                hub.read(cx)
+                    .form_for_test()
+                    .name
+                    .focus_handle(cx)
+                    .is_focused(window),
                 "the press focuses the field"
             )
         });
@@ -2700,13 +2832,23 @@ mod tests {
         cx.simulate_keystrokes("shift-tab");
         settle(cx);
         cx.update(|window, cx| {
-            assert!(!hub.read(cx).name.focus_handle(cx).is_focused(window));
+            assert!(
+                !hub.read(cx)
+                    .form_for_test()
+                    .name
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
         });
         cx.simulate_keystrokes("tab");
         settle(cx);
         cx.update(|window, cx| {
             assert!(
-                hub.read(cx).name.focus_handle(cx).is_focused(window),
+                hub.read(cx)
+                    .form_for_test()
+                    .name
+                    .focus_handle(cx)
+                    .is_focused(window),
                 "Tab returns to the field"
             )
         });
@@ -2729,10 +2871,12 @@ mod tests {
             cx.update(|window, cx| {
                 hub.update(cx, |hub, cx| {
                     hub.change_mode(mode, window, cx);
-                    hub.parent.update(cx, |input, cx| {
+                    let form = hub.ensure_form_inputs(window, cx);
+                    let (parent, name) = (form.parent.clone(), form.name.clone());
+                    parent.update(cx, |input, cx| {
                         input.set_value("/fixture/projects", window, cx)
                     });
-                    hub.name.update(cx, |input, cx| {
+                    name.update(cx, |input, cx| {
                         input.set_value("A multilingual 项目", window, cx)
                     });
                 });
@@ -2740,18 +2884,19 @@ mod tests {
             });
             let inputs = hub.read_with(cx, |hub, _| {
                 let mut inputs = vec![(
-                    hub.search.clone(),
+                    hub.search_field(),
                     "Find a recent project by name or folder",
                 )];
                 if mode != ProjectMode::Open {
+                    let form = hub.form_for_test();
                     inputs.extend([
-                        (hub.parent.clone(), "Parent folder"),
-                        (hub.name.clone(), "Project folder name"),
+                        (form.parent.clone(), "Parent folder"),
+                        (form.name.clone(), "Project folder name"),
                     ]);
                     inputs.push(if mode == ProjectMode::Clone {
-                        (hub.source.clone(), "Repository URL or local path")
+                        (form.source.clone(), "Repository URL or local path")
                     } else {
-                        (hub.branch.clone(), "Initial branch")
+                        (form.branch.clone(), "Initial branch")
                     });
                 }
                 inputs
@@ -3082,9 +3227,7 @@ mod tests {
         let search = |query: &'static str, cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
                 hub.update(cx, |hub, cx| {
-                    hub.search
-                        .update(cx, |input, cx| input.set_value(query, window, cx));
-                    hub.filter_recent(cx);
+                    hub.search_recent(query, window, cx);
                 })
             });
             draw(cx);
@@ -3235,9 +3378,7 @@ mod tests {
         ] {
             cx.update(|window, cx| {
                 hub.update(cx, |hub, cx| {
-                    hub.search
-                        .update(cx, |input, cx| input.set_value(query, window, cx));
-                    hub.filter_recent(cx);
+                    hub.search_recent(query, window, cx);
                     assert_eq!(hub.filtered, expected, "{query}");
                 });
             });
@@ -3536,10 +3677,10 @@ mod tests {
     }
 
     impl FailingHub {
-        const SOURCE: Field = |hub| &hub.source;
-        const PARENT: Field = |hub| &hub.parent;
-        const NAME: Field = |hub| &hub.name;
-        const BRANCH: Field = |hub| &hub.branch;
+        const SOURCE: Field = |hub| &hub.form_for_test().source;
+        const PARENT: Field = |hub| &hub.form_for_test().parent;
+        const NAME: Field = |hub| &hub.form_for_test().name;
+        const BRANCH: Field = |hub| &hub.form_for_test().branch;
 
         fn new(cx: &mut TestAppContext) -> (Self, &mut VisualTestContext) {
             Self::with_recent(cx, vec![])
@@ -3584,6 +3725,12 @@ mod tests {
                 attempts,
                 _failing: failing,
             };
+            cx.update(|window, cx| {
+                this.hub.update(cx, |hub, cx| {
+                    hub.ensure_search(window, cx);
+                    hub.ensure_form_inputs(window, cx);
+                });
+            });
             this.set(cx, Self::SOURCE, "https://example.invalid/demo.git");
             this.set(cx, Self::NAME, "demo");
             this.set(cx, Self::PARENT, "/srv/projects");
@@ -3840,7 +3987,7 @@ mod tests {
         use crate::branch_actions::tests::REPEATS;
         let recent = vec![PathBuf::from("/srv/projects/demo")];
         let (hub, cx) = FailingHub::with_recent(cx, recent);
-        let search: Field = |hub| &hub.search;
+        let search: Field = |hub| hub.search.as_ref().expect("Projects search initialized");
         hub.focus(cx, ProjectMode::Open, search);
         for press in ["the first press", "a new press after the key-up"] {
             let before = hub.seen(cx);

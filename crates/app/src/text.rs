@@ -867,11 +867,11 @@ pub fn decorated_patch_content() -> crate::worker::Content {
     let old = "context\nold line\ntail\n".to_owned();
     let new = "context\nnew line\ntail\n".to_owned();
     let presentation = Arc::new(PatchPresentation::prepare(&patch));
-    let split = Arc::new(crate::split_diff::SplitPresentation::prepare(
+    let split = Some(Arc::new(crate::split_diff::SplitPresentation::prepare(
         &old,
         &new,
         &presentation,
-    ));
+    )));
     crate::worker::Content::Text {
         diagrams: None,
         markdown: None,

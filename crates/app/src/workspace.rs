@@ -3658,6 +3658,7 @@ impl GitTurtle {
                     .work_status
                     .as_ref()
                     .and_then(|status| status.head.clone()),
+                prepare_split: self.text_mode == TextMode::Split,
             },
             "Reading working comparison…",
             window,
@@ -3732,6 +3733,7 @@ impl GitTurtle {
                 entry,
                 area,
                 head,
+                prepare_split: self.text_mode == TextMode::Split,
             },
             "Reading working comparison…",
             window,
@@ -3814,9 +3816,13 @@ impl GitTurtle {
             crate::text::refresh_editor(editor, new, None, window, cx);
         }
         if let Some(split_view) = &self.split_view {
-            split_view.update(cx, |split_view, cx| {
-                split_view.refresh(Arc::clone(split), window, cx)
-            });
+            if let Some(split) = split {
+                split_view.update(cx, |split_view, cx| {
+                    split_view.refresh(Arc::clone(split), window, cx)
+                });
+            } else {
+                self.split_view = None;
+            }
         }
         let decorations = self.patch_decoration.clone();
         view.update(cx, |view, cx| {

@@ -437,6 +437,7 @@ impl GitTurtle {
                     area,
                     file: self.files.first().cloned(),
                     content: self.content.clone(),
+                    prepare_split: self.text_mode == TextMode::Split,
                 })
             })
             .flatten();
@@ -815,7 +816,11 @@ impl GitTurtle {
                     });
                 }
                 if let Some(view) = &self.split_view {
-                    view.update(cx, |view, cx| view.refresh(Arc::clone(split), window, cx));
+                    if let Some(split) = split {
+                        view.update(cx, |view, cx| view.refresh(Arc::clone(split), window, cx));
+                    } else {
+                        self.split_view = None;
+                    }
                 }
             }
         } else {

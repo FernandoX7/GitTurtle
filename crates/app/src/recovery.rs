@@ -2802,6 +2802,7 @@ impl StashBrowser {
             origins: Default::default(),
             repo: self.repository.clone(),
             file,
+            prepare_split: false,
         });
         self.preview_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;

@@ -93,8 +93,9 @@ impl DirectoryIdentity {
 
 impl RepositoryIdentity {
     pub(super) fn capture(repository: &GitRepository) -> Result<Self> {
-        let (private, common) = repository.git_directories()?;
-        let directories = [repository.path(), &private, &common]
+        let private = repository.git_dir();
+        let common = repository.common_dir();
+        let directories = [repository.path(), private, common]
             .into_iter()
             .map(|path| Ok((path.to_owned(), DirectoryIdentity::read(path)?)))
             .collect::<Result<_>>()?;

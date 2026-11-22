@@ -548,13 +548,14 @@ pub fn capture_assets(
                             })?;
                             check()?;
                             let bytes = decoded.rgba.len();
-                            let render = worker::render_image(&decoded)?;
+                            let (width, height) = (decoded.width, decoded.height);
+                            let render = worker::render_image(decoded)?;
                             check()?;
                             pixel_budget -= bytes;
                             Ok::<_, anyhow::Error>(rich_preview::Page {
                                 render: Some(render),
-                                width: decoded.width,
-                                height: decoded.height,
+                                width,
+                                height,
                                 caption: None,
                                 error: None,
                             })
@@ -697,11 +698,8 @@ impl<F: Fn() -> anyhow::Result<()>> Builder<'_, F> {
                             self.diagrams += 1;
                             for diagram in document.diagrams {
                                 let (render, width, height) = if let Some(image) = diagram.image {
-                                    (
-                                        Some(worker::render_image(&image)?),
-                                        image.width,
-                                        image.height,
-                                    )
+                                    let (width, height) = (image.width, image.height);
+                                    (Some(worker::render_image(image)?), width, height)
                                 } else {
                                     (None, 1, 1)
                                 };

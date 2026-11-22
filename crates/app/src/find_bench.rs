@@ -203,6 +203,8 @@ fn show(
             cx.notify();
         })
     });
+    app.read_with(cx, |app, _| app.worker.wait_idle());
+    cx.run_until_parked();
     draw(cx);
     cx.update(|_, cx| {
         let app = app.read(cx);

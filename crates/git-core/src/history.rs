@@ -1,6 +1,10 @@
 //! Bounded, cancellable history reads. These APIs belong on a worker thread.
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::VecDeque;
+use std::sync::{
+    Condvar, Weak,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 pub const MAX_HISTORY_PAGE: usize = 500;
 const MAX_SEARCH_SCAN: usize = 50_000;
@@ -87,6 +91,10 @@ impl HistoryTraversal {
         let offset = self.offset;
         let mut commits = Vec::with_capacity(limit);
         let mut bytes = 0usize;
+        let _cancel = self.stream.as_ref().map(|stream| {
+            let wake_ch = Arc::clone(&stream.channel);
+            cancellation.on_cancel(move || wake_ch.wake_reader())
+        });
         let stop = loop {
             cancellation.check()?;
             if commits.len() == limit {
@@ -149,16 +157,105 @@ pub enum HistoryScope {
     FromCommit(String),
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct HistoryCancellation(Arc<AtomicBool>);
+type CancelCallback = Box<dyn Fn() + Send + Sync>;
+
+/// Unregisters a cancellation wake callback when dropped so long-lived
+/// cancellation tokens never accumulate stale closures.
+pub struct CancelGuard {
+    waiters: Weak<Mutex<Vec<(u64, CancelCallback)>>>,
+    id: u64,
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if let Some(waiters) = self.waiters.upgrade() {
+            let mut list = waiters.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(pos) = list.iter().position(|(id, _)| *id == self.id) {
+                let _ = list.swap_remove(pos);
+            }
+        }
+    }
+}
+
+pub(crate) struct CancelWaiters {
+    next_id: AtomicU64,
+    waiters: Arc<Mutex<Vec<(u64, CancelCallback)>>>,
+}
+
+impl Default for CancelWaiters {
+    fn default() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            waiters: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl CancelWaiters {
+    pub(crate) fn register(
+        &self,
+        cancelled: &AtomicBool,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> CancelGuard {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut list = self.waiters.lock().unwrap_or_else(|e| e.into_inner());
+        if cancelled.load(Ordering::Acquire) {
+            drop(list);
+            wake();
+            return CancelGuard {
+                waiters: Weak::new(),
+                id: 0,
+            };
+        }
+        list.push((id, Box::new(wake)));
+        CancelGuard {
+            waiters: Arc::downgrade(&self.waiters),
+            id,
+        }
+    }
+
+    pub(crate) fn wake_all(&self) {
+        let callbacks = {
+            let mut list = self.waiters.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *list)
+        };
+        for (_, wake) in callbacks {
+            wake();
+        }
+    }
+}
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: AtomicBool,
+    waiters: CancelWaiters,
+}
+
+#[derive(Clone, Default)]
+pub struct HistoryCancellation(Arc<CancelState>);
+
+impl std::fmt::Debug for HistoryCancellation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HistoryCancellation")
+            .field(&self.is_cancelled())
+            .finish()
+    }
+}
 
 impl HistoryCancellation {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.cancelled.store(true, Ordering::Release);
+        self.0.waiters.wake_all();
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Registers a wake callback invoked immediately if already cancelled or
+    /// when [`Self::cancel`] is called. Dropped [`CancelGuard`] unregisters it.
+    pub fn on_cancel(&self, wake: impl Fn() + Send + Sync + 'static) -> CancelGuard {
+        self.0.waiters.register(&self.0.cancelled, wake)
     }
 
     fn check(&self) -> Result<()> {
@@ -658,11 +755,97 @@ pub(super) enum ReadEnd {
     TimedOut,
 }
 
-enum ReadMessage {
-    Stdout(Vec<u8>),
-    StdoutEnd,
-    Stderr(Vec<u8>),
-    Error(std::io::Error),
+struct StreamState {
+    stdout: VecDeque<Vec<u8>>,
+    stdout_done: bool,
+    stderr: Option<Vec<u8>>,
+    error: Option<std::io::Error>,
+    writer_done: bool,
+    exit_ready: bool,
+    closed: bool,
+}
+
+/// Bounded event-driven pipe channel for history streaming. Backpressure caps
+/// queued stdout chunks at [`READ_QUEUE`] without 5 ms polling or post-EOF spin.
+struct StreamChannel {
+    state: Mutex<StreamState>,
+    readable: Condvar,
+    writable: Condvar,
+}
+
+impl StreamChannel {
+    fn new(has_writer: bool) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(StreamState {
+                stdout: VecDeque::with_capacity(READ_QUEUE),
+                stdout_done: false,
+                stderr: None,
+                error: None,
+                writer_done: !has_writer,
+                exit_ready: false,
+                closed: false,
+            }),
+            readable: Condvar::new(),
+            writable: Condvar::new(),
+        })
+    }
+
+    fn push_stdout(&self, chunk: Vec<u8>) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while state.stdout.len() >= READ_QUEUE && !state.closed {
+            state = self.writable.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        if state.closed {
+            return false;
+        }
+        state.stdout.push_back(chunk);
+        self.readable.notify_all();
+        true
+    }
+
+    fn finish_stdout(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.stdout_done = true;
+        self.readable.notify_all();
+    }
+
+    fn finish_stderr(&self, bytes: Vec<u8>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.stderr = Some(bytes);
+        self.readable.notify_all();
+    }
+
+    fn set_error(&self, error: std::io::Error) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.error.is_none() {
+            state.error = Some(error);
+        }
+        self.readable.notify_all();
+    }
+
+    fn finish_writer(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.writer_done = true;
+        self.readable.notify_all();
+    }
+
+    fn mark_exit(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.exit_ready = true;
+        self.readable.notify_all();
+    }
+
+    fn wake_reader(&self) {
+        let _guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.readable.notify_all();
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        self.writable.notify_all();
+        self.readable.notify_all();
+    }
 }
 
 /// Reusable pipe reader. The worker consumes only as far as the requested page;
@@ -670,7 +853,8 @@ enum ReadMessage {
 struct HistoryStream {
     child: Child,
     pipes: PipeControl,
-    receive: Option<mpsc::Receiver<ReadMessage>>,
+    channel: Arc<StreamChannel>,
+    exit_watcher: Option<JoinHandle<()>>,
     readers: Vec<JoinHandle<()>>,
     writer: Option<JoinHandle<std::io::Result<()>>>,
     chunk: Vec<u8>,
@@ -678,8 +862,7 @@ struct HistoryStream {
     pending: Vec<u8>,
     fields: Vec<Vec<u8>>,
     record_bytes: usize,
-    stdout_done: bool,
-    stderr: Option<Vec<u8>>,
+    reaped: bool,
 }
 
 impl HistoryStream {
@@ -696,45 +879,64 @@ impl HistoryStream {
             .spawn()
             .context("Unable to start Git history traversal")?;
         let pipes = ChildPipes::take(&mut child)?;
+        let channel = StreamChannel::new(input.is_some());
         let writer = input.map(|bytes| {
             let mut stdin = pipes.input.expect("Requested Git input pipe");
-            thread::spawn(move || stdin.write_all(&bytes))
+            let done = Arc::clone(&channel);
+            thread::spawn(move || {
+                struct Done(Arc<StreamChannel>);
+                impl Drop for Done {
+                    fn drop(&mut self) {
+                        self.0.finish_writer();
+                    }
+                }
+                let _done = Done(done);
+                stdin.write_all(&bytes)
+            })
         });
         let mut stdout = pipes.output;
         let stderr = pipes.error.expect("Requested Git error pipe");
-        let (send, receive) = mpsc::sync_channel(8);
-        let errors = send.clone();
+        let out_ch = Arc::clone(&channel);
         let output_reader = thread::spawn(move || {
+            struct Done(Arc<StreamChannel>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    self.0.finish_stdout();
+                }
+            }
+            let _done = Done(Arc::clone(&out_ch));
             let mut chunk = [0u8; 8192];
             loop {
-                let message = match stdout.read(&mut chunk) {
-                    Ok(0) => {
-                        let _ = send.send(ReadMessage::StdoutEnd);
-                        break;
+                match stdout.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if !out_ch.push_stdout(chunk[..n].to_vec()) {
+                            break;
+                        }
                     }
-                    Ok(n) => ReadMessage::Stdout(chunk[..n].to_vec()),
                     Err(error) => {
-                        let _ = send.send(ReadMessage::Error(error));
+                        out_ch.set_error(error);
                         break;
                     }
-                };
-                if send.send(message).is_err() {
-                    break;
                 }
             }
         });
+        let err_ch = Arc::clone(&channel);
         let error_reader = thread::spawn(move || {
             let mut bytes = Vec::new();
-            let message = match stderr.take(128 * 1024 + 1).read_to_end(&mut bytes) {
-                Ok(_) => ReadMessage::Stderr(bytes),
-                Err(error) => ReadMessage::Error(error),
-            };
-            let _ = errors.send(message);
+            match stderr.take(128 * 1024 + 1).read_to_end(&mut bytes) {
+                Ok(_) => err_ch.finish_stderr(bytes),
+                Err(error) => {
+                    err_ch.set_error(error);
+                    err_ch.finish_stderr(Vec::new());
+                }
+            }
         });
         Ok(Self {
             child,
             pipes: pipes.control,
-            receive: Some(receive),
+            channel,
+            exit_watcher: None,
             readers: vec![output_reader, error_reader],
             writer,
             chunk: Vec::new(),
@@ -742,8 +944,7 @@ impl HistoryStream {
             pending: Vec::new(),
             fields: Vec::new(),
             record_bytes: 0,
-            stdout_done: false,
-            stderr: None,
+            reaped: false,
         })
     }
 
@@ -752,10 +953,12 @@ impl HistoryStream {
         cancellation: &HistoryCancellation,
         start: Instant,
     ) -> Result<Option<Commit>> {
+        let mut poll_exit = false;
         loop {
             cancellation.check()?;
+            let remaining = GIT_TIMEOUT.saturating_sub(start.elapsed());
             ensure!(
-                start.elapsed() < GIT_TIMEOUT,
+                !remaining.is_zero(),
                 "History page exceeded its 15 second time limit; restart history to continue"
             );
             while self.position < self.chunk.len() {
@@ -778,60 +981,97 @@ impl HistoryStream {
                     return Ok(Some(commit));
                 }
             }
-            match self
-                .receive
-                .as_ref()
-                .expect("Live history pipe")
-                .recv_timeout(Duration::from_millis(5))
-            {
-                Ok(ReadMessage::Stdout(bytes)) => {
-                    self.chunk = bytes;
-                    self.position = 0;
-                }
-                Ok(ReadMessage::StdoutEnd) => self.stdout_done = true,
-                Ok(ReadMessage::Stderr(bytes)) => {
-                    ensure!(
-                        bytes.len() <= 128 * 1024,
-                        "Git history error output exceeded its limit"
-                    );
-                    self.stderr = Some(bytes);
-                }
-                Ok(ReadMessage::Error(error)) => return Err(error.into()),
-                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
+
+            let mut state = self.channel.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(chunk) = state.stdout.pop_front() {
+                self.channel.writable.notify_one();
+                drop(state);
+                self.chunk = chunk;
+                self.position = 0;
+                continue;
             }
-            if self.stdout_done
-                && let Some(stderr) = &self.stderr
-                && self
-                    .writer
-                    .as_ref()
-                    .is_none_or(|writer| writer.is_finished())
-                && let Some(status) = self.child.try_wait()?
-            {
-                if !status.success() {
-                    return Err(history_failure(stderr));
-                }
+            if let Some(error) = state.error.take() {
+                return Err(error.into());
+            }
+            let streams_done = state.stdout_done && state.stderr.is_some() && state.writer_done;
+            if streams_done && (self.exit_watcher.is_none() || state.exit_ready || poll_exit) {
+                let stderr = state.stderr.clone().unwrap_or_default();
+                drop(state);
                 ensure!(
-                    self.pending.is_empty() && self.fields.is_empty(),
-                    "Incomplete commit metadata from Git"
+                    stderr.len() <= 128 * 1024,
+                    "Git history error output exceeded its limit"
                 );
-                if let Some(writer) = self.writer.take() {
-                    writer
-                        .join()
-                        .map_err(|_| anyhow::anyhow!("Git history input writer stopped"))??;
+                if let Some(watcher) = self.exit_watcher.take() {
+                    let _ = watcher.join();
+                    poll_exit = true;
                 }
-                return Ok(None);
+                if let Some(status) = self.child.try_wait()? {
+                    self.reaped = true;
+                    if !status.success() {
+                        return Err(history_failure(&stderr));
+                    }
+                    ensure!(
+                        self.pending.is_empty() && self.fields.is_empty(),
+                        "Incomplete commit metadata from Git"
+                    );
+                    if let Some(writer) = self.writer.take() {
+                        writer
+                            .join()
+                            .map_err(|_| anyhow::anyhow!("Git history input writer stopped"))??;
+                    }
+                    return Ok(None);
+                }
+                // Pipes closed just before the child finished exiting: spawn
+                // the exit watcher lazily so normal exits pay zero extra thread.
+                if !poll_exit {
+                    let exit_ch = Arc::clone(&self.channel);
+                    self.exit_watcher =
+                        process_io::spawn_exit_watcher(self.child.id(), move || {
+                            exit_ch.mark_exit()
+                        });
+                    if self.exit_watcher.is_some() {
+                        continue;
+                    }
+                    poll_exit = true;
+                }
+                let state = self.channel.state.lock().unwrap_or_else(|e| e.into_inner());
+                if cancellation.is_cancelled() {
+                    continue;
+                }
+                let wait = remaining.min(Duration::from_millis(5));
+                let _ = self
+                    .channel
+                    .readable
+                    .wait_timeout(state, wait)
+                    .unwrap_or_else(|e| e.into_inner());
+                continue;
             }
+            if cancellation.is_cancelled() {
+                continue;
+            }
+            let _ = self
+                .channel
+                .readable
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|e| e.into_inner());
         }
     }
 }
 
 impl Drop for HistoryStream {
     fn drop(&mut self) {
+        self.channel.close();
         self.pipes.stop();
-        terminate_process_group(&self.child);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        self.receive.take();
+        if !self.reaped {
+            terminate_process_group(&self.child);
+            let _ = self.child.kill();
+            if let Some(watcher) = self.exit_watcher.take() {
+                let _ = watcher.join();
+            }
+            let _ = self.child.wait();
+        } else if let Some(watcher) = self.exit_watcher.take() {
+            let _ = watcher.join();
+        }
         for reader in self.readers.drain(..) {
             let _ = reader.join();
         }
@@ -860,23 +1100,23 @@ fn history_failure(stderr: &[u8]) -> anyhow::Error {
 /// unless Git had already failed. A failure already queued, Git's exit with its error output
 /// or a failed pipe read, ends the read as that failure, as it would have a moment before the
 /// cancel: the cancel once masked it, so a caller said "Cancelled" for a read Git had already
-/// refused. It reads only what is queued, no more than the queue holds and the readers' last
-/// two messages, so a cancel never waits on Git.
+/// refused. It reads only what is already queued, so a cancel never waits on Git.
 fn cancelled_end(
-    receive: &mpsc::Receiver<ReadMessage>,
-    mut stderr: Option<Vec<u8>>,
+    channel: &StreamChannel,
     status: impl FnOnce() -> std::io::Result<Option<std::process::ExitStatus>>,
 ) -> anyhow::Error {
-    for _ in 0..READ_QUEUE + 2 {
-        match receive.try_recv() {
-            Ok(ReadMessage::Stderr(bytes)) => stderr = Some(bytes),
-            Ok(ReadMessage::Error(error)) => return error.into(),
-            Ok(ReadMessage::Stdout(_) | ReadMessage::StdoutEnd) => {}
-            Err(_) => break,
-        }
+    let (error, stderr) = {
+        let mut state = channel.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.error.take(), state.stderr.take())
+    };
+    if let Some(error) = error {
+        return error.into();
     }
-    match (status(), stderr) {
-        (Ok(Some(status)), Some(stderr)) if !status.success() => {
+    let Some(stderr) = stderr else {
+        return ReadCancelled.into();
+    };
+    match status() {
+        Ok(Some(status)) if !status.success() => {
             if stderr.len() > 128 * 1024 {
                 anyhow::anyhow!("Git history error output exceeded its limit")
             } else {
@@ -907,96 +1147,180 @@ pub(super) fn stream_history(
         .spawn()
         .context("Unable to start Git history read")?;
     let pipes = ChildPipes::take(&mut child)?;
+    let channel = StreamChannel::new(input.is_some());
     let input_writer = input.map(|bytes| {
         let mut stdin = pipes.input.expect("Requested Git input pipe");
-        thread::spawn(move || stdin.write_all(&bytes))
+        let done = Arc::clone(&channel);
+        thread::spawn(move || {
+            struct Done(Arc<StreamChannel>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    self.0.finish_writer();
+                }
+            }
+            let _done = Done(done);
+            stdin.write_all(&bytes)
+        })
     });
     let mut stdout = pipes.output;
     let stderr = pipes.error.expect("Requested Git error pipe");
-    let (send, receive) = mpsc::sync_channel(READ_QUEUE);
-    let errors = send.clone();
+    let out_ch = Arc::clone(&channel);
     let output_reader = thread::spawn(move || {
+        struct Done(Arc<StreamChannel>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.finish_stdout();
+            }
+        }
+        let _done = Done(Arc::clone(&out_ch));
         let mut chunk = [0u8; 8192];
         loop {
-            let message = match stdout.read(&mut chunk) {
-                Ok(0) => {
-                    let _ = send.send(ReadMessage::StdoutEnd);
-                    break;
-                }
-                Ok(n) => ReadMessage::Stdout(chunk[..n].to_vec()),
-                Err(error) => {
-                    let _ = send.send(ReadMessage::Error(error));
-                    break;
-                }
-            };
-            if send.send(message).is_err() {
-                break;
-            }
-        }
-    });
-    let error_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let message = match stderr.take(128 * 1024 + 1).read_to_end(&mut bytes) {
-            Ok(_) => ReadMessage::Stderr(bytes),
-            Err(error) => ReadMessage::Error(error),
-        };
-        let _ = errors.send(message);
-    });
-    let start = Instant::now();
-    let result = (|| {
-        let mut stdout_done = false;
-        let mut stderr = None;
-        let mut status = None;
-        loop {
-            if cancellation.is_cancelled() {
-                return Err(cancelled_end(&receive, stderr.take(), || match status {
-                    Some(status) => Ok(Some(status)),
-                    None => child.try_wait(),
-                }));
-            }
-            if start.elapsed() >= timeout {
-                return Ok(ReadEnd::TimedOut);
-            }
-            match receive.recv_timeout(Duration::from_millis(5)) {
-                Ok(ReadMessage::Stdout(bytes)) => {
-                    if !consume(&bytes)? {
-                        return Ok(ReadEnd::Stopped);
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if !out_ch.push_stdout(chunk[..n].to_vec()) {
+                        break;
                     }
                 }
-                Ok(ReadMessage::StdoutEnd) => stdout_done = true,
-                Ok(ReadMessage::Stderr(bytes)) => {
-                    ensure!(
-                        bytes.len() <= 128 * 1024,
-                        "Git history error output exceeded its limit"
-                    );
-                    stderr = Some(bytes);
+                Err(error) => {
+                    out_ch.set_error(error);
+                    break;
                 }
-                Ok(ReadMessage::Error(error)) => return Err(error.into()),
-                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
-            }
-            if status.is_none() {
-                status = child.try_wait()?;
-            }
-            if stdout_done
-                && input_writer
-                    .as_ref()
-                    .is_none_or(|writer| writer.is_finished())
-                && let (Some(status), Some(stderr)) = (status, stderr.as_ref())
-            {
-                if !status.success() {
-                    return Err(history_failure(stderr));
-                }
-                return Ok(ReadEnd::Complete);
             }
         }
+    });
+    let err_ch = Arc::clone(&channel);
+    let error_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        match stderr.take(128 * 1024 + 1).read_to_end(&mut bytes) {
+            Ok(_) => err_ch.finish_stderr(bytes),
+            Err(error) => {
+                err_ch.set_error(error);
+                err_ch.finish_stderr(Vec::new());
+            }
+        }
+    });
+    let mut exit_watcher: Option<JoinHandle<()>> = None;
+    let wake_ch = Arc::clone(&channel);
+    let _cancel = cancellation.on_cancel(move || wake_ch.wake_reader());
+    let start = Instant::now();
+    let mut reaped = false;
+    let result = (|| {
+        let mut status = None;
+        let mut poll_exit = false;
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(cancelled_end(&channel, || match status {
+                    Some(status) => Ok(Some(status)),
+                    None => {
+                        let exit_ready = channel
+                            .state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .exit_ready;
+                        // Only reap an already-exited child here; sending SIGKILL
+                        // to a still-running child before `try_wait` would turn a
+                        // clean cancellation into a signal-killed Git failure.
+                        if exit_ready || process_io::child_has_exited(child.id()) {
+                            terminate_process_group(&child);
+                            if let Some(watcher) = exit_watcher.take() {
+                                let _ = watcher.join();
+                            }
+                            let found = child.try_wait()?;
+                            reaped |= found.is_some();
+                            Ok(found)
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }));
+            }
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Ok(ReadEnd::TimedOut);
+            }
+            let mut state = channel.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(chunk) = state.stdout.pop_front() {
+                channel.writable.notify_one();
+                drop(state);
+                if !consume(&chunk)? {
+                    return Ok(ReadEnd::Stopped);
+                }
+                continue;
+            }
+            if let Some(error) = state.error.take() {
+                return Err(error.into());
+            }
+            let streams_done = state.stdout_done && state.stderr.is_some() && state.writer_done;
+            if streams_done
+                && (status.is_some() || exit_watcher.is_none() || state.exit_ready || poll_exit)
+            {
+                let stderr_bytes = state.stderr.clone().unwrap_or_default();
+                drop(state);
+                ensure!(
+                    stderr_bytes.len() <= 128 * 1024,
+                    "Git history error output exceeded its limit"
+                );
+                if status.is_none() {
+                    if let Some(watcher) = exit_watcher.take() {
+                        let _ = watcher.join();
+                        poll_exit = true;
+                    }
+                    status = child.try_wait()?;
+                    if status.is_some() {
+                        reaped = true;
+                    }
+                }
+                if let Some(status) = status {
+                    if !status.success() {
+                        return Err(history_failure(&stderr_bytes));
+                    }
+                    return Ok(ReadEnd::Complete);
+                }
+                if !poll_exit {
+                    let exit_ch = Arc::clone(&channel);
+                    exit_watcher =
+                        process_io::spawn_exit_watcher(child.id(), move || exit_ch.mark_exit());
+                    if exit_watcher.is_some() {
+                        continue;
+                    }
+                    poll_exit = true;
+                }
+                let state = channel.state.lock().unwrap_or_else(|e| e.into_inner());
+                if cancellation.is_cancelled() {
+                    continue;
+                }
+                let wait = remaining.min(Duration::from_millis(5));
+                let _ = channel
+                    .readable
+                    .wait_timeout(state, wait)
+                    .unwrap_or_else(|e| e.into_inner());
+                continue;
+            }
+            if cancellation.is_cancelled() {
+                continue;
+            }
+            let _ = channel
+                .readable
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|e| e.into_inner());
+        }
     })();
-    // Always close the receiver before joining: a bounded sender may otherwise
+    drop(_cancel);
+    // Always close the channel before joining: a bounded writer may otherwise
     // remain blocked when a page fills while Git is still producing output.
+    channel.close();
     pipes.control.stop();
-    terminate_process_group(&child);
-    let _ = child.kill();
-    let _ = child.wait();
-    drop(receive);
+    if !reaped {
+        terminate_process_group(&child);
+        let _ = child.kill();
+        if let Some(watcher) = exit_watcher.take() {
+            let _ = watcher.join();
+        }
+        let _ = child.wait();
+    } else if let Some(watcher) = exit_watcher.take() {
+        let _ = watcher.join();
+    }
     let _ = output_reader.join();
     let _ = error_reader.join();
     if let Some(writer) = input_writer {
@@ -1225,12 +1549,11 @@ mod tests {
             Ok(true)
         })
         .unwrap_err();
-        let (_send, queued) = mpsc::sync_channel(READ_QUEUE);
-        let cancelled = cancelled_end(
-            &queued,
-            Some(b"fatal: not a git repository: /a\rb/.git/worktrees/x\n".to_vec()),
-            || Ok(Some(std::process::ExitStatus::from_raw(128 << 8))),
-        );
+        let queued = StreamChannel::new(false);
+        queued.finish_stderr(b"fatal: not a git repository: /a\rb/.git/worktrees/x\n".to_vec());
+        let cancelled = cancelled_end(&queued, || {
+            Ok(Some(std::process::ExitStatus::from_raw(128 << 8)))
+        });
         let shown = "Git history read failed: b/.git/worktrees/x";
         for error in [page, stream, cancelled] {
             assert_eq!(error.to_string(), shown);

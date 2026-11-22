@@ -433,7 +433,7 @@ fn request_pair<T: 'static>(documents: &[Arc<Document>], window: &mut Window, cx
             });
             check()?;
             frames.push(frame.and_then(|(frame, bounds)| {
-                worker::render_image(&frame).map(|frame| (frame, bounds))
+                worker::render_image(frame).map(|frame| (frame, bounds))
             }));
         }
         check()?;

@@ -187,6 +187,7 @@ pub(super) enum WaitPart {
     Output,
     Error,
     Exit,
+    Cancelled,
 }
 
 impl WaitPart {
@@ -196,6 +197,7 @@ impl WaitPart {
             Self::Output => "git-stdout",
             Self::Error => "git-stderr",
             Self::Exit => "git-exit",
+            Self::Cancelled => "git-cancel",
         }
     }
 
@@ -314,6 +316,13 @@ pub(super) fn wait_events(seam: &WaitSeam) -> (WaitSignals, WaitEvents) {
 }
 
 impl WaitSignals {
+    /// Clone only the event sender (without cloning `owned`) so cancellation
+    /// callbacks can wake [`WaitEvents::next`] without keeping owned-thread
+    /// handles alive.
+    pub(super) fn cancel_sender(&self) -> mpsc::Sender<WaitPart> {
+        self.events.clone()
+    }
+
     fn ended(&self, part: WaitPart) -> Ended {
         Ended {
             part,
@@ -468,6 +477,66 @@ impl ExitWatcher {
             let _ = helper.join();
         }
     }
+}
+
+/// Spawns a helper thread that blocks until `pid` has exited (without reaping
+/// it) and then invokes `wake`. Returns `None` on non-Unix platforms or if the
+/// thread cannot start.
+#[cfg(unix)]
+pub(super) fn spawn_exit_watcher(
+    pid: u32,
+    wake: impl FnOnce() + Send + 'static,
+) -> Option<JoinHandle<()>> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let pid = Pid::from_raw(i32::try_from(pid).ok()?)?;
+    let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+    thread::Builder::new()
+        .name("git-exit".into())
+        .spawn(move || {
+            struct WakeGuard<F: FnOnce()>(Option<F>);
+            impl<F: FnOnce()> Drop for WakeGuard<F> {
+                fn drop(&mut self) {
+                    if let Some(wake) = self.0.take() {
+                        wake();
+                    }
+                }
+            }
+            let _guard = WakeGuard(Some(wake));
+            while matches!(waitid(WaitId::Pid(pid), peek), Err(rustix::io::Errno::INTR)) {}
+        })
+        .ok()
+}
+
+#[cfg(not(unix))]
+pub(super) fn spawn_exit_watcher(
+    _pid: u32,
+    _wake: impl FnOnce() + Send + 'static,
+) -> Option<JoinHandle<()>> {
+    None
+}
+
+/// Non-blocking check for whether unreaped child `pid` has already exited,
+/// without reaping it. Used on cancellation so an already-exited failing child
+/// still surfaces its Git error without sending `SIGKILL` to a running child.
+#[cfg(unix)]
+pub(super) fn child_has_exited(pid: u32) -> bool {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+        return false;
+    };
+    let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
+    loop {
+        match waitid(WaitId::Pid(pid), peek) {
+            Ok(Some(_)) => return true,
+            Err(rustix::io::Errno::INTR) => continue,
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(super) fn child_has_exited(_pid: u32) -> bool {
+    false
 }
 
 /// A thread that blocks until `pid`, a child of this process, has exited, and

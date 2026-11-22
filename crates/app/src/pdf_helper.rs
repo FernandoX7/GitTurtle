@@ -34,7 +34,8 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use gitturtle_preview::pdf_helper::{
-    ErrorKind, MAX_REPLY_BYTES, PROTOCOL_VERSION, PageReply, encode_request, read_reply, serve,
+    ErrorKind, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PROTOCOL_VERSION, PageReply, encode_request,
+    read_reply, serve, serve_buffer,
 };
 
 /// The first argument that makes this binary the helper.
@@ -111,12 +112,85 @@ fn parent_pid(argument: &OsStr) -> Option<libc::pid_t> {
     libc::pid_t::try_from(value).ok()
 }
 
-fn run_helper(parent: libc::pid_t) -> i32 {
-    if let Err(code) = confine(parent) {
-        return code;
+/// Read-only `mmap` of a fully sealed `memfd` passed on fd 0. Has no `Drop`
+/// implementation because the helper exits immediately via `libc::_exit`,
+/// ensuring zero `munmap` syscalls under seccomp.
+struct MappedInput {
+    ptr: *const u8,
+    len: usize,
+}
+
+// SAFETY: Points to an immutable `PROT_READ` mapping of a `memfd` sealed with
+// `F_SEAL_WRITE | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL` that stays mapped
+// for the entire lifetime of the single-request helper process.
+unsafe impl Send for MappedInput {}
+// SAFETY: Shared references only read immutable sealed bytes mapped `PROT_READ`.
+unsafe impl Sync for MappedInput {}
+
+impl AsRef<[u8]> for MappedInput {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: `ptr` is a valid non-null `PROT_READ` mapping of `len` bytes
+        // whose backing `memfd` was verified sealed against mutation or resize.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
-    // (k) The request comes only from fd 0 and the reply goes only to fd 1;
-    // `serve` reads the header, then the validated body, with plain reads.
+}
+
+const REQUIRED_MEMFD_SEALS: libc::c_int =
+    libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+
+/// Maps fd 0 read-only before seccomp is installed ONLY when fd 0 is a regular
+/// file within [`MAX_REQUEST_BYTES`] carrying all four immutability seals.
+/// Pipes and unsealed files return `None` and use the plain `read()` path.
+fn map_sealed_stdin() -> Option<MappedInput> {
+    // Verify immutability seals FIRST so the size read from `fstat` cannot
+    // race with a concurrent resize or write before `mmap`.
+    // SAFETY: `F_GET_SEALS` queries memfd seals on fd 0; fails with EINVAL on
+    // non-memfd files and returns the bitmask on sealed memfds.
+    let seals = unsafe { libc::fcntl(0, libc::F_GET_SEALS) };
+    if seals < 0 || (seals & REQUIRED_MEMFD_SEALS) != REQUIRED_MEMFD_SEALS {
+        return None;
+    }
+    // SAFETY: `libc::stat` is a plain C struct valid when zero-initialized.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: queries metadata for fd 0 into a local `stat` struct.
+    if unsafe { libc::fstat(0, &mut stat) } != 0 {
+        return None;
+    }
+    if (stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
+        return None;
+    }
+    let len = usize::try_from(stat.st_size).ok()?;
+    if len == 0 || len > MAX_REQUEST_BYTES {
+        return None;
+    }
+    // SAFETY: `len > 0` and fd 0 is verified regular and fully sealed; no
+    // untrusted bytes are read until after seccomp is installed.
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            0,
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED || ptr.is_null() {
+        return None;
+    }
+    Some(MappedInput {
+        ptr: ptr.cast::<u8>(),
+        len,
+    })
+}
+
+fn run_helper(parent: libc::pid_t) -> i32 {
+    let mapped = match confine(parent) {
+        Ok(mapped) => mapped,
+        Err(code) => return code,
+    };
+    // (k) The request comes only from fd 0 (either pre-mapped sealed memfd or
+    // plain pipe reads) and the reply goes only to fd 1.
     // SAFETY: fds 0 and 1 stay open for the life of the process and are
     // never closed through these handles.
     let (input, output) = unsafe {
@@ -125,7 +199,11 @@ fn run_helper(parent: libc::pid_t) -> i32 {
             ManuallyDrop::new(File::from_raw_fd(1)),
         )
     };
-    match serve(&*input, &*output) {
+    let result = match mapped {
+        Some(mapped) => serve_buffer(mapped, &*output),
+        None => serve(&*input, &*output),
+    };
+    match result {
         Ok(()) => 0,
         Err(_) => exit::REPLY,
     }
@@ -134,7 +212,7 @@ fn run_helper(parent: libc::pid_t) -> i32 {
 /// Section 6's steps (a), (e), (b) to (d), then (f) to (j), before the first
 /// input byte. Every failure is a fixed exit code; only the OOM score is
 /// best effort.
-fn confine(parent: libc::pid_t) -> Result<(), i32> {
+fn confine(parent: libc::pid_t) -> Result<Option<MappedInput>, i32> {
     // SAFETY: (a) a process flag and a query, with no pointers.
     unsafe {
         // Die with the spawning thread, and only for the parent named.
@@ -181,12 +259,14 @@ fn confine(parent: libc::pid_t) -> Result<(), i32> {
         tighten(resource, soft, hard)?;
     }
     prepare_runtime();
+    let mapped = map_sealed_stdin();
     // SAFETY: (i) a process flag with no pointers.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         return Err(exit::SETUP);
     }
     // (j)
-    Filter::new().install().map_err(|_| exit::CONFINEMENT)
+    Filter::new().install().map_err(|_| exit::CONFINEMENT)?;
+    Ok(mapped)
 }
 
 /// (f) Closes every descriptor above 2 the helper inherited.
@@ -666,18 +746,95 @@ impl HelperCommand {
             .collect()
     }
 
-    fn spawn(&self) -> io::Result<Child> {
+    fn spawn_with_stdin(&self, stdin: Stdio) -> io::Result<Child> {
         // No `pre_exec`, uid, gid or groups, so std keeps `posix_spawn` in the
         // multithreaded app.
         Command::new(&self.program)
             .args(&self.arguments)
             .env_clear()
             .current_dir("/")
-            .stdin(Stdio::piped())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
     }
+}
+
+/// Builds a sealed, read-only anonymous `memfd` holding `request` so the
+/// helper can read/mmap up to 32 MiB without 64 KiB pipe copies. Returns
+/// `Ok(None)` on `ENOSYS` or any OS failure so callers fall back to pipes.
+fn create_sealed_memfd(
+    request: [&[u8]; 2],
+    check: &dyn Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<Option<OwnedFd>> {
+    let total = request[0].len().saturating_add(request[1].len());
+    if total == 0 || total > MAX_REQUEST_BYTES {
+        return Ok(None);
+    }
+    // MFD_NOEXEC_SEAL (0x0008, Linux 6.3+) avoids kernel dmesg warnings when
+    // vm.memfd_noexec=1; fall back to MFD_CLOEXEC | MFD_ALLOW_SEALING on older kernels.
+    const MFD_NOEXEC_SEAL: libc::c_uint = 0x0008;
+    let base_flags = libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING;
+    // SAFETY: `memfd_create` creates a new close-on-exec anonymous fd.
+    let mut raw = unsafe {
+        libc::syscall(
+            libc::SYS_memfd_create,
+            c"gitturtle-helper".as_ptr(),
+            base_flags | MFD_NOEXEC_SEAL,
+        )
+    };
+    if raw < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        // SAFETY: fallback flags supported since Linux 3.17.
+        raw = unsafe {
+            libc::syscall(
+                libc::SYS_memfd_create,
+                c"gitturtle-helper".as_ptr(),
+                base_flags,
+            )
+        };
+    }
+    let Ok(raw_fd) = libc::c_int::try_from(raw) else {
+        return Ok(None);
+    };
+    if raw_fd < 0 {
+        return Ok(None);
+    }
+    // SAFETY: `raw_fd` is a fresh owned fd from `memfd_create`.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    for slice in request {
+        let mut offset = 0;
+        while offset < slice.len() {
+            check()?;
+            let end = (offset + 2 * 1024 * 1024).min(slice.len());
+            // SAFETY: writes from a valid in-bounds slice into our owned memfd.
+            let n = unsafe {
+                libc::write(
+                    fd.as_raw_fd(),
+                    slice[offset..end].as_ptr().cast(),
+                    end - offset,
+                )
+            };
+            if n < 0 {
+                if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Ok(None);
+            }
+            if n == 0 {
+                return Ok(None);
+            }
+            offset += n as usize;
+        }
+    }
+    // SAFETY: rewind our owned memfd to offset 0 before passing it as fd 0.
+    if unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) } != 0 {
+        return Ok(None);
+    }
+    // SAFETY: seal against any writes, resizes, or future seal changes.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, REQUIRED_MEMFD_SEALS) } != 0 {
+        return Ok(None);
+    }
+    Ok(Some(fd))
 }
 
 /// Runs one request in a new confined helper, for every frame: the helper
@@ -749,11 +906,20 @@ impl<'a> Runner<'a> {
         if let Err(error) = check() {
             return (Outcome::Cancelled(error), Duration::ZERO);
         }
-        let Ok(child) = self.command.spawn() else {
+        let memfd = match create_sealed_memfd(request, check) {
+            Ok(fd) => fd,
+            Err(error) => return (Outcome::Cancelled(error), Duration::ZERO),
+        };
+        let piped_stdin = memfd.is_none();
+        let stdin = match memfd {
+            Some(fd) => Stdio::from(fd),
+            None => Stdio::piped(),
+        };
+        let Ok(child) = self.command.spawn_with_stdin(stdin) else {
             return (Outcome::CouldNotStart, Duration::ZERO);
         };
         let started = Instant::now();
-        let Some(mut running) = Running::new(child) else {
+        let Some(mut running) = Running::new(child, piped_stdin) else {
             return (Outcome::CouldNotStart, started.elapsed());
         };
         let (ending, reply) = running.exchange(request, cap, started + self.deadline, check);
@@ -895,19 +1061,21 @@ struct Running {
 
 impl Running {
     /// `None` when its pipes cannot be set up; dropping it reaps the child.
-    fn new(mut child: Child) -> Option<Self> {
+    fn new(mut child: Child, piped_stdin: bool) -> Option<Self> {
         let running = Self {
-            input: child.stdin.take(),
+            input: if piped_stdin {
+                child.stdin.take()
+            } else {
+                None
+            },
             output: child.stdout.take(),
             exited: pidfd(child.id()),
             child,
         };
-        for fd in [
-            running.input.as_ref().map(AsRawFd::as_raw_fd),
-            running.output.as_ref().map(AsRawFd::as_raw_fd),
-        ] {
-            non_blocking(fd?).ok()?;
+        if let Some(input) = running.input.as_ref() {
+            non_blocking(input.as_raw_fd()).ok()?;
         }
+        non_blocking(running.output.as_ref()?.as_raw_fd()).ok()?;
         Some(running)
     }
 

@@ -269,10 +269,11 @@ impl GitRepository {
         }
         let bytes = output.stdout;
         let mut status = parse_status(&bytes)?;
-        let git_dir = path_from_bytes(trim_line(&run_git(
-            self.target(),
-            &["rev-parse", "--absolute-git-dir"],
-        )?));
+        let git_dir = if matches!(self.verify_at_path()?, super::FoundAtPath::Same) {
+            self.git_dir().to_path_buf()
+        } else {
+            self.git_directories()?.0
+        };
         for (file, name) in [
             ("rebase-merge", "Rebase"),
             ("rebase-apply", "Rebase"),
@@ -286,6 +287,35 @@ impl GitRepository {
             }
         }
         Ok(status)
+    }
+
+    fn status_for_path(&self, path: &Path) -> Result<RepositoryStatus> {
+        ensure!(!self.bare, "A bare repository has no working tree");
+        let mut command = passive_status_command(self.target())?;
+        command
+            .arg("--literal-pathspecs")
+            .args([
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=all",
+                "--renames",
+                "--ignore-submodules=dirty",
+                "-z",
+                "--",
+            ])
+            .arg(path);
+        let output = bounded_output(command, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to read working-copy status: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
+        parse_status(&output.stdout)
     }
 
     /// Effective identity, including normal Git global/include/worktree configuration.
@@ -308,6 +338,45 @@ impl GitRepository {
     }
 
     pub fn remotes(&self) -> Result<Vec<Remote>> {
+        let (git_dir, common_dir) = if matches!(self.verify_at_path()?, super::FoundAtPath::Same) {
+            (
+                self.git_dir().to_path_buf(),
+                self.common_dir().to_path_buf(),
+            )
+        } else {
+            self.git_directories()?
+        };
+        let has_legacy = |dir: &Path| dir.join("remotes").is_dir() || dir.join("branches").is_dir();
+        if has_legacy(&git_dir) || (common_dir != git_dir && has_legacy(&common_dir)) {
+            return self.remotes_legacy();
+        }
+        let mut command = normal_command(self.target());
+        command
+            .arg("--no-optional-locks")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .args([
+                "config",
+                "--null",
+                "--get-regexp",
+                r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof))$",
+            ]);
+        let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
+        if output.status.code() == Some(1) && output.stderr.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to read remotes: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
+        parse_remotes_config(&output.stdout)
+    }
+
+    fn remotes_legacy(&self) -> Result<Vec<Remote>> {
         let mut command = normal_command(self.target());
         command.args(["remote"]);
         let bytes = checked_write_output(command, None, GIT_TIMEOUT)?.stdout;
@@ -339,14 +408,11 @@ impl GitRepository {
         normal_config_at(self.target(), key)
     }
 
-    /// Worktree reads never run clean/smudge filters and never follow stored symlinks.
-    /// Index/HEAD sides use immutable object IDs from the status snapshot. A changed
-    /// working file is reread on activation; callers should refresh after writes.
-    pub fn worktree_preview(
+    fn read_worktree_sides(
         &self,
         entry: &StatusEntry,
         area: ChangeArea,
-    ) -> Result<WorktreePreview> {
+    ) -> Result<(FileChange, Vec<u8>, Vec<u8>)> {
         ensure!(
             !entry.conflicted,
             "This path has unresolved conflicts. Resolve it in your editor, then stage the resolved file."
@@ -405,17 +471,34 @@ impl GitRepository {
             .transpose()?
             .unwrap_or_default();
         let new = match area {
-            ChangeArea::Staged => file.new_oid.as_deref().map(|oid| self.preview_side_bytes(oid, &file.new_mode)).transpose()?.unwrap_or_default(),
+            ChangeArea::Staged => file
+                .new_oid
+                .as_deref()
+                .map(|oid| self.preview_side_bytes(oid, &file.new_mode))
+                .transpose()?
+                .unwrap_or_default(),
             ChangeArea::Unstaged if file.new_path.is_none() => Vec::new(),
             ChangeArea::Unstaged if file.new_mode == "160000" => {
                 b"Submodule working copy changed. Open the submodule to inspect its working files.\n".to_vec()
-            },
+            }
             ChangeArea::Unstaged => {
                 let (mode, bytes) = read_worktree_file(&self.path, &entry.path, &file.new_mode)?;
                 file.new_mode = mode;
                 bytes
-            },
+            }
         };
+        Ok((file, old, new))
+    }
+
+    /// Worktree reads never run clean/smudge filters and never follow stored symlinks.
+    /// Index/HEAD sides use immutable object IDs from the status snapshot. A changed
+    /// working file is reread on activation; callers should refresh after writes.
+    pub fn worktree_preview(
+        &self,
+        entry: &StatusEntry,
+        area: ChangeArea,
+    ) -> Result<WorktreePreview> {
+        let (file, old, new) = self.read_worktree_sides(entry, area)?;
         let (preview, computed_edits) = if area == ChangeArea::Unstaged && file.new_mode == "160000"
         {
             (
@@ -441,6 +524,67 @@ impl GitRepository {
             Err(error) => result.partial_unavailable = Some(error.to_string()),
         }
         Ok(result)
+    }
+
+    fn check_partial_attributes(
+        &self,
+        path: &Path,
+        area: ChangeArea,
+        new_bytes: &[u8],
+    ) -> Result<()> {
+        // check-attr is a passive read of normal attributes; it never invokes a
+        // filter or a diff driver. Keep display bytes raw, and disclose cases in
+        // which combining those bytes with index contents would be misleading.
+        let mut command = normal_command(self.target());
+        command.env("GIT_OPTIONAL_LOCKS", "0").args([
+            "check-attr",
+            "-z",
+            "--stdin",
+            "filter",
+            "working-tree-encoding",
+            "ident",
+            "text",
+            "eol",
+            "diff",
+        ]);
+        let attributes = checked_write_output(
+            command,
+            Some(path_input(&[path.to_path_buf()])?),
+            GIT_TIMEOUT,
+        )?
+        .stdout;
+        let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
+        let attribute = |name: &[u8]| -> &[u8] {
+            fields
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .find_map(|item| (item[1] == name).then_some(item[2]))
+                .unwrap_or(b"unspecified")
+        };
+        let enabled = |value: &[u8]| !matches!(value, b"unset" | b"unspecified");
+        ensure!(
+            attribute(b"diff") != b"unset",
+            "Git marks this file as binary; use the whole-file action."
+        );
+        if area == ChangeArea::Unstaged {
+            ensure!(
+                ![b"filter".as_slice(), b"working-tree-encoding", b"ident"]
+                    .iter()
+                    .any(|name| enabled(attribute(name))),
+                "This file uses Git content conversion; stage it as a whole file to respect that configuration."
+            );
+            if new_bytes.windows(2).any(|pair| pair == b"\r\n") && attribute(b"text") != b"unset" {
+                let autocrlf = self.normal_config("core.autocrlf")?.unwrap_or_default();
+                ensure!(
+                    !enabled(attribute(b"text"))
+                        && !enabled(attribute(b"eol"))
+                        && !matches!(autocrlf.to_ascii_lowercase().as_str(), "true" | "input"),
+                    "Git normalizes this file's line endings; stage it as a whole file."
+                );
+            }
+        }
+        Ok(())
     }
 
     fn partial_diff(
@@ -469,59 +613,7 @@ impl GitRepository {
             matches!(&preview.preview, TextPreview::Patch(_)),
             "Partial staging is available for text within the diff size limits."
         );
-        // check-attr is a passive read of normal attributes; it never invokes a
-        // filter or a diff driver. Keep display bytes raw, and disclose cases in
-        // which combining those bytes with index contents would be misleading.
-        let mut command = normal_command(self.target());
-        command.env("GIT_OPTIONAL_LOCKS", "0").args([
-            "check-attr",
-            "-z",
-            "--stdin",
-            "filter",
-            "working-tree-encoding",
-            "ident",
-            "text",
-            "eol",
-            "diff",
-        ]);
-        let attributes = checked_write_output(
-            command,
-            Some(path_input(std::slice::from_ref(&entry.path))?),
-            GIT_TIMEOUT,
-        )?
-        .stdout;
-        let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
-        let attribute = |name: &[u8]| -> &[u8] {
-            fields
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .find_map(|item| (item[1] == name).then_some(item[2]))
-                .unwrap_or(b"unspecified")
-        };
-        let enabled = |value: &[u8]| !matches!(value, b"unset" | b"unspecified");
-        ensure!(
-            attribute(b"diff") != b"unset",
-            "Git marks this file as binary; use the whole-file action."
-        );
-        if area == ChangeArea::Unstaged {
-            ensure!(
-                ![b"filter".as_slice(), b"working-tree-encoding", b"ident"]
-                    .iter()
-                    .any(|name| enabled(attribute(name))),
-                "This file uses Git content conversion; stage it as a whole file to respect that configuration."
-            );
-            if preview.new.windows(2).any(|pair| pair == b"\r\n") && attribute(b"text") != b"unset"
-            {
-                let autocrlf = self.normal_config("core.autocrlf")?.unwrap_or_default();
-                ensure!(
-                    !enabled(attribute(b"text"))
-                        && !enabled(attribute(b"eol"))
-                        && !matches!(autocrlf.to_ascii_lowercase().as_str(), "true" | "input"),
-                    "Git normalizes this file's line endings; stage it as a whole file."
-                );
-            }
-        }
+        self.check_partial_attributes(&entry.path, area, &preview.new)?;
         PartialDiff::from_edits(
             self.path.clone(),
             entry.path.clone(),
@@ -549,7 +641,29 @@ impl GitRepository {
             &["rev-parse", "--path-format=absolute", "--git-path", "index"],
         )?));
         let transaction = PartialIndex::acquire(index)?;
-        let current = self.status()?;
+        // Narrow status to `-- <path>` under `.git/index.lock` to avoid scanning
+        // the full working tree. Fall back to full status whenever a staged
+        // Added or Deleted side could have paired into a rename with another path.
+        let mut current = if diff.area == ChangeArea::Staged
+            && matches!(
+                diff.snapshot.file.status,
+                ChangeStatus::Added | ChangeStatus::Deleted
+            ) {
+            self.status()?
+        } else {
+            self.status_for_path(&diff.path)?
+        };
+        if diff.area == ChangeArea::Unstaged
+            && current.entries.iter().any(|entry| {
+                entry.path == diff.path
+                    && matches!(
+                        entry.staged,
+                        Some(ChangeStatus::Added | ChangeStatus::Deleted)
+                    )
+            })
+        {
+            current = self.status()?;
+        }
         let entry = current
             .entries
             .iter()
@@ -559,12 +673,22 @@ impl GitRepository {
             !entry.conflicted,
             "This file has become conflicted; refresh and resolve it first."
         );
-        let fresh = self.worktree_preview(entry, diff.area)?;
+        // Verify snapshot identity directly from raw sides + current attributes
+        // instead of re-running the full Patience diff while holding index.lock.
+        let unchanged = entry.original_path.is_none()
+            && self
+                .read_worktree_sides(entry, diff.area)
+                .ok()
+                .is_some_and(|(file, old, new)| {
+                    file == diff.snapshot.file
+                        && old == diff.snapshot.old
+                        && new == diff.snapshot.new
+                        && self
+                            .check_partial_attributes(&diff.path, diff.area, &new)
+                            .is_ok()
+                });
         ensure!(
-            fresh
-                .partial
-                .as_ref()
-                .is_some_and(|fresh| fresh.snapshot == diff.snapshot),
+            unchanged,
             "This file, its staged contents, or its Git attributes changed; refresh and select changes again."
         );
         let mut input = if remove {
@@ -1990,6 +2114,12 @@ fn bounded_write_output_with(
                 .and_then(|writer| writer.as_ref().err())
                 .map(|error| anyhow::anyhow!("Unable to start a Git pipe writer: {error}"))
         });
+    let _cancel = control.as_ref().map(|token| {
+        let sender = signals.cancel_sender();
+        token.on_cancel(move || {
+            let _ = sender.send(WaitPart::Cancelled);
+        })
+    });
     let mut exit = ExitWatcher::start(&child, signals, &seam);
     let start = Instant::now();
     let mut status = None;
@@ -2033,10 +2163,11 @@ fn bounded_write_output_with(
                 (_, _, Err(error)) => break Err(error.into()),
                 _ => break Err(anyhow::anyhow!("Missing Git exit status")),
             }
-            let looking = control.is_some() || exit.polling();
+            let looking = exit.polling();
             events.next(if looking { left.min(seam.tick) } else { left });
         }
     };
+    drop(_cancel);
     if result.is_err() {
         // No status was taken on the way here, whether a helper watched or the
         // wait polled, so the reap is the last thing done to the child or to
@@ -2257,6 +2388,115 @@ fn preview_bytes_with_edits(
         patch = "File contents are identical.\n".into();
     }
     (TextPreview::Patch(patch), edits)
+}
+
+fn push_rewrite_rule(groups: &mut Vec<(String, Vec<String>)>, base: String, prefix: String) {
+    if let Some((_, prefixes)) = groups.iter_mut().find(|(existing, _)| *existing == base) {
+        prefixes.push(prefix);
+    } else {
+        groups.push((base, vec![prefix]));
+    }
+}
+
+fn rewrite_url(raw: &str, groups: &[(String, Vec<String>)]) -> Option<String> {
+    let mut best: Option<(&str, &str)> = None;
+    for (base, prefixes) in groups {
+        for prefix in prefixes {
+            if raw.starts_with(prefix.as_str())
+                && best.is_none_or(|(best_prefix, _)| prefix.len() > best_prefix.len())
+            {
+                best = Some((prefix.as_str(), base.as_str()));
+            }
+        }
+    }
+    best.map(|(prefix, base)| format!("{base}{}", &raw[prefix.len()..]))
+}
+
+fn parse_remotes_config(stdout: &[u8]) -> Result<Vec<Remote>> {
+    #[derive(Default)]
+    struct RawRemote {
+        url: Option<String>,
+        push_url: Option<String>,
+    }
+
+    let mut by_name: std::collections::BTreeMap<String, RawRemote> =
+        std::collections::BTreeMap::new();
+    let mut instead_of: Vec<(String, Vec<String>)> = Vec::new();
+    let mut push_instead_of: Vec<(String, Vec<String>)> = Vec::new();
+
+    for record in stdout.split(|byte| *byte == 0) {
+        if record.is_empty() {
+            continue;
+        }
+        let Some(split) = record.iter().position(|byte| *byte == b'\n') else {
+            continue;
+        };
+        let key = &record[..split];
+        let value = &record[split + 1..];
+        if let Some(rest) = key.strip_prefix(b"remote.") {
+            let Some(dot) = rest.iter().rposition(|byte| *byte == b'.') else {
+                continue;
+            };
+            if dot == 0 {
+                continue;
+            }
+            let name = text(&rest[..dot]);
+            let field = &rest[dot + 1..];
+            let val = text(value);
+            let entry = by_name.entry(name).or_default();
+            match field {
+                b"url" => {
+                    if val.is_empty() {
+                        entry.url = None;
+                    } else if entry.url.is_none() {
+                        entry.url = Some(val);
+                    }
+                }
+                b"pushurl" => {
+                    if val.is_empty() {
+                        entry.push_url = None;
+                    } else if entry.push_url.is_none() {
+                        entry.push_url = Some(val);
+                    }
+                }
+                _ => {}
+            }
+        } else if let Some(rest) = key.strip_prefix(b"url.") {
+            let Some(dot) = rest.iter().rposition(|byte| *byte == b'.') else {
+                continue;
+            };
+            if dot == 0 {
+                continue;
+            }
+            let base = text(&rest[..dot]);
+            let field = &rest[dot + 1..];
+            let prefix = text(value);
+            match field {
+                b"insteadof" => push_rewrite_rule(&mut instead_of, base, prefix),
+                b"pushinsteadof" => push_rewrite_rule(&mut push_instead_of, base, prefix),
+                _ => {}
+            }
+        }
+    }
+
+    let mut remotes = Vec::with_capacity(by_name.len());
+    for (name, entry) in by_name {
+        let Some(raw_url) = entry.url else {
+            continue;
+        };
+        validate_remote_name(&name)?;
+        let url = rewrite_url(&raw_url, &instead_of).unwrap_or_else(|| raw_url.clone());
+        let push_url = match entry.push_url {
+            Some(raw_push) => rewrite_url(&raw_push, &instead_of).unwrap_or(raw_push),
+            None => rewrite_url(&raw_url, &push_instead_of).unwrap_or_else(|| url.clone()),
+        };
+        remotes.push(Remote {
+            name,
+            url,
+            push_url,
+        });
+    }
+    Ok(remotes)
 }
 
 #[cfg(test)]
@@ -3310,5 +3550,92 @@ mod tests {
             error.to_string(),
             "Git output exceeded its limit. The operation may have completed; refresh and inspect before retrying."
         );
+    }
+
+    #[test]
+    fn parse_remotes_config_handles_dotted_names_rewrites_and_pushurl() {
+        let mut raw = Vec::new();
+        for (k, v) in [
+            ("remote.origin.url", "gh:org/repo.git"),
+            (
+                "remote.origin.url",
+                "https://ignored-second.example/repo.git",
+            ),
+            ("remote.my.dotted.url", "https://git.example/a/b.git"),
+            ("remote.my.dotted.pushurl", "gh:org/push.git"),
+            ("remote.orphan.fetch", "+refs/heads/*:refs/remotes/orphan/*"),
+            ("remote.reset.url", "https://first.example/a.git"),
+            ("remote.reset.url", ""),
+            ("remote.reset.url", "https://after-reset.example/a.git"),
+            ("url.https://github.com/.insteadof", "gh:"),
+            ("url.ssh://git@github.com/.pushinsteadof", "gh:"),
+        ] {
+            raw.extend_from_slice(k.as_bytes());
+            raw.push(b'\n');
+            raw.extend_from_slice(v.as_bytes());
+            raw.push(0);
+        }
+        let remotes = parse_remotes_config(&raw).unwrap();
+        assert_eq!(remotes.len(), 3);
+        assert_eq!(remotes[0].name, "my.dotted");
+        assert_eq!(remotes[0].url, "https://git.example/a/b.git");
+        // Explicit pushurl rewrites via insteadOf, not pushInsteadOf.
+        assert_eq!(remotes[0].push_url, "https://github.com/org/push.git");
+        assert_eq!(remotes[1].name, "origin");
+        assert_eq!(remotes[1].url, "https://github.com/org/repo.git");
+        assert_eq!(remotes[1].push_url, "ssh://git@github.com/org/repo.git");
+        assert_eq!(remotes[2].name, "reset");
+        assert_eq!(remotes[2].url, "https://after-reset.example/a.git");
+        assert_eq!(remotes[2].push_url, "https://after-reset.example/a.git");
+
+        // Equal-length prefixes follow first-seen base order (matching Git
+        // `remote.c`), and empty prefixes match when no longer rule applies.
+        let mut grouped = Vec::new();
+        for (k, v) in [
+            ("remote.tied.url", "bar:x"),
+            ("remote.empty.url", "rel/path"),
+            ("url.A/.insteadof", "foo:"),
+            ("url.B/.insteadof", "bar:"),
+            ("url.A/.insteadof", "bar:"),
+            ("url.EMPTY/.insteadof", ""),
+        ] {
+            grouped.extend_from_slice(k.as_bytes());
+            grouped.push(b'\n');
+            grouped.extend_from_slice(v.as_bytes());
+            grouped.push(0);
+        }
+        let grouped = parse_remotes_config(&grouped).unwrap();
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].name, "empty");
+        assert_eq!(grouped[0].url, "EMPTY/rel/path");
+        assert_eq!(grouped[1].name, "tied");
+        assert_eq!(grouped[1].url, "A/x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn operation_cancel_wakes_write_wait_without_tick_polling() {
+        use crate::process_io::fixtures::shell;
+        let control = OperationControl::default();
+        let trigger = control.clone();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(40));
+            trigger.cancel();
+        });
+        let long = Duration::from_secs(10);
+        let (seam, owned) = write_seam(long, process_io::ExitWatch::Readiness, None);
+        let started = Instant::now();
+        let err = authentication::run_controlled(control, || {
+            bounded_write_output_with(shell("sleep 5"), None, long, seam)
+        })
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        canceller.join().unwrap();
+        assert!(err.to_string().contains("cancelled"), "{err}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cancel should wake immediately without waiting for 10s tick: {elapsed:?}"
+        );
+        assert_eq!(Arc::strong_count(&owned), 1);
     }
 }

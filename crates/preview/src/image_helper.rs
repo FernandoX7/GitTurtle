@@ -401,6 +401,51 @@ pub(crate) fn serve(input: impl Read, output: impl Write) -> io::Result<()> {
     })
 }
 
+/// Zero-copy [`serve`] over an in-memory request slice starting immediately
+/// after `REQUEST_MAGIC`. Used when stdin is a sealed read-only `memfd`.
+pub(crate) fn serve_slice(after_magic: &[u8], mut output: impl Write) -> io::Result<()> {
+    let reply = parse_slice_request(after_magic).and_then(|(format, edge, bytes)| {
+        let decode: Decode = match format {
+            ConfinedFormat::Avif => crate::avif::decode,
+            ConfinedFormat::Jp2 | ConfinedFormat::J2k => crate::jpeg2000_hayro::decode,
+        };
+        let mut timings = ImageTimings::default();
+        let decoded = catch_unwind(AssertUnwindSafe(|| decode(bytes, edge, &mut timings)))
+            .unwrap_or(Err(ImageErrorKind::DecoderFailed))?;
+        Ok((format, decoded, timings))
+    });
+    write_reply(&mut output, &reply)?;
+    output.flush()
+}
+
+fn parse_slice_request(after_magic: &[u8]) -> Result<(ConfinedFormat, u32, &[u8]), ImageErrorKind> {
+    let header_rest = IMAGE_REQUEST_HEADER_BYTES - 4;
+    if after_magic.len() < header_rest {
+        return Err(ImageErrorKind::Request);
+    }
+    let header = &after_magic[..header_rest];
+    if u32_at(header, 0) != PROTOCOL_VERSION {
+        return Err(ImageErrorKind::Request);
+    }
+    let format = ConfinedFormat::from_code(header[4]).ok_or(ImageErrorKind::Request)?;
+    let edge = u32_at(header, 5);
+    if !(1..=MAX_HELPER_IMAGE_EDGE).contains(&edge) {
+        return Err(ImageErrorKind::Request);
+    }
+    let length = u32_at(header, 9) as usize;
+    if length > MAX_INPUT_BYTES {
+        return Err(ImageErrorKind::InputTooLarge);
+    }
+    let body = after_magic
+        .get(header_rest..header_rest + length)
+        .ok_or(ImageErrorKind::Request)?;
+    let prefix = &body[..length.min(SNIFF_BYTES)];
+    if confined_image_format(prefix) != Some(format) {
+        return Err(ImageErrorKind::FormatMismatch);
+    }
+    Ok((format, edge, body))
+}
+
 fn serve_with(
     mut input: impl Read,
     mut output: impl Write,

@@ -82,19 +82,42 @@ impl GitRepository {
             }
             tracked.insert(path);
         }
-        let config = |key: &str| -> Result<Option<PathBuf>> {
+        let mut config_cmd = work::normal_command(self.target());
+        config_cmd.arg("--no-optional-locks").args([
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^core\.(ignorecase|excludesfile)$",
+        ]);
+        let config_out = bounded_output(config_cmd, GIT_TIMEOUT)?;
+        let mut raw_ignorecase: Option<Option<Vec<u8>>> = None;
+        let mut raw_excludes: Option<Option<Vec<u8>>> = None;
+        if config_out.status.success() {
+            for entry in config_out.stdout.split(|byte| *byte == 0) {
+                if entry.is_empty() {
+                    continue;
+                }
+                let (key, value) = match entry.iter().position(|byte| *byte == b'\n') {
+                    Some(end) => (&entry[..end], Some(&entry[end + 1..])),
+                    None => (entry, None),
+                };
+                match key {
+                    b"core.ignorecase" => raw_ignorecase = Some(value.map(<[u8]>::to_vec)),
+                    b"core.excludesfile" => raw_excludes = Some(value.map(<[u8]>::to_vec)),
+                    _ => {}
+                }
+            }
+        } else if !(config_out.status.code() == Some(1) && config_out.stderr.is_empty()) {
+            anyhow::bail!(
+                "Read local watch configuration: {}",
+                reported(&config_out.stderr).trim()
+            );
+        }
+        let single_config = |flag: &str, key: &str| -> Result<Option<PathBuf>> {
             let mut command = work::normal_command(self.target());
-            command.arg("--no-optional-locks").args([
-                "config",
-                if key == "core.ignorecase" {
-                    "--bool"
-                } else {
-                    "--path"
-                },
-                "--null",
-                "--get",
-                key,
-            ]);
+            command
+                .arg("--no-optional-locks")
+                .args(["config", flag, "--null", "--get", key]);
             let output = bounded_output(command, GIT_TIMEOUT)?;
             if output.status.code() == Some(1) {
                 return Ok(None);
@@ -108,10 +131,33 @@ impl GitRepository {
                 output.stdout.strip_suffix(&[0]).unwrap_or(&output.stdout),
             )))
         };
-        let case_insensitive =
-            config("core.ignorecase")?.is_some_and(|value| value == Path::new("true"));
-        let (_, common) = self.git_directories()?;
-        let global = config("core.excludesFile")?.or_else(|| {
+        let case_insensitive = match raw_ignorecase {
+            None => false,
+            Some(value) => match super::git_boolean(value.as_deref()) {
+                Some(on) => on,
+                None => single_config("--bool", "core.ignorecase")?
+                    .is_some_and(|value| value == Path::new("true")),
+            },
+        };
+        let common = if matches!(self.verify_at_path()?, super::FoundAtPath::Same) {
+            self.common_dir().to_path_buf()
+        } else {
+            self.git_directories()?.1
+        };
+        let configured_excludes = match raw_excludes {
+            None => None,
+            Some(None) => single_config("--path", "core.excludesFile")?,
+            Some(Some(bytes))
+                if bytes.starts_with(b"~")
+                    || bytes.starts_with(b"%(prefix)")
+                    || bytes.starts_with(b":(optional)") =>
+            {
+                single_config("--path", "core.excludesFile")?
+            }
+            Some(Some(bytes)) if bytes.is_empty() => Some(PathBuf::new()),
+            Some(Some(bytes)) => Some(path_from_bytes(&bytes)),
+        };
+        let global = configured_excludes.or_else(|| {
             std::env::var_os("XDG_CONFIG_HOME")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)

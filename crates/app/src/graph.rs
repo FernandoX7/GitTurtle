@@ -2,7 +2,7 @@ use crate::appearance::{Palette, palette};
 use gitturtle_core::Commit;
 use gpui_kit::{
     AnyElement, App, Bounds, ContentMask, IntoElement, ParentElement, PathBuilder, Styled, canvas,
-    div, point, px, quad, rgb, size,
+    div, fill, point, px, quad, rgb, size,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -12,6 +12,9 @@ use std::{
 const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
 const NODE_MARGIN: f32 = 10.;
+/// Lane stroke thickness in logical pixels, shared by straight vertical quads
+/// and curved merge/branch paths so joints stay flush across row boundaries.
+const EDGE_WIDTH: f32 = 1.6;
 /// The selected node's radius, the widest a node is drawn.
 const SELECTED_RADIUS: f32 = 5.;
 /// The narrowest compact lane pitch. Nodes keep their radii at every pitch,
@@ -354,20 +357,59 @@ pub fn render(
                     // cell has no room for shows no cut node or line at its
                     // edge; an edge to it leaves toward it.
                     let half = px(lane_spacing / 2.);
+                    let visible_left = x(lane_offset) - half;
+                    let visible_right = x(last) + half;
                     let band = Bounds::from_corners(
-                        point(x(lane_offset) - half, top),
-                        point(x(last) + half, bottom),
+                        point(visible_left, top),
+                        point(visible_right, bottom),
                     );
+                    let scale = window.scale_factor().max(1.);
+                    let stroke_dp = (EDGE_WIDTH * scale).round().max(1.);
+                    let stroke = px(stroke_dp / scale);
+                    let half_stroke = stroke / 2.;
+                    // Snap each straight vertical stroke to an integer device-pixel
+                    // span of exact `stroke_dp` width so straight quads never
+                    // oscillate by 1 px across lanes or mismatch curved thickness,
+                    // while keeping curved endpoints and commit nodes at exact `x(lane)`.
+                    let lane_quad_span = |lane| {
+                        let raw_center = f32::from(x(lane));
+                        let left_dp = (raw_center * scale - stroke_dp * 0.5).round();
+                        let right_dp = left_dp + stroke_dp;
+                        (px(left_dp / scale), px(right_dp / scale))
+                    };
                     window.with_content_mask(Some(ContentMask { bounds: band }), |window| {
                         if !filtered {
-                            // Curves meet adjacent rows at exact lane coordinates with
-                            // vertical tangents, including collapsing lanes.
+                            // Straight vertical lanes paint directly as GPU quads
+                            // without Lyon path tessellation; curves meet adjacent
+                            // rows at exact lane coordinates with vertical tangents.
                             for edge in row.edges.iter() {
-                                let start =
-                                    point(x(edge.from), if edge.from_node { middle } else { top });
-                                let end = point(x(edge.to), bottom);
+                                let start_y = if edge.from_node { middle } else { top };
+                                let color = rgb(colors[edge.color % colors.len()]);
+                                if edge.from == edge.to {
+                                    let (left, right) = lane_quad_span(edge.from);
+                                    if right < visible_left || left > visible_right {
+                                        continue;
+                                    }
+                                    window.paint_quad(fill(
+                                        Bounds::from_corners(
+                                            point(left, start_y),
+                                            point(right, bottom),
+                                        ),
+                                        color,
+                                    ));
+                                    continue;
+                                }
+                                let start_x = x(edge.from);
+                                let end_x = x(edge.to);
+                                if start_x.max(end_x) + half_stroke < visible_left
+                                    || start_x.min(end_x) - half_stroke > visible_right
+                                {
+                                    continue;
+                                }
+                                let start = point(start_x, start_y);
+                                let end = point(end_x, bottom);
                                 let distance = end.y - start.y;
-                                let mut path = PathBuilder::stroke(px(1.6));
+                                let mut path = PathBuilder::stroke(stroke);
                                 path.move_to(start);
                                 path.cubic_bezier_to(
                                     end,
@@ -375,15 +417,19 @@ pub fn render(
                                     point(end.x, end.y - distance * 0.5),
                                 );
                                 if let Ok(path) = path.build() {
-                                    window.paint_path(path, rgb(colors[edge.color % colors.len()]));
+                                    window.paint_path(path, color);
                                 }
                             }
                             if row.incoming {
-                                let mut path = PathBuilder::stroke(px(1.6));
-                                path.move_to(point(x(row.lane), top));
-                                path.line_to(point(x(row.lane), middle));
-                                if let Ok(path) = path.build() {
-                                    window.paint_path(path, rgb(colors[row.color % colors.len()]));
+                                let (left, right) = lane_quad_span(row.lane);
+                                if right >= visible_left && left <= visible_right {
+                                    window.paint_quad(fill(
+                                        Bounds::from_corners(
+                                            point(left, top),
+                                            point(right, middle),
+                                        ),
+                                        rgb(colors[row.color % colors.len()]),
+                                    ));
                                 }
                             }
                         }
@@ -757,5 +803,129 @@ mod tests {
             .unwrap();
         assert!(hidden);
         assert!(rows[0].edges.is_empty());
+    }
+
+    #[crate::gpui::test]
+    async fn straight_vertical_lanes_paint_as_masked_quads_and_skip_offscreen_or_filtered(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{Context, Render, Window};
+
+        struct GraphHarness {
+            row: GraphRow,
+            width: f32,
+            lane_offset: usize,
+            lane_spacing: f32,
+            row_height: f32,
+            filtered: bool,
+        }
+
+        impl Render for GraphHarness {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                render(
+                    self.row.clone(),
+                    self.width,
+                    self.lane_offset,
+                    self.lane_spacing,
+                    self.row_height,
+                    RowStyle {
+                        active: false,
+                        merge: false,
+                        filtered: self.filtered,
+                    },
+                )
+            }
+        }
+
+        // Row on lane 1 with incoming segment, straight pass-through on lane 0,
+        // straight outgoing on lane 1, curved branch to lane 2, and an offscreen
+        // pass-through on lane 8 outside the visible 3-lane viewport.
+        let row = GraphRow {
+            lane: 1,
+            color: 1,
+            incoming: true,
+            edges: Arc::from([
+                Edge {
+                    from: 0,
+                    to: 0,
+                    color: 0,
+                    from_node: false,
+                },
+                Edge {
+                    from: 1,
+                    to: 1,
+                    color: 1,
+                    from_node: true,
+                },
+                Edge {
+                    from: 1,
+                    to: 2,
+                    color: 2,
+                    from_node: true,
+                },
+                Edge {
+                    from: 8,
+                    to: 8,
+                    color: 3,
+                    from_node: false,
+                },
+            ]),
+            width: 9,
+        };
+        let (view, cx) = cx.add_window_view(|_, _| GraphHarness {
+            row,
+            width: 64.,
+            lane_offset: 0,
+            lane_spacing: 19.3,
+            row_height: 28.,
+            filtered: false,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let (scale, quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+        let expected_dp = (EDGE_WIDTH * scale.max(1.)).round().max(1.);
+        // Straight lane strokes paint as sharp rectangular quads with uniform
+        // device-pixel width across lanes, even at fractional lane spacing.
+        let stroke_quads: Vec<_> = quads
+            .iter()
+            .filter(|q| q.corner_radii.top_left.0 == 0. && q.bounds.size.width.0 / scale <= 2.5)
+            .collect();
+        // Expect 3 vertical stroke quads: pass-through lane 0 (full 28 px),
+        // outgoing lane 1 (half 14 px), and incoming lane 1 (half 14 px).
+        // Offscreen lane 8 is culled; curved edge 1->2 uses a path, not a quad.
+        assert_eq!(stroke_quads.len(), 3, "stroke_quads={stroke_quads:#?}");
+        for stroke_quad in &stroke_quads {
+            assert!(
+                (stroke_quad.bounds.size.width.0 - expected_dp).abs() < 0.01,
+                "uniform device-pixel width expected {expected_dp}, got {}",
+                stroke_quad.bounds.size.width.0
+            );
+        }
+        let mut heights: Vec<i32> = stroke_quads
+            .iter()
+            .map(|q| (q.bounds.size.height.0 / scale).round() as i32)
+            .collect();
+        heights.sort_unstable();
+        assert_eq!(heights, [14, 14, 28]);
+
+        // Filtered rows hide ancestry strokes and paint only the node circle.
+        view.update(cx, |harness, cx| {
+            harness.filtered = true;
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let filtered_strokes = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|q| q.corner_radii.top_left.0 == 0. && q.bounds.size.width.0 / scale <= 2.5)
+                .count()
+        });
+        assert_eq!(filtered_strokes, 0);
     }
 }

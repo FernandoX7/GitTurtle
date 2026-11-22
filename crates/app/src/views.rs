@@ -4111,7 +4111,15 @@ impl GitTurtle {
                                 split = Some(view.clone());
                                 div().into_any_element()
                             }
-                            None => empty("Loading split comparison…", ""),
+                            None if self.loading.is_some() => {
+                                empty("Loading split comparison…", "")
+                            }
+                            None => empty(
+                                self.error
+                                    .as_deref()
+                                    .unwrap_or("Split comparison unavailable"),
+                                "",
+                            ),
                         }
                     } else if self.text_mode == TextMode::Unified && patch.is_empty() {
                         if self.review.options.hide_whitespace {
@@ -10869,7 +10877,7 @@ impl Render for GitTurtle {
         let page = match self.page {
             AppPage::Repository => self.render_repository(chrome, window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
-            AppPage::Settings => self.settings_page_element(window),
+            AppPage::Settings => self.settings_page_element(window, cx),
         };
         // The pane spans the whole body so a project stays one click away on
         // Repository and Settings. The hub already lists projects full width.

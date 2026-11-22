@@ -198,6 +198,26 @@ pub fn read_reply(mut input: impl Read) -> io::Result<Result<PageReply, ErrorKin
     Ok(reply)
 }
 
+/// Maximum request frame size across both PDF and image requests.
+pub const MAX_REQUEST_BYTES: usize = MAX_INPUT_BYTES
+    + if REQUEST_HEADER_BYTES > image_helper::IMAGE_REQUEST_HEADER_BYTES {
+        REQUEST_HEADER_BYTES
+    } else {
+        image_helper::IMAGE_REQUEST_HEADER_BYTES
+    };
+
+struct SubSlice<B> {
+    buffer: B,
+    start: usize,
+    len: usize,
+}
+
+impl<B: AsRef<[u8]>> AsRef<[u8]> for SubSlice<B> {
+    fn as_ref(&self) -> &[u8] {
+        &self.buffer.as_ref()[self.start..self.start + self.len]
+    }
+}
+
 /// The helper's whole job: read one request from `input`, render its page and
 /// text with hayro or decode its image, and write one reply to `output`. The
 /// magic chooses the frame before anything is allocated; an unknown magic gets
@@ -205,6 +225,66 @@ pub fn read_reply(mut input: impl Read) -> io::Result<Result<PageReply, ErrorKin
 /// every other failure is an error reply.
 pub fn serve(input: impl Read, output: impl Write) -> io::Result<()> {
     serve_with(input, output, pdf_hayro::prepare)
+}
+
+/// Zero-copy [`serve`] over an owned in-memory request buffer (such as a
+/// read-only `mmap` of a fully sealed `memfd`), avoiding up to 32 MiB of pipe
+/// copies and heap allocations inside the confined helper.
+pub fn serve_buffer<B: AsRef<[u8]> + Send + Sync + 'static>(
+    buffer: B,
+    mut output: impl Write,
+) -> io::Result<()> {
+    let slice = buffer.as_ref();
+    let Some(magic) = slice.get(..4) else {
+        write_reply(&mut output, &Err(ErrorKind::Request))?;
+        return output.flush();
+    };
+    if magic == image_helper::REQUEST_MAGIC {
+        return image_helper::serve_slice(&slice[4..], output);
+    }
+    if magic != REQUEST_MAGIC {
+        write_reply(&mut output, &Err(ErrorKind::Request))?;
+        return output.flush();
+    }
+    let reply = parse_pdf_buffer_header(slice).and_then(|(page, length)| {
+        let data = std::sync::Arc::new(SubSlice {
+            buffer,
+            start: REQUEST_HEADER_BYTES,
+            len: length,
+        });
+        let pdf = hayro::hayro_syntax::PdfData::from(data);
+        catch_unwind(AssertUnwindSafe(|| pdf_hayro::prepare_data(pdf, page)))
+            .unwrap_or(Err(ErrorKind::RendererFailed))
+    });
+    write_reply(&mut output, &reply)?;
+    output.flush()
+}
+
+fn parse_pdf_buffer_header(slice: &[u8]) -> Result<(usize, usize), ErrorKind> {
+    let header = slice
+        .get(4..REQUEST_HEADER_BYTES)
+        .ok_or(ErrorKind::Request)?;
+    if u32_at(header, 0) != PROTOCOL_VERSION {
+        return Err(ErrorKind::Request);
+    }
+    let page = u32_at(header, 4) as usize;
+    let length = u32_at(header, 8) as usize;
+    if length > MAX_INPUT_BYTES {
+        return Err(ErrorKind::InputTooLarge);
+    }
+    if page >= MAX_PDF_PAGES {
+        return Err(ErrorKind::PageBound);
+    }
+    if length < PDF_SIGNATURE.len() {
+        return Err(ErrorKind::NotPdf);
+    }
+    let body = slice
+        .get(REQUEST_HEADER_BYTES..REQUEST_HEADER_BYTES + length)
+        .ok_or(ErrorKind::Request)?;
+    if !body.starts_with(PDF_SIGNATURE) {
+        return Err(ErrorKind::NotPdf);
+    }
+    Ok((page, length))
 }
 
 fn serve_with(
@@ -784,5 +864,55 @@ mod tests {
         })
         .unwrap();
         assert_eq!(failure(&reply), ErrorKind::RendererFailed);
+    }
+
+    #[test]
+    fn serve_buffer_round_trips_pdf_and_image_and_enforces_header_bounds() {
+        let source = pdf(1);
+        let mut out = Vec::new();
+        serve_buffer(request(0, &source), &mut out).unwrap();
+        let page = read_reply(&out[..]).unwrap().unwrap();
+        assert_eq!(page.page_count, 1);
+        assert_eq!(page.page, 0);
+
+        let mut image_req =
+            encode_image_request(ConfinedFormat::Jp2, 10, crate::image_helper::tests::RGB_JP2)
+                .unwrap()
+                .to_vec();
+        image_req.extend_from_slice(crate::image_helper::tests::RGB_JP2);
+        let mut image_out = Vec::new();
+        serve_buffer(image_req, &mut image_out).unwrap();
+        assert_eq!(&image_out[..4], b"GTIr");
+
+        // Truncated body, wrong version, oversize length, out-of-range page, non-PDF header.
+        let mut truncated = request(0, &source);
+        truncated.pop();
+        let mut reply = Vec::new();
+        serve_buffer(truncated, &mut reply).unwrap();
+        assert_eq!(failure(&reply), ErrorKind::Request);
+
+        let mut bad_version = request(0, &source);
+        bad_version[4..8].copy_from_slice(&99u32.to_le_bytes());
+        reply.clear();
+        serve_buffer(bad_version, &mut reply).unwrap();
+        assert_eq!(failure(&reply), ErrorKind::Request);
+
+        let mut too_large = request(0, &source);
+        too_large[12..16].copy_from_slice(&((MAX_INPUT_BYTES + 1) as u32).to_le_bytes());
+        reply.clear();
+        serve_buffer(too_large, &mut reply).unwrap();
+        assert_eq!(failure(&reply), ErrorKind::InputTooLarge);
+
+        let mut bad_page = request(0, &source);
+        bad_page[8..12].copy_from_slice(&(MAX_PDF_PAGES as u32).to_le_bytes());
+        reply.clear();
+        serve_buffer(bad_page, &mut reply).unwrap();
+        assert_eq!(failure(&reply), ErrorKind::PageBound);
+
+        let mut not_pdf = request(0, &source);
+        not_pdf[REQUEST_HEADER_BYTES..REQUEST_HEADER_BYTES + 5].copy_from_slice(b"HELLO");
+        reply.clear();
+        serve_buffer(not_pdf, &mut reply).unwrap();
+        assert_eq!(failure(&reply), ErrorKind::NotPdf);
     }
 }

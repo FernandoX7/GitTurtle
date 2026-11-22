@@ -1664,6 +1664,7 @@ impl SeriesBrowser {
             origins: Default::default(),
             repo: self.repo.clone(),
             file,
+            prepare_split: false,
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;

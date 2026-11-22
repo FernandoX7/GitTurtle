@@ -183,6 +183,7 @@ struct EmbeddedAssets;
 const APP_ICON_PATH: &str = "branding/app-icon.png";
 /// The status of a History file's preview read, which Back abandons.
 const PREVIEW_LABEL: &str = "Loading preview…";
+const SPLIT_PREPARING_LABEL: &str = "Preparing split comparison…";
 /// The status of a captured comparison's preview read as its tab is
 /// restored (`restore_captured_tab_comparison`), which Back abandons too.
 const RESTORED_PREVIEW_LABEL: &str = "Restoring captured comparison…";
@@ -219,14 +220,16 @@ impl PreviewRead {
                 repo,
                 file,
                 origins,
+                ..
             } => Some(PreviewTarget {
                 repository: repo.path().to_owned(),
                 file: file.clone(),
                 origins: origins.clone(),
             }),
-            Job::TrackedPreview { .. } | Job::WorkingPreview { .. } | Job::ReviewText { .. } => {
-                None
-            }
+            Job::TrackedPreview { .. }
+            | Job::WorkingPreview { .. }
+            | Job::ReviewText { .. }
+            | Job::PrepareSplit { .. } => None,
             _ => return None,
         };
         Some(Self { generation, target })
@@ -371,10 +374,9 @@ struct GitTurtle {
     /// (`GitTurtle::return_modal_to`).
     modal_replaced_focus: Option<FocusHandle>,
     modal_focus_generation: u64,
-    settings_editor: Entity<InputState>,
-    /// The Settings page's own view, embedded cached by `render`
-    /// (`settings::SettingsPage`).
-    settings_page: Entity<settings::SettingsPage>,
+    /// Settings page view and its four text inputs, created lazily on first
+    /// entry to Settings so startup into a repository allocates none of them.
+    settings_ui: Option<settings::SettingsUi>,
     /// Where the Settings page's last build placed the picker cards, whose
     /// bodies `settings::CardLayer` draws after the page every frame.
     picker_cards: settings::CardSlots,
@@ -399,6 +401,9 @@ struct GitTurtle {
     project_library: project_library::ProjectLibrary,
     /// Saved custom themes, which a custom `settings.theme` selection resolves against.
     custom_themes: Vec<appearance::custom::CustomTheme>,
+    /// Whether the theme picker's retained miniature, body, and focus entities
+    /// have been initialized (deferred until Settings is first opened).
+    theme_cards_ready: bool,
     /// One miniature per picker card, built-in and custom, so the Settings
     /// picker can reuse the preview bodies that a palette change does not
     /// alter (`settings::ThemePreviewBody`). Each is stored with the selection
@@ -587,13 +592,10 @@ struct GitTurtle {
     hub: Entity<projects::ProjectHub>,
     commit_title: Entity<InputState>,
     commit_message: Entity<TextareaState>,
-    identity_name: Entity<InputState>,
-    identity_email: Entity<InputState>,
     branch_name: Entity<InputState>,
     branch_input_scope: BranchInputScope,
     remote_name: Entity<InputState>,
     remote_branch: Entity<InputState>,
-    settings_branch: Entity<InputState>,
     settings_drafts: settings::DraftState,
     column_drag: Option<(columns::ColumnId, Pixels, f32)>,
     column_menu: bool,
@@ -821,93 +823,14 @@ impl GitTurtle {
                 .placeholder(workspace::DESCRIPTION_PLACEHOLDER)
                 .rows(5)
         });
-        let identity_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
-        let identity_email =
-            cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
         let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("feature/my-change"));
         let remote_name = cx.new(|cx| InputState::new(window, cx).placeholder("Remote"));
         let remote_branch = cx.new(|cx| InputState::new(window, cx).placeholder("Remote branch"));
-        let settings_branch =
-            cx.new(|cx| InputState::new(window, cx).default_value(settings.default_branch.clone()));
         let settings_drafts = settings::DraftState::new(settings.default_branch.clone());
-        let settings_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(settings.external_editor.clone())
-                .placeholder(if cfg!(target_os = "macos") {
-                    "Visual Studio Code"
-                } else {
-                    "code"
-                })
-        });
-        // A built-in's miniature never changes: it draws one built-in
-        // palette. A custom miniature draws its saved palette until that theme
-        // is saved again. Their entities outlive a palette change so its frame
-        // can reuse them.
-        let theme_previews: Vec<(_, Entity<settings::ThemePreviewBody>)> =
-            appearance::ThemeChoice::ALL
-                .into_iter()
-                .map(|choice| {
-                    (
-                        appearance::custom::ThemeSelection::BuiltIn(choice),
-                        choice.palette(),
-                    )
-                })
-                .chain(preferences.custom_themes.iter().map(|theme| {
-                    (
-                        appearance::custom::ThemeSelection::Custom(theme.id),
-                        theme.palette,
-                    )
-                }))
-                .map(|(selection, palette)| {
-                    (
-                        selection,
-                        cx.new(|_| settings::ThemePreviewBody::new(palette)),
-                    )
-                })
-                .collect();
-        let theme_card_bodies = theme_previews
-            .iter()
-            .map(|(selection, miniature)| {
-                let miniature = miniature.entity_id();
-                (
-                    *selection,
-                    cx.new(|_| settings::ThemeCardBody::new(miniature)),
-                )
-            })
-            .collect();
-        let theme_card_focus = appearance::ThemeChoice::ALL
-            .into_iter()
-            .map(appearance::custom::ThemeSelection::BuiltIn)
-            .chain(
-                preferences
-                    .custom_themes
-                    .iter()
-                    .map(|theme| appearance::custom::ThemeSelection::Custom(theme.id)),
-            )
-            .map(|selection| (selection, cx.focus_handle()))
-            .collect();
         let file_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder(views::CHANGED_FILTER_PLACEHOLDER));
         let working_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder(workspace::FILTER_PLACEHOLDER));
-        // The Settings page's own view; `render` embeds it cached and the app
-        // notifies it at every site that alters the page
-        // (`settings::SettingsPage`).
-        let settings_page = {
-            let owner = cx.entity().downgrade();
-            cx.new(|cx| {
-                settings::SettingsPage::new(
-                    owner,
-                    [
-                        &settings_branch,
-                        &settings_editor,
-                        &identity_name,
-                        &identity_email,
-                    ],
-                    cx,
-                )
-            })
-        };
         let mut this = Self {
             activity,
             recovery_drafts,
@@ -935,8 +858,7 @@ impl GitTurtle {
             modal_return_focus: None,
             modal_replaced_focus: None,
             modal_focus_generation: 0,
-            settings_editor,
-            settings_page,
+            settings_ui: None,
             picker_cards: settings::CardSlots::default(),
             history_search: history_search::State::default(),
             history_updates: history_updates::State::default(),
@@ -954,9 +876,10 @@ impl GitTurtle {
             project_names: preferences.project_names.clone(),
             project_library: preferences.project_library.clone(),
             custom_themes: preferences.custom_themes.clone(),
-            theme_previews,
-            theme_card_focus,
-            theme_card_bodies,
+            theme_cards_ready: false,
+            theme_previews: Vec::new(),
+            theme_card_focus: Vec::new(),
+            theme_card_bodies: Vec::new(),
             #[cfg(test)]
             draws: Vec::new(),
             #[cfg(test)]
@@ -1029,13 +952,10 @@ impl GitTurtle {
             hub: hub.clone(),
             commit_title,
             commit_message,
-            identity_name,
-            identity_email,
             branch_name,
             branch_input_scope: BranchInputScope::default(),
             remote_name,
             remote_branch,
-            settings_branch,
             settings_drafts,
             column_drag: None,
             column_menu: false,
@@ -1702,6 +1622,16 @@ impl GitTurtle {
                 );
                 self.receive_text_review(content, window, cx);
             }
+            Output::SplitPrepared(content) => {
+                if !matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working) {
+                    return;
+                }
+                self.review.upgrade_original(&content);
+                self.content = Some(content);
+                if self.page == AppPage::Repository {
+                    self.prepare_editor(false, window, cx);
+                }
+            }
             Output::RevisionComparison(_)
             | Output::RevisionTargets(_)
             | Output::TrackedPaths(_) => {} // Modal-owned read results.
@@ -1939,6 +1869,9 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         let shown = self.text_mode == mode;
+        if !shown && mode != TextMode::Split && self.loading == Some(SPLIT_PREPARING_LABEL) {
+            self.invalidate_read();
+        }
         self.text_mode = mode;
         self.ensure_editor(window, cx);
         if !shown {
@@ -2001,13 +1934,18 @@ impl GitTurtle {
         }
         if self.text_mode == TextMode::Split {
             if self.split_view.is_none() {
-                self.split_view = Some(split_diff::new(
-                    Arc::clone(split),
-                    language,
-                    self.focus_ring.clone(),
-                    window,
-                    cx,
-                ));
+                if let Some(split) = split {
+                    self.split_view = Some(split_diff::new(
+                        Arc::clone(split),
+                        language,
+                        self.focus_ring.clone(),
+                        window,
+                        cx,
+                    ));
+                } else {
+                    let content = Arc::clone(content);
+                    self.request_split_presentation(content, window, cx);
+                }
             }
             return;
         }
@@ -2451,12 +2389,44 @@ impl GitTurtle {
                     origins,
                     repo: repo.clone(),
                     file: self.files[index].clone(),
+                    prepare_split: self.text_mode == TextMode::Split,
                 },
                 PREVIEW_LABEL,
                 window,
                 cx,
             );
         }
+    }
+
+    fn request_split_presentation(
+        &mut self,
+        content: Arc<Content>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Never interrupt another active foreground read (such as ReviewText
+        // or a post-write WorkingPreview); when that read lands, `prepare_editor`
+        // will request Split against the fresh content.
+        if self.loading.is_some() {
+            return;
+        }
+        let cache_key = (self.mode == WorkspaceMode::Compare)
+            .then(|| {
+                let repo = self.repository.as_ref()?;
+                let file = self.selected_file.and_then(|i| self.files.get(i))?;
+                Some(worker::PreviewKey::with_origins(
+                    repo.path(),
+                    file,
+                    self.preview_origins(),
+                ))
+            })
+            .flatten();
+        self.request(
+            Job::PrepareSplit { content, cache_key },
+            SPLIT_PREPARING_LABEL,
+            window,
+            cx,
+        );
     }
     /// The revision pair a changed file's comparison is read against, for
     /// the documents it shows: File history's or an inspection's, else the
@@ -5558,5 +5528,191 @@ pub(crate) mod phrase_tests {
         }
         let tip = crate::tags::error_tooltip("fatal: \u{202E}spoofed\u{2066}path\u{2069}");
         assert_eq!(tip.as_ref(), "fatal: spoofedpath");
+    }
+
+    #[gpui::test]
+    async fn lazy_split_loads_on_demand_and_cancels_when_returning_to_history(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .env("GIT_AUTHOR_NAME", "Tester")
+                .env("GIT_AUTHOR_EMAIL", "tester@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Tester")
+                .env("GIT_COMMITTER_EMAIL", "tester@example.invalid")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(path.join("sample.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        run(&["add", "sample.txt"]);
+        run(&["commit", "-q", "-m", "initial"]);
+        std::fs::write(path.join("sample.txt"), "alpha\nbeta changed\ngamma\n").unwrap();
+        run(&["add", "sample.txt"]);
+        run(&["commit", "-q", "-m", "change"]);
+
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let mut app = None;
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                GitTurtle::new(
+                    Some(path.to_path_buf()),
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            app = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let app = app.expect("GitTurtle entity initialized");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        // Settle initial open + commit file list.
+        for _ in 0..4 {
+            app.read_with(&cx, |app, _| app.worker.wait_idle());
+            cx.run_until_parked();
+        }
+        // Enter Compare in default Unified mode: split must remain None.
+        app.update_in(&mut cx, |app, window, cx| app.select_file(0, window, cx));
+        app.read_with(&cx, |app, _| app.worker.wait_idle());
+        cx.run_until_parked();
+        assert!(app.read_with(&cx, |app, _| {
+            app.mode == WorkspaceMode::Compare
+                && app.text_mode == TextMode::Unified
+                && matches!(
+                    app.content.as_deref(),
+                    Some(Content::Text { split: None, .. })
+                )
+                && app.split_view.is_none()
+        }));
+
+        // Hold worker, switch to Split, then press Back before PrepareSplit finishes.
+        let held = app.read_with(&cx, |app, _| app.worker.hold());
+        app.update_in(&mut cx, |app, window, cx| {
+            app.choose_text_mode(TextMode::Split, window, cx);
+        });
+        assert!(app.read_with(&cx, |app, _| {
+            app.loading == Some(SPLIT_PREPARING_LABEL) && app.split_view.is_none()
+        }));
+        app.update_in(&mut cx, |app, window, cx| app.back_to_history(window, cx));
+        drop(held);
+        app.read_with(&cx, |app, _| app.worker.wait_idle());
+        cx.run_until_parked();
+        assert!(app.read_with(&cx, |app, _| {
+            app.mode == WorkspaceMode::History && app.content.is_none() && app.split_view.is_none()
+        }));
+
+        // Re-enter Compare in Unified mode, then switch to Split and let it complete.
+        app.update_in(&mut cx, |app, window, cx| {
+            app.text_mode = TextMode::Unified;
+            app.select_file(0, window, cx);
+        });
+        app.read_with(&cx, |app, _| app.worker.wait_idle());
+        cx.run_until_parked();
+        app.update_in(&mut cx, |app, window, cx| {
+            app.choose_text_mode(TextMode::Split, window, cx);
+        });
+        app.read_with(&cx, |app, _| app.worker.wait_idle());
+        cx.run_until_parked();
+        assert!(app.read_with(&cx, |app, _| {
+            app.mode == WorkspaceMode::Compare
+                && app.text_mode == TextMode::Split
+                && matches!(
+                    app.content.as_deref(),
+                    Some(Content::Text { split: Some(_), .. })
+                )
+                && app.split_view.is_some()
+        }));
+    }
+
+    #[gpui::test]
+    async fn repo_startup_defers_settings_theme_cards_and_project_hub_inputs(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .env("GIT_AUTHOR_NAME", "Tester")
+                .env("GIT_AUTHOR_EMAIL", "tester@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Tester")
+                .env("GIT_COMMITTER_EMAIL", "tester@example.invalid")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(path.join("readme.txt"), "hello\n").unwrap();
+        run(&["add", "readme.txt"]);
+        run(&["commit", "-q", "-m", "initial"]);
+
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let mut app = None;
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                GitTurtle::new(
+                    Some(path.to_path_buf()),
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            app = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let app = app.expect("GitTurtle entity initialized");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        for _ in 0..4 {
+            app.read_with(&cx, |app, _| app.worker.wait_idle());
+            cx.run_until_parked();
+        }
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Launching directly into a repository must not allocate Settings UI,
+        // theme picker card entities, or ProjectHub input entities.
+        assert!(app.read_with(&cx, |app, cx| {
+            app.page == AppPage::Repository
+                && app.settings_ui.is_none()
+                && !app.theme_cards_ready
+                && app.theme_previews.is_empty()
+                && app.theme_card_bodies.is_empty()
+                && app.theme_card_focus.is_empty()
+                && !app.hub.read(cx).inputs_allocated()
+        }));
+
+        // Opening Settings materializes Settings UI and theme picker cards cleanly.
+        app.update_in(&mut cx, |app, window, cx| app.show_settings(window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(app.read_with(&cx, |app, cx| {
+            app.page == AppPage::Settings
+                && app.settings_ui.is_some()
+                && app.theme_cards_ready
+                && !app.theme_previews.is_empty()
+                && !app.theme_card_bodies.is_empty()
+                && !app.theme_card_focus.is_empty()
+                && !app.hub.read(cx).inputs_allocated()
+        }));
+
+        // Opening Projects materializes ProjectHub search on render.
+        app.update_in(&mut cx, |app, window, cx| app.show_projects(window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(app.read_with(&cx, |app, cx| {
+            app.page == AppPage::Projects && app.hub.read(cx).inputs_allocated()
+        }));
     }
 }

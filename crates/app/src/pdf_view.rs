@@ -158,7 +158,8 @@ pub(crate) fn prepare_page(
             .render(bytes, page, check)
             .map_err(helper::worded)?;
         check()?;
-        let render = worker::render_image(&reply.image)?;
+        let (width, height) = (reply.image.width, reply.image.height);
+        let render = worker::render_image(reply.image)?;
         check()?;
         let text = reply.text.map_err(|kind| {
             helper::worded(crate::pdf_helper::Failure::Document {
@@ -170,8 +171,8 @@ pub(crate) fn prepare_page(
             count: reply.page_count,
             page: PreparedPage::new(
                 rich_preview::Page {
-                    width: reply.image.width,
-                    height: reply.image.height,
+                    width,
+                    height,
                     render: Some(render),
                     caption: None,
                     error: None,
@@ -193,7 +194,8 @@ pub(crate) fn prepare_page(
             .pages
             .pop()
             .ok_or_else(|| anyhow::anyhow!("PDF page is unavailable"))?;
-        let render = worker::render_image(&image)?;
+        let (width, height) = (image.width, image.height);
+        let render = worker::render_image(image)?;
         check()?;
         let text = gitturtle_preview::decode_pdf_page_text(bytes, page, check);
         check()?;
@@ -201,8 +203,8 @@ pub(crate) fn prepare_page(
             count: preview.page_count,
             page: PreparedPage::new(
                 rich_preview::Page {
-                    width: image.width,
-                    height: image.height,
+                    width,
+                    height,
                     render: Some(render),
                     caption: None,
                     error: None,
@@ -2251,7 +2253,7 @@ pub(crate) mod tests {
                 format: "fixture".into(),
             };
             let mut page = page();
-            page.render = Some(worker::render_image(&image).unwrap());
+            page.render = Some(worker::render_image(image).unwrap());
             cache.insert(
                 index,
                 PreparedPage::new(

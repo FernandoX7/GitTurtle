@@ -425,6 +425,7 @@ fn query(
     environment: Vec<(OsString, OsString)>,
     wait: Duration,
 ) -> Result<String, String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
     let mut child = Command::new(program)
         .args(arguments)
         .env_clear()
@@ -436,21 +437,107 @@ fn query(
         .process_group(0)
         .spawn()
         .map_err(|error| format!("{tool} did not start: {error}."))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("{tool} gave no answer, so nothing was opened."))?;
+    // SAFETY: `F_GETFL`/`F_SETFL` on a valid pipe descriptor we own.
+    unsafe {
+        let flags = libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL);
+        if flags >= 0 {
+            let _ = libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+    // SAFETY: `pidfd_open` creates a close-on-exec fd readable when `child` exits.
+    let mut pidfd: Option<OwnedFd> = unsafe {
+        let raw = libc::syscall(libc::SYS_pidfd_open, child.id() as libc::pid_t, 0u32);
+        (raw >= 0).then(|| OwnedFd::from_raw_fd(raw as libc::c_int))
+    };
     let deadline = Instant::now() + wait;
+    let mut answer = Vec::new();
+    let mut stdout_done = false;
+    let mut exit_ready = false;
+    let mut buffer = [0u8; 4096];
     let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            Ok(None) => {
-                // SAFETY: the child is not yet reaped, so its process group
-                // id still names the group it leads.
-                unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
-                let _ = child.wait();
-                return Err(format!(
-                    "{tool} did not answer in time, so nothing was opened."
-                ));
+        if !stdout_done {
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) => {
+                        stdout_done = true;
+                        break;
+                    }
+                    Ok(count) => {
+                        let keep = (MAX_ANSWER as usize).saturating_sub(answer.len());
+                        if keep > 0 {
+                            answer.extend_from_slice(&buffer[..count.min(keep)]);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        // SAFETY: child is unreaped; negative PID targets its process group.
+                        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+                        let _ = child.wait();
+                        return Err(format!("{tool}'s answer could not be read: {error}."));
+                    }
+                }
             }
-            Err(error) => return Err(format!("{tool} could not be waited for: {error}.")),
+        }
+        if stdout_done && (exit_ready || pidfd.is_none()) {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if exit_ready {
+                        // Fall back to short polling if pidfd fired before `try_wait` saw exit.
+                        pidfd = None;
+                    }
+                }
+                Err(error) => return Err(format!("{tool} could not be waited for: {error}.")),
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            // SAFETY: the child is not yet reaped, so its process group
+            // id still names the group it leads.
+            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            let _ = child.wait();
+            return Err(format!(
+                "{tool} did not answer in time, so nothing was opened."
+            ));
+        }
+        let remaining = deadline - now;
+        let wait_ms = if stdout_done && pidfd.is_none() {
+            remaining.min(Duration::from_millis(5)).as_millis()
+        } else {
+            remaining.as_millis()
+        }
+        .clamp(1, i32::MAX as u128) as libc::c_int;
+        let mut poll_fds = [
+            libc::pollfd {
+                fd: if stdout_done { -1 } else { stdout.as_raw_fd() },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if exit_ready {
+                    -1
+                } else {
+                    pidfd.as_ref().map_or(-1, |fd| fd.as_raw_fd())
+                },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: `poll_fds` is a valid stack array of 2 `pollfd` entries.
+        let ready = unsafe {
+            libc::poll(
+                poll_fds.as_mut_ptr(),
+                poll_fds.len() as libc::nfds_t,
+                wait_ms,
+            )
+        };
+        if ready > 0 && poll_fds[1].revents != 0 {
+            exit_ready = true;
         }
     };
     if !status.success() {
@@ -458,14 +545,6 @@ fn query(
             "{tool} could not type the copy, so nothing was opened."
         ));
     }
-    let mut answer = Vec::new();
-    child
-        .stdout
-        .take()
-        .ok_or_else(|| format!("{tool} gave no answer, so nothing was opened."))?
-        .take(MAX_ANSWER)
-        .read_to_end(&mut answer)
-        .map_err(|error| format!("{tool}'s answer could not be read: {error}."))?;
     Ok(String::from_utf8_lossy(&answer).into_owned())
 }
 

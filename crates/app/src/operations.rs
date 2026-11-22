@@ -182,6 +182,10 @@ pub struct SerialExecutor {
     /// The thread's name, which a test's failed wait reports.
     #[cfg(test)]
     name: String,
+    /// Test-only wakeup notified whenever a queued job is dequeued or the
+    /// worker stops, replacing 1 ms polling in [`Self::queue_within`].
+    #[cfg(test)]
+    space: Arc<(Mutex<(u64, bool)>, std::sync::Condvar)>,
 }
 
 /// Keeps a [`SerialExecutor`] held until it drops ([`SerialExecutor::hold`]).
@@ -196,6 +200,10 @@ impl SerialExecutor {
         let (sender, receiver) = mpsc::sync_channel::<Operation>(8);
         #[cfg(test)]
         let test_settings = crate::preferences::test_settings_directory();
+        #[cfg(test)]
+        let space = Arc::new((Mutex::new((0u64, false)), std::sync::Condvar::new()));
+        #[cfg(test)]
+        let worker_space = Arc::clone(&space);
         let _ = std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {
@@ -204,13 +212,33 @@ impl SerialExecutor {
                 #[cfg(test)]
                 crate::preferences::inherit_test_settings_directory(test_settings);
                 for operation in receiver {
+                    #[cfg(test)]
+                    {
+                        let mut guard = worker_space
+                            .0
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        guard.0 = guard.0.wrapping_add(1);
+                        worker_space.1.notify_all();
+                    }
                     operation(Admission::Accepted);
+                }
+                #[cfg(test)]
+                {
+                    let mut guard = worker_space
+                        .0
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    guard.1 = true;
+                    worker_space.1.notify_all();
                 }
             });
         Self {
             sender,
             #[cfg(test)]
             name: name.into(),
+            #[cfg(test)]
+            space,
         }
     }
 
@@ -221,6 +249,7 @@ impl SerialExecutor {
         Self {
             sender,
             name: name.into(),
+            space: Arc::new((Mutex::new((0, true)), std::sync::Condvar::new())),
         }
     }
 
@@ -359,16 +388,30 @@ impl SerialExecutor {
         what: &str,
     ) {
         loop {
+            let seen = self
+                .space
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
             match self.sender.try_send(job) {
                 Ok(()) => return,
                 Err(mpsc::TrySendError::Full(refused)) => {
+                    let now = std::time::Instant::now();
                     assert!(
-                        std::time::Instant::now() < deadline,
+                        now < deadline,
                         "the {} executor's queue stayed full for {limit:?}: a job ahead of the {what} never answered or is still held",
                         self.name
                     );
                     job = refused;
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    let guard = self.space.0.lock().unwrap_or_else(PoisonError::into_inner);
+                    if guard.0 == seen && !guard.1 {
+                        let _ = self
+                            .space
+                            .1
+                            .wait_timeout(guard, deadline.saturating_duration_since(now))
+                            .unwrap_or_else(PoisonError::into_inner);
+                    }
                 }
                 Err(mpsc::TrySendError::Disconnected(_)) => {
                     panic!("the {} executor stopped before the {what}", self.name)

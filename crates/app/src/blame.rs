@@ -386,6 +386,12 @@ impl GitTurtle {
             .unwrap_or_default();
         if self.mode == WorkspaceMode::Compare && self.content.is_none() {
             self.read_selected_preview(window, cx);
+        } else if self.page == AppPage::Repository
+            && self.mode != WorkspaceMode::History
+            && !self.blame.is_visible()
+            && self.content.is_some()
+        {
+            self.prepare_editor(false, window, cx);
         }
         // Blame holds quiet reads off while it is shown, as File history
         // does; they start once this handler has finished. A quiet read it
