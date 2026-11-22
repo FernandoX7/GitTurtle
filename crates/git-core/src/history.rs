@@ -1,6 +1,8 @@
 //! Bounded, cancellable history reads. These APIs belong on a worker thread.
 use super::*;
+use crate::case_fold::CaseInsensitiveMatcher;
 use std::collections::VecDeque;
+use std::ops::Range;
 use std::sync::{
     Condvar, Weak,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -13,9 +15,25 @@ const MAX_HISTORY_RECORD: usize = 2 * 1024 * 1024;
 const MAX_FILE_HISTORY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_HISTORY_REFS: usize = 16_384;
 const MAX_HISTORY_REF_BYTES: usize = MAX_HISTORY_REFS * 65;
+/// First-commit timeout for `--topo-order` when a repository has no Git
+/// commit-graph. Exceeding this restarts the walk in reverse-chronological
+/// order so large repositories stream immediately instead of timing out.
+const TOPO_FALLBACK_TIMEOUT: Duration = Duration::from_secs(4);
 /// Metadata returned by one ordinary-history page, separate from the bounded
 /// process pipe queue and the caller's retained history window.
 pub const MAX_HISTORY_PAGE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Commit ordering used by a history traversal or search stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HistoryOrder {
+    /// Git `--topo-order`: keeps branch lanes coherent for graph connections.
+    #[default]
+    Topological,
+    /// Git's default reverse-chronological priority-queue walk: streams
+    /// immediately without waiting for a full topological sort when no
+    /// commit-graph is present.
+    Chronological,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoryTraversalStop {
@@ -32,24 +50,38 @@ pub struct HistoryTraversalPage {
     /// A full page can require one final, empty read to establish exhaustion.
     pub next_offset: Option<usize>,
     pub stop: HistoryTraversalStop,
+    /// Commit ordering actually produced for this traversal.
+    pub order: HistoryOrder,
 }
 
-/// One immutable topological traversal, intended to be owned by a worker.
+struct ChronologicalFallback {
+    repo: GitRepository,
+    skip: usize,
+    timeout: Duration,
+}
+
+/// One immutable history traversal, intended to be owned by a worker.
 /// Git walks the captured tips once; pages neither replay a growing prefix nor
 /// use `--skip`. Only a partial record, one deferred commit and eight 8 KiB pipe
 /// chunks can wait ahead of the current page. Git's own revision-walk memory is
 /// independent of this metadata bound. Drop closes and reaps the process.
 pub struct HistoryTraversal {
     scope: HistoryScope,
+    order: HistoryOrder,
     offset: usize,
     stream: Option<HistoryStream>,
     deferred: Option<Commit>,
+    fallback: Option<ChronologicalFallback>,
     failed: bool,
 }
 
 impl HistoryTraversal {
     pub fn scope(&self) -> &HistoryScope {
         &self.scope
+    }
+
+    pub fn order(&self) -> HistoryOrder {
+        self.order
     }
 
     pub fn offset(&self) -> usize {
@@ -76,6 +108,7 @@ impl HistoryTraversal {
         if result.is_err() {
             self.stream = None;
             self.deferred = None;
+            self.fallback = None;
             self.failed = true;
         }
         result
@@ -87,11 +120,11 @@ impl HistoryTraversal {
         cancellation: &HistoryCancellation,
     ) -> Result<HistoryTraversalPage> {
         cancellation.check()?;
-        let start = Instant::now();
+        let mut start = Instant::now();
         let offset = self.offset;
         let mut commits = Vec::with_capacity(limit);
         let mut bytes = 0usize;
-        let _cancel = self.stream.as_ref().map(|stream| {
+        let mut _cancel = self.stream.as_ref().map(|stream| {
             let wake_ch = Arc::clone(&stream.channel);
             cancellation.on_cancel(move || wake_ch.wake_reader())
         });
@@ -103,7 +136,50 @@ impl HistoryTraversal {
             let next = if let Some(commit) = self.deferred.take() {
                 Some(commit)
             } else if let Some(stream) = self.stream.as_mut() {
-                stream.next_commit(cancellation, start)?
+                let first_with_fallback =
+                    offset == 0 && commits.is_empty() && self.fallback.is_some();
+                let wait_limit = if first_with_fallback {
+                    self.fallback
+                        .as_ref()
+                        .map_or(GIT_TIMEOUT, |fb| fb.timeout.min(GIT_TIMEOUT))
+                } else {
+                    GIT_TIMEOUT
+                };
+                match stream.next_raw_record(cancellation, start, wait_limit)? {
+                    RawRecordOutcome::Record(_) => {
+                        self.fallback = None;
+                        Some(parse_commit_fields(&stream.current_fields())?)
+                    }
+                    RawRecordOutcome::Eof => {
+                        self.fallback = None;
+                        None
+                    }
+                    RawRecordOutcome::TimedOut if first_with_fallback => {
+                        let fallback = self.fallback.take().expect("checked above");
+                        // Drop stalled `--topo-order` stream before spawning chronological fallback.
+                        drop(_cancel);
+                        self.stream = None;
+                        cancellation.check()?;
+                        let (cmd, input) = build_history_log_command(
+                            fallback.repo.target(),
+                            &self.scope,
+                            HistoryOrder::Chronological,
+                            fallback.skip,
+                        )?;
+                        let new_stream = HistoryStream::start(cmd, input)?;
+                        let wake_ch = Arc::clone(&new_stream.channel);
+                        _cancel = Some(cancellation.on_cancel(move || wake_ch.wake_reader()));
+                        self.stream = Some(new_stream);
+                        self.order = HistoryOrder::Chronological;
+                        start = Instant::now();
+                        continue;
+                    }
+                    RawRecordOutcome::TimedOut => {
+                        bail!(
+                            "History page exceeded its 15 second time limit; restart history to continue"
+                        );
+                    }
+                }
             } else {
                 None
             };
@@ -128,8 +204,183 @@ impl HistoryTraversal {
             offset,
             next_offset: (stop != HistoryTraversalStop::Exhausted).then_some(self.offset),
             stop,
+            order: self.order,
         })
     }
+}
+
+/// Stateful streaming history search cursor owned by a worker.
+/// Keeps the underlying `git log` stream open between Continue pages so
+/// subsequent pages resume directly at the next commit without `--skip` replay
+/// and without allocating `Commit` strings for non-matching commits.
+pub struct HistorySearch {
+    scope: HistoryScope,
+    query: String,
+    matcher: CaseInsensitiveMatcher,
+    order: HistoryOrder,
+    offset: usize,
+    stream: Option<HistoryStream>,
+    fallback: Option<ChronologicalFallback>,
+    scratch: String,
+    failed: bool,
+}
+
+impl HistorySearch {
+    pub fn scope(&self) -> &HistoryScope {
+        &self.scope
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn order(&self) -> HistoryOrder {
+        self.order
+    }
+
+    /// Reads the next bounded search page from the active stream.
+    /// Cancellation or stream errors close and invalidate the cursor.
+    pub fn next_page(
+        &mut self,
+        limit: usize,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearchPage> {
+        ensure!(
+            (1..=MAX_HISTORY_PAGE).contains(&limit),
+            "History page must contain 1–500 results"
+        );
+        ensure!(
+            !self.failed,
+            "History search stopped; restart search to continue"
+        );
+        let result = self.read_page(limit, cancellation);
+        if result.is_err() {
+            self.stream = None;
+            self.fallback = None;
+            self.failed = true;
+        }
+        result
+    }
+
+    fn read_page(
+        &mut self,
+        limit: usize,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearchPage> {
+        cancellation.check()?;
+        let mut start = Instant::now();
+        let mut commits = Vec::new();
+        let mut scanned = 0usize;
+        let mut page_bytes = 0usize;
+        let mut _cancel = self.stream.as_ref().map(|stream| {
+            let wake_ch = Arc::clone(&stream.channel);
+            cancellation.on_cancel(move || wake_ch.wake_reader())
+        });
+        let stop = loop {
+            cancellation.check()?;
+            if commits.len() == limit {
+                break HistorySearchStop::PageFull;
+            }
+            if scanned == MAX_SEARCH_SCAN {
+                break HistorySearchStop::ScanLimit;
+            }
+            if page_bytes > MAX_SEARCH_BYTES {
+                break HistorySearchStop::ByteLimit;
+            }
+            let Some(stream) = self.stream.as_mut() else {
+                break HistorySearchStop::Exhausted;
+            };
+            let first_with_fallback = self.offset == 0 && scanned == 0 && self.fallback.is_some();
+            let wait_limit = if first_with_fallback {
+                self.fallback
+                    .as_ref()
+                    .map_or(GIT_TIMEOUT, |fb| fb.timeout.min(GIT_TIMEOUT))
+            } else {
+                GIT_TIMEOUT
+            };
+            match stream.next_raw_record(cancellation, start, wait_limit)? {
+                RawRecordOutcome::Eof => {
+                    self.fallback = None;
+                    self.stream = None;
+                    break HistorySearchStop::Exhausted;
+                }
+                RawRecordOutcome::TimedOut if first_with_fallback => {
+                    let fallback = self.fallback.take().expect("checked above");
+                    drop(_cancel);
+                    self.stream = None;
+                    cancellation.check()?;
+                    let (cmd, input) = build_history_log_command(
+                        fallback.repo.target(),
+                        &self.scope,
+                        HistoryOrder::Chronological,
+                        fallback.skip,
+                    )?;
+                    let new_stream = HistoryStream::start(cmd, input)?;
+                    let wake_ch = Arc::clone(&new_stream.channel);
+                    _cancel = Some(cancellation.on_cancel(move || wake_ch.wake_reader()));
+                    self.stream = Some(new_stream);
+                    self.order = HistoryOrder::Chronological;
+                    start = Instant::now();
+                    continue;
+                }
+                RawRecordOutcome::TimedOut => {
+                    break HistorySearchStop::TimeLimit;
+                }
+                RawRecordOutcome::Record(rec_bytes) => {
+                    self.fallback = None;
+                    page_bytes = page_bytes.saturating_add(rec_bytes);
+                    let fields = stream.current_fields();
+                    let body = trim_trailing_newlines(fields[5]);
+                    scanned += 1;
+                    let matched = self.matcher.is_empty()
+                        || [fields[0], fields[2], fields[4], body]
+                            .iter()
+                            .any(|field| self.matcher.matches_bytes(field, &mut self.scratch));
+                    if matched {
+                        commits.push(parse_commit_fields(&fields)?);
+                    }
+                    if commits.len() == limit {
+                        break HistorySearchStop::PageFull;
+                    }
+                    if scanned == MAX_SEARCH_SCAN {
+                        break HistorySearchStop::ScanLimit;
+                    }
+                    if page_bytes > MAX_SEARCH_BYTES {
+                        break HistorySearchStop::ByteLimit;
+                    }
+                }
+            }
+        };
+        cancellation.check()?;
+        self.offset = self
+            .offset
+            .checked_add(scanned)
+            .context("History offset overflow")?;
+        if self.scratch.capacity() > 64 * 1024 {
+            self.scratch = String::new();
+        }
+        if let Some(stream) = self.stream.as_mut() {
+            stream.shrink_idle_buffer();
+        }
+        Ok(HistorySearchPage {
+            scope: self.scope.clone(),
+            commits,
+            scanned,
+            next_offset: (stop != HistorySearchStop::Exhausted).then_some(self.offset),
+            stop,
+        })
+    }
+}
+
+fn trim_trailing_newlines(mut bytes: &[u8]) -> &[u8] {
+    while let Some(stripped) = bytes.strip_suffix(b"\n") {
+        bytes = stripped;
+    }
+    bytes
 }
 
 impl Commit {
@@ -258,7 +509,7 @@ impl HistoryCancellation {
         self.0.waiters.register(&self.0.cancelled, wake)
     }
 
-    fn check(&self) -> Result<()> {
+    pub(crate) fn check(&self) -> Result<()> {
         if self.is_cancelled() {
             return Err(CoreError::ReadCancelled.into());
         }
@@ -325,38 +576,45 @@ impl GitRepository {
         scope: &HistoryScope,
         cancellation: &HistoryCancellation,
     ) -> Result<HistoryTraversal> {
+        self.history_traversal_in_order(scope, HistoryOrder::Topological, cancellation)
+    }
+
+    /// Create a cancellable ordinary-history stream with an explicit initial
+    /// ordering. When `order` is `Topological` and the repository has no
+    /// commit-graph, waiting longer than 4 seconds for the first commit
+    /// switches automatically to streaming chronological order.
+    pub fn history_traversal_in_order(
+        &self,
+        scope: &HistoryScope,
+        order: HistoryOrder,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistoryTraversal> {
+        self.history_traversal_with_timeout(scope, order, TOPO_FALLBACK_TIMEOUT, cancellation)
+    }
+
+    fn history_traversal_with_timeout(
+        &self,
+        scope: &HistoryScope,
+        order: HistoryOrder,
+        topo_fallback_timeout: Duration,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistoryTraversal> {
         cancellation.check()?;
         let scope = match scope {
             HistoryScope::AllRefs => self.pin_history_refs(cancellation)?,
             other => other.clone(),
         };
-        let mut command = history_command(self.target());
-        let input = match &scope {
-            HistoryScope::PinnedRefs(refs) => {
-                ensure!(
-                    refs.len() <= MAX_HISTORY_REFS,
-                    "History scope exceeds 16,384 reference tips"
-                );
-                let mut input = Vec::new();
-                for oid in refs {
-                    validate_oid(oid)?;
-                    input.extend_from_slice(oid.as_bytes());
-                    input.push(b'\n');
-                }
-                command.arg("--stdin");
-                Some(input)
-            }
-            HistoryScope::FromCommit(oid) => {
-                validate_oid(oid)?;
-                command.arg(oid);
-                None
-            }
-            HistoryScope::AllRefs => unreachable!(),
-        };
-        command.arg("--");
+        let (command, input) = build_history_log_command(self.target(), &scope, order, 0)?;
         let empty = matches!(&scope, HistoryScope::PinnedRefs(refs) if refs.is_empty());
+        let fallback = (!empty && order == HistoryOrder::Topological && !self.has_commit_graph())
+            .then(|| ChronologicalFallback {
+                repo: self.clone(),
+                skip: 0,
+                timeout: topo_fallback_timeout,
+            });
         Ok(HistoryTraversal {
             scope,
+            order,
             offset: 0,
             stream: if empty {
                 None
@@ -364,6 +622,87 @@ impl GitRepository {
                 Some(HistoryStream::start(command, input)?)
             },
             deferred: None,
+            fallback,
+            failed: false,
+        })
+    }
+
+    /// Create a stateful streaming history search cursor starting at offset 0.
+    /// Continue pages resume directly from the live `git log` stream without
+    /// `--skip` prefix replay.
+    pub fn history_search(
+        &self,
+        scope: &HistoryScope,
+        query: &str,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearch> {
+        self.history_search_in_order(scope, query, 0, HistoryOrder::Topological, cancellation)
+    }
+
+    /// Create a stateful streaming history search cursor starting at `offset`
+    /// (passing `--skip={offset}` only once to resume a detached search).
+    pub fn history_search_from_offset(
+        &self,
+        scope: &HistoryScope,
+        query: &str,
+        offset: usize,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearch> {
+        self.history_search_in_order(
+            scope,
+            query,
+            offset,
+            HistoryOrder::Topological,
+            cancellation,
+        )
+    }
+
+    /// Create a stateful streaming history search cursor with explicit initial
+    /// ordering.
+    pub fn history_search_in_order(
+        &self,
+        scope: &HistoryScope,
+        query: &str,
+        offset: usize,
+        order: HistoryOrder,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearch> {
+        ensure!(query.len() <= 4096, "History query exceeds 4 KiB");
+        cancellation.check()?;
+        let scope = match scope {
+            HistoryScope::AllRefs => {
+                ensure!(
+                    offset == 0,
+                    "Continue all-ref search with the pinned scope returned by its first page"
+                );
+                self.pin_history_refs(cancellation)?
+            }
+            other => other.clone(),
+        };
+        let (command, input) = build_history_log_command(self.target(), &scope, order, offset)?;
+        let empty = matches!(&scope, HistoryScope::PinnedRefs(refs) if refs.is_empty());
+        let fallback = (offset == 0
+            && !empty
+            && order == HistoryOrder::Topological
+            && !self.has_commit_graph())
+        .then(|| ChronologicalFallback {
+            repo: self.clone(),
+            skip: 0,
+            timeout: TOPO_FALLBACK_TIMEOUT,
+        });
+        Ok(HistorySearch {
+            scope,
+            query: query.to_owned(),
+            matcher: CaseInsensitiveMatcher::new(query),
+            order,
+            offset,
+            stream: if empty {
+                None
+            } else {
+                Some(HistoryStream::start(command, input)?)
+            },
+            fallback,
+            scratch: String::new(),
             failed: false,
         })
     }
@@ -384,122 +723,8 @@ impl GitRepository {
             (1..=MAX_HISTORY_PAGE).contains(&limit),
             "History page must contain 1–500 results"
         );
-        ensure!(query.len() <= 4096, "History query exceeds 4 KiB");
-        cancellation.check()?;
-        let started = Instant::now();
-        let scope = match scope {
-            HistoryScope::AllRefs => {
-                ensure!(
-                    offset == 0,
-                    "Continue all-ref search with the pinned scope returned by its first page"
-                );
-                self.pin_history_refs(cancellation)?
-            }
-            other => other.clone(),
-        };
-        let mut command = history_command(self.target());
-        command.arg(format!("--skip={offset}"));
-        let input = match &scope {
-            HistoryScope::PinnedRefs(refs) => {
-                ensure!(
-                    refs.len() <= MAX_HISTORY_REFS,
-                    "History scope exceeds 16,384 reference tips"
-                );
-                let mut input = Vec::new();
-                for oid in refs {
-                    validate_oid(oid)?;
-                    input.extend_from_slice(oid.as_bytes());
-                    input.push(b'\n');
-                }
-                command.arg("--stdin");
-                Some(input)
-            }
-            HistoryScope::FromCommit(oid) => {
-                validate_oid(oid)?;
-                command.arg(oid);
-                None
-            }
-            HistoryScope::AllRefs => unreachable!(),
-        };
-        command.arg("--");
-        let query = query.to_lowercase();
-        let mut page = HistorySearchPage {
-            scope,
-            commits: Vec::new(),
-            scanned: 0,
-            next_offset: None,
-            stop: HistorySearchStop::Exhausted,
-        };
-        let mut pending = Vec::new();
-        let mut fields = Vec::new();
-        let mut record_bytes = 0;
-        let mut total_bytes = 0usize;
-        if matches!(&page.scope, HistoryScope::PinnedRefs(refs) if refs.is_empty()) {
-            return Ok(page);
-        }
-        let end = stream_history(
-            command,
-            input,
-            cancellation,
-            GIT_TIMEOUT.saturating_sub(started.elapsed()),
-            |chunk| {
-                total_bytes = total_bytes.saturating_add(chunk.len());
-                if total_bytes > MAX_SEARCH_BYTES {
-                    page.stop = HistorySearchStop::ByteLimit;
-                    return Ok(false);
-                }
-                for &byte in chunk {
-                    record_bytes += 1;
-                    ensure!(
-                        record_bytes <= MAX_HISTORY_RECORD,
-                        "One commit's metadata exceeds the 2 MiB history limit"
-                    );
-                    if byte != 0 {
-                        pending.push(byte);
-                        continue;
-                    }
-                    fields.push(std::mem::take(&mut pending));
-                    if fields.len() != 6 {
-                        continue;
-                    }
-                    let commit = parse_commit_fields(&fields)?;
-                    fields.clear();
-                    record_bytes = 0;
-                    page.scanned += 1;
-                    if [&commit.oid, &commit.author, &commit.subject, &commit.body]
-                        .iter()
-                        .any(|value| value.to_lowercase().contains(&query))
-                    {
-                        page.commits.push(commit);
-                    }
-                    if page.commits.len() == limit {
-                        page.stop = HistorySearchStop::PageFull;
-                        return Ok(false);
-                    }
-                    if page.scanned == MAX_SEARCH_SCAN {
-                        page.stop = HistorySearchStop::ScanLimit;
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            },
-        )?;
-        if end == ReadEnd::TimedOut {
-            page.stop = HistorySearchStop::TimeLimit;
-        }
-        if page.stop == HistorySearchStop::Exhausted {
-            ensure!(
-                pending.is_empty() && fields.is_empty(),
-                "Incomplete commit metadata from Git"
-            );
-        } else {
-            page.next_offset = Some(
-                offset
-                    .checked_add(page.scanned)
-                    .context("History offset overflow")?,
-            );
-        }
-        Ok(page)
+        let mut cursor = self.history_search_from_offset(scope, query, offset, cancellation)?;
+        cursor.next_page(limit, cancellation)
     }
 
     fn pin_history_refs(&self, cancellation: &HistoryCancellation) -> Result<HistoryScope> {
@@ -629,12 +854,18 @@ impl GitRepository {
 }
 
 pub(super) fn history_command(target: GitTarget<'_>) -> Command {
+    history_command_ordered(target, HistoryOrder::Topological)
+}
+
+pub(super) fn history_command_ordered(target: GitTarget<'_>, order: HistoryOrder) -> Command {
     let mut command = git_command(target);
-    command.arg("--literal-pathspecs").args([
-        "-c",
-        "log.follow=false",
-        "log",
-        "--topo-order",
+    command
+        .arg("--literal-pathspecs")
+        .args(["-c", "log.follow=false", "log"]);
+    if order == HistoryOrder::Topological {
+        command.arg("--topo-order");
+    }
+    command.args([
         "--no-show-signature",
         "--no-decorate",
         "--no-notes",
@@ -645,6 +876,42 @@ pub(super) fn history_command(target: GitTarget<'_>) -> Command {
         "--format=%H%x00%P%x00%an%x00%at%x00%s%x00%b",
     ]);
     command
+}
+
+fn build_history_log_command(
+    target: GitTarget<'_>,
+    scope: &HistoryScope,
+    order: HistoryOrder,
+    skip: usize,
+) -> Result<(Command, Option<Vec<u8>>)> {
+    let mut command = history_command_ordered(target, order);
+    if skip > 0 {
+        command.arg(format!("--skip={skip}"));
+    }
+    let input = match scope {
+        HistoryScope::PinnedRefs(refs) => {
+            ensure!(
+                refs.len() <= MAX_HISTORY_REFS,
+                "History scope exceeds 16,384 reference tips"
+            );
+            let mut input = Vec::new();
+            for oid in refs {
+                validate_oid(oid)?;
+                input.extend_from_slice(oid.as_bytes());
+                input.push(b'\n');
+            }
+            command.arg("--stdin");
+            Some(input)
+        }
+        HistoryScope::FromCommit(oid) => {
+            validate_oid(oid)?;
+            command.arg(oid);
+            None
+        }
+        HistoryScope::AllRefs => unreachable!(),
+    };
+    command.arg("--");
+    Ok((command, input))
 }
 
 pub(super) fn parse_commit_fields(fields: &[impl AsRef<[u8]>]) -> Result<Commit> {
@@ -833,6 +1100,12 @@ impl StreamChannel {
     }
 }
 
+enum RawRecordOutcome {
+    Record(usize),
+    Eof,
+    TimedOut,
+}
+
 /// Reusable pipe reader. The worker consumes only as far as the requested page;
 /// backpressure pauses Git naturally while the application browses that page.
 struct HistoryStream {
@@ -844,8 +1117,10 @@ struct HistoryStream {
     writer: Option<JoinHandle<std::io::Result<()>>>,
     chunk: Vec<u8>,
     position: usize,
-    pending: Vec<u8>,
-    fields: Vec<Vec<u8>>,
+    record_buf: Vec<u8>,
+    field_ranges: [Range<usize>; 6],
+    field_count: usize,
+    field_start: usize,
     record_bytes: usize,
     reaped: bool,
 }
@@ -926,44 +1201,81 @@ impl HistoryStream {
             writer,
             chunk: Vec::new(),
             position: 0,
-            pending: Vec::new(),
-            fields: Vec::new(),
+            record_buf: Vec::with_capacity(512),
+            field_ranges: std::array::from_fn(|_| 0..0),
+            field_count: 0,
+            field_start: 0,
             record_bytes: 0,
             reaped: false,
         })
     }
 
-    fn next_commit(
+    fn shrink_idle_buffer(&mut self) {
+        if self.field_count == 6 && self.record_buf.capacity() > 64 * 1024 {
+            self.record_buf.clear();
+            self.record_buf.shrink_to(4096);
+            self.field_count = 0;
+            self.field_start = 0;
+            self.record_bytes = 0;
+        }
+    }
+
+    fn current_fields(&self) -> [&[u8]; 6] {
+        [
+            &self.record_buf[self.field_ranges[0].clone()],
+            &self.record_buf[self.field_ranges[1].clone()],
+            &self.record_buf[self.field_ranges[2].clone()],
+            &self.record_buf[self.field_ranges[3].clone()],
+            &self.record_buf[self.field_ranges[4].clone()],
+            &self.record_buf[self.field_ranges[5].clone()],
+        ]
+    }
+
+    fn next_raw_record(
         &mut self,
         cancellation: &HistoryCancellation,
         start: Instant,
-    ) -> Result<Option<Commit>> {
+        timeout: Duration,
+    ) -> Result<RawRecordOutcome> {
+        if self.field_count == 6 {
+            self.record_buf.clear();
+            self.field_count = 0;
+            self.field_start = 0;
+            self.record_bytes = 0;
+        }
         let mut poll_exit = false;
         loop {
             cancellation.check()?;
-            let remaining = GIT_TIMEOUT.saturating_sub(start.elapsed());
-            ensure!(
-                !remaining.is_zero(),
-                "History page exceeded its 15 second time limit; restart history to continue"
-            );
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Ok(RawRecordOutcome::TimedOut);
+            }
             while self.position < self.chunk.len() {
-                let byte = self.chunk[self.position];
-                self.position += 1;
-                self.record_bytes += 1;
-                ensure!(
-                    self.record_bytes <= MAX_HISTORY_RECORD,
-                    "One commit's metadata exceeds the 2 MiB history limit"
-                );
-                if byte != 0 {
-                    self.pending.push(byte);
-                    continue;
-                }
-                self.fields.push(std::mem::take(&mut self.pending));
-                if self.fields.len() == 6 {
-                    let commit = parse_commit_fields(&self.fields)?;
-                    self.fields.clear();
-                    self.record_bytes = 0;
-                    return Ok(Some(commit));
+                let rest = &self.chunk[self.position..];
+                if let Some(rel) = rest.iter().position(|&b| b == 0) {
+                    let consumed = rel + 1;
+                    self.record_bytes = self.record_bytes.saturating_add(consumed);
+                    ensure!(
+                        self.record_bytes <= MAX_HISTORY_RECORD,
+                        "One commit's metadata exceeds the 2 MiB history limit"
+                    );
+                    self.record_buf.extend_from_slice(&rest[..rel]);
+                    let end = self.record_buf.len();
+                    self.field_ranges[self.field_count] = self.field_start..end;
+                    self.field_count += 1;
+                    self.field_start = end;
+                    self.position += consumed;
+                    if self.field_count == 6 {
+                        return Ok(RawRecordOutcome::Record(self.record_bytes));
+                    }
+                } else {
+                    self.record_bytes = self.record_bytes.saturating_add(rest.len());
+                    ensure!(
+                        self.record_bytes <= MAX_HISTORY_RECORD,
+                        "One commit's metadata exceeds the 2 MiB history limit"
+                    );
+                    self.record_buf.extend_from_slice(rest);
+                    self.position = self.chunk.len();
                 }
             }
 
@@ -996,7 +1308,7 @@ impl HistoryStream {
                         return Err(history_failure(&stderr));
                     }
                     ensure!(
-                        self.pending.is_empty() && self.fields.is_empty(),
+                        self.record_bytes == 0 && self.field_count == 0,
                         "Incomplete commit metadata from Git"
                     );
                     if let Some(writer) = self.writer.take() {
@@ -1004,7 +1316,7 @@ impl HistoryStream {
                             .join()
                             .map_err(|_| anyhow::anyhow!("Git history input writer stopped"))??;
                     }
-                    return Ok(None);
+                    return Ok(RawRecordOutcome::Eof);
                 }
                 // Pipes closed just before the child finished exiting: spawn
                 // the exit watcher lazily so normal exits pay zero extra thread.
@@ -1350,12 +1662,14 @@ mod tests {
             let (fixture, command) = process_io::fixtures::DetachedPipeHolder::command(input_held);
             let mut traversal = HistoryTraversal {
                 scope: HistoryScope::PinnedRefs(Vec::new()),
+                order: HistoryOrder::Topological,
                 offset: 0,
                 stream: Some(
                     HistoryStream::start(command, input_held.then(|| vec![b'x'; 1024 * 1024]))
                         .unwrap(),
                 ),
                 deferred: None,
+                fallback: None,
                 failed: false,
             };
             fixture.wait_ready();
@@ -1388,9 +1702,11 @@ mod tests {
             .arg(&marker);
         let mut traversal = HistoryTraversal {
             scope: HistoryScope::PinnedRefs(Vec::new()),
+            order: HistoryOrder::Topological,
             offset: 0,
             stream: Some(HistoryStream::start(command, None).unwrap()),
             deferred: None,
+            fallback: None,
             failed: false,
         };
         let cancel = HistoryCancellation::default();
@@ -1524,9 +1840,11 @@ mod tests {
         let cancellation = HistoryCancellation::default();
         let mut traversal = HistoryTraversal {
             scope: HistoryScope::PinnedRefs(Vec::new()),
+            order: HistoryOrder::Topological,
             offset: 0,
             stream: Some(HistoryStream::start(git(), None).unwrap()),
             deferred: None,
+            fallback: None,
             failed: false,
         };
         let page = traversal.next_page(10, &cancellation).unwrap_err();
@@ -1634,5 +1952,141 @@ mod tests {
         ) {
             let _ = parse_commit_fields(&fields);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stalled_topological_first_commit_falls_back_to_chronological_without_commit_graph() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        for i in 0..3 {
+            std::fs::write(root.join("f.txt"), format!("{i}\n")).unwrap();
+            for args in [
+                vec!["add", "."],
+                vec![
+                    "-c",
+                    "user.name=Hist",
+                    "-c",
+                    "user.email=hist@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "-q",
+                    "-m",
+                    &format!("commit {i}"),
+                ],
+            ] {
+                let status = Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .args(&args)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+            }
+        }
+        assert!(!repo.has_commit_graph());
+        let cancel = HistoryCancellation::default();
+        let pinned = repo.pin_history_refs(&cancel).unwrap();
+        let mut stall = Command::new("/bin/sh");
+        stall.args(["-c", "sleep 10"]);
+        let mut traversal = HistoryTraversal {
+            scope: pinned,
+            order: HistoryOrder::Topological,
+            offset: 0,
+            stream: Some(HistoryStream::start(stall, None).unwrap()),
+            deferred: None,
+            fallback: Some(ChronologicalFallback {
+                repo,
+                skip: 0,
+                timeout: Duration::from_millis(80),
+            }),
+            failed: false,
+        };
+        let started = Instant::now();
+        let page = traversal.next_page(10, &cancel).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(page.order, HistoryOrder::Chronological);
+        assert_eq!(traversal.order(), HistoryOrder::Chronological);
+        assert_eq!(page.commits.len(), 3);
+        assert_eq!(page.stop, HistoryTraversalStop::Exhausted);
+    }
+
+    #[test]
+    fn streaming_history_search_pages_match_stateless_search_without_replay() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        for i in 0..12 {
+            std::fs::write(root.join("f.txt"), format!("{i}\n")).unwrap();
+            let msg = if i % 3 == 0 {
+                format!("Résumé match #{i}\n\nDetails for item {i}")
+            } else {
+                format!("Unrelated commit #{i}")
+            };
+            for args in [
+                vec!["add", "."],
+                vec![
+                    "-c",
+                    "user.name=Search",
+                    "-c",
+                    "user.email=search@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "-q",
+                    "-m",
+                    &msg,
+                ],
+            ] {
+                let status = Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .args(&args)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+            }
+        }
+        let cancel = HistoryCancellation::default();
+        let baseline = repo
+            .search_history(&HistoryScope::AllRefs, "RÉSUMÉ", 0, 20, &cancel)
+            .unwrap();
+        assert_eq!(baseline.commits.len(), 4);
+        assert_eq!(baseline.scanned, 12);
+
+        let mut cursor = repo
+            .history_search(&HistoryScope::AllRefs, "RÉSUMÉ", &cancel)
+            .unwrap();
+        let mut streamed_oids = Vec::new();
+        let mut total_scanned = 0;
+        loop {
+            let page = cursor.next_page(2, &cancel).unwrap();
+            streamed_oids.extend(page.commits.into_iter().map(|c| c.oid));
+            total_scanned += page.scanned;
+            if page.stop == HistorySearchStop::Exhausted {
+                assert!(page.next_offset.is_none());
+                break;
+            }
+            assert_eq!(page.next_offset, Some(cursor.offset()));
+        }
+        assert_eq!(total_scanned, 12);
+        assert_eq!(
+            streamed_oids,
+            baseline
+                .commits
+                .iter()
+                .map(|c| c.oid.clone())
+                .collect::<Vec<_>>()
+        );
     }
 }

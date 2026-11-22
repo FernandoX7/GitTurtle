@@ -674,6 +674,7 @@ struct GitTurtle {
     /// readers are, so numbers only grow across tabs.
     status_requests: u64,
     working_paths: working_selection::FilterState,
+    quick_open_cache: Arc<std::sync::Mutex<worker::TrackedPathCache>>,
     integration_task: Option<Task<()>>,
     /// The busy state of a review's preparation that a page or tab switch
     /// dropped while its read may still run on the operation executor, and
@@ -997,6 +998,7 @@ impl GitTurtle {
             work_generation: 0,
             status_requests: 0,
             working_paths: working_selection::FilterState::default(),
+            quick_open_cache: Arc::new(std::sync::Mutex::new(worker::TrackedPathCache::default())),
             integration_task: None,
             dropped_preparation: None,
             profiles: profiles::State::default(),
@@ -5501,6 +5503,10 @@ pub(crate) mod phrase_tests {
                 .expect("Quit GitTurtle menu item")
         };
 
+        app.read_with(&cx, |app, _| {
+            app.preferences_writer.drain();
+            app.worker.wait_idle();
+        });
         cx.executor().run_until_parked();
         assert!(cx.update(|_, cx| !any_window_operation_busy(cx)));
         assert!(
@@ -5516,6 +5522,10 @@ pub(crate) mod phrase_tests {
             app.operation_busy = Some("Committing…");
             cx.notify();
         });
+        app.read_with(&cx, |app, _| {
+            app.preferences_writer.drain();
+            app.worker.wait_idle();
+        });
         cx.executor().run_until_parked();
         assert!(cx.update(|_, cx| any_window_operation_busy(cx)));
         assert!(
@@ -5530,6 +5540,10 @@ pub(crate) mod phrase_tests {
         app.update(&mut cx, |app, cx| {
             app.operation_busy = None;
             cx.notify();
+        });
+        app.read_with(&cx, |app, _| {
+            app.preferences_writer.drain();
+            app.worker.wait_idle();
         });
         cx.executor().run_until_parked();
         assert!(cx.update(|_, cx| !any_window_operation_busy(cx)));

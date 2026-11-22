@@ -187,11 +187,12 @@ impl GitRepository {
         self.validate_remote(remote)?;
         let bytes = if let Some(blob_oid) = &target.blob_oid {
             validate_oid(blob_oid)?;
-            ensure!(
-                self.blob_size(blob_oid)? <= 1024,
-                "The selected object is not a bounded Git LFS pointer."
-            );
-            self.blob(blob_oid)?
+            match self.blob_bounded(blob_oid, 1024, None)? {
+                BoundedBlob::Bytes(bytes) => bytes,
+                BoundedBlob::TooLarge(_) => {
+                    bail!("The selected object is not a bounded Git LFS pointer.")
+                }
+            }
         } else {
             let (mode, bytes) = read_worktree_file(&self.path, &target.path, "100644")?;
             ensure!(

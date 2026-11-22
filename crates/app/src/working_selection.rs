@@ -274,6 +274,9 @@ fn rows(
     Ok(result)
 }
 
+pub(super) const COLLAPSED_UNTRACKED_NOTE: &str =
+    "Large untracked folders are kept collapsed to stay fast.";
+
 impl GitTurtle {
     /// The status the shown rows index: while a newer status's rows are
     /// prepared, the earlier one they were built from.
@@ -1244,6 +1247,20 @@ impl GitTurtle {
                         .text_color(rgb(palette(cx).warning)),
                 )
             })
+            .when(
+                self.shown_working_status()
+                    .is_some_and(|status| status.untracked_directories_collapsed),
+                |el| {
+                    el.child(
+                        native_accessibility::text(
+                            "working-untracked-collapsed",
+                            COLLAPSED_UNTRACKED_NOTE,
+                        )
+                        .text_size(crate::appearance::ui_text(11.))
+                        .text_color(rgb(palette(cx).muted)),
+                    )
+                },
+            )
             .into_any_element()
     }
 }

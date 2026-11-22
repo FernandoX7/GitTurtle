@@ -66,6 +66,10 @@ impl GitRepository {
             validate_path(&path)?;
         }
         ensure!(
+            !expected.is_untracked_directory(),
+            "Untracked directories, including nested repositories, are not deleted here. Remove them outside GitTurtle."
+        );
+        ensure!(
             !expected.conflicted,
             "Resolve this conflict with the conflict tools; discard does not apply to conflicted files."
         );

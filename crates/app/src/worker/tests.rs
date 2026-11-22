@@ -627,3 +627,320 @@ fn lazy_split_defers_allocation_until_requested_and_keeps_cache_bytes_exact() {
     cache.remove(&key);
     assert_eq!(cache.bytes, 0);
 }
+
+fn preview_job(repo: GitRepository, file: FileChange) -> Job {
+    Job::Preview {
+        repo,
+        file,
+        origins: Default::default(),
+        prepare_split: false,
+    }
+}
+
+fn temp_repo_with_commits(count: usize) -> (tempfile::TempDir, GitRepository) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .env("GIT_AUTHOR_NAME", "Tester")
+            .env("GIT_AUTHOR_EMAIL", "tester@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Tester")
+            .env("GIT_COMMITTER_EMAIL", "tester@example.invalid")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run(&["init", "-q", "-b", "main"]);
+    for i in 0..count {
+        std::fs::write(path.join("notes.txt"), format!("entry {i}\n")).unwrap();
+        run(&["add", "notes.txt"]);
+        run(&["commit", "-q", "-m", &format!("commit {i}")]);
+    }
+    let repo = GitRepository::open(path).unwrap();
+    (dir, repo)
+}
+
+#[test]
+fn metadata_lane_runs_without_waiting_behind_blocked_preview_decode() {
+    let (_dir, repo) = temp_repo_with_commits(1);
+    let (preview_entered_tx, preview_entered_rx) = mpsc::channel();
+    let (release_preview_tx, release_preview_rx) = mpsc::channel();
+    let worker = Worker::with_lanes(
+        move |job, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
+        move |_, _, cancellation| {
+            cancellation.unobserved(|| {
+                let _ = preview_entered_tx.send(());
+                let _ = release_preview_rx.recv_timeout(Duration::from_secs(3));
+            })?;
+            Ok(notice("preview"))
+        },
+    );
+    let preview = worker.submit(preview_job(repo, file()));
+    preview_entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+
+    // While preview is blocked in `unobserved`, metadata completes immediately.
+    let started = Instant::now();
+    let meta = worker.submit(open_job("fast-commit-switch"));
+    let meta_out = block_on(meta).unwrap().unwrap();
+    assert_eq!(message(meta_out), "meta:fast-commit-switch");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "metadata waited behind blocked preview"
+    );
+
+    release_preview_tx.send(()).unwrap();
+    let preview_err = block_on(preview)
+        .unwrap()
+        .err()
+        .expect("superseded preview");
+    assert!(preview_err.to_string().contains("superseded"));
+    worker.wait_idle();
+}
+
+#[test]
+fn preview_takeover_survives_intervening_metadata_job() {
+    let (_dir, repo) = temp_repo_with_commits(1);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let decode_calls = Arc::new(AtomicU64::new(0));
+    let decode_calls_worker = Arc::clone(&decode_calls);
+    let worker = Worker::with_lanes(
+        move |job, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
+        move |_, _, cancellation| {
+            decode_calls_worker.fetch_add(1, Ordering::AcqRel);
+            cancellation.unobserved(|| {
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(3));
+            })?;
+            Ok(notice("decoded-once"))
+        },
+    );
+    let first_preview = worker.submit(preview_job(repo.clone(), file()));
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    // Intervening metadata job runs immediately while preview stays in unobserved decode.
+    let meta = worker.submit(open_job("intervening"));
+    assert_eq!(
+        message(block_on(meta).unwrap().unwrap()),
+        "meta:intervening"
+    );
+
+    // Returning to the same preview adopts the in-flight decode instead of starting a second.
+    let adopted = worker.submit(preview_job(repo, file()));
+    release_tx.send(()).unwrap();
+    assert_eq!(message(block_on(adopted).unwrap().unwrap()), "decoded-once");
+    assert!(block_on(first_preview).is_err());
+    assert_eq!(decode_calls.load(Ordering::Acquire), 1);
+    assert_eq!(worker.preparations(), 1);
+    worker.wait_idle();
+}
+
+#[test]
+fn lane_panics_are_isolated_between_metadata_and_preview() {
+    let (_dir, repo) = temp_repo_with_commits(1);
+    let worker = Worker::with_lanes(
+        |job, _, _| {
+            if job_name(job) == "boom" {
+                panic!("simulated metadata panic");
+            }
+            Ok(notice("meta-ok"))
+        },
+        |job, cache, _| {
+            if let Job::Preview { file, .. } = job
+                && file.new_path.as_deref() == Some(Path::new("boom.png"))
+            {
+                cache.insert(key("partial"), content(16));
+                panic!("simulated preview panic");
+            }
+            ensure!(cache.entries.is_empty(), "preview cache survived panic");
+            ensure!(cache.bytes == 0, "preview cache bytes survived panic");
+            Ok(notice("preview-ok"))
+        },
+    );
+
+    let mut bad_file = file();
+    bad_file.new_path = Some("boom.png".into());
+    let prev_err = block_on(worker.submit(preview_job(repo.clone(), bad_file)))
+        .unwrap()
+        .err()
+        .expect("preview panic converted to error");
+    assert!(prev_err.to_string().contains("Preview processing failed"));
+
+    // Metadata lane still works unaffected, and preview lane recovers with empty cache.
+    assert_eq!(
+        message(
+            block_on(worker.submit(open_job("healthy")))
+                .unwrap()
+                .unwrap()
+        ),
+        "meta-ok"
+    );
+    assert_eq!(
+        message(
+            block_on(worker.submit(preview_job(repo.clone(), file())))
+                .unwrap()
+                .unwrap()
+        ),
+        "preview-ok"
+    );
+
+    // Metadata panic resets metadata session without harming preview lane.
+    let meta_err = block_on(worker.submit(open_job("boom")))
+        .unwrap()
+        .err()
+        .expect("metadata panic converted to error");
+    assert!(meta_err.to_string().contains("metadata read failed"));
+    assert_eq!(
+        message(
+            block_on(worker.submit(open_job("after-boom")))
+                .unwrap()
+                .unwrap()
+        ),
+        "meta-ok"
+    );
+    assert_eq!(
+        message(
+            block_on(worker.submit(preview_job(repo, file())))
+                .unwrap()
+                .unwrap()
+        ),
+        "preview-ok"
+    );
+}
+
+#[test]
+fn tracked_path_cache_bounds_entries_validates_fingerprint_and_evicts_repo() {
+    let (_d1, repo1) = temp_repo_with_commits(1);
+    let (_d2, repo2) = temp_repo_with_commits(1);
+    let (_d3, repo3) = temp_repo_with_commits(1);
+    let cancel = gitturtle_core::HistoryCancellation::default();
+    let mut cache = TrackedPathCache::default();
+
+    let fp1 = repo1.index_fingerprint().unwrap().unwrap();
+    let idx1 = Arc::new(
+        repo1
+            .load_tracked_paths(&gitturtle_core::PathScope::Worktree, &cancel)
+            .unwrap(),
+    );
+    cache.insert(repo1.path(), Some(fp1.clone()), Arc::clone(&idx1));
+    assert!(cache.get_worktree(repo1.path(), &fp1).is_some());
+
+    let fp2 = repo2.index_fingerprint().unwrap().unwrap();
+    let idx2 = Arc::new(
+        repo2
+            .load_tracked_paths(&gitturtle_core::PathScope::Worktree, &cancel)
+            .unwrap(),
+    );
+    cache.insert(repo2.path(), Some(fp2.clone()), idx2);
+    assert_eq!(cache.len(), 2);
+
+    // Inserting a 3rd repo evicts the least recently used (repo1).
+    let fp3 = repo3.index_fingerprint().unwrap().unwrap();
+    let idx3 = Arc::new(
+        repo3
+            .load_tracked_paths(&gitturtle_core::PathScope::Worktree, &cancel)
+            .unwrap(),
+    );
+    cache.insert(repo3.path(), Some(fp3.clone()), idx3);
+    assert_eq!(cache.len(), 2);
+    assert!(cache.get_worktree(repo1.path(), &fp1).is_none());
+    assert!(cache.get_worktree(repo2.path(), &fp2).is_some());
+
+    // Changing `.git/index` invalidates repo2's fingerprint immediately.
+    std::fs::write(repo2.path().join("extra.txt"), "new\n").unwrap();
+    let status = std::process::Command::new("git")
+        .args(["add", "extra.txt"])
+        .current_dir(repo2.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let fp2_changed = repo2.index_fingerprint().unwrap().unwrap();
+    assert_ne!(fp2, fp2_changed);
+    assert!(cache.get_worktree(repo2.path(), &fp2_changed).is_none());
+
+    cache.evict_repo(repo2.path());
+    assert_eq!(cache.len(), 1);
+    assert!(cache.get_worktree(repo3.path(), &fp3).is_some());
+}
+
+#[test]
+fn chronological_history_page_emits_node_only_rows_and_clears_after_commit_graph() {
+    let (_dir, repo) = temp_repo_with_commits(4);
+    let mut session = RepositorySession {
+        prefer_chronological: vec![repo.path().to_owned()],
+        ..Default::default()
+    };
+    let cancel = active();
+    let result = session
+        .history_page(
+            &repo,
+            &gitturtle_core::HistoryScope::AllRefs,
+            0,
+            10,
+            &cancel,
+        )
+        .unwrap();
+    assert_eq!(
+        result.page.order,
+        gitturtle_core::HistoryOrder::Chronological
+    );
+    assert_eq!(result.page.commits.len(), 4);
+    assert!(
+        result
+            .graph
+            .iter()
+            .all(|row| row.width == 1 && row.edges.is_empty())
+    );
+    assert!(
+        result
+            .graph_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("commit-graph"))
+    );
+
+    // Writing a commit-graph lets the session automatically resume topological graphs.
+    let status = std::process::Command::new("git")
+        .args(["commit-graph", "write", "--reachable"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let topo = session
+        .history_page(
+            &repo,
+            &gitturtle_core::HistoryScope::AllRefs,
+            0,
+            10,
+            &cancel,
+        )
+        .unwrap();
+    assert_eq!(topo.page.order, gitturtle_core::HistoryOrder::Topological);
+    assert!(topo.graph_notice.is_none());
+    assert!(session.prefer_chronological.is_empty());
+}
+
+#[test]
+fn hold_lane_pauses_only_targeted_lane() {
+    let (_dir, repo) = temp_repo_with_commits(1);
+    let worker = Worker::with_lanes(
+        |job, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
+        |_, _, _| Ok(notice("preview-done")),
+    );
+    let hold_preview = worker.hold_lane(Lane::Preview);
+    let meta = worker.submit(open_job("unblocked-meta"));
+    assert_eq!(
+        message(block_on(meta).unwrap().unwrap()),
+        "meta:unblocked-meta"
+    );
+    let preview = worker.submit(preview_job(repo, file()));
+    drop(hold_preview);
+    assert_eq!(message(block_on(preview).unwrap().unwrap()), "preview-done");
+    worker.release_search();
+    worker.wait_idle();
+}

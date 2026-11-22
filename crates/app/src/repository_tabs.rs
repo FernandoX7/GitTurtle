@@ -2738,6 +2738,10 @@ impl GitTurtle {
             self.file_paths.reset();
         }
         let closed = self.repository_tabs.tabs.remove(index).path;
+        self.quick_open_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .evict_repo(&closed);
         // A wait for a preparation the closed tab dropped says it finishes
         // a closed tab's work, in a tab that opens its repository again too.
         self.forget_dropped_preparation_tab(&closed);

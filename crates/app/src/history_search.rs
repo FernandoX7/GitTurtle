@@ -191,6 +191,7 @@ impl GitTurtle {
 
     pub(super) fn discard_history_search(&mut self) {
         self.pause_history_search_for_read();
+        self.worker.release_search();
         let epoch = self.history_search.epoch.wrapping_add(1);
         self.history_search = State {
             epoch,
@@ -291,6 +292,7 @@ impl GitTurtle {
 
     pub(super) fn restore_normal_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.history_search.progress = None;
+        self.worker.release_search();
         let Some(normal) = self.history_search.normal.take() else {
             return;
         };

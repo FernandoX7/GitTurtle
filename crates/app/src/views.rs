@@ -2247,12 +2247,11 @@ impl GitTurtle {
             )
             .child(self.render_history_search_controls(window, cx))
             .children(self.graph_notice.as_ref().map(|notice| {
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(colors.muted))
-                    .child(notice.clone())
+                div().px_3().py_1().child(
+                    native_accessibility::text("history-graph-notice", notice.clone())
+                        .text_size(crate::appearance::ui_text(10.))
+                        .text_color(rgb(colors.muted)),
+                )
             }))
             .when(self.column_menu, |el| {
                 el.child(

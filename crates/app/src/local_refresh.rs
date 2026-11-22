@@ -128,6 +128,10 @@ pub struct LocalChange {
     /// guessing which paths changed.
     pub rescan: bool,
     pub error: Option<String>,
+    /// Informational steady-state coverage notice (for example, large-repo
+    /// `.git`-metadata-only watching). Updates the status bar without marking
+    /// the watcher failed or triggering watcher rebuilds on focus/tab switches.
+    pub notice: Option<String>,
     /// Coverage recovered; supersedes a prior warning in a coalesced burst.
     pub recovered: bool,
     /// Asked for by a write as it ended (`refresh_after_write`), never by
@@ -144,7 +148,11 @@ impl LocalChange {
         self.after_write |= next.after_write;
         if next.recovered {
             self.error = None;
+            self.notice = None;
             self.recovered = true;
+        }
+        if next.notice.is_some() {
+            self.notice = next.notice;
         }
         if next.error.is_some() {
             self.error = next.error;
@@ -411,10 +419,13 @@ pub fn watch(roots: WatchRoots) -> Result<(LocalWatcher, LocalChanges)> {
     registrations.start(&mut watcher, &roots);
     let fingerprints = Fingerprints::new(&roots);
     let (mut delivery, changes) = Delivery::channel();
-    if let Some(error) = registrations.diagnostic() {
+    let error = registrations.diagnostic();
+    let notice = registrations.notice();
+    if error.is_some() || notice.is_some() {
         delivery.send(LocalChange {
-            rescan: true,
-            error: Some(error),
+            rescan: error.is_some(),
+            error,
+            notice,
             ..Default::default()
         });
     }
@@ -577,16 +588,19 @@ fn run_actor(
         burst.push(change, Instant::now());
         if let Some(mut change) = burst.take_due(Instant::now()) {
             if !policy_paths.is_empty() {
-                let previous = registrations.diagnostic();
+                let previous_error = registrations.diagnostic();
+                let previous_notice = registrations.notice();
                 registrations.refresh_policy(
                     &mut watcher,
                     &roots,
                     &policy_paths.drain().collect::<Vec<_>>(),
                 );
-                let next = registrations.diagnostic();
-                if previous != next {
-                    change.error = next;
-                    change.recovered = change.error.is_none();
+                let next_error = registrations.diagnostic();
+                let next_notice = registrations.notice();
+                if previous_error != next_error || previous_notice != next_notice {
+                    change.error = next_error;
+                    change.notice = next_notice;
+                    change.recovered = change.error.is_none() && change.notice.is_none();
                     change.rescan = true;
                 }
             }
@@ -734,21 +748,44 @@ struct Registrations {
     deferred: HashMap<PathBuf, String>,
     policy: Option<gitturtle_core::LocalWatchPolicy>,
     policy_error: Option<String>,
+    policy_notice: Option<String>,
     worktree: PathBuf,
     scan_started: Instant,
     scan_entries: usize,
     directory_limit: usize,
 }
 
+fn metadata_only_diagnostic(reason: gitturtle_core::GitMetadataOnlyReason) -> String {
+    match reason {
+        gitturtle_core::GitMetadataOnlyReason::TrackedPathLimit => {
+            "Large working copy (more than 100,000 tracked paths): watching .git metadata only. Working-tree edits refresh on focus or Refresh."
+                .into()
+        }
+        gitturtle_core::GitMetadataOnlyReason::TrackedByteLimit => {
+            "Large working copy (more than 16 MiB of tracked paths): watching .git metadata only. Working-tree edits refresh on focus or Refresh."
+                .into()
+        }
+    }
+}
+
 impl Registrations {
     fn new(roots: &WatchRoots) -> Self {
         let policy = gitturtle_core::GitRepository::open(&roots.worktree)
             .and_then(|repository| repository.local_watch_policy());
-        let (policy, policy_error) = match policy {
-            Ok(policy) => (Some(policy), None),
+        let (policy, policy_error, policy_notice) = match policy {
+            Ok(policy) => {
+                let notice = match policy.coverage() {
+                    gitturtle_core::LocalWatchCoverage::Full => None,
+                    gitturtle_core::LocalWatchCoverage::GitMetadataOnly { reason } => {
+                        Some(metadata_only_diagnostic(reason))
+                    }
+                };
+                (Some(policy), None, notice)
+            }
             Err(error) => (
                 None,
                 Some(bounded_error(format!("Working-tree coverage: {error:#}"))),
+                None,
             ),
         };
         Self {
@@ -756,11 +793,22 @@ impl Registrations {
             deferred: Default::default(),
             policy,
             policy_error,
+            policy_notice,
             worktree: roots.worktree.clone(),
             scan_started: Instant::now(),
             scan_entries: 0,
             directory_limit: MAX_DIRECTORIES,
         }
+    }
+
+    fn notice(&self) -> Option<String> {
+        self.policy_notice.clone()
+    }
+
+    fn watches_worktree(&self) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|policy| !policy.is_git_metadata_only())
     }
 
     fn diagnostic(&self) -> Option<String> {
@@ -784,18 +832,30 @@ impl Registrations {
 
     fn start(&mut self, watcher: &mut RecommendedWatcher, roots: &WatchRoots) {
         self.begin_scan();
+        let watch_worktree = self.watches_worktree();
         // Register every essential root before spending watches on descendants.
         // A worktree budget/error must never discard HEAD/index/ref monitoring.
-        for path in [&roots.private_git, &roots.common_git, &roots.worktree] {
+        // In `GitMetadataOnly` mode, skip registering `&roots.worktree` on both
+        // macOS (recursive FSEvents) and Linux (inotify) so huge monorepos stay
+        // responsive without scanning or saturating OS watches.
+        for path in [&roots.private_git, &roots.common_git] {
             self.register(watcher, path);
         }
+        if watch_worktree {
+            self.register(watcher, &roots.worktree);
+        }
         if cfg!(target_os = "linux") {
-            for path in [&roots.private_git, &roots.common_git, &roots.worktree] {
+            for path in [&roots.private_git, &roots.common_git] {
                 if let Some(parent) = path.parent() {
                     self.register(watcher, parent);
                 }
             }
-            self.register_policy_parents(watcher);
+            if watch_worktree {
+                if let Some(parent) = roots.worktree.parent() {
+                    self.register(watcher, parent);
+                }
+                self.register_policy_parents(watcher);
+            }
         }
         if cfg!(target_os = "linux") {
             for root in [&roots.private_git, &roots.common_git] {
@@ -816,7 +876,7 @@ impl Registrations {
         for root in [&roots.private_git, &roots.common_git] {
             self.add(watcher, root, roots, true);
         }
-        if self.policy.is_some() {
+        if watch_worktree {
             self.add(watcher, &roots.worktree, roots, false);
         }
     }
@@ -878,6 +938,9 @@ impl Registrations {
         let Some(policy) = self.policy.as_mut() else {
             return true;
         };
+        if policy.is_git_metadata_only() {
+            return false;
+        }
         let directory = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
         // Deleted watched directories still need status and coverage cleanup.
         if self.directories.contains(path) {
@@ -907,6 +970,9 @@ impl Registrations {
                 }
             }
             return true;
+        }
+        if !self.watches_worktree() {
+            return false;
         }
         if path == roots.worktree {
             return true;
@@ -1120,6 +1186,15 @@ impl Registrations {
             })
             .filter_map(|path| path.parent().map(Path::to_owned))
             .collect();
+        if self
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.is_git_metadata_only())
+        {
+            // Avoid re-running `git ls-files --cached` on every `.git/index`
+            // edit once a huge monorepo has already degraded to metadata-only.
+            return;
+        }
         if all_rules || index_changed {
             let previous_tracked: Vec<_> = self
                 .policy
@@ -1132,9 +1207,56 @@ impl Registrations {
                 .and_then(|repository| repository.local_watch_policy())
             {
                 Ok(policy) => {
+                    if let gitturtle_core::LocalWatchCoverage::GitMetadataOnly { reason } =
+                        policy.coverage()
+                    {
+                        let keep_linux_parent = |dir: &Path| -> bool {
+                            cfg!(target_os = "linux")
+                                && [roots.private_git.parent(), roots.common_git.parent()]
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|parent| parent == dir)
+                        };
+                        let worktree_dirs: Vec<_> = self
+                            .directories
+                            .iter()
+                            .filter(|dir| {
+                                !keep_linux_parent(dir)
+                                    && (**dir == roots.worktree
+                                        || roots.classify(dir) == ChangeKind::Worktree)
+                            })
+                            .cloned()
+                            .collect();
+                        for dir in worktree_dirs {
+                            let _ = watcher.unwatch(&dir);
+                            self.directories.remove(&dir);
+                        }
+                        self.deferred
+                            .retain(|path, _| roots.classify(path) != ChangeKind::Worktree);
+                        self.policy = Some(policy);
+                        self.policy_error = None;
+                        self.policy_notice = Some(metadata_only_diagnostic(reason));
+                        // Re-ensure `.git` roots are watched directly (on macOS
+                        // FSEvents, `.git` may previously have relied on a
+                        // recursive watch on `roots.worktree`) and retry any
+                        // previously deferred `.git` metadata directories now
+                        // that worktree watch slots have been freed.
+                        self.begin_scan();
+                        for root in [&roots.private_git, &roots.common_git] {
+                            self.register(watcher, root);
+                            if cfg!(target_os = "linux")
+                                && let Some(parent) = root.parent()
+                            {
+                                self.register(watcher, parent);
+                            }
+                            self.add(watcher, root, roots, true);
+                        }
+                        return;
+                    }
                     let tracked: Vec<_> = policy.tracked_directories().collect();
                     self.policy = Some(policy);
                     self.policy_error = None;
+                    self.policy_notice = None;
                     // Release formerly tracked directories that are now
                     // ignored before admitting the new tracked ancestors.
                     // This inspects only known paths, not the working tree.
@@ -2130,5 +2252,15 @@ mod tests {
         );
         assert!(directory.join("tracked").is_file());
         assert!(registrations.diagnostic().is_none());
+    }
+
+    #[test]
+    fn metadata_only_diagnostic_covers_both_limits() {
+        let paths =
+            metadata_only_diagnostic(gitturtle_core::GitMetadataOnlyReason::TrackedPathLimit);
+        assert!(paths.contains("100,000") && paths.contains(".git metadata only"));
+        let bytes =
+            metadata_only_diagnostic(gitturtle_core::GitMetadataOnlyReason::TrackedByteLimit);
+        assert!(bytes.contains("16 MiB") && bytes.contains(".git metadata only"));
     }
 }

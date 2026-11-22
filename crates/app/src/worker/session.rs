@@ -453,12 +453,30 @@ pub(super) struct RetainedRepository {
 pub(super) struct RepositorySession {
     pub(super) current: Option<RetainedRepository>,
     pub(super) history: Option<OrdinaryHistory>,
+    pub(super) search: Option<ActiveSearch>,
+    /// Bounded LRU list of repositories without a commit-graph that fell back
+    /// to chronological history, avoiding repeated 4-second topological waits
+    /// across tab switches until `has_commit_graph()` turns true.
+    pub(super) prefer_chronological: Vec<PathBuf>,
 }
+
+const MAX_PREFER_CHRONOLOGICAL: usize = 16;
 
 pub(super) struct OrdinaryHistory {
     path: PathBuf,
     pub(super) traversal: gitturtle_core::HistoryTraversal,
     graph: graph::GraphCursor,
+}
+
+pub(super) struct ActiveSearch {
+    path: PathBuf,
+    scope: gitturtle_core::HistoryScope,
+    query: String,
+    cursor: gitturtle_core::HistorySearch,
+}
+
+fn chronological_graph_notice() -> String {
+    "Showing chronological history (no commit-graph). Run git commit-graph write --reachable for graph connections.".into()
 }
 
 impl RepositorySession {
@@ -516,6 +534,7 @@ impl RepositorySession {
         {
             self.current = None;
             self.history = None;
+            self.search = None;
         }
         if let Some(current) = &self.current
             && current.canonical_root == canonical
@@ -562,12 +581,39 @@ impl RepositorySession {
         let repository = Arc::new(discovered);
         let identity = RepositoryIdentity::capture(&repository)?;
         self.history = None;
+        self.search = None;
         self.current = Some(RetainedRepository {
             canonical_root,
             repository: Arc::clone(&repository),
             identity,
         });
         Ok(repository.as_ref().clone())
+    }
+
+    fn remember_chronological(&mut self, path: &Path) {
+        self.prefer_chronological
+            .retain(|existing| existing != path);
+        if self.prefer_chronological.len() >= MAX_PREFER_CHRONOLOGICAL {
+            self.prefer_chronological.remove(0);
+        }
+        self.prefer_chronological.push(path.to_owned());
+    }
+
+    fn preferred_order(&mut self, repo: &GitRepository) -> gitturtle_core::HistoryOrder {
+        if self
+            .prefer_chronological
+            .iter()
+            .any(|path| path == repo.path())
+        {
+            if repo.has_commit_graph() {
+                self.prefer_chronological.retain(|path| path != repo.path());
+                gitturtle_core::HistoryOrder::Topological
+            } else {
+                gitturtle_core::HistoryOrder::Chronological
+            }
+        } else {
+            gitturtle_core::HistoryOrder::Topological
+        }
     }
 
     pub(super) fn history_page(
@@ -579,16 +625,34 @@ impl RepositorySession {
         cancellation: &Cancellation,
     ) -> Result<HistoryPageResult> {
         let start = Instant::now();
-        let matches = self.history.as_ref().is_some_and(|history| {
-            history.path == repo.path()
-                && history.traversal.scope() == scope
-                && history.traversal.offset() <= offset
-        });
+        // When continuing an existing traversal (`offset > 0`), preserve its
+        // captured ordering so mid-pagination pages never mix Chronological
+        // and Topological seams if a commit-graph appears externally.
+        let continue_existing = offset > 0
+            && self.history.as_ref().is_some_and(|history| {
+                history.path == repo.path()
+                    && history.traversal.scope() == scope
+                    && history.traversal.offset() <= offset
+            });
+        let matches = continue_existing || {
+            let initial_order = self.preferred_order(repo);
+            self.history.as_ref().is_some_and(|history| {
+                history.path == repo.path()
+                    && history.traversal.scope() == scope
+                    && history.traversal.offset() <= offset
+                    && history.traversal.order() == initial_order
+            })
+        };
         if !matches {
+            let initial_order = self.preferred_order(repo);
             self.history = None;
             self.history = Some(OrdinaryHistory {
                 path: repo.path().to_owned(),
-                traversal: repo.history_traversal(scope, &cancellation.history)?,
+                traversal: repo.history_traversal_in_order(
+                    scope,
+                    initial_order,
+                    &cancellation.history,
+                )?,
                 graph: graph::GraphCursor::default(),
             });
         }
@@ -602,11 +666,14 @@ impl RepositorySession {
                 let count =
                     (offset - history.traversal.offset()).min(gitturtle_core::MAX_HISTORY_PAGE);
                 let page = history.traversal.next_page(count, &cancellation.history)?;
-                history
-                    .graph
-                    .append(&page.commits, GRAPH_LANE_LIMIT, GRAPH_EDGE_LIMIT, || {
-                        cancellation.check()
-                    })?;
+                if page.order == gitturtle_core::HistoryOrder::Topological {
+                    history.graph.append(
+                        &page.commits,
+                        GRAPH_LANE_LIMIT,
+                        GRAPH_EDGE_LIMIT,
+                        || cancellation.check(),
+                    )?;
+                }
                 // A position past the history's end, as a restored tab's
                 // saved page is where a shallower fetch cut it, reads as
                 // the empty page at the end, which tells the window where
@@ -619,22 +686,94 @@ impl RepositorySession {
                 limit.clamp(1, gitturtle_core::MAX_HISTORY_PAGE),
                 &cancellation.history,
             )?;
-            let (graph, hidden) =
-                history
-                    .graph
-                    .append(&page.commits, GRAPH_LANE_LIMIT, GRAPH_EDGE_LIMIT, || {
-                        cancellation.check()
-                    })?;
+            let (graph, graph_notice) = if page.order == gitturtle_core::HistoryOrder::Chronological
+            {
+                let node = graph::GraphRow {
+                    width: 1,
+                    ..Default::default()
+                };
+                (
+                    vec![node; page.commits.len()],
+                    Some(chronological_graph_notice()),
+                )
+            } else {
+                let (graph, hidden) = history.graph.append(
+                    &page.commits,
+                    GRAPH_LANE_LIMIT,
+                    GRAPH_EDGE_LIMIT,
+                    || cancellation.check(),
+                )?;
+                (graph, hidden.then(graph_notice))
+            };
             cancellation.check()?;
             Ok(HistoryPageResult {
                 page,
                 graph,
-                graph_notice: hidden.then(graph_notice),
+                graph_notice,
                 elapsed: start.elapsed(),
             })
         })();
-        if result.is_err() {
-            self.history = None;
+        match &result {
+            Ok(ok) if ok.page.order == gitturtle_core::HistoryOrder::Chronological => {
+                self.remember_chronological(repo.path());
+            }
+            Err(_) => {
+                self.history = None;
+            }
+            _ => {}
+        }
+        result
+    }
+
+    pub(super) fn search_history_page(
+        &mut self,
+        repo: &GitRepository,
+        pinned: &gitturtle_core::HistoryScope,
+        query: &str,
+        offset: usize,
+        limit: usize,
+        cancellation: &Cancellation,
+    ) -> Result<gitturtle_core::HistorySearchPage> {
+        let initial_order = self.preferred_order(repo);
+        let matches = self.search.as_ref().is_some_and(|active| {
+            active.path == repo.path()
+                && active.scope == *pinned
+                && active.query == query
+                && active.cursor.offset() == offset
+        });
+        if !matches {
+            self.search = None;
+            let cursor = repo.history_search_in_order(
+                pinned,
+                query,
+                offset,
+                initial_order,
+                &cancellation.history,
+            )?;
+            let cursor_scope = cursor.scope().clone();
+            self.search = Some(ActiveSearch {
+                path: repo.path().to_owned(),
+                scope: cursor_scope,
+                query: query.to_owned(),
+                cursor,
+            });
+        }
+        let active = self.search.as_mut().expect("Search cursor initialized");
+        let result = active.cursor.next_page(limit, &cancellation.history);
+        let switched_chronological =
+            active.cursor.order() == gitturtle_core::HistoryOrder::Chronological;
+        match &result {
+            Ok(page) => {
+                if switched_chronological {
+                    self.remember_chronological(repo.path());
+                }
+                if page.stop == gitturtle_core::HistorySearchStop::Exhausted {
+                    self.search = None;
+                }
+            }
+            Err(_) => {
+                self.search = None;
+            }
         }
         result
     }

@@ -297,6 +297,12 @@ impl GitTurtle {
         } else if let Some(error) = &change.error {
             self.automatic.watch_failed = true;
             self.automatic.watch_warning = Some(error.clone());
+        } else if let Some(notice) = &change.notice {
+            // Steady-state metadata-only watching keeps the `.git` watcher
+            // healthy without marking it failed or tearing it down on focus.
+            self.automatic.watch_failed = false;
+            self.automatic.watch_warning = Some(notice.clone());
+            cx.notify();
         }
         self.automatic.pending.merge(change);
         self.try_automatic_refresh(window, cx);
@@ -582,6 +588,7 @@ impl GitTurtle {
             ahead,
             behind,
             operation,
+            untracked_directories_collapsed,
         } = &working.status;
         let same_status = self.work_status.as_deref().is_some_and(|shown| {
             shown.branch == *branch
@@ -590,6 +597,7 @@ impl GitTurtle {
                 && shown.ahead == *ahead
                 && shown.behind == *behind
                 && shown.operation == *operation
+                && shown.untracked_directories_collapsed == *untracked_directories_collapsed
         });
         let same_working = same_status
             && matches!(&working.profile, Ok(profile) if self.profile.as_ref() == Some(profile))

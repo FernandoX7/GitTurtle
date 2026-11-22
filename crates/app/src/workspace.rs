@@ -2034,6 +2034,15 @@ impl GitTurtle {
         if let Some(error) = &self.working_paths.error {
             texts.push((error.clone(), ui_text(11.)));
         }
+        if self
+            .shown_working_status()
+            .is_some_and(|status| status.untracked_directories_collapsed)
+        {
+            texts.push((
+                crate::working_selection::COLLAPSED_UNTRACKED_NOTE.into(),
+                ui_text(11.),
+            ));
+        }
         for (text, size) in texts {
             height += gap + line(size) * wrapped_lines(&text, size, room, window) as f32;
         }
@@ -6699,6 +6708,8 @@ impl GitTurtle {
                 let change = if staged { entry.staged } else { entry.unstaged };
                 let (symbol, status_label, color, background) = if entry.conflicted {
                     ("file-conflict", "Conflict", p.warning, p.hover)
+                } else if entry.is_untracked_directory() {
+                    ("folder", "Folder", p.added, p.added_background)
                 } else if entry.untracked || change == Some(ChangeStatus::Added) {
                     ("file-added", "New", p.added, p.added_background)
                 } else {
@@ -8345,6 +8356,15 @@ pub(super) fn working_row_menu(
     };
     let discard = if discard_entry.conflicted && !preparing {
         native_accessibility::detailed_item("Discard changes…", "After conflict resolution")
+    } else if discard_entry.is_untracked_directory() {
+        if preparing {
+            item("Delete untracked folder…", false)
+        } else {
+            native_accessibility::detailed_item(
+                "Delete untracked folder…",
+                "Remove outside this app",
+            )
+        }
     } else if discard_entry.untracked {
         item("Delete untracked file…", false)
     } else {

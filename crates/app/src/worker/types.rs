@@ -362,6 +362,15 @@ pub(super) enum MissingScope {
     AllHistory,
 }
 
+/// Worker execution lane: metadata reads own `RepositorySession` while
+/// preview/decoding work owns `PreviewCache`, preventing slow decodes from
+/// head-of-line blocking history, commit changes, search, or Quick Open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Metadata,
+    Preview,
+}
+
 pub enum Job {
     /// Drop the idle history process on the worker when leaving its tab.
     ReleaseHistory,
@@ -393,6 +402,7 @@ pub enum Job {
         repo: GitRepository,
         scope: gitturtle_core::PathScope,
         query: String,
+        cache: Option<Arc<std::sync::Mutex<super::cache::TrackedPathCache>>>,
     },
     TrackedPreview {
         repo: GitRepository,
@@ -468,6 +478,30 @@ pub enum Job {
         origins: crate::markdown_view::Origins,
         prepare_split: bool,
     },
+}
+
+impl Job {
+    pub(crate) fn lane(&self) -> Lane {
+        match self {
+            Self::Preview { .. }
+            | Self::WorkingPreview { .. }
+            | Self::TrackedPreview { .. }
+            | Self::ReviewText { .. }
+            | Self::PrepareSplit { .. } => Lane::Preview,
+            Self::ReleaseHistory
+            | Self::HistoryPage { .. }
+            | Self::CompareRevisions { .. }
+            | Self::RevisionTargets { .. }
+            | Self::TrackedPaths { .. }
+            | Self::Blame { .. }
+            | Self::LineHistory { .. }
+            | Self::SearchHistory { .. }
+            | Self::FileHistory { .. }
+            | Self::QuietRefresh { .. }
+            | Self::Open { .. }
+            | Self::Changes { .. } => Lane::Metadata,
+        }
+    }
 }
 
 pub enum Output {

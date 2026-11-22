@@ -16,7 +16,7 @@ Bounds apply at each owner's scope, not automatically to the whole process. Trac
 
 | Work | Current owner and lifetime |
 | --- | --- |
-| History, selected previews, search and quiet reads | Each window's `GitTurtle::worker`; tabs share that reader and invalidate obsolete work when switching. A History snapshot reads its tags on one scoped thread beside its history page, under the same cancellation, and joins it before returning. |
+| History, selected previews, search and quiet reads | Each window's 2-lane `GitTurtle::worker` (`gitturtle-reader` for metadata/history/search/quiet reads; lazy `gitturtle-preview` for diff/image/document previews) plus `TrackedPathCache` (2 entries / 24 MiB LRU) for Quick Open; tabs share that worker and invalidate obsolete work when switching. A History snapshot reads its tags and worktrees beside its history page and branches under the same cancellation and joins before returning. |
 | Accepted Git writes and preference saves | Separate `SerialExecutor` instances created by each `GitTurtle`; accepted writes drain after a reply is dropped. This is not a process-wide Git transaction lock. |
 | Changed/working path filtering | The window's lazy `path_filter::State` executor, with snapshot identity and cancellation tickets; working filtering reuses this lane. |
 | Later PDF pages and model frames | Separate process-wide `OnceLock` renderers in `pdf_view::renderer` and `model_view::renderer`; content owners retain their own caches, generations and cancellation. A shared lane does not make retained view memory global or free. |

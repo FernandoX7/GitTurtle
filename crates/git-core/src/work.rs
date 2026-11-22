@@ -37,6 +37,11 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
 const WRITE_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const MAX_WRITE_INPUT: usize = 32 * 1024 * 1024;
+const MAX_EXPANDED_UNTRACKED_DIRS: usize = 256;
+const MAX_EXPANDED_UNTRACKED_FILES: usize = 5_000;
+const MAX_EXPANDED_UNTRACKED_BYTES: usize = 4 * 1024 * 1024;
+const MAX_UNTRACKED_PROBE_DEPTH: usize = 128;
+const MAX_UNTRACKED_PROBE_TIME: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeArea {
@@ -72,6 +77,12 @@ impl StatusEntry {
     pub fn index_oid(&self) -> Option<&str> {
         self.index_oid.as_deref()
     }
+
+    /// Whether this entry is a collapsed untracked directory or nested
+    /// repository (Git emits untracked directory entries with a trailing `/`).
+    pub fn is_untracked_directory(&self) -> bool {
+        self.untracked && self.path.as_os_str().as_encoded_bytes().ends_with(b"/")
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -83,6 +94,9 @@ pub struct RepositoryStatus {
     pub ahead: u64,
     pub behind: u64,
     pub operation: Option<String>,
+    /// True when one or more large untracked directories exceeded the bounded
+    /// expansion budget and were kept collapsed as directory rows.
+    pub untracked_directories_collapsed: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -244,6 +258,19 @@ pub struct WriteOutcome {
 impl GitRepository {
     /// No index refresh, filesystem-monitor invocation, or automatic network access.
     pub fn status(&self) -> Result<RepositoryStatus> {
+        self.status_with_untracked_limits(
+            MAX_EXPANDED_UNTRACKED_DIRS,
+            MAX_EXPANDED_UNTRACKED_FILES,
+            MAX_UNTRACKED_PROBE_TIME,
+        )
+    }
+
+    fn status_with_untracked_limits(
+        &self,
+        max_dirs: usize,
+        max_files: usize,
+        max_probe_time: Duration,
+    ) -> Result<RepositoryStatus> {
         ensure!(!self.bare, "A bare repository has no working copy");
         let mut command = passive_status_command(self.target())?;
         command.args([
@@ -252,7 +279,7 @@ impl GitRepository {
             "status",
             "--porcelain=v2",
             "--branch",
-            "--untracked-files=all",
+            "--untracked-files=normal",
             "--renames",
             "--ignore-submodules=dirty",
             "-z",
@@ -269,6 +296,12 @@ impl GitRepository {
         }
         let bytes = output.stdout;
         let mut status = parse_status(&bytes)?;
+        self.expand_bounded_untracked_directories(
+            &mut status,
+            max_dirs,
+            max_files,
+            max_probe_time,
+        )?;
         let git_dir = if matches!(self.verify_at_path()?, super::FoundAtPath::Same) {
             self.git_dir().to_path_buf()
         } else {
@@ -287,6 +320,161 @@ impl GitRepository {
             }
         }
         Ok(status)
+    }
+
+    fn expand_bounded_untracked_directories(
+        &self,
+        status: &mut RepositoryStatus,
+        max_dirs: usize,
+        max_files: usize,
+        max_probe_time: Duration,
+    ) -> Result<()> {
+        let dir_indices: Vec<usize> = status
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| entry.is_untracked_directory().then_some(idx))
+            .collect();
+        if dir_indices.is_empty() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + max_probe_time;
+        let mut remaining_dirs = max_dirs;
+        let mut remaining_files = max_files;
+        let mut expandable: Vec<(usize, PathBuf, Vec<u8>)> = Vec::new();
+        for idx in dir_indices {
+            if (remaining_dirs == 0 || Instant::now() >= deadline)
+                && status.untracked_directories_collapsed
+            {
+                // Budget/deadline already exhausted and collapse notice armed:
+                // stop issuing further filesystem syscalls immediately.
+                break;
+            }
+            let raw_bytes = status.entries[idx].path.as_os_str().as_encoded_bytes();
+            let trimmed_bytes = raw_bytes.strip_suffix(b"/").unwrap_or(raw_bytes);
+            let trimmed = path_from_bytes(trimmed_bytes);
+            if validate_path(&trimmed).is_err() {
+                continue;
+            }
+            if remaining_dirs == 0 || Instant::now() >= deadline {
+                // Still check whether this directory is a nested Git repository
+                // so nested repos alone never trigger the collapsed-folder notice.
+                if !is_nested_git_dir(&self.path, &trimmed) {
+                    status.untracked_directories_collapsed = true;
+                }
+                continue;
+            }
+            match probe_untracked_dir(
+                &self.path,
+                &trimmed,
+                remaining_dirs,
+                remaining_files,
+                deadline,
+            ) {
+                UntrackedProbe::NestedRepo => {}
+                UntrackedProbe::Bounded { dirs, files } => {
+                    remaining_dirs = remaining_dirs.saturating_sub(dirs);
+                    remaining_files = remaining_files.saturating_sub(files);
+                    expandable.push((idx, trimmed, raw_bytes.to_vec()));
+                }
+                UntrackedProbe::Exceeded => {
+                    status.untracked_directories_collapsed = true;
+                }
+            }
+        }
+        if expandable.is_empty() {
+            return Ok(());
+        }
+        let mut command = passive_status_command(self.target())?;
+        command.arg("--literal-pathspecs").args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+        ]);
+        for (_, dir, _) in &expandable {
+            command.arg(dir);
+        }
+        // Stream `ls-files` with strict byte and entry caps so a decoy `.git`
+        // entry or concurrent directory population never buffers unbounded
+        // output or fails `status()`.
+        let mut raw_output = Vec::new();
+        let mut expanded_count = 0usize;
+        let mut exceeded = false;
+        let cancellation = HistoryCancellation::default();
+        let stream_result =
+            crate::history::stream_history(command, None, &cancellation, GIT_TIMEOUT, |chunk| {
+                if raw_output.len().saturating_add(chunk.len()) > MAX_EXPANDED_UNTRACKED_BYTES {
+                    exceeded = true;
+                    return Ok(false);
+                }
+                expanded_count += chunk.iter().filter(|&&b| b == 0).count();
+                if expanded_count > max_files {
+                    exceeded = true;
+                    return Ok(false);
+                }
+                raw_output.extend_from_slice(chunk);
+                Ok(true)
+            });
+        match stream_result {
+            Ok(crate::history::ReadEnd::Complete) if !exceeded => {}
+            _ => {
+                status.untracked_directories_collapsed = true;
+                return Ok(());
+            }
+        }
+        // Untracked directory prefixes from `--untracked-files=normal` are
+        // mutually disjoint; sort once so each expanded file matches in
+        // O(log D) via `partition_point`.
+        expandable.sort_by(|a, b| a.2.cmp(&b.2));
+        let mut buckets: Vec<Vec<StatusEntry>> =
+            (0..expandable.len()).map(|_| Vec::new()).collect();
+        let mut matched_total = 0usize;
+        for raw in raw_output
+            .split(|byte| *byte == 0)
+            .filter(|raw| !raw.is_empty())
+        {
+            matched_total += 1;
+            if matched_total > max_files {
+                status.untracked_directories_collapsed = true;
+                return Ok(());
+            }
+            let pos = expandable.partition_point(|(_, _, prefix)| prefix.as_slice() <= raw);
+            if let Some(bucket_idx) = pos.checked_sub(1)
+                && raw.starts_with(expandable[bucket_idx].2.as_slice())
+            {
+                buckets[bucket_idx].push(StatusEntry {
+                    path: path_from_bytes(raw),
+                    original_path: None,
+                    staged: None,
+                    unstaged: Some(ChangeStatus::Added),
+                    untracked: true,
+                    conflicted: false,
+                    head_oid: None,
+                    index_oid: None,
+                    head_mode: "000000".into(),
+                    index_mode: "000000".into(),
+                    worktree_mode: "100644".into(),
+                });
+            }
+        }
+        let mut by_entry_index: std::collections::HashMap<usize, Vec<StatusEntry>> =
+            std::collections::HashMap::with_capacity(expandable.len());
+        for ((entry_idx, _, _), children) in expandable.into_iter().zip(buckets) {
+            by_entry_index.insert(entry_idx, children);
+        }
+        let old_entries = std::mem::take(&mut status.entries);
+        let mut new_entries = Vec::with_capacity(old_entries.len());
+        for (idx, entry) in old_entries.into_iter().enumerate() {
+            if let Some(children) = by_entry_index.remove(&idx) {
+                new_entries.extend(children);
+            } else {
+                new_entries.push(entry);
+            }
+        }
+        status.entries = new_entries;
+        Ok(())
     }
 
     fn status_for_path(&self, path: &Path) -> Result<RepositoryStatus> {
@@ -464,28 +652,37 @@ impl GitRepository {
         if file.new_path.is_none() {
             file.new_mode = "000000".into();
         }
-        let old = file
-            .old_oid
-            .as_deref()
-            .map(|oid| self.preview_side_bytes(oid, &file.old_mode))
-            .transpose()?
-            .unwrap_or_default();
-        let new = match area {
-            ChangeArea::Staged => file
-                .new_oid
+        let old_is_blob = file.old_oid.is_some() && file.old_mode != "160000";
+        let new_is_staged_blob =
+            area == ChangeArea::Staged && file.new_oid.is_some() && file.new_mode != "160000";
+        let (old, new) = if old_is_blob && new_is_staged_blob {
+            self.read_blob_pair(file.old_oid.as_deref(), file.new_oid.as_deref())?
+        } else {
+            let old = file
+                .old_oid
                 .as_deref()
-                .map(|oid| self.preview_side_bytes(oid, &file.new_mode))
+                .map(|oid| self.preview_side_bytes(oid, &file.old_mode))
                 .transpose()?
-                .unwrap_or_default(),
-            ChangeArea::Unstaged if file.new_path.is_none() => Vec::new(),
-            ChangeArea::Unstaged if file.new_mode == "160000" => {
-                b"Submodule working copy changed. Open the submodule to inspect its working files.\n".to_vec()
-            }
-            ChangeArea::Unstaged => {
-                let (mode, bytes) = read_worktree_file(&self.path, &entry.path, &file.new_mode)?;
-                file.new_mode = mode;
-                bytes
-            }
+                .unwrap_or_default();
+            let new = match area {
+                ChangeArea::Staged => file
+                    .new_oid
+                    .as_deref()
+                    .map(|oid| self.preview_side_bytes(oid, &file.new_mode))
+                    .transpose()?
+                    .unwrap_or_default(),
+                ChangeArea::Unstaged if file.new_path.is_none() => Vec::new(),
+                ChangeArea::Unstaged if file.new_mode == "160000" => {
+                    b"Submodule working copy changed. Open the submodule to inspect its working files.\n".to_vec()
+                }
+                ChangeArea::Unstaged => {
+                    let (mode, bytes) =
+                        read_worktree_file(&self.path, &entry.path, &file.new_mode)?;
+                    file.new_mode = mode;
+                    bytes
+                }
+            };
+            (old, new)
         };
         Ok((file, old, new))
     }
@@ -1497,6 +1694,211 @@ impl Drop for PartialIndex {
             let _ = std::fs::remove_file(&self.lock);
         }
     }
+}
+
+enum UntrackedProbe {
+    NestedRepo,
+    Bounded { dirs: usize, files: usize },
+    Exceeded,
+}
+
+#[cfg(unix)]
+fn open_dir_nofollow(root: &Path, dir_rel: &Path) -> Option<std::os::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut current = open(root, flags, Mode::empty()).ok()?;
+    for component in dir_rel.components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
+        current = openat(&current, part, flags, Mode::empty()).ok()?;
+    }
+    Some(current)
+}
+
+#[cfg(unix)]
+fn is_nested_git_dir(root: &Path, dir_rel: &Path) -> bool {
+    use rustix::fs::{AtFlags, statat};
+    let Some(dir_fd) = open_dir_nofollow(root, dir_rel) else {
+        return false;
+    };
+    statat(&dir_fd, ".git", AtFlags::SYMLINK_NOFOLLOW).is_ok()
+}
+
+#[cfg(not(unix))]
+fn is_nested_git_dir(root: &Path, dir_rel: &Path) -> bool {
+    let mut current = root.to_path_buf();
+    for component in dir_rel.components() {
+        current.push(component.as_os_str());
+        let Ok(meta) = std::fs::symlink_metadata(&current) else {
+            return false;
+        };
+        if meta.is_symlink() || !meta.is_dir() {
+            return false;
+        }
+    }
+    std::fs::symlink_metadata(current.join(".git")).is_ok()
+}
+
+/// Bounded, descriptor-relative, non-symlink-following probe of one untracked
+/// directory reported by `git status --untracked-files=normal`. Returns
+/// `NestedRepo` if the directory itself contains `.git`, `Exceeded` if
+/// expanding it would exceed the file, directory, depth, or time cap, or
+/// `Bounded` with its counted footprint.
+#[cfg(unix)]
+fn probe_untracked_dir(
+    root: &Path,
+    dir_rel: &Path,
+    max_dirs: usize,
+    max_files: usize,
+    deadline: Instant,
+) -> UntrackedProbe {
+    use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat};
+    let Some(top_fd) = open_dir_nofollow(root, dir_rel) else {
+        return UntrackedProbe::Exceeded;
+    };
+    if statat(&top_fd, ".git", AtFlags::SYMLINK_NOFOLLOW).is_ok() {
+        return UntrackedProbe::NestedRepo;
+    }
+    if max_dirs == 0 {
+        return UntrackedProbe::Exceeded;
+    }
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut dirs = 1usize;
+    let mut files = 0usize;
+    let mut stack = vec![(top_fd, 0usize)];
+    while let Some((dir_fd, depth)) = stack.pop() {
+        if Instant::now() >= deadline || depth > MAX_UNTRACKED_PROBE_DEPTH {
+            return UntrackedProbe::Exceeded;
+        }
+        let Ok(mut reader) = Dir::read_from(&dir_fd) else {
+            return UntrackedProbe::Exceeded;
+        };
+        let mut child_dirs = Vec::new();
+        let mut seen = 0usize;
+        while let Some(item) = reader.read() {
+            seen += 1;
+            if seen & 0x3F == 0 && Instant::now() >= deadline {
+                return UntrackedProbe::Exceeded;
+            }
+            let Ok(entry) = item else {
+                return UntrackedProbe::Exceeded;
+            };
+            let name = entry.file_name();
+            if matches!(name.to_bytes(), b"." | b"..") {
+                continue;
+            }
+            let ft = entry.file_type();
+            let is_dir = match ft {
+                FileType::Directory => true,
+                FileType::Unknown => statat(&dir_fd, name, AtFlags::SYMLINK_NOFOLLOW)
+                    .ok()
+                    .is_some_and(|st| FileType::from_raw_mode(st.st_mode) == FileType::Directory),
+                _ => false,
+            };
+            if is_dir {
+                child_dirs.push(name.to_owned());
+            } else {
+                files += 1;
+                if files > max_files {
+                    return UntrackedProbe::Exceeded;
+                }
+            }
+        }
+        drop(reader);
+        for name in child_dirs {
+            if Instant::now() >= deadline {
+                return UntrackedProbe::Exceeded;
+            }
+            let Ok(child_fd) = openat(&dir_fd, name.as_c_str(), dir_flags, Mode::empty()) else {
+                return UntrackedProbe::Exceeded;
+            };
+            if statat(&child_fd, ".git", AtFlags::SYMLINK_NOFOLLOW).is_ok() {
+                // Nested repository inside an untracked folder: Git reports it
+                // as a single directory entry without descending.
+                files += 1;
+                if files > max_files {
+                    return UntrackedProbe::Exceeded;
+                }
+                continue;
+            }
+            dirs += 1;
+            if dirs > max_dirs {
+                return UntrackedProbe::Exceeded;
+            }
+            stack.push((child_fd, depth + 1));
+        }
+    }
+    UntrackedProbe::Bounded { dirs, files }
+}
+
+#[cfg(not(unix))]
+fn probe_untracked_dir(
+    root: &Path,
+    dir_rel: &Path,
+    max_dirs: usize,
+    max_files: usize,
+    deadline: Instant,
+) -> UntrackedProbe {
+    let mut current = root.to_path_buf();
+    for component in dir_rel.components() {
+        current.push(component.as_os_str());
+        let Ok(meta) = std::fs::symlink_metadata(&current) else {
+            return UntrackedProbe::Exceeded;
+        };
+        if meta.is_symlink() || !meta.is_dir() {
+            return UntrackedProbe::Exceeded;
+        }
+    }
+    if std::fs::symlink_metadata(current.join(".git")).is_ok() {
+        return UntrackedProbe::NestedRepo;
+    }
+    if max_dirs == 0 {
+        return UntrackedProbe::Exceeded;
+    }
+    let mut dirs = 1usize;
+    let mut files = 0usize;
+    let mut stack = vec![(current, 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if Instant::now() >= deadline || depth > MAX_UNTRACKED_PROBE_DEPTH {
+            return UntrackedProbe::Exceeded;
+        }
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            return UntrackedProbe::Exceeded;
+        };
+        for item in read_dir {
+            if Instant::now() >= deadline {
+                return UntrackedProbe::Exceeded;
+            }
+            let Ok(entry) = item else {
+                return UntrackedProbe::Exceeded;
+            };
+            let Ok(ft) = entry.file_type() else {
+                return UntrackedProbe::Exceeded;
+            };
+            if ft.is_dir() {
+                let child = entry.path();
+                if std::fs::symlink_metadata(child.join(".git")).is_ok() {
+                    files += 1;
+                    if files > max_files {
+                        return UntrackedProbe::Exceeded;
+                    }
+                    continue;
+                }
+                dirs += 1;
+                if dirs > max_dirs {
+                    return UntrackedProbe::Exceeded;
+                }
+                stack.push((child, depth + 1));
+            } else {
+                files += 1;
+                if files > max_files {
+                    return UntrackedProbe::Exceeded;
+                }
+            }
+        }
+    }
+    UntrackedProbe::Bounded { dirs, files }
 }
 
 fn parse_status(bytes: &[u8]) -> Result<RepositoryStatus> {
@@ -3657,5 +4059,116 @@ mod tests {
             let _ = parse_status(&bytes);
             let _ = parse_remotes_config(&bytes);
         }
+    }
+
+    #[test]
+    fn bounded_untracked_expansion_collapses_large_dirs_preserves_small_and_nested_repos() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        std::fs::write(root.join("tracked.txt"), "base\n").unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args([
+                    "-c",
+                    "user.name=Work",
+                    "-c",
+                    "user.email=work@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "initial"]);
+
+        // 1. Nested repo alone stays collapsed without setting untracked_directories_collapsed.
+        let nested = root.join("nested_repo");
+        std::fs::create_dir_all(&nested).unwrap();
+        run(&nested, &["init", "-q", "-b", "main"]);
+        std::fs::write(nested.join("inner.txt"), "hi\n").unwrap();
+        let status = repo
+            .status_with_untracked_limits(8, 8, Duration::from_secs(2))
+            .unwrap();
+        assert!(!status.untracked_directories_collapsed);
+        assert!(
+            status
+                .entries
+                .iter()
+                .any(|e| { e.path == Path::new("nested_repo/") && e.is_untracked_directory() })
+        );
+
+        // 2. Small untracked dir expands while a giant dir (> max_files) collapses.
+        let small = root.join("small_dir");
+        std::fs::create_dir_all(&small).unwrap();
+        std::fs::write(small.join("a.txt"), "a\n").unwrap();
+        std::fs::write(small.join("b.txt"), "b\n").unwrap();
+        let huge = root.join("huge_dir");
+        std::fs::create_dir_all(&huge).unwrap();
+        for i in 0..8 {
+            std::fs::write(huge.join(format!("f{i}.txt")), "x\n").unwrap();
+        }
+        let status = repo
+            .status_with_untracked_limits(8, 4, Duration::from_secs(2))
+            .unwrap();
+        assert!(status.untracked_directories_collapsed);
+        assert!(
+            status
+                .entries
+                .iter()
+                .any(|e| e.path == Path::new("small_dir/a.txt")),
+            "small sibling dir should still expand: {:?}",
+            status.entries
+        );
+        assert!(
+            status
+                .entries
+                .iter()
+                .any(|e| e.path == Path::new("small_dir/b.txt")),
+            "small sibling dir should still expand: {:?}",
+            status.entries
+        );
+        let huge_entry = status
+            .entries
+            .iter()
+            .find(|e| e.path == Path::new("huge_dir/"))
+            .expect("huge_dir should remain collapsed");
+        assert!(huge_entry.is_untracked_directory());
+
+        // 3. Discard refuses collapsed untracked directory explicitly.
+        assert!(repo.discard_plan(huge_entry).is_err());
+
+        // 4. Stash with include_untracked refuses collapsed dirs (nested_repo is present too);
+        // stashing tracked edits with include_untracked = false still works!
+        std::fs::write(root.join("tracked.txt"), "edited\n").unwrap();
+        assert!(repo.stash_create_plan(true).is_err());
+        assert!(repo.stash_create_plan(false).is_ok());
+
+        // 5. Ignore plan for a collapsed directory writes a clean single-slash `/dir/` rule.
+        let nested_plan = repo
+            .ignore_plan(Path::new("nested_repo/"), false, IgnoreDestination::Shared)
+            .unwrap();
+        assert!(nested_plan.directory);
+        assert_eq!(nested_plan.rule, b"/nested_repo/");
+        repo.execute(&WriteCommand::Ignore(Arc::new(nested_plan)))
+            .unwrap();
+        let gitignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("/nested_repo/\n"), "{gitignore:?}");
+        let after = repo.status().unwrap();
+        assert!(
+            after
+                .entries
+                .iter()
+                .all(|e| e.path != Path::new("nested_repo/"))
+        );
     }
 }

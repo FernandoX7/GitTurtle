@@ -48,7 +48,9 @@ async fn rows_arrived(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         // `run_until_parked` cannot wait for.
         app.update(cx, |app, _| app.file_paths.executor().drain());
         cx.executor().run_until_parked();
-        if !app.read_with(cx, |app, _| app.working_paths.pending) {
+        if !app.read_with(cx, |app, _| {
+            app.working_paths.pending || app.status_task.is_some()
+        }) {
             break;
         }
     }
@@ -608,7 +610,21 @@ async fn heading_action_under_a_still_pointer(
     press_lands(app, cx).await;
     assert!(
         app.read_with(cx, |app, _| app.still_over_moved_rows()),
-        "the rows moved under the still pointer"
+        "the rows moved under the still pointer (position={position}, action={action}, pointer={pointer:?}, mouse={:?}, still={:?}, busy={:?}, op_err={:?}, read_err={:?}, pending={}, quiet={}, rows={})",
+        cx.update(|window, _| window.mouse_position()),
+        app.read_with(cx, |app, _| app
+            .still_pointer
+            .as_ref()
+            .map(|s| (s.at, s.position, s.area, s.moved))),
+        app.read_with(cx, |app, _| app.operation_busy),
+        app.read_with(cx, |app, _| app
+            .operation_error
+            .as_ref()
+            .map(|e| e.banner())),
+        app.read_with(cx, |app, _| app.working_read_failure.clone()),
+        app.read_with(cx, |app, _| app.working_paths.pending),
+        app.read_with(cx, |app, _| app.automatic.quiet_read_running()),
+        app.read_with(cx, |app, _| app.working_rows.len()),
     );
     let arrived = cx.debug_bounds(action).expect(action);
     assert!(
@@ -7586,7 +7602,10 @@ async fn a_keyboard_menu_tells_sub_from_sub_slash(cx: &mut TestAppContext) {
         "sub in Staged, row {sub}, above sub/ in Unstaged, row {slash}"
     );
     let (row, item) = open_row_menu(&app, cx, "sub/", Opening::Keyboard);
-    assert_eq!(offered(cx, "Delete untracked file…"), Some(true));
+    assert_eq!(
+        offered(cx, "Delete untracked folder…, remove outside this app"),
+        Some(false)
+    );
     delete_outside(&app, cx, "delta.txt");
     let selector: &'static str = format!(
         "working-row-{}",
@@ -7595,8 +7614,8 @@ async fn a_keyboard_menu_tells_sub_from_sub_slash(cx: &mut TestAppContext) {
     .leak();
     let moved = cx.debug_bounds(selector).expect(selector);
     assert_eq!(
-        offered(cx, "Delete untracked file…"),
-        Some(true),
+        offered(cx, "Delete untracked folder…, remove outside this app"),
+        Some(false),
         "sub/'s menu, not sub's"
     );
     assert_eq!(

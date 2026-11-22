@@ -289,6 +289,16 @@ impl GitRepository {
                 || entry.worktree_mode == "160000"),
             "A stash does not save nested submodule working changes. Commit or stash inside the submodule first, then review the parent repository."
         );
+        if include_untracked && entries.iter().any(|entry| entry.is_untracked_directory()) {
+            if status.untracked_directories_collapsed {
+                bail!(
+                    "Large untracked folders are kept collapsed and cannot be reviewed individually for stashing. Ignore them, turn off Include untracked, or use Git."
+                );
+            }
+            bail!(
+                "A changed directory or nested repository cannot be captured as a regular stash file"
+            );
+        }
         let affected_paths = sorted_paths(entries.iter().flat_map(|entry| entry.paths()).collect());
         let worktree_token = self.recovery_worktree_token(&affected_paths)?;
         Ok(StashCreatePlan {
@@ -644,23 +654,7 @@ impl GitRepository {
     /// its header alone. `git cat-file commit` would read through a tag to
     /// the commit it names, and say only that it failed for a missing one.
     fn ensure_commit_object(&self, oid: &str) -> Result<()> {
-        let mut guard = self
-            .batch
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Object reader lock was poisoned"))?;
-        if guard.is_none() {
-            *guard = Some(BatchReader::spawn(self.target())?);
-        }
-        let result = guard
-            .as_mut()
-            .expect("initialized above")
-            .request_header("info", oid, "commit");
-        // As every request of the shared reader: a failed one may leave
-        // unread protocol bytes, so the next starts a new process.
-        if result.is_err() {
-            *guard = None;
-        }
-        result.map(drop)
+        self.object_header(oid, "commit", None).map(drop)
     }
 
     /// The raw commit `oid` through one byte past
