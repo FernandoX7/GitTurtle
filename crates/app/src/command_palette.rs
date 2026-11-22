@@ -752,7 +752,9 @@ impl GitTurtle {
         }
         let owner = cx.entity().downgrade();
         let path = self.path.clone();
-        let return_focus = window.focused(cx);
+        let return_focus = native_accessibility::pointer_menu_return(window, cx)
+            .unwrap_or_else(|| window.focused(cx));
+        native_accessibility::close_tab_menus(window, cx);
         let file_scope = self.palette_file_scope();
         let context = self.palette_context(window, cx);
         let form =
@@ -1621,6 +1623,7 @@ impl Render for Palette {
             .on_action(|_: &ShowProjects, _, cx| cx.stop_propagation())
             .on_action(|_: &ShowHistory, _, cx| cx.stop_propagation())
             .on_action(|_: &ShowChanges, _, cx| cx.stop_propagation())
+            .on_action(|_: &ShowAbout, _, cx| cx.stop_propagation())
             .on_action(|_: &ShowSettings, _, cx| cx.stop_propagation())
             .on_action(|_: &Refresh, _, cx| cx.stop_propagation())
             .on_action(|_: &CompareRevisions, _, cx| cx.stop_propagation())
@@ -7004,5 +7007,65 @@ mod render_tests {
                 .clone()
         });
         draws_its_caret_as_it_takes_focus(cx, "the command palette's query", &query);
+    }
+
+    #[gpui::test]
+    async fn command_palette_dismisses_open_pointer_menu_and_restores_focus_behind_it(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, history_window};
+        let (_fixture, app, cx) = history_window(cx).await;
+        let list_focus = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| list_focus.focus(window, cx));
+        draw(cx);
+        // Right-click the first commit row to open a PointerMenu.
+        let row = cx
+            .debug_bounds("history-row-0")
+            .expect("first history row bounds");
+        cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(row.center(), MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(row.center(), MouseButton::Right, gpui::Modifiers::default());
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| crate::native_accessibility::pointer_menu_return(window, cx))
+                .is_some(),
+            "right-click opens a PointerMenu holding focus"
+        );
+        let dismissed = crate::native_accessibility::tab_dismissals();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+        draw(cx);
+        draw(cx);
+        assert!(
+            crate::native_accessibility::tab_dismissals() > dismissed,
+            "opening Command Palette dismisses open context menus"
+        );
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Command Palette stays open"
+        );
+        let query_focus = cx.update(|_, cx| {
+            OPENED_PALETTE
+                .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+                .expect("open palette")
+                .read(cx)
+                .query
+                .read(cx)
+                .focus_handle(cx)
+        });
+        assert!(
+            cx.update(|window, _| query_focus.is_focused(window)),
+            "PointerMenu must not steal focus back from Command Palette"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes Command Palette"
+        );
+        assert!(
+            cx.update(|window, _| list_focus.is_focused(window)),
+            "closing Command Palette returns focus to the list behind the dismissed menu"
+        );
     }
 }

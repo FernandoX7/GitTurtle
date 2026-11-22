@@ -318,9 +318,9 @@ class StageTests(unittest.TestCase):
             stages = gate.build_stages("fast", scope, Path(tmp), self.tools(nextest=True), None, False, CRATES, Path(tmp))
         names = [stage.name for stage in stages]
         # Workspace clippy covers every target the old workspace check built.
-        self.assertEqual(names, ["format", "typos", "machete", "docs-sync", "clippy", "tests:gitturtle-core"])
-        self.assertEqual(stages[4].reproduce, "cargo clippy --locked --workspace --all-targets -- -D warnings")
-        self.assertIn("--message-format=json", stages[4].argv)
+        self.assertEqual(names, ["format", "typos", "machete", "docs-sync", "invariants", "clippy", "tests:gitturtle-core"])
+        self.assertEqual(stages[5].reproduce, "cargo clippy --locked --workspace --all-targets -- -D warnings")
+        self.assertIn("--message-format=json", stages[5].argv)
         tests = stages[-1]
         self.assertEqual(tests.kind, "nextest")
         self.assertEqual(tests.argv, ["cargo", "nextest", "run", "--locked", "-p", "gitturtle-core", "-P", "ci", "--no-fail-fast"])
@@ -328,12 +328,12 @@ class StageTests(unittest.TestCase):
     def test_fast_without_rust_changes_keeps_the_workspace_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             stages = gate.build_stages("fast", gate.Scope((), False, False, ()), Path(tmp), self.tools(), None, False, CRATES, Path(tmp))
-        self.assertEqual([stage.name for stage in stages], ["format", "typos", "machete", "docs-sync", "check"])
+        self.assertEqual([stage.name for stage in stages], ["format", "typos", "machete", "docs-sync", "invariants", "check"])
         self.assertEqual(stages[-1].reproduce, "cargo check --locked --workspace --all-targets")
 
     def test_stages_without_a_rust_build_run_first(self):
         build_free = {
-            "format", "typos", "machete", "docs-sync", "insta", "privacy", "deny", "audit",
+            "format", "typos", "machete", "docs-sync", "invariants", "insta", "privacy", "deny", "audit",
             "guidance", "dev-tooling-tests", "gate-tests", "ci-tests", "native-qa-tests",
             "website-guides", "website-check",
         }

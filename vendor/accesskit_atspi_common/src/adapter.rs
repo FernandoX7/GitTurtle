@@ -704,7 +704,40 @@ fn root_window(current_state: &TreeState) -> Option<Node<'_>> {
 
 impl Drop for Adapter {
     fn drop(&mut self) {
-        let root_id = self.context.read_tree().state().root_id();
+        // GitTurtle patch (GITTURTLE-PATCH.md): emit Defunct, RemoveAccessible,
+        // and unregister D-Bus interfaces for every live and kept-removed node
+        // before destroying the window so AT-SPI clients do not retain stale
+        // proxies after a window closes.
+        fn collect_children(node: Node<'_>, to_remove: &mut Vec<(NodeId, InterfaceSet)>) {
+            for child in node.filtered_children(&filter) {
+                collect_children(child, to_remove);
+                let wrapper = NodeWrapper(&child);
+                to_remove.push((child.id(), wrapper.interfaces()));
+            }
+        }
+
+        let (root_id, live_nodes, kept_removed) = {
+            let tree = self.context.read_tree();
+            let root = tree.state().root();
+            let root_id = root.id();
+            let mut live_nodes = Vec::new();
+            collect_children(root, &mut live_nodes);
+            let root_wrapper = NodeWrapper(&root);
+            live_nodes.push((root_id, root_wrapper.interfaces()));
+            let kept_removed = self.context.lock_removed().clear();
+            (root_id, live_nodes, kept_removed)
+        };
+
+        let accessible = InterfaceSet::new(Interface::Accessible);
+        for id in kept_removed {
+            self.emit_cache_removed(id);
+            self.unregister_interfaces(id, accessible);
+        }
+        for (id, interfaces) in live_nodes {
+            self.emit_object_event(id, ObjectEvent::StateChanged(State::Defunct, true));
+            self.emit_cache_removed(id);
+            self.unregister_interfaces(id, interfaces);
+        }
         self.window_destroyed(root_id);
         // Note: We deliberately do the following here, not in a Drop
         // implementation on context, because AppContext owns a second
@@ -1152,5 +1185,33 @@ mod tests {
         let ops = ops.lock().unwrap();
         assert_eq!(ops.len(), 1);
         assert!(matches!(ops[0], CacheOp::Removed(_)));
+    }
+
+    #[test]
+    fn dropping_an_adapter_emits_remove_accessible_and_unregisters_nodes() {
+        let rows = [LocalNodeId(2), LocalNodeId(3)];
+        let (mut adapter, registered) = build_registered(&rows);
+        let root_id = adapter.root_id();
+        let (list_id, row_ids) = list_and_rows(&adapter);
+        // Remove the first row so it sits in `Removed` while its list stays.
+        adapter.update(update(list_of(&rows[1..])));
+        assert!(!registered.uncached(row_ids[0]));
+        assert!(registered.interfaces(row_ids[0]).is_some());
+        assert!(registered.interfaces(row_ids[1]).is_some());
+        assert!(registered.interfaces(list_id).is_some());
+        assert!(registered.interfaces(root_id).is_some());
+
+        drop(adapter);
+
+        for id in [row_ids[0], row_ids[1], list_id, root_id] {
+            assert!(
+                registered.uncached(id),
+                "expected RemoveAccessible for {id:?} on window close"
+            );
+            assert!(
+                registered.interfaces(id).is_none(),
+                "expected D-Bus interfaces unregistered for {id:?} on window close"
+            );
+        }
     }
 }

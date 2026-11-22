@@ -1,7 +1,7 @@
 use crate::appearance::palette;
 use gpui_kit::{
     App, AppContext, Entity, FontWeight, HighlightStyle, Window,
-    component::input::{EditorState, TextDecoration},
+    component::input::{EditorState, RopeExt, TextDecoration},
     rgb,
 };
 use std::{mem::size_of, ops::Range, sync::Arc};
@@ -75,6 +75,26 @@ pub fn editor(
     editor_with_decorations(value, language, diff, window, cx).0
 }
 
+/// Read-only prose/source editor with soft line wrapping enabled (for example,
+/// GitHub pull request descriptions inside a bounded overview pane).
+pub fn wrapped_editor(
+    value: &str,
+    language: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<EditorState> {
+    let editor = cx.new(|cx| {
+        EditorState::new(window, cx)
+            .language(language.to_owned())
+            .line_number(true)
+            .folding(false)
+            .soft_wrap(true)
+            .default_value(value.to_owned())
+    });
+    crate::editor_find::reserve_highlight_layer(&editor, cx);
+    editor
+}
+
 /// A patch is drawn as plain text, so its decorations are the only colors on it. A grammar's
 /// captures would compete with them for the same text, and GPUI's highlight fold leaves either
 /// color, by hash order rather than precedence.
@@ -130,10 +150,14 @@ pub fn refresh_editor(
     cx: &mut App,
 ) {
     editor.update(cx, |state, cx| {
-        let selection = state.selected_range();
+        let range = state.selected_range();
+        let start_pos = state.text().offset_to_position(range.start);
+        let end_pos = state.text().offset_to_position(range.end);
         let offset = state.scroll_offset();
         state.set_value(value.to_owned(), window, cx);
-        state.set_selected_range(selection, cx);
+        let start = state.text().position_to_offset(&start_pos);
+        let end = state.text().position_to_offset(&end_pos);
+        state.set_selected_range(start..end, cx);
         state.set_scroll_offset(offset, cx);
     });
     if let Some((collection, presentation)) = decorations {
@@ -1598,5 +1622,60 @@ mod tests {
             "\"red\" keeps its rule under \"d\" and \"green\" under \"g\" and \"en\", none under \
              a match: {drawn:?}"
         );
+    }
+
+    #[gpui_kit::test]
+    fn refresh_editor_restores_caret_by_line_and_column(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut handle = None;
+        let (_root, cx) = cx.add_window_view(|window, cx| {
+            let ed = editor("short\nsecond line\nthird line\n", "text", None, window, cx);
+            handle = Some(ed);
+            gpui_kit::Empty
+        });
+        let ed = handle.expect("editor");
+        cx.update(|window, cx| {
+            // Place caret on line 1 ("second line") at character column 4.
+            let offset = "short\nseco".len();
+            ed.update(cx, |state, cx| {
+                state.set_selected_range(offset..offset, cx);
+            });
+            // Line 0 grows significantly; line 1 stays at line index 1.
+            refresh_editor(
+                &ed,
+                "a much longer first line than before\nsecond line\nthird line\n",
+                None,
+                window,
+                cx,
+            );
+            let range = ed.read(cx).selected_range();
+            let pos = ed.read(cx).text().offset_to_position(range.start);
+            assert_eq!(pos.line, 1, "caret must remain on line 1");
+            assert_eq!(pos.character, 4, "caret must remain at column 4");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn wrapped_editor_constructs_with_content(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut handle = None;
+        let (_root, cx) = cx.add_window_view(|window, cx| {
+            let ed = wrapped_editor(
+                "One long unwrapped Markdown paragraph that should soft-wrap inside bounded panes.",
+                "markdown",
+                window,
+                cx,
+            );
+            handle = Some(ed);
+            gpui_kit::Empty
+        });
+        let ed = handle.expect("wrapped editor");
+        cx.update(|_, cx| {
+            assert!(
+                ed.read(cx)
+                    .value()
+                    .contains("should soft-wrap inside bounded panes")
+            );
+        });
     }
 }

@@ -207,6 +207,36 @@ class WorktreeTests(unittest.TestCase):
             self.assertTrue(fresh.exists())
             self.assertTrue(protected.exists())
 
+    def test_list_status_and_env_subcommands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = (Path(tmp) / "repo").resolve()
+            root.mkdir()
+            init_fixture_repo(root)
+            self.assertEqual(
+                worktree.main(["--root", str(root), "new", "wt-info", "--branch", "feat/info", "--no-seed"]),
+                0,
+            )
+            import json
+            buf_list = io.StringIO()
+            with redirect_stdout(buf_list):
+                self.assertEqual(worktree.main(["--root", str(root), "list", "--json"]), 0)
+            listed = json.loads(buf_list.getvalue())
+            self.assertEqual([item["name"] for item in listed], ["wt-info"])
+            self.assertEqual(listed[0]["branch"], "feat/info")
+
+            buf_status = io.StringIO()
+            with redirect_stdout(buf_status):
+                self.assertEqual(worktree.main(["--root", str(root), "status", "wt-info", "--json"]), 0)
+            st = json.loads(buf_status.getvalue())
+            self.assertEqual(len(st["worktrees"]), 1)
+            self.assertEqual(st["worktrees"][0]["name"], "wt-info")
+
+            buf_env = io.StringIO()
+            with redirect_stdout(buf_env):
+                self.assertEqual(worktree.main(["--root", str(root), "env", "wt-info"]), 0)
+            self.assertIn("export CARGO_TARGET_DIR=", buf_env.getvalue())
+            self.assertIn("unset RUSTUP_TOOLCHAIN", buf_env.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

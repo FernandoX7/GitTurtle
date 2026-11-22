@@ -17,6 +17,8 @@ When rebasing the 0.6.0 patch set onto `gpui-base` 0.10.0:
   - `src/input/base/accessible_text.rs` & `src/input/base/state.rs`: retained GitTurtle's bounded 255-grapheme-run / 772-run-window AccessKit projection, `set_placeholder_fit`, and `accepts_text_input` read-only/disabled refusal alongside 0.10.0's `InputAccessibility` struct.
   - `src/root.rs`: attaches `capture_key_up(note_key_up)` on the base `Root` container so held-Enter key-ups reach dialog/button suppression everywhere in the window.
   - `src/positioner.rs`, `src/popup.rs`, `src/tooltip.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/focus_trap.rs`, `src/button.rs`, `src/checkbox.rs`, `src/link.rs`, `src/color_picker.rs`, `src/resizable/`: rebased onto 0.10.0's `Root` / `Positioner` / `Presence` architecture and updated `Keystroke::parse` test helpers for `gpui-pre 0.3.12`'s `'static` bound.
+  - `src/slider.rs`: `Slider::handle_accessibility_set_value` now unmaps `ActionData::NumericValue` from `SliderAccessibleValue`'s custom `min..=max` range back into `SliderState`'s internal `min..=max` range (for example ColorPicker's `0..=360` Hue or `0..=100` S/L/A over `0.0..=1.0` state) before committing and emitting `SliderEvent::Change` + `SliderEvent::Release`, covered by `slider::tests::retained_layout::accessible_set_value_unmaps_custom_reported_range`.
+  - Deferred popover AT parent note: upstream `gpui-pre` 0.3.12 (`DeferredDraw`) does not snapshot `a11y.nodes.ids_stack`, so deferred popovers attach under the window root; GitTurtle avoids vendoring `gpui-pre` and instead dismisses open menus whenever dialogs/sheets or conflicting shortcuts open.
 
 The historical section-by-section rationale from the 0.6.0 series follows below for reference.
 

@@ -42,7 +42,7 @@ const PROMPT_LIMIT: Duration = Duration::from_secs(120);
 /// within 100 ms.
 const CANCEL_POLL: Duration = Duration::from_millis(25);
 
-const NO_KEYRING: &str = "No desktop keyring answered. Start your desktop's keyring (gnome-keyring on Omarchy), then try again.";
+const NO_KEYRING: &str = "No desktop keyring answered. Start your desktop's Secret Service keyring (such as gnome-keyring or KWallet), then try again.";
 const LOCKED: &str = "Your desktop keyring is locked. Unlock it, or choose Connect GitHub CLI account, then retry. Stored account reads never open an unlock prompt.";
 const READ_DEADLINE: &str = "Your desktop keyring did not answer within 5 seconds. Try again.";
 const READ_FAILED: &str = "Your desktop keyring could not read the GitHub authorization. Try again, or choose Connect GitHub CLI account.";

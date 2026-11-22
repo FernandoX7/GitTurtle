@@ -67,6 +67,11 @@ impl StatusEntry {
         }
         paths
     }
+
+    /// The index blob object ID captured when status was read, if tracked in the index.
+    pub fn index_oid(&self) -> Option<&str> {
+        self.index_oid.as_deref()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

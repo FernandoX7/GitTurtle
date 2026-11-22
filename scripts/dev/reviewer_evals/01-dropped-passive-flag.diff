@@ -1,0 +1,11 @@
+diff --git a/crates/git-core/src/lib.rs b/crates/git-core/src/lib.rs
+--- a/crates/git-core/src/lib.rs
++++ b/crates/git-core/src/lib.rs
+@@ -2193,7 +2193,6 @@ fn git_command(path: &Path) -> Command {
+     let mut command = Command::new("git");
+     command
+         .current_dir(path)
+-        .env("GIT_NO_LAZY_FETCH", "1")
+         .env("GIT_OPTIONAL_LOCKS", "0")
+         .env("GIT_TERMINAL_PROMPT", "0");
+     command

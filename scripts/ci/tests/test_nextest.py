@@ -100,8 +100,18 @@ def step_index(steps, markers):
 
 
 def matrix_include_entries(job):
-    """Parse matrix `include:` entries into a list of dicts when present."""
+    """Parse matrix `include:` entries (or `changes.py` dynamic matrices) into a list of dicts."""
     strategy = job_header(job, "strategy")
+    if "matrix: ${{ fromJSON(needs.changes.outputs.debug-matrix) }}" in strategy:
+        spec = importlib.util.spec_from_file_location("ci_changes_nextest", ROOT / "scripts/ci/changes.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return [{k: str(v) for k, v in entry.items()} for entry in mod.DEBUG_MATRIX_FULL["include"]]
+    if "matrix: ${{ fromJSON(needs.changes.outputs.arch-matrix) }}" in strategy:
+        spec = importlib.util.spec_from_file_location("ci_changes_nextest", ROOT / "scripts/ci/changes.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return [{k: str(v) for k, v in entry.items()} for entry in mod.ARCH_MATRIX_FULL["include"]]
     if "        include:\n" not in strategy:
         return None
     block = strategy.split("        include:\n", 1)[1]
@@ -486,11 +496,14 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_clippy_runs_beside_the_tests_and_only_restores_their_debug_cache(self):
         job, steps = quality_job_steps("rust-clippy")
         debug, _ = rust_debug_steps()
-        # Every product change, on the test job's platforms, with its environment:
-        # the cache key reads build flags from the environment, so a different
-        # one would restore nothing.
-        for key in ("if", "env"):
-            self.assertEqual(job_header(job, key), job_header(debug, key), key)
+        # Every product change (outside weekly cache-seed), on the test job's platforms,
+        # with its exact environment: the cache key reads build flags from the environment,
+        # so a different one would restore nothing.
+        self.assertEqual(
+            job_header(job, "if"),
+            "    if: needs.changes.outputs.product == 'true' && needs.changes.outputs.seed-only != 'true'\n",
+        )
+        self.assertEqual(job_header(job, "env"), job_header(debug, "env"), "env")
         # The same platforms; the test job's matrix also has its shards.
         self.assertEqual(matrix_axis(job, "os"), matrix_axis(debug, "os"))
         self.assertEqual(job_header(job, "strategy"),
@@ -548,7 +561,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                 if entries is not None:
                     by_os = {}
                     for entry in entries:
-                        by_os.setdefault(entry["os"], []).append((int(entry["shard"]), int(entry["shards"])))
+                        by_os.setdefault(entry.get("os", name), []).append((int(entry["shard"]), int(entry["shards"])))
                     for os_name, pairs in by_os.items():
                         totals = {total for _, total in pairs}
                         self.assertEqual(len(totals), 1, os_name)
@@ -557,7 +570,8 @@ class WorkflowPolicyTests(unittest.TestCase):
                 else:
                     (total,) = matrix_axis(job, "shards")
                     self.assertEqual(matrix_axis(job, "shard"), [str(shard) for shard in range(1, int(total) + 1)])
-                self.assertEqual(re.findall(r"^        ([a-z-]+):", job_header(job, "strategy"), re.M), TEST_AXES[name])
+                if "fromJSON(needs.changes.outputs." not in job_header(job, "strategy"):
+                    self.assertEqual(re.findall(r"^        ([a-z-]+):", job_header(job, "strategy"), re.M), TEST_AXES[name])
 
     def test_the_test_legs_are_two_shards_per_platform_and_all_start_at_once(self):
         for name, legs in TEST_LEGS.items():

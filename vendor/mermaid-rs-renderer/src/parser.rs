@@ -6017,6 +6017,19 @@ fn tokenize_quoted(input: &str) -> Vec<String> {
     tokens
 }
 
+fn is_click_node_id(token: &str) -> bool {
+    let Some(first) = token.chars().next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphanumeric() || first == '_') {
+        return false;
+    }
+    !(token.contains("--")
+        || token.contains("-.")
+        || token.contains("==")
+        || token.contains("~~"))
+}
+
 fn parse_click_line(line: &str) -> Option<(String, crate::ir::NodeLink)> {
     let trimmed = line.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -6029,7 +6042,7 @@ fn parse_click_line(line: &str) -> Option<(String, crate::ir::NodeLink)> {
     };
     let rest = trimmed[keyword_len..].trim();
     let tokens = tokenize_quoted(rest);
-    if tokens.len() < 2 {
+    if tokens.len() < 2 || !is_click_node_id(&tokens[0]) {
         return None;
     }
     let id = tokens[0].clone();
@@ -7420,6 +7433,19 @@ A["foo & bar"] & B --> C"#;
         assert_eq!(link.url, "https://example.com");
         assert!(link.title.is_none());
         assert!(link.target.is_none());
+    }
+
+    #[test]
+    fn parses_nodes_named_link_and_click() {
+        let input = "flowchart LR\nLink --> Regular\nClick -.-> Other\nLink o--o Third";
+        let parsed = parse_mermaid(input).unwrap();
+        assert!(parsed.graph.node_links.is_empty());
+        assert!(parsed.graph.nodes.contains_key("Link"));
+        assert!(parsed.graph.nodes.contains_key("Click"));
+        assert!(parsed.graph.nodes.contains_key("Regular"));
+        assert!(parsed.graph.nodes.contains_key("Other"));
+        assert!(parsed.graph.nodes.contains_key("Third"));
+        assert_eq!(parsed.graph.edges.len(), 3);
     }
 
     #[test]

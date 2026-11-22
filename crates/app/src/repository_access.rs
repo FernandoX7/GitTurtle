@@ -62,36 +62,43 @@ pub(super) fn finds_no_repository(error: &anyhow::Error) -> bool {
 /// Runs on the repository worker; no filesystem probe belongs in UI error handling.
 pub(super) fn explain(path: &Path, error: anyhow::Error) -> anyhow::Error {
     let failure = classify(&error);
-    let guidance = match failure {
+    let open_shortcut = crate::shortcuts::label(crate::shortcuts::ShortcutId::Open);
+    let guidance: std::borrow::Cow<'static, str> = match failure {
         Failure::Permission => {
             if cfg!(target_os = "macos") {
-                "Repository access was denied. Choose the folder with Open Repository (Command-O). If macOS still refuses access, check System Settings → Privacy & Security → Files and Folders for GitTurtle, then retry. A shell and GitTurtle can have different access permissions."
+                format!(
+                    "Repository access was denied. Choose the folder with Open Repository ({open_shortcut}). If macOS still refuses access, check System Settings → Privacy & Security → Files and Folders for GitTurtle, then retry. A shell and GitTurtle can have different access permissions."
+                )
+                .into()
             } else {
-                "Repository access was denied. Check folder permissions and access to its Git metadata, then choose the folder again with Open Repository."
+                "Repository access was denied. Check folder permissions and access to its Git metadata, then choose the folder again with Open Repository.".into()
             }
         }
         Failure::Missing => {
             if unavailable_volume(path) {
-                "The repository's volume is unavailable. Reconnect or mount that volume, then choose the repository with Open Repository."
+                "The repository's volume is unavailable. Reconnect or mount that volume, then choose the repository with Open Repository.".into()
             } else {
-                "The repository folder or a required path is missing. It may have moved or been removed. Choose its current location with Open Repository; saved drafts remain available."
+                "The repository folder or a required path is missing. It may have moved or been removed. Choose its current location with Open Repository; saved drafts remain available.".into()
             }
         }
         Failure::NotRepository => {
-            "This folder is not an available Git repository. Choose an existing repository or linked worktree with Open Repository. If it moved, check that its Git metadata still points to the correct location."
+            "This folder is not an available Git repository. Choose an existing repository or linked worktree with Open Repository. If it moved, check that its Git metadata still points to the correct location.".into()
         }
         Failure::Timeout => {
             if cfg!(target_os = "macos") {
-                "Git exceeded the local read deadline. This does not establish a permission failure: slow or unavailable storage can also cause it. Choose the folder again with Open Repository (Command-O), check its volume and any macOS access prompt, then retry. No fetch was requested."
+                format!(
+                    "Git exceeded the local read deadline. This does not establish a permission failure: slow or unavailable storage can also cause it. Choose the folder again with Open Repository ({open_shortcut}), check its volume and any macOS access prompt, then retry. No fetch was requested."
+                )
+                .into()
             } else {
-                "Git exceeded the local read deadline. Check that the repository's storage is available, then retry. No fetch was requested."
+                "Git exceeded the local read deadline. Check that the repository's storage is available, then retry. No fetch was requested.".into()
             }
         }
         Failure::Unreadable => {
-            "This repository's folder could not be read, so whether it is still there is not known. Check that its volume or network share is available and readable. When the folder can be read again, choose it with Open Repository."
+            "This repository's folder could not be read, so whether it is still there is not known. Check that its volume or network share is available and readable. When the folder can be read again, choose it with Open Repository.".into()
         }
         Failure::Other => {
-            "The local repository could not be opened. Review the diagnostic and choose its current folder with Open Repository."
+            "The local repository could not be opened. Review the diagnostic and choose its current folder with Open Repository.".into()
         }
     };
     error.context(format!("{guidance}\nFolder: {}", path.display()))

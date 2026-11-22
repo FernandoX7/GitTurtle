@@ -98,6 +98,12 @@ impl Removed {
         self.order.is_empty()
     }
 
+    /// Removes and returns every kept node, oldest first, for adapter teardown.
+    pub(crate) fn clear(&mut self) -> Vec<NodeId> {
+        self.parents.clear();
+        self.order.drain(..).collect()
+    }
+
     /// Forgets every node whose parent no longer `stays`, and returns them,
     /// oldest first, whose objects leave the bus.
     pub(crate) fn orphans(&mut self, mut stays: impl FnMut(NodeId) -> bool) -> Vec<NodeId> {

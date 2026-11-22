@@ -1,0 +1,7 @@
+diff --git a/crates/preview/src/lib.rs b/crates/preview/src/lib.rs
+--- a/crates/preview/src/lib.rs
++++ b/crates/preview/src/lib.rs
+@@ -42,4 +42,8 @@ pub fn preview_path_from_disk(path: &std::path::Path) -> anyhow::Result<Vec<u8>>
++pub fn preview_path_from_disk(path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
++    Ok(std::fs::read(path)?)
++}

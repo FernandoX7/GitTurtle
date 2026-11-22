@@ -438,6 +438,7 @@ fn scrubber<T: 'static>(
     let keyed = documents.to_vec();
     let increment = documents.to_vec();
     let decrement = documents.to_vec();
+    let set_value = documents.to_vec();
     let fraction = (seconds / total).clamp(0., 1.) as f32;
     div().id("model-timeline").debug_selector(|| "model-timeline".into()).min_w(px(120.)).w(px(210.)).h(px(22.)).relative().cursor(CursorStyle::PointingHand)
         .track_focus(&focus).tab_stop(true).role(Role::Slider).aria_label("Model animation time in seconds").aria_description("Left and right seek one thirtieth second; Home and End seek to the beginning and end. Seeking pauses playback.")
@@ -446,6 +447,17 @@ fn scrubber<T: 'static>(
         .when(ring.shows(&focus), |timeline| timeline.border_1().border_color(rgb(colors.accent)))
         .on_a11y_action(gpui::AccessibleAction::Increment, move |_, window, cx| { seek(&increment, position(&increment) + 1. / FPS); window.refresh(); cx.refresh_windows(); })
         .on_a11y_action(gpui::AccessibleAction::Decrement, move |_, window, cx| { seek(&decrement, position(&decrement) - 1. / FPS); window.refresh(); cx.refresh_windows(); })
+        .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, window, cx| {
+            let Some(gpui::accesskit::ActionData::NumericValue(target)) = data else {
+                return;
+            };
+            if !target.is_finite() {
+                return;
+            }
+            seek(&set_value, target.clamp(0., duration(&set_value)));
+            window.refresh();
+            cx.refresh_windows();
+        })
         .on_mouse_down(MouseButton::Left, cx.listener(move |_, event: &MouseDownEvent, window, cx| { focus_down.focus(window, cx); for document in &down { document.state.lock().unwrap_or_else(|e| e.into_inner()).scrubbing = true; } scrub_at(&down, event.position); window.refresh(); cx.stop_propagation(); cx.notify(); }))
         .on_mouse_move(cx.listener(move |_, event: &MouseMoveEvent, window, cx| { if event.pressed_button == Some(MouseButton::Left) && moved[0].state.lock().unwrap_or_else(|e| e.into_inner()).scrubbing { scrub_at(&moved, event.position); window.refresh(); cx.stop_propagation(); cx.notify(); } }))
         .on_mouse_up(MouseButton::Left, cx.listener(move |_, _, window, cx| { end_scrub(&up); window.refresh(); cx.notify(); }))

@@ -347,14 +347,15 @@ After classification, the selected jobs have no build dependencies on each other
 
 - `Rust formatting` checks `cargo fmt --all -- --check` on Ubuntu with the pinned
   workspace toolchain. It installs no native packages and restores no target cache.
-- `Rust tests · macos-15 · 1/2` and `· 2/2`, and the same two for
-  `ubuntu-24.04`, each restore the **debug** cache, install the
+- `Rust tests · macos-15 · 1/3`, `· 2/3`, and `· 3/3` (three shards), plus
+  `Rust tests · ubuntu-24.04 · 1/2` and `· 2/2` (two shards), each restore the
+  **debug** cache, install the
   [pinned cargo-nextest](#test-execution-with-nextest) and run
   `cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
-  --partition slice:<shard>/2`: every shard builds the whole workspace's tests
-  and runs its half of them (see [Test shards](#test-shards)). Shard 1 alone
-  then runs `cargo test --locked --workspace --timings -- "(line "` and, on a
-  push to `main`, saves the debug cache once its own steps have succeeded.
+  --partition slice:<shard>/<total>`: every shard builds the whole workspace's
+  tests and runs its slice of them (see [Test shards](#test-shards)). Shard 1
+  alone then runs `cargo test --locked --workspace --timings -- "(line "` and,
+  on a push to `main`, saves the debug cache once its own steps have succeeded.
   nextest builds the same targets as Cargo's default
   [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html) and
   runs its unit and integration tests; the doctest step runs the rest of that
@@ -412,8 +413,23 @@ After classification, the selected jobs have no build dependencies on each other
   changes the existing native cache identity, so earlier cache timings cannot be
   reused as warm evidence. Full hosted package validation remains required.
 - Development-tooling checks still cover both OSes; Website remains reusable.
-  The mandatory policy job runs all CI helper fixtures and pinned Actions-aware
-  lint on every workflow even for documentation-only changes.
+  The mandatory `changes` job runs `scripts/dev/check_invariants.py` (crate
+  boundary, `Command::new("git")`, and UI-thread I/O checks), all CI helper
+  fixtures, pinned `actionlint`, and pinned offline `zizmor v1.32.0`
+  (`--offline --min-severity medium .github/workflows .github/actions`) on
+  every workflow even for documentation-only changes.
+- Debug test, Clippy, and Arch Linux legs share
+  `CARGO_PROFILE_TEST_DEBUG=line-tables-only` so test compilation avoids full
+  DWARF emission while preserving file-and-line panic backtraces and unified
+  cache keys.
+- Exact Rust cache hits (`CI_RUST_CACHE_HIT=true` exported by
+  `.github/actions/setup-rust/cache.py` during restore) skip the `finish`
+  cache bound/save step so repeated warm runs avoid redundant cache churn.
+- Weekly `schedule` runs use `cache_seed_plan()` (`seed-only=true`), running
+  only shard-1 debug legs (`ubuntu-24.04`, `macos-15`, `archlinux`) plus all
+  three release legs (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-26`) — 6 jobs
+  and 2 macOS runner slots instead of the full 15-job suite — while skipping
+  artifact uploads, formatting, Clippy, tooling, and website jobs.
 
 The existing change classifier owns selection, the setup action owns each cache's
 lifetime, and the gate owns the final result. No new cross-job build artifact or

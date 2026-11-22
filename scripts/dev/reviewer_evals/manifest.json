@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "Offline evaluation fixtures for .agents/roles/ reviewers and mechanical invariant checks.",
+  "cases": [
+    {
+      "id": "dropped-passive-flag",
+      "diff": "01-dropped-passive-flag.diff",
+      "roles": ["security-reviewer", "code-reviewer"],
+      "expected_severity": "blocker",
+      "expected_keywords": ["GIT_NO_LAZY_FETCH", "passive"],
+      "mechanical_rule": null,
+      "summary": "Passive Git read command drops GIT_NO_LAZY_FETCH=1, permitting implicit network fetch on untrusted repos."
+    },
+    {
+      "id": "ui-thread-blocking-io",
+      "diff": "02-ui-thread-blocking-io.diff",
+      "roles": ["code-reviewer", "performance-reviewer"],
+      "expected_severity": "blocker",
+      "expected_keywords": ["render", "UI thread", "std::fs::write"],
+      "mechanical_rule": "ui-render-nonblocking",
+      "summary": "GPUI render() performs synchronous std::fs::write on the UI thread."
+    },
+    {
+      "id": "unredacted-secret-diagnostic",
+      "diff": "03-unredacted-secret-diagnostic.diff",
+      "roles": ["security-reviewer"],
+      "expected_severity": "blocker",
+      "expected_keywords": ["redact", "credential", "stderr"],
+      "mechanical_rule": null,
+      "summary": "Git failure diagnostic returns raw stderr without passing through redact_stream/redact_diagnostic."
+    },
+    {
+      "id": "stale-write-target",
+      "diff": "04-stale-write-target.diff",
+      "roles": ["security-reviewer", "code-reviewer"],
+      "expected_severity": "major",
+      "expected_keywords": ["verified_repository", "captured target", "write"],
+      "mechanical_rule": null,
+      "summary": "Explicit Git write skips captured repository verification before mutating a worktree."
+    },
+    {
+      "id": "symlink-preview-traversal",
+      "diff": "05-symlink-preview-traversal.diff",
+      "roles": ["security-reviewer"],
+      "expected_severity": "blocker",
+      "expected_keywords": ["symlink", "preview", "read"],
+      "mechanical_rule": "preview-purity",
+      "summary": "Preview decoder reads directly from the local filesystem via std::fs::read, following stored symlinks."
+    },
+    {
+      "id": "clean-control",
+      "diff": "06-clean-control.diff",
+      "roles": ["code-reviewer", "security-reviewer"],
+      "expected_severity": "none",
+      "expected_keywords": [],
+      "mechanical_rule": null,
+      "summary": "Pure formatting/helper cleanup with zero invariant violations; reviewers should return zero defects."
+    }
+  ]
+}

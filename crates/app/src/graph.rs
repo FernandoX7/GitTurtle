@@ -150,6 +150,7 @@ impl GraphCursor {
 
 /// Lay out a topologically ordered, newest-first history. Paged callers use
 /// GraphCursor to preserve exactly these lanes/colors without prefix replay.
+#[cfg(test)]
 pub fn layout<E>(
     commits: &[Commit],
     checkpoint: impl FnMut() -> Result<(), E>,

@@ -192,6 +192,13 @@ pub(super) struct DraftState {
     /// line's text, the failure was forgotten once another operation's
     /// error replaced it, and Return in the field saved nothing.
     failed_save: Option<AppSettings>,
+    /// Coalesces rapid setting toggles onto one queued preference-writer job
+    /// instead of overflowing the 8-slot writer queue with Busy errors.
+    saver: crate::commit_drafts::CoalescingSaver<(), AppSettings>,
+    /// Monotonic generation incremented each time a new settings-save batch is
+    /// spawned, so stale `Ok` or `Err` replies never overwrite a newer batch.
+    save_generation: u64,
+    retry: Option<Task<()>>,
 }
 
 impl DraftState {
@@ -200,6 +207,9 @@ impl DraftState {
             branch,
             identity: None,
             failed_save: None,
+            saver: crate::commit_drafts::CoalescingSaver::default(),
+            save_generation: 0,
+            retry: None,
         }
     }
     fn branch_update(&mut self, saved: &str, edited: &str) -> Option<String> {
@@ -504,7 +514,8 @@ impl GitTurtle {
             pdf_view::pause(self.content.as_deref());
             model_view::pause(self.content.as_deref());
             markdown_view::pause(self.content.as_deref());
-            self.page_return_focus = window.focused(cx);
+            self.page_return_focus = native_accessibility::pointer_menu_return(window, cx)
+                .unwrap_or_else(|| window.focused(cx));
         }
     }
 
@@ -720,7 +731,8 @@ impl GitTurtle {
     }
 
     /// This method never replaces current UI settings with an older disk reply.
-    /// The dedicated executor serializes these saves with recent-project writes.
+    /// The dedicated executor serializes these saves with recent-project writes,
+    /// coalescing rapid toggles onto the latest settings state.
     pub(super) fn save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.normalize();
         if let Err(error) = self.settings.validate() {
@@ -729,52 +741,88 @@ impl GitTurtle {
             cx.notify();
             return;
         }
-        let settings = self.settings.clone();
-        let submitted = settings.clone();
-        let response = self
-            .preferences_writer
-            .submit(move || Preferences::save_settings(&settings));
-        cx.spawn_in(window, async move |this, cx| {
-            let result = response.await.unwrap_or_else(|_| {
-                Err(anyhow::anyhow!(
-                    "The settings writer stopped before reporting a result"
-                ))
-            });
-            let _ = this.update_in(cx, |this, _, cx| {
-                if this.settings != submitted {
-                    return;
-                }
-                let error_before = this.operation_error.clone();
-                let status_before = this.status.clone();
-                match result {
-                    Ok(_) => {
-                        if this
-                            .operation_error
-                            .as_ref()
-                            .is_some_and(|error| error.starts_with("Could not save settings:"))
-                        {
-                            this.operation_error = None;
+        let submitted = self.settings.clone();
+        let response = self.settings_drafts.saver.queue_with(
+            &self.preferences_writer,
+            (),
+            submitted.clone(),
+            |pending| {
+                let Some(settings) = pending.get(&()) else {
+                    return Ok(());
+                };
+                Preferences::save_settings(settings).map(|_| ())
+            },
+        );
+        if let Some(response) = response {
+            self.settings_drafts.save_generation =
+                self.settings_drafts.save_generation.wrapping_add(1);
+            let generation = self.settings_drafts.save_generation;
+            cx.spawn_in(window, async move |this, cx| {
+                let result = response.await.unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!(
+                        "The settings writer stopped before reporting a result"
+                    ))
+                });
+                let _ =
+                    this.update_in(cx, |this, window, cx| {
+                        if this.settings_drafts.save_generation != generation {
+                            return;
                         }
-                        this.settings_drafts.failed_save = None;
-                        this.status = "Settings saved".into();
-                    }
-                    Err(error) => {
-                        this.operation_error =
-                            Some(format!("Could not save settings: {error:#}").into());
-                        this.settings_drafts.failed_save = Some(submitted);
-                    }
-                }
-                // A completed save costs a whole-window frame, so it only asks
-                // for one when it changed something the window shows. Every
-                // theme switch after the first leaves both of these alone.
-                if this.status != status_before || this.operation_error != error_before {
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+                        if let Err(ref error) = result
+                            && error.is::<operations::Busy>()
+                        {
+                            this.ask_again_to_save_preferences(window, cx);
+                            return;
+                        }
+                        let error_before = this.operation_error.clone();
+                        let status_before = this.status.clone();
+                        match result {
+                            Ok(_) => {
+                                // Only suppress stale success notices when a newer
+                                // save is still pending; failed saves stay pending in
+                                // CoalescingSaver for retry and must still report error.
+                                if this.settings_drafts.saver.is_pending() {
+                                    return;
+                                }
+                                if this.operation_error.as_ref().is_some_and(|error| {
+                                    error.starts_with("Could not save settings:")
+                                }) {
+                                    this.operation_error = None;
+                                }
+                                this.settings_drafts.failed_save = None;
+                                this.status = "Settings saved".into();
+                            }
+                            Err(error) => {
+                                this.operation_error =
+                                    Some(format!("Could not save settings: {error:#}").into());
+                                this.settings_drafts.failed_save = Some(this.settings.clone());
+                            }
+                        }
+                        // A completed save costs a whole-window frame, so it only asks
+                        // for one when it changed something the window shows. Every
+                        // theme switch after the first leaves both of these alone.
+                        if this.status != status_before || this.operation_error != error_before {
+                            cx.notify();
+                        }
+                    });
+            })
+            .detach();
+        }
         cx.notify();
         self.notify_settings_page(cx);
+    }
+
+    fn ask_again_to_save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_drafts.retry.is_some() {
+            return;
+        }
+        let retry = self.retry_refused_save(window, cx, |this, window, cx| {
+            this.settings_drafts.retry = None;
+            if this.settings_drafts.saver.is_pending() {
+                this.save_preferences(window, cx);
+            }
+        });
+        self.settings_drafts.retry = Some(retry);
     }
 
     fn choose_text_size(

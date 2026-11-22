@@ -166,6 +166,35 @@ class DocsSyncTests(unittest.TestCase):
         surfaces = docs_sync.affected_surfaces(self.root, "HEAD")
         self.assertEqual(surfaces, [("crates/app/src/appearance.rs", ["README.md"])])
 
+    def test_regex_str_and_known_gaps_sync(self):
+        self.write("scripts/ci/packages.py", "KNOWN_GAPS = {'linux': set(), 'macos': set()}\n")
+        self.write("docs/ci-artifacts.md", "All targets have empty `KNOWN_GAPS`.\nTool v1.2.3.\n")
+        self.write(".github/workflows/quality.yml", "download/v1.2.3/tool\n")
+        manifest = json.loads((self.root / "docs/doc-manifest.json").read_text(encoding="utf-8"))
+        manifest["constants"].append({
+            "name": "tool_ver",
+            "source": ".github/workflows/quality.yml",
+            "kind": "regex_str",
+            "pattern": r"download/v([0-9]+\.[0-9]+\.[0-9]+)/tool",
+            "docs": [{"path": "docs/ci-artifacts.md", "pattern": r"Tool v{value}\b"}],
+        })
+        manifest["known_gaps_sync"] = [{
+            "source": "scripts/ci/packages.py",
+            "docs": [{"path": "docs/ci-artifacts.md", "empty_pattern": r"empty `KNOWN_GAPS`"}],
+        }]
+        self.write("docs/doc-manifest.json", json.dumps(manifest))
+        self.assertEqual(docs_sync.validate(self.root), [])
+        self.write("docs/ci-artifacts.md", "Tool v0.9.0.\n")
+        msgs = self.messages()
+        self.assertIn("constant tool_ver=1.2.3", msgs)
+        self.assertIn("KNOWN_GAPS doc out of sync", msgs)
+        # Non-empty KNOWN_GAPS must reject docs that still claim empty KNOWN_GAPS.
+        self.write("docs/ci-artifacts.md", "All targets have empty `KNOWN_GAPS`.\nTool v1.2.3.\n")
+        self.write("scripts/ci/packages.py", "KNOWN_GAPS = {'linux': {'sample-gap'}, 'macos': set()}\n")
+        self.assertIn("still claims", self.messages())
+        self.write("docs/ci-artifacts.md", "Tracked gap: sample-gap.\nTool v1.2.3.\n")
+        self.assertEqual(docs_sync.validate(self.root), [])
+
 
 if __name__ == "__main__":
     unittest.main()

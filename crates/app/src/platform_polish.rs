@@ -163,9 +163,11 @@ impl PrimaryMenu {
             return;
         };
         let path = owner.read(cx).path.clone();
-        let focus = window
-            .focused(cx)
+        let focus = native_accessibility::pointer_menu_return(window, cx)
+            .flatten()
+            .or_else(|| window.focused(cx))
             .unwrap_or_else(|| owner.read(cx).app_focus.clone());
+        native_accessibility::close_tab_menus(window, cx);
         self.return_focus = Some(focus.clone());
         let rows = Self::rows(owner.read(cx), window, cx);
         let target = self.owner.clone();
@@ -454,6 +456,8 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
     };
     cx.set_menus(vec![
         Menu::new("GitTurtle").items([
+            MenuItem::action("About GitTurtle", ShowAbout),
+            MenuItem::separator(),
             MenuItem::action("Settings…", ShowSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
@@ -2062,5 +2066,36 @@ mod about_tests {
             enter(cx, None);
             draw(cx);
         }
+    }
+
+    #[gpui::test]
+    async fn show_about_action_opens_about_dialog_and_macos_menu_exposes_it(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (_app, cx) = window(cx, &repo);
+        #[cfg(target_os = "macos")]
+        cx.update(|_, cx| {
+            let menus = cx.get_menus().expect("macOS menu bar installed");
+            let app_menu = menus
+                .iter()
+                .find(|menu| menu.name == "GitTurtle")
+                .expect("GitTurtle application menu");
+            assert!(
+                matches!(
+                    app_menu.items.first(),
+                    Some(gpui::OwnedMenuItem::Action { name, .. }) if name == "About GitTurtle"
+                ),
+                "About GitTurtle must lead the macOS application menu"
+            );
+        });
+        cx.dispatch_action(ShowAbout);
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "ShowAbout must open the About dialog"
+        );
     }
 }

@@ -3,6 +3,7 @@ use crate::*;
 use gitturtle_core::{
     LeasedPublishPlan, OperationControl, PublicationInspection, RewriteReview, WriteCommand,
 };
+use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::{WindowExt, dialog::DialogFooter};
 use gpui_kit::prelude::FluentBuilder;
 
@@ -437,6 +438,7 @@ struct FailureBox<'a> {
     scrollbar: &'static str,
     label: &'static str,
     scroll: &'a ScrollHandle,
+    rest: &'a std::rc::Rc<std::cell::Cell<Pixels>>,
     focus: &'a FocusHandle,
 }
 
@@ -535,10 +537,12 @@ pub(crate) struct SeriesBrowser {
     /// the review.
     back: FocusHandle,
     rows_scroll: UniformListScrollHandle,
+    rows_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
     /// How many whole rows the series list showed, and how tall they were,
     /// as last drawn ([`Self::follow_rows`]).
     rows_layout: Option<(usize, Pixels)>,
     files_scroll: UniformListScrollHandle,
+    files_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
     inspecting: bool,
     /// The commit whose files are inspected, by its object ID.
     inspected: Option<String>,
@@ -567,6 +571,7 @@ pub(crate) struct SeriesBrowser {
     /// The scroll of a failure taller than the preview's box
     /// ([`Self::preview_prompt`]), from its top for each showing.
     failure_scroll: ScrollHandle,
+    failure_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
     /// The focus of a failure taller than the preview's box, which holds a
     /// Tab stop only while the failure overflows
     /// ([`Self::preview_prompt`]).
@@ -601,9 +606,11 @@ pub(crate) struct SeriesBrowser {
     /// The scroll of a failure taller than the file box, from its top for
     /// each showing.
     files_failure_scroll: ScrollHandle,
+    files_failure_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
     /// The focus of a failure taller than the file box, a Tab stop only
     /// while the failure overflows.
     files_failure_focus: FocusHandle,
+    error_scroll: crate::tags::NestedScroll,
     /// The answer of the last line beneath an open control in the preview
     /// that landed, recorded for every line as it lands, in view or not, so
     /// the body scrolls to each click's line once ([`Self::opener`]).
@@ -654,8 +661,10 @@ impl SeriesBrowser {
             focus: cx.focus_handle().tab_stop(true),
             back: cx.focus_handle().tab_stop(true),
             rows_scroll: UniformListScrollHandle::new(),
+            rows_scroll_rest: Default::default(),
             rows_layout: None,
             files_scroll: UniformListScrollHandle::new(),
+            files_scroll_rest: Default::default(),
             inspecting: false,
             inspected: None,
             messages: None,
@@ -673,6 +682,7 @@ impl SeriesBrowser {
             preview_bounds: Default::default(),
             preview_error: None,
             failure_scroll: ScrollHandle::new(),
+            failure_scroll_rest: Default::default(),
             failure_focus: cx.focus_handle(),
             lfs_failure_line: crate::lfs_download::FailureLine::new("series-lfs-failure", cx),
             lfs_download: None,
@@ -682,7 +692,9 @@ impl SeriesBrowser {
             ended_line: None,
             files_error: None,
             files_failure_scroll: ScrollHandle::new(),
+            files_failure_scroll_rest: Default::default(),
             files_failure_focus: cx.focus_handle(),
+            error_scroll: crate::tags::NestedScroll::default(),
             line_revealed: Default::default(),
             network_pending: false,
             error: None,
@@ -2212,6 +2224,7 @@ impl SeriesBrowser {
                 scrollbar: "series-preview-failure-scrollbar",
                 label: PREVIEW_UNAVAILABLE,
                 scroll: &self.failure_scroll,
+                rest: &self.failure_scroll_rest,
                 focus: &self.failure_focus,
             };
             return Self::failure_box(state, box_, window, cx)
@@ -2242,19 +2255,28 @@ impl SeriesBrowser {
             scrollbar,
             label,
             scroll,
+            rest,
             focus,
         } = region;
         let cue = crate::tags::ScrollCue::new(scroll, Pixels::ZERO);
         let overflows = cue.kept();
         let tracked = overflows || focus.is_focused(window);
         let keys = scroll.clone();
+        let observe_scroll = scroll.clone();
+        let observe_rest = rest.clone();
         cue.list(
             div()
-                .on_children_prepainted(cue.observe(|_, _, _| {}))
+                .on_children_prepainted(cue.observe(move |_, _, _| {
+                    observe_rest.set(observe_scroll.offset().y);
+                }))
                 .id(id)
                 .size_full()
                 .overflow_y_scroll()
                 .track_scroll(scroll)
+                .on_scroll(crate::tags::chain_scroll_wheel(
+                    scroll.clone(),
+                    rest.clone(),
+                ))
                 .when(tracked, |element| {
                     element
                         // The handle carries the Tab stop: GPUI ignores the
@@ -2513,7 +2535,12 @@ impl Render for SeriesBrowser {
                 // its wrapped lines need: the load's error, drawn at the
                 // body's end in a scrolling box the body shrank to nothing
                 // once it scrolled, left an empty list with no text.
-                .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.body.control(self.focus.clone(), room)).child(div().when(row_count > 0, |list| list.on_children_prepainted(rows_cue.observe(|_, _, _| {}))).id("series-focus-list").debug_selector(|| "series-focus-list".into()).w_full().min_w_0().map(|list| if empty.is_some() { list.min_h(list_height) } else { list.h(list_height) }).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(if empty.is_some() { Role::Group } else { Role::ListBox }).aria_label("Original and rewritten commits").aria_description(empty.as_ref().map_or_else(|| SERIES_KEYS.into(), |empty| empty.description.clone()))
+                .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.body.control(self.focus.clone(), room)).child(div().when(row_count > 0, |list| {
+                    let (scroll, rest) = (self.rows_scroll.clone(), self.rows_scroll_rest.clone());
+                    list.on_children_prepainted(rows_cue.observe(move |_, _, _| {
+                        rest.set(scroll.0.borrow().base_handle.offset().y);
+                    }))
+                }).id("series-focus-list").debug_selector(|| "series-focus-list".into()).w_full().min_w_0().map(|list| if empty.is_some() { list.min_h(list_height) } else { list.h(list_height) }).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(if empty.is_some() { Role::Group } else { Role::ListBox }).aria_label("Original and rewritten commits").aria_description(empty.as_ref().map_or_else(|| SERIES_KEYS.into(), |empty| empty.description.clone()))
                     // Return inspects as it goes down, never on a held key's
                     // repeats, as the dialog's own Enter acts. A key on Edit
                     // local commits… inside it is that Button's own.
@@ -2548,7 +2575,7 @@ impl Render for SeriesBrowser {
                         // beside them while they overflow, as the stash
                         // browser's saved files do, so the track runs along
                         // their scroll's right edge and covers no row.
-                        None => list.flex().flex_col().child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, window, cx| range.map(|index| this.row(index, window, cx)).collect::<Vec<_>>())).flex_1().min_h_0().mr(-gutter).pr(gutter).track_scroll(&self.rows_scroll)),
+                        None => list.flex().flex_col().child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, window, cx| range.map(|index| this.row(index, window, cx)).collect::<Vec<_>>())).flex_1().min_h_0().mr(-gutter).pr(gutter).track_scroll(&self.rows_scroll).on_scroll(crate::tags::chain_uniform_list_wheel(self.rows_scroll.clone(), self.rows_scroll_rest.clone()))),
                     })
                     .map(|list| if row_count == 0 { crate::native_accessibility::clips_children(list).into_any_element() } else { rows_cue.list(list, "rewrite-series-scrollbar").into_any_element() })))
                 .child(crate::edge_row(window).on_children_prepainted(action_row(self.pending, self.body.controls(vec![Some(messages.clone()), Some(original.clone()), Some(rewritten.clone()), Some(reload.clone())], room)))
@@ -2586,13 +2613,19 @@ impl Render for SeriesBrowser {
                 // height (a failure may grow it, within its bound): said
                 // after the preview, the read lay below the view at 18 pt
                 // in a 461 × 490 window.
-                .when(self.messages.is_none(), |element| element.child(div().debug_selector(|| "series-files".into()).track_focus(&files_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(self.body.control(files_focus.clone(), room)).map(|files| if self.files_error.is_some() { files.flex().flex_col().min_h(px(130.)).max_h(px(FILES_FAILURE_MOST)) } else { files.h(px(130.)) }).flex_shrink_0().border_1().border_color(rgb(if files_ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().map(|files| if self.reading_files() { files.child(div().px_3().py_2().child(crate::empty_state::EmptyState::new("series-files-reading", READING_FILES).block(cx))) } else if let Some(error) = &self.files_error {
+                .when(self.messages.is_none(), |element| {
+                    let files_control = self.body.control(files_focus.clone(), room);
+                    let (files_scroll, files_rest) = (self.files_scroll.clone(), self.files_scroll_rest.clone());
+                    element.child(div().debug_selector(|| "series-files".into()).track_focus(&files_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).on_children_prepainted(move |bounds, window, cx| {
+                        files_rest.set(files_scroll.0.borrow().base_handle.offset().y);
+                        files_control(bounds, window, cx);
+                    }).map(|files| if self.files_error.is_some() { files.flex().flex_col().min_h(px(130.)).max_h(px(FILES_FAILURE_MOST)) } else { files.h(px(130.)) }).flex_shrink_0().border_1().border_color(rgb(if files_ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().map(|files| if self.reading_files() { files.child(div().px_3().py_2().child(crate::empty_state::EmptyState::new("series-files-reading", READING_FILES).block(cx))) } else if let Some(error) = &self.files_error {
                     // Said in the box whose read failed, at the rows' inset,
                     // the box growing within `FILES_FAILURE_MOST` to hold it,
                     // scrolling past that: drawn at the body's end, the
                     // failure lay below the view.
                     let failure = div().px_3().py_2().child(crate::empty_state::EmptyState::new("series-files-failed", error.clone()).titled(Some(FILES_UNAVAILABLE)).block(cx));
-                    let region = FailureBox { id: "series-files-failure", scrollbar: "series-files-failure-scrollbar", label: FILES_UNAVAILABLE, scroll: &self.files_failure_scroll, focus: &self.files_failure_focus };
+                    let region = FailureBox { id: "series-files-failure", scrollbar: "series-files-failure-scrollbar", label: FILES_UNAVAILABLE, scroll: &self.files_failure_scroll, rest: &self.files_failure_scroll_rest, focus: &self.files_failure_focus };
                     files.child(Self::failure_box(failure, region, window, cx).flex_1().min_h_0().w_full())
                 } else { files.child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, window, cx| range.map(|index| {
                     let file = &this.files[index];
@@ -2605,7 +2638,8 @@ impl Render for SeriesBrowser {
                     div().w_full().h(appearance::ui_size(30.)).flex().items_center().gap_2().child({ use native_accessibility::DrawnButton as _; control.node_recorded() })
                         .when(reading, |row| row.child(div().debug_selector(|| "series-file-reading".into()).flex_shrink_0().pr_2().text_size(appearance::ui_text(11.)).text_color(rgb(palette(cx).muted)).child(READING_ROW)))
                         .into_any_element()
-                }).collect::<Vec<_>>())).size_full().p(room).track_scroll(&self.files_scroll)) })))
+                }).collect::<Vec<_>>())).size_full().p(room).track_scroll(&self.files_scroll).on_scroll(crate::tags::chain_uniform_list_wheel(self.files_scroll.clone(), self.files_scroll_rest.clone()))) }))
+                })
                 // The text modes keep their row for every preview, waiting
                 // for one with text and saying why, so the preview below
                 // keeps its place and size as its read comes and goes and
@@ -2621,7 +2655,7 @@ impl Render for SeriesBrowser {
             // concerns; the load's own error says why in the list's place.
             // It keeps its height in the scrolling body, which shrank a
             // scrolling box with no least height of its own to nothing.
-            .when_some(self.error.as_ref().filter(|_| self.review.is_some()), |element, error| element.child(div().max_h(appearance::ui_size(100.)).flex_shrink_0().id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))), "rewrite-review-scrollbar").min_h_0())
+            .when_some(self.error.as_ref().filter(|_| self.review.is_some()), |element, error| element.child(div().max_h(appearance::ui_size(100.)).flex_shrink_0().id("series-review-error").overflow_y_scroll().track_scroll(&self.error_scroll.handle).on_prepaint(self.error_scroll.observe()).on_scroll(self.error_scroll.wheel()).text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))), "rewrite-review-scrollbar").min_h_0())
     }
 }
 

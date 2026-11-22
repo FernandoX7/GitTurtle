@@ -740,6 +740,13 @@ def build_stages(
             reproduce="python3 scripts/check-docs-sync.py",
         )
     )
+    stages.append(
+        Stage(
+            "invariants",
+            [sys.executable, "-B", "scripts/dev/check_invariants.py"],
+            reproduce="python3 scripts/dev/check_invariants.py",
+        )
+    )
     if tier == "full":
         # Snapshot hygiene only finds `.snap.new` files already present:
         # base_env sets INSTA_UPDATE=no, so the test stages write none.
@@ -1025,6 +1032,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--report")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--no-slot", action="store_true")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--changed-only", action="store_true")
     group.add_argument("--workspace", action="store_true")
@@ -1066,6 +1074,20 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     outcomes: list[Outcome] = []
     failing: Outcome | None = None
+    def _run_with_optional_slot(stage: Stage) -> Outcome:
+        needs_slot = stage.name in {"clippy", "check", "tests", "gpui-iterations", "doctests", "doc-lint", "mutants", "release"} or stage.name.startswith("tests:")
+        if not needs_slot or args.no_slot or os.environ.get("GITTURTLE_NO_BUILD_SLOT") == "1" or os.environ.get("GITTURTLE_BUILD_SLOT"):
+            return run_stage(stage, root, args.tier)
+        dev_dir = root / "scripts"
+        if str(dev_dir) not in sys.path:
+            sys.path.insert(0, str(dev_dir))
+        try:
+            from dev import build_slot
+        except ImportError:
+            return run_stage(stage, root, args.tier)
+        with build_slot.held_slot():
+            return run_stage(stage, root, args.tier)
+
     with tempfile.TemporaryDirectory(prefix="gitturtle-gate-") as scratch_name:
         scratch = Path(scratch_name)
         stages = build_stages(args.tier, scope, root, tools, base, args.strict, crates, scratch)
@@ -1083,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
                 progress(f"warn: {stage.name} {stage.note}")
                 continue
             progress(f"stage {stage.name}{' (' + stage.note + ')' if stage.note else ''} ...")
-            outcome = run_stage(stage, root, args.tier)
+            outcome = _run_with_optional_slot(stage)
             if outcome.status == "failed" and stage.advisory and not args.strict:
                 outcome.status = "warn"
                 summary = outcome.first_error or (outcome.filtered[0] if outcome.filtered else f"exit {outcome.returncode}")

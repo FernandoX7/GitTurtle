@@ -27,6 +27,29 @@ LANES = ("product", "tooling", "website")
 JOBS = {"rust-format": "product", "rust-debug": "product", "rust-clippy": "product",
         "rust-release": "product", "package-transfer": "product", "rust-arch": "product",
         "agent-tooling": "tooling", "website": "website"}
+# Weekly schedule refreshes only the 6 cache-owning Rust legs (2 macOS slots
+# instead of 6: macos-15 debug shard 1 + macos-26 release, plus Ubuntu/Arch
+# shard 1 and Linux release legs) without re-running formatting, Clippy,
+# shards 2/3, website, tooling, or package-transfer on an already-green main.
+CACHE_SEED_JOBS = frozenset({"rust-debug", "rust-arch", "rust-release"})
+DEBUG_MATRIX_FULL = {"include": [
+    {"os": "macos-15", "shard": 1, "shards": 3},
+    {"os": "macos-15", "shard": 2, "shards": 3},
+    {"os": "macos-15", "shard": 3, "shards": 3},
+    {"os": "ubuntu-24.04", "shard": 1, "shards": 2},
+    {"os": "ubuntu-24.04", "shard": 2, "shards": 2},
+]}
+DEBUG_MATRIX_SEED = {"include": [
+    {"os": "macos-15", "shard": 1, "shards": 3},
+    {"os": "ubuntu-24.04", "shard": 1, "shards": 2},
+]}
+ARCH_MATRIX_FULL = {"include": [
+    {"shard": 1, "shards": 2},
+    {"shard": 2, "shards": 2},
+]}
+ARCH_MATRIX_SEED = {"include": [
+    {"shard": 1, "shards": 2},
+]}
 # Runs unconditionally in parallel with other lanes once `changes` finishes,
 # taking the full CI unit test suite off the serial `changes` critical path.
 CI_TESTS_JOB = "ci-tests"
@@ -222,11 +245,33 @@ def compared_paths(repository: Path, comparisons: list[tuple[str, str]], diff_fi
     return sorted(paths)
 
 
+def cache_seed_plan() -> dict:
+    return {
+        "version": 1,
+        "product": True,
+        "tooling": False,
+        "website": False,
+        "has_images": False,
+        "reason": "scheduled-cache-seed",
+        "path_count": None,
+    }
+
+
+def is_cache_seed(plan: dict) -> bool:
+    return plan.get("reason") == "scheduled-cache-seed"
+
+
+def job_required(job: str, plan: dict) -> bool:
+    if is_cache_seed(plan):
+        return job in CACHE_SEED_JOBS
+    return bool(plan[JOBS[job]])
+
+
 def classify_checkout(repository: Path, event_name: str, event: dict, checkout_sha: str) -> dict:
     if event_name == "workflow_dispatch":
         return full_plan("manual-full-validation", has_images=False)
     if event_name == "schedule":
-        return full_plan("scheduled-cache-seed", has_images=False)
+        return cache_seed_plan()
     try:
         expected = checkout_identity(repository, checkout_sha)
         if event_name == "pull_request":
@@ -271,6 +316,10 @@ def validate_plan(plan: object) -> dict:
     if plan["reason"] == "classified-paths":
         if type(count) is not int or not 1 <= count <= MAX_PATHS:
             raise PolicyError("classified paths lack a complete comparison")
+    elif plan["reason"] == "scheduled-cache-seed":
+        if (count is not None or not plan["product"] or plan["tooling"]
+                or plan["website"] or plan["has_images"]):
+            raise PolicyError("scheduled cache seed must select product cache lanes only")
     elif count is not None or not all(plan[lane] for lane in LANES):
         raise PolicyError("fallback must require all validation lanes")
     if not isinstance(plan["reason"], str) or not re.fullmatch(r"[a-z-]{1,64}", plan["reason"]):
@@ -317,8 +366,14 @@ def gate(needs: object) -> list[str]:
     try:
         outputs = changes["outputs"]
         plan = validate_plan(json.loads(outputs["plan"]))
+        seed = is_cache_seed(plan)
+        expected_debug = json.dumps(DEBUG_MATRIX_SEED if seed else DEBUG_MATRIX_FULL, separators=(",", ":"))
+        expected_arch = json.dumps(ARCH_MATRIX_SEED if seed else ARCH_MATRIX_FULL, separators=(",", ":"))
         if (any(outputs.get(lane) != str(plan[lane]).lower() for lane in LANES)
-                or outputs.get("has-images") != str(plan["has_images"]).lower()):
+                or outputs.get("has-images") != str(plan["has_images"]).lower()
+                or outputs.get("seed-only") != str(seed).lower()
+                or outputs.get("debug-matrix") != expected_debug
+                or outputs.get("arch-matrix") != expected_arch):
             raise PolicyError("classification outputs disagree")
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise PolicyError("missing or malformed classification outputs") from error
@@ -331,11 +386,12 @@ def gate(needs: object) -> list[str]:
         result = entry.get("result") if isinstance(entry, dict) else None
         if result == "success":
             results.append(f"{job}: success")
-        elif result == "skipped" and not plan[lane]:
+        elif result == "skipped" and not job_required(job, plan):
             results.append(f"{job}: not needed by classification")
         else:
             raise PolicyError(f"{job}: required result was not successful ({result!r})")
-    results += transfer_results(needs)
+    if not (is_cache_seed(plan) and needs[TRANSFER_JOB].get("result") == "skipped"):
+        results += transfer_results(needs)
     entry = needs[PRIVACY_JOB]
     result = entry.get("result") if isinstance(entry, dict) else None
     outputs = entry.get("outputs") if isinstance(entry, dict) else None
@@ -381,10 +437,16 @@ def main() -> int:
             serialized = json.dumps(plan, separators=(",", ":"), sort_keys=True)
             print(serialized)
             if args.output:
+                seed = is_cache_seed(plan)
+                debug_matrix = json.dumps(DEBUG_MATRIX_SEED if seed else DEBUG_MATRIX_FULL, separators=(",", ":"))
+                arch_matrix = json.dumps(ARCH_MATRIX_SEED if seed else ARCH_MATRIX_FULL, separators=(",", ":"))
                 with args.output.open("a", encoding="utf-8") as output:
                     for lane in LANES:
                         output.write(f"{lane}={str(plan[lane]).lower()}\n")
                     output.write(f"has-images={str(plan['has_images']).lower()}\n")
+                    output.write(f"seed-only={str(seed).lower()}\n")
+                    output.write(f"debug-matrix={debug_matrix}\n")
+                    output.write(f"arch-matrix={arch_matrix}\n")
                     output.write(f"plan={serialized}\n")
         else:
             raw = os.environ.get("NEEDS_JSON", "")

@@ -98,6 +98,7 @@ impl WatchRoots {
                     "rebase-apply",
                     "sequencer",
                     "info",
+                    "lfs",
                 ]
                 .iter()
                 .any(|name| first == *name)
@@ -887,7 +888,25 @@ impl Registrations {
 
     fn eligible(&mut self, path: &Path, roots: &WatchRoots, metadata: bool) -> bool {
         if metadata {
-            return matches!(roots.classify(path), ChangeKind::Git | ChangeKind::GitRoot);
+            if !matches!(roots.classify(path), ChangeKind::Git | ChangeKind::GitRoot) {
+                return false;
+            }
+            // Avoid walking Git LFS's two-level hex fan-out (`.git/lfs/objects/<xx>/<yy>`,
+            // up to 65,536 directories) on Linux inotify; watching `lfs`, `lfs/tmp`, and
+            // `lfs/objects` detects `git lfs fetch`/`pull` in O(1) watches without
+            // exhausting `MAX_DIRECTORIES` or `fs.inotify.max_user_watches`.
+            for root in [&roots.private_git, &roots.common_git] {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    let mut components = relative.components();
+                    if components.next().and_then(|c| c.as_os_str().to_str()) == Some("lfs")
+                        && components.next().and_then(|c| c.as_os_str().to_str()) == Some("objects")
+                        && components.next().is_some()
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
         if path == roots.worktree {
             return true;

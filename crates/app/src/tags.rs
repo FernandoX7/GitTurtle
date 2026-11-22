@@ -368,6 +368,76 @@ impl FieldReturn {
     }
 }
 
+/// Reusable wheel-chaining state for a nested vertical scroll container inside
+/// an outer scrolling body or dialog.
+#[derive(Clone)]
+pub(crate) struct NestedScroll {
+    pub(crate) handle: ScrollHandle,
+    pub(crate) rest: Rc<Cell<Pixels>>,
+}
+
+impl Default for NestedScroll {
+    fn default() -> Self {
+        Self {
+            handle: ScrollHandle::new(),
+            rest: Rc::default(),
+        }
+    }
+}
+
+impl NestedScroll {
+    pub(crate) fn wheel(&self) -> impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static {
+        chain_scroll_wheel(self.handle.clone(), self.rest.clone())
+    }
+
+    pub(crate) fn observe(&self) -> impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static {
+        let (handle, rest) = (self.handle.clone(), self.rest.clone());
+        move |_, _, _| {
+            rest.set(handle.offset().y);
+        }
+    }
+}
+
+/// Stops a nested vertical scroller's wheel turn from leaking into an outer
+/// scroll container while the inner scroller moved, while still chaining to
+/// the outer scroller once the inner scroller rests at its top or bottom.
+pub(crate) fn chain_scroll_wheel(
+    scroll: ScrollHandle,
+    rest: Rc<Cell<Pixels>>,
+) -> impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| {
+        let reach = scroll.max_offset().y.max(Pixels::ZERO);
+        let offset = scroll.offset();
+        let turned = offset.y.clamp(-reach, Pixels::ZERO);
+        scroll.set_offset(point(offset.x, turned));
+        if (rest.replace(turned) - turned).abs() > px(0.01) {
+            cx.stop_propagation();
+        }
+    }
+}
+
+/// Stops a nested vertical `uniform_list`'s wheel turn from leaking into an
+/// outer scroll container while the list moved, while still chaining to the
+/// outer scroller once the list rests at its top or bottom.
+pub(crate) fn chain_uniform_list_wheel(
+    scroll: UniformListScrollHandle,
+    rest: Rc<Cell<Pixels>>,
+) -> impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| {
+        let state = scroll.0.borrow();
+        let Some(size) = state.last_item_size else {
+            return;
+        };
+        let reach = (size.contents.height - size.item.height).max(Pixels::ZERO);
+        let offset = state.base_handle.offset();
+        let turned = offset.y.clamp(-reach, Pixels::ZERO);
+        state.base_handle.set_offset(point(offset.x, turned));
+        if (rest.replace(turned) - turned).abs() > px(0.01) {
+            cx.stop_propagation();
+        }
+    }
+}
+
 /// A dialog's own footer, the kit's OK and optional Cancel built on the app's
 /// compact frame (`button_frame`, through `button`): 28 px high at the
 /// interface size, with its padding, label size and focus ring, as every

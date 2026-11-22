@@ -116,6 +116,35 @@ def release_slot(fd: int) -> None:
         os.close(fd)
 
 
+from contextlib import contextmanager  # noqa: E402
+from typing import Iterator  # noqa: E402
+
+
+@contextmanager
+def held_slot(
+    slot_dir: Path | None = None,
+    *,
+    slots: int = DEFAULT_SLOTS,
+    disabled: bool = False,
+) -> Iterator[int | None]:
+    """Acquire a build slot for the duration of a block unless disabled or nested."""
+    if disabled or os.environ.get("GITTURTLE_NO_BUILD_SLOT") == "1" or os.environ.get("GITTURTLE_BUILD_SLOT"):
+        yield None
+        return
+    resolved = slot_dir or default_slot_dir()
+    slot_num, fd = acquire_slot(resolved, slots=slots)
+    previous = os.environ.get("GITTURTLE_BUILD_SLOT")
+    os.environ["GITTURTLE_BUILD_SLOT"] = str(slot_num)
+    try:
+        yield slot_num
+    finally:
+        if previous is None:
+            os.environ.pop("GITTURTLE_BUILD_SLOT", None)
+        else:
+            os.environ["GITTURTLE_BUILD_SLOT"] = previous
+        release_slot(fd)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     command = list(args.command)
     if command and command[0] == "--":
@@ -123,9 +152,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not command:
         print("error: missing command to run", file=sys.stderr)
         return 2
+    if os.environ.get("GITTURTLE_NO_BUILD_SLOT") == "1" or os.environ.get("GITTURTLE_BUILD_SLOT"):
+        completed = subprocess.run(command, check=False, close_fds=True)
+        return completed.returncode
     slot_dir = args.slot_dir or default_slot_dir()
     try:
-        _slot, fd = acquire_slot(
+        slot_num, fd = acquire_slot(
             slot_dir,
             slots=args.slots,
             poll_seconds=args.poll_seconds,
@@ -136,7 +168,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 124
     try:
-        completed = subprocess.run(command, check=False, close_fds=True)
+        env = os.environ.copy()
+        env["GITTURTLE_BUILD_SLOT"] = str(slot_num)
+        completed = subprocess.run(command, env=env, check=False, close_fds=True)
         return completed.returncode
     finally:
         release_slot(fd)

@@ -3316,6 +3316,50 @@ class UbuntuKeyPreconditions(unittest.TestCase):
             ("test", "- run: /usr/bin/apt-get -y install ninja-build"),
             ("test", "- run: python3 scripts/ci/apt_install.py -o Dir::Etc::sourceparts=- -- nasm")])
 
+    def test_exact_cache_hit_skips_bound_payload_and_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            temp = Path(tmp) / "temp"
+            root.mkdir()
+            temp.mkdir()
+            (root / "Cargo.lock").write_text('version = 4\n', encoding="utf-8")
+            (temp / "gitturtle-cache-start").write_text("0.0", encoding="utf-8")
+            gh_env = Path(tmp) / "gh_env"
+            gh_out = Path(tmp) / "gh_out"
+            gh_env.write_text("", encoding="utf-8")
+            gh_out.write_text("", encoding="utf-8")
+            env = {
+                "GITHUB_WORKSPACE": str(root),
+                "RUNNER_TEMP": str(temp),
+                "GITHUB_ENV": str(gh_env),
+                "GITHUB_OUTPUT": str(gh_out),
+                "CACHE_HIT": "true",
+                "CACHE_OUTCOME": "success",
+                "CI_RUST_CACHE_KEY": "k",
+                "CI_RUST_CACHE_LOCK": cache.digest((root / "Cargo.lock").read_bytes()),
+                "CI_RUST_CACHE_PROFILE": "debug",
+                "CACHE_PROFILE": "debug",
+                "CACHE_IDENTITY": cache.IDENTITY_UNCHANGED,
+                "CARGO_HOME": str(temp / "gitturtle-cargo"),
+                "CARGO_TARGET_DIR": str(root / "target"),
+            }
+            with patch.dict(os.environ, env, clear=True), patch.object(cache, "record"):
+                cache.restored()
+            exported = dict(line.split("=", 1) for line in gh_env.read_text(encoding="utf-8").splitlines() if "=" in line)
+            self.assertEqual(exported.get("CI_RUST_CACHE_HIT"), "true")
+
+            env["CI_RUST_CACHE_HIT"] = "true"
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("sys.argv", ["cache.py", "bound"]),
+                patch.object(cache, "bound_payload", side_effect=AssertionError("must not run bound_payload on exact hit")),
+                patch.object(cache, "record") as rec,
+                patch("builtins.print"),
+            ):
+                self.assertEqual(cache.main(), 0)
+            self.assertEqual(gh_out.read_text(encoding="utf-8").strip(), "save=false")
+            self.assertEqual(rec.call_args.kwargs["details"]["reason"], "exact cache hit already stored")
+
 
 if __name__ == "__main__":
     unittest.main()

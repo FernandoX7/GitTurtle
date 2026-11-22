@@ -427,9 +427,20 @@ impl SliderState {
         self.commit_thumb_value(value, window, cx);
     }
 
+    #[cfg(test)]
     fn handle_accessibility_set_value(
         &mut self,
         data: Option<&ActionData>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_accessibility_set_value_for(data, None, window, cx);
+    }
+
+    fn handle_accessibility_set_value_for(
+        &mut self,
+        data: Option<&ActionData>,
+        reported: Option<SliderAccessibleValue>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -439,10 +450,22 @@ impl SliderState {
         if !target.is_finite() || !steppable(self.value, self.min, self.max) {
             return;
         }
+        let mapped = match reported {
+            Some(reported)
+                if reported.min.is_finite()
+                    && reported.max.is_finite()
+                    && reported.max > reported.min =>
+            {
+                let fraction =
+                    ((*target - reported.min) / (reported.max - reported.min)).clamp(0.0, 1.0);
+                self.min as f64 + fraction * (self.max as f64 - self.min as f64)
+            }
+            _ => *target,
+        };
         let value = thumb_value_at(
             self.value,
             false,
-            *target as f32,
+            mapped as f32,
             self.min,
             self.max,
             self.step,
@@ -718,7 +741,8 @@ impl RenderOnce for Slider {
         let state = self.state.read(cx);
         let slider_state = self.state.clone();
 
-        let reported = self.accessible_value.unwrap_or(SliderAccessibleValue {
+        let custom_reported = self.accessible_value;
+        let reported = custom_reported.unwrap_or(SliderAccessibleValue {
             value: state.value().end() as f64,
             min: state.min_value() as f64,
             max: state.max_value() as f64,
@@ -767,7 +791,12 @@ impl RenderOnce for Slider {
                     let state = slider_state.clone();
                     move |data, window, cx| {
                         state.update(cx, |state, cx| {
-                            state.handle_accessibility_set_value(data, window, cx);
+                            state.handle_accessibility_set_value_for(
+                                data,
+                                custom_reported,
+                                window,
+                                cx,
+                            );
                         });
                     }
                 })
@@ -1772,6 +1801,45 @@ mod tests {
             }
             cx.update(|window, cx| window.draw(cx).clear(cx));
             assert_eq!(renders.get(), rendered, "the readout was built again");
+        }
+
+        #[gpui::test]
+        fn accessible_set_value_unmaps_custom_reported_range(cx: &mut TestAppContext) {
+            let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let (state, cx) = cx.add_window_view({
+                let events = events.clone();
+                move |_, cx| {
+                    let state = SliderState::new().min(0.0).max(1.0).step(0.01);
+                    let entity = cx.entity();
+                    cx.subscribe(&entity, move |_, _, event: &super::super::SliderEvent, _| {
+                        events.borrow_mut().push(*event);
+                    })
+                    .detach();
+                    state
+                }
+            });
+            let reported = super::super::SliderAccessibleValue {
+                value: 0.0,
+                min: 0.0,
+                max: 360.0,
+                step: 1.0,
+            };
+            cx.update(|window, cx| {
+                state.update(cx, |state, cx| {
+                    state.handle_accessibility_set_value_for(
+                        Some(&gpui::accesskit::ActionData::NumericValue(180.0)),
+                        Some(reported),
+                        window,
+                        cx,
+                    );
+                });
+            });
+            let value = state.read_with(cx, |state, _| state.value().end());
+            assert!((value - 0.5).abs() < 1e-4, "expected 0.5, got {value}");
+            let fired = events.borrow();
+            assert_eq!(fired.len(), 2, "expected Change and Release events");
+            assert!(matches!(fired[0], super::super::SliderEvent::Change(_)));
+            assert!(matches!(fired[1], super::super::SliderEvent::Release(_)));
         }
     }
 }
