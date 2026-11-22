@@ -110,6 +110,11 @@ fn readable_text(element: &mut AnyElement, depth: usize) -> Option<(SharedString
         // an accessible name: GPUI writes it as a node of its own.
         accessible_name(title).map(|name| (name, true))
     } else {
+        #[cfg(feature = "test-support")]
+        if let Some(title) = element.downcast_mut::<crate::test_support::Observed<Stateful<Div>>>()
+        {
+            return accessible_name(title).map(|name| (name, true));
+        }
         None
     }
 }

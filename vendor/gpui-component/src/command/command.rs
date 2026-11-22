@@ -20,6 +20,7 @@ pub(crate) struct CommandOptions {
     pub(crate) placeholder: Option<SharedString>,
     pub(crate) empty: Option<Rc<CommandSlot>>,
     pub(crate) max_h: DefiniteLength,
+    pub(crate) scroll_bounce: Option<bool>,
     pub(crate) bordered: bool,
     pub(crate) header: Option<Rc<CommandSlot>>,
     pub(crate) footer: Option<Rc<CommandSlot>>,
@@ -32,6 +33,7 @@ impl Default for CommandOptions {
             placeholder: None,
             empty: None,
             max_h: rems(18.75).into(),
+            scroll_bounce: None,
             bordered: true,
             header: None,
             footer: None,
@@ -60,6 +62,7 @@ pub struct Command {
     entries: Vec<CommandEntry>,
     searchable: bool,
     filterable: bool,
+    highlight_matches: bool,
     on_query: Option<Rc<OnQuery>>,
     on_select: Option<Rc<OnIndex>>,
     on_confirm: Option<Rc<OnIndex>>,
@@ -75,6 +78,7 @@ impl Command {
             entries: Vec::new(),
             searchable: true,
             filterable: true,
+            highlight_matches: false,
             on_query: None,
             on_select: None,
             on_confirm: None,
@@ -122,6 +126,14 @@ impl Command {
     /// highlight back to the first item instead of a local textual match.
     pub fn filterable(mut self, filterable: bool) -> Self {
         self.filterable = filterable;
+        self
+    }
+
+    /// Highlight the part of each item's label that matches the query, default
+    /// is `false`. Has no effect with `filterable(false)` or on rows built with
+    /// `child`.
+    pub fn highlight_matches(mut self, highlight: bool) -> Self {
+        self.highlight_matches = highlight;
         self
     }
 
@@ -197,6 +209,13 @@ impl Command {
         self
     }
 
+    /// Bounce the command list at its vertical boundaries. On by default on iOS,
+    /// Android and macOS, off elsewhere; reduced motion disables displacement.
+    pub fn scroll_bounce(mut self, enabled: bool) -> Self {
+        self.options.scroll_bounce = Some(enabled);
+        self
+    }
+
     /// Set whether to draw the surrounding border and rounding, default: `true`.
     ///
     /// Turn it off when the palette already sits inside a frame of its own,
@@ -244,13 +263,14 @@ impl RenderOnce for Command {
             entries: self.entries,
             searchable: self.searchable,
             filterable: self.filterable,
+            highlight_matches: self.highlight_matches,
             on_query: self.on_query,
             on_select: self.on_select,
             on_confirm: self.on_confirm,
             on_cancel: self.on_cancel,
         };
         self.state.update(cx, |state, cx| {
-            state.options = options;
+            state.set_options(options);
             state.install_model(model, cx);
         });
 

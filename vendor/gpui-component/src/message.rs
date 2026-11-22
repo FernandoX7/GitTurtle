@@ -1,9 +1,11 @@
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement, RenderOnce, StyleRefinement, Styled, Window,
-    prelude::FluentBuilder as _, relative, rems,
+    AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
+    relative, rems,
 };
+use gpui_base::LogicalStyledExt as _;
 
-use crate::{ActiveTheme as _, StyledExt as _, bubble::Bubble, h_flex, v_flex};
+use crate::{ActiveTheme as _, RoleOverride, StyledExt as _, bubble::Bubble, h_flex, v_flex};
 
 /// Horizontal alignment for a message and message-owned chat surfaces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -13,6 +15,14 @@ pub enum MessageAlignment {
     Start,
     /// Place the message at the trailing edge.
     End,
+}
+
+impl MessageAlignment {
+    /// Whether this alignment puts the message on the physical right under
+    /// the global layout direction: `End` in LTR, `Start` in RTL.
+    pub(crate) fn is_right(self, cx: &App) -> bool {
+        (self == Self::End) != gpui_base::LayoutDirection::global(cx).is_rtl()
+    }
 }
 
 /// A vertical stack of consecutive messages from the same sender.
@@ -66,6 +76,8 @@ impl RenderOnce for MessageGroup {
 /// part remains independently styleable.
 #[derive(IntoElement)]
 pub struct Message {
+    id: Option<ElementId>,
+    role: RoleOverride,
     style: StyleRefinement,
     stack_style: StyleRefinement,
     alignment: MessageAlignment,
@@ -79,6 +91,8 @@ impl Message {
     /// Create a leading-aligned message.
     pub fn new() -> Self {
         Self {
+            id: None,
+            role: RoleOverride::default(),
             style: StyleRefinement::default(),
             stack_style: StyleRefinement::default(),
             alignment: MessageAlignment::Start,
@@ -92,6 +106,24 @@ impl Message {
     /// Set whether the message is aligned to the leading or trailing edge.
     pub fn alignment(mut self, alignment: MessageAlignment) -> Self {
         self.alignment = alignment;
+        self
+    }
+
+    /// Set a stable identity so the message can appear in the accessibility
+    /// tree and keep element state across frames.
+    pub fn id(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Set the accessibility role announced for this message.
+    ///
+    /// A message is presentational by default. Give the rows of a transcript
+    /// a role such as [`gpui::Role::ListItem`] so assistive technology can
+    /// move between them. Accessibility nodes need a stable identity, so the
+    /// role takes effect only together with [`Self::id`].
+    pub fn role(mut self, role: impl Into<RoleOverride>) -> Self {
+        self.role = role.into();
         self
     }
 
@@ -145,25 +177,30 @@ impl Styled for Message {
 }
 
 impl RenderOnce for Message {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let alignment = self.alignment;
+        let is_right = alignment.is_right(cx);
         let has_avatar = self.avatar.is_some();
         let has_ghost_bubble = self
             .content
             .as_ref()
             .is_some_and(|content| content.has_ghost_bubble);
         let stack_style = self.stack_style;
+        let role = self.role;
 
-        v_flex()
+        // No text size or line height here: the header and footer set their
+        // own, and content typography belongs to the bubble or the caller.
+        let row = v_flex()
             .relative()
             .w_full()
             .min_w_0()
             .gap(rems(0.625))
-            .text_sm()
-            .line_height(relative(1.25))
-            .map(|this| match alignment {
-                MessageAlignment::Start => this.items_start(),
-                MessageAlignment::End => this.items_end(),
+            .map(|this| {
+                if is_right {
+                    this.items_end()
+                } else {
+                    this.items_start()
+                }
             })
             .refine_style(&self.style)
             .child(
@@ -175,18 +212,19 @@ impl RenderOnce for Message {
                     .min_w_0()
                     .items_end()
                     .gap_2()
-                    .when(alignment == MessageAlignment::End, |this| {
-                        this.flex_row_reverse()
-                    })
+                    .when(is_right, |this| this.flex_row_reverse())
                     .when_some(self.avatar, |this, avatar| this.child(avatar))
                     .child(
                         v_flex()
                             .w_full()
                             .min_w_0()
                             .gap(rems(0.625))
-                            .map(|this| match alignment {
-                                MessageAlignment::Start => this.items_start(),
-                                MessageAlignment::End => this.items_end(),
+                            .map(|this| {
+                                if is_right {
+                                    this.items_end()
+                                } else {
+                                    this.items_start()
+                                }
                             })
                             .refine_style(&stack_style)
                             .when_some(self.header, |this, header| {
@@ -203,14 +241,18 @@ impl RenderOnce for Message {
                         .with_inherited_content_inset(!has_ghost_bubble)
                         // Align the footer with the content column: the
                         // avatar's shared `size-8` baseline plus the row gap.
-                        .when(has_avatar && alignment == MessageAlignment::Start, |this| {
-                            this.ml(rems(2.5))
-                        })
-                        .when(has_avatar && alignment == MessageAlignment::End, |this| {
-                            this.mr(rems(2.5))
-                        }),
+                        .when(has_avatar && !is_right, |this| this.ml(rems(2.5)))
+                        .when(has_avatar && is_right, |this| this.mr(rems(2.5))),
                 )
-            })
+            });
+
+        // `role` lives on the stateful element: accessibility nodes need the
+        // stable identity that only an element id provides.
+        match (self.id, role) {
+            (Some(id), RoleOverride::Role(role)) => row.id(id).role(role).into_any_element(),
+            (Some(id), _) => row.id(id).into_any_element(),
+            (None, _) => row.into_any_element(),
+        }
     }
 }
 
@@ -324,6 +366,7 @@ impl RenderOnce for MessageHeader {
         let tokens = cx.theme().semantic_tokens();
 
         h_flex()
+            .flex_row_dir(cx)
             .max_w_full()
             .min_w_0()
             .gap_1()
@@ -393,15 +436,19 @@ impl Styled for MessageContent {
 }
 
 impl RenderOnce for MessageContent {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let is_right = self.alignment.is_right(cx);
         v_flex()
             .w_full()
             .max_w_full()
             .min_w_0()
             .gap(rems(0.625))
-            .map(|this| match self.alignment {
-                MessageAlignment::Start => this.items_start(),
-                MessageAlignment::End => this.items_end(),
+            .map(|this| {
+                if is_right {
+                    this.items_end()
+                } else {
+                    this.items_start()
+                }
             })
             .refine_style(&self.style)
             .children(self.children)
@@ -461,6 +508,7 @@ impl RenderOnce for MessageFooter {
         let tokens = cx.theme().semantic_tokens();
 
         h_flex()
+            .flex_row_dir(cx)
             .max_w_full()
             .min_w_0()
             .gap_1()
@@ -497,6 +545,12 @@ mod tests {
         assert!(message.footer.is_some());
         assert_eq!(message.header.as_ref().unwrap().content_inset, Some(false));
         assert_eq!(message.footer.as_ref().unwrap().content_inset, Some(false));
+        assert!(message.id.is_none());
+        assert_eq!(message.role, RoleOverride::default());
+
+        let row = Message::new().id("message-1").role(gpui::Role::ListItem);
+        assert_eq!(row.id, Some("message-1".into()));
+        assert_eq!(row.role, RoleOverride::Role(gpui::Role::ListItem));
 
         let group = MessageGroup::new().child("First").child("Second");
         assert_eq!(group.children.len(), 2);

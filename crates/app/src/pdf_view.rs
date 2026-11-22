@@ -2494,9 +2494,6 @@ pub(crate) mod tests {
                     .child(rich_preview::render_comparison(
                         comparison, false, opener, self.width, window, cx,
                     ))
-                    // The page number's dialog, drawn as the app's root view
-                    // draws it.
-                    .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
             }
         }
 

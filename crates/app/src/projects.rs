@@ -3505,7 +3505,8 @@ mod tests {
     /// One key event as the platform delivers it, with no idle pass after
     /// it: `stroke` going down, marked held or not, or with `None` its key-up.
     fn key(cx: &mut VisualTestContext, stroke: &str, down: Option<bool>) {
-        let keystroke = Keystroke::parse(stroke).expect("a keystroke");
+        let keystroke =
+            Keystroke::parse_with_os(stroke, crate::shortcuts::host_os()).expect("a keystroke");
         let input = match down {
             Some(is_held) => PlatformInput::KeyDown(KeyDownEvent {
                 keystroke,

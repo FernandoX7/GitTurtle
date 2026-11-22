@@ -302,11 +302,12 @@ impl Site {
                     .debug_bounds("new-git-profile")
                     .expect("Git profiles' New profile…");
                 if new.bottom() > body.bottom() {
-                    cx.simulate_event(ScrollWheelEvent {
+                    cx.simulate_event(ScrollEvent {
                         position: body.center(),
                         delta: ScrollDelta::Pixels(point(px(0.), body.bottom() - new.bottom())),
                         modifiers: Modifiers::default(),
                         touch_phase: TouchPhase::Moved,
+                        source: Default::default(),
                     });
                     width_walk::frame(cx);
                 }

@@ -40,7 +40,8 @@ const TIMINGS: [Timing; 4] = [
 
 /// A press of `key` going down, or coming up.
 fn key(key: &str, down: bool) -> PlatformInput {
-    let keystroke = Keystroke::parse(key).expect("a keystroke");
+    let keystroke =
+        Keystroke::parse_with_os(key, crate::shortcuts::host_os()).expect("a keystroke");
     if down {
         PlatformInput::KeyDown(KeyDownEvent {
             keystroke,
@@ -236,6 +237,9 @@ fn run_from_the_palette(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, com
     deliver(cx, key("enter", true));
     deliver(cx, key("enter", false));
     reads_land(app, cx);
+    cx.executor()
+        .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+    draw(cx);
     assert!(dialog_open(cx), "{command} opens its dialog");
 }
 

@@ -4744,7 +4744,7 @@ const EDITOR_PADDING: Pixels = px(8.);
 /// would end; Compare's gutter takes their place. Each Changes row starts its text this far
 /// after its gutter. Counting only the padding, Changes' text began 10 px before Source's.
 fn source_text_inset() -> Pixels {
-    gpui_kit::component::Size::default().input_px()
+    gpui_kit::component::Size::default().input_px().min(px(6.))
         + gpui_kit::base::input::LINE_NUMBER_RIGHT_MARGIN
 }
 /// A Changes row's height: one of Source's lines, the kit editor's [`EDITOR_LINE_HEIGHT`]
@@ -7177,7 +7177,8 @@ mod tests {
     /// One key event as the platform delivers it, with no idle pass after it: `stroke` going
     /// down, marked held or not, or with `None` its key-up.
     fn key(cx: &mut gpui_kit::VisualTestContext, stroke: &str, down: Option<bool>) {
-        let keystroke = gpui::Keystroke::parse(stroke).expect("a keystroke");
+        let keystroke = gpui::Keystroke::parse_with_os(stroke, crate::shortcuts::host_os())
+            .expect("a keystroke");
         let input = match down {
             Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                 keystroke,

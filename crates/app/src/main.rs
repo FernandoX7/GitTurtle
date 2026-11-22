@@ -768,6 +768,10 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Register window-wide action forwarding above Root's sibling layers so
+        // Refresh and window controls still dispatch while a dialog or sheet
+        // holds focus.
+        gpui_kit::base::Root::register_plugin(cx, |_, _| views::WindowActionHost);
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(views::SEARCH_PLACEHOLDERS[0]));
         let nav_search =
@@ -2299,7 +2303,7 @@ impl GitTurtle {
             .replace(self.page)
             .is_some_and(|drawn| drawn != self.page)
         {
-            gpui_kit::component::Root::hide_tooltip(window, cx);
+            gpui_kit::component::hide_tooltip(window, cx);
         }
     }
     fn select_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -3678,8 +3682,8 @@ fn main() {
             .flatten()
     });
     gpui_kit::application().with_assets(Assets).run(move |cx| {
-        gpui_kit::init(cx);
         desktop_text::register_bundled_fonts(cx);
+        gpui_kit::init(cx);
         // The person's Reduce motion and Increase contrast, before the first
         // resolution, so the first frame already has them.
         native_accessibility::set_display_choices(&preferences.settings, cx);

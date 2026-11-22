@@ -1334,7 +1334,7 @@ impl Render for DiffView {
             .top_0()
             .w(px(width))
             .h_full()
-            .on_scroll_wheel(move |event, _, cx| {
+            .on_scroll(move |event, _, cx| {
                 scroll_editor.update(cx, |state, cx| {
                     let (Some(line_height), Some(text_bounds)) =
                         (state.line_height(), state.text_bounds())
@@ -1521,7 +1521,7 @@ fn trace_editor_paint(
     let label = label.clone();
     // Capture sees events before the editor's ordinary bubble listener can
     // consume them. The observer never changes focus, offsets or propagation.
-    window.on_mouse_event(move |event: &gpui_kit::ScrollWheelEvent, phase, _, cx| {
+    window.on_mouse_event(move |event: &gpui_kit::ScrollEvent, phase, _, cx| {
         if phase != gpui_kit::DispatchPhase::Capture
             || (!input_bounds.contains(&event.position) && !gutter_bounds.contains(&event.position))
         {
@@ -2956,7 +2956,8 @@ mod tests {
             fn press(&self, cx: &mut VisualTestContext, keys: &str) {
                 for key in keys.split(' ') {
                     cx.simulate_keystrokes(key);
-                    let keystroke = gpui::Keystroke::parse(key).unwrap();
+                    let keystroke =
+                        gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap();
                     cx.simulate_event(gpui::KeyUpEvent { keystroke });
                 }
                 crate::tags::tests::draw(cx);
@@ -3298,7 +3299,7 @@ mod tests {
                 let at = shown.at.clone();
                 let first = shown.first();
                 let three: Vec<_> = (first..first + 3).map(|row| shown.id(row)).collect();
-                shown.press(cx, "shift-down shift-down");
+                shown.press(cx, "shift-down shift-down shift-right");
                 assert_eq!(shown.caret(cx), first + 2, "{at}");
                 shown.press(cx, "space");
                 assert_eq!(shown.selected(cx), three, "{at}");
@@ -3318,7 +3319,7 @@ mod tests {
                 shown.press(cx, "space");
                 assert_eq!(shown.selected(cx), [three[1]], "{at}");
                 shown.caret_to(cx, first);
-                shown.press(cx, "shift-down shift-down space");
+                shown.press(cx, "shift-down shift-down shift-right space");
                 assert_eq!(shown.selected(cx), three, "{at}");
             }
         }
@@ -3727,7 +3728,7 @@ mod tests {
                 let shown = Shown::at(&app, cx, size);
                 let at = shown.at.clone();
                 let first = shown.first();
-                shown.press(cx, "shift-down shift-left");
+                shown.press(cx, "shift-down");
                 assert_eq!(
                     shown.caret(cx),
                     first + 1,

@@ -1,4 +1,3 @@
-use crate::disabled_focus::track_control_focus;
 use crate::input::InputState;
 use std::rc::Rc;
 
@@ -75,11 +74,8 @@ pub fn color_channels(color: Hsla) -> [u32; 4] {
 
 /// Formats a color as `#RRGGBB`, or `#RRGGBBAA` when it is translucent.
 ///
-/// GitTurtle patch: each channel is rounded ([`color_channels`]), as a value
-/// saved as RGB is, so what a field shows, a screen reader says and a save
-/// writes agree, and formatting a parsed value gives it back. Upstream
-/// truncated, so committing a field's text unedited saved a step lower each
-/// time.
+/// GitTurtle patch: exported helper shared with `gpui-component` using
+/// [`color_channels`] so field text, swatch labels, and saved values agree.
 pub fn color_hex(color: Hsla) -> String {
     let [r, g, b, a] = color_channels(color);
     if a < 255 {
@@ -87,6 +83,11 @@ pub fn color_hex(color: Hsla) -> String {
     } else {
         format!("#{r:02X}{g:02X}{b:02X}")
     }
+}
+
+/// Formats a color as `#RRGGBB`, or `#RRGGBBAA` when it is translucent.
+fn hex_string(color: Hsla) -> String {
+    color_hex(color)
 }
 
 /// Events emitted by a [`ColorPickerState`].
@@ -187,7 +188,6 @@ pub struct ColorPickerState {
     /// A builder-supplied value cannot reach the sliders without a `Window`,
     /// so the first render flushes it through [`Self::sync_pending_value`].
     needs_slider_sync: bool,
-    suppress_input_change: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -203,10 +203,6 @@ impl ColorPickerState {
             window,
             |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
-                    if this.suppress_input_change {
-                        this.suppress_input_change = false;
-                        return;
-                    }
                     let value = input.read(cx).value();
                     if this.preview_hex(value.as_str(), window, cx) {
                         let color = this.preview.expect("valid hex leaves a preview");
@@ -246,7 +242,6 @@ impl ColorPickerState {
             hex_input,
             sliders,
             needs_slider_sync: false,
-            suppress_input_change: false,
             _subscriptions: subscriptions,
         }
     }
@@ -433,11 +428,10 @@ impl ColorPickerState {
         cx.notify();
     }
 
-    /// Writes the hex field, suppressing the change it would otherwise feed
-    /// back through `Hsla` → hex → `Hsla` and lose precision to.
+    /// Writes the hex field. `InputState::set_value` emits no change event,
+    /// so nothing feeds back, and the next typed edit still previews.
     fn write_hex_input(&mut self, value: Option<Hsla>, window: &mut Window, cx: &mut App) {
-        self.suppress_input_change = true;
-        let text = value.map(color_hex).unwrap_or_default();
+        let text = value.map(hex_string).unwrap_or_default();
         self.hex_input
             .update(cx, |input, cx| input.set_value(text, window, cx));
     }
@@ -750,7 +744,7 @@ impl RenderOnce for ColorSwatch {
         let selected = self.selected;
         let label = self
             .accessibility_label
-            .unwrap_or_else(|| color_hex(color).into());
+            .unwrap_or_else(|| hex_string(color).into());
         let focus_handle = self.provided_focus_handle.clone().unwrap_or_else(|| {
             window
                 .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
@@ -771,17 +765,13 @@ impl RenderOnce for ColorSwatch {
                 Toggled::False
             })
             .aria_selected(selected)
-            // GitTurtle patch: while focused, a disabled control keeps its
-            // handle as a target that is not a tab stop, so Tab and Shift+Tab
-            // still leave it (`disabled_focus`).
-            .map(|this| {
-                track_control_focus(
-                    this,
-                    focus_handle,
-                    disabled,
-                    self.tab_index,
-                    self.tab_stop,
-                    window,
+            // GitTurtle patch: keep the current focus in the dispatch tree when
+            // activation disables this control, so Tab can still leave in either direction.
+            .when(!disabled || focus_handle.is_focused(window), |this| {
+                this.track_focus(
+                    &focus_handle
+                        .tab_index(self.tab_index)
+                        .tab_stop(self.tab_stop && !disabled),
                 )
             })
             .when_some(
@@ -810,7 +800,7 @@ mod tests {
     #[test]
     fn parses_every_supported_hex_width() {
         let white = parse_hex("#fff").unwrap();
-        assert_eq!(color_hex(white), "#FFFFFF");
+        assert_eq!(hex_string(white), "#FFFFFF");
         assert_eq!(parse_hex("ffffff"), Some(white));
 
         let half = parse_hex("#ff000080").unwrap();
@@ -827,8 +817,8 @@ mod tests {
 
     #[test]
     fn formats_alpha_only_when_translucent() {
-        assert_eq!(color_hex(hsla(0., 1., 0.5, 1.)), "#FF0000");
-        assert_eq!(color_hex(hsla(0., 1., 0.5, 0.5)), "#FF000080");
+        assert_eq!(hex_string(hsla(0., 1., 0.5, 1.)), "#FF0000");
+        assert_eq!(hex_string(hsla(0., 1., 0.5, 0.5)), "#FF000080");
     }
 
     /// GitTurtle patch: a value formatted after parsing is the value parsed,
@@ -888,6 +878,26 @@ mod tests {
         });
         state.read_with(cx, |state, _| {
             assert_eq!(state.displayed_color(), Some(committed));
+        });
+    }
+
+    #[gpui::test]
+    fn first_hex_edit_after_set_value_previews(cx: &mut TestAppContext) {
+        let (state, cx) = state(cx);
+        cx.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                state.set_value(hsla(0., 1., 0.5, 1.), window, cx)
+            });
+            // A typed edit: new text and the change event it brings.
+            let input = state.read(cx).hex_input().clone();
+            input.update(cx, |input, cx| {
+                input.set_value("#00FF00", window, cx);
+                cx.emit(InputEvent::Change);
+            });
+        });
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.preview().map(hex_string).as_deref(), Some("#00FF00"));
         });
     }
 

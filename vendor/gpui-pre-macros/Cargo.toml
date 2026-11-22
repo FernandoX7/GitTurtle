@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-pre-macros"
-version = "0.3.4"
+version = "0.3.12"
 build = false
 publish = true
 autolib = false
@@ -20,7 +20,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Macros used by gpui (gpui-pre snapshot of zed@6916400)"
+description = "Macros used by gpui (gpui-pre snapshot of zed@d2a4fb6)"
 readme = false
 license = "Apache-2.0"
 repository = "https://github.com/zed-industries/zed"
@@ -29,7 +29,7 @@ resolver = "2"
 [package.metadata.gpui-pre]
 zed-crate = "gpui_macros"
 zed-version = "0.1.0"
-zed-rev = "69164008341295ad481bb11c0334a712ca8c23e3"
+zed-rev = "d2a4fb6ded7c470be25d1541281da3882495b65b"
 
 [features]
 inspector = []
@@ -37,6 +37,7 @@ inspector = []
 [lib]
 name = "gpui_macros"
 path = "src/gpui_macros.rs"
+test = false
 doctest = true
 proc-macro = true
 
@@ -65,12 +66,14 @@ version = "1.0.93"
 version = "1.0.9"
 
 [dependencies.syn]
-version = "2.0.101"
+version = "2.0"
 features = [
+    "proc-macro",
     "full",
     "extra-traits",
     "visit-mut",
 ]
+default-features = true
 
 [lints.clippy]
 dbg_macro = "deny"

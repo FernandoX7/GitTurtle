@@ -525,6 +525,9 @@ pub(crate) async fn open_dialog<O: Opened>(
     // app settles.
     app.read_with(cx, |app, _| app.operations.drain());
     views::tests::settle(app, cx).await;
+    cx.executor()
+        .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+    draw(cx, 1);
     assert!(
         cx.update(|window, cx| window.has_active_dialog(cx)),
         "{surface} opens"

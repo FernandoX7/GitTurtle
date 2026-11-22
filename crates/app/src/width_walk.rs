@@ -1298,6 +1298,11 @@ pub(crate) async fn open(
         }
     };
     settle(&app, cx).await;
+    if page == Page::GitHub {
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        frame(cx);
+    }
     // The status strip names how long the last read took, so the width its
     // line takes, and where GPUI's ellipsis lets a truncated line end up to
     // a pixel past its box, changed from run to run; the walk reads it with

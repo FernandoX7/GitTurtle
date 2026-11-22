@@ -1696,11 +1696,12 @@ pub(crate) mod tests {
         // the view, the field above it out of sight.
         let panel = cx.debug_bounds("github-panel").expect("the panel");
         let scroll = |cx: &mut VisualTestContext, by: Pixels| {
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: panel.center(),
                 delta: ScrollDelta::Pixels(point(px(0.), by)),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             draw(cx);
         };

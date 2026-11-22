@@ -20,7 +20,12 @@ const NEXT_BLOCK: &str = "primary-alt-down";
 /// (`Some(false)`) or neither.
 fn block_step(keystroke: &Keystroke) -> Option<bool> {
     let modifiers = &keystroke.modifiers;
-    if !(modifiers.secondary() && modifiers.alt && !modifiers.shift) {
+    let secondary = if cfg!(target_os = "macos") {
+        modifiers.platform
+    } else {
+        modifiers.control
+    };
+    if !(secondary && modifiers.alt && !modifiers.shift) {
         return None;
     }
     match keystroke.key.as_str() {
@@ -480,7 +485,7 @@ impl ConflictView {
             self.accepted_draft = value.clone();
             let editor = cx.new(|cx| {
                 TextareaState::new(window, cx)
-                    .rows(10)
+                    .rows(LEAST_DRAFT_LINES as usize)
                     .default_value(value.clone())
             });
             self.resolution_subscription =
@@ -2998,10 +3003,11 @@ mod tests {
             body.take_painted();
         };
         let step = |cx: &mut VisualTestContext, previous: bool| {
+            let secondary = cx.read(Modifiers::secondary_key);
             let keystroke = Keystroke {
                 modifiers: Modifiers {
                     alt: true,
-                    ..Modifiers::secondary_key()
+                    ..secondary
                 },
                 key: if previous { "up" } else { "down" }.into(),
                 key_char: None,
@@ -3509,14 +3515,17 @@ mod tests {
     #[test]
     fn the_advertised_block_keys_step_between_blocks() {
         let parse = |key: &str| {
-            Keystroke::parse(&key.replace(
-                "primary",
-                if cfg!(target_os = "macos") {
-                    "cmd"
-                } else {
-                    "ctrl"
-                },
-            ))
+            Keystroke::parse_with_os(
+                &key.replace(
+                    "primary",
+                    if cfg!(target_os = "macos") {
+                        "cmd"
+                    } else {
+                        "ctrl"
+                    },
+                ),
+                crate::shortcuts::host_os(),
+            )
             .unwrap()
         };
         assert_eq!(block_step(&parse(PREVIOUS_BLOCK)), Some(true));

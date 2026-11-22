@@ -966,7 +966,9 @@ impl GitTurtle {
         // for (`StashBrowser::new`).
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
-                .at_rest(returning)
+                .when(returning, |dialog| {
+                    dialog.entrance(gpui_kit::component::dialog::DialogEntrance::None)
+                })
                 .title(native_accessibility::dialog_title(
                     "stashes-title",
                     "Stashes",
@@ -4470,6 +4472,9 @@ mod tests {
         // on the browser's own threads.
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
         landed(&app, cx, "saved-stash-row-0");
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        draw(cx);
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
         cx.simulate_keystrokes("home");
@@ -4716,6 +4721,9 @@ mod tests {
         fixture_git(&root, &["stash", "push", "-m", "kept for later"]);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
         landed(&app, cx, "saved-stash-row-0");
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        draw(cx);
         for interface in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(490.)));
@@ -4812,6 +4820,9 @@ mod tests {
         draw(cx);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
         landed(&app, cx, "saved-stash-row-0");
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        draw(cx);
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
         landed(&app, cx, "stash-file-0");
@@ -5542,6 +5553,9 @@ mod tests {
         draw(cx);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
         landed(&app, cx, "saved-stash-row-0");
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        draw(cx);
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
         landed(&app, cx, "stash-file-0");
@@ -5868,7 +5882,8 @@ mod tests {
         };
         // A whole press: the keyboard's click waits for the key up.
         let press = |cx: &mut VisualTestContext, key: &str| {
-            let keystroke = gpui::Keystroke::parse(key).expect("a keystroke");
+            let keystroke = gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                .expect("a keystroke");
             cx.simulate_event(gpui::KeyDownEvent {
                 keystroke: keystroke.clone(),
                 is_held: false,
@@ -6060,6 +6075,9 @@ mod tests {
         draw(cx);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
         landed(&app, cx, "saved-stash-row-0");
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        draw(cx);
         let browser = app
             .read_with(cx, |app, _| app.recovery.browser.clone())
             .and_then(|browser| browser.upgrade())

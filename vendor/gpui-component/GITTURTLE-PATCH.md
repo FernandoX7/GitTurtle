@@ -1,8 +1,32 @@
-# GitTurtle patch to gpui-component 0.6.0
+# GitTurtle patch to gpui-component 0.10.0
 
-This directory contains the exact crates.io `gpui-component` 0.6.0 source under Apache-2.0. `LICENSE-APACHE` is byte-for-byte preserved, and `.cargo_vcs_info.json` identifies published source revision `94a313a72a2513aee2780240cd322d552b2395f0` (`crates/component`). The registry archive checksum is `9bd7938c395be32cea6127b92f7206501ad1fe7e121a609de1aafdedcb4d98be`. Dependency versions are unchanged. The registry-only `.cargo-ok`, `.cargo-checksum.json`, and package lockfile are omitted; GitTurtle uses the workspace lockfile. `upstream-files/` adds two files of that revision's repository that the package omits and the crate's tests include, test data only, described in the test-layout part at the end of this note.
+This directory contains the crates.io `gpui-component` 0.10.0 source under Apache-2.0. `LICENSE-APACHE` is byte-for-byte preserved, `.cargo_vcs_info.json` identifies published source revision `f697c3133d55c64fa8a5b67926147fb3dadd276d` (`crates/component`), and the registry archive checksum is `607c90f6985ac2b96e54102338994eaea143aff521375c6f9e7fc7ecb3ba3646`. Dependency versions are unchanged. The registry-only `.cargo-ok`, `.cargo-checksum.json`, and package lockfile are omitted; GitTurtle uses the workspace lockfile. `upstream-files/` holds files of the upstream repository outside the package that the crate's unit tests include (`examples/fixtures/test.md`, `themes/aurora.json`, `crates/assets/assets/icons/arrow-up.svg`, `crates/assets/assets/icons/search.svg`).
 
-The input patch modifies `src/input/input.rs` and `src/input/state.rs`. The styled Input previously attached its role, name, author identifier, placeholder, value and SetValue action to the surrounding frame, while the shared text editing state owned the active keyboard FocusHandle on a different element without a role. GPUI 0.3.4 only records a focused accessibility node when that same element has a node; otherwise its tree falls back to the window root. This was a separate source defect from the macOS first-responder adapter attachment.
+## 0.10.0 rebase summary
+
+When rebasing the 0.6.0 patch set onto `gpui-component` 0.10.0:
+
+- **Dropped (upstreamed or retired in 0.10.0):**
+  - Core `Input` accessibility projection (`src/input/state.rs` reverted to pristine 0.10.0; `src/input/input.rs` keeps only `aria_description`, `PlaceholderFit`/`accessible_placeholder`, `disabled_input_background`, `input_outline`, and `apply_focus_ring`).
+  - `Button::track_focus` and disabled-focus retention in `src/button/button.rs`.
+  - `Popover::trigger_style` wrapper in `src/popover.rs`.
+  - `Root` focus-trap >100-stop patch (moved into `gpui-base` 0.10.0).
+  - Weak-ref entity cycle fixes in `src/menu/context_menu.rs` and `src/menu/dropdown_menu.rs` (kept in `src/menu/app_menu_bar.rs`, `src/input/popovers/hover_popover.rs`, `src/input/popovers/code_action_menu.rs`, and `src/input/popovers/completion_menu.rs`, where 0.10.0 still holds strong handles).
+  - `std::usize` import warning fix in `src/highlighter/highlighter.rs` (kept the `deadline: Option<Duration>` injection parse budget fix, since 0.10.0 still sets an unconditional 20 ms timeout).
+  - `Dialog::at_rest` / `AlertDialog::at_rest` (retired in favor of upstream `DialogEntrance::None`).
+- **Adapted to 0.10.0 architecture:**
+  - `src/root.rs` and `src/window_ext.rs`: `gpui_component::Root` is now `pub use gpui_base::Root;` with overlays owned by `WindowState` (`RootPlugin`). `WindowState` dialog/sheet open and close transitions also notify `Root` so application observers of `window.root::<Root>()` keep reacting to modal transitions, and closing dialogs disable exit-animation persistence (`exit_enabled`) so a closed modal leaves hitboxes immediately. `hide_tooltip(window: &Window, cx: &mut App)` (re-exported at crate root) and `WindowExt::hide_tooltip(&self, cx: &mut App)` close `WindowState`'s tooltip overlay cleanly.
+  - `src/dialog/dialog.rs` & `src/dialog/title.rs`: preserves caller absolute `.max_h(...)` caps alongside 0.10.0's viewport clamp, subtracts nested `LAYER_OFFSET` from caller height caps when stacked, aligns `BaseDialogRoot` to top-left (`.items_start().justify_start()`) so `Positioner::corner` stays at layout origin `(0, 0)` without half-pixel height-parity drift, and keeps `DialogTitle`'s `.line_height(relative(1.))` for compact narrow dialog heights.
+  - `src/styled.rs` & `src/popover.rs`: rebased `Theme::popover_edge`, `popover_ring`, `POPOVER_EDGE_WIDTH`, `popup_fill_margin`, and `ClearOfOpener` onto upstream's `popover_ring`/`popover_shadow` helpers.
+  - `src/menu/popup_menu.rs`: adapted submenu `open_left` to flip only when the opposite side fits or has strictly more room, and split `CONFIRM_KEYS_MAC` / `CONFIRM_KEYS_OTHER` for `gpui-pre 0.3.12`'s `Keystroke::parse` `'static` bound.
+  - `src/theme/mono_font.rs`: preserves the platform default monospace font when `installed_font_names(cx).is_empty()` (such as under GPUI's `TestTextSystem`).
+  - `src/color_picker.rs`: preserved 0.10.0's `ColorSelect` / `field` styling while rebasing `SwatchGrid`, `ClosingWatch`, held-Enter filtering, and accessible channel/swatch naming.
+
+The historical section-by-section rationale from the 0.6.0 series follows below for reference.
+
+---
+
+The input patch originally modified `src/input/input.rs` and `src/input/state.rs`. The styled Input previously attached its role, name, author identifier, placeholder, value and SetValue action to the surrounding frame, while the shared text editing state owned the active keyboard FocusHandle on a different element without a role. GPUI 0.3.4 only records a focused accessibility node when that same element has a node; otherwise its tree falls back to the window root. This was a separate source defect from the macOS first-responder adapter attachment.
 
 The component now projects its resolved metadata to `gpui-base::input::InputBaseState` through the matching local base patch. The existing editing element exposes the field semantics and SetValue action. The frame keeps its distinct focus handle for containment and focus-ring behavior and becomes presentational. Input, Textarea and Editor continue to use their existing shared editing engine, key bindings, selection and focus handle. No duplicate focus handle registration or native focus changes are introduced.
 

@@ -135,6 +135,25 @@
     "note": "The alloc-stdlib crate lives in the alloc-stdlib directory of the alloc-no-stdlib repository and ships no license file; the repository's LICENSE at the archive's revision covers it."
   },
   {
+    "name": "anes",
+    "version": "0.1.6",
+    "license": "MIT OR Apache-2.0",
+    "repository": "zrzka/anes-rs",
+    "revision": "378ac7461ecac29fde9e10df7b08359d1315a9ad",
+    "files": [
+      {
+        "path": "texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt",
+        "url": "https://raw.githubusercontent.com/zrzka/anes-rs/378ac7461ecac29fde9e10df7b08359d1315a9ad/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt",
+        "url": "https://raw.githubusercontent.com/zrzka/anes-rs/378ac7461ecac29fde9e10df7b08359d1315a9ad/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      }
+    ]
+  },
+  {
     "name": "block2",
     "version": "0.5.1",
     "license": "MIT",
@@ -206,28 +225,29 @@
   },
   {
     "name": "gpui-kit",
-    "version": "0.6.0",
+    "version": "0.10.0",
     "license": "Apache-2.0",
     "repository": "longbridge/gpui-kit",
-    "revision": "94a313a72a2513aee2780240cd322d552b2395f0",
+    "revision": "f697c3133d55c64fa8a5b67926147fb3dadd276d",
     "files": [
       {
         "path": "texts/d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811.txt",
-        "url": "https://raw.githubusercontent.com/longbridge/gpui-kit/94a313a72a2513aee2780240cd322d552b2395f0/LICENSE-APACHE",
+        "url": "https://raw.githubusercontent.com/longbridge/gpui-kit/f697c3133d55c64fa8a5b67926147fb3dadd276d/LICENSE-APACHE",
         "sha256": "d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811"
       }
     ]
   },
   {
     "name": "gpui-kit-assets",
-    "version": "0.6.0",
+    "version": "0.10.0",
     "license": "Apache-2.0",
     "repository": "longbridge/gpui-kit",
-    "revision": "6d802393b4f247c11777aa27c7a46504a1b46d30",
+    "revision": "f697c3133d55c64fa8a5b67926147fb3dadd276d",
+    "note": "The published crate includes LICENSE-LUCIDE for the bundled icons but omits the repository's LICENSE-APACHE covering the Rust crate itself.",
     "files": [
       {
         "path": "texts/d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811.txt",
-        "url": "https://raw.githubusercontent.com/longbridge/gpui-kit/6d802393b4f247c11777aa27c7a46504a1b46d30/LICENSE-APACHE",
+        "url": "https://raw.githubusercontent.com/longbridge/gpui-kit/f697c3133d55c64fa8a5b67926147fb3dadd276d/LICENSE-APACHE",
         "sha256": "d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811"
       }
     ]
@@ -761,6 +781,34 @@
     ]
   },
   {
+    "name": "objc2-security",
+    "version": "0.3.2",
+    "license": "Zlib OR Apache-2.0 OR MIT",
+    "repository": "madsmtm/objc2",
+    "revision": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+    "files": [
+      {
+        "path": "texts/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+        "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+        "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+      }
+    ]
+  },
+  {
+    "name": "objc2-uniform-type-identifiers",
+    "version": "0.3.2",
+    "license": "Zlib OR Apache-2.0 OR MIT",
+    "repository": "madsmtm/objc2",
+    "revision": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+    "files": [
+      {
+        "path": "texts/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+        "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+        "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+      }
+    ]
+  },
+  {
     "name": "objc2-user-notifications",
     "version": "0.3.2",
     "license": "Zlib OR Apache-2.0 OR MIT",
@@ -810,6 +858,44 @@
         "path": "texts/0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720.txt",
         "url": "https://raw.githubusercontent.com/servo/pathfinder/6c3c0466f451c5bd2007087728cd168798cd64e8/LICENSE-MIT",
         "sha256": "0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720"
+      }
+    ]
+  },
+  {
+    "name": "perf-event-open-sys2",
+    "version": "5.0.6",
+    "license": "MIT OR Apache-2.0",
+    "repository": "Phantomical/perf-event",
+    "revision": "6e5e01cfec051b6ed683376bbd27be2198c4fca0",
+    "files": [
+      {
+        "path": "texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt",
+        "url": "https://raw.githubusercontent.com/Phantomical/perf-event/6e5e01cfec051b6ed683376bbd27be2198c4fca0/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt",
+        "url": "https://raw.githubusercontent.com/Phantomical/perf-event/6e5e01cfec051b6ed683376bbd27be2198c4fca0/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      }
+    ]
+  },
+  {
+    "name": "perf-event2",
+    "version": "0.7.4",
+    "license": "MIT OR Apache-2.0",
+    "repository": "Phantomical/perf-event",
+    "revision": "aa2a46d2929f6b063dfb6be71881977dd79dc83f",
+    "files": [
+      {
+        "path": "texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt",
+        "url": "https://raw.githubusercontent.com/Phantomical/perf-event/aa2a46d2929f6b063dfb6be71881977dd79dc83f/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt",
+        "url": "https://raw.githubusercontent.com/Phantomical/perf-event/aa2a46d2929f6b063dfb6be71881977dd79dc83f/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
       }
     ]
   },
@@ -953,14 +1039,14 @@
   },
   {
     "name": "taffy",
-    "version": "0.13.0",
+    "version": "0.15.1",
     "license": "MIT",
     "repository": "DioxusLabs/taffy",
-    "revision": "45a56299d366ddb383e593a1f0372158d00e8530",
+    "revision": "0064bd54cbe38bf1d8bcd6ec6ab0704d45fb048a",
     "files": [
       {
         "path": "texts/f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a.txt",
-        "url": "https://raw.githubusercontent.com/DioxusLabs/taffy/45a56299d366ddb383e593a1f0372158d00e8530/LICENSE",
+        "url": "https://raw.githubusercontent.com/DioxusLabs/taffy/0064bd54cbe38bf1d8bcd6ec6ab0704d45fb048a/LICENSE",
         "sha256": "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a"
       }
     ]

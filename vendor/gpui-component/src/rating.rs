@@ -1,5 +1,6 @@
 use crate::theme::ActiveTheme;
 use crate::{Disableable, Icon, IconName, Sizable, Size, StyledExt, h_flex};
+use gpui_base::LogicalStyledExt as _;
 use std::rc::Rc;
 
 use gpui::{
@@ -136,11 +137,12 @@ impl RenderOnce for Rating {
         let value = state.read(cx).value;
 
         h_flex()
+            .flex_row_dir(cx)
             .id(id)
             .flex_nowrap()
             .refine_style(&self.style)
             .on_hover(window.listener_for(&state, move |state, hovered, _, cx| {
-                if !hovered {
+                if !hovered && state.hovered_value != 0 {
                     state.hovered_value = 0;
                     cx.notify();
                 }
@@ -169,8 +171,10 @@ impl RenderOnce for Rating {
                                 this.on_mouse_move(window.listener_for(
                                     &state,
                                     move |state, _, _, cx| {
-                                        state.hovered_value = ix;
-                                        cx.notify();
+                                        if state.hovered_value != ix {
+                                            state.hovered_value = ix;
+                                            cx.notify();
+                                        }
                                     },
                                 ))
                                 .on_click({

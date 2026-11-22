@@ -348,24 +348,28 @@ impl Selection {
         canvas(
             |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
             move |bounds, hitbox, window, cx| {
-                selection.register(
-                    bounds,
-                    hitbox,
-                    scroll.scroll_px_offset_for_scrollbar(),
-                    window,
-                    cx,
-                )
+                let offset = scroll.scroll_px_offset_for_scrollbar();
+                let max = scroll.max_offset_for_scrollbar();
+                let above = offset.y < px(0.);
+                let below = max.y > px(0.) && -offset.y < max.y;
+                selection.register(bounds, hitbox, offset, above, below, window, cx)
             },
         )
         .absolute()
         .inset_0()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "drag-scroll helper takes explicit layout geometry and list scroll state"
+    )]
     fn register(
         &self,
         bounds: Bounds<Pixels>,
         hitbox: Hitbox,
         scroll: Point<Pixels>,
+        scrollable_above: bool,
+        scrollable_below: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -375,6 +379,7 @@ impl Selection {
         });
         let (runs, followed) = {
             let mut model = self.model.borrow_mut();
+            let scrolled = model.scroll != scroll;
             model.viewport = bounds;
             model.scroll = scroll;
             model.view = Some(window.current_view());
@@ -383,8 +388,9 @@ impl Selection {
             // The window resolved a held drag's cursor against the previous
             // frame. When the list scrolls under a still pointer, as
             // auto-scroll does before a release without a move, follow the
-            // pointer into the text this frame painted.
-            let cursor = (dragging && model.cursor.is_some())
+            // pointer into the text this frame painted. When no scroll
+            // occurred, leave a word/line multi-click selection intact.
+            let cursor = (dragging && scrolled && model.cursor.is_some())
                 .then(|| model.offset_at_window(window.mouse_position()))
                 .flatten()
                 .filter(|cursor| model.cursor != Some(*cursor));
@@ -401,6 +407,7 @@ impl Selection {
         self.handle.register(
             TextSelectionRegistration::new(hitbox, bounds)
                 .with_scroll_offset(scroll)
+                .with_scrollable(scrollable_above, scrollable_below)
                 .with_text_bounds(runs.iter().map(TextSelectionRun::bounds).collect()),
             window,
             cx,

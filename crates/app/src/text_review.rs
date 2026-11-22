@@ -2174,7 +2174,8 @@ mod tests {
     fn press(cx: &mut gpui::VisualTestContext, keys: &str) {
         for key in keys.split(' ') {
             cx.simulate_keystrokes(key);
-            let keystroke = gpui::Keystroke::parse(key).unwrap();
+            let keystroke =
+                gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap();
             cx.simulate_event(gpui::KeyUpEvent { keystroke });
         }
         crate::tags::tests::draw(cx);
@@ -4481,7 +4482,7 @@ mod tests {
 
     /// Sends `times` repeats of the held `key`, as `repeats` says.
     fn repeat_key(cx: &mut gpui::VisualTestContext, key: &str, repeats: Repeats, times: usize) {
-        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        let keystroke = gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap();
         let down = gpui::KeyDownEvent {
             keystroke: keystroke.clone(),
             is_held: matches!(repeats, Repeats::Held),
@@ -4512,7 +4513,7 @@ mod tests {
     /// Releases the held `key`, then draws, as the window does before a
     /// person presses a key again.
     fn release_key(cx: &mut gpui::VisualTestContext, key: &str) {
-        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        let keystroke = gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap();
         cx.simulate_event(gpui::KeyUpEvent { keystroke });
         crate::tags::tests::draw(cx);
     }

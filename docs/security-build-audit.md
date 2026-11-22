@@ -125,6 +125,19 @@ replaced `chrono` with `jiff 1.0.2` in `crates/app/src/main.rs` and
 `RUSTSEC-2026-0543` remains only in `.cargo/audit.toml` as a transitive GPUI
 toolkit dependency until the toolkit drops `chrono`.
 
+**Update, November 21, 2026 (GPUI Kit 0.10.0 / GPUI 0.3.12).** Upgraded the
+locked toolkit stack (`gpui-kit`, `gpui-base`, `gpui-component` 0.6.0 → 0.10.0
+and `gpui-pre` / `gpui-pre-linux` / `gpui-pre-macos` / `gpui-pre-macros`
+0.3.4 → 0.3.12). Upstream `gpui-pre-macos` migrated to `objc2`, removing
+`block`, `cocoa`, `cocoa-foundation`, `objc_exception`, `leak`, `leaky-cow`,
+and `bincode` from `gitturtle`'s packaged binary dependency graphs on Linux and
+macOS (`block`, `cocoa`, `cocoa-foundation`, `objc_exception`, and
+`rustls-pemfile` remain in `Cargo.lock` only on uncompiled optional/dev edges). `scripts/collect-third-party-licenses.py
+--require-complete` now passes on all four packaged targets (`x86_64` and
+`aarch64` on Linux and macOS) with supplemental notices pinned in
+`docs/licenses/dependencies.json`. `cargo deny --locked check` passes with zero
+ignored advisories.
+
 ## Source and native boundaries
 
 The workspace has no custom build scripts. The local GPUI component build script

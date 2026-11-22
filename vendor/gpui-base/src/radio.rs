@@ -8,7 +8,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{StateStyle, StyledExt as _, disabled_focus::track_control_focus};
+use crate::{StateStyle, StyledExt as _, TestSupportExt as _, a11y_disabled::A11yDisabledExt as _};
 
 type ChangeHandler = Rc<dyn Fn(bool, &ClickEvent, &mut Window, &mut App)>;
 
@@ -199,6 +199,7 @@ impl RenderOnce for Radio {
         let on_change = self.on_change;
 
         self.base
+            .test_support()
             .role(Role::RadioButton)
             .aria_toggled(if checked {
                 Toggled::True
@@ -216,17 +217,13 @@ impl RenderOnce for Radio {
                 this.aria_position_in_set(position)
             })
             .when_some(self.size_of_set, |this, size| this.aria_size_of_set(size))
-            // GitTurtle patch: while focused, a disabled control keeps its
-            // handle as a target that is not a tab stop, so Tab and Shift+Tab
-            // still leave it (`disabled_focus`).
-            .map(|this| {
-                track_control_focus(
-                    this,
-                    focus_handle,
-                    disabled,
-                    self.tab_index,
-                    self.tab_stop,
-                    window,
+            // Keep the current focus in the dispatch tree when activation
+            // disables this control, so Tab can still leave in either direction.
+            .when(!disabled || focus_handle.is_focused(window), |this| {
+                this.track_focus(
+                    &focus_handle
+                        .tab_index(self.tab_index)
+                        .tab_stop(self.tab_stop && !disabled),
                 )
             })
             .when_some(
@@ -239,6 +236,7 @@ impl RenderOnce for Radio {
             )
             .children(self.children)
             .refine_style(&style)
+            .a11y_disabled(disabled)
     }
 }
 

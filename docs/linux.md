@@ -128,7 +128,7 @@ statically, so `scripts/package-linux.sh` refuses to run while one is set.
 Install Rust through [rustup](https://rustup.rs/) if needed. The checked-in
 `rust-toolchain.toml` selects **Rust 1.100.0** with rustfmt and Clippy only for
 this checkout; other projects' default toolchains are unchanged. The workspace
-minimum is Rust 1.100. `Cargo.lock` pins the matching GPUI Kit 0.6.0 / GPUI 0.3.4
+minimum is Rust 1.100. `Cargo.lock` pins the matching GPUI Kit 0.10.0 / GPUI 0.3.12
 stack and local patches. Do not independently upgrade toolkit components or
 use Ubuntu's older packaged Rust in place of the selected toolchain.
 

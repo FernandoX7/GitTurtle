@@ -1686,11 +1686,12 @@ mod tests {
         // it stays.
         cx.simulate_mouse_move(error.center(), None, Modifiers::default());
         draw(cx);
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: error.center(),
             delta: ScrollDelta::Pixels(point(px(0.), px(2000.))),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: Default::default(),
         });
         draw(cx);
         park_pointer(cx);
@@ -2345,7 +2346,7 @@ mod tests {
         };
         let key = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
             cx.simulate_event(KeyDownEvent {
-                keystroke: Keystroke::parse(key).unwrap(),
+                keystroke: Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
                 is_held,
                 prefer_character_input: false,
             });
@@ -2438,7 +2439,7 @@ mod tests {
         };
         let up = |cx: &mut VisualTestContext, key: &str| {
             cx.simulate_event(KeyUpEvent {
-                keystroke: Keystroke::parse(key).unwrap(),
+                keystroke: Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
             });
             draw(cx);
         };
@@ -4019,11 +4020,12 @@ mod tests {
         let position = rendered(cx, "reflog-explanation").center();
         cx.simulate_mouse_move(position, None, Modifiers::default());
         draw(cx);
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position,
             delta: ScrollDelta::Pixels(point(px(0.), px(-2000.))),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: Default::default(),
         });
         draw(cx);
         assert_eq!(rendered(cx, "reflog-browser-content"), content);
@@ -4136,11 +4138,12 @@ mod tests {
         let position = rendered(cx, selector).center();
         cx.simulate_mouse_move(position, None, Modifiers::default());
         draw(cx);
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position,
             delta: ScrollDelta::Pixels(point(px(0.), px(-2000.))),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: Default::default(),
         });
         draw(cx);
         park_pointer(cx);

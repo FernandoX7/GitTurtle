@@ -6,10 +6,10 @@ These dependencies are selected by the root [Cargo.toml](../Cargo.toml) `[patch.
 | --- | --- |
 | `accesskit_atspi_common` | [GITTURTLE-PATCH.md](accesskit_atspi_common/GITTURTLE-PATCH.md) — Linux AT-SPI disabled states, modal-hidden page removal/restore, clip visibility/hit-test filtering, and bounded selectable-item cache retention |
 | `accesskit_unix` | [GITTURTLE-PATCH.md](accesskit_unix/GITTURTLE-PATCH.md) — Upstream #819 AT-SPI `AddAccessible` / `RemoveAccessible` cache signal signatures (remove once GPUI Linux upgrades to `accesskit_unix >= 0.24.1`) |
-| `gpui-base` | [GITTURTLE-PATCH.md](gpui-base/GITTURTLE-PATCH.md) — Accessibility (`DialogKind`, `TextRun` <=255-char splitting, disabled flags), dialog/input/Enter once-per-press semantics, popup/popover device-pixel clamping & bottom inset, blink-cursor stability, resizable fit, and text decorations |
-| `gpui-component` | [GITTURTLE-PATCH.md](gpui-component/GITTURTLE-PATCH.md) — Resolved theme/focus-ring/disabled tokens, control focus handles, menu keyboard/pointer/accessibility behavior, popup/dialog clamping & shadow masking, weak overlay callbacks, color picker roving focus, diff syntax roles, and `Icon::own_color` |
-| `gpui-pre-linux` | [GITTURTLE-PATCH.md](gpui-pre-linux/GITTURTLE-PATCH.md) — Wayland `zwp_text_input_v3` focus gating (upstreamed in `0.3.5+`) and fractional-scale `content_size` device-pixel rounding |
-| `gpui-pre-macos` | [README.gitturtle.md](gpui-pre-macos/README.gitturtle.md) — Demand-driven frames and macOS accessibility responder alignment |
+| `gpui-base` | [GITTURTLE-PATCH.md](gpui-base/GITTURTLE-PATCH.md) — Accessibility (`DialogKind`, `TextRun` <=255-char splitting, disabled flags, `accepts_text_input`), dialog/input/Enter once-per-press semantics, popup/popover device-pixel clamping & bottom inset, blink-cursor stability, resizable fit, `ColorSwatch::track_focus`, `TextSelectionRegistration::with_scrollable`, and text decorations |
+| `gpui-component` | [GITTURTLE-PATCH.md](gpui-component/GITTURTLE-PATCH.md) — Resolved theme/focus-ring/disabled tokens, menu keyboard/pointer/accessibility behavior, popup/dialog clamping, top-left alignment & shadow masking, weak overlay callbacks, color picker roving focus, diff syntax roles, `mono_font` empty-list guard, and `Icon::own_color` |
+| `gpui-pre-linux` | [GITTURTLE-PATCH.md](gpui-pre-linux/GITTURTLE-PATCH.md) — Wayland fractional-scale `content_size` device-pixel rounding (the previous zed#63776 Wayland text-input backport is upstream in `0.3.12`) |
+| `gpui-pre-macos` | [README.gitturtle.md](gpui-pre-macos/README.gitturtle.md) — macOS accessibility responder alignment on `native_view` with `objc2` (the previous `frame_waker` patch is upstream in `0.3.12` via `CAMetalDisplayLink`) |
 | `gpui-pre-macros` | [GITTURTLE-PATCH.md](gpui-pre-macros/GITTURTLE-PATCH.md) — Test-only `#[gpui::test]` teardown calling `TestAppContext::quit()` so multi-seed runs release apps/threads |
 | `mermaid-rs-renderer` | [GITTURTLE-PATCH.md](mermaid-rs-renderer/GITTURTLE-PATCH.md) — Disables renderer-owned disk font caching and isolates upstream test files |
 
@@ -27,6 +27,5 @@ These packages are excluded workspace members. Run a vendored crate's own librar
 Validate runtime behavior through consuming regressions:
 - Toolkit controls, layout, focus, and dialogs: `crates/app` `#[gpui::test]` suites.
 - Linux AT-SPI adapter: `crates/app` `native_accessibility::atspi_state_tests`.
-- macOS frame dispatch lifetime: `gpui-pre-macos` `frame_demand_probe` (see its patch note).
 - Mermaid integration: `crates/preview` Mermaid/SVG fixtures (never upstream CLI/filesystem examples).
 - Patch-note or doc-only edits need link and diff checks without rebuilding the application.

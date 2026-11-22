@@ -1,52 +1,44 @@
 use crate::{
-    ActiveTheme, ElementExt, Placement, StyledExt,
-    dialog::Dialog,
-    input::{AnyInputState, Copy},
+    ActiveTheme, ElementExt, Placement,
+    dialog::{Dialog, DialogMotion},
+    input::AnyInputState,
     native_menu::FallbackMenuOverlay,
     notification::{Notification, NotificationList},
     sheet::Sheet,
-    tooltip::render_tooltip,
+    tooltip::tooltip_renderer,
+    touch_selection::WindowTouchSelectionOverlay,
     window_border,
 };
 use gpui::{
-    AnyView, App, AppContext, ClipboardItem, Context, DefiniteLength, ElementId, Entity,
-    FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement as _, Pixels, Render,
-    StyleRefinement, Styled, WeakFocusHandle, Window, actions, div, prelude::FluentBuilder as _,
+    App, AppContext, Bounds, Context, DefiniteLength, DispatchPhase, ElementId, Entity,
+    FocusHandle, GlobalElementId, InteractiveElement, IntoElement, MouseMoveEvent,
+    ParentElement as _, Pixels, Render, RenderOnce, Styled, WeakFocusHandle, Window, canvas, div,
+    prelude::FluentBuilder as _,
 };
-use gpui_base::{TextSelection, TextSelectionLayer, TextSelectionScopeId};
-use std::{any::TypeId, rc::Rc};
+use gpui_base::{TextSelection, TextSelectionScopeId, motion::Presence};
+use std::{any::TypeId, cell::Cell, rc::Rc};
 
-actions!(root, [Tab, TabPrev]);
-
-const CONTEXT: &str = "Root";
 pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("tab", Tab, Some(CONTEXT)),
-        KeyBinding::new("shift-tab", TabPrev, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
-    ]);
+    gpui_base::Root::register_plugin::<WindowState>(cx, WindowState::new);
 }
 
-/// Root is a view for the App window for as the top level view (Must be the first view in the window).
-///
-/// It is used to manage the Sheet, Dialog, and Notification.
-pub struct Root {
-    style: StyleRefinement,
-    view: AnyView,
+/// Component-owned window state and presentation; Base owns the actual root.
+pub(crate) struct WindowState {
     pub(crate) active_sheet: Option<ActiveSheet>,
     pub(crate) active_dialogs: Vec<ActiveDialog>,
     pub(super) focused_input: Option<AnyInputState>,
     pub notification: Entity<NotificationList>,
     pub(crate) tooltip_overlay: Entity<gpui_base::TooltipOverlay>,
+    tooltip_hovered_trigger: Option<GlobalElementId>,
+    tooltip_trigger_lifetime: std::rc::Weak<()>,
+    /// Bounds of the tooltip trigger last pressed, whose tooltip stays
+    /// dismissed until the pointer moves outside them.
+    tooltip_pressed_trigger: Option<Bounds<Pixels>>,
     pub(crate) native_menu_overlay: Entity<FallbackMenuOverlay>,
+    touch_selection_overlay: Entity<WindowTouchSelectionOverlay>,
     sheet_size: Option<DefiniteLength>,
-    window_shadow_size: Pixels,
-    /// Render the Linux CSD `window_border` wrapper.
-    bordered: bool,
-    window_id: gpui::WindowId,
+    /// Source of stable dialog identities, including their rendered subtrees.
+    next_dialog_id: usize,
     /// GitTurtle patch: a close asked the window to draw before its next
     /// input and no frame has been drawn since ([`draw_before_next_input`]).
     draw_pending: bool,
@@ -64,26 +56,59 @@ pub(crate) struct ActiveSheet {
 
 #[derive(Clone)]
 pub(crate) struct ActiveDialog {
+    /// Stable for the dialog's lifetime, independently of its stack position.
+    id: usize,
     focus_handle: FocusHandle,
     /// The previous focused handle before opening the Dialog.
     previous_focused_handle: Option<WeakFocusHandle>,
     selection_scope: TextSelectionScopeId,
     builder: Rc<dyn Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static>,
+    /// Whether closing plays an exit transition, refreshed on every render.
+    ///
+    /// `DialogEntrance::None`, reduced motion, and a zero theme duration all
+    /// close in a single frame.
+    exit_enabled: Rc<Cell<bool>>,
+    /// Retained after closing until its exit transition finishes.
+    pub(crate) closing: bool,
 }
 
 impl ActiveDialog {
     pub(crate) fn new(
+        id: usize,
         focus_handle: FocusHandle,
         previous_focused_handle: Option<WeakFocusHandle>,
         selection_scope: TextSelectionScopeId,
         builder: impl Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
     ) -> Self {
         Self {
+            id,
             focus_handle,
             previous_focused_handle,
             selection_scope,
             builder: Rc::new(builder),
+            exit_enabled: Rc::new(Cell::new(false)),
+            closing: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn focus_handle(&self) -> &FocusHandle {
+        &self.focus_handle
+    }
+}
+
+/// Keys one dialog's shared entrance and exit transition.
+fn dialog_presence_id(id: usize) -> ElementId {
+    ElementId::NamedInteger("dialog-presence".into(), id as u64)
+}
+
+/// GitTurtle patch: notifies `gpui_base::Root` directly whenever `WindowState`
+/// opens or closes a dialog or sheet, so views observing `window.root::<Root>()`
+/// (such as `GitTurtle::render`'s modal state check) react in the same effect
+/// cycle without waiting for the plugin's deferred observer.
+fn notify_root(window: &Window, cx: &mut App) {
+    if let Some(root) = window.root::<gpui_base::Root>().flatten() {
+        root.update(cx, |_, cx| cx.notify());
     }
 }
 
@@ -102,19 +127,19 @@ impl ActiveDialog {
 /// the close gave focus back to and the page beneath. The frame is
 /// presented as the platform next asks for one, as any frame drawn there is.
 ///
-/// Closes in one effect cycle draw once ([`Root::draw_pending`]): the draw
-/// waits one more turn of the cycle, behind every effect queued by the code
-/// that closed them, and a frame the window draws first, as for a key event,
-/// takes its place. Drawn ahead of the platform's frame, it replaces that
-/// frame's draw, except where an effect queued later still changes what the
-/// window shows: then that frame draws again.
-fn draw_before_next_input(root: &mut Root, window: &mut Window, cx: &mut App) {
+/// Closes in one effect cycle draw once ([`WindowState::draw_pending`]): the
+/// draw waits one more turn of the cycle, behind every effect queued by the
+/// code that closed them, and a frame the window draws first, as for a key
+/// event, takes its place. Drawn ahead of the platform's frame, it replaces
+/// that frame's draw, except where an effect queued later still changes what
+/// the window shows: then that frame draws again.
+fn draw_before_next_input(root: &mut WindowState, window: &mut Window, cx: &mut App) {
     if std::mem::replace(&mut root.draw_pending, true) {
         return;
     }
     window.defer(cx, |window, cx| {
         window.defer(cx, |window, cx| {
-            let pending = Root::try_update(window, cx, |root, _, _| {
+            let pending = WindowState::try_update(window, cx, |root, _, _| {
                 std::mem::take(&mut root.draw_pending)
             });
             if pending == Some(true) {
@@ -129,43 +154,51 @@ fn draw_before_next_input(root: &mut Root, window: &mut Window, cx: &mut App) {
 /// or a color picker's popover, each of which stayed in the frame presses are
 /// hit-tested against until the window next drew, as a dialog did
 /// ([`draw_before_next_input`]). Deferred, so a close inside an update of
-/// [`Root`] cannot reenter it; a window without a [`Root`] draws nothing.
+/// [`WindowState`] cannot reenter it; a window without a [`WindowState`] draws
+/// nothing.
 pub(crate) fn draw_after_popup_close(window: &mut Window, cx: &mut App) {
     window.defer(cx, |window, cx| {
-        Root::try_update(window, cx, |root, window, cx| {
+        WindowState::try_update(window, cx, |root, window, cx| {
             draw_before_next_input(root, window, cx)
         });
     });
 }
 
-impl Root {
-    /// Clears window-owned text selection synchronously.
-    #[deprecated(note = "use gpui_base::TextSelection::clear instead")]
-    pub fn clear_text_selection(&mut self, cx: &mut Context<Self>) {
-        gpui_base::TextSelection::clear_for_window(self.window_id, cx);
+/// Hides this window's tooltip, shown or still waiting out its delay.
+///
+/// GitTurtle patch: the overlay forgets a tooltip only when its trigger's
+/// hover ends, a press hides it, or another trigger replaces it. A
+/// trigger that is no longer drawn ends no hover, so an application that
+/// moves a control away from under a pointer that stays still cancels the
+/// tooltip it asked for here.
+pub fn hide_tooltip(window: &Window, cx: &mut App) {
+    if let Some(overlay) = WindowState::tooltip_overlay(window, cx) {
+        overlay.update(cx, |overlay, cx| overlay.hide(cx));
     }
+}
 
-    /// Create a new Root view.
-    pub fn new(view: impl Into<AnyView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        #[cfg(all(target_os = "macos", not(test)))]
-        gpui_base::install_window_hit_test_forwarder(window);
-
+impl WindowState {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
-            style: StyleRefinement::default(),
-            view: view.into(),
             active_sheet: None,
             active_dialogs: Vec::new(),
             focused_input: None,
             notification: cx.new(|cx| NotificationList::new(window, cx)),
             tooltip_overlay: cx
-                .new(|_| gpui_base::TooltipOverlay::new().render_with(render_tooltip)),
+                .new(|_| gpui_base::TooltipOverlay::new().render_with(tooltip_renderer())),
+            tooltip_hovered_trigger: None,
+            tooltip_trigger_lifetime: std::rc::Weak::new(),
+            tooltip_pressed_trigger: None,
             native_menu_overlay: cx.new(|_| FallbackMenuOverlay::new()),
+            touch_selection_overlay: cx.new(|cx| WindowTouchSelectionOverlay::new(window, cx)),
             sheet_size: None,
-            window_shadow_size: window_border::SHADOW_SIZE,
-            bordered: true,
-            window_id: window.window_handle().window_id(),
+            next_dialog_id: 0,
             draw_pending: false,
         }
+    }
+
+    fn entity(window: &Window, cx: &App) -> Option<Entity<Self>> {
+        window.root::<gpui_base::Root>()??.read(cx).plugin::<Self>()
     }
 
     fn allocate_text_selection_scope(&mut self) -> TextSelectionScopeId {
@@ -174,7 +207,9 @@ impl Root {
 
     pub(crate) fn active_text_selection_scope(&self) -> TextSelectionScopeId {
         self.active_dialogs
-            .last()
+            .iter()
+            .rev()
+            .find(|dialog| !dialog.closing)
             .map(|dialog| dialog.selection_scope)
             .or_else(|| {
                 self.active_sheet
@@ -184,59 +219,39 @@ impl Root {
             .unwrap_or_default()
     }
 
-    /// Enable or disable the Linux client-side window border wrapper.
-    ///
-    /// Defaults to `true`. Use `bordered(false)` for layer-shell fullscreen windows
-    /// or other surfaces that should not render GPUI Component's window border.
-    pub fn bordered(mut self, bordered: bool) -> Self {
-        self.bordered = bordered;
-        self
-    }
-
-    /// Set the window border shadow size for Linux client-side decorations.
-    ///
-    /// Default: [`window_border::SHADOW_SIZE`]
-    pub fn window_shadow_size(mut self, size: impl Into<Pixels>) -> Self {
-        self.window_shadow_size = size.into();
-        self
-    }
-
     pub fn update<F, R>(window: &mut Window, cx: &mut App, f: F) -> R
     where
         F: FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> R,
     {
-        let root = window
-            .root::<Root>()
-            .flatten()
-            .expect("BUG: window first layer should be a gpui_component::Root.");
+        let root = Self::entity(window, cx).expect(ROOT_MISSING);
 
         root.update(cx, |root, cx| f(root, window, cx))
+    }
+
+    pub(crate) fn try_read<'a>(window: &Window, cx: &'a App) -> Option<&'a Self> {
+        Self::entity(window, cx).map(|root| root.read(cx))
     }
 
     pub(crate) fn try_update<F, R>(window: &mut Window, cx: &mut App, f: F) -> Option<R>
     where
         F: FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> R,
     {
-        let root = window.root::<Root>().flatten()?;
+        let root = Self::entity(window, cx)?;
         Some(root.update(cx, |root, cx| f(root, window, cx)))
     }
 
     pub fn read<'a>(window: &'a Window, cx: &'a App) -> &'a Self {
-        &window
-            .root::<Root>()
-            .expect("The window root view should be of type `ui::Root`.")
-            .unwrap()
-            .read(cx)
+        Self::entity(window, cx).expect(ROOT_MISSING).read(cx)
     }
 
-    // Render Notification layer.
-    pub fn render_notification_layer(
-        window: &mut Window,
-        cx: &mut App,
+    fn notification_layer(
+        root: &Entity<WindowState>,
+        window: &Window,
+        cx: &App,
     ) -> Option<impl IntoElement + use<>> {
-        let root = window.root::<Root>()??;
-
-        let active_sheet_placement = root.read(cx).active_sheet.clone().map(|d| d.placement);
+        let active_sheet_placement = root.read(cx).active_sheet.clone().map(|d| {
+            crate::sheet::physical_placement(d.placement, gpui_base::LayoutDirection::global(cx))
+        });
 
         let sheet_size = root.read(cx).sheet_size;
         let (mt, mr, mb, ml) = match active_sheet_placement {
@@ -247,30 +262,42 @@ impl Root {
             _ => (None, None, None, None),
         };
 
+        // Keep toasts out from under the system bars and the on-screen keyboard.
+        let safe_insets = window_border::window_safe_insets(window);
+
         Some(
             div()
                 .absolute()
-                .inset_0()
-                .when_some(mt, |this, offset| this.mt(offset))
-                .when_some(mr, |this, offset| this.mr(offset))
-                .when_some(mb, |this, offset| this.mb(offset))
-                .when_some(ml, |this, offset| this.ml(offset))
-                .child(root.read(cx).notification.clone()),
+                .top(safe_insets.top)
+                .right(safe_insets.right)
+                .bottom(safe_insets.bottom)
+                .left(safe_insets.left)
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .when_some(mt, |this, offset| this.mt(offset))
+                        .when_some(mr, |this, offset| this.mr(offset))
+                        .when_some(mb, |this, offset| this.mb(offset))
+                        .when_some(ml, |this, offset| this.ml(offset))
+                        .child(root.read(cx).notification.clone()),
+                ),
         )
     }
 
-    /// Render the Sheet layer.
-    pub fn render_sheet_layer(
+    fn sheet_layer(
+        root: Entity<WindowState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<impl IntoElement + use<>> {
-        let root = window.root::<Root>()??;
-
         if let Some(active_sheet) = root.read(cx).active_sheet.clone() {
             let mut sheet = Sheet::new(window, cx);
             sheet = (active_sheet.builder)(sheet, window, cx);
             sheet.focus_handle = active_sheet.focus_handle.clone();
-            sheet.placement = active_sheet.placement;
+            sheet.placement = crate::sheet::physical_placement(
+                active_sheet.placement,
+                gpui_base::LayoutDirection::global(cx),
+            );
             sheet.selection_scope = active_sheet.selection_scope;
 
             let size = sheet.size;
@@ -286,51 +313,90 @@ impl Root {
         None
     }
 
-    /// Render the Dialog layer.
-    pub fn render_dialog_layer(
+    fn dialog_layer(
+        root: &Entity<WindowState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<impl IntoElement + use<>> {
-        let root = window.root::<Root>()??;
-
         let active_dialogs = root.read(cx).active_dialogs.clone();
 
         if active_dialogs.is_empty() {
             return None;
         }
 
-        let mut show_overlay_ix = None;
+        let mut rendered: Vec<(usize, Dialog)> = Vec::with_capacity(active_dialogs.len());
+        let mut stack_depth = 0;
 
-        let mut dialogs = active_dialogs
+        for (index, active_dialog) in active_dialogs.iter().enumerate() {
+            let mut dialog = Dialog::new(cx);
+
+            dialog = (active_dialog.builder)(dialog, window, cx);
+
+            // Give the dialog the focus handle, because `dialog` is a temporary value, is not possible to
+            // keep the focus handle in the dialog.
+            //
+            // So we keep the focus handle in the `active_dialog`, this is owned by the `WindowState`.
+            dialog.focus_handle = active_dialog.focus_handle.clone();
+            dialog.selection_scope = active_dialog.selection_scope;
+
+            dialog.layer_ix = index;
+            // A dialog that is leaving must not push the next one down.
+            dialog.stack_depth = stack_depth;
+            if !active_dialog.closing {
+                stack_depth += 1;
+            }
+            dialog.id = active_dialog.id;
+
+            // GitTurtle patch: a closed dialog leaves immediately rather than
+            // staying mounted behind a closing click-swallowing shield; see
+            // `draw_before_next_input`.
+            active_dialog.exit_enabled.set(false);
+
+            let sample =
+                Presence::new(dialog_presence_id(active_dialog.id), !active_dialog.closing)
+                    .transition(dialog.motion_transition(cx))
+                    .sample(window, cx);
+            if active_dialog.closing && !sample.should_render() {
+                Self::schedule_dialog_removal(root, active_dialog.id, window, cx);
+                continue;
+            }
+            dialog.motion = Some(DialogMotion {
+                visibility: sample.progress,
+                closing: active_dialog.closing,
+            });
+
+            rendered.push((index, dialog));
+        }
+
+        if rendered.is_empty() {
+            return None;
+        }
+
+        // The overlay belongs to the newest dialog still open. With none left,
+        // the newest closing dialog keeps the dim through its exit so the
+        // backdrop fades with the surface instead of switching off at once.
+        // A closing dialog below an open overlay never paints its own backdrop:
+        // the constant dim beneath it hands over without a flash.
+        let overlay_slot = rendered
             .iter()
             .enumerate()
-            .map(|(i, active_dialog)| {
-                let mut dialog = Dialog::new(cx);
-
-                dialog = (active_dialog.builder)(dialog, window, cx);
-
-                // Give the dialog the focus handle, because `dialog` is a temporary value, is not possible to
-                // keep the focus handle in the dialog.
-                //
-                // So we keep the focus handle in the `active_dialog`, this is owned by the `Root`.
-                dialog.focus_handle = active_dialog.focus_handle.clone();
-                dialog.selection_scope = active_dialog.selection_scope;
-
-                dialog.layer_ix = i;
-                // Find the dialog which one needs to show overlay.
-                if dialog.has_overlay() {
-                    show_overlay_ix = Some(i);
-                }
-
-                dialog
-            })
-            .collect::<Vec<_>>();
-
-        if let Some(ix) = show_overlay_ix {
-            if let Some(dialog) = dialogs.get_mut(ix) {
-                dialog.props.overlay_visible = true;
-            }
+            .filter(|(_, (index, dialog))| !active_dialogs[*index].closing && dialog.has_overlay())
+            .map(|(slot, _)| slot)
+            .next_back()
+            .or_else(|| {
+                rendered
+                    .iter()
+                    .rposition(|(_, dialog)| dialog.has_overlay())
+            });
+        if let Some(slot) = overlay_slot {
+            rendered[slot].1.props.overlay_visible = true;
         }
+
+        let closing_scopes: Vec<_> = active_dialogs
+            .iter()
+            .filter(|dialog| dialog.closing)
+            .map(|dialog| dialog.focus_handle.clone())
+            .collect();
 
         // Named so a test can assert the layer actually reached the screen. A
         // dialog that opens into a root which never renders this layer looks
@@ -338,12 +404,74 @@ impl Root {
         Some(
             div()
                 .debug_selector(|| "dialog-layer".to_string())
-                .children(dialogs),
+                .children(
+                    rendered
+                        .into_iter()
+                        .map(|(_, dialog)| div().id(("dialog-instance", dialog.id)).child(dialog)),
+                )
+                .when(!closing_scopes.is_empty(), |layer| {
+                    layer.on_prepaint(move |_, window, cx| {
+                        // Skip every exiting scope, including when close-all
+                        // leaves several old tab groups mounted at once.
+                        let mut visited = Vec::new();
+                        while closing_scopes
+                            .iter()
+                            .any(|scope| scope.contains_focused(window, cx))
+                        {
+                            let current = window.focused(cx);
+                            if visited.contains(&current) {
+                                window.blur(cx);
+                                break;
+                            }
+                            visited.push(current);
+                            if window.modifiers().shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
+                        }
+                    })
+                }),
         )
     }
 
-    pub fn open_dialog<F>(&mut self, build: F, window: &mut Window, cx: &mut Context<'_, Root>)
-    where
+    /// Unmounts a dialog once its exit transition has finished.
+    ///
+    /// The removal is deferred because the layer runs while the window state
+    /// that owns the dialog is rendering, and removing it mid-render would
+    /// update an entity that is still on the stack.
+    fn schedule_dialog_removal(
+        root: &Entity<WindowState>,
+        dialog_id: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let root = root.clone();
+        window.defer(cx, move |window, cx| {
+            let removed = root.update(cx, |state, cx| {
+                let before = state.active_dialogs.len();
+                state
+                    .active_dialogs
+                    .retain(|dialog| !(dialog.closing && dialog.id == dialog_id));
+                if state.active_dialogs.len() != before {
+                    cx.notify();
+                    true
+                } else {
+                    false
+                }
+            });
+            if removed {
+                notify_root(window, cx);
+            }
+        });
+    }
+
+    pub fn open_dialog<F>(
+        &mut self,
+        build: F,
+        window: &mut Window,
+        cx: &mut Context<'_, WindowState>,
+    ) where
         F: Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
     {
         // GitTurtle patch: every close gives focus back as the dialog goes
@@ -358,8 +486,11 @@ impl Root {
         // press to come up before it takes Enter.
         gpui_base::dialog_opened(window, cx);
 
+        let id = self.next_dialog_id;
+        self.next_dialog_id += 1;
         let selection_scope = self.allocate_text_selection_scope();
         self.active_dialogs.push(ActiveDialog::new(
+            id,
             focus_handle,
             previous_focused_handle,
             selection_scope,
@@ -369,6 +500,7 @@ impl Root {
         // selection so it cannot linger (or be copied) under the modal.
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();
+        notify_root(window, cx);
     }
 
     /// GitTurtle patch: a dialog that recorded one of `menus` as its opener
@@ -388,34 +520,64 @@ impl Root {
         }
     }
 
-    fn close_dialog_internal(&mut self) -> Option<FocusHandle> {
+    /// Closes the newest dialog that is not already closing.
+    ///
+    /// A dialog with an exit transition stays in `active_dialogs`, marked
+    /// `closing`, until [`WindowState::dialog_layer`] unmounts it once the
+    /// transition ends. Without one, it is removed as before.
+    fn close_dialog_internal(&mut self, window: &mut Window, cx: &mut App) -> Option<FocusHandle> {
         self.focused_input = None;
-        self.active_dialogs
-            .pop()
-            .and_then(|d| d.previous_focused_handle)
-            .and_then(|h| h.upgrade())
+
+        let ix = self
+            .active_dialogs
+            .iter()
+            .rposition(|dialog| !dialog.closing)?;
+        let previous_focused_handle = self.active_dialogs[ix]
+            .previous_focused_handle
+            .clone()
+            .and_then(|handle| handle.upgrade());
+
+        if self.active_dialogs[ix].exit_enabled.get() {
+            Self::begin_dialog_exit(&mut self.active_dialogs[ix], window, cx);
+        } else {
+            self.active_dialogs.remove(ix);
+        }
+
+        previous_focused_handle
     }
 
-    pub fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
-        let closing = !self.active_dialogs.is_empty();
+    fn begin_dialog_exit(dialog: &mut ActiveDialog, window: &mut Window, cx: &mut App) {
+        if dialog.closing {
+            return;
+        }
+        dialog.closing = true;
+        // Do not leave the input handler active during deferred focus restoration.
+        if dialog.focus_handle.contains_focused(window, cx) {
+            window.blur(cx);
+        }
+    }
+
+    pub fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, WindowState>) {
+        let closing = self.active_dialogs.iter().any(|dialog| !dialog.closing);
         // GitTurtle patch: an Enter still down waits for its key-up, so its
         // repeats press nothing this close gives focus to.
         if closing {
             gpui_base::dialog_closing(window, cx);
         }
-        if let Some(handle) = self.close_dialog_internal() {
+        if let Some(handle) = self.close_dialog_internal(window, cx) {
             window.focus(&handle, cx);
         }
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();
+        notify_root(window, cx);
         if closing {
             draw_before_next_input(self, window, cx);
         }
     }
 
-    pub fn close_all_dialogs(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
+    pub fn close_all_dialogs(&mut self, window: &mut Window, cx: &mut Context<'_, WindowState>) {
         self.focused_input = None;
-        let closing = !self.active_dialogs.is_empty();
+        let closing = self.active_dialogs.iter().any(|dialog| !dialog.closing);
         // GitTurtle patch: as `close_dialog` waits for an Enter still down.
         if closing {
             gpui_base::dialog_closing(window, cx);
@@ -424,12 +586,20 @@ impl Root {
             .active_dialogs
             .first()
             .and_then(|d| d.previous_focused_handle.clone());
-        self.active_dialogs.clear();
+
+        // Dialogs with an exit transition leave by animating; the rest go now.
+        self.active_dialogs
+            .retain(|dialog| dialog.closing || dialog.exit_enabled.get());
+        for dialog in &mut self.active_dialogs {
+            Self::begin_dialog_exit(dialog, window, cx);
+        }
+
         if let Some(handle) = previous_focused_handle.and_then(|h| h.upgrade()) {
             window.focus(&handle, cx);
         }
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();
+        notify_root(window, cx);
         if closing {
             draw_before_next_input(self, window, cx);
         }
@@ -440,7 +610,7 @@ impl Root {
         placement: Placement,
         build: F,
         window: &mut Window,
-        cx: &mut Context<'_, Root>,
+        cx: &mut Context<'_, WindowState>,
     ) where
         F: Fn(Sheet, &mut Window, &mut App) -> Sheet + 'static,
     {
@@ -464,9 +634,10 @@ impl Root {
         // selection so it cannot linger (or be copied) under the modal.
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();
+        notify_root(window, cx);
     }
 
-    pub fn close_sheet(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
+    pub fn close_sheet(&mut self, window: &mut Window, cx: &mut Context<'_, WindowState>) {
         self.focused_input = None;
         if self.active_sheet.is_some() {
             draw_before_next_input(self, window, cx);
@@ -482,13 +653,14 @@ impl Root {
         self.active_sheet = None;
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();
+        notify_root(window, cx);
     }
 
     pub fn push_notification(
         &mut self,
         note: impl Into<Notification>,
         window: &mut Window,
-        cx: &mut Context<'_, Root>,
+        cx: &mut Context<'_, WindowState>,
     ) {
         self.notification
             .update(cx, |view, cx| view.push(note, window, cx));
@@ -500,7 +672,7 @@ impl Root {
     pub fn remove_notification<T: Sized + 'static>(
         &mut self,
         window: &mut Window,
-        cx: &mut Context<'_, Root>,
+        cx: &mut Context<'_, WindowState>,
     ) {
         self.notification.update(cx, |view, cx| {
             view.close_by_type(TypeId::of::<T>(), window, cx);
@@ -513,7 +685,7 @@ impl Root {
         &mut self,
         key: impl Into<ElementId>,
         window: &mut Window,
-        cx: &mut Context<'_, Root>,
+        cx: &mut Context<'_, WindowState>,
     ) {
         let key = key.into();
         self.notification.update(cx, |view, cx| {
@@ -522,7 +694,7 @@ impl Root {
         cx.notify();
     }
 
-    pub fn clear_notifications(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
+    pub fn clear_notifications(&mut self, window: &mut Window, cx: &mut Context<'_, WindowState>) {
         self.notification
             .update(cx, |view, cx| view.clear(window, cx));
         cx.notify();
@@ -533,21 +705,96 @@ impl Root {
         window: &Window,
         cx: &App,
     ) -> Option<Entity<gpui_base::TooltipOverlay>> {
-        let root = window.root::<Root>()??;
+        let root = Self::entity(window, cx)?;
         Some(root.read(cx).tooltip_overlay.clone())
     }
 
-    /// Hides this window's tooltip, shown or still waiting out its delay.
-    ///
-    /// GitTurtle patch: the overlay forgets a tooltip only when its trigger's
-    /// hover ends, a press hides it, or another trigger replaces it. A
-    /// trigger that is no longer drawn ends no hover, so an application that
-    /// moves a control away from under a pointer that stays still cancels the
-    /// tooltip it asked for here.
-    pub fn hide_tooltip(window: &Window, cx: &mut App) {
-        if let Some(overlay) = Self::tooltip_overlay(window, cx) {
-            overlay.update(cx, |overlay, cx| overlay.hide(cx));
-        }
+    /// Only the current trigger may request a hide. Hover listeners run in
+    /// reverse paint order, so a new trigger can enter before the old one leaves.
+    pub(crate) fn tooltip_overlay_for_trigger(
+        trigger: &GlobalElementId,
+        lifetime: std::rc::Weak<()>,
+        hovered: bool,
+        window: &Window,
+        cx: &mut App,
+    ) -> Option<Entity<gpui_base::TooltipOverlay>> {
+        Self::entity(window, cx)?.update(cx, |state, _| {
+            if hovered {
+                state.tooltip_hovered_trigger = Some(trigger.clone());
+                state.tooltip_trigger_lifetime = lifetime;
+            } else if state.tooltip_hovered_trigger.as_ref() == Some(trigger) {
+                state.tooltip_hovered_trigger = None;
+                state.tooltip_trigger_lifetime = std::rc::Weak::new();
+            } else {
+                return None;
+            }
+            Some(state.tooltip_overlay.clone())
+        })
+    }
+
+    fn dismiss_removed_tooltip(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(trigger) = self.tooltip_hovered_trigger.clone() else {
+            return;
+        };
+        let state = cx.weak_entity();
+        // Defer until GPUI has retained this frame's element states and dropped
+        // absent ones. A reused cached subtree keeps its trigger alive.
+        window.defer(cx, move |_, cx| {
+            _ = state.update(cx, |state, cx| {
+                if state.tooltip_hovered_trigger.as_ref() != Some(&trigger)
+                    || state.tooltip_trigger_lifetime.upgrade().is_some()
+                {
+                    return;
+                }
+                state.tooltip_hovered_trigger = None;
+                state.tooltip_trigger_lifetime = std::rc::Weak::new();
+                state
+                    .tooltip_overlay
+                    .update(cx, |overlay, cx| overlay.hide(cx));
+            });
+        });
+    }
+
+    /// Keeps the tooltip of the trigger at `bounds` dismissed until the
+    /// pointer moves outside them.
+    pub(crate) fn press_tooltip_trigger(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        Self::try_update(window, cx, |state, _, cx| {
+            state.tooltip_pressed_trigger = Some(bounds);
+            cx.notify();
+        });
+    }
+
+    pub(crate) fn is_tooltip_trigger_pressed(
+        bounds: Bounds<Pixels>,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        Self::try_read(window, cx)
+            .is_some_and(|state| state.tooltip_pressed_trigger == Some(bounds))
+    }
+
+    /// Ends the press on the first pointer move outside the trigger. It is
+    /// window-level because a removed or moved trigger never reports a
+    /// hover-leave.
+    fn tooltip_press_listener(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let bounds = self.tooltip_pressed_trigger?;
+        let state = cx.entity().downgrade();
+        Some(canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture || bounds.contains(&event.position) {
+                        return;
+                    }
+                    _ = state.update(cx, |state, cx| {
+                        if state.tooltip_pressed_trigger == Some(bounds) {
+                            state.tooltip_pressed_trigger = None;
+                            cx.notify();
+                        }
+                    });
+                });
+            },
+        ))
     }
 
     /// Get the fallback native-menu overlay entity for this window.
@@ -555,146 +802,85 @@ impl Root {
         window: &Window,
         cx: &App,
     ) -> Option<Entity<FallbackMenuOverlay>> {
-        let root = window.root::<Root>()??;
+        let root = Self::entity(window, cx)?;
         Some(root.read(cx).native_menu_overlay.clone())
     }
-
-    /// Return the root view of the Root.
-    pub fn view(&self) -> &AnyView {
-        &self.view
-    }
-
-    fn on_action_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
-        Self::step_focus(true, window, cx);
-    }
-
-    fn on_action_tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
-        Self::step_focus(false, window, cx);
-    }
-
-    /// Moves focus to the next Tab stop, or with `forward` false the
-    /// previous one, inside the active focus trap if there is one.
-    ///
-    /// GitTurtle patch: a step that would leave the trap moves straight to
-    /// the trap's own first stop (Tab past its last) or last stop
-    /// (Shift-Tab before its first), and a trap with no stop keeps focus
-    /// where it was, so focus never leaves an open dialog and no key reaches
-    /// the page behind it, where it could act. Upstream walked the window on
-    /// from the stop outside the trap and gave up after 100 stops, leaving
-    /// focus on that page with the dialog still open (31 saved themes behind
-    /// GitTurtle's theme editor).
-    fn step_focus(forward: bool, window: &mut Window, cx: &mut App) {
-        let step = |window: &mut Window, cx: &mut App| {
-            if forward {
-                window.focus_next(cx)
-            } else {
-                window.focus_prev(cx)
-            }
-        };
-        let Some(trap) = gpui_base::active_focus_trap(window, cx) else {
-            step(window, cx);
-            return;
-        };
-        let before = window.focused(cx);
-        step(window, cx);
-        if trap.contains_focused(window, cx) {
-            return;
-        }
-        if let Some(target) = Self::trap_end(&trap, forward, window, cx).or(before) {
-            window.focus(&target, cx);
-        }
-    }
-
-    /// GitTurtle patch: the first Tab stop inside `trap`, or with `first`
-    /// false its last, in the order `focus_next` visits them. GPUI orders a
-    /// tracked handle ahead of everything its element holds, so stepping on
-    /// from the trap's own handle visits the trap's stops and then one stop
-    /// past them, never the rest of the window. It moves focus as it steps,
-    /// within this handler, before any frame draws or any listener sees it;
-    /// the caller focuses what it returns.
-    fn trap_end(
-        trap: &FocusHandle,
-        first: bool,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<FocusHandle> {
-        // The trap's own handle is its first stop when it is a Tab stop.
-        let mut ends = trap.tab_stop.then(|| (trap.clone(), trap.clone()));
-        window.focus(trap, cx);
-        while !(first && ends.is_some()) {
-            window.focus_next(cx);
-            let Some(focused) = window.focused(cx) else {
-                break;
-            };
-            if !trap.contains_focused(window, cx) {
-                break;
-            }
-            match &mut ends {
-                // Back at its first stop, every stop in the window is the
-                // trap's; at its last, the step moved nothing.
-                Some((head, tail)) if focused == *head || focused == *tail => break,
-                Some((_, tail)) => *tail = focused,
-                None if focused == *trap => break,
-                None => ends = Some((focused.clone(), focused)),
-            }
-        }
-        ends.map(|(head, tail)| if first { head } else { tail })
-    }
-
-    fn on_action_copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
-        let text = gpui_base::TextSelection::selected_text(window, cx)
-            .trim()
-            .to_string();
-        if text.is_empty() {
-            cx.propagate();
-            return;
-        }
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-    }
 }
 
-impl Styled for Root {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.style
-    }
-}
-
-impl Render for Root {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        window.set_rem_size(cx.theme().font_size);
+impl gpui_base::RootPlugin for WindowState {
+    fn prepare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_removed_tooltip(window, cx);
         // GitTurtle patch: this frame draws what a close asked for.
         self.draw_pending = false;
-        let active_scope = self.active_text_selection_scope();
-        TextSelection::activate_scope(active_scope, window, cx);
+        window.set_rem_size(cx.theme().font_size);
+        TextSelection::activate_scope(self.active_text_selection_scope(), window, cx);
+    }
 
-        let inner = div()
-            .id("root")
-            .key_context(CONTEXT)
-            // GitTurtle patch: every Enter that comes up in the window, so a
-            // dialog an Enter press opened takes Enter again once it does.
-            .capture_key_up(|event, window, cx| gpui_base::note_key_up(event, window, cx))
-            .on_action(cx.listener(Self::on_action_tab))
-            .on_action(cx.listener(Self::on_action_tab_prev))
-            .on_action(cx.listener(Self::on_action_copy))
-            .relative()
-            .size_full()
-            .font_family(cx.theme().font_family.clone())
-            .bg(cx.theme().tokens.background)
-            .text_color(cx.theme().foreground)
-            .refine_style(&self.style)
-            .child(TextSelectionLayer)
-            .child(self.view.clone())
-            .child(self.tooltip_overlay.clone())
-            .child(self.native_menu_overlay.clone());
-
-        if self.bordered {
-            window_border()
-                .shadow_size(self.window_shadow_size)
-                .child(inner)
-                .into_any_element()
-        } else {
-            inner.into_any_element()
+    fn style(&self, surface: &mut gpui::Stateful<gpui::Div>, window: &mut Window, cx: &mut App) {
+        use gpui::Refineable as _;
+        // The surface's background must follow the window's rounded corners.
+        let radii = window_border::window_corner_radii(window, cx);
+        surface.style().refine(
+            &gpui::StyleRefinement::default()
+                .font_family(cx.theme().font_family.clone())
+                .bg(cx.theme().tokens.background)
+                .text_color(cx.theme().foreground)
+                .rounded_tl(radii.top_left)
+                .rounded_tr(radii.top_right)
+                .rounded_bl(radii.bottom_left)
+                .rounded_br(radii.bottom_right),
+        );
+        // Text starts on the right in a right-to-left interface; elements
+        // that set their own alignment keep it.
+        if gpui_base::LayoutDirection::global(cx).is_rtl() {
+            surface.style().text.text_align = Some(gpui::TextAlign::Right);
         }
+    }
+
+    fn decorate(
+        &self,
+        surface: gpui::AnyElement,
+        _root: &gpui_base::Root,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> impl IntoElement {
+        window_border().child(surface)
+    }
+}
+
+impl Render for WindowState {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .inset_0()
+            .child(WindowStateLayers { root: cx.entity() })
+            .child(self.touch_selection_overlay.clone())
+            .child(self.tooltip_overlay.clone())
+            .children(self.tooltip_press_listener(cx))
+            .child(self.native_menu_overlay.clone())
+    }
+}
+
+const ROOT_MISSING: &str =
+    "component window state is missing; call gpui_component::init before gpui_kit::open_window";
+
+/// Window-level layers, always mounted once after the application content.
+/// Child view caching does not affect their ownership or rendering.
+#[derive(IntoElement)]
+struct WindowStateLayers {
+    root: Entity<WindowState>,
+}
+
+impl RenderOnce for WindowStateLayers {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let root = self.root;
+        div()
+            .absolute()
+            .inset_0()
+            .debug_selector(|| "root-layers".to_string())
+            .children(WindowState::sheet_layer(root.clone(), window, cx))
+            .children(WindowState::dialog_layer(&root, window, cx))
+            .children(WindowState::notification_layer(&root, window, cx))
     }
 }
 
@@ -712,7 +898,7 @@ pub(crate) mod before_a_frame {
     const EFFECT_ROUNDS: usize = 32;
 
     /// A press of `key` going down, or coming up.
-    pub(crate) fn key(key: &str, down: bool) -> PlatformInput {
+    pub(crate) fn key(key: &'static str, down: bool) -> PlatformInput {
         let keystroke = Keystroke::parse(key).expect("a keystroke");
         if down {
             PlatformInput::KeyDown(KeyDownEvent {
@@ -782,18 +968,60 @@ pub(crate) mod before_a_frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{StatefulInteractiveElement as _, TestAppContext, VisualTestContext, px};
+    use crate::Root;
+    use gpui::{
+        Bounds, Context, IntoElement, Pixels, Render, StatefulInteractiveElement as _,
+        TestAppContext, VisualTestContext, Window, canvas, div, px, size,
+    };
+    use std::{cell::Cell, rc::Rc};
 
-    struct TestView;
+    struct BottomBarDemo {
+        bar: Rc<Cell<Option<Bounds<Pixels>>>>,
+    }
 
-    impl Render for TestView {
+    impl Render for BottomBarDemo {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let bar = self.bar.clone();
             div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(div().flex_1().w_full())
+                .child(div().h(px(40.)).w_full().child(
+                    canvas(move |bounds, _, _| bar.set(Some(bounds)), |_, _, _, _| {}).size_full(),
+                ))
         }
     }
 
+    /// #3857: with every component layer installed (window border, overlay
+    /// layers), a `size_full` view still fills the window height.
+    #[gpui::test]
+    fn size_full_view_fills_window_height(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let bar = Rc::new(Cell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let bar = bar.clone();
+            move |window, cx| {
+                let view = cx.new(|_| BottomBarDemo { bar });
+                Root::new(view, window, cx)
+            }
+        });
+        cx.simulate_resize(size(px(800.), px(600.)));
+        cx.run_until_parked();
+        let viewport = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.viewport_size()
+        });
+        let bounds = bar.get().expect("bar painted");
+        assert_eq!(
+            bounds.bottom(),
+            viewport.height,
+            "bar {bounds:?}, viewport {viewport:?}"
+        );
+    }
+
     /// A view that counts the frames that draw it.
-    struct Counted(Rc<std::cell::Cell<usize>>);
+    struct Counted(Rc<Cell<usize>>);
 
     impl Render for Counted {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -811,14 +1039,14 @@ mod tests {
     #[gpui::test]
     fn two_closes_in_one_handler_draw_once(cx: &mut TestAppContext) {
         cx.update(crate::init);
-        let drawn = Rc::new(std::cell::Cell::new(0));
+        let drawn = Rc::new(Cell::new(0));
         let counted = drawn.clone();
         let (_, cx) = cx.add_window_view(|window, cx| {
             let view = cx.new(|_| Counted(counted));
-            Root::new(view, window, cx).bordered(false)
+            Root::new(view, window, cx)
         });
         cx.update(|window, cx| {
-            Root::update(window, cx, |root, window, cx| {
+            WindowState::update(window, cx, |root, window, cx| {
                 root.open_dialog(|dialog, _, _| dialog, window, cx);
                 root.open_dialog(|dialog, _, _| dialog, window, cx);
             })
@@ -826,7 +1054,7 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let before = drawn.get();
         cx.update(|window, cx| {
-            Root::update(window, cx, |root, window, cx| {
+            WindowState::update(window, cx, |root, window, cx| {
                 root.close_dialog(window, cx);
                 root.close_dialog(window, cx);
             })
@@ -837,8 +1065,8 @@ mod tests {
     /// A page whose clicks are counted, holding a dropdown and a right-click
     /// menu whose items count theirs.
     struct MenuPage {
-        page: Rc<std::cell::Cell<usize>>,
-        acted: Rc<std::cell::Cell<usize>>,
+        page: Rc<Cell<usize>>,
+        acted: Rc<Cell<usize>>,
     }
 
     impl Render for MenuPage {
@@ -903,13 +1131,13 @@ mod tests {
         use gpui::{Modifiers, MouseButton};
 
         cx.update(crate::init);
-        let page = Rc::new(std::cell::Cell::new(0));
-        let acted = Rc::new(std::cell::Cell::new(0));
+        let page = Rc::new(Cell::new(0));
+        let acted = Rc::new(Cell::new(0));
         let (_, cx) = cx.add_window_view({
             let (page, acted) = (page.clone(), acted.clone());
             move |window, cx| {
                 let view = cx.new(|_| MenuPage { page, acted });
-                Root::new(view, window, cx).bordered(false)
+                Root::new(view, window, cx)
             }
         });
         settle(cx);
@@ -1017,7 +1245,7 @@ mod tests {
     }
 
     impl Render for DialogMenus {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             use crate::{
                 button::Button,
                 menu::{ContextMenuExt as _, DropdownMenu as _},
@@ -1078,7 +1306,6 @@ mod tests {
                             dialog_menu_items(menu, row.clone(), window, cx)
                         }),
                 )
-                .children(Root::render_dialog_layer(window, cx))
         }
     }
 
@@ -1088,7 +1315,10 @@ mod tests {
     const NESTED: &str = "menu-item: Nested · MenuItem";
 
     fn dialog_menus(cx: &mut TestAppContext) -> (Entity<DialogMenus>, &mut VisualTestContext) {
-        cx.update(crate::init);
+        cx.update(|cx| {
+            crate::init(cx);
+            cx.set_reduce_motion(true);
+        });
         let slot = Rc::new(std::cell::RefCell::new(None));
         let (_, cx) = cx.add_window_view({
             let slot = slot.clone();
@@ -1099,7 +1329,7 @@ mod tests {
                     keyed_shown: true,
                 });
                 *slot.borrow_mut() = Some(view.clone());
-                Root::new(view, window, cx).bordered(false)
+                Root::new(view, window, cx)
             }
         });
         settle(cx);
@@ -1359,8 +1589,8 @@ mod tests {
     /// menu's Handler opens a dialog Enter confirms.
     struct HeldEnterPage {
         write: FocusHandle,
-        written: Rc<std::cell::Cell<usize>>,
-        acted: Rc<std::cell::Cell<usize>>,
+        written: Rc<Cell<usize>>,
+        acted: Rc<Cell<usize>>,
     }
 
     /// Opens a dialog Enter confirms: its own close, or, with `all`, every
@@ -1384,7 +1614,7 @@ mod tests {
     }
 
     impl Render for HeldEnterPage {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             use crate::{
                 button::Button,
                 menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
@@ -1431,12 +1661,14 @@ mod tests {
                             }))
                         }),
                 )
-                .children(Root::render_dialog_layer(window, cx))
         }
     }
 
     fn held_enter_page(cx: &mut TestAppContext) -> (Entity<HeldEnterPage>, &mut VisualTestContext) {
-        cx.update(crate::init);
+        cx.update(|cx| {
+            crate::init(cx);
+            cx.set_reduce_motion(true);
+        });
         let slot = Rc::new(std::cell::RefCell::new(None));
         let (_, cx) = cx.add_window_view({
             let slot = slot.clone();
@@ -1447,7 +1679,7 @@ mod tests {
                     acted: Default::default(),
                 });
                 *slot.borrow_mut() = Some(view.clone());
-                Root::new(view, window, cx).bordered(false)
+                Root::new(view, window, cx)
             }
         });
         settle(cx);
@@ -1537,144 +1769,40 @@ mod tests {
         settle(cx);
     }
 
-    /// More stops on each side of a focus trap than upstream's walk took.
-    const STOPS_AROUND_THE_TRAP: usize = 150;
+    /// GitTurtle patch: opening and closing a dialog notify `gpui_base::Root`
+    /// directly so views observing `window.root::<Root>()` react immediately.
+    #[gpui::test]
+    fn dialog_open_and_close_notify_root(cx: &mut TestAppContext) {
+        use crate::WindowExt as _;
 
-    /// A page of [`STOPS_AROUND_THE_TRAP`] Tab stops, a focus trap holding
-    /// `inside`, and as many stops again after it.
-    struct TrapPage {
-        before: Vec<FocusHandle>,
-        trap: FocusHandle,
-        inside: Vec<FocusHandle>,
-        after: Vec<FocusHandle>,
-    }
-
-    impl Render for TrapPage {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            use gpui_base::FocusTrapElement as _;
-            let stop = |handle: &FocusHandle| div().track_focus(handle).size(px(2.));
-            div()
-                .size_full()
-                .children(self.before.iter().map(stop))
-                .child(
-                    div()
-                        .focus_trap("trap", &self.trap)
-                        .children(self.inside.iter().map(stop)),
-                )
-                .children(self.after.iter().map(stop))
-        }
-    }
-
-    fn tab_stops(count: usize, cx: &mut App) -> Vec<FocusHandle> {
-        (0..count)
-            .map(|_| cx.focus_handle().tab_stop(true))
-            .collect()
-    }
-
-    fn trap_page(
-        inside: usize,
-        cx: &mut TestAppContext,
-    ) -> (Entity<TrapPage>, &mut VisualTestContext) {
-        cx.update(crate::init);
-        let slot = Rc::new(std::cell::RefCell::new(None));
-        let (_, cx) = cx.add_window_view({
-            let slot = slot.clone();
-            move |window, cx| {
-                let view = cx.new(|cx| TrapPage {
-                    before: tab_stops(STOPS_AROUND_THE_TRAP, cx),
-                    trap: cx.focus_handle(),
-                    inside: tab_stops(inside, cx),
-                    after: tab_stops(STOPS_AROUND_THE_TRAP, cx),
-                });
-                *slot.borrow_mut() = Some(view.clone());
-                Root::new(view, window, cx).bordered(false)
-            }
+        cx.update(|cx| {
+            crate::init(cx);
+            cx.set_reduce_motion(true);
         });
-        settle(cx);
-        let view = slot.borrow().clone().expect("the page");
-        (view, cx)
-    }
-
-    /// GitTurtle patch: Tab and Shift-Tab never take focus out of a focus
-    /// trap, however many stops lie around it: Tab from its last stop moves
-    /// to its first, Shift-Tab from its first to its last, and inside it
-    /// each moves one stop, also from the trap's own handle, which a dialog
-    /// focuses as it opens. Upstream walked the window from the stop outside
-    /// the trap and gave up after 100 stops, leaving focus on the page behind
-    /// an open dialog (31 saved themes behind GitTurtle's theme editor).
-    #[gpui::test]
-    fn tab_wraps_inside_a_focus_trap_past_any_number_of_stops(cx: &mut TestAppContext) {
-        let (view, cx) = trap_page(3, cx);
-        let (trap, inside) = view.read_with(cx, |view, _| (view.trap.clone(), view.inside.clone()));
-        for (key, to) in [("tab", 0), ("shift-tab", 2)] {
-            focus(&trap, cx);
-            assert!(focused(&trap, cx), "the trap holds focus");
-            cx.simulate_keystrokes(key);
-            settle(cx);
-            assert!(
-                focused(&inside[to], cx),
-                "{key} from the trap's own handle reaches its stop {to}"
-            );
-        }
-        focus(&inside[0], cx);
-        let presses = [
-            ("shift-tab", 2),
-            ("shift-tab", 1),
-            ("shift-tab", 0),
-            ("shift-tab", 2),
-            ("tab", 0),
-            ("tab", 1),
-            ("tab", 2),
-            ("tab", 0),
-        ];
-        for (press, (key, to)) in presses.into_iter().enumerate() {
-            cx.simulate_keystrokes(key);
-            settle(cx);
-            assert!(
-                cx.update(|window, cx| trap.contains_focused(window, cx)),
-                "press {press}, {key}, keeps focus in the trap"
-            );
-            assert!(
-                focused(&inside[to], cx),
-                "press {press}, {key}, reaches stop {to}"
-            );
-        }
-    }
-
-    /// GitTurtle patch: a focus trap with no Tab stop of its own keeps focus
-    /// where it was on Tab and Shift-Tab, however many stops lie around it.
-    #[gpui::test]
-    fn tab_in_a_focus_trap_without_stops_moves_nothing(cx: &mut TestAppContext) {
-        let (view, cx) = trap_page(0, cx);
-        let trap = view.read_with(cx, |view, _| view.trap.clone());
-        focus(&trap, cx);
-        for key in ["tab", "shift-tab", "tab"] {
-            cx.simulate_keystrokes(key);
-            settle(cx);
-            assert!(focused(&trap, cx), "{key} leaves focus on the trap");
-        }
-    }
-
-    #[gpui::test]
-    fn bordered_builder_toggles_window_border(cx: &mut TestAppContext) {
-        cx.update(crate::init);
-
-        let (default_root, _) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|_| TestView);
+        let notifications = Rc::new(Cell::new(0usize));
+        let counted = notifications.clone();
+        let (root, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|_| Counted(Rc::new(Cell::new(0))));
             Root::new(view, window, cx)
         });
-        assert!(default_root.read_with(cx, |root, _| root.bordered));
-
-        let (root, _) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|_| TestView);
-            Root::new(view, window, cx).bordered(false)
+        cx.update(|_, cx| {
+            cx.observe(&root, move |_, _| {
+                counted.set(counted.get() + 1);
+            })
+            .detach();
         });
-        assert!(!root.read_with(cx, |root, _| root.bordered));
-
-        let (root, _) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|_| TestView);
-            Root::new(view, window, cx).bordered(false).bordered(true)
-        });
-        assert!(root.read_with(cx, |root, _| root.bordered));
+        settle(cx);
+        let before_open = notifications.get();
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog));
+        assert!(
+            notifications.get() > before_open,
+            "opening a dialog notifies Root"
+        );
+        let before_close = notifications.get();
+        cx.update(|window, cx| window.close_dialog(cx));
+        assert!(
+            notifications.get() > before_close,
+            "closing a dialog notifies Root"
+        );
     }
 }

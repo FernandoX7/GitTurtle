@@ -29,7 +29,7 @@ pub struct OtpState {
 impl OtpState {
     pub fn new(length: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let blink_cursor = cx.new(|_| BlinkCursor::new());
+        let blink_cursor = cx.new(BlinkCursor::new);
         let subscriptions = vec![
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
             // GitTurtle patch: as the input's state, no window-activation
@@ -215,7 +215,6 @@ mod tests {
     };
     use std::{cell::Cell, rc::Rc, time::Duration};
 
-    /// An OTP field, drawn while `shown`.
     struct Root {
         otp: Entity<OtpState>,
         shown: bool,
@@ -227,12 +226,6 @@ mod tests {
         }
     }
 
-    /// GitTurtle patch: a window turned active again starts the blink of a
-    /// focused OTP field drawn in it, through the focus GPUI reports in the
-    /// first frame it draws active, and starts nothing for one that holds
-    /// the window's focus without being drawn. Upstream's window-activation
-    /// observer started it drawn or not, and with no blur to stop it, it
-    /// blinked, ten notifications in five seconds.
     #[gpui::test]
     fn window_activation_blinks_only_a_drawn_focused_field(cx: &mut TestAppContext) {
         let (root, cx) = cx.add_window_view(|window, cx| Root {

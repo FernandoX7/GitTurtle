@@ -5,6 +5,7 @@ use gpui::{
 use smallvec::SmallVec;
 
 use crate::{ActiveTheme, StyledExt, h_flex};
+use gpui_base::LogicalStyledExt as _;
 
 /// A horizontal status bar, usually placed at the bottom of a window or pane.
 ///
@@ -23,6 +24,7 @@ use crate::{ActiveTheme, StyledExt, h_flex};
 /// otherwise (only `right`, or neither — like a plain container).
 ///
 /// ```
+/// # mod gpui_kit { pub extern crate gpui_component as component; }
 /// use gpui_kit::component::status_bar::StatusBar;
 ///
 /// let _ = StatusBar::new().left("Ln 1, Col 1").right("UTF-8");
@@ -80,9 +82,17 @@ impl RenderOnce for StatusBar {
         // right, or neither) — so a bar with just `child`s reads like a container.
         let has_left = !self.left.is_empty();
         let has_right = !self.right.is_empty();
-        let region = || h_flex().overflow_hidden().items_center().gap_2();
+        // `left` and `right` are the start and end regions: mirrored in RTL.
+        let region = || {
+            h_flex()
+                .flex_row_dir(cx)
+                .overflow_hidden()
+                .items_center()
+                .gap_2()
+        };
 
         h_flex()
+            .flex_row_dir(cx)
             .items_center()
             .gap_2()
             .py_1()
@@ -98,7 +108,7 @@ impl RenderOnce for StatusBar {
                 region()
                     .flex_1()
                     .when(has_left && has_right, |this| this.justify_center())
-                    .when(has_left && !has_right, |this| this.justify_end())
+                    .when(has_left && !has_right, |this| this.justify_flex_end())
                     .children(self.children),
             )
             .when(has_right, |this| this.child(region().children(self.right)))

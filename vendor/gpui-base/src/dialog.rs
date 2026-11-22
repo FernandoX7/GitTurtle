@@ -1,3 +1,4 @@
+use crate::TestSupportExt as _;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
@@ -7,8 +8,9 @@ use std::{
 use gpui::{
     AnyElement, App, ClickEvent, FocusHandle, Global, InteractiveElement as _, IntoElement,
     KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton, NoAction, ParentElement, Pixels,
-    RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, WeakFocusHandle,
-    Window, WindowId, actions, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,
+    WeakFocusHandle, Window, WindowId, actions, anchored, deferred, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use smallvec::SmallVec;
 
@@ -152,40 +154,10 @@ pub fn init(cx: &mut App) {
     // held key carries the modifiers held as it repeats, so an unrecorded
     // Shift- or Control-Enter that opened a confirmation, or moved focus to
     // a Button, had the plain repeat after the modifier came up confirm it
-    // or press that Button. Residual, unverified without a Mac: Enter pressed
-    // alone, then Command, then Enter released; if Cocoa drops that key-up
-    // too, the press stays recorded, and the next plain Return presses no
-    // Button but the one the press began on, nor confirms a dialog opened
-    // meanwhile, until its own key-up ends the press: one Return swallowed,
-    // which fails safe.
-    //
-    // While a dialog waits out the press that opened it, nothing in its
-    // window takes that press's repeats: not the dialog, a Button, a field's
-    // or a list's own Enter binding, nor anything behind the dialog once it
-    // has gone, until the press comes up. A repeat is an Enter going down
-    // again with no Enter key-up or other key since, as a held key repeats
-    // on every platform (marked held on macOS and Wayland, not under X11),
-    // or right after a key-up that came with it: an input method on Wayland,
-    // as fcitx5 does while a text field is focused, sends each repeat as a
-    // release and a press together, which once let the first repeat of the
-    // Enter that opened a dialog from the command palette confirm it.
-    // Stopped here, the key reaches no binding; GPUI still hands it to the
-    // first key listener on the focused path, the component `Root`'s key-up
-    // listener or a dialog host's, which take no key-down that waits.
-    // Residuals: on macOS a Command pressed during the hold is another key
-    // here and ends `began` (below), so the first plain repeat after Command
-    // comes up is no repeat of this press and reaches a field's or a list's
-    // binding, though never the dialog's confirmation or a Button, since
-    // macOS marks repeats held (whether Enter goes on repeating across the
-    // Command is unverified without a Mac). The input method's pairing
-    // assumes the compositor delivers its release and press together, as
-    // every one of 426 recorded fcitx5 pairs arrived (3 to 54 µs apart).
+    // or press that Button.
     //
     // Registered once per application, however often `init` runs, as it
-    // does for each app a test builds: a second interceptor saw every Enter
-    // key-down again, after the first had recorded it, and took it for a
-    // repeat of its own press, so nothing that asks
-    // [`enter_press_is_repeat`] acted on any press, in any window.
+    // does for each app a test builds.
     if cx.has_global::<EnterInterceptor>() {
         return;
     }
@@ -261,16 +233,7 @@ struct EnterPress {
     /// key-up's number: the press ends once the application next runs a
     /// task ([`end_released`]), unless an Enter goes down first, in that
     /// window or, for a key-up in another window, in any window, as the
-    /// press of an input method's repeat follows its release together. That
-    /// task runs in the event loop's next idle pass: on Linux the spawn
-    /// wakes the main-thread channel, read in the loop's current iteration
-    /// if its ping is already pending, or else in the next, and its runnable
-    /// runs as an idle at the end of that iteration, after every input
-    /// source of the key-up's batch (`gpui-pre-linux`'s `dispatcher.rs` and
-    /// `wayland/client.rs`). A
-    /// person who releases Enter and presses it again within that window,
-    /// as within one slow frame, loses that press, as a press whose key-up
-    /// never arrives does, which fails safe.
+    /// press of an input method's repeat follows its release together.
     released: HashMap<WindowId, u64>,
     /// The number of the last Enter key-up that left a press `released`.
     key_ups: u64,
@@ -313,30 +276,8 @@ pub fn dialog_closing(window: &Window, cx: &mut App) {
 /// waited out, once the application next runs a task, unless an Enter goes
 /// down before that, as an input method's repeat follows its release
 /// ([`EnterPress::released`]). A dialog's host notes it, and so does
-/// whatever holds the window's root, as the component `Root` does, since an
+/// whatever holds the window's root, as `Root` does, since an
 /// Enter can come up with no dialog open.
-///
-/// A press ends only on an Enter key-up, never as its window loses focus:
-/// under X11 a held Enter's repeats arrive as fresh presses, and the focus
-/// leaves and comes back whenever another client grabs the keyboard (a
-/// global shortcut, a window move, a screenshot tool), so a press forgotten
-/// then let the next repeat confirm the reviewed write its dialog asked
-/// about. A key-up in a window with no press of its own ends the press of
-/// every window still holding Enter down once the application next runs a
-/// task, unless an Enter goes down first in any window: with none, the key
-/// came up after focus left the window it went down in, but an input
-/// method's repeat sends its press there right after its release, as the
-/// key stays down. Under X11 an unpaired release at a poll batch's end,
-/// whose press arrives in the next batch, after that task, still ends them:
-/// the residual the patch note records. A key-up in a window with nothing
-/// focused reaches no root listener that notes it, so the press stays
-/// recorded. One that lands in another application ends none: the next
-/// Return in the window is taken for a repeat of the press and swallowed,
-/// until its own key-up, which fails safe. A key-up in a window with a press
-/// of its own ends only that press: under X11 a held Enter's repeats record
-/// a press in the window focus moved to, and an unpaired release there that
-/// ended every window's press would let the next repeat back in the first
-/// window, a fresh press, confirm its dialog.
 pub fn note_key_up(event: &KeyUpEvent, window: &Window, cx: &mut App) {
     if event.keystroke.key != ENTER {
         return;
@@ -352,9 +293,6 @@ pub fn note_key_up(event: &KeyUpEvent, window: &Window, cx: &mut App) {
         || press.blocked.contains(&window)
         || press.began.contains_key(&window))
     {
-        // No window holds Enter down while its key-up waits for its task:
-        // the interceptor takes a window out of `released` before marking it
-        // down, and `release` takes it out of `down` before recording it.
         debug_assert!(press.down.iter().all(|held| !press.released.contains_key(held)));
         let key_downs = press.key_downs;
         let held: SmallVec<[WindowId; 1]> = press.down.iter().copied().collect();
@@ -368,10 +306,7 @@ pub fn note_key_up(event: &KeyUpEvent, window: &Window, cx: &mut App) {
 
 /// GitTurtle patch: Enter came up for the press recorded in `window`, in
 /// that window, or in another with `key_downs` the Enter key-downs counted
-/// as it came up ([`end_released`]). One in another window schedules the
-/// end of a press that only holds the key down too, so an Enter going down
-/// after it, in any window, keeps that window's mark, which a dialog opened
-/// there waits on ([`dialog_opened`]).
+/// as it came up ([`end_released`]).
 fn release(window: WindowId, key_downs: Option<u64>, cx: &mut App) {
     let press = cx.global_mut::<EnterPress>();
     press.down.remove(&window);
@@ -391,9 +326,7 @@ fn release(window: WindowId, key_downs: Option<u64>, cx: &mut App) {
 /// GitTurtle patch: ends the press in `window` whose Enter came up as key-up
 /// `key_up`, unless an Enter went down since in that window, or, for a
 /// key-up in another window, with `key_downs` the count as it came up, in
-/// any window: an input method's repeat sends its press right after its
-/// release, in the window focus moved to, so the key is still down and the
-/// press holds it down again.
+/// any window.
 fn end_released(window: WindowId, key_up: u64, key_downs: Option<u64>, cx: &mut App) {
     if cx
         .try_global::<EnterPress>()
@@ -414,10 +347,7 @@ fn end_released(window: WindowId, key_up: u64, key_downs: Option<u64>, cx: &mut 
 /// GitTurtle patch: whether the Enter press going down in `window` began
 /// with `focus` focused, or no press is recorded. A control that acts on
 /// Enter as the key goes down asks this, so a held Enter acts once, on the
-/// control it began on: under X11 a held key's repeats arrive as fresh
-/// presses, not marked held, so a press that moved focus to a Button had
-/// the next repeat press that Button. The press ends at its key-up or at
-/// any other key, as a held key's repeats do.
+/// control it began on.
 pub fn enter_press_began_on(focus: &FocusHandle, window: &Window, cx: &App) -> bool {
     cx.try_global::<EnterPress>()
         .and_then(|press| press.began.get(&window.window_handle().window_id()))
@@ -425,19 +355,7 @@ pub fn enter_press_began_on(focus: &FocusHandle, window: &Window, cx: &App) -> b
 }
 
 /// GitTurtle patch: whether the Enter key-down `window` is dispatching
-/// repeats the press recorded there: it went down again with no Enter
-/// key-up or other key since, as a held key repeats on every platform
-/// (marked held on macOS and Wayland, not under X11, where each repeat
-/// arrives as a fresh press), or right after a key-up that came with it, as
-/// an input method's repeat on Wayland and an X11 repeat's release and press
-/// arrive. A control that acts on Enter as the key goes down, whatever the
-/// focus it began on, asks this as well as [`enter_press_began_on`], so a
-/// held Enter acts once under X11 too: a held Enter in a form's field that
-/// submits it, whose focus stays put, began on that field on every repeat,
-/// so after a refused save each repeat began another. The residual is
-/// [`EnterPress::released`]'s: an X11 repeat whose release ends a poll batch
-/// and whose press arrives in the next, after the idle pass that ends the
-/// press, is a fresh press.
+/// repeats the press recorded there.
 pub fn enter_press_is_repeat(window: &Window, cx: &App) -> bool {
     cx.try_global::<EnterPress>()
         .is_some_and(|press| press.repeats.contains(&window.window_handle().window_id()))
@@ -455,13 +373,7 @@ fn enter_blocked(window: &Window, cx: &App) -> bool {
 
 /// GitTurtle patch: whether `event` is Enter going down on a focused Button
 /// in a dialog, which activates that Button rather than the dialog's default
-/// action: the focus ring shows the control the keyboard acts on, and Enter
-/// there took the dialog's [`Confirm`], pressing a control other than the one
-/// it marks. On the Button the binding above leaves the key unbound, so it
-/// reaches the Button, which acts as it goes down, never on a held key's
-/// repeats, as a popover's trigger and a menu act, and takes it no further.
-/// In a field, on the dialog itself and on anything else that is not a
-/// Button, Enter is the dialog's [`Confirm`] as before; Escape is unchanged.
+/// action.
 pub(crate) fn enter_presses_button(event: &KeyDownEvent, window: &Window) -> bool {
     event.keystroke.key == ENTER
         && !event.keystroke.modifiers.modified()
@@ -503,6 +415,7 @@ pub struct Dialog {
     style: StyleRefinement,
     focus: FocusHandle,
     role: Role,
+    accessibility_label: Option<SharedString>,
     layer: usize,
     keyboard: bool,
     overlay_closable: bool,
@@ -563,6 +476,9 @@ impl RenderOnce for DialogTrigger {
 
 macro_rules! dialog_part {
     ($(#[$meta:meta])* $name:ident, $id:literal) => {
+        dialog_part!($(#[$meta])* $name, $id, false);
+    };
+    ($(#[$meta:meta])* $name:ident, $id:literal, $occlude:literal) => {
         $(#[$meta])*
         #[derive(IntoElement)]
         pub struct $name {
@@ -601,6 +517,9 @@ macro_rules! dialog_part {
             fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
                 div()
                     .id($id)
+                    // The popup sits over the backdrop, whose press dismisses
+                    // the dialog, so it keeps presses on itself from falling through.
+                    .when($occlude, |this| this.occlude())
                     .children(self.children)
                     .refine_style(&self.style)
             }
@@ -617,7 +536,8 @@ dialog_part!(
 dialog_part!(
     /// Unstyled popup part containing dialog content.
     DialogPopup,
-    "dialog-popup"
+    "dialog-popup",
+    true
 );
 
 /// Unstyled title slot for a dialog surface.
@@ -710,6 +630,10 @@ impl RenderOnce for DialogDescription {
 pub struct DialogClose {
     style: StyleRefinement,
     children: SmallVec<[AnyElement; 1]>,
+    trigger: Option<AnyElement>,
+    /// The focus node activation dispatches from, filled at render and read
+    /// when clicked, so the trigger built earlier reaches it too.
+    anchor: Rc<RefCell<Option<FocusHandle>>>,
 }
 
 impl DialogClose {
@@ -717,6 +641,36 @@ impl DialogClose {
         Self {
             style: StyleRefinement::default(),
             children: SmallVec::new(),
+            trigger: None,
+            anchor: Rc::default(),
+        }
+    }
+
+    /// Styles a button with the accessible name "Close" and cancel activation.
+    ///
+    /// The supplied button already supports pointer, keyboard, and accessibility
+    /// activation. The builder only needs to supply presentation.
+    /// The wrapper does not also handle clicks when a trigger is supplied.
+    pub fn trigger<E: IntoElement>(mut self, build: impl FnOnce(crate::Button) -> E) -> Self {
+        let anchor = self.anchor.clone();
+        let button = crate::Button::new("close")
+            .accessibility_label("Close")
+            .on_click(move |_, window, cx| Self::activate(&anchor, window, cx));
+        self.trigger = Some(build(button).into_any_element());
+        self
+    }
+
+    /// Dispatches [`Cancel`] from the control's own focus node, so it reaches
+    /// the dialog the control sits in whatever holds focus at that moment: a
+    /// surface that keeps taking focus back (a native web view, an
+    /// always-on-top window) would otherwise leave the control inert.
+    fn activate(anchor: &RefCell<Option<FocusHandle>>, window: &mut Window, cx: &mut App) {
+        // Clone out before dispatching so the dialog's handlers never run
+        // while the cell is borrowed.
+        let anchor = anchor.borrow().clone();
+        match anchor {
+            Some(anchor) => anchor.dispatch_action(&Cancel, window, cx),
+            None => window.dispatch_action(Box::new(Cancel), cx),
         }
     }
 }
@@ -736,10 +690,23 @@ impl Styled for DialogClose {
     }
 }
 impl RenderOnce for DialogClose {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let anchor = window
+            .use_keyed_state("dialog-close-anchor", cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        *self.anchor.borrow_mut() = Some(anchor.clone());
+        let cell = self.anchor;
         div()
             .id("dialog-close")
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx))
+            // A zero-size, out-of-flow node that tracks the anchor: it is never
+            // hovered, so it takes no focus on its own and does not enter the
+            // Tab order, but it sits inside this dialog's dispatch path.
+            .child(div().absolute().size_0().track_focus(&anchor))
+            .when(self.trigger.is_none(), |this| {
+                this.on_click(move |_, window, cx| Self::activate(&cell, window, cx))
+            })
+            .children(self.trigger)
             .children(self.children)
             .refine_style(&self.style)
     }
@@ -751,6 +718,7 @@ impl Dialog {
             style: StyleRefinement::default(),
             focus: cx.focus_handle(),
             role: Role::Dialog,
+            accessibility_label: None,
             layer: 0,
             keyboard: true,
             overlay_closable: true,
@@ -819,6 +787,11 @@ impl Dialog {
     pub fn kind(self, kind: DialogKind) -> Self {
         self.role(kind.role())
     }
+    /// Names the dialog for accessibility clients (its title, typically).
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
     #[doc(hidden)]
     pub fn layer(mut self, index: usize, topmost: bool) -> Self {
         self.layer = index;
@@ -882,12 +855,21 @@ impl RenderOnce for Dialog {
             anchored().position(point(px(0.), px(0.))).child(
                 div()
                     .id(("dialog-host", self.layer))
+                    .test_support()
                     .absolute()
                     .top_0()
                     .left_0()
                     .w(viewport.width)
                     .h(viewport.height)
+                    // A popup in normal flow lands centered; `refine_style`
+                    // below lets the caller lay the host out differently.
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .role(self.role)
+                    .when_some(self.accessibility_label.clone(), |this, label| {
+                        this.aria_label(label)
+                    })
                     .track_focus(&self.focus)
                     .focus_trap(format!("dialog-{}", self.layer), &self.focus)
                     .when(self.keyboard, |this| this.key_context(CONTEXT))
@@ -905,11 +887,7 @@ impl RenderOnce for Dialog {
                             // it goes down, never on a held key's repeats,
                             // under X11 too ([`enter_press_is_repeat`]),
                             // and not at all until an Enter that opened the
-                            // dialog comes up. Taken in the capture phase,
-                            // ahead of anything inside the dialog, as the
-                            // binding to `Confirm` took it; a press something
-                            // inside binds (a field, a Button) reaches it as
-                            // before, unless the dialog waits out its opener.
+                            // dialog comes up.
                             .capture_key_down(move |event, window, cx| {
                                 if event.keystroke.key != ENTER
                                     || event.keystroke.modifiers.modified()
@@ -1033,6 +1011,133 @@ mod tests {
     use gpui::{Context, Render, point};
     use std::{cell::RefCell, rc::Rc};
 
+    #[gpui::test]
+    fn a_dialog_takes_an_accessible_name(cx: &mut gpui::TestAppContext) {
+        struct Named;
+        impl Render for Named {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().child(
+                    Dialog::new(cx)
+                        .accessibility_label("Discard draft?")
+                        .popup(div().size(px(10.))),
+                )
+            }
+        }
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| Named);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let dialog = cx.update(|window, _| {
+            crate::test_support::snapshots(window)
+                .into_iter()
+                .find(|node| node.role() == Some(Role::Dialog))
+                .expect("a dialog node")
+        });
+        assert_eq!(dialog.label(), Some("Discard draft?"));
+    }
+
+    #[gpui::test]
+    fn close_trigger_supplies_accessible_button(cx: &mut gpui::TestAppContext) {
+        use gpui::{Element as _, accesskit, canvas};
+        use std::sync::{Arc, Mutex};
+
+        struct Probe(Arc<Mutex<Option<accesskit::Node>>>);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let captured = self.0.clone();
+                canvas(
+                    move |_, window, cx| {
+                        DialogClose::new().trigger(|button| {
+                            let element = button.render(window, cx).into_element();
+                            let mut node = accesskit::Node::new(element.a11y_role().unwrap());
+                            element.write_a11y_info(&mut node);
+                            *captured.lock().unwrap() = Some(node);
+                            element
+                        });
+                    },
+                    |_, _, _, _| {},
+                )
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(None));
+        let result = captured.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| Probe(captured));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let node = result.lock().unwrap().take().unwrap();
+        assert_eq!(node.role(), Role::Button);
+        assert_eq!(node.label(), Some("Close"));
+        assert!(node.supports_action(accesskit::Action::Click));
+    }
+
+    #[gpui::test]
+    fn close_trigger_activates_once_and_respects_cancel_veto(cx: &mut gpui::TestAppContext) {
+        use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
+
+        struct Harness {
+            focus: FocusHandle,
+            button_focus: FocusHandle,
+            handle: DialogHandle,
+            attempts: Rc<Cell<usize>>,
+        }
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let attempts = self.attempts.clone();
+                let button_focus = self.button_focus.clone();
+                Dialog::new(cx)
+                    .handle(self.handle.clone())
+                    .focus_handle(self.focus.clone())
+                    .on_cancel(move |_, _, _| {
+                        attempts.set(attempts.get() + 1);
+                        attempts.get() > 1
+                    })
+                    .popup(
+                        DialogClose::new().trigger(move |button| {
+                            button.size(px(100.)).track_focus(&button_focus)
+                        }),
+                    )
+            }
+        }
+
+        cx.update(crate::init);
+        let handle = DialogHandle::new(true);
+        let attempts = Rc::new(Cell::new(0));
+        let (view, cx) = cx.add_window_view({
+            let handle = handle.clone();
+            let attempts = attempts.clone();
+            move |_, cx| Harness {
+                focus: cx.focus_handle(),
+                button_focus: cx.focus_handle(),
+                handle,
+                attempts,
+            }
+        });
+        let viewport = cx.update(|window, cx| {
+            view.read(cx).focus.clone().focus(window, cx);
+            window.draw(cx).clear(cx);
+            window.viewport_size()
+        });
+        let popup_center = point(viewport.width / 2., viewport.height / 2.);
+        cx.simulate_click(popup_center, Default::default());
+        cx.run_until_parked();
+        assert_eq!(attempts.get(), 1);
+        assert!(handle.is_open(), "on_cancel can veto pointer dismissal");
+
+        cx.update(|window, cx| {
+            view.read(cx).button_focus.clone().focus(window, cx);
+            window.draw(cx).clear(cx);
+        });
+        let keystroke = Keystroke::parse("space").unwrap();
+        cx.simulate_event(KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke });
+        cx.run_until_parked();
+        assert_eq!(attempts.get(), 2);
+        assert!(!handle.is_open(), "Space uses the same cancel decision");
+    }
+
     struct TriggerHarness {
         handle: DialogHandle,
     }
@@ -1116,18 +1221,81 @@ mod tests {
         );
     }
 
+    /// The backdrop sits under the popup, so a press on the popup must not
+    /// reach it and dismiss the dialog.
+    #[gpui::test]
+    fn pressing_the_popup_does_not_dismiss(cx: &mut gpui::TestAppContext) {
+        struct Harness(DialogHandle);
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                Dialog::new(cx)
+                    .handle(self.0.clone())
+                    .backdrop(div().absolute().size_full())
+                    .popup(DialogPopup::new().size(px(100.)))
+            }
+        }
+
+        cx.update(crate::init);
+        let handle = DialogHandle::new(true);
+        let (_, cx) = cx.add_window_view({
+            let handle = handle.clone();
+            move |_, _| Harness(handle)
+        });
+        let viewport = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.viewport_size()
+        });
+
+        cx.simulate_click(
+            point(viewport.width / 2., viewport.height / 2.),
+            Default::default(),
+        );
+        assert!(
+            handle.is_open(),
+            "a press on the popup keeps the dialog open"
+        );
+
+        cx.simulate_click(point(px(5.), px(5.)), Default::default());
+        assert!(!handle.is_open(), "a press on the backdrop still dismisses");
+    }
+
+    #[gpui::test]
+    fn the_popup_is_centered_by_default(cx: &mut gpui::TestAppContext) {
+        use gpui::{Bounds, canvas};
+        use std::cell::Cell;
+
+        struct Harness(Rc<Cell<Bounds<Pixels>>>);
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let bounds = self.0.clone();
+                Dialog::new(cx).popup(
+                    canvas(move |popup, _, _| bounds.set(popup), |_, _, _, _| {}).size(px(100.)),
+                )
+            }
+        }
+
+        cx.update(crate::init);
+        let bounds = Rc::new(Cell::new(Bounds::default()));
+        let (_, cx) = cx.add_window_view({
+            let bounds = bounds.clone();
+            move |_, _| Harness(bounds)
+        });
+        let viewport = cx.update(|window, cx| {
+            let viewport = window.viewport_size();
+            window.draw(cx).clear(cx);
+            viewport
+        });
+
+        assert_eq!(
+            bounds.get().center(),
+            point(viewport.width / 2., viewport.height / 2.)
+        );
+    }
+
     /// GitTurtle patch: Enter on a focused Button in a dialog presses that
     /// Button, once, as the key goes down: a held key's repeats and its
     /// release press nothing more, and the dialog's default action does not
-    /// run. On the dialog itself and on a focused element that is not a
-    /// Button, Enter is the dialog's [`Confirm`], as before. Bound to
-    /// [`Confirm`] in the dialog, Enter on the Button ran the default action
-    /// and pressed nothing. A press that began on another control presses
-    /// the Button nothing once focus moves to it, as a press that opens or
-    /// focuses a control moves it: under X11 the held press's repeats arrive
-    /// not marked held, and the first pressed the Button. On macOS a
-    /// Command-Enter, whose key-up Cocoa never sends, begins no press; off
-    /// macOS a Super-Enter, whose key-up arrives, begins one as Enter does.
+    /// run.
     #[gpui::test]
     fn enter_on_a_focused_button_presses_it_once(cx: &mut gpui::TestAppContext) {
         use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
@@ -1190,11 +1358,13 @@ mod tests {
 
         focus(cx, |harness| harness.button.clone());
         down(cx, false);
-        assert_eq!((presses.get(), confirms.get()), (1, 0), "Enter presses the Button");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (1, 0),
+            "Enter presses the Button"
+        );
         down(cx, true);
         down(cx, true);
-        // Under X11 a held key's repeats arrive as fresh presses, unmarked;
-        // each began on the Button, where focus stays.
         down(cx, false);
         down(cx, false);
         cx.simulate_event(KeyUpEvent {
@@ -1208,14 +1378,22 @@ mod tests {
 
         focus(cx, |harness| harness.dialog.clone());
         down(cx, false);
-        assert_eq!((presses.get(), confirms.get()), (1, 1), "on the dialog, Confirm");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (1, 1),
+            "on the dialog, Confirm"
+        );
         cx.simulate_event(KeyUpEvent {
             keystroke: enter.clone(),
         });
 
         focus(cx, |harness| harness.field.clone());
         down(cx, false);
-        assert_eq!((presses.get(), confirms.get()), (1, 2), "beside the Button, Confirm");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (1, 2),
+            "beside the Button, Confirm"
+        );
 
         focus(cx, |harness| harness.button.clone());
         down(cx, false);
@@ -1234,12 +1412,6 @@ mod tests {
             "a press of its own presses it"
         );
 
-        // On macOS a Command-Enter is no press of Enter's: Cocoa sends no
-        // key-up for a key pressed with Command held, and a recorded
-        // secondary Enter took the next Return on another control for its
-        // repeat. Off macOS the same keystroke is Super-Enter, whose key-up
-        // arrives, so begun beside the Button it presses that Button nothing
-        // until it comes up.
         cx.simulate_event(KeyUpEvent {
             keystroke: enter.clone(),
         });
@@ -1276,9 +1448,6 @@ mod tests {
         }
     }
 
-    /// A probe of two dialogs: A, focused on its Button, which opens B over
-    /// it as a reviewed write's last step opens, and B, whose default action
-    /// counts.
     struct Pair {
         a: FocusHandle,
         button: FocusHandle,
@@ -1289,7 +1458,8 @@ mod tests {
 
     impl Render for Pair {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let (b, b_open, confirms) = (self.b.clone(), self.b_open.clone(), self.confirms.clone());
+            let (b, b_open, confirms) =
+                (self.b.clone(), self.b_open.clone(), self.confirms.clone());
             div()
                 .child(
                     Dialog::new(cx)
@@ -1321,9 +1491,7 @@ mod tests {
         }
     }
 
-    fn pair(
-        cx: &mut gpui::TestAppContext,
-    ) -> (gpui::Entity<Pair>, &mut gpui::VisualTestContext) {
+    fn pair(cx: &mut gpui::TestAppContext) -> (gpui::Entity<Pair>, &mut gpui::VisualTestContext) {
         cx.update(crate::init);
         let (view, cx) = cx.add_window_view(|_, cx| Pair {
             a: cx.focus_handle(),
@@ -1349,11 +1517,6 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
-    /// GitTurtle patch: Enter on a dialog confirms it once, as the key goes
-    /// down; a held key's repeats confirm nothing more, also under X11,
-    /// where they arrive as fresh presses. Bound to [`Confirm`], every
-    /// repeat confirmed again; filtered by the held mark alone, each X11
-    /// repeat did, so a form a refused write left open submitted again.
     #[gpui::test]
     fn a_held_enter_confirms_a_dialog_once(cx: &mut gpui::TestAppContext) {
         let (view, cx) = pair(cx);
@@ -1377,12 +1540,6 @@ mod tests {
         assert_eq!(confirms.get(), 2, "a fresh press confirms again");
     }
 
-    /// GitTurtle patch: `init` run again in the same application, as the
-    /// app's tests run it for each app they build, records each Enter
-    /// key-down once: a fresh press is no repeat of itself and confirms the
-    /// dialog once. A second interceptor saw the key-down again after the
-    /// first had recorded it and took it for a repeat, so nothing that asks
-    /// [`enter_press_is_repeat`] acted on any press.
     #[gpui::test]
     fn init_again_records_each_enter_once(cx: &mut gpui::TestAppContext) {
         let (view, cx) = pair(cx);
@@ -1404,9 +1561,6 @@ mod tests {
         enter(cx, None);
     }
 
-    /// GitTurtle patch: a dialog an Enter press opened takes no Enter until
-    /// that press comes up, even a key-down not marked held, as each repeat
-    /// arrives under X11; then a fresh Enter confirms it.
     #[gpui::test]
     fn a_dialog_waits_for_the_enter_that_opened_it(cx: &mut gpui::TestAppContext) {
         let (view, cx) = pair(cx);
@@ -1418,17 +1572,22 @@ mod tests {
             window.draw(cx).clear(cx);
         });
         enter(cx, Some(false));
-        assert!(cx.update(|window, _| b.is_focused(window)), "the press opened B");
+        assert!(
+            cx.update(|window, _| b.is_focused(window)),
+            "the press opened B"
+        );
         enter(cx, Some(false));
         enter(cx, Some(false));
-        assert_eq!(confirms.get(), 0, "no confirm before the opening press comes up");
+        assert_eq!(
+            confirms.get(),
+            0,
+            "no confirm before the opening press comes up"
+        );
         enter(cx, None);
         enter(cx, Some(false));
         assert_eq!(confirms.get(), 1, "a fresh press after it confirms");
     }
 
-    /// A dialog with a field and a Button inside it, as a reviewed write's
-    /// confirmation holds its own, and a control outside it.
     struct ButtonDialog {
         dialog: FocusHandle,
         field: FocusHandle,
@@ -1481,8 +1640,7 @@ mod tests {
         (view, cx)
     }
 
-    /// A key-down of `keys` not marked held, as each X11 repeat arrives.
-    fn key_down(cx: &mut gpui::VisualTestContext, keys: &str) {
+    fn key_down(cx: &mut gpui::VisualTestContext, keys: &'static str) {
         cx.simulate_event(gpui::KeyDownEvent {
             keystroke: gpui::Keystroke::parse(keys).unwrap(),
             is_held: false,
@@ -1499,18 +1657,18 @@ mod tests {
         });
     }
 
-    /// A held Shift- or Control-Enter that opens a confirmation, as a
-    /// one-line field's Enter (which takes either as Enter) opens a reviewed
-    /// write's, is an Enter press: under X11, once the modifier comes up,
-    /// the held key's next repeat arrives as a plain Enter not marked held,
-    /// and the confirmation takes none until the key-up.
     fn a_dialog_opened_by_a_held_modified_enter_waits_for_its_key_up(
         cx: &mut gpui::TestAppContext,
-        opener: &str,
+        opener: &'static str,
     ) {
         let (view, cx) = pair(cx);
         let (a, b, b_open, confirms) = view.read_with(cx, |pair, _| {
-            (pair.a.clone(), pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+            (
+                pair.a.clone(),
+                pair.b.clone(),
+                pair.b_open.clone(),
+                pair.confirms.clone(),
+            )
         });
         focus_on(cx, &a);
         key_down(cx, opener);
@@ -1528,29 +1686,23 @@ mod tests {
         );
         enter(cx, None);
         enter(cx, Some(false));
-        assert_eq!(confirms.get(), 1, "{opener}: a fresh press after its key-up confirms");
+        assert_eq!(
+            confirms.get(),
+            1,
+            "{opener}: a fresh press after its key-up confirms"
+        );
     }
 
-    /// GitTurtle patch: a confirmation opened by a held Shift-Enter waits for
-    /// its key-up. Left unrecorded, as every modified Enter once was, the
-    /// plain repeat after Shift came up confirmed it.
     #[gpui::test]
-    fn a_dialog_opened_by_a_held_shift_enter_waits_for_its_key_up(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn a_dialog_opened_by_a_held_shift_enter_waits_for_its_key_up(cx: &mut gpui::TestAppContext) {
         a_dialog_opened_by_a_held_modified_enter_waits_for_its_key_up(cx, "shift-enter");
     }
 
-    /// GitTurtle patch: as a Shift-Enter, a Control-Enter.
     #[gpui::test]
-    fn a_dialog_opened_by_a_held_control_enter_waits_for_its_key_up(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn a_dialog_opened_by_a_held_control_enter_waits_for_its_key_up(cx: &mut gpui::TestAppContext) {
         a_dialog_opened_by_a_held_modified_enter_waits_for_its_key_up(cx, "ctrl-enter");
     }
 
-    /// GitTurtle patch: a Button focused in a dialog a held Shift-Enter
-    /// opened takes no plain repeat of that press, nor does the dialog.
     #[gpui::test]
     fn a_button_in_a_dialog_opened_by_a_held_shift_enter_takes_no_repeat(
         cx: &mut gpui::TestAppContext,
@@ -1580,23 +1732,27 @@ mod tests {
         );
     }
 
-    /// GitTurtle patch: Control going down and up while an Enter that moved
-    /// focus to a Button stays held, so that under X11 its repeats arrive as
-    /// a Control-Enter and then a plain Enter, none marked held, lets no
-    /// repeat press that Button: the Control-Enter does not end the press.
     #[gpui::test]
     fn a_control_tap_during_a_held_enter_lets_no_repeat_press_the_button(
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx) = button_dialog(cx, true);
         let (field, button, presses) = view.read_with(cx, |dialog, _| {
-            (dialog.field.clone(), dialog.button.clone(), dialog.presses.clone())
+            (
+                dialog.field.clone(),
+                dialog.button.clone(),
+                dialog.presses.clone(),
+            )
         });
         focus_on(cx, &field);
         enter(cx, Some(false));
         focus_on(cx, &button);
         enter(cx, Some(false));
-        assert_eq!(presses.get(), 0, "a repeat on the Button focus moved to presses nothing");
+        assert_eq!(
+            presses.get(),
+            0,
+            "a repeat on the Button focus moved to presses nothing"
+        );
         key_down(cx, "ctrl-enter");
         enter(cx, Some(false));
         assert_eq!(
@@ -1606,9 +1762,6 @@ mod tests {
         );
     }
 
-    /// An Enter key-up followed by an Enter key-down in the same batch of
-    /// input events, with no task run between them, as an input method on
-    /// Wayland (fcitx5) sends each repeat of a key held in a text field.
     fn input_method_repeat(cx: &mut gpui::VisualTestContext) {
         let keystroke = gpui::Keystroke::parse("enter").unwrap();
         cx.update(|window, cx| {
@@ -1632,9 +1785,6 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
-    /// A focused root that records, for each Enter going down,
-    /// [`enter_press_is_repeat`] as its listeners see it, and notes every
-    /// key-up, as the component `Root` does.
     struct RepeatProbe {
         focus: FocusHandle,
         seen: Rc<RefCell<Vec<bool>>>,
@@ -1655,13 +1805,6 @@ mod tests {
         }
     }
 
-    /// GitTurtle patch: a key-down that repeats the recorded Enter press is
-    /// one to its window's listeners, whether marked held, as macOS and
-    /// Wayland mark a held key's repeats, or not, as X11 sends them, and
-    /// whether alone or right after a key-up that came with it; the first
-    /// key-down after the press's key-up, or after another key, is not. A
-    /// form whose focus stays on the field a held Enter submits began
-    /// another submission on each X11 repeat.
     #[gpui::test]
     fn a_key_down_knows_it_repeats_the_enter_press(cx: &mut gpui::TestAppContext) {
         cx.update(crate::init);
@@ -1675,16 +1818,22 @@ mod tests {
             }
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        // Each key-down and whether its listeners saw it repeat the press.
         let down = |cx: &mut gpui::VisualTestContext, is_held| {
             enter(cx, Some(is_held));
-            seen.borrow().last().copied().expect("the root saw the key-down")
+            seen.borrow()
+                .last()
+                .copied()
+                .expect("the root saw the key-down")
         };
         assert!(!down(cx, false), "the first key-down is the press");
         assert!(down(cx, true), "a held repeat");
         assert!(down(cx, false), "an X11 repeat, not marked held");
         input_method_repeat(cx);
-        assert_eq!(seen.borrow().last(), Some(&true), "a release and its press together");
+        assert_eq!(
+            seen.borrow().last(),
+            Some(&true),
+            "a release and its press together"
+        );
         enter(cx, None);
         assert!(!down(cx, false), "the first key-down after the key-up");
         assert!(down(cx, false), "its X11 repeat");
@@ -1694,11 +1843,6 @@ mod tests {
         assert_eq!(seen.borrow().len(), 7, "every Enter reached the root");
     }
 
-    /// GitTurtle patch: a dialog an Enter press opened takes none of that
-    /// press's repeats as an input method sends them, each a release and a
-    /// press together, until the key comes up; then a fresh Enter confirms
-    /// it. The release ended the press, so the first repeat confirmed the
-    /// dialog the command palette had opened (QA-105).
     #[gpui::test]
     fn a_dialog_waits_out_an_input_method_s_repeats(cx: &mut gpui::TestAppContext) {
         let (view, cx) = pair(cx);
@@ -1707,7 +1851,10 @@ mod tests {
         });
         focus_on(cx, &button);
         enter(cx, Some(false));
-        assert!(cx.update(|window, _| b.is_focused(window)), "the press opened B");
+        assert!(
+            cx.update(|window, _| b.is_focused(window)),
+            "the press opened B"
+        );
         input_method_repeat(cx);
         input_method_repeat(cx);
         input_method_repeat(cx);
@@ -1717,8 +1864,6 @@ mod tests {
         assert_eq!(confirms.get(), 1, "a fresh press after its key-up confirms");
     }
 
-    /// Another window of the application, focused on its root, which notes
-    /// every key-up in it, as the component `Root` does.
     struct Blank(FocusHandle);
 
     impl Render for Blank {
@@ -1730,7 +1875,6 @@ mod tests {
         }
     }
 
-    /// Opens a [`Blank`] window, focused on its root.
     fn blank_window(cx: &mut gpui::TestAppContext) -> gpui::VisualTestContext {
         let other = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
@@ -1745,9 +1889,6 @@ mod tests {
         cx.run_until_parked();
     }
 
-    /// Opens [`Pair`]'s B with an Enter press on A's Button in the active
-    /// window and sends one of the press's repeats, as X11 sends them, not
-    /// marked held, which confirms nothing; returns B's confirmations.
     fn open_b_with_a_held_enter(
         cx: &mut gpui::VisualTestContext,
         view: &gpui::Entity<Pair>,
@@ -1758,19 +1899,15 @@ mod tests {
         activate(cx);
         focus_on(cx, &button);
         enter(cx, Some(false));
-        assert!(cx.update(|window, _| b.is_focused(window)), "the press opened B");
+        assert!(
+            cx.update(|window, _| b.is_focused(window)),
+            "the press opened B"
+        );
         enter(cx, Some(false));
         assert_eq!(confirms.get(), 0, "a repeat confirms nothing");
         confirms
     }
 
-    /// GitTurtle patch: a dialog an Enter press opened takes none of the
-    /// press's repeats across a focus bounce until the key comes up: under
-    /// X11 another client's keyboard grab (a global shortcut, a window move,
-    /// a screenshot tool) takes the window's focus and gives it back while
-    /// the key stays down, and the repeats that follow arrive as fresh
-    /// presses. A press forgotten as its window lost focus let the first of
-    /// them confirm the reviewed write the dialog asked about.
     #[gpui::test]
     fn a_held_enter_waits_out_a_focus_bounce(cx: &mut gpui::TestAppContext) {
         let (view, cx) = pair(cx);
@@ -1779,22 +1916,28 @@ mod tests {
         activate(cx);
         enter(cx, Some(false));
         enter(cx, Some(false));
-        assert_eq!(confirms.get(), 0, "no repeat after the focus came back confirms");
+        assert_eq!(
+            confirms.get(),
+            0,
+            "no repeat after the focus came back confirms"
+        );
         enter(cx, None);
         enter(cx, Some(false));
         assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
     }
 
-    /// GitTurtle patch: a dialog that opens while its window has lost focus,
-    /// as one a read asked for lands, waits out the press that asked for it
-    /// as one opened at once does.
     #[gpui::test]
     fn a_dialog_opened_while_its_window_lost_focus_waits_for_the_key_up(
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx) = pair(cx);
         let (a, b, b_open, confirms) = view.read_with(cx, |pair, _| {
-            (pair.a.clone(), pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+            (
+                pair.a.clone(),
+                pair.b.clone(),
+                pair.b_open.clone(),
+                pair.confirms.clone(),
+            )
         });
         activate(cx);
         focus_on(cx, &a);
@@ -1808,18 +1951,16 @@ mod tests {
         activate(cx);
         enter(cx, Some(false));
         enter(cx, Some(false));
-        assert_eq!(confirms.get(), 0, "no repeat of the press that asked for it confirms");
+        assert_eq!(
+            confirms.get(),
+            0,
+            "no repeat of the press that asked for it confirms"
+        );
         enter(cx, None);
         enter(cx, Some(false));
         assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
     }
 
-    /// GitTurtle patch: an Enter whose key-up lands in another window of the
-    /// application, one with no press of its own, as focus moved there while
-    /// the key was held, ends the press where it began: the next Enter there,
-    /// once that window is active again, is a fresh press and confirms the
-    /// dialog the press opened. Left recorded, the press made that Enter one
-    /// of its repeats, which the dialog waited out, and one Return was lost.
     #[gpui::test]
     fn an_enter_released_in_another_window_ends_its_press(cx: &mut gpui::TestAppContext) {
         let mut other = blank_window(cx);
@@ -1840,15 +1981,6 @@ mod tests {
         );
     }
 
-    /// GitTurtle patch: an input method's repeat in another window of the
-    /// application, a release and a press together, as fcitx5 on Wayland
-    /// sends each repeat of a key held in a text field, ends no press: its
-    /// release lands where no press is recorded, but the press that follows
-    /// it shows the key is still down, so the press where the key went down
-    /// holds, and the dialog it opened waits out the next Enter there as one
-    /// of its repeats until the key comes up. Ended by the release, the press
-    /// let that Enter, an X11 repeat or the input method's next repeat once
-    /// focus came back, confirm the dialog.
     #[gpui::test]
     fn an_input_method_s_repeat_in_another_window_ends_no_press(cx: &mut gpui::TestAppContext) {
         let mut other = blank_window(cx);
@@ -1870,11 +2002,6 @@ mod tests {
         assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
     }
 
-    /// GitTurtle patch: an Enter still down after another key ended its
-    /// repeats keeps its window's mark through an input method's repeat in
-    /// another window, so a dialog that opens there afterwards waits for the
-    /// key-up as one opened at once would. Cleared by the release, the mark
-    /// let the dialog take the next Enter there, the key still down.
     #[gpui::test]
     fn an_input_method_s_repeat_in_another_window_keeps_a_press_held_past_another_key(
         cx: &mut gpui::TestAppContext,
@@ -1882,7 +2009,12 @@ mod tests {
         let mut other = blank_window(cx);
         let (view, cx) = pair(cx);
         let (a, b, b_open, confirms) = view.read_with(cx, |pair, _| {
-            (pair.a.clone(), pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+            (
+                pair.a.clone(),
+                pair.b.clone(),
+                pair.b_open.clone(),
+                pair.confirms.clone(),
+            )
         });
         activate(cx);
         focus_on(cx, &a);
@@ -1909,14 +2041,6 @@ mod tests {
         assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
     }
 
-    /// GitTurtle patch: an Enter whose key-up lands in another window of the
-    /// application that recorded a press of its own, as a held Enter's X11
-    /// autorepeats reach the window focus moved to, ends only that window's
-    /// press: the next Enter where the key first went down is still taken for
-    /// one of its repeats and swallowed, until its own key-up. Had it ended
-    /// every window's press, an unpaired release at a poll batch's end
-    /// reaching the other window would end the first window's too, and back
-    /// there the next autorepeat, a fresh press, would confirm its dialog.
     #[gpui::test]
     fn an_enter_released_where_it_repeated_ends_only_that_window_s_press(
         cx: &mut gpui::TestAppContext,
@@ -1938,18 +2062,15 @@ mod tests {
         );
         enter(cx, None);
         enter(cx, Some(false));
-        assert_eq!(confirms.get(), 1, "a fresh press after its own key-up confirms");
+        assert_eq!(
+            confirms.get(),
+            1,
+            "a fresh press after its own key-up confirms"
+        );
     }
 
-    /// GitTurtle patch: an Enter whose key-up lands in another application,
-    /// which the application never sees, leaves its press recorded, so the
-    /// next Return in its window, a press of its own, is taken for one of its
-    /// repeats and swallowed until its own key-up: the one Return a press
-    /// whose key-up never arrives costs, which fails safe.
     #[gpui::test]
-    fn an_enter_released_in_another_application_swallows_one_return(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn an_enter_released_in_another_application_swallows_one_return(cx: &mut gpui::TestAppContext) {
         let (view, cx) = pair(cx);
         let confirms = open_b_with_a_held_enter(cx, &view);
         cx.deactivate_window();
@@ -1963,8 +2084,6 @@ mod tests {
 
     actions!(dialog_tests, [Probe]);
 
-    /// A dialog an Enter press opens, with an element inside it and one
-    /// outside it, each binding Enter as a field or a list binds it.
     struct Bound {
         dialog: FocusHandle,
         inside: FocusHandle,
@@ -1984,7 +2103,6 @@ mod tests {
             );
             let (open, dialog) = (self.open.clone(), self.dialog.clone());
             div()
-                // As the component `Root` notes every key-up in its window.
                 .capture_key_up(|event, window, cx| note_key_up(event, window, cx))
                 .child(
                     div()
@@ -1993,7 +2111,6 @@ mod tests {
                         .size(px(20.))
                         .on_action(move |_: &Probe, window, cx| {
                             outside_acts.set(outside_acts.get() + 1);
-                            // As a list's Enter opens a dialog.
                             if !open.get() {
                                 open.set(true);
                                 dialog_opened(window, cx);
@@ -2017,8 +2134,6 @@ mod tests {
                                 .size(px(20.))
                                 .on_action(move |_: &Probe, _, cx| {
                                     inside_acts.set(inside_acts.get() + 1);
-                                    // A one-line field hands Enter on to
-                                    // the dialog.
                                     cx.propagate();
                                 }),
                         ),
@@ -2026,16 +2141,6 @@ mod tests {
         }
     }
 
-    /// GitTurtle patch: the repeats of an Enter that opened a dialog reach
-    /// nothing in its window until the key comes up: not a field's or a
-    /// list's own Enter binding inside the dialog, nor, once the dialog has
-    /// gone, one behind it, whether the platform marks them held (macOS,
-    /// Wayland), sends them as fresh presses (X11) or as a release and a
-    /// press together (an input method). A binding runs before any key
-    /// listener, so the dialog's wait held off only its own confirmation and
-    /// its Buttons: a field inside took every repeat, as Quick Open's query
-    /// opened a file on a held Enter that opened Quick Open from the command
-    /// palette.
     #[gpui::test]
     fn a_held_enter_reaches_nothing_in_or_behind_the_dialog_it_opened(
         cx: &mut gpui::TestAppContext,
@@ -2080,14 +2185,20 @@ mod tests {
         assert_eq!(acts(), (1, 0, 0), "held repeats reach nothing inside");
         enter(cx, Some(false));
         enter(cx, Some(false));
-        // Under X11 a repeat carries the modifiers held as it repeats.
         key_down(cx, "shift-enter");
-        assert_eq!(acts(), (1, 0, 0), "repeats as X11 sends them reach nothing inside");
+        assert_eq!(
+            acts(),
+            (1, 0, 0),
+            "repeats as X11 sends them reach nothing inside"
+        );
         input_method_repeat(cx);
         input_method_repeat(cx);
-        assert_eq!(acts(), (1, 0, 0), "an input method's repeats reach nothing inside");
+        assert_eq!(
+            acts(),
+            (1, 0, 0),
+            "an input method's repeats reach nothing inside"
+        );
 
-        // Gone while the key stays down, as a click on Done closes it.
         open.set(false);
         focus_on(cx, &outside);
         enter(cx, Some(true));
