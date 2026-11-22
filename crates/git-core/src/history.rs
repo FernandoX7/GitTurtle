@@ -209,6 +209,103 @@ impl HistoryTraversal {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickaxeMode {
+    /// Commits where occurrences of the literal string changed (`git log -S`).
+    String,
+    /// Commits whose diff contains added or removed lines matching a regex (`git log -G`).
+    Regex,
+}
+
+/// Optional structured filters combined with a history search query.
+/// All text fields are bounded and passed to Git as attached single-argument
+/// options or literal `--` pathspecs so repository or user input can never
+/// inject command flags.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistorySearchFilter {
+    pub pickaxe: Option<(PickaxeMode, String)>,
+    pub author: Option<String>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub paths: Vec<PathBuf>,
+    pub regex: bool,
+    pub first_parent: bool,
+    pub no_merges: bool,
+}
+
+impl HistorySearchFilter {
+    pub fn is_empty(&self) -> bool {
+        !self.filters_without_query() && !self.regex
+    }
+
+    /// True when at least one filter narrows history even with an empty message query.
+    pub fn filters_without_query(&self) -> bool {
+        self.pickaxe
+            .as_ref()
+            .is_some_and(|(_, pattern)| !pattern.is_empty())
+            || self.author.as_deref().is_some_and(|v| !v.is_empty())
+            || self.since.as_deref().is_some_and(|v| !v.is_empty())
+            || self.until.as_deref().is_some_and(|v| !v.is_empty())
+            || !self.paths.is_empty()
+            || self.first_parent
+            || self.no_merges
+    }
+
+    pub fn active_count(&self) -> usize {
+        usize::from(
+            self.pickaxe
+                .as_ref()
+                .is_some_and(|(_, pattern)| !pattern.is_empty()),
+        ) + usize::from(self.author.as_deref().is_some_and(|v| !v.is_empty()))
+            + usize::from(self.since.as_deref().is_some_and(|v| !v.is_empty()))
+            + usize::from(self.until.as_deref().is_some_and(|v| !v.is_empty()))
+            + usize::from(!self.paths.is_empty())
+            + usize::from(self.regex)
+            + usize::from(self.first_parent)
+            + usize::from(self.no_merges)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let check_field = |value: &str, label: &str| -> Result<()> {
+            ensure!(value.len() <= 4096, "{label} exceeds 4 KiB");
+            ensure!(
+                !value.contains(['\0', '\r', '\n']),
+                "{label} must be a single line without NUL bytes"
+            );
+            Ok(())
+        };
+        if let Some((_, pattern)) = &self.pickaxe {
+            check_field(pattern, "Diff content search pattern")?;
+        }
+        if let Some(author) = &self.author {
+            check_field(author, "Author filter")?;
+        }
+        if let Some(since) = &self.since {
+            check_field(since, "Since date filter")?;
+        }
+        if let Some(until) = &self.until {
+            check_field(until, "Until date filter")?;
+        }
+        ensure!(
+            self.paths.len() <= 64,
+            "At most 64 path filters are supported per history search"
+        );
+        for path in &self.paths {
+            let raw = path.as_os_str().as_encoded_bytes();
+            ensure!(
+                !raw.is_empty()
+                    && raw.len() <= 16 * 1024
+                    && !raw.contains(&0)
+                    && path
+                        .components()
+                        .all(|part| matches!(part, std::path::Component::Normal(_))),
+                "Path filters must be literal repository-relative paths"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Stateful streaming history search cursor owned by a worker.
 /// Keeps the underlying `git log` stream open between Continue pages so
 /// subsequent pages resume directly at the next commit without `--skip` replay
@@ -216,6 +313,7 @@ impl HistoryTraversal {
 pub struct HistorySearch {
     scope: HistoryScope,
     query: String,
+    filter: HistorySearchFilter,
     matcher: CaseInsensitiveMatcher,
     order: HistoryOrder,
     offset: usize,
@@ -232,6 +330,10 @@ impl HistorySearch {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    pub fn filter(&self) -> &HistorySearchFilter {
+        &self.filter
     }
 
     pub fn offset(&self) -> usize {
@@ -313,11 +415,13 @@ impl HistorySearch {
                     drop(_cancel);
                     self.stream = None;
                     cancellation.check()?;
-                    let (cmd, input) = build_history_log_command(
+                    let (cmd, input) = build_history_log_command_filtered(
                         fallback.repo.target(),
                         &self.scope,
                         HistoryOrder::Chronological,
                         fallback.skip,
+                        &self.query,
+                        &self.filter,
                     )?;
                     let new_stream = HistoryStream::start(cmd, input)?;
                     let wake_ch = Arc::clone(&new_stream.channel);
@@ -336,7 +440,8 @@ impl HistorySearch {
                     let fields = stream.current_fields();
                     let body = trim_trailing_newlines(fields[5]);
                     scanned += 1;
-                    let matched = self.matcher.is_empty()
+                    let matched = self.filter.regex
+                        || self.matcher.is_empty()
                         || [fields[0], fields[2], fields[4], body]
                             .iter()
                             .any(|field| self.matcher.matches_bytes(field, &mut self.scratch));
@@ -667,7 +772,54 @@ impl GitRepository {
         order: HistoryOrder,
         cancellation: &HistoryCancellation,
     ) -> Result<HistorySearch> {
+        self.history_search_filtered_in_order(
+            scope,
+            query,
+            &HistorySearchFilter::default(),
+            offset,
+            order,
+            cancellation,
+        )
+    }
+
+    /// Create a stateful streaming history search cursor with structured
+    /// filters (diff content `-S`/`-G`, author, date range, path, regex,
+    /// first-parent, no-merges).
+    pub fn history_search_filtered(
+        &self,
+        scope: &HistoryScope,
+        query: &str,
+        filter: &HistorySearchFilter,
+        offset: usize,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearch> {
+        self.history_search_filtered_in_order(
+            scope,
+            query,
+            filter,
+            offset,
+            HistoryOrder::Topological,
+            cancellation,
+        )
+    }
+
+    /// Create a stateful streaming history search cursor with structured
+    /// filters and explicit initial ordering.
+    pub fn history_search_filtered_in_order(
+        &self,
+        scope: &HistoryScope,
+        query: &str,
+        filter: &HistorySearchFilter,
+        offset: usize,
+        order: HistoryOrder,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearch> {
         ensure!(query.len() <= 4096, "History query exceeds 4 KiB");
+        ensure!(
+            !query.contains('\0'),
+            "History query must not contain NUL bytes"
+        );
+        filter.validate()?;
         cancellation.check()?;
         let scope = match scope {
             HistoryScope::AllRefs => {
@@ -679,7 +831,14 @@ impl GitRepository {
             }
             other => other.clone(),
         };
-        let (command, input) = build_history_log_command(self.target(), &scope, order, offset)?;
+        let (command, input) = build_history_log_command_filtered(
+            self.target(),
+            &scope,
+            order,
+            offset,
+            query,
+            filter,
+        )?;
         let empty = matches!(&scope, HistoryScope::PinnedRefs(refs) if refs.is_empty());
         let fallback = (offset == 0
             && !empty
@@ -693,7 +852,12 @@ impl GitRepository {
         Ok(HistorySearch {
             scope,
             query: query.to_owned(),
-            matcher: CaseInsensitiveMatcher::new(query),
+            filter: filter.clone(),
+            matcher: if filter.regex {
+                CaseInsensitiveMatcher::new("")
+            } else {
+                CaseInsensitiveMatcher::new(query)
+            },
             order,
             offset,
             stream: if empty {
@@ -705,6 +869,25 @@ impl GitRepository {
             scratch: String::new(),
             failed: false,
         })
+    }
+
+    /// Structured history search combining query and [`HistorySearchFilter`].
+    pub fn search_history_filtered(
+        &self,
+        scope: &HistoryScope,
+        query: &str,
+        filter: &HistorySearchFilter,
+        offset: usize,
+        limit: usize,
+        cancellation: &HistoryCancellation,
+    ) -> Result<HistorySearchPage> {
+        ensure!(
+            (1..=MAX_HISTORY_PAGE).contains(&limit),
+            "History page must contain 1–500 results"
+        );
+        let mut cursor =
+            self.history_search_filtered(scope, query, filter, offset, cancellation)?;
+        cursor.next_page(limit, cancellation)
     }
 
     /// Literal, case-insensitive substring search of subject, description,
@@ -884,9 +1067,65 @@ fn build_history_log_command(
     order: HistoryOrder,
     skip: usize,
 ) -> Result<(Command, Option<Vec<u8>>)> {
+    build_history_log_command_filtered(
+        target,
+        scope,
+        order,
+        skip,
+        "",
+        &HistorySearchFilter::default(),
+    )
+}
+
+fn build_history_log_command_filtered(
+    target: GitTarget<'_>,
+    scope: &HistoryScope,
+    order: HistoryOrder,
+    skip: usize,
+    query: &str,
+    filter: &HistorySearchFilter,
+) -> Result<(Command, Option<Vec<u8>>)> {
     let mut command = history_command_ordered(target, order);
     if skip > 0 {
         command.arg(format!("--skip={skip}"));
+    }
+    if filter.first_parent {
+        command.arg("--first-parent");
+    }
+    if filter.no_merges {
+        command.arg("--no-merges");
+    }
+    if filter.regex {
+        command.args(["--regexp-ignore-case", "--extended-regexp"]);
+        if !query.is_empty() {
+            command.arg(format!("--grep={query}"));
+        }
+    } else if filter.author.as_deref().is_some_and(|v| !v.is_empty()) {
+        command.args(["--regexp-ignore-case", "--fixed-strings"]);
+    }
+    if let Some(author) = filter.author.as_deref().filter(|v| !v.is_empty()) {
+        command.arg(format!("--author={author}"));
+    }
+    if let Some(since) = filter.since.as_deref().filter(|v| !v.is_empty()) {
+        command.arg(format!("--since={since}"));
+    }
+    if let Some(until) = filter.until.as_deref().filter(|v| !v.is_empty()) {
+        command.arg(format!("--until={until}"));
+    }
+    if let Some((mode, pattern)) = &filter.pickaxe
+        && !pattern.is_empty()
+    {
+        // Always suppress patch output so `-S`/`-G` never injects diff text
+        // into the 6-NUL-field stream parser.
+        command.arg("--no-patch");
+        match mode {
+            PickaxeMode::String => {
+                command.arg(format!("-S{pattern}"));
+            }
+            PickaxeMode::Regex => {
+                command.arg(format!("-G{pattern}"));
+            }
+        }
     }
     let input = match scope {
         HistoryScope::PinnedRefs(refs) => {
@@ -911,6 +1150,9 @@ fn build_history_log_command(
         HistoryScope::AllRefs => unreachable!(),
     };
     command.arg("--");
+    for path in &filter.paths {
+        command.arg(path);
+    }
     Ok((command, input))
 }
 

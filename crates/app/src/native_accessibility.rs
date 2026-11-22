@@ -385,7 +385,7 @@ pub(super) struct KeyboardMenu {
 
 /// How a [`KeyboardMenu`] opened by [`KeyboardMenu::following`] builds its
 /// items from the window's state.
-type BuildFrom = dyn Fn(PopupMenu, &GitTurtle) -> PopupMenu;
+type BuildFrom = dyn Fn(PopupMenu, &GitTurtle, &mut Window, &mut Context<PopupMenu>) -> PopupMenu;
 
 impl KeyboardMenu {
     /// Builds the row's menu once with `build`, the builder its right-click
@@ -401,7 +401,7 @@ impl KeyboardMenu {
     pub(super) fn open(
         row: impl Into<RowPlace>,
         focus: FocusHandle,
-        build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
+        build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
@@ -410,17 +410,12 @@ impl KeyboardMenu {
     }
 
     /// [`Self::open`] for a menu that belongs to what its row shows: built
-    /// once with `build`, as `open` builds it, since its items read nothing
-    /// a write or a pause changes (a changed file's File history…), and
-    /// closed through `dismissed`, focus back on its list, as soon as
-    /// `holds` finds that no row holds what it acts on, as
-    /// [`Self::following`] closes. Unlike `following` it is never built
-    /// again: a rebuild would only move the keyboard's cursor back to the
-    /// first item at each write's start and end.
+    /// once with `build`, as `open` builds it, and closed through `dismissed`
+    /// as soon as `holds` finds that no row holds what it acts on.
     pub(super) fn open_while(
         row: impl Into<RowPlace>,
         focus: FocusHandle,
-        build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
+        build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
         holds: impl Fn(&GitTurtle) -> bool + 'static,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
         window: &mut Window,
@@ -430,7 +425,6 @@ impl KeyboardMenu {
         let mut gone = false;
         this.watch(window, cx, move |app, menu, _, cx| {
             if !gone && !holds(app) {
-                // Closed as Escape closes it.
                 gone = true;
                 menu.update(cx, |_, cx| cx.emit(DismissEvent));
             }
@@ -454,7 +448,8 @@ impl KeyboardMenu {
     pub(super) fn following(
         row: impl Into<RowPlace>,
         focus: FocusHandle,
-        build: impl Fn(PopupMenu, &GitTurtle) -> PopupMenu + 'static,
+        build: impl Fn(PopupMenu, &GitTurtle, &mut Window, &mut Context<PopupMenu>) -> PopupMenu
+        + 'static,
         holds: impl Fn(&GitTurtle) -> bool + 'static,
         commit: Option<MenuCommit>,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
@@ -467,7 +462,7 @@ impl KeyboardMenu {
         let mut this = Self::built(
             row.into(),
             focus,
-            move |menu| first(menu, app),
+            move |menu, window, cx| first(menu, app, window, cx),
             dismissed,
             window,
             cx,
@@ -496,7 +491,7 @@ impl KeyboardMenu {
                     menu,
                     focus.clone(),
                     cap,
-                    |menu| build(menu, app),
+                    |menu, window, cx| build(menu, app, window, cx),
                     window,
                     cx,
                 );
@@ -559,7 +554,7 @@ impl KeyboardMenu {
     fn built(
         row: RowPlace,
         focus: FocusHandle,
-        build: impl FnOnce(PopupMenu) -> PopupMenu,
+        build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
@@ -575,7 +570,8 @@ impl KeyboardMenu {
             // Escape. Its blur closed it as a switch or a close focused the
             // tab shown, but a move leaves focus in it.
             closes_as_its_tab_changes(window, cx);
-            Self::finish(build(menu), focus.clone(), cap, window, cx)
+            let menu = build(menu, window, cx);
+            Self::finish(menu, focus.clone(), cap, window, cx)
         });
         announces_resting(&menu, window, cx);
         let dismiss = cx.subscribe_in(
@@ -584,8 +580,8 @@ impl KeyboardMenu {
             move |this, _, _: &DismissEvent, window, cx| dismissed(this, window, cx),
         );
         let handle = menu.focus_handle(cx);
-        let blur = cx.on_blur(&handle, window, move |this, window, cx| {
-            dismissed(this, window, cx)
+        let blur = cx.on_focus_out(&handle, window, move |this, _, window, cx| {
+            dismissed(this, window, cx);
         });
         window.focus(&handle, cx);
         Self {
@@ -643,7 +639,7 @@ impl KeyboardMenu {
     /// on a narrow Working row, where Enter staged the file.
     pub(super) fn rebuild(
         &self,
-        build: impl FnOnce(PopupMenu) -> PopupMenu,
+        build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -663,13 +659,18 @@ impl KeyboardMenu {
         menu: &Entity<PopupMenu>,
         focus: FocusHandle,
         cap: Pixels,
-        build: impl FnOnce(PopupMenu) -> PopupMenu,
+        build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let handle = menu.focus_handle(cx);
+        if handle.contains_focused(window, cx) && !handle.is_focused(window) {
+            window.focus(&handle, cx);
+        }
         menu.update(cx, |menu, cx| {
             menu.rebuild(window, cx, move |menu, window, cx| {
-                Self::finish(build(menu), focus, cap, window, cx)
+                let menu = build(menu, window, cx);
+                Self::finish(menu, focus, cap, window, cx)
             })
         });
     }
@@ -762,11 +763,13 @@ impl KeyboardMenu {
         // behind it.
         let mut menu = div().on_any_mouse_down(|_, _, cx| cx.stop_propagation());
         if let Some(refuse) = self.paused {
-            // Before the menu's own Enter, which does nothing with every
-            // item disabled.
+            let menu_handle = self.menu.focus_handle(cx);
+            // Before the menu's own Enter, which does nothing on disabled
+            // top-level items while paused. Allow Enter inside an open child
+            // submenu (e.g. More actions' read-only Compare/Copy items).
             menu = menu.capture_action(cx.listener(
                 move |this, _: &gpui_kit::component::dialog::Confirm, window, cx| {
-                    if this.integration_state.is_some() {
+                    if this.integration_state.is_some() && menu_handle.is_focused(window) {
                         cx.stop_propagation();
                         refuse(this, window, cx);
                     }
@@ -3396,7 +3399,11 @@ pub(crate) fn text(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
 ) -> StaticText<Stateful<Div>> {
-    let (id, text) = (id.into(), text.into());
+    let (id, raw) = (id.into(), text.into());
+    let text: SharedString = match gitturtle_core::strip_bidi_controls(&raw) {
+        std::borrow::Cow::Borrowed(_) => raw,
+        std::borrow::Cow::Owned(cleaned) => cleaned.into(),
+    };
     let selector = id.clone();
     static_text(
         div()
@@ -3419,7 +3426,11 @@ pub(crate) fn dialog_title(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
 ) -> Stateful<Div> {
-    let (id, text) = (id.into(), text.into());
+    let (id, raw) = (id.into(), text.into());
+    let text: SharedString = match gitturtle_core::strip_bidi_controls(&raw) {
+        std::borrow::Cow::Borrowed(_) => raw,
+        std::borrow::Cow::Owned(cleaned) => cleaned.into(),
+    };
     let selector = id.clone();
     let title = div()
         .id(id)
@@ -4422,6 +4433,18 @@ impl GitTurtle {
             cx.notify();
             return;
         }
+        if let NavRow::SectionToggle { key, expanded, .. } = &row
+            && *expanded != expand
+        {
+            if expand {
+                self.expanded_folders.insert((*key).to_owned());
+            } else {
+                self.expanded_folders.remove(*key);
+            }
+            self.rebuild_navigation(cx);
+            cx.notify();
+            return;
+        }
         let (NavRow::Folder { depth, .. } | NavRow::Branch(_, depth)) = row else {
             return;
         };
@@ -4454,6 +4477,26 @@ impl GitTurtle {
                     self.expanded_folders.insert(key);
                 }
                 self.rebuild_navigation(cx);
+            }
+            NavRow::SectionToggle { key, .. } => {
+                if !self.expanded_folders.remove(key) {
+                    self.expanded_folders.insert(key.to_owned());
+                }
+                self.rebuild_navigation(cx);
+            }
+            NavRow::Tag(index) => {
+                if let Some(tag) = self.tags.get(index).cloned() {
+                    if tag.target_kind == "commit" {
+                        self.jump_to_oid(tag.target_oid, window, cx);
+                    } else {
+                        self.open_tags(window, cx);
+                    }
+                    return;
+                }
+            }
+            NavRow::Stash(_) => {
+                self.open_stashes(window, cx);
+                return;
             }
             NavRow::All => {
                 if let Some(path) = self.path.clone() {

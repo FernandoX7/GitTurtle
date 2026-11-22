@@ -1353,6 +1353,67 @@ impl GitTurtle {
                 .child(count.to_string())
                 .into_any_element();
         }
+        if let NavRow::SectionToggle {
+            key: _,
+            label,
+            count,
+            truncated,
+            expanded,
+        } = row
+        {
+            let count_text = if truncated {
+                format!("{count}+")
+            } else {
+                count.to_string()
+            };
+            let spoken = format!(
+                "{} {label} ({count_text})",
+                if expanded { "Collapse" } else { "Expand" }
+            );
+            return native_accessibility::recorded(
+                div()
+                    .id(self.nav_row_key(index))
+                    .debug_selector(move || format!("nav-row-{index}"))
+                    .role(Role::TreeItem)
+                    .aria_level(1)
+                    .when(self.nav_cursor == Some(index), |row| {
+                        row.aria_active_descendant()
+                            .border_l_2()
+                            .border_color(rgb(colors.accent))
+                    })
+                    .aria_expanded(expanded)
+                    .aria_label(spoken)
+                    .w_full()
+                    .h(crate::appearance::ui_size(30.))
+                    .pl(nav_row_inset(0, self.nav_cursor == Some(index)))
+                    .pr_3()
+                    .pt_1()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .text_size(crate::appearance::ui_text(
+                        crate::appearance::SECTION_LABEL_TEXT,
+                    ))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(colors.muted))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(colors.hover)).text_color(rgb(colors.text)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().w(px(12.)).child(if expanded { "⌄" } else { "›" }))
+                            .child(label),
+                    )
+                    .child(count_text)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_navigation(index, window, cx)
+                    })),
+            )
+            .into_any_element();
+        }
         if let Some(folder) = self.render_nav_folder(index, cx) {
             // Its node recorded for tests, which read the name it is drawn
             // with; transparent otherwise.
@@ -1384,6 +1445,26 @@ impl GitTurtle {
                     ),
                 )
             }
+            NavRow::Tag(i) => {
+                let tag = &self.tags[*i];
+                (
+                    tag.name.clone(),
+                    "tag",
+                    false,
+                    1,
+                    format!("{} · {}", tag.name, short_oid(&tag.target_oid)),
+                )
+            }
+            NavRow::Stash(i) => {
+                let stash = &self.stashes[*i];
+                (
+                    stash.name.clone(),
+                    "clock",
+                    false,
+                    1,
+                    format!("{} · {}", stash.selector, stash.name),
+                )
+            }
             NavRow::Worktree(i) => {
                 let tree = &self.worktrees[*i];
                 (
@@ -1404,11 +1485,25 @@ impl GitTurtle {
             }
             _ => unreachable!("section and folder rows handled above"),
         };
+        let detached_head = self
+            .work_status
+            .as_ref()
+            .is_some_and(|status| status.branch.is_none());
         let contextual_branch = match &row {
-            NavRow::Branch(index, _) => Some((
-                self.branches[*index].name.clone(),
-                self.branches[*index].remote,
-            )),
+            NavRow::Branch(index, _) => Some(BranchMenuTarget {
+                name: self.branches[*index].name.clone(),
+                remote: self.branches[*index].remote,
+                current: self.branches[*index].current,
+                detached_head,
+            }),
+            _ => None,
+        };
+        let contextual_tag = match &row {
+            NavRow::Tag(index) => Some(self.tags[*index].clone()),
+            _ => None,
+        };
+        let contextual_stash = match &row {
+            NavRow::Stash(index) => Some(self.stashes[*index].clone()),
             _ => None,
         };
         let branch_owner = cx.entity().downgrade();
@@ -1454,9 +1549,10 @@ impl GitTurtle {
             .on_click(
                 cx.listener(move |this, _, window, cx| this.activate_navigation(index, window, cx)),
             );
-        if let Some((name, remote)) = contextual_branch {
+        if let Some(target) = contextual_branch {
+            let built_key = target.clone();
             element
-                .app_context_menu(move |menu, _, cx| {
+                .app_context_menu(move |menu, window, cx| {
                     let (gone, wait) = branch_owner
                         .upgrade()
                         .map_or((true, None), |owner| (false, owner.read(cx).menu_wait()));
@@ -1464,12 +1560,50 @@ impl GitTurtle {
                         menu,
                         branch_owner.clone(),
                         branch_repository.clone(),
-                        name.clone(),
-                        remote,
+                        target.clone(),
                         (gone, wait),
+                        window,
+                        cx,
                     )
                 })
+                .built_from(built_key)
                 // A write's start or end builds the open menu again.
+                .follows_writes(cx.entity().downgrade())
+                .into_any_element()
+        } else if let Some(tag) = contextual_tag {
+            let built_key = (tag.name.clone(), tag.oid.clone(), tag.target_oid.clone());
+            element
+                .app_context_menu(move |menu, _, cx| {
+                    let wait = branch_owner
+                        .upgrade()
+                        .and_then(|owner| owner.read(cx).menu_wait());
+                    tag_row_menu(
+                        menu,
+                        branch_owner.clone(),
+                        branch_repository.clone(),
+                        tag.clone(),
+                        wait,
+                    )
+                })
+                .built_from(built_key)
+                .follows_writes(cx.entity().downgrade())
+                .into_any_element()
+        } else if let Some(stash) = contextual_stash {
+            let built_key = (stash.selector.clone(), stash.oid.clone());
+            element
+                .app_context_menu(move |menu, _, cx| {
+                    let wait = branch_owner
+                        .upgrade()
+                        .and_then(|owner| owner.read(cx).menu_wait());
+                    stash_row_menu(
+                        menu,
+                        branch_owner.clone(),
+                        branch_repository.clone(),
+                        stash.clone(),
+                        wait,
+                    )
+                })
+                .built_from(built_key)
                 .follows_writes(cx.entity().downgrade())
                 .into_any_element()
         } else if let Some(tree) = contextual_worktree {
@@ -1522,21 +1656,66 @@ impl GitTurtle {
             app.path == shown
                 && app.nav_cursor.and_then(|index| app.nav_ids.get(index)) == Some(&held)
         };
-        type Build = Box<dyn Fn(PopupMenu, &GitTurtle) -> PopupMenu>;
+        type Build =
+            Box<dyn Fn(PopupMenu, &GitTurtle, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
         let (depth, build): (usize, Build) = match self.nav_rows.get(index) {
             Some(NavRow::Branch(branch, depth)) => {
                 let branch = &self.branches[*branch];
                 let (name, remote) = (branch.name.clone(), branch.remote);
                 (
                     *depth,
-                    Box::new(move |menu, app: &GitTurtle| {
+                    Box::new(move |menu, app: &GitTurtle, window, cx| {
+                        let current = app
+                            .branches
+                            .iter()
+                            .any(|b| b.remote == remote && b.name == name && b.current);
+                        let detached_head = app
+                            .work_status
+                            .as_ref()
+                            .is_some_and(|status| status.branch.is_none());
                         branch_row_menu(
                             menu,
                             owner.clone(),
                             repository.clone(),
-                            name.clone(),
-                            remote,
+                            BranchMenuTarget {
+                                name: name.clone(),
+                                remote,
+                                current,
+                                detached_head,
+                            },
                             (false, app.menu_wait()),
+                            window,
+                            cx,
+                        )
+                    }),
+                )
+            }
+            Some(NavRow::Tag(tag)) => {
+                let tag = self.tags[*tag].clone();
+                (
+                    1,
+                    Box::new(move |menu, app: &GitTurtle, _, _| {
+                        tag_row_menu(
+                            menu,
+                            owner.clone(),
+                            repository.clone(),
+                            tag.clone(),
+                            app.menu_wait(),
+                        )
+                    }),
+                )
+            }
+            Some(NavRow::Stash(stash)) => {
+                let stash = self.stashes[*stash].clone();
+                (
+                    1,
+                    Box::new(move |menu, app: &GitTurtle, _, _| {
+                        stash_row_menu(
+                            menu,
+                            owner.clone(),
+                            repository.clone(),
+                            stash.clone(),
+                            app.menu_wait(),
                         )
                     }),
                 )
@@ -1545,7 +1724,7 @@ impl GitTurtle {
                 let tree = self.worktrees[*tree].clone();
                 (
                     0,
-                    Box::new(move |menu, app: &GitTurtle| {
+                    Box::new(move |menu, app: &GitTurtle, _, _| {
                         let elsewhere = app.path != repository || app.page != AppPage::Repository;
                         worktree_row_menu(
                             menu,
@@ -2226,25 +2405,35 @@ impl GitTurtle {
             .child(self.render_history_scope_toolbar(scope, window, cx))
             .child(
                 div()
-                    .relative()
                     .h(crate::appearance::ui_size(38.))
                     .flex_shrink_0()
                     .px_3()
                     .pb_2()
                     .pt_1()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
                     .child(
-                        Input::new(&self.search)
-                            .aria_label(SEARCH_NAME)
-                            .text_size(crate::appearance::ui_text(12.)),
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                Input::new(&self.search)
+                                    .aria_label(SEARCH_NAME)
+                                    .text_size(crate::appearance::ui_text(12.)),
+                            )
+                            // Painted after the field, it fits its placeholder.
+                            .child(crate::workspace::placeholder_fit(
+                                self.search.clone(),
+                                &SEARCH_FIT,
+                                SEARCH_PLACEHOLDERS,
+                                12.,
+                            )),
                     )
-                    // Painted after the field, it fits its placeholder.
-                    .child(crate::workspace::placeholder_fit(
-                        self.search.clone(),
-                        &SEARCH_FIT,
-                        SEARCH_PLACEHOLDERS,
-                        12.,
-                    )),
+                    .child(self.render_history_filter_toggle(cx)),
             )
+            .children(self.render_history_filter_bar(cx))
             .child(self.render_history_search_controls(window, cx))
             .children(self.graph_notice.as_ref().map(|notice| {
                 div().px_3().py_1().child(
@@ -2631,18 +2820,24 @@ impl GitTurtle {
                 ""
             }
         );
+        let compare_marked = self.selected_compare_commit.as_deref() == Some(commit.oid.as_str());
         #[cfg(test)]
         HISTORY_ROW_NAMES.with(|names| {
             names
                 .borrow_mut()
                 .insert(index, (name.clone(), pill_tooltip))
         });
+        let row_label: SharedString = if compare_marked {
+            format!("{name} · marked for comparison").into()
+        } else {
+            name.into()
+        };
         let row = div()
             .id(commit_row_id(&commit.oid))
             .debug_selector(move || format!("history-row-{index}"))
             .role(Role::ListBoxOption)
-            .aria_label(name)
-            .aria_selected(active)
+            .aria_label(row_label)
+            .aria_selected(active || compare_marked)
             .when(active, |row| row.aria_active_descendant())
             .aria_position_in_set(position + 1)
             .aria_size_of_set(self.visible.len())
@@ -2654,11 +2849,17 @@ impl GitTurtle {
             .gap_0()
             .bg(rgb(if active {
                 colors.selected
+            } else if compare_marked {
+                colors.subtle
             } else {
                 colors.canvas
             }))
             .border_l_2()
-            .border_color(rgb(if active { colors.accent } else { colors.canvas }))
+            .border_color(rgb(if active || compare_marked {
+                colors.accent
+            } else {
+                colors.canvas
+            }))
             .hover(|s| s.bg(rgb(colors.row_hover(active))))
             .active(|s| s.bg(rgb(colors.selected)))
             .cursor_pointer()
@@ -2744,15 +2945,29 @@ impl GitTurtle {
         // list's viewport, under the inspector and past the window's edge;
         // its node reports the part of it the list draws, as the list's own
         // node does, rather than extents to x 542.5 in a 461 px window.
-        native_accessibility::clips_children(row.on_click(
-            cx.listener(move |this, _, window, cx| this.select_commit(index, window, cx)),
-        ))
-        .app_context_menu(move |menu, _, cx| {
+        let click_oid = commit.oid.clone();
+        native_accessibility::clips_children(row.on_click(cx.listener(
+            move |this, event: &ClickEvent, window, cx| {
+                if event.modifiers().secondary(cx) {
+                    if this.selected_compare_commit.as_deref() == Some(click_oid.as_str()) {
+                        this.selected_compare_commit = None;
+                    } else {
+                        this.selected_compare_commit = Some(click_oid.clone());
+                    }
+                    cx.notify();
+                } else {
+                    this.selected_compare_commit = None;
+                    this.select_commit(index, window, cx);
+                }
+            },
+        )))
+        .app_context_menu(move |menu, window, cx| {
             GitTurtle::recovery_context_menu(
                 menu,
                 &recovery_owner,
                 &recovery_repository,
                 &recovery_commit,
+                window,
                 cx,
             )
         })
@@ -3316,12 +3531,16 @@ impl GitTurtle {
             }
             row.is_some()
         };
-        // Built once: File history… reads nothing a write or a pause
-        // changes, and a rebuild would only move the keyboard's cursor.
+        let paused = self.integration_state.is_some();
+        let wait = self.menu_wait();
         self.file_menu = Some(native_accessibility::KeyboardMenu::open_while(
             anchor,
             self.file_focus.clone(),
-            move |menu| changed_file_menu(menu, owner, repository, file, commit),
+            move |menu, window, cx| {
+                changed_file_menu(
+                    menu, owner, repository, file, commit, paused, wait, window, cx,
+                )
+            },
             holds,
             Self::dismiss_file_menu,
             window,
@@ -3542,15 +3761,24 @@ impl GitTurtle {
         // that row whole past the list and the window's foot; its node
         // reports the part of it the list draws, as History's rows do.
         native_accessibility::clips_children(row)
-            .app_context_menu(move |menu, _, _| {
+            .app_context_menu(move |menu, window, cx| {
+                let (paused, wait) = history_owner.upgrade().map_or((false, None), |owner| {
+                    let owner = owner.read(cx);
+                    (owner.integration_state.is_some(), owner.menu_wait())
+                });
                 changed_file_menu(
                     menu,
                     history_owner.clone(),
                     history_repository.clone(),
                     history_file.clone(),
                     history_commit.clone(),
+                    paused,
+                    wait,
+                    window,
+                    cx,
                 )
             })
+            .follows_writes(cx.entity().downgrade())
             .into_any_element()
     }
     /// `column_min` is the preview column's narrowest width; the path row keeps
@@ -4998,31 +5226,328 @@ impl FilesHeader {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct BranchMenuTarget {
+    name: String,
+    remote: bool,
+    current: bool,
+    detached_head: bool,
+}
+
 /// A navigator branch's menu, which a right-click on its row and Shift-F10
 /// or the Menu key on the cursor row open alike: its name, then Branch
-/// actions…, which acts only while the repository the menu was built for is
-/// still the one shown. `refusal` is whether it is unavailable for a reason
-/// of its own and why a write refuses it, which it then states
-/// (`native_accessibility::waiting_item`).
+/// actions… and direct everyday branch commands, which act only while the
+/// repository the menu was built for is still the one shown.
 fn branch_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
-    name: String,
-    remote: bool,
+    target: BranchMenuTarget,
     (refused, wait): (bool, Option<native_accessibility::MenuWait>),
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    menu.label(name.clone()).item(
-        native_accessibility::waiting_item("Branch actions…", refused, wait).on_click(
+    let BranchMenuTarget {
+        name,
+        remote,
+        current,
+        detached_head,
+    } = target;
+    let mut menu = menu.label(name.clone()).item(
+        native_accessibility::waiting_item("Branch actions…", refused, wait).on_click({
+            let owner = owner.clone();
+            let repository = repository.clone();
+            let name = name.clone();
             move |_, window, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     if this.path == repository && this.page == AppPage::Repository {
                         this.open_contextual_branch(name.clone(), remote, window, cx);
                     }
                 });
+            }
+        }),
+    );
+    if !remote {
+        if !current {
+            menu = menu.separator();
+            let owner_sw = owner.clone();
+            let repo_sw = repository.clone();
+            let branch = name.clone();
+            menu = menu.item(
+                native_accessibility::waiting_item("Switch to branch", refused, wait).on_click(
+                    move |_, window, cx| {
+                        let _ = owner_sw.update(cx, |this, cx| {
+                            if this.path == repo_sw && this.page == AppPage::Repository {
+                                this.write(
+                                    gitturtle_core::WriteCommand::Checkout {
+                                        branch: branch.clone(),
+                                    },
+                                    "Switching branch…",
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                    },
+                ),
+            );
+            if !detached_head {
+                let owner_m = owner.clone();
+                let repo_m = repository.clone();
+                let branch_m = name.clone();
+                menu = menu.item(
+                    native_accessibility::waiting_item("Merge into current…", refused, wait)
+                        .on_click(move |_, window, cx| {
+                            let _ = owner_m.update(cx, |this, cx| {
+                                if this.path == repo_m && this.page == AppPage::Repository {
+                                    this.prepare_named_integration(
+                                        branch_m.clone(),
+                                        false,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        }),
+                );
+                let owner_r = owner.clone();
+                let repo_r = repository.clone();
+                let branch_r = name.clone();
+                menu = menu.item(
+                    native_accessibility::waiting_item("Rebase current onto…", refused, wait)
+                        .on_click(move |_, window, cx| {
+                            let _ = owner_r.update(cx, |this, cx| {
+                                if this.path == repo_r && this.page == AppPage::Repository {
+                                    this.prepare_named_integration(
+                                        branch_r.clone(),
+                                        true,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        }),
+                );
+            }
+        }
+    } else {
+        menu = menu.separator();
+        let owner_tr = owner.clone();
+        let repo_tr = repository.clone();
+        let branch_tr = name.clone();
+        menu = menu.item(
+            native_accessibility::waiting_item("Create tracking branch…", refused, wait).on_click(
+                move |_, window, cx| {
+                    let _ = owner_tr.update(cx, |this, cx| {
+                        if this.path == repo_tr && this.page == AppPage::Repository {
+                            this.open_remote_branch_track_named(branch_tr.clone(), window, cx);
+                        }
+                    });
+                },
+            ),
+        );
+    }
+    menu.submenu("More", window, cx, move |mut sub, _, _| {
+        if !remote {
+            let owner_rn = owner.clone();
+            let repo_rn = repository.clone();
+            let branch_rn = name.clone();
+            sub = sub.item(
+                native_accessibility::waiting_item("Rename…", refused, wait).on_click(
+                    move |_, window, cx| {
+                        let _ = owner_rn.update(cx, |this, cx| {
+                            if this.path == repo_rn && this.page == AppPage::Repository {
+                                this.open_branch_rename_named(branch_rn.clone(), window, cx);
+                            }
+                        });
+                    },
+                ),
+            );
+            if !current {
+                let owner_del = owner.clone();
+                let repo_del = repository.clone();
+                let branch_del = name.clone();
+                sub = sub.item(
+                    native_accessibility::waiting_item("Delete…", refused, wait).on_click(
+                        move |_, window, cx| {
+                            let _ = owner_del.update(cx, |this, cx| {
+                                if this.path == repo_del && this.page == AppPage::Repository {
+                                    this.open_branch_delete_named(
+                                        branch_del.clone(),
+                                        false,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        },
+                    ),
+                );
+                let owner_fdel = owner.clone();
+                let repo_fdel = repository.clone();
+                let branch_fdel = name.clone();
+                sub = sub.item(
+                    native_accessibility::waiting_item("Force delete…", refused, wait).on_click(
+                        move |_, window, cx| {
+                            let _ = owner_fdel.update(cx, |this, cx| {
+                                if this.path == repo_fdel && this.page == AppPage::Repository {
+                                    this.open_branch_delete_named(
+                                        branch_fdel.clone(),
+                                        true,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        },
+                    ),
+                );
+            }
+        } else {
+            let owner_dr = owner.clone();
+            let repo_dr = repository.clone();
+            let branch_dr = name.clone();
+            sub = sub.item(
+                native_accessibility::waiting_item("Delete remote branch…", refused, wait)
+                    .on_click(move |_, window, cx| {
+                        let _ = owner_dr.update(cx, |this, cx| {
+                            if this.path == repo_dr
+                                && this.page == AppPage::Repository
+                                && let Some((remote_name, branch_name)) =
+                                    this.split_remote_branch_ref(&branch_dr)
+                            {
+                                this.prepare_remote_branch_delete(
+                                    remote_name,
+                                    branch_name,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                    }),
+            );
+        }
+        sub = sub.separator();
+        if !current {
+            let owner_cmp = owner.clone();
+            let repo_cmp = repository.clone();
+            let ref_spec = if remote {
+                format!("refs/remotes/{name}")
+            } else {
+                format!("refs/heads/{name}")
+            };
+            sub = sub.item(
+                native_accessibility::waiting_item("Compare with HEAD", refused, wait).on_click(
+                    move |_, window, cx| {
+                        let _ = owner_cmp.update(cx, |this, cx| {
+                            if this.path == repo_cmp && this.page == AppPage::Repository {
+                                this.compare_revisions_direct(
+                                    ref_spec.clone(),
+                                    "HEAD".into(),
+                                    gitturtle_core::ComparisonMode::Endpoints,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                    },
+                ),
+            );
+        }
+        if !remote {
+            let owner_wt = owner.clone();
+            let repo_wt = repository.clone();
+            sub = sub.item(
+                native_accessibility::waiting_item("Create worktree…", refused, wait).on_click(
+                    move |_, window, cx| {
+                        let _ = owner_wt.update(cx, |this, cx| {
+                            if this.path == repo_wt && this.page == AppPage::Repository {
+                                this.open_worktree_manager(window, cx);
+                            }
+                        });
+                    },
+                ),
+            );
+        }
+        let copy_name = name.clone();
+        sub.item(
+            PopupMenuItem::new("Copy branch name").on_click(move |_, window, cx| {
+                copy_feedback::copy(window, cx, None, "branch name", copy_name.clone());
+            }),
+        )
+    })
+}
+
+fn tag_row_menu(
+    menu: PopupMenu,
+    owner: WeakEntity<GitTurtle>,
+    repository: Option<PathBuf>,
+    tag: gitturtle_core::Tag,
+    wait: Option<native_accessibility::MenuWait>,
+) -> PopupMenu {
+    let mut menu = menu.label(tag.name.clone());
+    if tag.target_kind == "commit" {
+        let owner_j = owner.clone();
+        let repo_j = repository.clone();
+        let oid = tag.target_oid.clone();
+        menu = menu.item(
+            PopupMenuItem::new("Jump to commit").on_click(move |_, window, cx| {
+                let _ = owner_j.update(cx, |this, cx| {
+                    if this.path == repo_j && this.page == AppPage::Repository {
+                        this.jump_to_oid(oid.clone(), window, cx);
+                    }
+                });
+            }),
+        );
+    }
+    let owner_t = owner;
+    let repo_t = repository;
+    menu = menu.item(
+        native_accessibility::waiting_item("Manage tags…", false, wait).on_click(
+            move |_, window, cx| {
+                let _ = owner_t.update(cx, |this, cx| {
+                    if this.path == repo_t && this.page == AppPage::Repository {
+                        this.open_tags(window, cx);
+                    }
+                });
             },
         ),
+    );
+    let copy_name = tag.name;
+    menu.item(
+        PopupMenuItem::new("Copy tag name").on_click(move |_, window, cx| {
+            copy_feedback::copy(window, cx, None, "tag name", copy_name.clone());
+        }),
     )
+}
+
+fn stash_row_menu(
+    menu: PopupMenu,
+    owner: WeakEntity<GitTurtle>,
+    repository: Option<PathBuf>,
+    stash: gitturtle_core::StashEntry,
+    wait: Option<native_accessibility::MenuWait>,
+) -> PopupMenu {
+    let owner_s = owner;
+    let repo_s = repository;
+    let copy_name = stash.name;
+    menu.label(stash.selector)
+        .item(
+            native_accessibility::waiting_item("Browse stashes…", false, wait).on_click(
+                move |_, window, cx| {
+                    let _ = owner_s.update(cx, |this, cx| {
+                        if this.path == repo_s && this.page == AppPage::Repository {
+                            this.open_stashes(window, cx);
+                        }
+                    });
+                },
+            ),
+        )
+        .item(
+            PopupMenuItem::new("Copy stash name").on_click(move |_, window, cx| {
+                copy_feedback::copy(window, cx, None, "stash name", copy_name.clone());
+            }),
+        )
 }
 
 /// A navigator worktree's menu, which a right-click on its row and
@@ -5087,15 +5612,24 @@ fn changed_file_id(file: &FileChange) -> ElementId {
 /// Shift-F10 or the Menu key on the highlighted row open alike. File history
 /// opens only while the repository and commit the menu was built for are
 /// still those shown and the file is still among their changed files.
+#[expect(clippy::too_many_arguments)]
 fn changed_file_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
     file: FileChange,
     commit: Option<String>,
+    paused: bool,
+    wait: Option<native_accessibility::MenuWait>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    menu.item(
-        PopupMenuItem::new("File history…").on_click(move |_, window, cx| {
+    let menu = menu.item(PopupMenuItem::new("File history…").on_click({
+        let owner = owner.clone();
+        let repository = repository.clone();
+        let file = file.clone();
+        let commit = commit.clone();
+        move |_, window, cx| {
             let _ = owner.update(cx, |this, cx| {
                 if this.path == repository
                     && this
@@ -5108,8 +5642,90 @@ fn changed_file_menu(
                     this.open_file_history(index, window, cx);
                 }
             });
-        }),
-    )
+        }
+    }));
+    menu.submenu("More", window, cx, move |mut sub, _, _| {
+        sub = sub.item(PopupMenuItem::new("Blame…").on_click({
+            let owner = owner.clone();
+            let repository = repository.clone();
+            let file = file.clone();
+            let commit = commit.clone();
+            move |_, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.path == repository
+                        && this
+                            .selected_commit
+                            .and_then(|i| this.commits.get(i))
+                            .map(|c| &c.oid)
+                            == commit.as_ref()
+                        && let Some(index) =
+                            this.files.iter().position(|candidate| candidate == &file)
+                    {
+                        this.open_blame(index, window, cx);
+                    }
+                });
+            }
+        }));
+        sub = sub.separator();
+        {
+            let owner_e = owner.clone();
+            let repo_e = repository.clone();
+            let path_e = file.path().to_owned();
+            sub = sub.item(
+                PopupMenuItem::new("Open in editor").on_click(move |_, window, cx| {
+                    let _ = owner_e.update(cx, |this, cx| {
+                        if this.path == repo_e && this.page == AppPage::Repository {
+                            this.open_repo_file_in_editor(path_e.clone(), None, window, cx);
+                        }
+                    });
+                }),
+            );
+        }
+        {
+            let owner_r = owner.clone();
+            let repo_r = repository.clone();
+            let path_r = file.path().to_owned();
+            let reveal_label = if cfg!(target_os = "macos") {
+                "Reveal in Finder"
+            } else {
+                "Reveal in file manager"
+            };
+            sub = sub.item(
+                PopupMenuItem::new(reveal_label).on_click(move |_, window, cx| {
+                    let _ = owner_r.update(cx, |this, cx| {
+                        if this.path == repo_r && this.page == AppPage::Repository {
+                            this.reveal_repo_file_in_manager(path_r.clone(), window, cx);
+                        }
+                    });
+                }),
+            );
+        }
+        {
+            let copy_path = file.path().to_string_lossy().into_owned();
+            sub = sub.item(
+                PopupMenuItem::new("Copy path").on_click(move |_, window, cx| {
+                    copy_feedback::copy(window, cx, None, "file path", copy_path.clone());
+                }),
+            );
+        }
+        if let Some(oid) = &commit {
+            let owner_rs = owner.clone();
+            let repo_rs = repository.clone();
+            let path_rs = file.path().to_owned();
+            let oid = oid.clone();
+            sub = sub.separator().item(
+                native_accessibility::waiting_item("Restore file to this revision…", paused, wait)
+                    .on_click(move |_, window, cx| {
+                        let _ = owner_rs.update(cx, |this, cx| {
+                            if this.path == repo_rs && this.page == AppPage::Repository {
+                                this.open_restore_file(oid.clone(), path_rs.clone(), window, cx);
+                            }
+                        });
+                    }),
+            );
+        }
+        sub
+    })
 }
 
 /// The widest of the parents' labelled controls, `labels`: the shared
@@ -11377,6 +11993,18 @@ impl Render for GitTurtle {
             .on_action(cx.listener(|this, _: &CompareRevisions, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
                     this.open_revision_comparison(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &JumpToHead, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.jump_to_head(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &JumpToRevision, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_jump_to_revision(window, cx);
                 }
             }))
             // The menu bar's View ▸ Browse Stashes…, checked again as it

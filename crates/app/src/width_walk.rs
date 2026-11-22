@@ -64,6 +64,7 @@ fn control_mark() -> Hsla {
 thread_local! {
     /// Clear's label as laid out, for its font and size.
     static CLEAR_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static DISCARD_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// What the walk fails on.
@@ -450,31 +451,44 @@ impl Walk<'_> {
             self.found(Rule::SelectionBar, "partial-selection-bar", at, detail);
             return;
         };
-        let (gap, room, label) = cx.update(|window, _| {
+        let discard = cx.debug_bounds("discard-partial-selection");
+        let (gap, room, label, discard_label) = cx.update(|window, _| {
             let snap = |length: Pixels| window.pixel_snap(length);
             (
                 snap(appearance::ui_size(crate::diff_view::BAR_GAP)),
                 bar.size.width - snap(appearance::ui_size(crate::diff_view::BAR_INSET)) * 2.,
                 crate::text_button_width(&["Clear"], &CLEAR_LABEL, window),
+                crate::text_button_width(&["Discard"], &DISCARD_LABEL, window),
             )
         });
-        let fits = |clear: Pixels| action.size.width + gap + clear <= room - px(1.);
+        let fits =
+            |clear: Pixels, extra: Pixels| action.size.width + gap + clear + extra <= room - px(1.);
+        let label_extra = if discard.is_some() {
+            gap + discard_label
+        } else {
+            px(0.)
+        };
+        let icon_extra = discard.map_or(px(0.), |d| gap + d.size.width);
         let icon = (clear.size.width - clear.size.height).abs() < px(0.5);
         let beside = (action.top() - clear.top()).abs() < px(0.5);
         self.bar_forms.insert((icon, beside));
-        let detail = format!("action {action:?}, Clear {clear:?}, bar {bar:?}");
-        let wrong = if [action, clear].iter().any(|control| {
-            control.left() < bar.left()
-                || control.right() > bar.right()
-                || control.top() < bar.top()
-                || control.bottom() > bar.bottom()
-        }) {
+        let detail =
+            format!("action {action:?}, Clear {clear:?}, Discard {discard:?}, bar {bar:?}");
+        let wrong = if [Some(action), Some(clear), discard]
+            .into_iter()
+            .flatten()
+            .any(|control| {
+                control.left() < bar.left()
+                    || control.right() > bar.right()
+                    || control.top() < bar.top()
+                    || control.bottom() > bar.bottom()
+            }) {
             Some("a control lies outside the bar")
         } else if !beside && !icon {
             Some("Clear is wrapped with its label")
-        } else if icon && fits(label) {
+        } else if icon && fits(label, label_extra) {
             Some("Clear is its icon where its label fits")
-        } else if !beside && fits(clear.size.width) {
+        } else if !beside && fits(clear.size.width, icon_extra) {
             Some("Clear is wrapped where its icon fits")
         } else {
             None
@@ -2516,7 +2530,47 @@ const DIALOG_SITES: &[(&str, &str, Walked)] = {
             "show_tag_details",
             Left("needs a tag; the fixture has none"),
         ),
-        ("tags.rs", "open_create_tag", As(Dialog::CreateTag)),
+        ("tags.rs", "open_create_tag_at", As(Dialog::CreateTag)),
+        (
+            "tags.rs",
+            "confirm_remote_tag_delete",
+            Left("needs a tag and remote; the fixture has none"),
+        ),
+        (
+            "branch_actions.rs",
+            "confirm_branch_force_delete",
+            Left("needs an unmerged branch to force-delete"),
+        ),
+        (
+            "branch_actions.rs",
+            "confirm_remote_branch_delete",
+            Left("needs a configured remote tracking branch"),
+        ),
+        (
+            "discard/review.rs",
+            "confirm_multi_discard",
+            Left("needs multiple dirty working files"),
+        ),
+        (
+            "discard/review.rs",
+            "confirm_partial_discard",
+            Left("needs an unstaged working hunk"),
+        ),
+        (
+            "discard/review.rs",
+            "confirm_restore_file",
+            Left("needs a revision file chosen for restore"),
+        ),
+        (
+            "history_search.rs",
+            "open_jump_to_revision",
+            Left("single-field jump dialog, tested in history_search"),
+        ),
+        (
+            "recovery.rs",
+            "show_reset_dialog",
+            Left("needs a prepared reset plan"),
+        ),
         (
             "theme_editor.rs",
             "open_theme_editor",

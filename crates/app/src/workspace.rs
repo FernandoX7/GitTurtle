@@ -3448,6 +3448,56 @@ impl GitTurtle {
         self.working_status_not_read() || (self.unread_look.shown && self.working_status_unread())
     }
 
+    pub(super) fn fetch_remote_with_prune(
+        &mut self,
+        prune: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.refuse_unread_press(cx) {
+            return;
+        }
+        let configured = self.remote_name.read(cx).value().trim().to_owned();
+        let remote = if !configured.is_empty() {
+            configured
+        } else if let Some(first) = self.remotes.first() {
+            first.name.clone()
+        } else {
+            "origin".to_owned()
+        };
+        self.write(
+            WriteCommand::Fetch { remote, prune },
+            if prune {
+                "Fetching remote (prune)…"
+            } else {
+                "Fetching remote…"
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn fetch_all_remotes(
+        &mut self,
+        prune: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.refuse_unread_press(cx) {
+            return;
+        }
+        self.write(
+            WriteCommand::FetchAll { prune },
+            if prune {
+                "Fetching all remotes (prune)…"
+            } else {
+                "Fetching all remotes…"
+            },
+            window,
+            cx,
+        );
+    }
+
     /// Refuses a press of Fetch, Pull or Push while the working status is
     /// not read ([`Self::working_status_unread`],
     /// [`Self::working_status_not_read`]), showing the look at once, so the
@@ -3680,10 +3730,14 @@ impl GitTurtle {
     /// the window keeps it shown through them.
     pub(super) fn lands_partial_write(&self, cx: &App) -> bool {
         self.mode == WorkspaceMode::Working
-            && self
+            && (self
                 .patch_view
                 .as_ref()
                 .is_some_and(|view| view.read(cx).awaits_write())
+                || self
+                    .split_view
+                    .as_ref()
+                    .is_some_and(|view| view.read(cx).awaits_write()))
     }
 
     /// Whether the working row of `index` in `area` is the file and side of
@@ -3773,7 +3827,11 @@ impl GitTurtle {
         let focused = self
             .patch_view
             .as_ref()
-            .is_some_and(|view| view.read(cx).holds_focus(window, cx));
+            .is_some_and(|view| view.read(cx).holds_focus(window, cx))
+            || self
+                .split_view
+                .as_ref()
+                .is_some_and(|view| view.read(cx).holds_focus(window, cx));
         self.clear_preview();
         if focused
             && self.page == AppPage::Repository
@@ -3801,22 +3859,26 @@ impl GitTurtle {
         if !self.lands_partial_write(cx) {
             return;
         }
-        let (
-            Some(view),
-            Content::Text {
-                patch,
-                old,
-                new,
-                presentation,
-                partial,
-                split,
-                ..
-            },
-        ) = (self.patch_view.clone(), content.as_ref())
+        let Content::Text {
+            patch,
+            old,
+            new,
+            presentation,
+            partial,
+            split,
+            split_partial,
+            ..
+        } = content.as_ref()
         else {
             self.clear_preview();
             return;
         };
+        let patch_view = self.patch_view.clone();
+        let split_view = self.split_view.clone();
+        if patch_view.is_none() && split_view.is_none() {
+            self.clear_preview();
+            return;
+        }
         self.review = crate::text_review::State::default();
         if let Some(editor) = &self.before_editor {
             crate::text::refresh_editor(editor, old, None, window, cx);
@@ -3824,26 +3886,34 @@ impl GitTurtle {
         if let Some(editor) = &self.after_editor {
             crate::text::refresh_editor(editor, new, None, window, cx);
         }
-        if let Some(split_view) = &self.split_view {
+        if let Some(split_view) = split_view {
             if let Some(split) = split {
                 split_view.update(cx, |split_view, cx| {
-                    split_view.refresh(Arc::clone(split), window, cx)
+                    split_view.refresh_with_partial(
+                        Arc::clone(split),
+                        split_partial.clone(),
+                        window,
+                        cx,
+                    )
                 });
             } else {
                 self.split_view = None;
+                self.split_partial_subscription = None;
             }
         }
-        let decorations = self.patch_decoration.clone();
-        view.update(cx, |view, cx| {
-            view.land(
-                patch,
-                decorations.as_ref(),
-                presentation,
-                partial.clone(),
-                window,
-                cx,
-            )
-        });
+        if let Some(view) = patch_view {
+            let decorations = self.patch_decoration.clone();
+            view.update(cx, |view, cx| {
+                view.land(
+                    patch,
+                    decorations.as_ref(),
+                    presentation,
+                    partial.clone(),
+                    window,
+                    cx,
+                )
+            });
+        }
     }
 
     /// The person's explicit choice of the selected working file, a click on
@@ -4301,6 +4371,9 @@ impl GitTurtle {
         if let Some(view) = &self.patch_view {
             view.update(cx, |view, _| view.follow_busy_look(shown));
         }
+        if let Some(view) = &self.split_view {
+            view.update(cx, |view, cx| view.follow_busy_look(shown, cx));
+        }
     }
 
     fn track_busy_spell(&mut self, cx: &mut Context<Self>) {
@@ -4535,10 +4608,23 @@ impl GitTurtle {
             WriteCommand::StageAll => Some("Staged all working changes".into()),
             WriteCommand::UnstageAll => Some("Unstaged all changes".into()),
             WriteCommand::Checkout { branch } => Some(format!("Switched to {branch}")),
+            WriteCommand::CheckoutDetached(plan) => Some(format!(
+                "Checked out detached HEAD at {}",
+                short_oid(&plan.target_oid)
+            )),
             WriteCommand::CreateBranch { name, .. } => {
                 Some(format!("Created and switched to {name}"))
             }
-            WriteCommand::Fetch { remote } => Some(format!("Fetched {remote}")),
+            WriteCommand::Fetch { remote, prune } => Some(if *prune {
+                format!("Fetched {remote} (pruned deleted remote branches)")
+            } else {
+                format!("Fetched {remote}")
+            }),
+            WriteCommand::FetchAll { prune } => Some(if *prune {
+                "Fetched all remotes (pruned deleted remote branches)".into()
+            } else {
+                "Fetched all remotes".into()
+            }),
             WriteCommand::Pull { remote, branch } => Some(format!("Pulled {remote}/{branch}")),
             WriteCommand::Push {
                 remote,
@@ -4564,8 +4650,11 @@ impl GitTurtle {
         // branch it pulled. Its control still reads Fetched or Pulled, whose
         // width is the control's own.
         let up_to_date_notice = match &command {
-            WriteCommand::Fetch { remote } => {
+            WriteCommand::Fetch { remote, .. } => {
                 Some(format!("Up to date with {remote} · nothing new"))
+            }
+            WriteCommand::FetchAll { .. } => {
+                Some("Up to date with all remotes · nothing new".into())
             }
             WriteCommand::Pull { remote, branch } => {
                 Some(format!("Up to date with {remote}/{branch} · nothing new"))
@@ -4601,12 +4690,27 @@ impl GitTurtle {
                 | WriteCommand::Branch(_)
                 | WriteCommand::Tag(_)
                 | WriteCommand::Checkout { .. }
+                | WriteCommand::CheckoutDetached(_)
                 | WriteCommand::CreateBranch { .. }
                 | WriteCommand::Fetch { .. }
+                | WriteCommand::FetchAll { .. }
                 | WriteCommand::Pull { .. }
                 | WriteCommand::Push { .. }
         ) || matches!(&command, WriteCommand::Integration(operation) if !matches!(operation, gitturtle_core::IntegrationCommand::Resolve { .. }))
-            || matches!(&command, WriteCommand::Recovery(command) if matches!(command.as_ref(), gitturtle_core::RecoveryCommand::Amend { .. } | gitturtle_core::RecoveryCommand::Undo { .. } | gitturtle_core::RecoveryCommand::Revert { .. } | gitturtle_core::RecoveryCommand::CherryPick { .. }));
+            || matches!(
+                &command,
+                WriteCommand::Recovery(command)
+                    if matches!(
+                        command.as_ref(),
+                        gitturtle_core::RecoveryCommand::Amend { .. }
+                            | gitturtle_core::RecoveryCommand::Undo { .. }
+                            | gitturtle_core::RecoveryCommand::Revert { .. }
+                            | gitturtle_core::RecoveryCommand::CherryPick { .. }
+                            | gitturtle_core::RecoveryCommand::Reset { .. }
+                            | gitturtle_core::RecoveryCommand::CreateStash { .. }
+                            | gitturtle_core::RecoveryCommand::DropStash { .. }
+                    )
+            );
         self.operation_repository = Some(path.clone());
         self.operation_busy = Some(label);
         self.operation_error = None;
@@ -4620,8 +4724,10 @@ impl GitTurtle {
         // ([`Self::land_partial_write`]): torn down here, the Diff view read
         // "Choose a file" for the write's whole length, focus fell to the
         // window frame and the caret, selection and scroll were lost.
-        let in_place =
-            matches!(&command, WriteCommand::ApplyPartial { .. }) && self.lands_partial_write(cx);
+        let in_place = matches!(
+            &command,
+            WriteCommand::ApplyPartial { .. } | WriteCommand::DiscardPartial { .. }
+        ) && self.lands_partial_write(cx);
         if self.mode == WorkspaceMode::Working && !downloading_lfs {
             self.invalidate_read();
             if !in_place {
@@ -6958,6 +7064,9 @@ impl GitTurtle {
                 if picture {
                     return row.into_any_element();
                 }
+                let selected_paths = self.selected_working_paths_for(&entry.path, area);
+                let menu_selected = selected_paths.clone();
+                let built_selected = selected_paths;
                 row.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     // Command-click (Ctrl-click on Linux, as Select All
                     // is Ctrl-A there; it read Super) toggles the row in
@@ -6979,7 +7088,7 @@ impl GitTurtle {
                         this.activate_working_preview(window, cx);
                     }
                 }))
-                .app_context_menu(move |menu, _, cx| {
+                .app_context_menu(move |menu, window, cx| {
                     // Read as it is built: a write's start or end builds
                     // the open menu again. Opened on rows the filter is
                     // replacing, it refuses its items until the new rows
@@ -6999,9 +7108,12 @@ impl GitTurtle {
                         MenuRow {
                             entry: (*ignore_entry).clone(),
                             staged,
+                            selected_paths: menu_selected.clone(),
                         },
                         wait,
                         waiting,
+                        window,
+                        cx,
                     )
                 })
                 // A file whose status changes under its open menu, as
@@ -7015,7 +7127,7 @@ impl GitTurtle {
                 // built again, but for a write that starts or ends
                 // meanwhile, which builds it refused, and for the
                 // reason its refused items state changing.
-                .built_from(menu_entry)
+                .built_from((menu_entry, built_selected))
                 .follows_writes(cx.entity().downgrade())
                 .waits_while(GitTurtle::working_rows_wait)
                 .into_any_element()
@@ -7059,10 +7171,12 @@ impl GitTurtle {
         // time it builds them, as it opens, as rows land and as a write
         // starts or ends (`follow_working_menu`), never from a copy taken as
         // it opened.
+        let selected_paths = self.selected_working_paths_for(&entry.path, area);
         self.file_menu_row = Some(WorkingMenu {
             target: MenuRow {
                 entry,
                 staged: area == ChangeArea::Staged,
+                selected_paths,
             },
             wait: None,
             waiting: None,
@@ -7097,13 +7211,18 @@ impl GitTurtle {
     pub(super) fn working_menu_items(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> Option<impl FnOnce(PopupMenu) -> PopupMenu + 'static> {
+    ) -> Option<impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static>
+    {
         let (wait, waiting) = (self.menu_wait(), self.working_rows_wait());
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let followed = self.file_menu_row.as_mut()?;
         (followed.wait, followed.waiting) = (wait, waiting);
         let target = followed.target.clone();
-        Some(move |menu| working_row_menu(menu, owner, repository, target, wait, waiting))
+        Some(
+            move |menu, window: &mut Window, cx: &mut Context<PopupMenu>| {
+                working_row_menu(menu, owner, repository, target, wait, waiting, window, cx)
+            },
+        )
     }
 
     /// Why a Working row's menu refuses every item while the rows are
@@ -7502,7 +7621,10 @@ impl GitTurtle {
                         };
                         let origin = confirmations::sync(id, &this.path, &target);
                         let command = match id {
-                            "fetch" => WriteCommand::Fetch { remote },
+                            "fetch" => WriteCommand::Fetch {
+                                remote,
+                                prune: false,
+                            },
                             "pull" => WriteCommand::Pull { remote, branch },
                             _ => WriteCommand::Push {
                                 remote,
@@ -8173,6 +8295,7 @@ fn field_text(input: &InputState) -> Cow<'_, str> {
 pub(super) struct MenuRow {
     pub(super) entry: StatusEntry,
     pub(super) staged: bool,
+    pub(super) selected_paths: Vec<PathBuf>,
 }
 
 impl MenuRow {
@@ -8293,6 +8416,7 @@ pub(super) const FILTERING_ROWS_REASON: &str = "Wait for the filter to finish";
 /// file finishes" or "…, available when filtering finishes"; an item the row
 /// cannot take states its own condition instead, as an item a row cannot take
 /// does.
+#[expect(clippy::too_many_arguments)]
 pub(super) fn working_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
@@ -8300,15 +8424,16 @@ pub(super) fn working_row_menu(
     target: MenuRow,
     wait: Option<native_accessibility::MenuWait>,
     waiting: Option<&'static str>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    let MenuRow { entry, staged } = target;
-    // Refused with nothing to say why, a menu opened as the rows were
-    // prepared showed every item dim and was announced so, and one built as
-    // a write ran, its rows standing, did so as well.
+    let MenuRow {
+        entry,
+        staged,
+        selected_paths,
+    } = target;
     let preparing = waiting.is_some();
     let wait = waiting.map(native_accessibility::MenuWait::named).or(wait);
-    // While the rows are prepared, their landing is what every item waits
-    // for, whatever else it waits for.
     let item = |label: &'static str, refused: bool| {
         native_accessibility::waiting_item(label, refused && !preparing, wait)
     };
@@ -8329,12 +8454,6 @@ pub(super) fn working_row_menu(
                         ChangeArea::Unstaged
                     };
                     if let Some(row) = this.working_row_position(&path, area) {
-                        // A second press lands where this write moves a
-                        // row or a heading under the pointer, as on a row's
-                        // own control. Held on every confirm: for a
-                        // keyboard's it costs only hover, and a pointer's
-                        // press on those controls, staying off until the
-                        // pointer moves.
                         if this.operation_busy.is_none() {
                             this.hold_still_pointer(row, window);
                         }
@@ -8345,10 +8464,6 @@ pub(super) fn working_row_menu(
             });
         }),
     );
-    // An action the row cannot take reads as its command with the condition
-    // it waits for apart from it, not as one phrase, and the menu keys rest
-    // on it, so that condition is heard; while the rows are prepared, that
-    // is their landing, whatever else it waits for.
     let ignore = if entry.untracked || preparing {
         item("Ignore…", staged)
     } else {
@@ -8370,15 +8485,19 @@ pub(super) fn working_row_menu(
     } else {
         item("Discard changes…", false)
     };
+    let ignore_owner = owner.clone();
+    let ignore_repository = repository.clone();
+    let ignore_entry = entry.clone();
+    let sub_owner = owner;
+    let sub_repo = repository;
+    let sub_entry = entry;
     menu.item(ignore.on_click(move |_, window, cx| {
-        let _ = owner.update(cx, |this, cx| {
-            if this.path == repository {
-                this.open_ignore(entry.clone(), window, cx);
+        let _ = ignore_owner.update(cx, |this, cx| {
+            if this.path == ignore_repository {
+                this.open_ignore(ignore_entry.clone(), window, cx);
             }
         });
     }))
-    // Discard reverts the whole file to HEAD, so both the staged and
-    // unstaged rows offer the same action.
     .item(discard.on_click(move |_, window, cx| {
         let _ = discard_owner.update(cx, |this, cx| {
             if this.path == discard_repository {
@@ -8386,6 +8505,171 @@ pub(super) fn working_row_menu(
             }
         });
     }))
+    .submenu("More", window, cx, move |mut sub, _, _| {
+        let sub_item = |label: &'static str, refused: bool| {
+            native_accessibility::waiting_item(label, refused && !preparing, wait)
+        };
+        if selected_paths.len() > 1 {
+            let count = selected_paths.len();
+            let stash_owner = sub_owner.clone();
+            let stash_repo = sub_repo.clone();
+            let stash_paths = selected_paths.clone();
+            let multi_owner = sub_owner.clone();
+            let multi_repo = sub_repo.clone();
+            let multi_paths = selected_paths.clone();
+            sub = sub
+                .item(
+                    native_accessibility::waiting_item(
+                        format!("Stash {count} selected files…"),
+                        false,
+                        wait,
+                    )
+                    .on_click(move |_, window, cx| {
+                        let _ = stash_owner.update(cx, |this, cx| {
+                            if this.path == stash_repo && this.page == AppPage::Repository {
+                                this.open_stash_selected(stash_paths.clone(), window, cx);
+                            }
+                        });
+                    }),
+                )
+                .item(
+                    native_accessibility::waiting_item(
+                        format!("Discard {count} selected files…"),
+                        false,
+                        wait,
+                    )
+                    .on_click(move |_, window, cx| {
+                        let _ = multi_owner.update(cx, |this, cx| {
+                            if this.path == multi_repo
+                                && this.page == AppPage::Repository
+                                && let Some(status) = &this.work_status
+                            {
+                                let entries: Vec<StatusEntry> = status
+                                    .entries
+                                    .iter()
+                                    .filter(|e| {
+                                        multi_paths.iter().any(|p| {
+                                            crate::working_selection::same_path(p, &e.path)
+                                        })
+                                    })
+                                    .cloned()
+                                    .collect();
+                                if !entries.is_empty() {
+                                    this.open_multi_discard(entries, window, cx);
+                                }
+                            }
+                        });
+                    }),
+                )
+                .separator();
+        } else if !sub_entry.untracked && !sub_entry.conflicted {
+            let stash_owner = sub_owner.clone();
+            let stash_repo = sub_repo.clone();
+            let stash_path = sub_entry.path.clone();
+            sub = sub
+                .item(
+                    sub_item("Stash this file…", false).on_click(move |_, window, cx| {
+                        let _ = stash_owner.update(cx, |this, cx| {
+                            if this.path == stash_repo && this.page == AppPage::Repository {
+                                this.open_stash_selected(vec![stash_path.clone()], window, cx);
+                            }
+                        });
+                    }),
+                )
+                .separator();
+        }
+        {
+            let open_owner = sub_owner.clone();
+            let open_repo = sub_repo.clone();
+            let open_path = sub_entry.path.clone();
+            sub = sub.item(
+                gpui_kit::component::menu::PopupMenuItem::new("Open in editor").on_click(
+                    move |_, window, cx| {
+                        let _ = open_owner.update(cx, |this, cx| {
+                            if this.path == open_repo && this.page == AppPage::Repository {
+                                this.open_repo_file_in_editor(open_path.clone(), None, window, cx);
+                            }
+                        });
+                    },
+                ),
+            );
+        }
+        {
+            let reveal_owner = sub_owner.clone();
+            let reveal_repo = sub_repo.clone();
+            let reveal_path = sub_entry.path.clone();
+            let reveal_label = if cfg!(target_os = "macos") {
+                "Reveal in Finder"
+            } else {
+                "Reveal in file manager"
+            };
+            sub = sub.item(
+                gpui_kit::component::menu::PopupMenuItem::new(reveal_label).on_click(
+                    move |_, window, cx| {
+                        let _ = reveal_owner.update(cx, |this, cx| {
+                            if this.path == reveal_repo && this.page == AppPage::Repository {
+                                this.reveal_repo_file_in_manager(reveal_path.clone(), window, cx);
+                            }
+                        });
+                    },
+                ),
+            );
+        }
+        {
+            let copy_path = sub_entry.path.to_string_lossy().into_owned();
+            sub = sub.item(
+                gpui_kit::component::menu::PopupMenuItem::new("Copy path").on_click(
+                    move |_, window, cx| {
+                        crate::copy_feedback::copy(
+                            window,
+                            cx,
+                            None,
+                            "file path",
+                            copy_path.clone(),
+                        );
+                    },
+                ),
+            );
+        }
+        if !sub_entry.untracked {
+            let hist_owner = sub_owner.clone();
+            let hist_repo = sub_repo.clone();
+            let hist_path = sub_entry.path.clone();
+            sub = sub
+                .separator()
+                .item(
+                    sub_item("File history…", false).on_click(move |_, window, cx| {
+                        let _ = hist_owner.update(cx, |this, cx| {
+                            if this.path == hist_repo && this.page == AppPage::Repository {
+                                let anchor = this
+                                    .work_status
+                                    .as_ref()
+                                    .and_then(|s| s.head.clone())
+                                    .unwrap_or_else(|| "HEAD".into());
+                                this.open_file_history_at(anchor, hist_path.clone(), window, cx);
+                            }
+                        });
+                    }),
+                );
+            let blame_owner = sub_owner.clone();
+            let blame_repo = sub_repo.clone();
+            let blame_path = sub_entry.path.clone();
+            sub = sub.item(sub_item("Blame…", false).on_click(move |_, window, cx| {
+                let _ = blame_owner.update(cx, |this, cx| {
+                    if this.path == blame_repo
+                        && this.page == AppPage::Repository
+                        && let Some(index) = this
+                            .work_status
+                            .as_ref()
+                            .and_then(|s| s.entries.iter().position(|e| e.path == blame_path))
+                    {
+                        this.open_blame(index, window, cx);
+                    }
+                });
+            }));
+        }
+        sub
+    })
 }
 
 fn action_inset() -> Pixels {
@@ -8625,7 +8909,8 @@ fn remote_defaults(
 }
 
 pub(super) fn display_remote_url(url: &str) -> String {
-    let without_query = url.split(['?', '#']).next().unwrap_or(url);
+    let cleaned = gitturtle_core::strip_bidi_controls(url);
+    let without_query = cleaned.split(['?', '#']).next().unwrap_or(cleaned.as_ref());
     if let Some((scheme, remainder)) = without_query.split_once("://") {
         let (authority, path) = remainder
             .split_once('/')

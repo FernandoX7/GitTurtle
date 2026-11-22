@@ -38,6 +38,15 @@ pub struct CreateTagPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteRemoteTagPlan {
+    pub tag: Tag,
+    pub remote: Arc<RemoteConfig>,
+    pub remote_url: String,
+    pub expected_remote_oid: String,
+    root: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TagCommand {
     Create(CreateTagPlan),
     Delete(Tag),
@@ -45,6 +54,11 @@ pub enum TagCommand {
     Push {
         tag: Tag,
         remote: Arc<RemoteConfig>,
+    },
+    /// Delete only the named captured tag from one named remote with an exact
+    /// object-ID lease matching the reviewed tag.
+    DeleteRemote {
+        plan: DeleteRemoteTagPlan,
     },
 }
 
@@ -150,6 +164,32 @@ impl GitRepository {
         })
     }
 
+    /// Capture one local tag and one named remote with a single push URL for
+    /// exact-lease remote tag deletion. Passive: never contacts the network.
+    pub fn delete_remote_tag_plan(
+        &self,
+        tag: &Tag,
+        remote: Arc<RemoteConfig>,
+    ) -> Result<DeleteRemoteTagPlan> {
+        self.check_tag(tag)?;
+        let actual = self
+            .remote_configs()?
+            .into_iter()
+            .find(|candidate| candidate.name == remote.name);
+        ensure!(
+            actual.as_ref() == Some(remote.as_ref()),
+            "The remote configuration changed; review this tag's destination again."
+        );
+        let remote_url = self.single_push_url(&remote.name)?;
+        Ok(DeleteRemoteTagPlan {
+            expected_remote_oid: tag.oid.clone(),
+            tag: tag.clone(),
+            remote,
+            remote_url,
+            root: self.path.clone(),
+        })
+    }
+
     pub(super) fn execute_tag(&self, operation: &TagCommand) -> Result<WriteOutcome> {
         let mut command = normal_command(self.target());
         let mut input = None;
@@ -251,6 +291,55 @@ impl GitRepository {
                 ]);
                 timeout = NETWORK_TIMEOUT;
                 format!("Pushed only tag '{}' to '{}'", tag.name, remote.name)
+            }
+            TagCommand::DeleteRemote { plan } => {
+                ensure!(
+                    plan.root == self.path,
+                    "This remote tag deletion plan belongs to another working copy."
+                );
+                self.check_tag(&plan.tag)?;
+                let actual = self
+                    .remote_configs()?
+                    .into_iter()
+                    .find(|candidate| candidate.name == plan.remote.name);
+                ensure!(
+                    actual.as_ref() == Some(plan.remote.as_ref()),
+                    "The remote configuration changed; review this tag's destination again."
+                );
+                ensure!(
+                    self.single_push_url(&plan.remote.name)? == plan.remote_url,
+                    "The remote push URL changed; review this tag deletion again."
+                );
+                validate_oid(&plan.expected_remote_oid)?;
+                ensure!(
+                    plan.expected_remote_oid == plan.tag.oid,
+                    "The reviewed remote tag object ID no longer matches the tag plan."
+                );
+                configure_network(&mut command, self)?;
+                command.args([
+                    "-c",
+                    &format!("remote.{}.mirror=false", plan.remote.name),
+                    "-c",
+                    "push.followTags=false",
+                    "push",
+                    "--porcelain",
+                    "--progress",
+                    "--no-force",
+                    "--no-follow-tags",
+                    "--recurse-submodules=no",
+                    &format!(
+                        "--force-with-lease=refs/tags/{}:{}",
+                        plan.tag.name, plan.expected_remote_oid
+                    ),
+                    "--",
+                    &plan.remote.name,
+                    &format!(":refs/tags/{}", plan.tag.name),
+                ]);
+                timeout = NETWORK_TIMEOUT;
+                format!(
+                    "Deleted remote tag '{}' from '{}' (local tag unchanged)",
+                    plan.tag.name, plan.remote.name
+                )
             }
         };
         checked_write_output(command, input, timeout)?;

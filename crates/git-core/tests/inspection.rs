@@ -231,3 +231,120 @@ fn tracked_path_index_and_index_fingerprint_match_and_invalidate() {
     assert_eq!(rev_index.scope(), &PathScope::Revision(head_oid));
     assert_eq!(rev_index.len(), 3);
 }
+
+#[test]
+fn resolve_revision_and_commit_patch_are_passive_and_handle_regular_and_merge_commits() {
+    let (_temp, repo) = fixture();
+    let path = repo.path();
+    let c = HistoryCancellation::default();
+    fs::write(path.join("a.txt"), "one\n").unwrap();
+    git(path, &["add", "a.txt"]);
+    git(path, &["commit", "-m", "Add a"]);
+    let first = git(path, &["rev-parse", "HEAD"]);
+    git(path, &["tag", "v0.1"]);
+
+    git(path, &["switch", "-c", "side"]);
+    fs::write(path.join("side.txt"), "side\n").unwrap();
+    git(path, &["add", "side.txt"]);
+    git(path, &["commit", "-m", "Add side"]);
+    git(path, &["switch", "main"]);
+    fs::write(path.join("b.txt"), "two\n").unwrap();
+    git(path, &["add", "b.txt"]);
+    git(path, &["commit", "-m", "Add b"]);
+    git(path, &["merge", "--no-ff", "--no-edit", "side"]);
+    let merge = git(path, &["rev-parse", "HEAD"]);
+
+    assert_eq!(repo.resolve_revision("HEAD").unwrap(), merge);
+    assert_eq!(repo.resolve_revision("v0.1").unwrap(), first);
+    assert_eq!(repo.resolve_revision(&first[..8]).unwrap(), first);
+    assert!(repo.resolve_revision("--all").is_err());
+    assert!(repo.resolve_revision("HEAD\nfoo").is_err());
+    assert!(repo.resolve_revision("nonexistent-ref").is_err());
+
+    let patch = repo.commit_patch(&first, &c).unwrap();
+    assert!(patch.contains("Subject: [PATCH] Add a"), "{patch}");
+    assert!(patch.contains("+one"), "{patch}");
+
+    let merge_patch = repo.commit_patch(&merge, &c).unwrap();
+    assert!(merge_patch.contains("+side"), "{merge_patch}");
+}
+
+#[test]
+fn compare_revision_with_working_and_preview_never_follow_symlinks() {
+    use std::os::unix::fs::symlink;
+    let (_temp, repo) = fixture();
+    let path = repo.path();
+    let c = HistoryCancellation::default();
+    let base = git(path, &["rev-parse", "HEAD"]);
+
+    // Modify tracked file and create a tracked symlink pointing outside the repo.
+    fs::write(path.join("file.txt"), "hello\nworking edit\n").unwrap();
+    symlink("/etc/passwd", path.join("outside-link")).unwrap();
+    git(path, &["add", "outside-link"]);
+
+    let comparison = repo.compare_revision_with_working(&base, &c).unwrap();
+    assert!(comparison.after_working);
+    assert_eq!(comparison.before.oid, base);
+    assert!(
+        comparison
+            .files
+            .iter()
+            .any(|f| f.path() == Path::new("file.txt"))
+    );
+    let link_change = comparison
+        .files
+        .iter()
+        .find(|f| f.path() == Path::new("outside-link"))
+        .expect("symlink entry in comparison");
+
+    let text_file = comparison
+        .files
+        .iter()
+        .find(|f| f.path() == Path::new("file.txt"))
+        .expect("file.txt entry in comparison");
+    let preview = repo.preview_revision_vs_working(text_file).unwrap();
+    match preview.preview {
+        gitturtle_core::TextPreview::Patch(patch) => {
+            assert!(patch.contains("+working edit"), "{patch}");
+            assert!(
+                String::from_utf8_lossy(&preview.new).contains("working edit"),
+                "{:?}",
+                preview.new
+            );
+        }
+        other => panic!("expected patch preview, got {other:?}"),
+    }
+
+    // Previewing a symlink against working tree must never read the symlink target's file contents.
+    let link_preview = repo.preview_revision_vs_working(link_change).unwrap();
+    assert_eq!(link_preview.file.new_mode, "120000");
+    assert_eq!(link_preview.new, b"/etc/passwd");
+}
+
+#[cfg(unix)]
+#[test]
+fn compare_revision_with_working_never_runs_repo_clean_or_process_filters() {
+    let (_temp, repo) = fixture();
+    let path = repo.path();
+    let c = HistoryCancellation::default();
+    let base = git(path, &["rev-parse", "HEAD"]);
+    let marker = path.join(".git/filter-ran");
+    fs::write(path.join(".gitattributes"), "*.txt filter=hostile\n").unwrap();
+    git(
+        path,
+        &[
+            "config",
+            "filter.hostile.clean",
+            &format!("printf ran > '{}'; cat", marker.display()),
+        ],
+    );
+    git(path, &["config", "filter.hostile.required", "true"]);
+    fs::write(path.join("file.txt"), "dirty working edit\n").unwrap();
+
+    let comparison = repo.compare_revision_with_working(&base, &c).unwrap();
+    assert!(comparison.after_working);
+    assert!(
+        !marker.exists(),
+        "passive revision-vs-working diff must never execute clean/process filters"
+    );
+}

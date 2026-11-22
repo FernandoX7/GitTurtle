@@ -713,9 +713,10 @@ impl GitTurtle {
             return;
         };
         let submitted_path = path.clone();
+        let terminal = self.settings.external_terminal.trim().to_owned();
         let response = self
             .preferences_writer
-            .submit_read(move || open_terminal_at(&path));
+            .submit_read(move || open_terminal_with(&terminal, &path));
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ = this.update_in(cx, |this, _, cx| {
@@ -730,6 +731,104 @@ impl GitTurtle {
                     Err(_) => "The terminal launcher stopped before reporting a result.".into(),
                 });
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn open_repo_file_in_editor(
+        &mut self,
+        relative_path: PathBuf,
+        line: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo_root) = self.repository.as_ref().map(|repo| repo.path().to_owned()) else {
+            return;
+        };
+        let Some(full_path) = safe_repo_file_path(&repo_root, &relative_path) else {
+            self.operation_notice =
+                Some("This path cannot be opened outside the repository working folder.".into());
+            cx.notify();
+            return;
+        };
+        let submitted_path = repo_root.clone();
+        let editor = self.settings.external_editor.trim().to_owned();
+        let terminal = self.settings.external_terminal.trim().to_owned();
+        let response = self.preferences_writer.submit_read(move || {
+            open_file_in_editor(&editor, &terminal, &repo_root, &full_path, line)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.repository.as_ref().map(|repo| repo.path())
+                    != Some(submitted_path.as_path())
+                {
+                    return;
+                }
+                match result {
+                    Ok(Ok(Some(Opened::Configured))) => {
+                        this.operation_notice =
+                            Some("Opened file in the configured editor.".into());
+                    }
+                    Ok(Ok(Some(Opened::Omarchy))) => {
+                        this.operation_notice = Some("Opened file in your Omarchy editor.".into());
+                    }
+                    Ok(Ok(None)) => {
+                        this.show_settings(window, cx);
+                        this.operation_notice = Some(EDITOR_NEEDED.into());
+                    }
+                    Ok(Err(error)) => {
+                        this.operation_notice = Some(error.to_string());
+                    }
+                    Err(_) => {
+                        this.operation_notice =
+                            Some("The editor launcher stopped before reporting a result.".into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn reveal_repo_file_in_manager(
+        &mut self,
+        relative_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo_root) = self.repository.as_ref().map(|repo| repo.path().to_owned()) else {
+            return;
+        };
+        let Some(full_path) = safe_repo_file_path(&repo_root, &relative_path) else {
+            self.operation_notice =
+                Some("This path cannot be revealed outside the repository working folder.".into());
+            cx.notify();
+            return;
+        };
+        let submitted_path = repo_root.clone();
+        let check_root = repo_root;
+        let check_path = full_path.clone();
+        let response = self
+            .preferences_writer
+            .submit_read(move || verify_no_symlink_components(&check_root, &check_path, false));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response.await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                if this.repository.as_ref().map(|repo| repo.path())
+                    != Some(submitted_path.as_path())
+                {
+                    return;
+                }
+                match result {
+                    Ok(Ok(())) => cx.reveal_path(&full_path),
+                    Ok(Err(error)) => {
+                        this.operation_notice = Some(error.to_string());
+                        cx.notify();
+                    }
+                    Err(_) => {}
+                }
             });
         })
         .detach();
@@ -964,16 +1063,112 @@ pub(super) fn open_in_editor(configured: &str, path: &Path) -> anyhow::Result<Op
     Ok(Some(opened))
 }
 
-/// Opens a terminal in `path`: Terminal on macOS; on Linux the desktop's
-/// default terminal through `xdg-terminal-exec` (the default-terminal
-/// specification Omarchy and current GNOME follow), else `$TERMINAL`, else
-/// Debian's `x-terminal-emulator`. Runs on a worker.
-pub(super) fn open_terminal_at(path: &Path) -> anyhow::Result<()> {
+/// Opens a terminal in `path`: the configured terminal when set in Settings,
+/// else Terminal on macOS; on Linux `xdg-terminal-exec`, `$TERMINAL`, or
+/// `x-terminal-emulator`. Runs on a worker.
+pub(super) fn open_terminal_with(configured: &str, path: &Path) -> anyhow::Result<()> {
     launch(
-        terminal_command(path, &LaunchEnvironment::current())?,
+        terminal_command_with(configured, path, &LaunchEnvironment::current())?,
         "Could not open a terminal",
-        "macOS could not open Terminal.",
+        "macOS could not open the configured terminal.",
     )
+}
+
+pub(super) fn safe_repo_file_path(repo_root: &Path, relative_path: &Path) -> Option<PathBuf> {
+    if relative_path.as_os_str().is_empty() || relative_path.is_absolute() {
+        return None;
+    }
+    for component in relative_path.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return None;
+        }
+    }
+    Some(repo_root.join(relative_path))
+}
+
+fn verify_no_symlink_components(
+    repo_root: &Path,
+    file_path: &Path,
+    require_regular_file: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        repo_root.is_absolute(),
+        "Repository root must be an absolute path."
+    );
+    let relative = file_path.strip_prefix(repo_root).map_err(|_| {
+        anyhow::anyhow!("This path cannot be opened outside the repository working folder.")
+    })?;
+    anyhow::ensure!(
+        !relative.as_os_str().is_empty(),
+        "Refused to open an empty repository path."
+    );
+    let components: Vec<_> = relative.components().collect();
+    let last_index = components.len().saturating_sub(1);
+    let mut cursor = repo_root.to_path_buf();
+    for (idx, component) in components.into_iter().enumerate() {
+        let std::path::Component::Normal(part) = component else {
+            anyhow::bail!("This path cannot be opened outside the repository working folder.");
+        };
+        cursor.push(part);
+        let meta = std::fs::symlink_metadata(&cursor).map_err(|error| {
+            anyhow::anyhow!(
+                "Cannot inspect {} before opening: {error}",
+                cursor.display()
+            )
+        })?;
+        anyhow::ensure!(
+            !meta.file_type().is_symlink(),
+            "Stored symlinks are not opened or revealed automatically."
+        );
+        if idx < last_index {
+            anyhow::ensure!(
+                meta.file_type().is_dir(),
+                "Cannot traverse non-directory component {}.",
+                cursor.display()
+            );
+        } else if require_regular_file {
+            anyhow::ensure!(
+                meta.file_type().is_file(),
+                "Only regular files can be opened directly in an external editor."
+            );
+        } else {
+            anyhow::ensure!(
+                meta.file_type().is_file() || meta.file_type().is_dir(),
+                "Special filesystem entries cannot be revealed automatically."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Opens a repository file (optionally at a 1-based line number) in the
+/// configured editor or Omarchy editor, rejecting symlinks and running
+/// without any shell interpolation.
+pub(super) fn open_file_in_editor(
+    configured: &str,
+    configured_terminal: &str,
+    repo_root: &Path,
+    file_path: &Path,
+    line: Option<usize>,
+) -> anyhow::Result<Option<Opened>> {
+    verify_no_symlink_components(repo_root, file_path, true)?;
+    let Some((command, opened)) = file_editor_command(
+        configured,
+        configured_terminal,
+        repo_root,
+        file_path,
+        line,
+        &LaunchEnvironment::current(),
+    )?
+    else {
+        return Ok(None);
+    };
+    launch(
+        command,
+        "Could not open file in editor",
+        "macOS could not open the configured editor. Check its application name or path in Settings.",
+    )?;
+    Ok(Some(opened))
 }
 
 /// What a launcher reads from the process environment.
@@ -1007,6 +1202,14 @@ impl LaunchEnvironment {
     }
 }
 
+fn editor_working_dir(path: &Path) -> &Path {
+    if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    }
+}
+
 fn editor_command(
     configured: &str,
     path: &Path,
@@ -1024,19 +1227,213 @@ fn editor_command(
     } else {
         (omarchy_editor(environment)?, Opened::Omarchy)
     };
-    // A terminal editor such as Neovim works in its working directory.
-    command.arg(path).current_dir(path);
+    // A terminal editor such as Neovim works in its working directory; never
+    // pass a file path as current_dir (which fails with ENOTDIR).
+    command.arg(path).current_dir(editor_working_dir(path));
     Some((command, opened))
 }
 
+fn editor_basename(configured: &str) -> String {
+    let trimmed = configured.trim().trim_end_matches(".app");
+    Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase()
+}
+
+fn is_tui_editor(name: &str) -> bool {
+    matches!(
+        name,
+        "nvim" | "vim" | "vi" | "nano" | "emacs" | "micro" | "kak" | "hx" | "helix"
+    )
+}
+
+fn file_editor_command(
+    configured: &str,
+    configured_terminal: &str,
+    repo_root: &Path,
+    file_path: &Path,
+    line: Option<usize>,
+    environment: &LaunchEnvironment,
+) -> anyhow::Result<Option<(std::process::Command, Opened)>> {
+    anyhow::ensure!(
+        repo_root.is_absolute() && file_path.is_absolute(),
+        "Editor handoff requires absolute repository and file paths."
+    );
+    let configured = configured.trim();
+    if configured.is_empty() {
+        let Some(mut command) = omarchy_editor(environment) else {
+            return Ok(None);
+        };
+        command.arg(file_path).current_dir(repo_root);
+        return Ok(Some((command, Opened::Omarchy)));
+    }
+    let name = editor_basename(configured);
+    let line = line.filter(|line| *line > 0);
+    let file_str = file_path.as_os_str();
+    let with_colon = |line: usize| {
+        let mut arg = file_str.to_os_string();
+        arg.push(format!(":{line}"));
+        arg
+    };
+
+    if cfg!(target_os = "macos") {
+        // Prefer known CLI shims on PATH when jumping to a specific line;
+        // otherwise delegate cleanly to `/usr/bin/open -a <configured> -- <file>`.
+        let cli_for_line = match name.as_str() {
+            "visual studio code" | "code" => Some(("code", true)),
+            "visual studio code - insiders" | "code-insiders" => Some(("code-insiders", true)),
+            "vscodium" | "codium" => Some(("codium", true)),
+            "cursor" => Some(("cursor", true)),
+            "windsurf" => Some(("windsurf", true)),
+            "zed" => Some(("zed", false)),
+            "sublime text" | "subl" => Some(("subl", false)),
+            _ => None,
+        };
+        if let (Some(line), Some((cli, use_goto))) = (line, cli_for_line)
+            && let Some(program) = environment.find(cli)
+        {
+            let mut command = std::process::Command::new(program);
+            if use_goto {
+                command.arg("--goto").arg(with_colon(line));
+            } else {
+                command.arg(with_colon(line));
+            }
+            command.current_dir(repo_root);
+            return Ok(Some((command, Opened::Configured)));
+        }
+        let mut command = std::process::Command::new("/usr/bin/open");
+        command
+            .args(["-a", configured, "--"])
+            .arg(file_path)
+            .current_dir(repo_root);
+        return Ok(Some((command, Opened::Configured)));
+    }
+
+    if is_tui_editor(&name) {
+        let mut editor_args: Vec<std::ffi::OsString> = Vec::new();
+        if matches!(name.as_str(), "hx" | "helix") {
+            editor_args.push(std::ffi::OsString::from("--"));
+            if let Some(line) = line {
+                editor_args.push(with_colon(line));
+            } else {
+                editor_args.push(file_str.to_os_string());
+            }
+        } else {
+            if let Some(line) = line {
+                editor_args.push(std::ffi::OsString::from(format!("+{line}")));
+            }
+            editor_args.push(std::ffi::OsString::from("--"));
+            editor_args.push(file_str.to_os_string());
+        }
+        let command = terminal_exec_command(
+            configured_terminal.trim(),
+            repo_root,
+            configured,
+            &editor_args,
+            environment,
+        )?;
+        return Ok(Some((command, Opened::Configured)));
+    }
+
+    let mut command = std::process::Command::new(configured);
+    match name.as_str() {
+        "code" | "code-insiders" | "codium" | "cursor" | "windsurf" => {
+            if let Some(line) = line {
+                command.arg("--goto").arg(with_colon(line));
+            } else {
+                command.arg("--").arg(file_path);
+            }
+        }
+        "zed" | "subl" | "sublime" => {
+            command.arg("--");
+            if let Some(line) = line {
+                command.arg(with_colon(line));
+            } else {
+                command.arg(file_path);
+            }
+        }
+        "idea" | "goland" | "rustrover" | "clion" | "pycharm" | "webstorm" | "rubymine"
+        | "phpstorm" | "fleet" => {
+            if let Some(line) = line {
+                command.arg("--line").arg(line.to_string());
+            }
+            command.arg(file_path);
+        }
+        "kate" | "mate" => {
+            if let Some(line) = line {
+                command.arg("-l").arg(line.to_string());
+            }
+            command.arg("--").arg(file_path);
+        }
+        _ => {
+            command.arg(file_path);
+        }
+    }
+    command.current_dir(repo_root);
+    Ok(Some((command, Opened::Configured)))
+}
+
+fn terminal_exec_command(
+    configured_terminal: &str,
+    dir: &Path,
+    program: &str,
+    args: &[std::ffi::OsString],
+    environment: &LaunchEnvironment,
+) -> anyhow::Result<std::process::Command> {
+    let mut command = if !configured_terminal.is_empty() {
+        let mut command = std::process::Command::new(configured_terminal);
+        command.arg("-e").arg(program).args(args);
+        command
+    } else if let Some(exec) = environment.find("xdg-terminal-exec") {
+        let mut command = std::process::Command::new(exec);
+        let mut directory = std::ffi::OsString::from("--dir=");
+        directory.push(dir);
+        command.arg(directory).arg("--").arg(program).args(args);
+        command
+    } else if let Some(terminal) = &environment.terminal {
+        let mut command = std::process::Command::new(terminal);
+        command.arg("-e").arg(program).args(args);
+        command
+    } else if let Some(exec) = environment.find("x-terminal-emulator") {
+        let mut command = std::process::Command::new(exec);
+        command.arg("-e").arg(program).args(args);
+        command
+    } else {
+        anyhow::bail!(
+            "No terminal was found to run {program}. Set External terminal in Settings → Projects, or install xdg-terminal-exec."
+        );
+    };
+    command.current_dir(dir);
+    Ok(command)
+}
+
+#[cfg(all(test, target_os = "linux"))]
 fn terminal_command(
     path: &Path,
     environment: &LaunchEnvironment,
 ) -> anyhow::Result<std::process::Command> {
+    terminal_command_with("", path, environment)
+}
+
+fn terminal_command_with(
+    configured: &str,
+    path: &Path,
+    environment: &LaunchEnvironment,
+) -> anyhow::Result<std::process::Command> {
+    let configured = configured.trim();
     let mut command = if cfg!(target_os = "macos") {
+        let app = if configured.is_empty() {
+            "Terminal"
+        } else {
+            configured
+        };
         let mut command = std::process::Command::new("/usr/bin/open");
-        command.args(["-a", "Terminal", "--"]).arg(path);
+        command.args(["-a", app, "--"]).arg(path);
         command
+    } else if !configured.is_empty() {
+        std::process::Command::new(configured)
     } else if let Some(program) = environment.find("xdg-terminal-exec") {
         let mut command = std::process::Command::new(program);
         let mut directory = std::ffi::OsString::from("--dir=");
@@ -1049,7 +1446,7 @@ fn terminal_command(
         std::process::Command::new(program)
     } else {
         anyhow::bail!(
-            "No default terminal was found. Install xdg-terminal-exec, or set the TERMINAL environment variable."
+            "No default terminal was found. Configure External terminal in Settings → Projects, install xdg-terminal-exec, or set TERMINAL."
         );
     };
     command.current_dir(path);
@@ -1250,6 +1647,130 @@ mod launcher_tests {
                 .unwrap(),
             repository.canonicalize().unwrap(),
             "{recorded}"
+        );
+    }
+
+    #[test]
+    fn configured_terminal_and_file_editor_commands_reject_symlinks_and_avoid_shell_interpolation()
+    {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let file = repo.join("src/main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let outside = root.path().join("secret.txt");
+        std::fs::write(&outside, "secret\n").unwrap();
+        symlink(&outside, repo.join("leaf-link.txt")).unwrap();
+        symlink(root.path(), repo.join("dir-link")).unwrap();
+
+        // safe_repo_file_path rejects empty, absolute, and traversal paths.
+        assert!(safe_repo_file_path(&repo, Path::new("")).is_none());
+        assert!(safe_repo_file_path(&repo, Path::new("/etc/passwd")).is_none());
+        assert!(safe_repo_file_path(&repo, Path::new("../secret.txt")).is_none());
+        assert_eq!(
+            safe_repo_file_path(&repo, Path::new("src/main.rs")),
+            Some(file.clone())
+        );
+
+        // verify_no_symlink_components accepts regular files and rejects leaf & ancestor symlinks and directories when regular file required.
+        verify_no_symlink_components(&repo, &file, true).unwrap();
+        assert!(verify_no_symlink_components(&repo, &repo.join("src"), true).is_err());
+        verify_no_symlink_components(&repo, &repo.join("src"), false).unwrap();
+        assert!(verify_no_symlink_components(&repo, &repo.join("leaf-link.txt"), true).is_err());
+        assert!(
+            verify_no_symlink_components(&repo, &repo.join("dir-link/secret.txt"), true).is_err()
+        );
+
+        // editor_working_dir never uses a file path as current_dir (prevents ENOTDIR).
+        assert_eq!(editor_working_dir(&file), repo.join("src").as_path());
+        assert_eq!(editor_working_dir(&repo), repo.as_path());
+
+        // Configured terminal overrides xdg-terminal-exec.
+        let _xdg = program(&bin, "xdg-terminal-exec", "exit 0");
+        let env = environment(&[&bin], &[]);
+        let term = terminal_command_with("ghostty", &repo, &env).unwrap();
+        assert_eq!(term.get_program(), "ghostty");
+        assert_eq!(term.get_current_dir(), Some(repo.as_path()));
+
+        // Line-number flags per editor without shell interpolation.
+        let expected_colon = format!("{}:42", file.display());
+        let (code, opened) = file_editor_command("code", "", &repo, &file, Some(42), &env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened, Opened::Configured);
+        assert_eq!(code.get_program(), "code");
+        assert_eq!(
+            code.get_args().collect::<Vec<_>>(),
+            ["--goto", expected_colon.as_str()]
+        );
+        assert_eq!(code.get_current_dir(), Some(repo.as_path()));
+
+        let (zed, _) = file_editor_command("zed", "", &repo, &file, Some(42), &env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(zed.get_program(), "zed");
+        assert_eq!(
+            zed.get_args().collect::<Vec<_>>(),
+            ["--", expected_colon.as_str()]
+        );
+
+        let (idea, _) = file_editor_command("rustrover", "", &repo, &file, Some(42), &env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(idea.get_program(), "rustrover");
+        assert_eq!(
+            idea.get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new("--line"),
+                std::ffi::OsStr::new("42"),
+                file.as_os_str(),
+            ]
+        );
+
+        let (kate, _) = file_editor_command("kate", "", &repo, &file, Some(42), &env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(kate.get_program(), "kate");
+        assert_eq!(
+            kate.get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new("-l"),
+                std::ffi::OsStr::new("42"),
+                std::ffi::OsStr::new("--"),
+                file.as_os_str(),
+            ]
+        );
+
+        // TUI editors (nvim and hx) wrap directly in the terminal with argv (no sh -c).
+        let (nvim, _) = file_editor_command("nvim", "alacritty", &repo, &file, Some(42), &env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(nvim.get_program(), "alacritty");
+        assert_eq!(
+            nvim.get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new("-e"),
+                std::ffi::OsStr::new("nvim"),
+                std::ffi::OsStr::new("+42"),
+                std::ffi::OsStr::new("--"),
+                file.as_os_str(),
+            ]
+        );
+
+        let (hx, _) = file_editor_command("hx", "alacritty", &repo, &file, Some(42), &env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(hx.get_program(), "alacritty");
+        assert_eq!(
+            hx.get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new("-e"),
+                std::ffi::OsStr::new("hx"),
+                std::ffi::OsStr::new("--"),
+                std::ffi::OsStr::new(expected_colon.as_str()),
+            ]
         );
     }
 }

@@ -963,3 +963,67 @@ fn discard_uses_literal_pathspecs_and_leaves_glob_siblings_changed() {
     assert_eq!(status.entries.len(), 1);
     assert_eq!(status.entries[0].path, Path::new("a.txt"));
 }
+
+#[test]
+fn multi_discard_restores_tracked_and_deletes_untracked_while_preserving_unselected() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    f.write("tracked", "edited tracked\n");
+    f.write("other", "keep unselected\n");
+    f.write("temp1.txt", "untracked 1\n");
+    f.write("temp2.txt", "untracked 2\n");
+    let entries = vec![f.entry("tracked"), f.entry("temp1.txt")];
+    let plan = repo.multi_discard_plan(&entries).unwrap();
+    assert_eq!(plan.tracked_count(), 1);
+    assert_eq!(plan.untracked_count(), 1);
+    let outcome = repo
+        .execute(&WriteCommand::DiscardMany(Arc::new(plan)))
+        .unwrap();
+    assert!(outcome.message.contains("Discarded 2 files"));
+    assert_eq!(f.read("tracked"), b"base\n");
+    assert!(!f.root.join("temp1.txt").exists());
+    assert_eq!(f.read("other"), b"keep unselected\n");
+    assert_eq!(f.read("temp2.txt"), b"untracked 2\n");
+
+    // Stale batch is refused without mutating any file.
+    f.write("tracked", "again\n");
+    let stale = repo
+        .multi_discard_plan(&[f.entry("tracked"), f.entry("temp2.txt")])
+        .unwrap();
+    f.write("temp2.txt", "edited after review\n");
+    assert!(
+        repo.execute(&WriteCommand::DiscardMany(Arc::new(stale)))
+            .is_err()
+    );
+    assert_eq!(f.read("tracked"), b"again\n");
+    assert_eq!(f.read("temp2.txt"), b"edited after review\n");
+}
+
+#[test]
+fn restore_file_restores_working_bytes_from_older_revision_without_touching_index() {
+    let f = Fixture::new();
+    let repo = f.repo();
+    let first_oid = f.git(&["rev-parse", "HEAD"]);
+    f.write("tracked", "second version\n");
+    f.git(&["commit", "-q", "-am", "second"]);
+    f.write("other", "staged unrelated\n");
+    f.git(&["add", "other"]);
+
+    let plan = repo
+        .restore_file_plan(&first_oid, Path::new("tracked"))
+        .unwrap();
+    let outcome = repo
+        .execute(&WriteCommand::RestoreFile(Arc::new(plan)))
+        .unwrap();
+    assert!(outcome.message.contains("Restored tracked"));
+    assert_eq!(f.read("tracked"), b"base\n");
+    // Index keeps HEAD ("second version") and unrelated staged file intact.
+    assert_eq!(f.git(&["show", ":tracked"]), "second version");
+    assert_eq!(f.git(&["show", ":other"]), "staged unrelated");
+
+    // Missing path in revision is refused.
+    assert!(
+        repo.restore_file_plan(&first_oid, Path::new("missing.txt"))
+            .is_err()
+    );
+}

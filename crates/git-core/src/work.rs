@@ -189,6 +189,15 @@ struct PartialEdit {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckoutDetachedPlan {
+    pub target_oid: String,
+    pub target_subject: String,
+    pub current_branch: Option<String>,
+    pub current_head: Option<String>,
+    root: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteCommand {
     DownloadLfs(Arc<LfsDownloadPlan>),
     Worktree(Arc<WorktreeCommand>),
@@ -198,10 +207,17 @@ pub enum WriteCommand {
     Tag(Arc<TagCommand>),
     Ignore(Arc<IgnorePlan>),
     Discard(Arc<DiscardPlan>),
+    DiscardMany(Arc<MultiDiscardPlan>),
+    RestoreFile(Arc<RestoreFilePlan>),
+    CheckoutDetached(Arc<CheckoutDetachedPlan>),
     Recovery(Arc<RecoveryCommand>),
     Branch(Arc<BranchCommand>),
     Integration(IntegrationCommand),
     ApplyPartial {
+        diff: Arc<PartialDiff>,
+        selection: PartialSelection,
+    },
+    DiscardPartial {
         diff: Arc<PartialDiff>,
         selection: PartialSelection,
     },
@@ -225,6 +241,10 @@ pub enum WriteCommand {
     },
     Fetch {
         remote: String,
+        prune: bool,
+    },
+    FetchAll {
+        prune: bool,
     },
     Pull {
         remote: String,
@@ -723,6 +743,52 @@ impl GitRepository {
         Ok(result)
     }
 
+    /// Passive read comparing a revision blob against the current working file.
+    /// Never runs filters and never follows stored symlinks.
+    pub fn preview_revision_vs_working(&self, file: &FileChange) -> Result<WorktreePreview> {
+        ensure!(
+            !self.bare,
+            "Bare repositories do not have a working tree to compare against."
+        );
+        let mut file = file.clone();
+        let old = file
+            .old_oid
+            .as_deref()
+            .map(|oid| self.preview_side_bytes(oid, &file.old_mode))
+            .transpose()?
+            .unwrap_or_default();
+        let new = if let Some(new_path) = file.new_path.as_deref() {
+            if file.new_mode == "160000" {
+                b"Submodule working copy changed. Open the submodule to inspect its checked-out commit and working files.\n".to_vec()
+            } else {
+                let (mode, bytes) = read_worktree_file(&self.path, new_path, &file.new_mode)?;
+                file.new_mode = mode;
+                bytes
+            }
+        } else {
+            Vec::new()
+        };
+        let (preview, _) = if file.new_mode == "160000" {
+            (
+                TextPreview::Submodule {
+                    old_oid: file.old_oid.clone(),
+                    new_oid: file.new_oid.clone(),
+                },
+                None,
+            )
+        } else {
+            preview_bytes_with_edits(&file, &old, &new, true)
+        };
+        Ok(WorktreePreview {
+            file,
+            old,
+            new,
+            preview,
+            partial: None,
+            partial_unavailable: None,
+        })
+    }
+
     fn check_partial_attributes(
         &self,
         path: &Path,
@@ -949,6 +1015,90 @@ impl GitRepository {
         })
     }
 
+    fn discard_partial(
+        &self,
+        diff: &PartialDiff,
+        selection: &PartialSelection,
+    ) -> Result<WriteOutcome> {
+        ensure!(
+            diff.snapshot.root == self.path,
+            "This selection belongs to another working copy; refresh first."
+        );
+        ensure!(
+            diff.area == ChangeArea::Unstaged,
+            "Discard hunk or lines applies only to unstaged changes."
+        );
+        validate_path(&diff.path)?;
+        let discarded = diff.discarded_contents(selection)?;
+        let current = self.status_for_path(&diff.path)?;
+        let entry = current
+            .entries
+            .iter()
+            .find(|entry| entry.path == diff.path)
+            .context("This change is no longer present; refresh before discarding again.")?;
+        ensure!(
+            !entry.conflicted,
+            "This file has become conflicted; refresh and resolve it first."
+        );
+        let unchanged = entry.original_path.is_none()
+            && self
+                .read_worktree_sides(entry, ChangeArea::Unstaged)
+                .ok()
+                .is_some_and(|(file, old, new)| {
+                    file == diff.snapshot.file
+                        && old == diff.snapshot.old
+                        && new == diff.snapshot.new
+                        && self
+                            .check_partial_attributes(&diff.path, ChangeArea::Unstaged, &new)
+                            .is_ok()
+                });
+        ensure!(
+            unchanged,
+            "This file, its staged contents, or its Git attributes changed; refresh and select changes again."
+        );
+        write_partial_discard_file(
+            &self.path,
+            &diff.path,
+            &diff.snapshot.file.new_mode,
+            &diff.snapshot.new,
+            &discarded,
+        )?;
+        Ok(WriteOutcome {
+            message: format!("Discarded selected changes in {}", diff.path.display()),
+            commit_oid: None,
+            up_to_date: false,
+        })
+    }
+
+    /// Capture one commit target for an explicit detached-HEAD checkout.
+    pub fn checkout_detached_plan(&self, target_oid: &str) -> Result<CheckoutDetachedPlan> {
+        ensure!(!self.bare, "Open a working copy to check out a commit.");
+        validate_oid(target_oid)?;
+        let status = self.status()?;
+        ensure!(
+            status.operation.is_none() && !status.entries.iter().any(|entry| entry.conflicted),
+            "Finish the current Git operation and resolve conflicts before checking out a commit."
+        );
+        let verified_oid = text(trim_line(&run_git(
+            self.target(),
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{target_oid}^{{commit}}"),
+            ],
+        )?));
+        validate_oid(&verified_oid)?;
+        let commit = self.recovery_commit(&verified_oid)?;
+        Ok(CheckoutDetachedPlan {
+            target_oid: verified_oid,
+            target_subject: commit.subject,
+            current_branch: status.branch,
+            current_head: status.head,
+            root: self.path.clone(),
+        })
+    }
+
     /// Must be called from the application's serialized explicit-operation worker.
     /// Never place this in a replaceable preview queue or automatically retry it.
     ///
@@ -990,11 +1140,35 @@ impl GitRepository {
             WriteCommand::Tag(command) => return self.execute_tag(command),
             WriteCommand::Ignore(plan) => return self.execute_ignore(plan),
             WriteCommand::Discard(plan) => return self.execute_discard(plan),
+            WriteCommand::DiscardMany(plan) => return self.execute_multi_discard(plan),
+            WriteCommand::RestoreFile(plan) => return self.execute_restore_file(plan),
+            WriteCommand::CheckoutDetached(plan) => {
+                ensure!(
+                    plan.root == self.path,
+                    "This checkout plan belongs to another working copy."
+                );
+                let fresh = self.checkout_detached_plan(&plan.target_oid)?;
+                ensure!(
+                    fresh == **plan,
+                    "The current branch or HEAD changed after review. Review checkout again."
+                );
+                command.args([
+                    "switch",
+                    "--detach",
+                    "--no-guess",
+                    "--no-recurse-submodules",
+                    "--",
+                    &plan.target_oid,
+                ]);
+            }
             WriteCommand::Recovery(command) => return self.execute_recovery(command),
             WriteCommand::Branch(command) => return self.execute_branch(command),
             WriteCommand::Integration(command) => return self.execute_integration(command),
             WriteCommand::ApplyPartial { diff, selection } => {
                 return self.apply_partial(diff, selection);
+            }
+            WriteCommand::DiscardPartial { diff, selection } => {
+                return self.discard_partial(diff, selection);
             }
             WriteCommand::Stage { paths } => {
                 input = Some(path_input(paths)?);
@@ -1081,16 +1255,31 @@ impl GitRepository {
                     command.arg(oid);
                 }
             }
-            WriteCommand::Fetch { remote } => {
+            WriteCommand::Fetch { remote, prune } => {
                 self.validate_remote(remote)?;
                 configure_network(&mut command, self)?;
                 command.args([
                     "fetch",
                     "--progress",
                     "--no-recurse-submodules",
-                    "--no-prune",
+                    if *prune { "--prune" } else { "--no-prune" },
                     "--",
                     remote,
+                ]);
+                timeout = NETWORK_TIMEOUT;
+            }
+            WriteCommand::FetchAll { prune } => {
+                ensure!(
+                    !self.remotes()?.is_empty(),
+                    "No remotes are configured in this repository."
+                );
+                configure_network(&mut command, self)?;
+                command.args([
+                    "fetch",
+                    "--progress",
+                    "--no-recurse-submodules",
+                    if *prune { "--prune" } else { "--no-prune" },
+                    "--all",
                 ]);
                 timeout = NETWORK_TIMEOUT;
             }
@@ -1207,7 +1396,7 @@ impl GitRepository {
     fn sync_snapshot(&self, operation: &WriteCommand) -> Option<[u8; 32]> {
         let mut digest = Sha256::new();
         match operation {
-            WriteCommand::Fetch { .. } => {
+            WriteCommand::Fetch { .. } | WriteCommand::FetchAll { .. } => {
                 let records = run_git(
                     self.target(),
                     &[
@@ -1613,6 +1802,173 @@ impl PartialDiff {
             };
         Ok((result, remove))
     }
+
+    /// Whether partial hunk/line discard is supported for this snapshot (tracked
+    /// unstaged modifications with both index and working-tree sides present).
+    pub fn can_discard(&self) -> bool {
+        self.area == ChangeArea::Unstaged
+            && self.snapshot.file.old_path.is_some()
+            && self.snapshot.file.new_path.is_some()
+    }
+
+    /// Reconstruct working-tree bytes with the selected unstaged edits reverted
+    /// back to the index snapshot while leaving all unselected edits intact.
+    pub fn discarded_contents(&self, selection: &PartialSelection) -> Result<Vec<u8>> {
+        ensure!(
+            self.area == ChangeArea::Unstaged,
+            "Discard hunk or lines applies only to unstaged changes."
+        );
+        ensure!(
+            self.snapshot.file.old_path.is_some() && self.snapshot.file.new_path.is_some(),
+            "Use whole-file discard to revert an added or deleted file."
+        );
+        let count = self
+            .edits
+            .iter()
+            .filter(|edit| edit.change_id.is_some())
+            .count();
+        let mut chosen = vec![false; count];
+        let mut select = |id: usize| -> Result<()> {
+            *chosen
+                .get_mut(id)
+                .context("This selection is invalid; refresh and select changes again.")? = true;
+            Ok(())
+        };
+        match selection {
+            PartialSelection::Hunks(indices) => {
+                for index in indices {
+                    let hunk = self
+                        .hunks
+                        .get(*index)
+                        .context("This hunk no longer exists; refresh the preview.")?;
+                    for id in hunk.lines.iter().filter_map(|line| line.change_id) {
+                        select(id)?;
+                    }
+                }
+            }
+            PartialSelection::Lines(ids) => {
+                for id in ids {
+                    select(*id)?;
+                }
+            }
+        }
+        ensure!(
+            chosen.iter().any(|selected| *selected),
+            "Select at least one changed line or hunk."
+        );
+        let old_lines: Vec<_> = self
+            .snapshot
+            .old
+            .split_inclusive(|byte| *byte == b'\n')
+            .collect();
+        let new_lines: Vec<_> = self
+            .snapshot
+            .new
+            .split_inclusive(|byte| *byte == b'\n')
+            .collect();
+        let mut result = Vec::with_capacity(self.snapshot.old.len().max(self.snapshot.new.len()));
+        for edit in &self.edits {
+            let selected = edit.change_id.is_some_and(|id| chosen[id]);
+            // Inverse of staging: keep unselected working-tree edits, revert
+            // selected edits back to the index snapshot.
+            let use_new = !selected;
+            let line = match edit.kind {
+                PartialLineKind::Context => Some(old_lines[edit.old_index.expect("context index")]),
+                PartialLineKind::Deletion if !use_new => {
+                    Some(old_lines[edit.old_index.expect("deleted index")])
+                }
+                PartialLineKind::Addition if use_new => {
+                    Some(new_lines[edit.new_index.expect("added index")])
+                }
+                _ => None,
+            };
+            if let Some(line) = line {
+                ensure!(
+                    result.is_empty() || result.ends_with(b"\n"),
+                    "This selection changes the final newline; select both replacement lines or the whole hunk."
+                );
+                result.extend_from_slice(line);
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// Descriptor-pinned in-place working-tree write for partial discard. Traverses
+/// every component with `O_NOFOLLOW`, re-verifies the regular file's mode and
+/// exact raw bytes through that open descriptor before rewriting, and truncates
+/// and syncs atomically on the same descriptor (zero symlink escape, zero TOCTOU).
+#[cfg(unix)]
+fn write_partial_discard_file(
+    root: &Path,
+    path: &Path,
+    expected_mode: &str,
+    expected_bytes: &[u8],
+    new_bytes: &[u8],
+) -> Result<()> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::fs::PermissionsExt;
+
+    validate_path(path)?;
+    ensure!(
+        matches!(expected_mode, "100644" | "100755"),
+        "Partial discard applies to regular files only."
+    );
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = open(root, dir_flags, Mode::empty())?;
+    let components: Vec<_> = path.components().collect();
+    for component in &components[..components.len() - 1] {
+        directory = openat(&directory, component.as_os_str(), dir_flags, Mode::empty())
+            .context("Partial discard cannot follow a symbolic-link directory")?;
+    }
+    let name = components.last().context("Missing filename")?.as_os_str();
+    let fd = openat(
+        &directory,
+        name,
+        OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .context("Unable to open the working file safely without following symlinks")?;
+    let mut file = std::fs::File::from(fd);
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file(),
+        "Partial discard requires a regular file."
+    );
+    let mode = if metadata.permissions().mode() & 0o111 != 0 {
+        "100755"
+    } else {
+        "100644"
+    };
+    ensure!(
+        mode == expected_mode,
+        "The working file mode changed; refresh before discarding."
+    );
+    let mut actual = Vec::new();
+    (&mut file)
+        .take(MAX_BLOB_BYTES as u64 + 1)
+        .read_to_end(&mut actual)?;
+    ensure!(
+        actual == expected_bytes,
+        "The working file changed; refresh before discarding."
+    );
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(new_bytes)?;
+    file.set_len(new_bytes.len() as u64)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_partial_discard_file(
+    _root: &Path,
+    _path: &Path,
+    _expected_mode: &str,
+    _expected_bytes: &[u8],
+    _new_bytes: &[u8],
+) -> Result<()> {
+    bail!("Safe partial discard is currently supported on macOS and Linux")
 }
 
 struct PartialIndex {
@@ -2066,7 +2422,7 @@ fn validate_remote_name(name: &str) -> Result<()> {
         !name.is_empty()
             && name.len() <= 1024
             && !name.starts_with('-')
-            && !name.contains(['\0', '\n', '\r', ':'])
+            && !name.contains(['\0', '\n', '\r', ':', '='])
             && !name.chars().any(char::is_whitespace),
         "Choose a configured remote name"
     );
@@ -2131,7 +2487,7 @@ fn fresh_destination(path: &Path) -> Result<PathBuf> {
 /// Status may otherwise execute clean/process filters while verifying a dirty
 /// stat entry. Disable every configured local filter driver without touching the
 /// repository's config. Raw worktree bytes are also what our preview displays.
-fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
+pub(crate) fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
     let result = run_git_output(
         target,
         &[

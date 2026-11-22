@@ -1031,7 +1031,7 @@ impl GitTurtle {
             self.project_pane.focus.clone(),
             // Read as it is built: a write's start or end builds the open
             // menu again.
-            move |menu, app: &GitTurtle| {
+            move |menu, app: &GitTurtle, _, _| {
                 row_menu(menu, &owner, &key, Some(app.menu_snapshot(&key)))
             },
             holds,

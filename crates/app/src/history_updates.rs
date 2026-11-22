@@ -339,6 +339,9 @@ impl GitTurtle {
             .map(|commit| commit.oid.clone());
         self.refs = snapshot.refs;
         self.branches = snapshot.branches;
+        self.tags = snapshot.tags;
+        self.tags_truncated = snapshot.tags_truncated;
+        self.stashes = snapshot.stashes;
         self.worktrees = snapshot.worktrees;
         self.commits = snapshot.commits;
         self.graph = snapshot.graph;
@@ -537,6 +540,7 @@ impl GitTurtle {
                         }
                         match output {
                             Output::Snapshot(snapshot) => {
+                                let snapshot = *snapshot;
                                 // A repository cloned again at the tab's
                                 // path is installed in place, as a fresh
                                 // capture, as an accepted Refresh's is
@@ -572,7 +576,10 @@ impl GitTurtle {
                                 if replaced || in_place {
                                     this.select_newest_as_an_open_does(window, cx);
                                 }
-                                if in_place && !this.search.read(cx).value().is_empty() {
+                                if in_place
+                                    && (!this.search.read(cx).value().is_empty()
+                                        || this.history_search.filter.filters_without_query())
+                                {
                                     this.history_query_changed(window, cx);
                                 }
                             }
@@ -762,6 +769,9 @@ mod tests {
             repository: repo.clone(),
             branches: vec![],
             worktrees: vec![],
+            tags: vec![],
+            tags_truncated: false,
+            stashes: vec![],
             history_scope: HistoryScope::FromCommit(commits[0].oid.clone()),
             history_offset: 0,
             history_next_offset: None,

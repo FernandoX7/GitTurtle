@@ -871,3 +871,119 @@ fn duplicate_remote_is_preserved_and_option_like_urls_remain_literal() {
     assert_eq!(fs::read(f.root.join(".git/config")).unwrap(), before);
     assert!(!f.root.join(".git/config.lock").exists());
 }
+
+#[test]
+fn force_delete_removes_unmerged_branch_and_still_refuses_checked_out_and_stale_tips() {
+    let f = Fixture::new();
+    f.git(&["switch", "-c", "squashed"]);
+    f.write("feature.txt", "squashed work\n");
+    f.git(&["add", "feature.txt"]);
+    f.git(&["commit", "-m", "unmerged feature"]);
+    let tip = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["switch", "main"]);
+
+    let plan = f.repo().branch_plan("squashed").unwrap();
+    assert_eq!(plan.unmerged_commits, Some(1));
+    assert!(plan.checked_out_in.is_empty());
+    // Ordinary safe delete still refuses.
+    assert!(
+        f.repo()
+            .execute(&WriteCommand::Branch(
+                BranchCommand::Delete { plan: plan.clone() }.into()
+            ))
+            .is_err()
+    );
+    // Checked-out branch is refused even by force delete.
+    let current_plan = f.repo().branch_plan("main").unwrap();
+    assert!(
+        f.repo()
+            .execute(&WriteCommand::Branch(
+                BranchCommand::ForceDelete { plan: current_plan }.into()
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("checked out")
+    );
+    // Stale tip is refused.
+    f.git(&["update-ref", "refs/heads/squashed", &f.extra_commit()]);
+    assert!(
+        f.repo()
+            .execute(&WriteCommand::Branch(
+                BranchCommand::ForceDelete { plan }.into()
+            ))
+            .is_err()
+    );
+    f.git(&["update-ref", "refs/heads/squashed", &tip]);
+    let fresh = f.repo().branch_plan("squashed").unwrap();
+    let outcome = f
+        .repo()
+        .execute(&WriteCommand::Branch(
+            BranchCommand::ForceDelete { plan: fresh }.into(),
+        ))
+        .unwrap();
+    assert!(
+        outcome
+            .message
+            .contains("Force deleted local branch 'squashed'")
+    );
+    assert!(f.repo().branch_plan("squashed").is_err());
+    // Commit remains reachable as an object for reflog recovery.
+    assert_eq!(f.git(&["cat-file", "-t", &tip]), "commit");
+}
+
+#[test]
+fn delete_remote_branch_enforces_exact_lease_and_preserves_other_remote_refs() {
+    let f = Fixture::new();
+    let server = f.local_remote("origin");
+    f.git(&["switch", "-c", "topic"]);
+    f.write("topic.txt", "topic\n");
+    f.git(&["add", "topic.txt"]);
+    f.git(&["commit", "-m", "topic"]);
+    f.git(&["push", "-u", "origin", "topic"]);
+    f.git(&["switch", "main"]);
+
+    let stale_plan = f
+        .repo()
+        .delete_remote_branch_plan("origin", "topic")
+        .unwrap();
+    // Point remote branch to a different commit already on the bare remote so the lease is stale.
+    let main_oid = f.git(&["rev-parse", "main"]);
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&server)
+            .args(["update-ref", "refs/heads/topic", &main_oid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        f.repo()
+            .execute(&WriteCommand::Branch(
+                BranchCommand::DeleteRemote { plan: stale_plan }.into()
+            ))
+            .is_err()
+    );
+    assert!(server.join("refs/heads/topic").exists());
+
+    // Fetch, capture fresh exact lease, then delete cleanly.
+    f.git(&["fetch", "origin"]);
+    let fresh_plan = f
+        .repo()
+        .delete_remote_branch_plan("origin", "topic")
+        .unwrap();
+    let outcome = f
+        .repo()
+        .execute(&WriteCommand::Branch(
+            BranchCommand::DeleteRemote { plan: fresh_plan }.into(),
+        ))
+        .unwrap();
+    assert!(
+        outcome
+            .message
+            .contains("Deleted remote branch 'origin/topic'")
+    );
+    assert!(!server.join("refs/heads/topic").exists());
+    assert!(server.join("refs/heads/main").exists());
+}

@@ -1424,13 +1424,32 @@ impl GitTurtle {
                 }
                 ConflictEvent::OpenEditor => {
                     let Some(repo) = this.repository.clone() else { return; };
+                    let repo_root = repo.path().to_owned();
+                    let editor = this.settings.external_editor.trim().to_owned();
+                    let terminal = this.settings.external_terminal.trim().to_owned();
                     let snapshot = Arc::clone(&snapshot);
-                    let response = this.operations.submit_read(move || repo.conflict_editor_path(&snapshot));
+                    let response = this.operations.submit_read(move || {
+                        let path = repo.conflict_editor_path(&snapshot)?;
+                        let opened = crate::platform_polish::open_file_in_editor(
+                            &editor,
+                            &terminal,
+                            &repo_root,
+                            &path,
+                            None,
+                        )?;
+                        Ok((path, opened))
+                    });
                     cx.spawn_in(window, async move |this, cx| {
                         let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Editor handoff interrupted")));
-                        let _ = this.update_in(cx, |this, _, cx| {
+                        let _ = this.update_in(cx, |this, window, cx| {
                             match result {
-                                Ok(path) => { cx.open_with_system(&path); this.operation_notice = Some("Edit and save the file, then refresh to review and stage the resolution.".into()); }
+                                Ok((_, Some(_))) => {
+                                    this.operation_notice = Some("Edit and save the file, then refresh to review and stage the resolution.".into());
+                                }
+                                Ok((_, None)) => {
+                                    this.show_settings(window, cx);
+                                    this.operation_notice = Some(crate::platform_polish::EDITOR_NEEDED.into());
+                                }
                                 Err(error) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                             }
                             cx.notify();

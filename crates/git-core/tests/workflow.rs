@@ -405,6 +405,7 @@ fn clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote() {
     cloned
         .execute(&WriteCommand::Fetch {
             remote: "origin".into(),
+            prune: false,
         })
         .unwrap();
     assert_eq!(cloned.status().unwrap().behind, 1);
@@ -487,6 +488,7 @@ fn fetch_and_pull_report_whether_they_brought_anything_new() {
     }
     let fetch = WriteCommand::Fetch {
         remote: "origin".into(),
+        prune: false,
     };
     let pull = WriteCommand::Pull {
         remote: "origin".into(),
@@ -586,6 +588,7 @@ fn a_fetch_that_stores_no_ref_reports_new_commits_from_fetch_head() {
     git(&plain, &["config", "--unset-all", "remote.origin.fetch"]);
     let fetch = WriteCommand::Fetch {
         remote: "origin".into(),
+        prune: false,
     };
     let refs = || git(&plain, &["for-each-ref"]);
     let fetch_head = plain.join(".git/FETCH_HEAD");
@@ -643,6 +646,7 @@ fn a_fetch_through_a_linked_git_directory_reads_its_fetch_head() {
     let repo = f.repo();
     let fetch = WriteCommand::Fetch {
         remote: "origin".into(),
+        prune: false,
     };
 
     repo.execute(&fetch).unwrap();
@@ -940,6 +944,7 @@ fn ssh_failures_keep_configured_program_and_provide_safe_recovery_guidance() {
             .repo()
             .execute(&WriteCommand::Fetch {
                 remote: "origin".into(),
+                prune: false,
             })
             .unwrap_err()
             .to_string();
@@ -1008,6 +1013,7 @@ fn local_http_authentication_failure_reports_helper_recovery_without_prompting()
     ]);
     let result = f.repo().execute(&WriteCommand::Fetch {
         remote: "origin".into(),
+        prune: false,
     });
     stopped.store(true, Ordering::Relaxed);
     worker.join().unwrap();
@@ -1743,4 +1749,76 @@ fn a_core_worktree_through_a_link_re_pointed_after_open_is_refused() {
     assert_eq!(repo.verify_at_path().unwrap(), FoundAtPath::Same);
     repo.execute(&WriteCommand::StageAll).unwrap();
     assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "file.txt");
+}
+
+#[test]
+fn fetch_prune_fetch_all_and_checkout_detached_preserve_invariants() {
+    let f = Fixture::new();
+    f.write("file.txt", "v1\n");
+    let first = f.commit("first");
+    f.write("file.txt", "v2\n");
+    let second = f.commit("second");
+
+    // Detached HEAD checkout preserves non-conflicting dirty file.
+    f.write("untracked.txt", "keep me\n");
+    let plan = f.repo().checkout_detached_plan(&first).unwrap();
+    assert_eq!(plan.target_oid, first);
+    f.repo()
+        .execute(&WriteCommand::CheckoutDetached(std::sync::Arc::new(plan)))
+        .unwrap();
+    let status = f.repo().status().unwrap();
+    assert!(status.branch.is_none());
+    assert_eq!(status.head.as_deref(), Some(first.as_str()));
+    assert_eq!(
+        fs::read_to_string(f.root.join("untracked.txt")).unwrap(),
+        "keep me\n"
+    );
+    f.git(&["switch", "main"]);
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), second);
+
+    // Fetch --prune and FetchAll across two bare remotes.
+    let remote_a = f.temp.path().join("remote-a.git");
+    let remote_b = f.temp.path().join("remote-b.git");
+    for r in [&remote_a, &remote_b] {
+        git(f.temp.path(), &["init", "--bare", r.to_str().unwrap()]);
+    }
+    f.git(&["remote", "add", "origin", remote_a.to_str().unwrap()]);
+    f.git(&["remote", "add", "mirror", remote_b.to_str().unwrap()]);
+    f.git(&["branch", "stale"]);
+    f.git(&["push", "origin", "main", "stale"]);
+    f.git(&["push", "mirror", "main"]);
+    f.repo()
+        .execute(&WriteCommand::FetchAll { prune: false })
+        .unwrap();
+    assert!(
+        f.git(&["for-each-ref", "refs/remotes/origin/stale"])
+            .contains("stale")
+    );
+    assert!(
+        f.git(&["for-each-ref", "refs/remotes/mirror/main"])
+            .contains("main")
+    );
+
+    // Delete branch on remote-a; fetch with prune=false keeps tracking ref, prune=true removes it.
+    git(&remote_a, &["branch", "-D", "stale"]);
+    f.repo()
+        .execute(&WriteCommand::Fetch {
+            remote: "origin".into(),
+            prune: false,
+        })
+        .unwrap();
+    assert!(
+        f.git(&["for-each-ref", "refs/remotes/origin/stale"])
+            .contains("stale")
+    );
+    f.repo()
+        .execute(&WriteCommand::Fetch {
+            remote: "origin".into(),
+            prune: true,
+        })
+        .unwrap();
+    assert!(
+        f.git(&["for-each-ref", "refs/remotes/origin/stale"])
+            .is_empty()
+    );
 }

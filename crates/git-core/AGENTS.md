@@ -25,7 +25,7 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 | Named profile application, atomic identity and signing configuration | `src/work/profiles.rs` | `tests/profiles.rs`, `tests/signing.rs` |
 | Explicit one-object LFS download and resolved text | `src/work/lfs_download.rs` | `tests/lfs_download.rs` |
 | Tags and literal ignore rules | `src/work/tags.rs`, `src/work/ignore.rs` | `tests/tags_ignore.rs` |
-| Single-file discard to HEAD and reviewed untracked deletion | `src/work/discard.rs` | `tests/discard.rs` |
+| Single-file, multi-file, and partial discard; restore file to revision | `src/work/discard.rs`, `src/work.rs` | `tests/discard.rs`, `tests/partial_staging.rs` |
 | Operation cancellation, askpass, signing and redacted diagnostics | `src/work/authentication.rs`, `src/work/diagnostics.rs`, `src/work.rs` | `tests/authentication.rs`, `tests/signing.rs`, `tests/workflow.rs`, module unit tests |
 
 Process deadlines and byte-input regressions also live in `src/lib.rs` and `src/work.rs` unit tests.

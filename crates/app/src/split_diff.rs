@@ -1,13 +1,19 @@
 //! Aligned source views prepared on the reader, with one linked vertical viewport.
-use crate::{appearance::palette, diff_view, focus_ring::FocusRing};
+use crate::{appearance::palette, diff_view, focus_ring::FocusRing, partial_view::PartialActions};
+use gitturtle_core::{ChangeArea, PartialSelection};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, AppContext, ClipboardItem, Context, Entity, Focusable, HighlightStyle, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Window, canvas,
-    component::input::{Copy, EditorState, TextDecoration},
+    AnyElement, App, AppContext, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, HighlightStyle, InteractiveElement, IntoElement, ParentElement, Pixels, Render,
+    Styled, Subscription, Window, canvas,
+    component::{
+        Sizable,
+        button::{Button, ButtonVariants},
+        input::{Copy, EditorState, TextDecoration},
+    },
     div, point, px, rgb,
 };
-use std::{ops::Range, sync::Arc};
+use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
 
 /// The height of the heading over each side's text, at the default size.
 pub(crate) const SIDE_HEADING_HEIGHT: f32 = 30.;
@@ -41,7 +47,7 @@ fn heading_words_height() -> Pixels {
 use crate::text::PatchPresentation;
 #[cfg(test)]
 use gitturtle_diff_model::split_diff::Row;
-pub use gitturtle_diff_model::split_diff::{SplitPresentation, SplitSide};
+pub use gitturtle_diff_model::split_diff::{SplitPartialActions, SplitPresentation, SplitSide};
 
 /// Each side's changed-line tint, changed-word tint and, under More contrast, the rule a changed
 /// word draws along its box's bottom edge, old side first, from the applied palette and its
@@ -133,8 +139,18 @@ impl SplitSideExt for SplitSide {
     }
 }
 
+impl EventEmitter<diff_view::DiffViewEvent> for SplitView {}
+
 pub struct SplitView {
     presentation: Arc<SplitPresentation>,
+    partial: Option<Arc<SplitPartialActions>>,
+    shared_selection: Rc<RefCell<diff_view::LineSelection>>,
+    partial_busy: bool,
+    writing: bool,
+    busy_look: bool,
+    apply_focus: FocusHandle,
+    clear_focus: FocusHandle,
+    discard_focus: FocusHandle,
     editors: [Entity<EditorState>; 2],
     views: [Entity<diff_view::DiffView>; 2],
     decorations: [crate::editor_find::PatchDecorations; 2],
@@ -179,8 +195,20 @@ impl LinkedScroll {
     }
 }
 
+#[cfg(test)]
 pub fn new(
     presentation: Arc<SplitPresentation>,
+    language: &str,
+    focus_ring: FocusRing,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<SplitView> {
+    new_with_partial(presentation, None, language, focus_ring, window, cx)
+}
+
+pub fn new_with_partial(
+    presentation: Arc<SplitPresentation>,
+    partial: Option<Arc<SplitPartialActions>>,
     language: &str,
     focus_ring: FocusRing,
     window: &mut Window,
@@ -280,10 +308,22 @@ pub fn new(
             };
             view.update(cx, |view, _| view.share_find_with(partner, side));
         }
-        SplitView {
+        let shared_selection = Rc::new(RefCell::new(diff_view::LineSelection::default()));
+        let apply_focus = cx.focus_handle();
+        let clear_focus = cx.focus_handle();
+        let discard_focus = cx.focus_handle();
+        let mut this = SplitView {
             initial_row: Some(presentation.first_change.saturating_sub(3)),
             change_index: None,
             presentation,
+            partial,
+            shared_selection,
+            partial_busy: false,
+            writing: false,
+            busy_look: false,
+            apply_focus,
+            clear_focus,
+            discard_focus,
             editors,
             views,
             decorations,
@@ -291,7 +331,9 @@ pub fn new(
             headings: Default::default(),
             focus_ring,
             _subscriptions: subscriptions,
-        }
+        };
+        this.sync_side_partials(cx);
+        this
     })
 }
 
@@ -357,16 +399,415 @@ impl SplitView {
         cx.notify();
     }
 
+    pub(crate) fn awaits_write(&self) -> bool {
+        self.writing
+    }
+
+    pub(crate) fn holds_focus(&self, window: &Window, cx: &App) -> bool {
+        self.views
+            .iter()
+            .any(|view| view.read(cx).holds_focus(window, cx))
+            || self.apply_focus.is_focused(window)
+            || self.clear_focus.is_focused(window)
+            || self.discard_focus.is_focused(window)
+    }
+
+    pub(crate) fn follow_busy_look(&mut self, shown: bool, cx: &mut App) {
+        self.busy_look = shown || (self.writing && self.busy_look);
+        for view in &self.views {
+            view.update(cx, |view, _| view.follow_busy_look(shown));
+        }
+    }
+
+    pub(crate) fn suspend_partial(&mut self, cx: &mut Context<Self>) {
+        self.partial_busy = true;
+        self.shared_selection.borrow_mut().clear();
+        for view in &self.views {
+            view.update(cx, |view, cx| view.suspend_partial(cx));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn end_write(&mut self, cx: &mut Context<Self>) {
+        if self.writing {
+            self.writing = false;
+            for view in &self.views {
+                view.update(cx, |view, cx| view.end_write(cx));
+            }
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn restore_after_cancel(&mut self, cx: &mut Context<Self>) {
+        self.partial_busy = false;
+        self.writing = false;
+        for view in &self.views {
+            view.update(cx, |view, cx| view.restore_after_cancel(cx));
+        }
+        cx.notify();
+    }
+
+    fn sync_side_partials(&mut self, cx: &mut Context<Self>) {
+        let weak_self = cx.entity().downgrade();
+        let views = self.views.clone();
+        let on_change: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+            if let Some(entity) = weak_self.upgrade() {
+                entity.update(cx, |_, cx| cx.notify());
+            }
+            for view in &views {
+                view.update(cx, |_, cx| cx.notify());
+            }
+        });
+        for side in 0..2 {
+            let side_partial = self.partial.as_ref().map(|split_partial| {
+                Arc::new(PartialActions {
+                    diff: Arc::clone(&split_partial.diff),
+                    rows: Arc::clone(&split_partial.sides[side]),
+                })
+            });
+            let shared = Rc::clone(&self.shared_selection);
+            let notify = Rc::clone(&on_change);
+            self.views[side].update(cx, |view, cx| {
+                view.configure_split_partial(side_partial, shared, notify, cx);
+            });
+        }
+    }
+
+    fn action(&self) -> &'static str {
+        if self
+            .partial
+            .as_ref()
+            .is_some_and(|partial| partial.diff.area == ChangeArea::Staged)
+        {
+            "Unstage"
+        } else {
+            "Stage"
+        }
+    }
+
+    fn can_discard(&self) -> bool {
+        self.partial
+            .as_ref()
+            .is_some_and(|partial| partial.diff.can_discard())
+    }
+
+    fn dimmed(&self) -> bool {
+        self.partial_busy && (!self.writing || self.busy_look)
+    }
+
+    fn apply_partial(&mut self, ids: Vec<usize>, cx: &mut Context<Self>) {
+        if self.partial_busy || ids.is_empty() {
+            return;
+        }
+        let Some(partial) = &self.partial else {
+            return;
+        };
+        let diff = Arc::clone(&partial.diff);
+        self.partial_busy = true;
+        self.writing = true;
+        for view in &self.views {
+            view.update(cx, |view, cx| view.set_split_busy(true, true, cx));
+        }
+        cx.emit(diff_view::DiffViewEvent::ApplyPartial {
+            diff,
+            selection: PartialSelection::Lines(ids),
+        });
+        cx.notify();
+    }
+
+    fn discard_partial(&mut self, ids: Vec<usize>, cx: &mut Context<Self>) {
+        if self.partial_busy || ids.is_empty() {
+            return;
+        }
+        let Some(partial) = &self.partial else {
+            return;
+        };
+        if !partial.diff.can_discard() {
+            return;
+        }
+        let diff = Arc::clone(&partial.diff);
+        self.partial_busy = true;
+        self.writing = true;
+        for view in &self.views {
+            view.update(cx, |view, cx| view.set_split_busy(true, true, cx));
+        }
+        cx.emit(diff_view::DiffViewEvent::DiscardPartial {
+            diff,
+            selection: PartialSelection::Lines(ids),
+        });
+        cx.notify();
+    }
+
+    fn render_block_controls(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(partial) = &self.partial else {
+            return Vec::new();
+        };
+        let state = self.editors[1].read(cx);
+        let (Some(bounds), Some(line_height), Some(visible)) = (
+            state.text_bounds(),
+            state.line_height(),
+            state.visible_row_range(),
+        ) else {
+            return Vec::new();
+        };
+        let input = state.input_bounds();
+        let top = bounds.origin.y - input.origin.y;
+        let action = self.action();
+        let can_discard = self.can_discard();
+        let (refused, dimmed) = (self.partial_busy, self.dimmed());
+        let mut elements = Vec::new();
+        for block in partial.blocks.iter() {
+            let row = block.start_row;
+            if row < visible.start || row >= visible.end {
+                continue;
+            }
+            let y = top + line_height * row as f32;
+            if y < px(0.) || y + line_height > input.size.height {
+                continue;
+            }
+            let ids = Arc::clone(&block.ids);
+            let discard_ids = Arc::clone(&block.ids);
+            let line_count = ids.len();
+            let stage_tip = format!(
+                "{action} all {} in this block",
+                crate::counted(line_count, "changed line", "changed lines")
+            );
+            let stage_snapshot = Arc::clone(partial);
+            let discard_snapshot = Arc::clone(partial);
+            let compact = input.size.width < crate::appearance::ui_size(340.);
+            let stage_btn = crate::workspace::refusing(
+                Button::new(("split-partial-hunk", row))
+                    .debug_selector(move || format!("split-partial-hunk-{row}"))
+                    .tab_stop(false)
+                    .small()
+                    .h(line_height - px(2.))
+                    .px_2()
+                    .rounded(px(3.))
+                    .text_size(crate::appearance::ui_text(10.))
+                    .label(if compact {
+                        action.to_owned()
+                    } else {
+                        format!("{action} hunk")
+                    })
+                    .accessibility_label(format!("{action} hunk at row {}", row + 1)),
+                || format!("split-partial-hunk-{row}"),
+                refused,
+                dimmed,
+            )
+            .tooltip(stage_tip)
+            .on_click(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    if !this.partial_busy
+                        && event.click_count() <= 1
+                        && this
+                            .partial
+                            .as_ref()
+                            .is_some_and(|cur| Arc::ptr_eq(cur, &stage_snapshot))
+                    {
+                        this.apply_partial(ids.to_vec(), cx);
+                    }
+                }),
+            );
+            let discard_btn = can_discard.then(|| {
+                let discard_tip = format!(
+                    "Discard all {} in this block",
+                    crate::counted(line_count, "changed line", "changed lines")
+                );
+                crate::workspace::refusing(
+                    Button::new(("split-partial-discard-hunk", row))
+                        .debug_selector(move || format!("split-partial-discard-hunk-{row}"))
+                        .tab_stop(false)
+                        .small()
+                        .h(line_height - px(2.))
+                        .px_2()
+                        .rounded(px(3.))
+                        .text_size(crate::appearance::ui_text(10.))
+                        .label(if compact { "Discard" } else { "Discard hunk" })
+                        .accessibility_label(format!("Discard hunk at row {}", row + 1)),
+                    || format!("split-partial-discard-hunk-{row}"),
+                    refused,
+                    dimmed,
+                )
+                .tooltip(discard_tip)
+                .on_click(cx.listener(
+                    move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                        if !this.partial_busy
+                            && event.click_count() <= 1
+                            && this
+                                .partial
+                                .as_ref()
+                                .is_some_and(|cur| Arc::ptr_eq(cur, &discard_snapshot))
+                        {
+                            this.discard_partial(discard_ids.to_vec(), cx);
+                        }
+                    },
+                ))
+            });
+            elements.push(
+                div()
+                    .debug_selector(move || format!("split-partial-block-{row}"))
+                    .absolute()
+                    .top(y + px(1.))
+                    .right(px(14.))
+                    .h(line_height - px(2.))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(stage_btn)
+                    .children(discard_btn)
+                    .into_any_element(),
+            );
+        }
+        elements
+    }
+
+    fn render_partial_selection_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let count = self.shared_selection.borrow().ids.len();
+        if self.partial.is_none() || count == 0 {
+            return None;
+        }
+        let p = palette(cx);
+        let room = crate::appearance::button_ring_room(cx);
+        let action = self.action();
+        let can_discard = self.can_discard();
+        let (refused, dimmed) = (self.partial_busy, self.dimmed());
+        let apply_label = format!("{action} {}", crate::counted(count, "line", "lines"));
+        let apply_btn = crate::workspace::refusing(
+            Button::new("split-apply-partial-selection")
+                .debug_selector(|| "split-apply-partial-selection".into())
+                .small()
+                .primary()
+                .label(apply_label.clone())
+                .accessibility_label(apply_label)
+                .track_focus(&self.apply_focus),
+            || "split-apply-partial-selection".into(),
+            refused,
+            dimmed,
+        )
+        .on_click(
+            cx.listener(|this, event: &gpui_kit::ClickEvent, window, cx| {
+                if this.partial_busy || event.click_count() > 1 {
+                    return;
+                }
+                let ids = this
+                    .shared_selection
+                    .borrow()
+                    .ids
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>();
+                window.focus(&this.editors[1].read(cx).focus_handle(cx), cx);
+                this.apply_partial(ids, cx);
+            }),
+        );
+        let clear_btn = crate::workspace::refusing(
+            crate::button("split-clear-partial-selection", "Clear", "", false)
+                .debug_selector(|| "split-clear-partial-selection".into())
+                .accessibility_label(format!(
+                    "Clear {}",
+                    crate::counted(count, "selected line", "selected lines")
+                ))
+                .track_focus(&self.clear_focus),
+            || "split-clear-partial-selection".into(),
+            refused,
+            dimmed,
+        )
+        .tooltip("Clear selected lines")
+        .on_click(cx.listener(|this, _, window, cx| {
+            if this.partial_busy {
+                return;
+            }
+            this.shared_selection.borrow_mut().clear();
+            for view in &this.views {
+                view.update(cx, |_, cx| cx.notify());
+            }
+            window.focus(&this.editors[1].read(cx).focus_handle(cx), cx);
+            cx.notify();
+        }));
+        let discard_btn = can_discard.then(|| {
+            crate::workspace::refusing(
+                crate::button("split-discard-partial-selection", "Discard", "reset", false)
+                    .debug_selector(|| "split-discard-partial-selection".into())
+                    .accessibility_label(format!(
+                        "Discard {}",
+                        crate::counted(count, "selected line", "selected lines")
+                    ))
+                    .track_focus(&self.discard_focus),
+                || "split-discard-partial-selection".into(),
+                refused,
+                dimmed,
+            )
+            .tooltip("Discard selected lines")
+            .on_click(
+                cx.listener(|this, event: &gpui_kit::ClickEvent, window, cx| {
+                    if this.partial_busy || event.click_count() > 1 {
+                        return;
+                    }
+                    let ids = this
+                        .shared_selection
+                        .borrow()
+                        .ids
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>();
+                    window.focus(&this.editors[1].read(cx).focus_handle(cx), cx);
+                    this.discard_partial(ids, cx);
+                }),
+            )
+        });
+        Some(
+            div()
+                .debug_selector(|| "split-partial-selection-bar".into())
+                .flex_none()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_x_2()
+                .gap_y_1()
+                .px_3()
+                .py(room.max(px(4.)))
+                .bg(rgb(p.panel))
+                .border_t_1()
+                .border_color(rgb(p.border))
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_size(crate::appearance::ui_text(11.))
+                        .text_color(rgb(p.muted))
+                        .child(format!(
+                            "{} selected",
+                            crate::counted(count, "line", "lines")
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_1p5()
+                        .child(apply_btn)
+                        .child(clear_btn)
+                        .children(discard_btn),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Update a mutable file while retaining editor focus, find state, selection
     /// and viewport. Text and alignment metadata were prepared on the worker.
-    pub fn refresh(
+    pub fn refresh_with_partial(
         &mut self,
         presentation: Arc<SplitPresentation>,
+        partial: Option<Arc<SplitPartialActions>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.initial_row = None;
         self.change_index = None;
+        let bar_focused = self.apply_focus.is_focused(window)
+            || self.clear_focus.is_focused(window)
+            || self.discard_focus.is_focused(window);
         for (side, tints) in side_tints(cx).into_iter().enumerate() {
             crate::text::refresh_editor(
                 &self.editors[side],
@@ -389,6 +830,15 @@ impl SplitView {
             });
         }
         self.presentation = presentation;
+        self.partial = partial;
+        self.shared_selection.borrow_mut().clear();
+        self.partial_busy = false;
+        self.writing = false;
+        self.busy_look = false;
+        self.sync_side_partials(cx);
+        if bar_focused {
+            window.focus(&self.editors[1].read(cx).focus_handle(cx), cx);
+        }
         cx.notify();
     }
 }
@@ -445,9 +895,13 @@ impl Render for SplitView {
                     })
             }))
         });
+        let block_controls = self.render_block_controls(cx);
+        let selection_bar = self.render_partial_selection_bar(cx);
+        let mut block_controls = [Vec::new(), block_controls];
         let sides = div().flex_1().min_h_0().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
             let presentation = Arc::clone(&self.presentation);
+            let overlays = std::mem::take(&mut block_controls[side]);
             div()
                 .flex_1()
                 .min_w_0()
@@ -474,9 +928,11 @@ impl Render for SplitView {
                         .flex_1()
                         .min_h_0()
                         .relative()
+                        .overflow_hidden()
                         .flex()
                         .flex_col()
                         .child(div().flex_1().min_h_0().child(self.views[side].clone()))
+                        .children(overlays)
                         .children(edges[side].take()),
                 )
         }));
@@ -488,6 +944,7 @@ impl Render for SplitView {
             .children(headings)
             .children(shared_bar)
             .child(sides)
+            .children(selection_bar)
             .children(trace_editors.map(|editors| {
             // Painted after both panes, so one record contains their actual
             // same-frame geometry. The transparent observer has no hitbox and
@@ -1630,5 +2087,140 @@ mod tests {
         });
         std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
         cx.update(|window, cx| apply_text_sizes(13, 12, window, cx));
+    }
+
+    #[gpui::test]
+    async fn split_partial_staging_and_discard_emit_expected_events(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::ThemeChoice;
+        use crate::diff_view::DiffViewEvent;
+        use crate::tags::tests::{draw, git, tagged_repository};
+        use gitturtle_core::{ChangeArea, TextPreview};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "one\nold\nthree\n").unwrap();
+        git(repo.path(), &["add", "notes.txt"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add notes"]);
+        std::fs::write(repo.path().join("notes.txt"), "one\nnew\nthree\n").unwrap();
+
+        let status = repo.status().unwrap();
+        let entry = status
+            .entries
+            .iter()
+            .find(|entry| entry.path == std::path::Path::new("notes.txt"))
+            .expect("modified notes.txt")
+            .clone();
+        let preview = repo.worktree_preview(&entry, ChangeArea::Unstaged).unwrap();
+        let old = String::from_utf8(preview.old).unwrap();
+        let new = String::from_utf8(preview.new).unwrap();
+        let patch = match preview.preview {
+            TextPreview::Patch(patch) => patch,
+            other => panic!("expected patch preview, got {other:?}"),
+        };
+        let partial_diff = Arc::new(preview.partial.expect("unstaged partial diff"));
+        assert!(partial_diff.can_discard());
+        let split_presentation = Arc::new(prepare(&old, &new, &patch));
+        let split_partial = Arc::new(
+            gitturtle_diff_model::split_diff::prepare_split_partial(
+                &split_presentation,
+                partial_diff,
+            )
+            .expect("split partial mapping"),
+        );
+
+        struct Root(Entity<SplitView>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1200.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&events);
+        cx.update(gpui::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+            let split = new_with_partial(
+                Arc::clone(&split_presentation),
+                Some(Arc::clone(&split_partial)),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            );
+            cx.subscribe(&split, move |_, _, event: &DiffViewEvent, _| match event {
+                DiffViewEvent::ApplyPartial { selection, .. } => {
+                    assert!(matches!(
+                        selection,
+                        gitturtle_core::PartialSelection::Lines(ids) if !ids.is_empty()
+                    ));
+                    recorded.borrow_mut().push("apply");
+                }
+                DiffViewEvent::DiscardPartial { selection, .. } => {
+                    assert!(matches!(
+                        selection,
+                        gitturtle_core::PartialSelection::Lines(ids) if !ids.is_empty()
+                    ));
+                    recorded.borrow_mut().push("discard");
+                }
+            })
+            .detach();
+            Root(split)
+        });
+        let split = cx.read(|cx| root.read(cx).0.clone());
+        draw(cx);
+        draw(cx);
+
+        let block_row = split_partial.blocks[0].start_row;
+        let stage_selector: &'static str = format!("split-partial-hunk-{block_row}").leak();
+        let discard_selector: &'static str =
+            format!("split-partial-discard-hunk-{block_row}").leak();
+        let stage_bounds = cx
+            .debug_bounds(stage_selector)
+            .expect("split stage hunk overlay is drawn");
+        let discard_bounds = cx
+            .debug_bounds(discard_selector)
+            .expect("split discard hunk overlay is drawn");
+
+        cx.simulate_click(stage_bounds.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert_eq!(*events.borrow(), vec!["apply"]);
+
+        // Restore after write/cancel so the next action is interactive.
+        cx.update(|_, cx| split.update(cx, |split, cx| split.restore_after_cancel(cx)));
+        draw(cx);
+        cx.simulate_click(discard_bounds.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert_eq!(*events.borrow(), vec!["apply", "discard"]);
+
+        // Selecting a changed line exposes the shared selection bar with Stage/Discard/Clear.
+        cx.update(|_, cx| {
+            split.update(cx, |split, cx| {
+                split.restore_after_cancel(cx);
+                let first_id = split_partial.blocks[0].ids[0];
+                split.shared_selection.borrow_mut().ids.insert(first_id);
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("split-apply-partial-selection").is_some(),
+            "shared apply selection button"
+        );
+        assert!(
+            cx.debug_bounds("split-discard-partial-selection").is_some(),
+            "shared discard selection button"
+        );
+        let clear = cx
+            .debug_bounds("split-clear-partial-selection")
+            .expect("shared clear selection button");
+        cx.simulate_click(clear.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("split-apply-partial-selection").is_none(),
+            "clear dismisses the shared selection bar"
+        );
     }
 }

@@ -19,6 +19,54 @@ pub struct DiscardPlan {
     working: Vec<WorkingIdentity>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MultiDiscardItem {
+    pub entry: StatusEntry,
+    working: Vec<WorkingIdentity>,
+}
+
+/// Reviewed multi-file discard batch captured from one status snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MultiDiscardPlan {
+    pub items: Vec<MultiDiscardItem>,
+    pub head: Option<String>,
+    root: PathBuf,
+    directories: [DirectoryIdentity; 3],
+}
+
+impl MultiDiscardPlan {
+    pub fn entries(&self) -> Vec<StatusEntry> {
+        self.items.iter().map(|item| item.entry.clone()).collect()
+    }
+
+    pub fn tracked_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| !item.entry.untracked)
+            .count()
+    }
+
+    pub fn untracked_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.entry.untracked)
+            .count()
+    }
+}
+
+/// Reviewed plan to restore one file in the working tree to its contents in a
+/// specific commit revision without modifying the index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoreFilePlan {
+    pub revision_oid: String,
+    pub path: PathBuf,
+    pub revision_mode: String,
+    pub revision_blob_oid: String,
+    root: PathBuf,
+    directories: [DirectoryIdentity; 3],
+    working: WorkingIdentity,
+}
+
 /// Bounded raw content and filesystem identity for stale-review detection.
 /// Symlinks capture their stored target text, never the linked destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,43 +300,469 @@ impl GitRepository {
             up_to_date: false,
         })
     }
+
+    /// Capture a reviewed multi-file discard batch from one status snapshot.
+    /// Refuses the entire batch if any entry is conflicted, a submodule, an
+    /// untracked directory, an unborn-HEAD tracked file, or a file/directory
+    /// replacement.
+    pub fn multi_discard_plan(&self, expected: &[StatusEntry]) -> Result<MultiDiscardPlan> {
+        ensure!(!self.bare, "Open a working copy to discard changes.");
+        ensure!(
+            !expected.is_empty(),
+            "Select at least one changed file to discard."
+        );
+        let selected = GitRepository::open(&self.path)?;
+        ensure!(
+            selected.path == self.path && !selected.bare,
+            "The selected repository changed. Reopen it and review the discard again."
+        );
+        let git_directories = selected.git_directories()?;
+        let directories = [
+            directory_identity(&self.path)?,
+            directory_identity(&git_directories.0)?,
+            directory_identity(&git_directories.1)?,
+        ];
+        // Deduplicate rows when both staged and unstaged views of one entry are selected.
+        let mut unique = Vec::with_capacity(expected.len());
+        for candidate in expected {
+            if !unique.iter().any(|existing: &StatusEntry| {
+                existing.path == candidate.path
+                    && existing.original_path == candidate.original_path
+                    && existing.untracked == candidate.untracked
+            }) {
+                unique.push(candidate.clone());
+            }
+        }
+        let status = self.status()?;
+        let head = if self.has_head()? {
+            let oid = text(trim_line(&run_git(
+                self.target(),
+                &["rev-parse", "--verify", "HEAD^{commit}"],
+            )?));
+            validate_oid(&oid)?;
+            Some(oid)
+        } else {
+            None
+        };
+        let mut tracked_paths = Vec::new();
+        let mut items = Vec::with_capacity(unique.len());
+        let started = Instant::now();
+        for candidate in &unique {
+            for path in candidate.paths() {
+                validate_path(&path)?;
+            }
+            ensure!(
+                !candidate.is_untracked_directory(),
+                "Untracked directories, including nested repositories, are not deleted here. Remove {} outside GitTurtle.",
+                candidate.path.display()
+            );
+            ensure!(
+                !candidate.conflicted,
+                "Resolve {} with the conflict tools; discard does not apply to conflicted files.",
+                candidate.path.display()
+            );
+            let entry = status
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.path == candidate.path
+                        && entry.original_path == candidate.original_path
+                        && entry.untracked == candidate.untracked
+                })
+                .with_context(|| {
+                    format!(
+                        "{} no longer appears in Changes. Refresh and review the selection again.",
+                        candidate.path.display()
+                    )
+                })?;
+            ensure!(
+                entry == candidate,
+                "The status of {} changed. Refresh Changes and review the selection again.",
+                candidate.path.display()
+            );
+            ensure!(
+                [&entry.head_mode, &entry.index_mode, &entry.worktree_mode]
+                    .iter()
+                    .all(|mode| mode.as_str() != "160000"),
+                "Submodule changes ({}) are not discarded here. Use Git inside the submodule.",
+                entry.path.display()
+            );
+            ensure!(
+                entry.untracked || head.is_some(),
+                "There is no commit to restore {} from yet. Unstage it to keep it out of the first commit.",
+                entry.path.display()
+            );
+            let mut working = Vec::new();
+            for path in entry.paths() {
+                let identity = working_identity(&self.path, &path, started)?;
+                let present = matches!(
+                    identity,
+                    WorkingIdentity::File { .. } | WorkingIdentity::Symlink { .. }
+                );
+                if entry.untracked {
+                    ensure!(
+                        present,
+                        "Untracked directories, including nested repositories, are not deleted here. Remove {} outside GitTurtle.",
+                        path.display()
+                    );
+                } else {
+                    ensure!(
+                        present || identity == WorkingIdentity::Absent,
+                        "The path {} is now a directory or a special file. Move or remove it with Git before discarding.",
+                        path.display()
+                    );
+                    let git_expects_absent = entry.original_path.as_deref() == Some(path.as_path())
+                        || entry.worktree_mode == "000000";
+                    ensure!(
+                        !(present && git_expects_absent),
+                        "An untracked file occupies {} while Git records it as deleted or renamed away. Delete its untracked row first, or unstage the change to keep the file.",
+                        path.display()
+                    );
+                    tracked_paths.push(path);
+                }
+                working.push(identity);
+            }
+            items.push(MultiDiscardItem {
+                entry: entry.clone(),
+                working,
+            });
+        }
+        if !tracked_paths.is_empty() {
+            ensure_single_file_restore(
+                self.target(),
+                head.as_deref().context("Missing reviewed HEAD")?,
+                &tracked_paths,
+            )?;
+        }
+        Ok(MultiDiscardPlan {
+            items,
+            head,
+            root: self.path.clone(),
+            directories,
+        })
+    }
+
+    pub(super) fn execute_multi_discard(&self, plan: &MultiDiscardPlan) -> Result<WriteOutcome> {
+        ensure!(
+            plan.root == self.path,
+            "The selected repository changed. Review the discard again."
+        );
+        let expected_entries = plan.entries();
+        let fresh = self.multi_discard_plan(&expected_entries)?;
+        ensure!(
+            fresh == *plan,
+            "One or more selected files, the index, or HEAD changed after review. Review the discard again."
+        );
+        let mut tracked_paths = Vec::new();
+        let mut untracked_paths = Vec::new();
+        for item in &plan.items {
+            if item.entry.untracked {
+                untracked_paths.push(item.entry.path.clone());
+            } else {
+                tracked_paths.extend(item.entry.paths());
+            }
+        }
+        let mut diagnostics = Vec::new();
+        if !tracked_paths.is_empty() {
+            let mut command = normal_command(self.target());
+            command
+                .arg("--git-dir")
+                .arg(&plan.directories[1].path)
+                .arg("--work-tree")
+                .arg(&plan.root)
+                .env("GIT_NO_REPLACE_OBJECTS", "1")
+                .args(["--literal-pathspecs", "restore", "--source"])
+                .arg(plan.head.as_deref().context("Missing reviewed HEAD")?)
+                .args([
+                    "--staged",
+                    "--worktree",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ]);
+            let output = checked_write_output(command, Some(path_input(&tracked_paths)?), WRITE_TIMEOUT)
+                .map_err(|error| {
+                    error.context(
+                        "Discarding selected tracked files did not report success. Git may have restored part of the selection. Refresh Changes and inspect the files before another attempt; GitTurtle did not retry.",
+                    )
+                })?;
+            let text_out = format!("{}{}", text(&output.stdout), text(&output.stderr));
+            if !text_out.trim().is_empty() {
+                diagnostics.push(text_out.trim().to_owned());
+            }
+        }
+        for chunk in untracked_paths.chunks(128) {
+            let mut command = normal_command(self.target());
+            command
+                .arg("--git-dir")
+                .arg(&plan.directories[1].path)
+                .arg("--work-tree")
+                .arg(&plan.root)
+                .env("GIT_NO_REPLACE_OBJECTS", "1")
+                .args(["--literal-pathspecs", "clean", "--force", "--"])
+                .args(chunk);
+            let output = checked_write_output(command, None, WRITE_TIMEOUT).map_err(|error| {
+                error.context(
+                    "Deleting selected untracked files did not report success. Refresh Changes and inspect the files before another attempt; GitTurtle did not retry.",
+                )
+            })?;
+            let text_out = format!("{}{}", text(&output.stdout), text(&output.stderr));
+            if !text_out.trim().is_empty() {
+                diagnostics.push(text_out.trim().to_owned());
+            }
+        }
+        let status = self.status()?;
+        for item in &plan.items {
+            let item_paths = item.entry.paths();
+            ensure!(
+                !status.entries.iter().any(|entry| {
+                    entry.untracked == item.entry.untracked
+                        && (item_paths.contains(&entry.path)
+                            || entry
+                                .original_path
+                                .as_ref()
+                                .is_some_and(|old| item_paths.contains(old)))
+                }),
+                "Git reported success, but {} still appears in Changes. Refresh and inspect it before another attempt.",
+                item.entry.path.display()
+            );
+            if item.entry.untracked {
+                ensure!(
+                    working_identity(&self.path, &item.entry.path, Instant::now())?
+                        == WorkingIdentity::Absent,
+                    "Git reported success, but untracked file {} still exists. Inspect it before another attempt.",
+                    item.entry.path.display()
+                );
+            }
+        }
+        let total = plan.items.len();
+        let tracked = plan.tracked_count();
+        let untracked = plan.untracked_count();
+        let message = match (tracked, untracked) {
+            (t, 0) => format!(
+                "Discarded changes to {t} {}.",
+                if t == 1 { "file" } else { "files" }
+            ),
+            (0, u) => format!(
+                "Deleted {u} untracked {}.",
+                if u == 1 { "file" } else { "files" }
+            ),
+            (t, u) => {
+                format!("Discarded {total} files ({t} restored to HEAD, {u} untracked deleted).")
+            }
+        };
+        Ok(WriteOutcome {
+            message: if diagnostics.is_empty() {
+                message
+            } else {
+                format!("{message}\n{}", diagnostics.join("\n"))
+            },
+            commit_oid: None,
+            up_to_date: false,
+        })
+    }
+
+    /// Capture a reviewed plan to restore one file's working-tree bytes from a
+    /// specific commit revision without modifying the index.
+    pub fn restore_file_plan(&self, revision_oid: &str, path: &Path) -> Result<RestoreFilePlan> {
+        ensure!(!self.bare, "Open a working copy to restore a file.");
+        validate_oid(revision_oid)?;
+        validate_path(path)?;
+        let selected = GitRepository::open(&self.path)?;
+        ensure!(
+            selected.path == self.path && !selected.bare,
+            "The selected repository changed. Reopen it and review the restore again."
+        );
+        let git_directories = selected.git_directories()?;
+        let directories = [
+            directory_identity(&self.path)?,
+            directory_identity(&git_directories.0)?,
+            directory_identity(&git_directories.1)?,
+        ];
+        let verified_oid = text(trim_line(&run_git(
+            self.target(),
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{revision_oid}^{{commit}}"),
+            ],
+        )?));
+        validate_oid(&verified_oid)?;
+        let mut ls_tree = git_command(self.target());
+        ls_tree
+            .arg("--literal-pathspecs")
+            .args(["ls-tree", "-z", "--full-tree", &verified_oid, "--"])
+            .arg(path);
+        let output = bounded_output(ls_tree, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to inspect {} at {}: {}",
+                    path.display(),
+                    &verified_oid[..8.min(verified_oid.len())],
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
+        let records: Vec<_> = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+            .collect();
+        ensure!(
+            records.len() == 1,
+            "{} does not exist as a single file in commit {}.",
+            path.display(),
+            &verified_oid[..8.min(verified_oid.len())]
+        );
+        let record = records[0];
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .context("Malformed revision tree entry")?;
+        let found_path = path_from_bytes(&record[tab + 1..]);
+        let fields: Vec<_> = record[..tab].split(|byte| *byte == b' ').collect();
+        ensure!(fields.len() == 3, "Malformed revision tree metadata");
+        ensure!(
+            found_path == path && fields[1] == b"blob",
+            "{} is a directory or submodule in commit {} and cannot be restored as a single file.",
+            path.display(),
+            &verified_oid[..8.min(verified_oid.len())]
+        );
+        let revision_mode = text(fields[0]);
+        let revision_blob_oid = text(fields[2]);
+        validate_oid(&revision_blob_oid)?;
+        let status = self.status_for_path(path)?;
+        ensure!(
+            !status
+                .entries
+                .iter()
+                .any(|entry| entry.path == path && entry.conflicted),
+            "Resolve the conflict on {} before restoring it from another revision.",
+            path.display()
+        );
+        ensure!(
+            !status.entries.iter().any(|entry| {
+                entry.path == path
+                    && [&entry.head_mode, &entry.index_mode, &entry.worktree_mode]
+                        .iter()
+                        .any(|mode| mode.as_str() == "160000")
+            }),
+            "Submodule {} cannot be restored as a regular file.",
+            path.display()
+        );
+        let working = working_identity(&self.path, path, Instant::now())?;
+        ensure!(
+            matches!(
+                working,
+                WorkingIdentity::Absent
+                    | WorkingIdentity::File { .. }
+                    | WorkingIdentity::Symlink { .. }
+            ),
+            "The path {} is currently a directory or special file. Move or remove it with Git before restoring.",
+            path.display()
+        );
+        Ok(RestoreFilePlan {
+            revision_oid: verified_oid,
+            path: path.to_owned(),
+            revision_mode,
+            revision_blob_oid,
+            root: self.path.clone(),
+            directories,
+            working,
+        })
+    }
+
+    pub(super) fn execute_restore_file(&self, plan: &RestoreFilePlan) -> Result<WriteOutcome> {
+        ensure!(
+            plan.root == self.path,
+            "The selected repository changed. Review the file restore again."
+        );
+        let fresh = self.restore_file_plan(&plan.revision_oid, &plan.path)?;
+        ensure!(
+            fresh == *plan,
+            "The file or revision changed after review. Review the file restore again."
+        );
+        let mut command = normal_command(self.target());
+        command
+            .arg("--git-dir")
+            .arg(&plan.directories[1].path)
+            .arg("--work-tree")
+            .arg(&plan.root)
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .args(["--literal-pathspecs", "restore", "--source"])
+            .arg(&plan.revision_oid)
+            .args([
+                "--worktree",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ]);
+        let output = checked_write_output(
+            command,
+            Some(path_input(std::slice::from_ref(&plan.path))?),
+            WRITE_TIMEOUT,
+        )
+        .map_err(|error| {
+            error.context(
+                "Restoring the file did not report success. Refresh Changes and inspect the file before another attempt; GitTurtle did not retry.",
+            )
+        })?;
+        let short = &plan.revision_oid[..8.min(plan.revision_oid.len())];
+        let message = format!(
+            "Restored {} in the working tree from commit {short}.",
+            plan.path.display()
+        );
+        let diagnostic = format!("{}{}", text(&output.stdout), text(&output.stderr));
+        Ok(WriteOutcome {
+            message: if diagnostic.trim().is_empty() {
+                message
+            } else {
+                format!("{message}\n{}", diagnostic.trim())
+            },
+            commit_oid: None,
+            up_to_date: false,
+        })
+    }
 }
 
 /// Even literal pathspecs select descendants. Refuse file/tree transitions
 /// whose restore would also change rows outside the reviewed file or rename.
 fn ensure_single_file_restore(target: GitTarget<'_>, head: &str, paths: &[PathBuf]) -> Result<()> {
-    let mut command = git_command(target);
-    command
-        .arg("--literal-pathspecs")
-        .args(["ls-tree", "-z", "--full-tree", head, "--"])
-        .args(paths);
-    let output = bounded_output(command, GIT_TIMEOUT)?;
-    if !output.status.success() {
-        return Err(git_failure(
-            &output.stderr,
-            format!(
-                "Unable to inspect the reviewed commit's restore paths: {}",
-                reported(&output.stderr).trim()
-            ),
-        ));
-    }
-    for record in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-    {
-        let tab = record
-            .iter()
-            .position(|byte| *byte == b'\t')
-            .context("Malformed restore tree entry")?;
-        let path = path_from_bytes(&record[tab + 1..]);
-        let fields: Vec<_> = record[..tab].split(|byte| *byte == b' ').collect();
-        ensure!(fields.len() == 3, "Malformed restore tree metadata");
-        ensure!(
-            fields[1] != b"tree" && paths.contains(&path),
-            "The path {} is a directory in the reviewed commit. Discard would also restore other files beneath it. Review this file/directory replacement with Git.",
-            path.display()
-        );
+    for chunk in paths.chunks(128) {
+        let mut command = git_command(target);
+        command
+            .arg("--literal-pathspecs")
+            .args(["ls-tree", "-z", "--full-tree", head, "--"])
+            .args(chunk);
+        let output = bounded_output(command, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to inspect the reviewed commit's restore paths: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
+        for record in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+        {
+            let tab = record
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .context("Malformed restore tree entry")?;
+            let path = path_from_bytes(&record[tab + 1..]);
+            let fields: Vec<_> = record[..tab].split(|byte| *byte == b' ').collect();
+            ensure!(fields.len() == 3, "Malformed restore tree metadata");
+            ensure!(
+                fields[1] != b"tree" && paths.contains(&path),
+                "The path {} is a directory in the reviewed commit. Discard would also restore other files beneath it. Review this file/directory replacement with Git.",
+                path.display()
+            );
+        }
     }
     ensure_single_index_restore(target, paths)
 }
@@ -296,32 +770,34 @@ fn ensure_single_file_restore(target: GitTarget<'_>, head: &str, paths: &[PathBu
 /// The index half of [`ensure_single_file_restore`]: refuse a restore whose
 /// literal pathspecs also select staged files beneath the reviewed paths.
 fn ensure_single_index_restore(target: GitTarget<'_>, paths: &[PathBuf]) -> Result<()> {
-    let mut command = git_command(target);
-    command
-        .arg("--literal-pathspecs")
-        .args(["ls-files", "--cached", "-z", "--"])
-        .args(paths);
-    let output = bounded_output(command, GIT_TIMEOUT)?;
-    if !output.status.success() {
-        return Err(git_failure(
-            &output.stderr,
-            format!(
-                "Unable to inspect the selected index paths: {}",
-                reported(&output.stderr).trim()
-            ),
-        ));
-    }
-    for record in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-    {
-        let path = path_from_bytes(record);
-        ensure!(
-            paths.contains(&path),
-            "There are staged files beneath the selected path ({}). Discard would also remove those files from the index. Review this file/directory replacement with Git.",
-            path.display()
-        );
+    for chunk in paths.chunks(128) {
+        let mut command = git_command(target);
+        command
+            .arg("--literal-pathspecs")
+            .args(["ls-files", "--cached", "-z", "--"])
+            .args(chunk);
+        let output = bounded_output(command, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to inspect the selected index paths: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
+        for record in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+        {
+            let path = path_from_bytes(record);
+            ensure!(
+                paths.contains(&path),
+                "There are staged files beneath the selected path ({}). Discard would also remove those files from the index. Review this file/directory replacement with Git.",
+                path.display()
+            );
+        }
     }
     Ok(())
 }

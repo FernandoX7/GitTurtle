@@ -631,3 +631,102 @@ fn preexisting_nested_lock_symlink_is_never_removed_or_followed() {
     assert!(!f.root.join(".git/index.lock").exists());
     assert_eq!(f.index("file.txt"), b"baseline\n");
 }
+
+#[test]
+fn discard_partial_hunk_and_lines_reverts_selected_unstaged_edits_and_keeps_others() {
+    let f = Fixture::new();
+    f.write("file.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n");
+    f.commit();
+    // Stage an independent edit to verify staged index stays untouched.
+    f.write("file.txt", "1-staged\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n");
+    f.git(&["add", "file.txt"]);
+    // Make two separated unstaged edits (2 hunks); second hunk modifies line 10 and line 12 separately.
+    f.write(
+        "file.txt",
+        "1-staged\n2-debug\n3\n4\n5\n6\n7\n8\n9\n10-keep\n11\n12-extra\n",
+    );
+    let diff = f.partial("file.txt", ChangeArea::Unstaged);
+    assert!(diff.can_discard());
+    assert_eq!(diff.hunks.len(), 2);
+    // Discard hunk 0 only -> 2-debug reverts to 2, hunk 1 stays intact, index stays 1-staged.
+    f.repo()
+        .execute(&WriteCommand::DiscardPartial {
+            diff: std::sync::Arc::new(diff),
+            selection: PartialSelection::Hunks(vec![0]),
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.join("file.txt")).unwrap(),
+        "1-staged\n2\n3\n4\n5\n6\n7\n8\n9\n10-keep\n11\n12-extra\n"
+    );
+    assert_eq!(
+        f.index("file.txt"),
+        b"1-staged\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n"
+    );
+
+    // Discard the line 12 replacement while keeping 10-keep.
+    let diff2 = f.partial("file.txt", ChangeArea::Unstaged);
+    let extra_add = changed_id(&diff2, PartialLineKind::Addition, "12-extra\n");
+    let old_12_del = changed_id(&diff2, PartialLineKind::Deletion, "12\n");
+    f.repo()
+        .execute(&WriteCommand::DiscardPartial {
+            diff: std::sync::Arc::new(diff2),
+            selection: PartialSelection::Lines(vec![old_12_del, extra_add]),
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.join("file.txt")).unwrap(),
+        "1-staged\n2\n3\n4\n5\n6\n7\n8\n9\n10-keep\n11\n12\n"
+    );
+
+    // Staged diffs refuse partial discard.
+    let staged_diff = f.partial("file.txt", ChangeArea::Staged);
+    assert!(!staged_diff.can_discard());
+    assert!(
+        f.repo()
+            .execute(&WriteCommand::DiscardPartial {
+                diff: std::sync::Arc::new(staged_diff),
+                selection: PartialSelection::Hunks(vec![0]),
+            })
+            .is_err()
+    );
+
+    // Stale working bytes are refused without touching the modified file.
+    let stale_diff = f.partial("file.txt", ChangeArea::Unstaged);
+    f.write("file.txt", "1-staged\nexternal edit\n");
+    assert!(
+        f.repo()
+            .execute(&WriteCommand::DiscardPartial {
+                diff: std::sync::Arc::new(stale_diff),
+                selection: PartialSelection::Hunks(vec![0]),
+            })
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("file.txt")).unwrap(),
+        "1-staged\nexternal edit\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn discard_partial_refuses_symlink_replacement_without_touching_target() {
+    let f = Fixture::new();
+    f.write("file.txt", "base\n");
+    f.commit();
+    f.write("file.txt", "changed\n");
+    let diff = f.partial("file.txt", ChangeArea::Unstaged);
+    let outside = f.root.parent().unwrap().join("precious.txt");
+    fs::write(&outside, "changed\n").unwrap();
+    fs::remove_file(f.root.join("file.txt")).unwrap();
+    std::os::unix::fs::symlink(&outside, f.root.join("file.txt")).unwrap();
+    assert!(
+        f.repo()
+            .execute(&WriteCommand::DiscardPartial {
+                diff: std::sync::Arc::new(diff),
+                selection: PartialSelection::Hunks(vec![0]),
+            })
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "changed\n");
+}

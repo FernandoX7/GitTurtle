@@ -182,6 +182,7 @@ pub(super) struct SettingsUi {
     pub(super) page: Entity<SettingsPage>,
     pub(super) branch: Entity<InputState>,
     pub(super) editor: Entity<InputState>,
+    pub(super) terminal: Entity<InputState>,
     pub(super) identity_name: Entity<InputState>,
     pub(super) identity_email: Entity<InputState>,
 }
@@ -344,11 +345,21 @@ impl GitTurtle {
                         "code"
                     })
             });
+            let external_terminal = self.settings.external_terminal.clone();
+            let terminal = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(external_terminal)
+                    .placeholder(if cfg!(target_os = "macos") {
+                        "Terminal"
+                    } else {
+                        "ghostty"
+                    })
+            });
             let owner = cx.entity().downgrade();
             let page = cx.new(|cx| {
                 SettingsPage::new(
                     owner,
-                    [&branch, &editor, &identity_name, &identity_email],
+                    [&branch, &editor, &terminal, &identity_name, &identity_email],
                     cx,
                 )
             });
@@ -356,6 +367,7 @@ impl GitTurtle {
                 page,
                 branch,
                 editor,
+                terminal,
                 identity_name,
                 identity_email,
             });
@@ -527,6 +539,7 @@ impl GitTurtle {
         };
         let anchors = [
             ui.editor.entity_id(),
+            ui.terminal.entity_id(),
             ui.branch.entity_id(),
             ui.identity_name.entity_id(),
             ui.identity_email.entity_id(),
@@ -3093,6 +3106,7 @@ impl GitTurtle {
             .into_any_element();
 
         let save_editor = self.page_focus("save-external-editor", cx);
+        let save_terminal = self.page_focus("save-external-terminal", cx);
         let reopen_last = self.page_focus("settings-reopen-last", cx);
         let project_pane = self.page_focus("settings-project-pane", cx);
         let save_branch = self.page_focus("save-default-branch", cx);
@@ -3126,6 +3140,31 @@ impl GitTurtle {
                         .on_click(cx.listener(|this, _, window, cx| {
                             if let Some(ui) = &this.settings_ui {
                                 this.settings.external_editor = ui.editor.read(cx).value().trim().to_owned();
+                                this.save_preferences(window, cx);
+                            }
+                        })))))
+            .child(div()
+                .flex().flex_col().gap_2()
+                .child(setting_description("External terminal", if cfg!(target_os = "macos") { "Optional application name, such as Ghostty or iTerm. Leave empty to use Terminal." } else { "Optional executable name or path, such as ghostty or kitty. Leave empty to use xdg-terminal-exec or $TERMINAL." }, cx))
+                .child(div()
+                    .on_children_prepainted(self.keep_in_view(
+                        vec![Some(ui.terminal.focus_handle(cx)), Some(save_terminal.clone())],
+                        cx,
+                    ))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().debug_selector(|| "settings-terminal-field".into()).flex_1().min_w_0()
+                        .child(Input::new(&ui.terminal).aria_label("External terminal")))
+                    .child(Button::new("save-external-terminal")
+                        .track_focus(&save_terminal)
+                        .debug_selector(|| "save-external-terminal".into())
+                        .label("Save terminal")
+                        .disabled(ui.terminal.read(cx).value().trim() == self.settings.external_terminal)
+                        .tooltip("Save the terminal that opens repositories and terminal editors")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(ui) = &this.settings_ui {
+                                this.settings.external_terminal = ui.terminal.read(cx).value().trim().to_owned();
                                 this.save_preferences(window, cx);
                             }
                         })))))
@@ -3645,7 +3684,7 @@ struct PageKey {
 impl SettingsPage {
     pub(super) fn new(
         app: WeakEntity<GitTurtle>,
-        inputs: [&Entity<InputState>; 4],
+        inputs: [&Entity<InputState>; 5],
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -6058,6 +6097,7 @@ mod theme_apply_tests {
             new,
             presentation,
             split,
+            split_partial: None,
             partial: None,
             partial_unavailable: None,
             lfs_missing: [false; 2],

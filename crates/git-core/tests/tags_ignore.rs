@@ -500,3 +500,69 @@ fn oversized_annotation_keeps_inspection_identity_and_safe_delete_available() {
         300 * 1024
     );
 }
+
+#[test]
+fn delete_remote_tag_enforces_exact_lease_and_preserves_local_tag() {
+    let f = Fixture::new();
+    let bare = f.root.parent().unwrap().join("tags-remote.git");
+    assert!(
+        Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&bare)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    f.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+    f.git(&["tag", "-a", "v1.0", "-m", "release 1.0"]);
+    f.git(&["push", "origin", "refs/tags/v1.0"]);
+
+    let repo = f.repo();
+    let tag = repo.tags().unwrap().tags.pop().unwrap();
+    let remote = Arc::new(repo.remote_configs().unwrap().pop().unwrap());
+    let plan = repo
+        .delete_remote_tag_plan(&tag, Arc::clone(&remote))
+        .unwrap();
+
+    // Move remote tag to a different object already present on the bare remote -> exact lease refuses deletion.
+    let target_commit_oid = tag.target_oid.clone();
+    assert_ne!(target_commit_oid, tag.oid);
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["update-ref", "refs/tags/v1.0", &target_commit_oid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        repo.execute(&WriteCommand::Tag(Arc::new(TagCommand::DeleteRemote {
+            plan: plan.clone(),
+        })))
+        .is_err()
+    );
+    assert!(bare.join("refs/tags/v1.0").exists());
+
+    // Restore matching remote tag OID -> deletion succeeds and local tag remains.
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["update-ref", "refs/tags/v1.0", &tag.oid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let outcome = repo
+        .execute(&WriteCommand::Tag(Arc::new(TagCommand::DeleteRemote {
+            plan,
+        })))
+        .unwrap();
+    assert!(outcome.message.contains("Deleted remote tag 'v1.0'"));
+    assert!(!bare.join("refs/tags/v1.0").exists());
+    assert_eq!(repo.tags().unwrap().tags.len(), 1);
+}

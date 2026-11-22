@@ -11,6 +11,9 @@ pub struct Snapshot {
     pub repository: GitRepository,
     pub branches: Vec<Branch>,
     pub worktrees: Vec<Worktree>,
+    pub tags: Vec<gitturtle_core::Tag>,
+    pub tags_truncated: bool,
+    pub stashes: Vec<gitturtle_core::StashEntry>,
     pub commits: Vec<Commit>,
     pub history_scope: gitturtle_core::HistoryScope,
     pub history_offset: usize,
@@ -205,6 +208,7 @@ pub enum Content {
         new: String,
         presentation: Arc<PatchPresentation>,
         split: Option<Arc<crate::split_diff::SplitPresentation>>,
+        split_partial: Option<Arc<gitturtle_diff_model::split_diff::SplitPartialActions>>,
         partial: Option<Arc<crate::partial_view::PartialActions>>,
         partial_unavailable: Option<String>,
         /// Which sides, old then new, are Git LFS pointers whose object the
@@ -271,6 +275,7 @@ impl Content {
                 new,
                 presentation,
                 split,
+                split_partial,
                 partial,
                 partial_unavailable,
                 lfs_missing: _,
@@ -287,6 +292,7 @@ impl Content {
                     + new.capacity()
                     + presentation.retained_bytes()
                     + split.as_ref().map_or(0, |split| split.retained_bytes())
+                    + split_partial.as_ref().map_or(0, |s| s.bytes())
                     + partial.as_ref().map_or(0, |p| p.bytes())
                     + partial_unavailable.as_ref().map_or(0, String::capacity)
             }
@@ -424,6 +430,7 @@ pub enum Job {
         scope: Option<Scope>,
         pinned: Option<gitturtle_core::HistoryScope>,
         query: String,
+        filter: gitturtle_core::HistorySearchFilter,
         offset: usize,
         limit: usize,
         previous: Vec<(String, Vec<String>)>,
@@ -526,7 +533,7 @@ pub enum Output {
         content: Arc<Content>,
         elapsed: Duration,
     },
-    Snapshot(Snapshot),
+    Snapshot(Box<Snapshot>),
     Changes(Vec<FileChange>, Duration),
     Preview(Arc<Content>, Duration),
 }

@@ -124,6 +124,7 @@ pub fn prepare(
         new: new.clone(),
         presentation: reviewed.presentation,
         split: Some(reviewed.split),
+        split_partial: None,
         partial: None,
         partial_unavailable: Some("Review options are active. Partial staging is unavailable: reset to the original diff to select exact Git lines or hunks. Whole-file actions include every change.".into()),
         lfs_missing: *lfs_missing,
@@ -158,6 +159,9 @@ impl GitTurtle {
         if let Some(view) = &self.patch_view {
             view.update(cx, |view, cx| view.suspend_partial(cx));
         }
+        if let Some(view) = &self.split_view {
+            view.update(cx, |view, cx| view.suspend_partial(cx));
+        }
         self.request(
             Job::ReviewText {
                 content: original,
@@ -185,6 +189,7 @@ impl GitTurtle {
             presentation,
             partial,
             split,
+            split_partial,
             ..
         } = content.as_ref()
         {
@@ -206,9 +211,17 @@ impl GitTurtle {
             }
             if let Some(view) = &self.split_view {
                 if let Some(split) = split {
-                    view.update(cx, |view, cx| view.refresh(Arc::clone(split), window, cx));
+                    view.update(cx, |view, cx| {
+                        view.refresh_with_partial(
+                            Arc::clone(split),
+                            split_partial.clone(),
+                            window,
+                            cx,
+                        )
+                    });
                 } else {
                     self.split_view = None;
+                    self.split_partial_subscription = None;
                 }
             }
         }
@@ -265,6 +278,9 @@ impl GitTurtle {
                 view.refresh(presentation, partial.clone(), cx)
             });
         }
+        if let Some(view) = &self.split_view {
+            view.update(cx, |view, cx| view.restore_after_cancel(cx));
+        }
     }
 
     /// Takes the partial actions of `view`, the unified diff built for the
@@ -290,7 +306,14 @@ impl GitTurtle {
         self.partial_subscription =
             Some(
                 cx.subscribe_in(view, window, move |this, view, event, window, cx| {
-                    let crate::diff_view::DiffViewEvent::ApplyPartial { diff, selection } = event;
+                    let (diff, selection, discard) = match event {
+                        crate::diff_view::DiffViewEvent::ApplyPartial { diff, selection } => {
+                            (diff, selection, false)
+                        }
+                        crate::diff_view::DiffViewEvent::DiscardPartial { diff, selection } => {
+                            (diff, selection, true)
+                        }
+                    };
                     if this.path != repository || !this.shows_partial(view, diff) {
                         // No write runs for it, so no read is to land in
                         // the view: left waiting, it kept its stale text
@@ -314,6 +337,80 @@ impl GitTurtle {
                             });
                         }
                         this.show_busy_look(cx);
+                        return;
+                    }
+                    if discard {
+                        let view_weak = view.downgrade();
+                        this.confirm_partial_discard(
+                            Arc::clone(diff),
+                            selection.clone(),
+                            move |_, cx| {
+                                if let Some(view) = view_weak.upgrade() {
+                                    view.update(cx, |view, cx| view.restore_after_cancel(cx));
+                                }
+                            },
+                            window,
+                            cx,
+                        );
+                        return;
+                    }
+                    this.write(
+                        gitturtle_core::WriteCommand::ApplyPartial {
+                            diff: Arc::clone(diff),
+                            selection: selection.clone(),
+                        },
+                        if diff.area == gitturtle_core::ChangeArea::Unstaged {
+                            "Staging selected changes…"
+                        } else {
+                            "Unstaging selected changes…"
+                        },
+                        window,
+                        cx,
+                    );
+                }),
+            );
+    }
+
+    pub(super) fn bind_split_partial(
+        &mut self,
+        view: &gpui_kit::Entity<crate::split_diff::SplitView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let repository = self.path.clone();
+        self.split_partial_subscription =
+            Some(
+                cx.subscribe_in(view, window, move |this, view, event, window, cx| {
+                    let (diff, selection, discard) = match event {
+                        crate::diff_view::DiffViewEvent::ApplyPartial { diff, selection } => {
+                            (diff, selection, false)
+                        }
+                        crate::diff_view::DiffViewEvent::DiscardPartial { diff, selection } => {
+                            (diff, selection, true)
+                        }
+                    };
+                    if this.path != repository || !this.shows_split_partial(view, diff) {
+                        view.update(cx, |view, cx| view.end_write(cx));
+                        return;
+                    }
+                    if this.operation_busy.is_some() {
+                        view.update(cx, |view, cx| view.restore_after_cancel(cx));
+                        this.show_busy_look(cx);
+                        return;
+                    }
+                    if discard {
+                        let view_weak = view.downgrade();
+                        this.confirm_partial_discard(
+                            Arc::clone(diff),
+                            selection.clone(),
+                            move |_, cx| {
+                                if let Some(view) = view_weak.upgrade() {
+                                    view.update(cx, |view, cx| view.restore_after_cancel(cx));
+                                }
+                            },
+                            window,
+                            cx,
+                        );
                         return;
                     }
                     this.write(
@@ -356,6 +453,30 @@ impl GitTurtle {
         self.page == AppPage::Repository
             && self.mode == WorkspaceMode::Working
             && self.patch_view.as_ref() == Some(view)
+            && shown
+            && selected
+    }
+
+    fn shows_split_partial(
+        &self,
+        view: &gpui_kit::Entity<crate::split_diff::SplitView>,
+        diff: &Arc<gitturtle_core::PartialDiff>,
+    ) -> bool {
+        let shown = matches!(
+            self.content.as_deref(),
+            Some(Content::Text { split_partial: Some(partial), .. }) if Arc::ptr_eq(&partial.diff, diff)
+        );
+        let selected = self.working_selected.is_some_and(|(index, area)| {
+            area == diff.area
+                && self
+                    .work_status
+                    .as_ref()
+                    .and_then(|status| status.entries.get(index))
+                    .is_some_and(|entry| entry.path == diff.path)
+        });
+        self.page == AppPage::Repository
+            && self.mode == WorkspaceMode::Working
+            && self.split_view.as_ref() == Some(view)
             && shown
             && selected
     }
@@ -916,6 +1037,7 @@ mod tests {
             new,
             presentation,
             split,
+            split_partial: None,
             partial: Some(partial),
             partial_unavailable: None,
             lfs_missing: [false; 2],
@@ -971,6 +1093,7 @@ mod tests {
             patch: patch.into(),
             presentation,
             split,
+            split_partial: None,
             partial: None,
             partial_unavailable: None,
             lfs_missing: [false; 2],

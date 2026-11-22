@@ -192,7 +192,9 @@ gpui_kit::actions!(
         ExtendNextWorking,
         ExtendPreviousWorking,
         SelectAllWorking,
-        CompareRevisions
+        CompareRevisions,
+        JumpToHead,
+        JumpToRevision
     ]
 );
 
@@ -284,6 +286,13 @@ impl AssetSource for Assets {
 #[derive(Clone)]
 enum NavRow {
     Section(&'static str, usize),
+    SectionToggle {
+        key: &'static str,
+        label: &'static str,
+        count: usize,
+        truncated: bool,
+        expanded: bool,
+    },
     All,
     Folder {
         key: String,
@@ -293,6 +302,8 @@ enum NavRow {
         expanded: bool,
     },
     Branch(usize, usize),
+    Tag(usize),
+    Stash(usize),
     Worktree(usize),
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -373,7 +384,11 @@ pub(crate) struct RepositoryWorkspace {
     pub(crate) history_paging: history_paging::State,
     pub(crate) history_updates: history_updates::State,
     pub(crate) branches: Vec<Branch>,
+    pub(crate) tags: Vec<gitturtle_core::Tag>,
+    pub(crate) tags_truncated: bool,
+    pub(crate) stashes: Vec<gitturtle_core::StashEntry>,
     pub(crate) worktrees: Vec<Worktree>,
+    pub(crate) selected_compare_commit: Option<String>,
     pub(crate) nav_rows: Vec<NavRow>,
     pub(crate) nav_ids: Vec<ElementId>,
     pub(crate) nav_mode: NavMode,
@@ -423,7 +438,11 @@ impl RepositoryWorkspace {
             history_paging: history_paging::State::default(),
             history_updates: history_updates::State::default(),
             branches: Vec::new(),
+            tags: Vec::new(),
+            tags_truncated: false,
+            stashes: Vec::new(),
             worktrees: Vec::new(),
+            selected_compare_commit: None,
             nav_rows: Vec::new(),
             nav_ids: Vec::new(),
             nav_mode: NavMode::Local,
@@ -764,6 +783,7 @@ struct GitTurtle {
     patch_view: Option<Entity<diff_view::DiffView>>,
     partial_subscription: Option<Subscription>,
     split_view: Option<Entity<split_diff::SplitView>>,
+    split_partial_subscription: Option<Subscription>,
     markdown_view: Option<Entity<markdown_view::View>>,
     conflict_view: Option<Entity<conflicts::ConflictView>>,
     conflict_subscription: Option<Subscription>,
@@ -1052,6 +1072,7 @@ impl GitTurtle {
             patch_view: None,
             partial_subscription: None,
             split_view: None,
+            split_partial_subscription: None,
             markdown_view: None,
             conflict_view: None,
             conflict_subscription: None,
@@ -1547,6 +1568,10 @@ impl GitTurtle {
         self.remote_branch
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.branches.clear();
+        self.tags.clear();
+        self.tags_truncated = false;
+        self.stashes.clear();
+        self.selected_compare_commit = None;
         self.worktrees.clear();
         self.nav_rows.clear();
         self.nav_ids.clear();
@@ -1642,6 +1667,7 @@ impl GitTurtle {
         self.patch_view = None;
         self.partial_subscription = None;
         self.split_view = None;
+        self.split_partial_subscription = None;
         self.markdown_view = None;
         self.conflict_view = None;
         self.conflict_subscription = None;
@@ -1697,6 +1723,7 @@ impl GitTurtle {
                 self.receive(Output::Preview(content, elapsed), window, cx);
             }
             Output::Snapshot(snapshot) => {
+                let snapshot = *snapshot;
                 if self.tab_snapshot_accepted(&snapshot.repository, window, cx) {
                     return;
                 }
@@ -1711,6 +1738,10 @@ impl GitTurtle {
                 );
                 self.refs = snapshot.refs;
                 self.branches = snapshot.branches;
+                self.tags = snapshot.tags;
+                self.tags_truncated = snapshot.tags_truncated;
+                self.stashes = snapshot.stashes;
+                self.selected_compare_commit = None;
                 self.seed_navigation_folders();
                 self.worktrees = snapshot.worktrees;
                 self.commits = snapshot.commits;
@@ -1769,7 +1800,9 @@ impl GitTurtle {
                             .scroll_to_item(position, ScrollStrategy::Center);
                     }
                 }
-                if !self.search.read(cx).value().is_empty() {
+                if !self.search.read(cx).value().is_empty()
+                    || self.history_search.filter.filters_without_query()
+                {
                     self.history_query_changed(window, cx);
                 }
                 self.run_pending_search(window, cx);
@@ -1940,6 +1973,7 @@ impl GitTurtle {
             new,
             presentation,
             split,
+            split_partial,
             partial,
             ..
         } = content.as_ref()
@@ -1974,13 +2008,16 @@ impl GitTurtle {
         if self.text_mode == TextMode::Split {
             if self.split_view.is_none() {
                 if let Some(split) = split {
-                    self.split_view = Some(split_diff::new(
+                    let view = split_diff::new_with_partial(
                         Arc::clone(split),
+                        split_partial.clone(),
                         language,
                         self.focus_ring.clone(),
                         window,
                         cx,
-                    ));
+                    );
+                    self.bind_split_partial(&view, window, cx);
+                    self.split_view = Some(view);
                 } else {
                     let content = Arc::clone(content);
                     self.request_split_presentation(content, window, cx);
@@ -2095,6 +2132,63 @@ impl GitTurtle {
                     navigation::Row::Branch { index, depth } => NavRow::Branch(index, depth),
                 }),
             );
+            if !remote {
+                if !self.tags.is_empty() {
+                    let matching_tags: Vec<usize> = self
+                        .tags
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, tag)| {
+                            query.is_empty() || tag.name.to_lowercase().contains(&query)
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    if query.is_empty() || !matching_tags.is_empty() {
+                        let expanded =
+                            !query.is_empty() || self.expanded_folders.contains("section:tags");
+                        let truncated = query.is_empty() && self.tags_truncated;
+                        self.nav_rows.push(NavRow::SectionToggle {
+                            key: "section:tags",
+                            label: "TAGS",
+                            count: matching_tags.len(),
+                            truncated,
+                            expanded,
+                        });
+                        if expanded {
+                            self.nav_rows
+                                .extend(matching_tags.into_iter().map(NavRow::Tag));
+                        }
+                    }
+                }
+                if !self.stashes.is_empty() {
+                    let matching_stashes: Vec<usize> = self
+                        .stashes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, stash)| {
+                            query.is_empty()
+                                || stash.name.to_lowercase().contains(&query)
+                                || stash.selector.to_lowercase().contains(&query)
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    if query.is_empty() || !matching_stashes.is_empty() {
+                        let expanded =
+                            !query.is_empty() || self.expanded_folders.contains("section:stashes");
+                        self.nav_rows.push(NavRow::SectionToggle {
+                            key: "section:stashes",
+                            label: "STASHES",
+                            count: matching_stashes.len(),
+                            truncated: false,
+                            expanded,
+                        });
+                        if expanded {
+                            self.nav_rows
+                                .extend(matching_stashes.into_iter().map(NavRow::Stash));
+                        }
+                    }
+                }
+            }
         } else {
             let matching: Vec<_> = self
                 .worktrees
@@ -2152,12 +2246,19 @@ impl GitTurtle {
     fn nav_row_id(&self, row: &NavRow) -> ElementId {
         match row {
             NavRow::Section(label, _) => ElementId::Name((*label).into()),
+            NavRow::SectionToggle { key, .. } => {
+                ElementId::Name(format!("nav-toggle:{key}").into())
+            }
             NavRow::All => ElementId::Name("nav-all".into()),
             NavRow::Folder { key, .. } => ElementId::Name(format!("nav-folder:{key}").into()),
             NavRow::Branch(branch, _) => {
                 let branch = &self.branches[*branch];
                 let side = if branch.remote { "remote" } else { "local" };
                 ElementId::Name(format!("nav-{side}:{}", branch.name).into())
+            }
+            NavRow::Tag(tag) => ElementId::Name(format!("nav-tag:{}", self.tags[*tag].name).into()),
+            NavRow::Stash(stash) => {
+                ElementId::Name(format!("nav-stash:{}", self.stashes[*stash].oid).into())
             }
             NavRow::Worktree(tree) => {
                 ElementId::Path(Arc::from(self.worktrees[*tree].path.as_path()))

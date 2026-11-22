@@ -207,6 +207,7 @@ fn configured_helper_authenticates_loopback_fetch_and_pull_preserving_local_file
     run_controlled(OperationControl::default(), || {
         repo.execute(&WriteCommand::Fetch {
             remote: "origin".into(),
+            prune: false,
         })
     })
     .unwrap();
@@ -255,6 +256,7 @@ fn expired_loopback_credentials_are_rejected_by_helper_and_error_is_actionable()
     let error = run_controlled(OperationControl::default(), || {
         repo.execute(&WriteCommand::Fetch {
             remote: "origin".into(),
+            prune: false,
         })
     })
     .unwrap_err()

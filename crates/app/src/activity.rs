@@ -105,14 +105,49 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(" ← "),
+        WriteCommand::DiscardMany(plan) => format!(
+            "{} files: {}",
+            plan.items.len(),
+            plan.items
+                .iter()
+                .take(12)
+                .map(|item| item.entry.path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        WriteCommand::RestoreFile(plan) => format!(
+            "{} from {}",
+            plan.path.display(),
+            &plan.revision_oid[..8.min(plan.revision_oid.len())]
+        ),
+        WriteCommand::CheckoutDetached(plan) => format!(
+            "Detached HEAD at {}",
+            &plan.target_oid[..8.min(plan.target_oid.len())]
+        ),
         WriteCommand::UnstageAll => "All staged changes".into(),
         WriteCommand::ApplyPartial { diff, .. } => {
             format!("{} · exact reviewed partial diff", diff.path.display())
         }
+        WriteCommand::DiscardPartial { diff, .. } => {
+            format!("{} · discard reviewed partial diff", diff.path.display())
+        }
         WriteCommand::Checkout { branch } | WriteCommand::CreateBranch { name: branch, .. } => {
             branch.clone()
         }
-        WriteCommand::Fetch { remote } => remote.clone(),
+        WriteCommand::Fetch { remote, prune } => {
+            if *prune {
+                format!("{remote} (prune)")
+            } else {
+                remote.clone()
+            }
+        }
+        WriteCommand::FetchAll { prune } => {
+            if *prune {
+                "All remotes (prune)".into()
+            } else {
+                "All remotes".into()
+            }
+        }
         WriteCommand::Pull { remote, branch } => format!("{remote}/{branch}"),
         WriteCommand::Push {
             remote,
@@ -145,6 +180,9 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
             TagCommand::Create(plan) => format!("{} at {}", plan.name, plan.target_oid),
             TagCommand::Delete(tag) => format!("{} · {}", tag.name, tag.oid),
             TagCommand::Push { tag, remote } => format!("{} → {}", tag.name, remote.name),
+            TagCommand::DeleteRemote { plan } => {
+                format!("Delete {} from {}", plan.tag.name, plan.remote.name)
+            }
         },
         WriteCommand::Integration(command) => match command {
             IntegrationCommand::Resolve { expected, .. } => expected.path.display().to_string(),
@@ -162,6 +200,14 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
             | RecoveryCommand::Undo { plan }
             | RecoveryCommand::Revert { plan }
             | RecoveryCommand::CherryPick { plan } => plan.target.oid.clone(),
+            RecoveryCommand::Reset { plan, mode } => {
+                format!(
+                    "{} → {} ({})",
+                    plan.current.branch,
+                    plan.target.oid,
+                    mode.label()
+                )
+            }
             RecoveryCommand::DropStash { stash } => stash.oid.clone(),
             _ => fallback.into(),
         },

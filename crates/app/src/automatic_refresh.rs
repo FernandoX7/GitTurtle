@@ -736,7 +736,9 @@ impl GitTurtle {
                 return entries;
             }
             self.select_newest_as_an_open_does(window, cx);
-            if !self.search.read(cx).value().is_empty() {
+            if !self.search.read(cx).value().is_empty()
+                || self.history_search.filter.filters_without_query()
+            {
                 self.history_query_changed(window, cx);
             }
             return entries;
@@ -802,6 +804,7 @@ impl GitTurtle {
                 presentation,
                 partial,
                 split,
+                split_partial,
                 ..
             } = content.as_ref()
             {
@@ -829,9 +832,17 @@ impl GitTurtle {
                 }
                 if let Some(view) = &self.split_view {
                     if let Some(split) = split {
-                        view.update(cx, |view, cx| view.refresh(Arc::clone(split), window, cx));
+                        view.update(cx, |view, cx| {
+                            view.refresh_with_partial(
+                                Arc::clone(split),
+                                split_partial.clone(),
+                                window,
+                                cx,
+                            )
+                        });
                     } else {
                         self.split_view = None;
+                        self.split_partial_subscription = None;
                     }
                 }
             }

@@ -1657,7 +1657,7 @@ impl GitTurtle {
                 .child(static_text("tag-push-consequences", "Choose one remote, then review. No other tags or branches are pushed. Existing remote tags are never replaced.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
                 .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tag-remote-list").debug_selector(|| "tag-remote-list".into()).max_h(px(160.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(list.scroll()).flex().flex_col().gap_1().children(remotes.iter().zip(pushes).enumerate().map(|(index, (remote, focus))| {
                     let remote = remote.clone(); let tag = tag.clone(); let owner = owner.clone(); let path = path.clone();
-                    crate::workspace::dialog_refusing(owner.clone(), path.clone(), move |refused, dimmed| button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).track_focus(&focus).debug_selector(move || format!("push-tag-remote-{index}")).map(|push| crate::workspace::refusing(push, || format!("push-tag-remote-{index}"), refused, dimmed)).on_click(move |_, window, cx| {
+                    crate::workspace::dialog_refusing(owner.clone(), path.clone(), move |refused, dimmed| button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).track_focus(&focus).debug_selector(move || format!("push-tag-remote-{index}")).w_full().map(|push| crate::workspace::refusing(push, || format!("push-tag-remote-{index}"), refused, dimmed)).on_click(move |_, window, cx| {
                         let _ = owner.update(cx, |this, cx| {
                             if !this.dialog_refusal(path.as_deref()).0 {
                                 window.close_dialog(cx);
@@ -1667,7 +1667,31 @@ impl GitTurtle {
                             }
                         });
                     }).into_any_element())
-                })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"));
+                })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"))
+                .when(!remotes.is_empty(), |element| {
+                    element
+                        .child(static_text("tag-delete-remote-heading", "Delete from remote").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
+                        .child(div().flex().flex_wrap().gap_1p5().children(remotes.iter().enumerate().map(|(index, remote)| {
+                            let del_remote = remote.clone();
+                            let del_tag = tag.clone();
+                            let del_owner = owner.clone();
+                            let del_path = path.clone();
+                            crate::workspace::dialog_refusing(del_owner.clone(), del_path.clone(), move |refused, dimmed| {
+                                button(("delete-tag-remote", index), format!("Delete from {}…", del_remote.name), "", false)
+                                    .debug_selector(move || format!("delete-tag-remote-{index}"))
+                                    .map(|btn| crate::workspace::refusing(btn, || format!("delete-tag-remote-{index}"), refused, dimmed))
+                                    .on_click(move |_, window, cx| {
+                                        let _ = del_owner.update(cx, |this, cx| {
+                                            if !this.dialog_refusal(del_path.as_deref()).0 {
+                                                window.close_dialog(cx);
+                                                this.prepare_remote_tag_delete(del_tag.clone(), Arc::new(del_remote.clone()), window, cx);
+                                            }
+                                        });
+                                    })
+                                    .into_any_element()
+                            })
+                        })))
+                });
             dialog.title(native_accessibility::dialog_title("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).max_h(appearance::dialog_max_height(window)).gap(DIALOG_FOOTER_GAP - room).child(content).footer(crate::tags::dialog_footer("Done", None))
         });
     }
@@ -1696,21 +1720,33 @@ impl GitTurtle {
             self.tag_actions.draft = None;
         }
     }
-    fn open_create_tag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_create_tag_at(
+        &mut self,
+        target: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let owner = cx.entity().downgrade();
         let path = self.path.clone();
-        let target = self
-            .selected_commit
-            .and_then(|index| self.commits.get(index))
-            .map(|commit| commit.oid.clone())
-            .unwrap_or_else(|| "HEAD".into());
-        let form = self
-            .tag_actions
-            .draft
-            .as_ref()
-            .filter(|form| form.read(cx).path == path)
-            .cloned()
-            .unwrap_or_else(|| cx.new(|cx| TagForm::new(owner, path, target, window, cx)));
+        let explicit_target = target.is_some();
+        let resolved_target = target.unwrap_or_else(|| {
+            self.selected_commit
+                .and_then(|index| self.commits.get(index))
+                .map(|commit| commit.oid.clone())
+                .unwrap_or_else(|| "HEAD".into())
+        });
+        let form = if explicit_target {
+            cx.new(|cx| TagForm::new(owner, path, resolved_target, window, cx))
+        } else {
+            self.tag_actions
+                .draft
+                .as_ref()
+                .filter(|form| form.read(cx).path == path)
+                .cloned()
+                .unwrap_or_else(|| {
+                    cx.new(|cx| TagForm::new(owner, path, resolved_target, window, cx))
+                })
+        };
         self.tag_actions.draft = Some(form.clone());
         window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit = form.clone();
@@ -1749,6 +1785,212 @@ impl GitTurtle {
                 })
                 .on_cancel(move |_, window, cx| {
                     cancel.update(cx, |form, cx| form.cancel(window, cx));
+                    true
+                })
+        });
+    }
+
+    fn open_create_tag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_create_tag_at(None, window, cx);
+    }
+
+    fn prepare_remote_tag_delete(
+        &mut self,
+        tag: Tag,
+        remote: Arc<RemoteConfig>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || self.page != AppPage::Repository {
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let path = repo.path().to_owned();
+        let response = self
+            .operations
+            .submit_read(move || repo.delete_remote_tag_plan(&tag, remote));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Remote tag deletion preparation was interrupted."
+                ))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.path.as_ref() != Some(&path) || this.page != AppPage::Repository {
+                    return;
+                }
+                match result {
+                    Ok(plan) => this.confirm_remote_tag_delete(Arc::new(plan), window, cx),
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_remote_tag_delete(
+        &mut self,
+        plan: Arc<gitturtle_core::DeleteRemoteTagPlan>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use std::{cell::Cell, rc::Rc};
+        let owner = cx.entity().downgrade();
+        let path = self.path.clone();
+        let requested = Rc::new(Cell::new(false));
+        let submitted = Rc::new(Cell::new(false));
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let owner = owner.clone();
+            let path = path.clone();
+            let plan = Arc::clone(&plan);
+            let requested = requested.clone();
+            let request_click = requested.clone();
+            let submitted = submitted.clone();
+            let display_url = crate::workspace::display_remote_url(&plan.remote_url);
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .text_size(crate::appearance::ui_text(12.))
+                .child(
+                    div()
+                        .p_3()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(p.warning))
+                        .bg(rgb(p.panel))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            static_text(
+                                "delete-remote-tag-target",
+                                format!("{} on {}", plan.tag.name, plan.remote.name),
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            static_text(
+                                "delete-remote-tag-url",
+                                format!("Destination · {display_url}"),
+                            )
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(p.muted)),
+                        )
+                        .child(
+                            static_text(
+                                "delete-remote-tag-lease",
+                                format!("Expected tag object · {}", plan.expected_remote_oid),
+                            )
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(p.muted)),
+                        ),
+                )
+                .child(
+                    static_text(
+                        "delete-remote-tag-note",
+                        "This explicit network action deletes only this tag on the remote if it still matches the reviewed object ID. The local tag, branches, and working files stay unchanged.",
+                    )
+                    .text_color(rgb(p.muted)),
+                );
+            let submit_owner = owner.clone();
+            let submit_path = path.clone();
+            let submit_plan = Arc::clone(&plan);
+            let request_key = request_click.clone();
+            dialog
+                .kind(DialogKind::Alert)
+                .title(native_accessibility::dialog_title(
+                    "delete-remote-tag-title",
+                    format!("Delete remote tag '{}'?", plan.tag.name),
+                ))
+                .width(appearance::dialog_width(px(580.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(content)
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            dialog_cancel("cancel-delete-remote-tag", "Cancel")
+                                .debug_selector(|| "cancel-delete-remote-tag".into())
+                                .on_action(|_: &Confirm, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(gpui_kit::component::dialog::Cancel),
+                                        cx,
+                                    );
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(gpui_kit::component::dialog::Cancel),
+                                        cx,
+                                    );
+                                }),
+                        )
+                        .child(crate::workspace::dialog_refusing(
+                            owner,
+                            path,
+                            move |refused, dimmed| {
+                                let req_key = request_key.clone();
+                                let req_click = request_click;
+                                button(
+                                    "confirm-delete-remote-tag",
+                                    "Delete remote tag",
+                                    "",
+                                    false,
+                                )
+                                .danger()
+                                .debug_selector(|| "confirm-delete-remote-tag".into())
+                                .map(|btn| {
+                                    crate::workspace::refusing(
+                                        btn,
+                                        || "confirm-delete-remote-tag".into(),
+                                        refused,
+                                        dimmed,
+                                    )
+                                })
+                                .on_action(move |_: &Confirm, _, cx| {
+                                    if !refused {
+                                        req_key.set(true);
+                                        cx.propagate();
+                                    }
+                                })
+                                .on_click(move |_, window, cx| {
+                                    if !refused {
+                                        req_click.set(true);
+                                        window.dispatch_action(
+                                            Box::new(Confirm { secondary: false }),
+                                            cx,
+                                        );
+                                    }
+                                })
+                                .into_any_element()
+                            },
+                        )),
+                )
+                .on_ok(move |_, window, cx| {
+                    if !requested.replace(false) || submitted.get() {
+                        return false;
+                    }
+                    submitted.set(true);
+                    let _ = submit_owner.update(cx, |this, cx| {
+                        if this.path == submit_path
+                            && this.page == AppPage::Repository
+                            && this.operation_busy.is_none()
+                        {
+                            this.write(
+                                WriteCommand::Tag(Arc::new(TagCommand::DeleteRemote {
+                                    plan: (*submit_plan).clone(),
+                                })),
+                                "Deleting remote tag…",
+                                window,
+                                cx,
+                            );
+                        }
+                    });
                     true
                 })
         });
