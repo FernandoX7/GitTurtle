@@ -2923,7 +2923,10 @@ mod tests {
         let failed = "Git operation failed: password=[redacted]\nb/.git/worktrees/x\n\nReview Git's output and the current repository state. For a commit, check the configured hooks, identity and signing program. GitTurtle preserves that configuration and does not bypass failures or retry automatically.";
         assert_eq!(error.root_cause().to_string(), failed);
         assert!(
-            error.chain().any(|cause| cause.is::<NotARepository>()),
+            matches!(
+                CoreError::from_anyhow(&error),
+                Some(CoreError::NotARepository { .. })
+            ),
             "{error:#}"
         );
         assert!(finds_no_repository(&error), "{error:#}");
@@ -3637,5 +3640,22 @@ mod tests {
             "cancel should wake immediately without waiting for 10s tick: {elapsed:?}"
         );
         assert_eq!(Arc::strong_count(&owned), 1);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5A17_C0DE_0003),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn proptest_status_and_remotes_parsers_never_panic(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+        ) {
+            let _ = parse_status(&bytes);
+            let _ = parse_remotes_config(&bytes);
+        }
     }
 }

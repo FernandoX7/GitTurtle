@@ -2406,6 +2406,7 @@ impl Render for RenameProjectForm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::appearance::ThemeChoiceExt as _;
     use core::prelude::v1::test;
     use std::{cell::RefCell, rc::Rc};
 

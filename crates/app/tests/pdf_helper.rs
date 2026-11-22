@@ -1,16 +1,13 @@
 //! The Linux PDF helper: its seccomp filter in forked children, the real
 //! binary as a confined helper, and the client against shell fakes.
 //!
-//! The app crate has no library target, so this test compiles
-//! `src/pdf_helper.rs` as its own module.
+//! Uses `gitturtle::pdf_helper` from the app's library target directly.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-#[expect(dead_code, reason = "each test uses part of the module")]
-#[path = "../src/pdf_helper.rs"]
-mod pdf_helper;
+use gitturtle::pdf_helper;
 
 mod filter {
     use std::fs::File;

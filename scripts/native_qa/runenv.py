@@ -1,7 +1,7 @@
 """One isolated launch environment: run directory, HOME, XDG directories and Git identity.
 
 GitTurtle ignores a relative XDG_CONFIG_HOME (`absolute_environment_path` in
-crates/app/src/preferences.rs) and falls back to the operator's real
+crates/prefs/src/preferences.rs) and falls back to the operator's real
 ~/.config/gitturtle; a QA launch with a relative path rewrote the owner's
 preferences on 2026-09-18. Every path here is therefore absolute, fresh for
 each launch and refused when it is the operator's own directory.
@@ -38,7 +38,7 @@ READ_ONLY_ROOTS = tuple(sub for name, sub in LAYOUT.items() if name != "HOME")
 HOME_FILES = 64
 HOME_FILE_BYTES = 1_000_000
 HOME_OWN = (".gitconfig",)  # written by `prepare` itself: the run's Git identity
-# The app's configuration directory under the run's XDG_CONFIG_HOME (`settings_path` in crates/app/src/preferences.rs),
+# The app's configuration directory under the run's XDG_CONFIG_HOME (`settings_path` in crates/prefs/src/preferences.rs),
 # where it keeps the preference store and the stores beside it, such as recovery-drafts.json.
 APP_CONFIG = "gitturtle"
 STORE = "preferences.json"  # written by `prepare` itself, generated or supplied: never an `app_config` file

@@ -6,6 +6,7 @@ These instructions supplement root [AGENTS.md](../../AGENTS.md) for `crates/prev
 
 | Concern | Source and focused fixtures |
 | --- | --- |
+| Typed boundary errors and panic-free guards | [src/error.rs](src/error.rs) (`PreviewError`), `#![cfg_attr(not(test), deny(clippy::unwrap_used))]` in [src/lib.rs](src/lib.rs); [tests/parser_proptests.rs](tests/parser_proptests.rs) |
 | Raster/SVG decode, alpha, and orientation | [src/lib.rs](src/lib.rs); [src/svg_limits.rs](src/svg_limits.rs) for SVG preflight |
 | Composited GIF animation and budgets | [src/animation.rs](src/animation.rs) |
 | Supplied-byte ImageIO/PDF pages and text (macOS) | [src/native.rs](src/native.rs), [src/jpeg2000.rs](src/jpeg2000.rs) (unconfined JP2/J2K box/SIZ dimension reader on both platforms), [src/native/pdf_text.rs](src/native/pdf_text.rs) |
@@ -29,7 +30,7 @@ Keep format parsing, validation, and optional resource handling inside the ownin
 
 - `decode_image` consumes supplied bytes only (filename is a format hint, never a path to open; magic bytes take precedence). `detect_lfs_pointer` returns metadata only; verified local LFS resolution belongs to [crates/git-core/AGENTS.md](../git-core/AGENTS.md).
 - Keep source-byte, source-dimension, decoded-allocation, and output-dimension limits independent. Reject unreasonable headers before pixel allocation; run decoding on bounded background workers.
-- `ImagePreview.rgba` is straight RGBA8 (premultiply during resize, return straight alpha, preserve aspect ratio, never enlarge, apply raster orientation before reporting original dimensions). `animation::decode_gif` bounds composed frames, duration, aggregate pixels, and cooperative time. BGRA conversion belongs to [crates/app/src/worker.rs](../app/src/worker.rs).
+- `ImagePreview.rgba` is straight RGBA8 (premultiply during resize, return straight alpha, preserve aspect ratio, never enlarge, apply raster orientation before reporting original dimensions). `animation::decode_gif` bounds composed frames, duration, aggregate pixels, and cooperative time. BGRA conversion belongs to [crates/app/src/worker/prepare.rs](../app/src/worker/prepare.rs).
 - SVG previews are static and self-contained: refuse DTDs, external/embedded image resources, nonfragment `href`, and filters; bound `use` and marker expansion before `usvg`; keep both image resolvers disabled and load system fonts once only when text appears.
 - Generic container metadata never decompresses archives, installs fonts, or triggers document actions. `metadata::container` inspects leading magic without file names for Linux default-app handoff (deliberately omitting OOXML/OpenDocument bodies; see [file-previews.md](../../docs/file-previews.md#background-work-and-resource-lifetime)). Decoded UTF-16 and PDF text are explicitly transformed source, never a Git patch.
 

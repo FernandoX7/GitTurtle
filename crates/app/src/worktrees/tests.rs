@@ -774,7 +774,7 @@ async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
     let details = fixture.repo.worktree_details(&tree).unwrap();
     assert_eq!(details.changed_files, 20);
     assert_eq!(details.ignored_files, 20);
-    let (app, cx) = app_window(cx, fixture.repo.clone());
+    let (app, cx) = app_window(cx, fixture.repo);
     cx.simulate_resize(size(px(1000.), px(680.)));
     for theme in [
         appearance::ThemeChoice::Daylight,

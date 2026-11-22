@@ -3,20 +3,13 @@
 //! 14 and 16 of the security review in
 //! `docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md`.
 //!
-//! The app crate has no library target, so this test compiles
-//! `src/pdf_helper.rs` and `src/image_helper.rs` as its own modules.
+//! Uses `gitturtle::pdf_helper` and `gitturtle::image_helper` from the app's library target directly.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-#[expect(dead_code, reason = "each test uses part of the module")]
-#[path = "../src/pdf_helper.rs"]
-mod pdf_helper;
-
-#[expect(dead_code, reason = "each test uses part of the module")]
-#[path = "../src/image_helper.rs"]
-mod image_helper;
+use gitturtle::{image_helper, pdf_helper};
 
 /// Checked-in codec fixtures from the preview crate, and the hostile inputs
 /// its tests build, rebuilt here from the same issues.

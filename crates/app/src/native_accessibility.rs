@@ -1766,7 +1766,7 @@ impl RenderOnce for AppDropdown {
         };
         // The menu as it opens, or as a write's start or end builds it again,
         // its rows capped at the room of its side.
-        let bounds = anchor.clone();
+        let bounds = anchor;
         let open = std::rc::Rc::new(
             move |menu: PopupMenu,
                   keyboard: bool,

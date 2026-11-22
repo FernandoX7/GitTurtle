@@ -221,7 +221,7 @@ fn move_destinations_exclude_impossible_targets_and_mark_the_current_place() {
 #[gpui::test]
 fn the_pane_appears_only_when_it_is_enabled_and_a_page_needs_it(cx: &mut TestAppContext) {
     let (library, _, _) = library_with_group();
-    let (app, cx) = test_app(cx, AppSettings::default(), library.clone());
+    let (app, cx) = test_app(cx, AppSettings::default(), library);
     app.read_with(cx, |app, _| assert_eq!(app.page, AppPage::Settings));
     assert!(cx.debug_bounds("project-pane").is_none());
 

@@ -283,7 +283,7 @@ impl GitTurtle {
             cx.notify();
             return;
         }
-        let Some(repo) = &self.repository else {
+        let Some(repo_path) = self.repository.as_ref().map(|repo| repo.path().to_owned()) else {
             return;
         };
         let target = if self.mode == WorkspaceMode::Working {
@@ -319,17 +319,18 @@ impl GitTurtle {
             }
         };
         let previous = self
+            .workspace
             .blame
             .target
             .is_some()
-            .then(|| Box::new(std::mem::take(&mut self.blame)));
+            .then(|| Box::new(std::mem::take(&mut self.workspace.blame)));
         self.blame = State {
             visible: true,
             // The lines are one Tab stop: GPUI ignores the `tab_stop` of the
             // div that tracks this handle, so the handle carries it.
             focus: Some(cx.focus_handle().tab_stop(true)),
             previous,
-            repository: Some(repo.path().to_owned()),
+            repository: Some(repo_path),
             target: Some(target),
             return_context: Some((
                 self.mode,
@@ -937,7 +938,7 @@ impl GitTurtle {
                         let whole = format!("{summary}\n{detail}");
                         line.min_w_0().truncate().aria_label(format!("{summary}. {detail}")).tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx)).into_any_element()
                     } else {
-                        let whole = summary.clone();
+                        let whole = summary;
                         line.line_clamp(FOOTER_TEXT_LINES).text_ellipsis().tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx)).into_any_element()
                     }
                 })
@@ -1531,7 +1532,7 @@ mod tests {
                     )
                     .expect("tracked paths");
                 let entry = paths.entries.first().expect("the file").clone();
-                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+                app.show_tracked_file(paths.scope, entry, window, cx);
                 assert_eq!(app.loading, Some("Reading tracked file…"));
                 app.open_blame(0, window, cx);
                 assert!(app.blame.is_visible());

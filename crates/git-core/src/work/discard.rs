@@ -708,7 +708,10 @@ mod tests {
         ] {
             assert_eq!(error.root_cause().to_string(), shown);
             assert!(
-                error.chain().any(|cause| cause.is::<NotARepository>()),
+                matches!(
+                    CoreError::from_anyhow(&error),
+                    Some(CoreError::NotARepository { .. })
+                ),
                 "{error:#}"
             );
             assert!(finds_no_repository(&error), "{error:#}");
@@ -765,7 +768,10 @@ mod tests {
                 "{error:#}"
             );
             assert!(
-                error.chain().any(|cause| cause.is::<NotARepository>()),
+                matches!(
+                    CoreError::from_anyhow(&error),
+                    Some(CoreError::NotARepository { .. })
+                ),
                 "{error:#}"
             );
         }

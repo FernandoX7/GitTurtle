@@ -2458,7 +2458,7 @@ sys.stderr.flush()
     #[test]
     fn a_controlled_write_refused_before_git_stays_refused() {
         let error = run_controlled(answered("answered-s3cret"), || -> Result<()> {
-            Err(crate::WriteRefused(
+            Err(crate::CoreError::WriteRefused(
                 "The repository at /tmp/answered-s3cret is gone: Git finds no repository there. Git was not started.".into(),
             )
             .into())
@@ -2484,9 +2484,10 @@ sys.stderr.flush()
         ]);
         let error = controlled_failure(answered("answered-s3cret"), command);
         assert!(
-            error
-                .chain()
-                .any(|cause| cause.is::<crate::NotARepository>()),
+            matches!(
+                crate::CoreError::from_anyhow(&error),
+                Some(crate::CoreError::NotARepository { .. })
+            ),
             "{error:#}"
         );
         assert_eq!(
@@ -2894,5 +2895,57 @@ os._exit(0)
             "prompt leaked secret after bidi stripping: {redacted_prompt}"
         );
         assert!(!redacted_prompt.contains('\u{202E}'));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5A17_C0DE_0004),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn proptest_progress_scanner_and_control_redact_never_leak_secrets_or_bidi(
+            secret_body in "[A-Za-z0-9]{8,14}",
+            chunk in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256),
+            bidi_noise in "[a-z \u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}]{0,24}",
+        ) {
+            let secret = format!("gtsec_{secret_body}");
+            let control = OperationControl::default();
+            control
+                .0
+                .state
+                .lock()
+                .unwrap()
+                .secrets
+                .push(secret.clone());
+            let mut scanner = ProgressScanner::default();
+            scanner.feed(&chunk, &control);
+            scanner.feed(b"\r", &control);
+            scanner.feed(
+                format!("Counting objects: 50% (1/2) {secret} {bidi_noise}\r").as_bytes(),
+                &control,
+            );
+            scanner.feed(b"Counting objects: 50% (1/2)\r", &control);
+            let progress = control
+                .progress()
+                .expect("framed progress line updates operation progress");
+            proptest::prop_assert!(!progress.contains(&secret), "secret leaked in {progress:?}");
+            proptest::prop_assert!(
+                !progress
+                    .chars()
+                    .any(|ch| matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+                "bidi survived in {progress:?}"
+            );
+            let cleaned = control.redact(&format!("fatal: {secret} {bidi_noise}"));
+            proptest::prop_assert!(!cleaned.contains(&secret), "secret leaked in {cleaned:?}");
+            proptest::prop_assert!(
+                !cleaned
+                    .chars()
+                    .any(|ch| matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+                "bidi survived in {cleaned:?}"
+            );
+        }
     }
 }

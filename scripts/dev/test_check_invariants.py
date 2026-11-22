@@ -32,6 +32,7 @@ def _make_clean_repo(root: Path) -> None:
         encoding="utf-8",
     )
     (root / "crates/preview/src/lib.rs").write_text(
+        "#![cfg_attr(not(test), deny(clippy::unwrap_used))]\n"
         "pub fn decode(bytes: &[u8]) -> usize { bytes.len() }\n"
         "#[cfg(test)]\nmod tests {\n    fn fixture() { let _ = std::fs::read(\"a\"); }\n}\n",
         encoding="utf-8",
@@ -67,7 +68,7 @@ class CheckInvariantsTests(unittest.TestCase):
             repo = Path(tmp)
             _make_clean_repo(repo)
             (repo / "crates/app/src/main.rs").write_text(
-                "#[cfg(test)]\n#[path = \"helper_bench.rs\"]\nmod benchmarks;\n"
+                "#[cfg(\n    all(\n        test,\n        unix\n    )\n)]\n#[path = \"helper_bench.rs\"]\nmod benchmarks;\n"
                 "#[cfg(all(test, unix))]\nmod inline_tests {\n"
                 '    fn t() { let _ = std::process::Command::new("git"); }\n'
                 "}\n",
@@ -120,7 +121,42 @@ class CheckInvariantsTests(unittest.TestCase):
             (repo / "crates/git-core/src/lib.rs").write_text("pub fn ok() {}\n", encoding="utf-8")
             violations = check_invariants.check_repo(repo)
             self.assertEqual(len(violations), 2)
-            self.assertTrue(all(v.rule == "git-core-safety" for v in violations))
+            self.assertTrue(all(v.rule == "crate-safety" for v in violations))
+
+    def test_cfg_boolean_parser_never_skips_production_or_nested_not(self) -> None:
+        self.assertTrue(check_invariants._is_test_cfg("test"))
+        self.assertTrue(check_invariants._is_test_cfg('all(test, target_os = "linux")'))
+        self.assertTrue(check_invariants._is_test_cfg('any(test, feature = "test-support")'))
+        self.assertFalse(check_invariants._is_test_cfg('any(target_os = "linux", test)'))
+        self.assertFalse(
+            check_invariants._is_test_cfg('any(target_os = "linux", test, feature = "test-support")')
+        )
+        self.assertFalse(check_invariants._is_test_cfg("not(test)"))
+        self.assertFalse(
+            check_invariants._is_test_cfg('not(all(not(target_os = "windows"), test))')
+        )
+
+    def test_flags_production_test_support_feature_and_headless_crate_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _make_clean_repo(repo)
+            (repo / "crates/diff-model/src").mkdir(parents=True)
+            (repo / "crates/diff-model/src/lib.rs").write_text(
+                "#![forbid(unsafe_code)]\n#![cfg_attr(not(test), deny(clippy::unwrap_used))]\n",
+                encoding="utf-8",
+            )
+            (repo / "crates/diff-model/Cargo.toml").write_text(
+                '[package]\nname = "gitturtle-diff-model"\n[dependencies]\ngitturtle-theme = { path = "../theme" }\n',
+                encoding="utf-8",
+            )
+            (repo / "crates/app/Cargo.toml").write_text(
+                '[package]\nname = "gitturtle"\n[dependencies]\n'
+                'gitturtle-github = { path = "../github", features = ["test-support"] }\n',
+                encoding="utf-8",
+            )
+            rules = [v.rule for v in check_invariants.check_repo(repo)]
+            self.assertIn("crate-boundary", rules)
+            self.assertIn("test-support-isolation", rules)
 
 
 if __name__ == "__main__":

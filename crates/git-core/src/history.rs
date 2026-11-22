@@ -260,26 +260,11 @@ impl HistoryCancellation {
 
     fn check(&self) -> Result<()> {
         if self.is_cancelled() {
-            return Err(ReadCancelled.into());
+            return Err(CoreError::ReadCancelled.into());
         }
         Ok(())
     }
 }
-
-/// The error a read ends with when its [`HistoryCancellation`] stopped it,
-/// found with `downcast_ref` through any context added on the way out, so a
-/// caller can tell a cancel the person asked for from a failure the read met
-/// before the cancel reached it, which still ends with its own error.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ReadCancelled;
-
-impl std::fmt::Display for ReadCancelled {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("History read cancelled")
-    }
-}
-
-impl std::error::Error for ReadCancelled {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistorySearchStop {
@@ -1113,7 +1098,7 @@ fn cancelled_end(
         return error.into();
     }
     let Some(stderr) = stderr else {
-        return ReadCancelled.into();
+        return CoreError::ReadCancelled.into();
     };
     match status() {
         Ok(Some(status)) if !status.success() => {
@@ -1123,7 +1108,7 @@ fn cancelled_end(
                 history_failure(&stderr)
             }
         }
-        _ => ReadCancelled.into(),
+        _ => CoreError::ReadCancelled.into(),
     }
 }
 
@@ -1509,7 +1494,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(error.downcast_ref::<ReadCancelled>().is_none(), "{error:#}");
+        assert!(!is_read_cancelled(&error), "{error:#}");
         assert_eq!(
             error.to_string(),
             "Git history read failed: fatal: bad revision"
@@ -1519,7 +1504,7 @@ mod tests {
     /// A history read whose `.git` went away, where the path Git names holds
     /// a carriage return: a traversal's page, a stream, and a stream whose
     /// cancel came after Git failed each end as finding no repository, by
-    /// the type their failure carries ([`NotARepository`]), through any
+    /// the type their failure carries ([`CoreError::NotARepository`]), through any
     /// context, and each shows the message it showed before the type, Git's
     /// words as a terminal leaves them, with none of "not a git repository".
     /// Told apart by that message, History's read of a gone tab left it
@@ -1558,7 +1543,13 @@ mod tests {
         for error in [page, stream, cancelled] {
             assert_eq!(error.to_string(), shown);
             assert_eq!(format!("{error:#}"), shown);
-            assert!(error.is::<NotARepository>(), "{error:#}");
+            assert!(
+                matches!(
+                    CoreError::from_anyhow(&error),
+                    Some(CoreError::NotARepository { .. })
+                ),
+                "{error:#}"
+            );
             assert!(finds_no_repository(&error), "{error:#}");
             let read = error.context("Read local history");
             assert_eq!(format!("{read:#}"), format!("Read local history: {shown}"));
@@ -1571,11 +1562,17 @@ mod tests {
             Ok(true)
         })
         .unwrap_err();
-        assert!(!other.is::<NotARepository>(), "{other:#}");
+        assert!(
+            !matches!(
+                CoreError::from_anyhow(&other),
+                Some(CoreError::NotARepository { .. })
+            ),
+            "{other:#}"
+        );
         assert!(!finds_no_repository(&other), "{other:#}");
     }
 
-    /// A read its cancellation stopped while Git still runs ends with [`ReadCancelled`],
+    /// A read its cancellation stopped while Git still runs ends with [`CoreError::ReadCancelled`],
     /// which a caller finds through the context added on the way out, as the app does to
     /// say "Cancelled" rather than show a failure.
     #[cfg(unix)]
@@ -1598,7 +1595,7 @@ mod tests {
         .context("Compare the captured revisions")
         .context("PR changes")
         .unwrap_err();
-        assert!(error.downcast_ref::<ReadCancelled>().is_some(), "{error:#}");
+        assert!(is_read_cancelled(&error), "{error:#}");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
@@ -1618,5 +1615,24 @@ mod tests {
         .unwrap();
         assert_eq!(end, ReadEnd::Stopped);
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5A17_C0DE_0002),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn proptest_commit_field_parser_never_panics(
+            fields in proptest::collection::vec(
+                proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64),
+                0..12,
+            ),
+        ) {
+            let _ = parse_commit_fields(&fields);
+        }
     }
 }

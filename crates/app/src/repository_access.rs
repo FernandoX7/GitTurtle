@@ -17,19 +17,25 @@ fn permission_denied(error: &io::Error) -> bool {
 
 fn classify(error: &anyhow::Error) -> Failure {
     for cause in error.chain() {
-        // Decided from Git's own words, never from the message, which shows
-        // them as a terminal leaves them.
-        if cause.is::<gitturtle_core::NotARepository>() {
-            return Failure::NotRepository;
-        }
-        // Its own type before the error it carries: "timed out" in that
-        // error's words is no Git deadline.
-        if let Some(unchecked) = cause.downcast_ref::<gitturtle_core::CouldNotCheck>() {
-            return if permission_denied(&unchecked.source) {
-                Failure::Permission
-            } else {
-                Failure::Unreadable
-            };
+        // Decided from Git's own typed boundary error before any formatted text.
+        if let Some(core) = cause.downcast_ref::<gitturtle_core::CoreError>() {
+            match core {
+                gitturtle_core::CoreError::NotARepository { .. } => {
+                    return Failure::NotRepository;
+                }
+                gitturtle_core::CoreError::CouldNotCheck { source, .. } => {
+                    return if permission_denied(source) {
+                        Failure::Permission
+                    } else {
+                        Failure::Unreadable
+                    };
+                }
+                gitturtle_core::CoreError::ChangedWhileOpening { .. }
+                | gitturtle_core::CoreError::WorkTreeOutside { .. }
+                | gitturtle_core::CoreError::GitFailure { .. }
+                | gitturtle_core::CoreError::WriteRefused(_)
+                | gitturtle_core::CoreError::ReadCancelled => {}
+            }
         }
         if let Some(error) = cause.downcast_ref::<io::Error>() {
             if permission_denied(error) {
@@ -138,10 +144,10 @@ mod tests {
     /// repository, with that guidance.
     #[test]
     fn a_folder_with_no_repository_is_told_apart_by_its_type() {
-        let error = anyhow::Error::from(gitturtle_core::NotARepository(
-            "Git rev-parse failed: b)".into(),
-            None,
-        ))
+        let error = anyhow::Error::from(gitturtle_core::CoreError::NotARepository {
+            message: "Git rev-parse failed: b)".into(),
+            summary: None,
+        })
         .context("Opening repository");
         assert_eq!(classify(&error), Failure::NotRepository);
         assert!(finds_no_repository(&error), "{error:#}");
@@ -183,7 +189,13 @@ mod tests {
             (status, "Unable to read working-copy status"),
             (history, "Git history read failed"),
         ] {
-            assert!(error.is::<gitturtle_core::NotARepository>(), "{error:#}");
+            assert!(
+                matches!(
+                    gitturtle_core::CoreError::from_anyhow(&error),
+                    Some(gitturtle_core::CoreError::NotARepository { .. })
+                ),
+                "{error:#}"
+            );
             assert!(finds_no_repository(&error), "{error:#}");
             assert_eq!(
                 format!("{error:#}"),
@@ -200,7 +212,7 @@ mod tests {
     #[test]
     fn a_folder_that_could_not_be_checked_says_so() {
         let unchecked = |code| {
-            gitturtle_core::CouldNotCheck::unless_absent(
+            gitturtle_core::CoreError::could_not_check_unless_absent(
                 Path::new("/mnt/share/project"),
                 io::Error::from_raw_os_error(code),
             )
@@ -235,7 +247,7 @@ mod tests {
     /// through a typed helper that keeps every other error apart.
     #[test]
     fn nothing_at_the_path_stays_missing() {
-        let error = gitturtle_core::CouldNotCheck::unless_absent(
+        let error = gitturtle_core::CoreError::could_not_check_unless_absent(
             Path::new("/mnt/share/project"),
             io::Error::from(io::ErrorKind::NotFound),
         );
@@ -251,7 +263,7 @@ mod tests {
             "{:#}",
             explain(
                 Path::new("/mnt/share/project"),
-                gitturtle_core::CouldNotCheck::unless_absent(
+                gitturtle_core::CoreError::could_not_check_unless_absent(
                     Path::new("/mnt/share/project"),
                     io::Error::from_raw_os_error(libc::EIO),
                 ),

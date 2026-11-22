@@ -1322,7 +1322,7 @@ fn a_swapped_git_entry_or_a_linked_root_is_another_repository() {
     .unwrap();
     assert_eq!(
         repo.verify_at_path().unwrap(),
-        FoundAtPath::Other(other_git.clone())
+        FoundAtPath::Other(other_git)
     );
     refused(&repo);
     fs::remove_file(f.root.join(".git")).unwrap();

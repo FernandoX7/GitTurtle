@@ -287,7 +287,9 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
                     validate_weights(value, count)?;
                 }
             }
-            duration = duration.max(*channel.times.last().unwrap());
+            if let Some(&last) = channel.times.last() {
+                duration = duration.max(last);
+            }
             channels.push(channel);
         }
         ensure!(
@@ -360,9 +362,30 @@ impl Channel {
     pub(super) fn apply(&self, node: &mut Node, time: f64) -> Result<()> {
         let value = self.sample(time)?;
         match self.property {
-            Property::Translation => node.translation = Some(value.as_slice().try_into().unwrap()),
-            Property::Rotation => node.rotation = Some(value.as_slice().try_into().unwrap()),
-            Property::Scale => node.scale = Some(value.as_slice().try_into().unwrap()),
+            Property::Translation => {
+                node.translation = Some(
+                    value
+                        .as_slice()
+                        .try_into()
+                        .context("Invalid GLB translation keyframe")?,
+                );
+            }
+            Property::Rotation => {
+                node.rotation = Some(
+                    value
+                        .as_slice()
+                        .try_into()
+                        .context("Invalid GLB rotation keyframe")?,
+                );
+            }
+            Property::Scale => {
+                node.scale = Some(
+                    value
+                        .as_slice()
+                        .try_into()
+                        .context("Invalid GLB scale keyframe")?,
+                );
+            }
             Property::Weights => node.weights = Some(value),
         }
         Ok(())

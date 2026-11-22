@@ -1087,7 +1087,7 @@ impl ConflictView {
             .child(div().px_3().py_2().flex().flex_col().gap_2().bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                 .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).polite().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
                 .when_some(self.durable_saved.clone(), |element, (valid, text)| {
-                    let copy = text.clone();
+                    let copy = text;
                     // Keyed by this file's draft.
                     let mark = copy_feedback::Mark::new("copy-saved-conflict", &self.durable_key);
                     let copy_mark = mark.clone();

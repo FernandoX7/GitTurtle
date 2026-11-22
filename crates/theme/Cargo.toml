@@ -1,0 +1,19 @@
+[package]
+name = "gitturtle-theme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Enables per-thread text-size isolation and embedded Omarchy palette fixtures for tests.
+test-support = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Match the locked toolkit dependency for grapheme-safe text cutting.
+unicode-segmentation = "=1.13.3"

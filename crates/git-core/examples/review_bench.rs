@@ -169,7 +169,7 @@ fn main() -> Result<()> {
         ),
         (
             "quick_open_revision_no_matches",
-            PathScope::Revision(pinned.clone()),
+            PathScope::Revision(pinned),
             "missing-review-match",
         ),
         (

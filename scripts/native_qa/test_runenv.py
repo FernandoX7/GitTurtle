@@ -507,7 +507,7 @@ class SnapshotTest(unittest.TestCase):
 
 class StoreTest(unittest.TestCase):
     def test_store_version_matches_the_app(self) -> None:
-        source = Path(__file__).resolve().parents[2] / "crates" / "app" / "src" / "preferences.rs"
+        source = Path(__file__).resolve().parents[2] / "crates" / "prefs" / "src" / "preferences.rs"
         if not source.is_file():
             self.skipTest("app source not present")
         self.assertIn(f"const STORE_VERSION: u32 = {stores.STORE_VERSION};", source.read_text())

@@ -23,19 +23,13 @@
 //! whether the source tree it was built from was clean, never by an absolute
 //! path, and no helper's reply is read past the largest the client accepts.
 //!
-//! The app crate has no library target, so this test compiles
-//! `src/pdf_helper.rs` as its own module, as `tests/pdf_helper.rs` does.
+//! Uses `gitturtle::pdf_helper` from the app's library target directly.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-#[expect(
-    dead_code,
-    reason = "the measurement uses the client and its constants"
-)]
-#[path = "../src/pdf_helper.rs"]
-mod pdf_helper;
+use gitturtle::pdf_helper;
 
 use std::fs;
 use std::io::{Read, Write};

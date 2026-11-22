@@ -230,13 +230,11 @@ fn u32_at(bytes: &[u8], offset: usize) -> Result<u32> {
     let end = offset
         .checked_add(4)
         .context("GLB integer offset overflow")?;
-    Ok(u32::from_le_bytes(
-        bytes
-            .get(offset..end)
-            .context("Truncated GLB integer")?
-            .try_into()
-            .unwrap(),
-    ))
+    let raw: [u8; 4] = bytes
+        .get(offset..end)
+        .and_then(|slice| slice.try_into().ok())
+        .context("Truncated GLB integer")?;
+    Ok(u32::from_le_bytes(raw))
 }
 
 fn container<'a>(
@@ -1262,8 +1260,12 @@ fn read_index(data: &[u8], offset: usize, kind: u32) -> Result<usize> {
     let data = data.get(offset..end).context("Truncated GLB index data")?;
     match kind {
         5121 => Ok(data[0] as usize),
-        5123 => Ok(u16::from_le_bytes(data.try_into().unwrap()) as usize),
-        5125 => Ok(u32::from_le_bytes(data.try_into().unwrap()) as usize),
+        5123 => {
+            Ok(u16::from_le_bytes(data.try_into().context("Truncated GLB index data")?) as usize)
+        }
+        5125 => {
+            Ok(u32::from_le_bytes(data.try_into().context("Truncated GLB index data")?) as usize)
+        }
         _ => bail!("Unsupported GLB index component type"),
     }
 }
@@ -1284,17 +1286,17 @@ fn read_point(data: &[u8], offset: usize, accessor: &Accessor) -> Result<Point> 
             5120 => (bytes[0] as i8 as f64, 127., true),
             5121 => (bytes[0] as f64, 255., false),
             5122 => (
-                i16::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                i16::from_le_bytes(bytes.try_into().context("Truncated GLB position data")?) as f64,
                 32767.,
                 true,
             ),
             5123 => (
-                u16::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                u16::from_le_bytes(bytes.try_into().context("Truncated GLB position data")?) as f64,
                 65535.,
                 false,
             ),
             5126 => (
-                f32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                f32::from_le_bytes(bytes.try_into().context("Truncated GLB position data")?) as f64,
                 1.,
                 false,
             ),

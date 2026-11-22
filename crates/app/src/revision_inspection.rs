@@ -2653,11 +2653,7 @@ mod tests {
                 {
                     assert_eq!(
                         landing,
-                        if gone {
-                            vec![named.clone()]
-                        } else {
-                            Vec::new()
-                        },
+                        if gone { vec![named] } else { Vec::new() },
                         "{query}, gone {gone}: renamed only where the reason differs"
                     );
                 }

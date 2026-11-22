@@ -35,8 +35,12 @@ from collections.abc import Sequence
 SUPPORTED_PLATFORMS = ("aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu")
 MEMBERS = {
     "crates/app": "gitturtle",
+    "crates/diff-model": "gitturtle-diff-model",
     "crates/git-core": "gitturtle-core",
+    "crates/github": "gitturtle-github",
+    "crates/prefs": "gitturtle-prefs",
     "crates/preview": "gitturtle-preview",
+    "crates/theme": "gitturtle-theme",
 }
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 GIT_TIMEOUT_SECONDS = 15
@@ -302,7 +306,7 @@ def _versions(git: _Git, commit: str, expected: str) -> str:
     workspace = _table(root.get("workspace"), "workspace")
     members = workspace.get("members")
     if "package" in root or not isinstance(members, list) or sorted(members, key=str) != sorted(MEMBERS):
-        raise IdentityError("unsupported workspace membership; expected GitTurtle's three explicit members")
+        raise IdentityError("unsupported workspace membership; expected GitTurtle's explicit workspace members")
     package = _table(workspace.get("package"), "workspace.package")
     if package.get("version") != expected:
         raise IdentityError("workspace version does not match the explicit release version")
@@ -342,8 +346,8 @@ def verify_release_identity(
 ) -> ReleaseIdentity:
     """Verify current local source, failing closed on unsupported version semantics.
 
-    This intentionally understands the current virtual workspace's three
-    explicit members and literal or workspace-inherited package versions.
+    This intentionally understands the current virtual workspace's explicit
+    members and literal or workspace-inherited package versions.
     Changed membership/inheritance must be reviewed before extending it.
     Ignored build output does not make source dirty (matching --build-info).
     """

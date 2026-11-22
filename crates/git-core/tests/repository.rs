@@ -1,4 +1,4 @@
-use gitturtle_core::{ChangeStatus, GitRepository, NotARepository, TextPreview};
+use gitturtle_core::{ChangeStatus, CoreError, GitRepository, TextPreview};
 use std::{
     collections::BTreeMap,
     fs,
@@ -101,7 +101,13 @@ fn empty_repository_and_nested_discovery() {
     // A folder no repository holds is told apart by its type, which the app
     // reads before any text.
     let plain = GitRepository::open(f.temp.path()).unwrap_err();
-    assert!(plain.is::<NotARepository>(), "{plain:#}");
+    assert!(
+        matches!(
+            CoreError::from_anyhow(&plain),
+            Some(CoreError::NotARepository { .. })
+        ),
+        "{plain:#}"
+    );
 }
 
 /// A repository folder that denies its own search permission could not be
@@ -111,7 +117,7 @@ fn empty_repository_and_nested_discovery() {
 #[cfg(unix)]
 #[test]
 fn a_denied_repository_folder_could_not_be_checked_by_either_route() {
-    use gitturtle_core::{CouldNotCheck, finds_no_repository};
+    use gitturtle_core::finds_no_repository;
 
     // Root enters a mode-000 folder, so only a normal user is denied. Its
     // parent stays searchable, so the folder's own metadata still reads and
@@ -134,15 +140,21 @@ fn a_denied_repository_folder_could_not_be_checked_by_either_route() {
         ("found_at_path", found.map(|_| ()).unwrap_err()),
         ("verify_at_path", checked.map(|_| ()).unwrap_err()),
     ] {
-        let unchecked = error
-            .downcast_ref::<CouldNotCheck>()
-            .unwrap_or_else(|| panic!("{route}: {error:#}"));
+        let Some(CoreError::CouldNotCheck { source, .. }) = CoreError::from_anyhow(&error) else {
+            panic!("{route}: {error:#}");
+        };
         assert_eq!(
-            unchecked.source.kind(),
+            source.kind(),
             std::io::ErrorKind::PermissionDenied,
             "{route}"
         );
-        assert!(!error.is::<NotARepository>(), "{route}: {error:#}");
+        assert!(
+            !matches!(
+                CoreError::from_anyhow(&error),
+                Some(CoreError::NotARepository { .. })
+            ),
+            "{route}: {error:#}"
+        );
         assert!(!finds_no_repository(&error), "{route}: {error:#}");
     }
     assert_eq!(
@@ -185,7 +197,7 @@ impl Drop for DeniedFolder<'_> {
 #[cfg(unix)]
 #[test]
 fn a_parent_without_search_permission_could_not_be_checked() {
-    use gitturtle_core::{CouldNotCheck, FoundAtPath, WriteCommand, could_not_check};
+    use gitturtle_core::{FoundAtPath, WriteCommand, could_not_check};
 
     // Root enters a mode-000 folder, so only a normal user is denied.
     if rustix::process::geteuid().is_root() {
@@ -205,7 +217,13 @@ fn a_parent_without_search_permission_could_not_be_checked() {
         written = repo.execute(&WriteCommand::StageAll);
     }
     let opened = opened.expect_err("nothing to open");
-    assert!(opened.is::<CouldNotCheck>(), "{opened:#}");
+    assert!(
+        matches!(
+            CoreError::from_anyhow(&opened),
+            Some(CoreError::CouldNotCheck { .. })
+        ),
+        "{opened:#}"
+    );
     assert!(could_not_check(&opened));
     assert_eq!(
         format!("{opened:#}"),
@@ -219,7 +237,13 @@ fn a_parent_without_search_permission_could_not_be_checked() {
         ("found_at_path", found.expect_err("could not check")),
         ("verify_at_path", checked.expect_err("could not check")),
     ] {
-        assert!(error.is::<CouldNotCheck>(), "{read}: {error:#}");
+        assert!(
+            matches!(
+                CoreError::from_anyhow(&error),
+                Some(CoreError::CouldNotCheck { .. })
+            ),
+            "{read}: {error:#}"
+        );
         assert!(!format!("{error:#}").contains("gone"), "{read}: {error:#}");
     }
     let refused = written.expect_err("a path that could not be checked is never written to");

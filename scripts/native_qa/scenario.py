@@ -43,7 +43,7 @@ VERSION = 1
 ROLES = ("base", "cand")
 COMMITTED_PREFIX = {"base": "base", "cand": "candidate"}
 DEFAULT_WINDOW = (1000, 680)
-# INTERFACE_TEXT_RANGE in crates/app/src/appearance.rs; test_scenario checks that they agree.
+# INTERFACE_TEXT_RANGE in crates/theme/src/lib.rs; test_scenario checks that they agree.
 TEXT_SIZES = range(11, 19)
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9.-]{0,79}")
 PALETTE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")

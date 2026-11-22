@@ -202,7 +202,7 @@ fn push_triangle(mesh: &mut Vec<Triangle>, triangle: Triangle) -> Result<()> {
 
 fn stl(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<Vec<Triangle>> {
     if bytes.len() >= 84 {
-        let declared = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
+        let declared = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
         if 84usize.checked_add(declared.saturating_mul(50)) == Some(bytes.len()) {
             ensure!(
                 declared <= MAX_MODEL_TRIANGLES,
@@ -346,7 +346,7 @@ fn archive_preflight(bytes: &[u8]) -> Result<()> {
         "ZIP64 3MF packages are not supported by the bounded preview"
     );
     let word = |i| u16::from_le_bytes([fields[i], fields[i + 1]]);
-    let dword = |i| u32::from_le_bytes(fields[i..i + 4].try_into().unwrap());
+    let dword = |i| u32::from_le_bytes([fields[i], fields[i + 1], fields[i + 2], fields[i + 3]]);
     ensure!(
         word(4) == 0 && word(6) == 0 && word(8) == word(10),
         "Multi-disk 3MF packages are not supported"

@@ -2,95 +2,24 @@
 //! Shares the commit draft coalescer and atomic writer, but has independent
 //! bounds and storage so large resolutions cannot crowd out ordinary drafts.
 use crate::*;
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use futures::{
     FutureExt,
     future::{BoxFuture, Shared},
 };
 use gpui_kit::component::{WindowExt, dialog::DialogFooter};
 use gpui_kit::prelude::FluentBuilder;
-use serde::{Deserialize, Serialize};
-use std::{
-    cell::RefCell,
-    path::Path,
-    rc::Rc,
-    time::{SystemTime, UNIX_EPOCH},
+use std::{cell::RefCell, rc::Rc};
+
+#[cfg(test)]
+use gitturtle_prefs::recovery_drafts::path_from_bytes;
+pub(super) use gitturtle_prefs::recovery_drafts::{
+    Batch, Draft, Key, Kind, NO_CAPTURE, SavedRewrite, latest_rewrite, now, path_bytes, read,
+    save_at, store_path, validate_budget,
 };
-
-const MAX_ENTRIES: usize = 256;
-const MAX_BYTES: usize = 64 * 1024 * 1024;
-const MAX_TEXT: usize = 2 * 1024 * 1024;
-type Batch = HashMap<Key, Option<Draft>>;
+#[cfg(test)]
+use std::path::Path;
 type SaveCompletion = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(super) struct Key {
-    worktree: Vec<u8>,
-    file: Vec<u8>,
-    kind: Kind,
-    source: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(super) enum Kind {
-    Conflict,
-    RebaseMessage,
-    RewriteSeries,
-}
-
-fn path_bytes(path: &Path) -> Vec<u8> {
-    path.as_os_str().as_encoded_bytes().to_vec()
-}
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStringExt;
-        std::ffi::OsString::from_vec(bytes.to_vec()).into()
-    }
-    #[cfg(not(unix))]
-    {
-        PathBuf::from(String::from_utf8_lossy(bytes).as_ref())
-    }
-}
-impl Key {
-    pub(super) fn conflict(root: &Path, file: &Path, source: String) -> Self {
-        Self {
-            worktree: path_bytes(root),
-            file: path_bytes(file),
-            kind: Kind::Conflict,
-            source,
-        }
-    }
-    pub(super) fn message(expected: &gitturtle_core::InteractiveRebaseResume) -> Self {
-        Self {
-            worktree: path_bytes(&expected.root),
-            file: vec![],
-            kind: Kind::RebaseMessage,
-            source: expected.draft_identity(),
-        }
-    }
-    fn same_location(&self, other: &Self) -> bool {
-        self.worktree == other.worktree && self.kind == other.kind && self.file == other.file
-    }
-    fn description(&self) -> String {
-        format!(
-            "{} · {}",
-            path_from_bytes(&self.worktree).display(),
-            match self.kind {
-                Kind::Conflict => format!("Conflict: {}", path_from_bytes(&self.file).display()),
-                Kind::RebaseMessage => "Rebase message".into(),
-                Kind::RewriteSeries => "Original commit-series review record".into(),
-            }
-        )
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct Draft {
-    pub key: Key,
-    pub text: String,
-    updated: u64,
-}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -101,23 +30,6 @@ pub(super) struct State {
     pub error: Option<String>,
     browser: Option<WeakEntity<RecoveryList>>,
 }
-#[derive(Serialize, Deserialize)]
-struct Store {
-    version: u32,
-    drafts: Vec<Draft>,
-}
-
-fn store_path() -> Result<PathBuf> {
-    Ok(preferences::settings_path()?.with_file_name("recovery-drafts.json"))
-}
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64
-}
-
 impl State {
     /// Keep the actual accepted save independent of the window and its view.
     /// The toolkit still bounds the total native shutdown wait to 200 ms.
@@ -220,127 +132,6 @@ impl State {
             "Recovery draft saved locally · no file or index write".into()
         }
     }
-}
-
-fn validate_budget(entries: &HashMap<Key, Draft>) -> Result<()> {
-    ensure!(
-        entries.len() <= MAX_ENTRIES,
-        "Recovery storage holds at most 256 drafts. Copy and discard older drafts to free space"
-    );
-    ensure!(
-        entries.values().all(|draft| draft.text.len() <= MAX_TEXT),
-        "Recovery text exceeds 2 MiB"
-    );
-    let total = entries.values().fold(0usize, |total, draft| {
-        total.saturating_add(draft.text.len())
-    });
-    ensure!(
-        total <= MAX_BYTES,
-        "Recovery storage is full. Copy and discard older drafts to free space"
-    );
-    Ok(())
-}
-
-/// Full source validation stays on the persistence worker. Typing only checks
-/// entry counts and recorded byte lengths, never rescans other drafts' text.
-fn validate(entries: &HashMap<Key, Draft>) -> Result<()> {
-    validate_budget(entries)?;
-    for draft in entries.values() {
-        ensure!(
-            path_from_bytes(&draft.key.worktree).is_absolute(),
-            "Recovery worktree must be absolute"
-        );
-        ensure!(
-            draft.key.worktree.len() <= 32768
-                && draft.key.file.len() <= 32768
-                && draft.key.source.len() == 64
-                && draft.key.source.bytes().all(|b| b.is_ascii_hexdigit()),
-            "Invalid recovery identity"
-        );
-        ensure!(
-            draft.text.len() <= MAX_TEXT && !draft.text.contains('\0'),
-            "Recovery text exceeds 2 MiB or contains NUL bytes"
-        );
-    }
-    Ok(())
-}
-
-fn read(path: &Path) -> Result<HashMap<Key, Draft>> {
-    let bytes = match preferences::read_store(path, (MAX_BYTES * 2) as u64) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(error) => return Err(error.into()),
-    };
-    let store: Store = serde_json::from_slice(&bytes).context("Read recovery draft store")?;
-    ensure!(
-        store.version == 1,
-        "Unsupported recovery draft version; existing storage was preserved"
-    );
-    ensure!(
-        store.drafts.len() <= MAX_ENTRIES,
-        "Too many stored recovery drafts"
-    );
-    let entries = store
-        .drafts
-        .into_iter()
-        .map(|draft| (draft.key.clone(), draft))
-        .collect();
-    validate(&entries)?;
-    Ok(entries)
-}
-
-fn save_at(batch: &Batch, path: &Path) -> Result<()> {
-    let mut entries = read(path)?;
-    for (key, draft) in batch {
-        if let Some(draft) = draft {
-            entries.insert(key.clone(), draft.clone());
-        } else {
-            entries.remove(key);
-        }
-    }
-    validate(&entries)?;
-    let mut drafts: Vec<_> = entries.into_values().collect();
-    drafts.sort_by(|a, b| {
-        a.updated
-            .cmp(&b.updated)
-            .then_with(|| a.key.worktree.cmp(&b.key.worktree))
-            .then_with(|| a.key.source.cmp(&b.key.source))
-    });
-    let bytes = serde_json::to_vec(&Store { version: 1, drafts })?;
-    ensure!(
-        bytes.len() <= MAX_BYTES * 2,
-        "Encoded recovery drafts exceed their storage limit"
-    );
-    preferences::atomic_write(path, &bytes)
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct SavedRewrite {
-    pub branch: String,
-    pub base: String,
-    pub original: String,
-}
-
-/// What the rewritten-series review says where [`latest_rewrite`] finds no
-/// capture: no rebase started in GitTurtle captured a series for the
-/// worktree. Edit local commits… stands beside it.
-pub(super) const NO_CAPTURE: &str =
-    "No rewritten series for this worktree · A rebase started in Edit local commits captures one";
-
-/// The series the latest rebase started in GitTurtle in the worktree at
-/// `root` captured, if one did.
-pub(super) fn latest_rewrite(root: &Path) -> Result<Option<SavedRewrite>> {
-    let entries = read(&store_path()?)?;
-    let Some(draft) = entries
-        .values()
-        .filter(|draft| {
-            draft.key.worktree == path_bytes(root) && draft.key.kind == Kind::RewriteSeries
-        })
-        .max_by_key(|draft| draft.updated)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::from_str(&draft.text)?))
 }
 
 impl GitTurtle {
@@ -736,7 +527,7 @@ mod tests {
         let message = Key {
             kind: Kind::RebaseMessage,
             file: vec![],
-            ..key.clone()
+            ..key
         };
         assert_eq!(
             state.status_for(&message),

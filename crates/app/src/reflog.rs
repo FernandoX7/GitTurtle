@@ -1254,7 +1254,7 @@ impl Render for ReflogBrowser {
                 // Compare's text does, where it showed no focus at all. Kept,
                 // it is no Tab stop: its handle says so for every clone the
                 // editor tracks, and the next entry's editor is a new one.
-                .when_some(self.message.as_ref(), |element, message| { let focus = message.read(cx).focus_handle(cx).clone().tab_stop(!kept); let ring = self.owner.upgrade().and_then(|owner| owner.read(cx).focus_ring.edge(&focus, rgb(p.accent))); element.child(out_of_reach(fade(shown(focus)).id("reflog-commit-message").debug_selector(|| "reflog-commit-message".into()).relative().flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")).children(ring))) })
+                .when_some(self.message.as_ref(), |element, message| { let focus = message.read(cx).focus_handle(cx).tab_stop(!kept); let ring = self.owner.upgrade().and_then(|owner| owner.read(cx).focus_ring.edge(&focus, rgb(p.accent))); element.child(out_of_reach(fade(shown(focus)).id("reflog-commit-message").debug_selector(|| "reflog-commit-message".into()).relative().flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")).children(ring))) })
                 // Whole rows of one line each, so the list's bound cuts no
                 // row; past that bound its scrollbar, in a gutter of its own,
                 // cues the rest.

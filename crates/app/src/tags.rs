@@ -1990,7 +1990,7 @@ thread_local! {
 /// where the row is too narrow. The row's accessible name keeps it whole.
 pub(crate) fn row_text(selector: String, text: String) -> Div {
     div()
-        .debug_selector(move || selector.clone())
+        .debug_selector(move || selector)
         .flex_1()
         .min_w_0()
         .whitespace_nowrap()
@@ -5598,7 +5598,7 @@ pub(crate) mod tests {
             point(short.right() - Scrollbar::width() - px(4.), short.top()),
             short.bottom_right(),
         );
-        let shrunk = list.clone();
+        let shrunk = list;
         let ((top, bottom), painted) = cx.update(|window, cx| {
             shrunk.update(cx, |list, cx| {
                 list.height = px(40.);
@@ -5651,7 +5651,7 @@ pub(crate) mod tests {
             (None, None),
             "a list whose rows fit fades no edge"
         );
-        let grown = list.clone();
+        let grown = list;
         let (top, bottom) = first_frame_fades(cx, region, move |_, cx| {
             grown.update(cx, |list, cx| {
                 list.rows = 10;

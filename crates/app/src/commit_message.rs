@@ -1272,7 +1272,7 @@ impl GitTurtle {
                 .child(list)
                 .child(selection.registrar(scroll.clone()))
                 .children(stand_ins)
-                .child(message_cue(scroll.clone(), cue_reveal, cx))
+                .child(message_cue(scroll, cue_reveal, cx))
                 // Its keyboard ring on its own edge, inside its clip, over
                 // the text, so none of it moves.
                 .children(self.focus_ring.edge(&focus, rgb(colors.accent)))

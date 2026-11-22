@@ -466,16 +466,26 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
                     5120 => (bytes[0] as i8 as f32, 127., true),
                     5121 => (bytes[0] as f32, 255., false),
                     5122 => (
-                        i16::from_le_bytes(bytes.try_into().unwrap()) as f32,
+                        i16::from_le_bytes(
+                            bytes.try_into().context("truncated appearance component")?,
+                        ) as f32,
                         32767.,
                         true,
                     ),
                     5123 => (
-                        u16::from_le_bytes(bytes.try_into().unwrap()) as f32,
+                        u16::from_le_bytes(
+                            bytes.try_into().context("truncated appearance component")?,
+                        ) as f32,
                         65535.,
                         false,
                     ),
-                    5126 => (f32::from_le_bytes(bytes.try_into().unwrap()), 1., false),
+                    5126 => (
+                        f32::from_le_bytes(
+                            bytes.try_into().context("truncated appearance component")?,
+                        ),
+                        1.,
+                        false,
+                    ),
                     _ => bail!("unsupported appearance component"),
                 };
                 *target = if accessor.normalized {

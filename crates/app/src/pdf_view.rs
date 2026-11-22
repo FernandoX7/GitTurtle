@@ -1909,7 +1909,7 @@ pub(super) fn render_comparison<T: 'static>(
                     held.track_for(("pdf-retry",index), std::slice::from_ref(&more_id), retry, window, cx)
                 } else {
                     let read = |name: String| HeaderControl::new(("pdf-read-text",index), format!("pdf-read-text-{index}"), "Read page text", name, "file-text", slot).labelled_with_icon().button(line_room);
-                    let read = match cached.clone() {
+                    let read = match cached {
                         Some(prepared) => read(read_name.clone()).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)),
                         None => preparing(read(format!("{read_name} · {PREPARING}")), index),
                     };
@@ -1995,7 +1995,7 @@ pub(super) fn render_comparison<T: 'static>(
                 .menu(choices).button(px(0.));
             // The controls whose focus the menu takes as the form changes.
             let folded: Vec<ElementId> = if narrowest { zoom_controls.iter().cloned().chain([zoom_menu_id.clone()]).chain(page_controls.iter().cloned()).collect() } else { page_controls.to_vec() };
-            let (cached, open) = (cached.clone(), open.clone());
+            let (cached, open) = (cached, open.clone());
             let has_link = link.is_some();
             let (retry_page, flip_link) = (retry_page.clone(), flip_link.clone());
             let more = held.track_for(more_id.clone(), &folded, more, window, cx).app_menu(move |menu, _, _| {

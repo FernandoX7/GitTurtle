@@ -381,7 +381,7 @@ mod tests {
             assert_eq!(kind(&signature), None, "{name}");
             // The ISO 9660 primary volume descriptor sits at 32 KiB, and a
             // playlist in the image is what libarchive hands the player.
-            let mut iso = signature.clone();
+            let mut iso = signature;
             iso.resize(32768, 0);
             iso.extend_from_slice(b"\x01CD001\x01");
             iso.resize(40960, 0);

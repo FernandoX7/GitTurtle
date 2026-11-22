@@ -16,55 +16,33 @@
 //! switch and `apply_appearance` all read it, and it changes (notifying its observers) only
 //! when what it holds changes, so a reread that finds the same theme applies nothing.
 
-mod palette;
-#[cfg(test)]
-pub(crate) use palette::fixture_palettes;
+use gitturtle_theme::omarchy as palette;
 
 use super::Palette;
 use super::custom::{ResolvedTheme, ThemeSelection};
+#[cfg(test)]
+use crate::appearance::ResolvedThemeExt as _;
+#[cfg(test)]
+use crate::preferences::AppSettingsExt as _;
 use futures::{StreamExt as _, channel::mpsc, channel::oneshot, future::Either};
 use gpui_kit::{App, AsyncApp, Global, Task};
 use palette::Mapped;
+use palette::{
+    COLORS_FILE, LIGHT_MARKER, MAX_NAME_FILE_BYTES, NAME_FILE, THEME_DIRECTORY, default_root,
+    display_name,
+};
+#[cfg(test)]
+use palette::{MAX_NAME_BYTES, runs_omarchy};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The file holding the applied theme's name, beside `theme/`.
-const NAME_FILE: &str = "theme.name";
-/// The directory `omarchy-theme-set` replaces on each switch.
-const THEME_DIRECTORY: &str = "theme";
-const COLORS_FILE: &str = "colors.toml";
-/// Omarchy's legacy marker beside `colors.toml` for a light theme that names no mode.
-const LIGHT_MARKER: &str = "light.mode";
-/// `theme.name` holds one short name; anything longer is not one.
-const MAX_NAME_FILE_BYTES: usize = 1024;
-/// The longest theme name the card shows.
-const MAX_NAME_BYTES: usize = 64;
 /// A switch's writes settle when this passes without another (the local-refresh quiet period).
 pub(crate) const QUIET_PERIOD: Duration = Duration::from_millis(250);
 /// A stream of writes that never settles is read after this anyway.
 const LONGEST_SETTLE: Duration = Duration::from_secs(2);
 /// How long launch waits for the first read before opening the window.
 const STARTUP_WAIT: Duration = Duration::from_millis(200);
-
-/// `~/.local/state/omarchy/current`, where Omarchy keeps the applied theme.
-fn default_root() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    home.is_absolute()
-        .then(|| home.join(".local/state/omarchy/current"))
-}
-
-/// Whether this desktop runs Omarchy: its current theme's `colors.toml` is a regular file,
-/// links followed, the rule that offers the card. One `stat`, for a first launch's defaults.
-pub(crate) fn desktop_runs_omarchy() -> bool {
-    default_root().is_some_and(|root| runs_omarchy(&root))
-}
-
-/// [`desktop_runs_omarchy`] for `root`, the directory standing in for `current/`.
-fn runs_omarchy(root: &Path) -> bool {
-    std::fs::metadata(root.join(THEME_DIRECTORY).join(COLORS_FILE))
-        .is_ok_and(|metadata| metadata.is_file())
-}
 
 /// What one read of `current/` found.
 #[derive(Clone, Debug, PartialEq)]
@@ -166,33 +144,6 @@ fn read_name(path: &Path) -> Option<String> {
         return None;
     }
     display_name(std::str::from_utf8(&bytes).ok()?)
-}
-
-fn display_name(raw: &str) -> Option<String> {
-    let raw = raw.trim();
-    if raw.is_empty() || raw.chars().any(char::is_control) {
-        return None;
-    }
-    let mut name = raw
-        .split(|character: char| character == '-' || character == '_' || character.is_whitespace())
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut characters = word.chars();
-            characters
-                .next()
-                .map(|first| first.to_uppercase().chain(characters).collect::<String>())
-                .unwrap_or_default()
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if name.len() > MAX_NAME_BYTES {
-        let mut end = MAX_NAME_BYTES;
-        while !name.is_char_boundary(end) {
-            end -= 1;
-        }
-        name.truncate(end);
-    }
-    (!name.is_empty()).then_some(name)
 }
 
 /// What the reads found: the one owner the picker card, the Follow system switch and the
@@ -1157,14 +1108,16 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::On(_))));
         assert_eq!(
-            cx.read(|cx| *cx.global::<Palette>()),
+            cx.read(crate::appearance::palette),
             mapped(TOKYO_NIGHT).palette
         );
         let applied = Rc::new(Cell::new(0));
         let count = applied.clone();
         cx.update(|_, cx| {
-            cx.observe_global::<Palette>(move |_| count.set(count.get() + 1))
-                .detach()
+            cx.observe_global::<crate::appearance::GlobalPalette>(move |_| {
+                count.set(count.get() + 1)
+            })
+            .detach()
         });
         let generation =
             |cx: &mut VisualTestContext| cx.read(|cx| cx.global::<Follower>().generation);
@@ -1176,7 +1129,7 @@ mod tests {
         cx.executor().advance_clock(QUIET_PERIOD);
         cx.run_until_parked();
         assert_eq!(applied.get(), 1, "the switch applies once");
-        assert_eq!(cx.read(|cx| *cx.global::<Palette>()), mapped(WHITE).palette);
+        assert_eq!(cx.read(crate::appearance::palette), mapped(WHITE).palette);
         assert_eq!(cx.read(|cx| card(cx).unwrap().description), "Follows White");
 
         let read_so_far = generation(cx);
@@ -1203,7 +1156,7 @@ mod tests {
         cx.executor().advance_clock(QUIET_PERIOD);
         cx.run_until_parked();
         assert_eq!(applied.get(), 2, "the next switch applies once more");
-        assert_eq!(cx.read(|cx| *cx.global::<Palette>()), mapped(LATTE).palette);
+        assert_eq!(cx.read(crate::appearance::palette), mapped(LATTE).palette);
 
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
@@ -1229,8 +1182,8 @@ mod tests {
         let applied = Rc::<std::cell::RefCell<Vec<Palette>>>::default();
         let record = applied.clone();
         cx.update(|_, cx| {
-            cx.observe_global::<Palette>(move |cx| {
-                record.borrow_mut().push(*cx.global::<Palette>())
+            cx.observe_global::<crate::appearance::GlobalPalette>(move |cx| {
+                record.borrow_mut().push(crate::appearance::palette(cx))
             })
             .detach()
         });
@@ -1262,7 +1215,10 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(watch_state(cx), "on", "Settings shows the card");
         let applied = applications(cx);
-        let before = cx.read(|cx| cx.try_global::<Palette>().copied());
+        let before = cx.read(|cx| {
+            cx.try_global::<crate::appearance::GlobalPalette>()
+                .map(|p| p.0)
+        });
 
         switch(&root, WHITE, "white", "switched");
         delivered(cx, &root.join("switched"));
@@ -1289,7 +1245,12 @@ mod tests {
             applied.borrow().is_empty(),
             "an unselected card applies nothing"
         );
-        assert_eq!(cx.read(|cx| cx.try_global::<Palette>().copied()), before);
+        assert_eq!(
+            cx.read(|cx| cx
+                .try_global::<crate::appearance::GlobalPalette>()
+                .map(|p| p.0)),
+            before
+        );
 
         let close = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
@@ -1481,7 +1442,7 @@ mod tests {
         });
         let mut preferences = crate::Preferences::default();
         preferences.settings.theme = ThemeSelection::Omarchy;
-        let applied = |cx: &mut TestAppContext| cx.read(|cx| *cx.global::<Palette>());
+        let applied = |cx: &mut TestAppContext| cx.read(crate::appearance::palette);
         let initial = cx.update(|cx| start_at(Some(root), true, cx));
         assert!(initial.0.is_some(), "launch waits for this read");
         cx.update(|cx| {
@@ -1579,15 +1540,17 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(
-            cx.read(|cx| *cx.global::<Palette>()),
+            cx.read(crate::appearance::palette),
             mapped(TOKYO_NIGHT).palette
         );
         let applied = Rc::new(Cell::new(0));
         let captions = Rc::new(std::cell::RefCell::new(Vec::new()));
         let (count, seen) = (applied.clone(), captions.clone());
         cx.update(|_, cx| {
-            cx.observe_global::<Palette>(move |_| count.set(count.get() + 1))
-                .detach();
+            cx.observe_global::<crate::appearance::GlobalPalette>(move |_| {
+                count.set(count.get() + 1)
+            })
+            .detach();
             cx.observe_global::<Omarchy>(move |cx| {
                 seen.borrow_mut().push(card(cx).unwrap().status)
             })
@@ -1610,7 +1573,7 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(applied.get(), 1, "the switch applies once");
-        assert_eq!(cx.read(|cx| *cx.global::<Palette>()), mapped(WHITE).palette);
+        assert_eq!(cx.read(crate::appearance::palette), mapped(WHITE).palette);
         let captions = captions.borrow();
         assert!(
             captions

@@ -251,8 +251,9 @@ impl GitTurtle {
     /// restored tab). When its branch or worktree scope had vanished the worker
     /// read All history: drop the stale scope and say once, politely, why.
     pub(super) fn accept_snapshot_scope(&mut self, snapshot: &worker::Snapshot) {
-        self.history_updates
-            .clear_scope_error(&mut self.operation_error);
+        self.workspace
+            .history_updates
+            .clear_scope_error(&mut self.workspace.operation_error);
         if let Some(vanished) = &snapshot.vanished_scope {
             self.scope = None;
             // A restored tab's pinned traversal belonged to the vanished
@@ -274,8 +275,9 @@ impl GitTurtle {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        self.history_updates
-            .clear_scope_error(&mut self.operation_error);
+        self.workspace
+            .history_updates
+            .clear_scope_error(&mut self.workspace.operation_error);
         let offset = f32::from(self.history_scroll.0.borrow().base_handle.offset().y);
         let following = follows_latest(
             self.mode,

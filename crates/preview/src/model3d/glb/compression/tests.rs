@@ -499,7 +499,7 @@ fn meshopt_rejects_truncation_newer_versions_and_out_of_width_indices() {
         let mut wrong = bytes.clone();
         wrong[0] += 1;
         assert!(decode_view(&source, &wrong, &|| Ok(())).is_err());
-        let mut extra = bytes.clone();
+        let mut extra = bytes;
         extra.push(0);
         assert!(decode_view(&source, &extra, &|| Ok(())).is_err());
     }

@@ -169,9 +169,30 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
                 let (raw, divisor) = match accessor.component_type {
                     5120 => (bytes[0] as i8 as f64, 127.),
                     5121 => (bytes[0] as f64, 255.),
-                    5122 => (i16::from_le_bytes(bytes.try_into().unwrap()) as f64, 32767.),
-                    5123 => (u16::from_le_bytes(bytes.try_into().unwrap()) as f64, 65535.),
-                    5126 => (f32::from_le_bytes(bytes.try_into().unwrap()) as f64, 1.),
+                    5122 => (
+                        i16::from_le_bytes(
+                            bytes
+                                .try_into()
+                                .context("Truncated GLB deformation accessor")?,
+                        ) as f64,
+                        32767.,
+                    ),
+                    5123 => (
+                        u16::from_le_bytes(
+                            bytes
+                                .try_into()
+                                .context("Truncated GLB deformation accessor")?,
+                        ) as f64,
+                        65535.,
+                    ),
+                    5126 => (
+                        f32::from_le_bytes(
+                            bytes
+                                .try_into()
+                                .context("Truncated GLB deformation accessor")?,
+                        ) as f64,
+                        1.,
+                    ),
                     _ => bail!("Unsupported GLB deformation component type"),
                 };
                 *value = if accessor.normalized {
@@ -310,8 +331,8 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
                     );
                     for &joint in &skin.joints {
                         let mut ancestor = Some(joint);
-                        while ancestor.is_some_and(|v| v != skeleton) {
-                            ancestor = parent_of[ancestor.unwrap()];
+                        while let Some(node) = ancestor.filter(|&v| v != skeleton) {
+                            ancestor = parent_of[node];
                         }
                         ensure!(
                             ancestor == Some(skeleton),
@@ -718,7 +739,11 @@ impl GlbAnimation {
                         }
                     }
                     let point = if let Some(skin) = node.skin {
-                        let influence = &primitive.influences.as_ref().unwrap()[vertex];
+                        let influence = primitive
+                            .influences
+                            .as_deref()
+                            .and_then(|influences| influences.get(vertex))
+                            .context("Missing GLB skin vertex influence")?;
                         let matrices = &joint_matrices[&skin];
                         let mut point = [0.; 3];
                         for (&joint, &weight) in influence.joints.iter().zip(&influence.weights) {

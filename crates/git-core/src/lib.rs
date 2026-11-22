@@ -10,6 +10,7 @@
 
 mod blame;
 mod conflict_blocks;
+mod error;
 mod history;
 mod inspection;
 mod local_watch;
@@ -18,6 +19,7 @@ mod process_io;
 mod work;
 pub use blame::*;
 pub use conflict_blocks::*;
+pub use error::CoreError;
 pub use history::*;
 pub use inspection::*;
 pub use local_watch::*;
@@ -166,85 +168,20 @@ pub struct TextPreviewWithSources {
     pub new: Vec<u8>,
 }
 
-/// A repository [`GitRepository::open`] refused: Git, asked again once the
-/// files that can move its work tree or common directory were stamped,
-/// found another repository at its path (by what differs), or none, so
-/// what was captured is not what Git would act on.
-#[derive(Debug)]
-pub struct ChangedWhileOpening {
-    /// The work-tree root (a bare repository's Git directory) Git reported.
-    pub path: PathBuf,
-    /// What Git finds there now, if anything: [`Self::path`] itself where
-    /// Git still reports the same repository, only the capture having
-    /// failed.
-    pub found: Option<PathBuf>,
-}
-
-impl std::fmt::Display for ChangedWhileOpening {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "The repository at {} changed while it was opened",
-            self.path.display()
-        )?;
-        match &self.found {
-            Some(found) if *found == self.path => write!(f, "."),
-            Some(found) => write!(f, ": Git now finds {} there.", found.display()),
-            None => write!(f, ": Git now finds no repository there."),
-        }?;
-        write!(f, " Open it again.")
-    }
-}
-
-impl std::error::Error for ChangedWhileOpening {}
-
-/// A folder's metadata could not be read, for a reason other than nothing
-/// being there: its parent lost search permission, its volume or share
-/// stopped answering. It says nothing of what is at the path, so a check
-/// that meets it finds neither the repository nor its absence: a tab keeps
-/// the state it had until a later read decides, and a write stays refused
-/// ([`GitRepository::verify_at_path`]). [`Path::is_dir`] answers `false`
-/// here, which once read as a folder that was gone. Its text says it could
-/// not be read and, as the next cause in the chain, why.
-#[derive(Debug)]
-pub struct CouldNotCheck {
-    /// The path whose metadata could not be read.
-    pub path: PathBuf,
-    /// Why it could not.
-    pub source: std::io::Error,
-}
-
-impl CouldNotCheck {
-    /// `source`, a failure to read `path`'s metadata, as an error: where it
-    /// says nothing is there it stays as it is, and otherwise it is this.
-    pub fn unless_absent(path: &Path, source: std::io::Error) -> anyhow::Error {
-        if nothing_there(&source) {
-            source.into()
-        } else {
-            Self {
-                path: path.to_owned(),
-                source,
-            }
-            .into()
-        }
-    }
-}
-
-impl std::fmt::Display for CouldNotCheck {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Could not read {}", self.path.display())
-    }
-}
-
-impl std::error::Error for CouldNotCheck {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
-/// Whether `error`, or anything that caused it, is [`CouldNotCheck`].
+/// Whether `error`, or anything that caused it, is [`CoreError::CouldNotCheck`].
 pub fn could_not_check(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| cause.is::<CouldNotCheck>())
+    matches!(
+        CoreError::from_anyhow(error),
+        Some(CoreError::CouldNotCheck { .. })
+    )
+}
+
+/// Whether `error`, or anything that caused it, is [`CoreError::ReadCancelled`].
+pub fn is_read_cancelled(error: &anyhow::Error) -> bool {
+    matches!(
+        CoreError::from_anyhow(error),
+        Some(CoreError::ReadCancelled)
+    )
 }
 
 /// Whether a failure to read a path's metadata says nothing is there: no
@@ -257,7 +194,7 @@ fn nothing_there(error: &std::io::Error) -> bool {
 }
 
 /// Whether `path` is a folder that can be read now: `false` where nothing is
-/// there or it is no folder, and [`CouldNotCheck`] for any other failure. It
+/// there or it is no folder, and [`CoreError::CouldNotCheck`] for any other failure. It
 /// asks for the folder's own `.`, which needs search permission on the
 /// folder as every read inside it does: a folder that denies it still has
 /// metadata of its own, and past a check of that alone the failure came
@@ -270,39 +207,13 @@ fn is_folder(path: &Path) -> Result<bool> {
     match std::fs::metadata(path.join(".")) {
         Ok(metadata) => Ok(metadata.is_dir()),
         Err(error) if nothing_there(&error) => Ok(false),
-        Err(source) => Err(CouldNotCheck {
+        Err(source) => Err(CoreError::CouldNotCheck {
             path: path.to_owned(),
             source,
         }
         .into()),
     }
 }
-
-/// A repository [`GitRepository::open`] refused as it stands, nothing having
-/// changed: Git found it in one folder and reports a work tree outside that
-/// folder (`core.worktree`), which no `.git` entry leads back from, so no
-/// command could be confined to it.
-#[derive(Debug)]
-pub struct WorkTreeOutside {
-    /// Where Git found the repository: the folder holding its `.git` entry,
-    /// or its Git directory where no entry leads there.
-    pub path: PathBuf,
-    /// The work tree Git reports for it.
-    pub work_tree: PathBuf,
-}
-
-impl std::fmt::Display for WorkTreeOutside {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "GitTurtle opens a repository only inside the folder Git found it in: the work tree of the repository at {} is {} (core.worktree).",
-            self.path.display(),
-            self.work_tree.display()
-        )
-    }
-}
-
-impl std::error::Error for WorkTreeOutside {}
 
 /// What a test makes a directory's stat read ([`DIRECTORY_READ`]).
 #[cfg(test)]
@@ -608,7 +519,7 @@ impl Identity {
         let count = if self.common == self.git_dir { 1 } else { 2 };
         for (path, captured) in &directories[..count] {
             let now = DirectoryIdentity::read(path)
-                .map_err(|error| CouldNotCheck::unless_absent(path, error))?;
+                .map_err(|error| CoreError::could_not_check_unless_absent(path, error))?;
             if !captured.is(&now) {
                 return Ok(Some(path.as_path()));
             }
@@ -1222,8 +1133,10 @@ impl Reported {
 /// not be checked found out nothing, whatever its name says.
 pub fn finds_no_repository(error: &anyhow::Error) -> bool {
     !could_not_check(error)
-        && (error.chain().any(|cause| cause.is::<NotARepository>())
-            || says_no_repository(&format!("{error:#}")))
+        && (matches!(
+            CoreError::from_anyhow(error),
+            Some(CoreError::NotARepository { .. })
+        ) || says_no_repository(&format!("{error:#}")))
 }
 
 /// Git's words for a folder it finds no repository at: its usual "not a git
@@ -1345,7 +1258,7 @@ impl GitRepository {
             // captured so, the handle had no ceiling and asked Git at every
             // check for its whole life.
             FoundAtPath::Same if gitfile_unread => {
-                return Err(ChangedWhileOpening {
+                return Err(CoreError::ChangedWhileOpening {
                     found: Some(repository.path.clone()),
                     path: repository.path,
                 }
@@ -1366,13 +1279,13 @@ impl GitRepository {
             && repository.identity.holder.is_none()
             && Reported::by_git(requested).is_ok_and(|now| now == reported)
         {
-            return Err(WorkTreeOutside {
+            return Err(CoreError::WorkTreeOutside {
                 path: folder_found_in(requested, &repository.identity.git_dir),
                 work_tree: repository.path,
             }
             .into());
         }
-        Err(ChangedWhileOpening {
+        Err(CoreError::ChangedWhileOpening {
             path: repository.path,
             found,
         }
@@ -1636,7 +1549,7 @@ impl GitRepository {
                 self.path.display()
             ),
         };
-        Err(WriteRefused(refusal).into())
+        Err(CoreError::WriteRefused(refusal).into())
     }
 
     /// A failed command's error, worded as the repository gone where Git
@@ -2852,41 +2765,10 @@ fn no_repository_found(stderr: &[u8]) -> bool {
 /// than by its message, which shows those words as a terminal leaves them,
 /// so a carriage return in a path Git names leaves the message only what
 /// follows it. It is the failure itself, its message the command's own
-/// (`git_failure`), so what every surface shows is unchanged. The app tells
-/// a folder with no repository apart, and a tab whose repository is gone, by
-/// this type before any text, as [`finds_no_repository`] does.
-#[derive(Debug)]
-pub struct NotARepository(
-    /// The failure's message as it is shown, as "Git rev-parse failed: …".
-    pub String,
-    /// The line of it that says what went wrong, where Git wrote one
-    /// ([`GitFailure`]).
-    pub Option<String>,
-);
-
-impl std::fmt::Display for NotARepository {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for NotARepository {}
-
 /// A failed Git command's error, `message` as it is shown: a
-/// [`NotARepository`] where Git's raw `stderr` says no repository holds the
-/// path ([`no_repository_found`]), otherwise `message` alone. [`run_git`],
-/// status and the history streams (`history_failure`) report through it,
-/// the reads whose failure says that a repository's `.git` is gone, and so
-/// does a write's command (`checked_write_output`) and every step of a
-/// write that reports Git's stderr, which [`GitRepository::word_gone`] then
-/// words as the repository gone: its configuration reads and edits too,
-/// since in a linked worktree whose administration directory is gone even
-/// `git config` fails so. Only `check-ref-format`, which needs no
-/// repository, never does.
-/// Decided 2026-11-07: telling them apart read only the message, Git's
-/// words as a terminal leaves them, so where a Git named a path holding a
-/// carriage return such a read left the tab unmarked and showed a cut
-/// message.
+/// [`CoreError::NotARepository`] where Git's raw `stderr` says no repository holds the
+/// path ([`no_repository_found`]), otherwise [`CoreError::GitFailure`] when a summary
+/// line exists, or `message` alone.
 fn git_failure(stderr: &[u8], message: String) -> anyhow::Error {
     git_failure_summarized(stderr, git_failure_line(stderr, b""), message)
 }
@@ -2900,9 +2782,9 @@ fn git_failure_summarized(
     message: String,
 ) -> anyhow::Error {
     if no_repository_found(stderr) {
-        NotARepository(message, summary).into()
+        CoreError::NotARepository { message, summary }.into()
     } else if let Some(summary) = summary {
-        GitFailure {
+        CoreError::GitFailure {
             report: message,
             summary,
         }
@@ -2929,56 +2811,13 @@ fn git_failure_line(stderr: &[u8], stdout: &[u8]) -> Option<String> {
     })
 }
 
-/// A failed Git command's whole report with the one line that says what went
-/// wrong, built where core still has Git's streams apart and never guessed
-/// from the report's text. The banner draws the summary and the report
-/// stays behind Details…. The failure itself, its message the report, so
-/// what every other surface shows is unchanged.
-#[derive(Debug)]
-pub struct GitFailure {
-    /// The failure's message as it is shown, as "Git operation failed: …".
-    report: String,
-    /// Core's own headline, or Git's first redacted `fatal:` or `error:` line.
-    summary: String,
-}
-
-impl std::fmt::Display for GitFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.report)
-    }
-}
-
-impl std::error::Error for GitFailure {}
-
-/// A write core refused before it started the write's Git
-/// ([`GitRepository::ensure_found_at_path`]): core's own sentence, which
-/// names the repository's path and the one found there, a path Git's
-/// discovery printed (`rev-parse` in [`GitRepository::found_at_path`]) or
-/// the Git directory found replaced (`Identity::replaced`), and nothing a
-/// write's Git command wrote. Its line is drawn whole ([`write_refused`]):
-/// cut at a line of Git's length, the refusal lost "Git was not started"
-/// and the found path wherever its two paths ran past 66 characters each,
-/// as every repository in macOS's per-user temporary folder does (hosted
-/// run 42964793991, 2026-11-11).
-#[derive(Debug)]
-pub struct WriteRefused(String);
-
-impl std::fmt::Display for WriteRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for WriteRefused {}
-
 /// Whether `error` is a write core refused before starting Git
-/// ([`WriteRefused`]), with any words of ours added around it: its report
-/// holds our sentence and two paths, the found one from `rev-parse`
-/// ([`GitRepository::found_at_path`]), and nothing else of Git's, so a
-/// banner draws its line whole, where a failure Git answered has its line
-/// cut to bound what Git can write.
+/// ([`CoreError::WriteRefused`]), with any words of ours added around it.
 pub fn write_refused(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| cause.is::<WriteRefused>())
+    matches!(
+        CoreError::from_anyhow(error),
+        Some(CoreError::WriteRefused(_))
+    )
 }
 
 /// The line `error` carries for a compact banner, or `None` where it carries
@@ -2988,15 +2827,10 @@ pub fn write_refused(error: &anyhow::Error) -> bool {
 pub fn failure_summary(error: &anyhow::Error) -> Option<String> {
     let mut lead = String::new();
     for cause in error.chain() {
-        let summary = cause
-            .downcast_ref::<GitFailure>()
-            .map(|failure| failure.summary.as_str())
-            .or_else(|| {
-                cause
-                    .downcast_ref::<NotARepository>()
-                    .and_then(|failure| failure.1.as_deref())
-            });
-        if let Some(summary) = summary {
+        if let Some(summary) = cause
+            .downcast_ref::<CoreError>()
+            .and_then(CoreError::summary)
+        {
             return Some(format!("{lead}{summary}"));
         }
         lead.push_str(&format!("{cause}: "));
@@ -3005,27 +2839,27 @@ pub fn failure_summary(error: &anyhow::Error) -> Option<String> {
 }
 
 /// `error` as the same failure with its whole report and its line each read
-/// through `redact`: the type a caller tells it apart by ([`NotARepository`]),
-/// a refusal before Git started ([`WriteRefused`]) and the line the banner
-/// draws ([`GitFailure`]) outlive a redaction of the report, which flattened
-/// to text left no write a line to show. Both go
-/// through `redact`, so the line shows nothing the report hides, a secret
-/// only `redact` knows included; a line carries the words of ours that lead
-/// it, so a marker among them cuts it as it cuts the report's first line.
+/// through `redact`, preserving [`CoreError::NotARepository`],
+/// [`CoreError::WriteRefused`], and [`CoreError::GitFailure`] summaries.
 pub(crate) fn redacted_failure(
     error: &anyhow::Error,
     redact: impl Fn(&str) -> String,
 ) -> anyhow::Error {
     let report = redact(&format!("{error:#}"));
     let summary = failure_summary(error).map(|line| redact(&line));
-    if error.chain().any(|cause| cause.is::<NotARepository>()) {
-        NotARepository(report, summary).into()
-    } else if write_refused(error) {
-        WriteRefused(report).into()
-    } else if let Some(summary) = summary {
-        GitFailure { report, summary }.into()
-    } else {
-        anyhow::Error::msg(report)
+    match CoreError::from_anyhow(error) {
+        Some(CoreError::NotARepository { .. }) => CoreError::NotARepository {
+            message: report,
+            summary,
+        }
+        .into(),
+        Some(CoreError::WriteRefused(_)) => CoreError::WriteRefused(report).into(),
+        _ if summary.is_some() => CoreError::GitFailure {
+            report,
+            summary: summary.unwrap_or_default(),
+        }
+        .into(),
+        _ => anyhow::Error::msg(report),
     }
 }
 
@@ -3326,7 +3160,7 @@ mod tests {
             &["config", "core.worktree", link.to_str().unwrap()],
         );
         let opened = GitRepository::open(&by_link).unwrap();
-        assert_eq!(guards(&opened), [(by_link.clone(), link.clone())]);
+        assert_eq!(guards(&opened), [(by_link, link)]);
 
         let unread = committed_repository(&base, "unread");
         let file = unread.join(".git/config.worktree");
@@ -3345,7 +3179,7 @@ mod tests {
         let opened = GitRepository::open(&linked).unwrap();
         let private = opened.git_dir().to_owned();
         let common = main.join(".git");
-        let common_entry = (common.clone(), private.join("../.."));
+        let common_entry = (common, private.join("../.."));
         assert_eq!(
             guards(&opened),
             std::slice::from_ref(&common_entry),
@@ -3373,7 +3207,7 @@ mod tests {
             guards(&opened),
             [
                 (per_worktree.join(".git"), private.join("../..")),
-                (second.clone(), tree_link.clone()),
+                (second, tree_link),
             ]
         );
 
@@ -3393,7 +3227,7 @@ mod tests {
             own,
             "a commondir file: Git ignores the value"
         );
-        assert_eq!(guards(&opened), [(own_git.clone(), own_link.clone())]);
+        assert_eq!(guards(&opened), [(own_git, own_link)]);
 
         let both = committed_repository(&base, "both");
         git(&both, &["config", "extensions.worktreeConfig", "true"]);
@@ -3406,11 +3240,7 @@ mod tests {
         )
         .unwrap();
         let opened = GitRepository::open(&both).unwrap();
-        assert_eq!(
-            guards(&opened),
-            [(both.clone(), both_link.clone())],
-            "config.worktree wins"
-        );
+        assert_eq!(guards(&opened), [(both, both_link)], "config.worktree wins");
     }
 
     /// A common `config` with no `core.repositoryformatversion` defines
@@ -3479,7 +3309,7 @@ mod tests {
         )
         .unwrap();
         let opened = GitRepository::open(&root).unwrap();
-        assert_eq!(guards(&opened), [(root.clone(), link.clone())]);
+        assert_eq!(guards(&opened), [(root, link.clone())]);
         re_point(&link, &elsewhere);
         let error = opened.execute(&WriteCommand::StageAll).unwrap_err();
         assert!(
@@ -3975,7 +3805,10 @@ mod tests {
                 root.display()
             );
             opened.is_err_and(|error| {
-                error.is::<ChangedWhileOpening>() && format!("{error:#}") == said
+                matches!(
+                    CoreError::from_anyhow(&error),
+                    Some(CoreError::ChangedWhileOpening { .. })
+                ) && format!("{error:#}") == said
             })
         });
         let answered = answer.recv_timeout(LIMIT);
@@ -4067,14 +3900,17 @@ mod tests {
             .git_dir()
             .join("commondir");
         let pointed = other_git.clone();
-        let changed = commondir.clone();
+        let changed = commondir;
         let refused = open_changed_part_way(&linked, move || {
             std::fs::write(&changed, format!("{}\n", pointed.display())).unwrap();
         })
         .unwrap_err()
-        .downcast::<ChangedWhileOpening>()
+        .downcast::<CoreError>()
         .expect("refused as changed");
-        assert_eq!(refused.found.as_deref(), Some(other_git.as_path()));
+        let CoreError::ChangedWhileOpening { found, .. } = refused else {
+            panic!("expected ChangedWhileOpening, got {refused:?}");
+        };
+        assert_eq!(found.as_deref(), Some(other_git.as_path()));
 
         let elsewhere = fixture.path().join("elsewhere");
         std::fs::create_dir(&elsewhere).unwrap();
@@ -4087,9 +3923,12 @@ mod tests {
             );
         })
         .unwrap_err()
-        .downcast::<ChangedWhileOpening>()
+        .downcast::<CoreError>()
         .expect("refused as changed");
-        assert_eq!(refused.found.as_deref(), Some(elsewhere.as_path()));
+        let CoreError::ChangedWhileOpening { found, .. } = refused else {
+            panic!("expected ChangedWhileOpening, got {refused:?}");
+        };
+        assert_eq!(found.as_deref(), Some(elsewhere.as_path()));
     }
 
     /// A repository in `folder` whose `core.worktree` is `work_tree`.
@@ -4128,13 +3967,23 @@ mod tests {
         std::fs::create_dir(&inside).unwrap();
         for opened in [&repository, &inside] {
             let refused = GitRepository::open(opened).unwrap_err();
-            assert!(!refused.is::<ChangedWhileOpening>(), "{refused:#}");
+            assert!(
+                !matches!(
+                    CoreError::from_anyhow(&refused),
+                    Some(CoreError::ChangedWhileOpening { .. })
+                ),
+                "{refused:#}"
+            );
             let message = refused.to_string();
             assert_eq!(message, outside_message(&repository, &elsewhere));
             assert!(!message.contains("Open it again"), "{message}");
-            let outside = refused.downcast::<WorkTreeOutside>().expect("its own");
-            assert_eq!(outside.path, repository);
-            assert_eq!(outside.work_tree, elsewhere);
+            let CoreError::WorkTreeOutside { path, work_tree } =
+                refused.downcast::<CoreError>().expect("its own")
+            else {
+                panic!("expected WorkTreeOutside");
+            };
+            assert_eq!(path, repository);
+            assert_eq!(work_tree, elsewhere);
         }
 
         // Inside another repository, whose own work tree Git finds there.
@@ -4184,11 +4033,19 @@ mod tests {
             );
         })
         .unwrap_err();
-        assert!(!refused.is::<WorkTreeOutside>(), "{refused:#}");
-        let changed = refused
-            .downcast::<ChangedWhileOpening>()
-            .expect("refused as changed");
-        assert_eq!(changed.path, first);
+        assert!(
+            !matches!(
+                CoreError::from_anyhow(&refused),
+                Some(CoreError::WorkTreeOutside { .. })
+            ),
+            "{refused:#}"
+        );
+        let CoreError::ChangedWhileOpening { path, .. } =
+            refused.downcast::<CoreError>().expect("refused as changed")
+        else {
+            panic!("expected ChangedWhileOpening");
+        };
+        assert_eq!(path, first);
 
         let inside = base.join("inside");
         std::fs::create_dir(&inside).unwrap();
@@ -4441,7 +4298,13 @@ mod tests {
             &["rev-parse", "--absolute-git-dir"],
             b"Checking (1/2)\rChecking (2/2)\rfatal: bad object HEAD\n",
         );
-        assert!(!failure.is::<NotARepository>(), "{failure}");
+        assert!(
+            !matches!(
+                CoreError::from_anyhow(&failure),
+                Some(CoreError::NotARepository { .. })
+            ),
+            "{failure}"
+        );
         assert_eq!(
             failure.to_string(),
             "Git rev-parse failed: fatal: bad object HEAD"
@@ -4449,7 +4312,13 @@ mod tests {
         // As an open reports them: the folder with no repository by its type,
         // whatever its message keeps.
         let open = failed(&["rev-parse", "--is-bare-repository"], boundary);
-        assert!(open.is::<NotARepository>(), "{open}");
+        assert!(
+            matches!(
+                CoreError::from_anyhow(&open),
+                Some(CoreError::NotARepository { .. })
+            ),
+            "{open}"
+        );
         assert_eq!(
             open.to_string(),
             "Git rev-parse failed: b)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
@@ -4463,7 +4332,13 @@ mod tests {
         ] {
             assert!(!no_repository_found(denied));
             let error = failed(&["rev-parse"], denied);
-            assert!(!error.is::<NotARepository>(), "{error}");
+            assert!(
+                !matches!(
+                    CoreError::from_anyhow(&error),
+                    Some(CoreError::NotARepository { .. })
+                ),
+                "{error}"
+            );
             assert!(error.to_string().ends_with("Permission denied"), "{error}");
         }
     }
@@ -4484,7 +4359,13 @@ mod tests {
         let shown = "Git rev-parse failed: b/.git/worktrees/x";
         assert_eq!(error.to_string(), shown);
         assert_eq!(format!("{error:#}"), shown);
-        assert!(error.is::<NotARepository>(), "{error}");
+        assert!(
+            matches!(
+                CoreError::from_anyhow(&error),
+                Some(CoreError::NotARepository { .. })
+            ),
+            "{error}"
+        );
         assert!(finds_no_repository(&error), "{error:#}");
         let resolved = error.context("Resolve Git administration directory");
         assert_eq!(

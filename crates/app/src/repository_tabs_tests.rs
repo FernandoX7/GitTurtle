@@ -1,0 +1,16058 @@
+use super::*;
+use ::core::prelude::v1::test;
+
+use crate::test_support::allocations;
+
+async fn settle_tab_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    for _ in 0..8 {
+        cx.executor().run_until_parked();
+        let tasks = cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                [
+                    app.task.take(),
+                    app.status_task.take(),
+                    app.integration_task.take(),
+                    app.repository_tabs.save_pending.take(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+            })
+        });
+        if tasks.is_empty() {
+            break;
+        }
+        for task in tasks {
+            task.await;
+        }
+    }
+    let (operations, preferences) = app.read_with(cx, |app, _| {
+        (
+            app.operations.submit_read(|| Ok(())),
+            app.preferences_writer.submit_read(|| Ok(())),
+        )
+    });
+    operations.await.unwrap().unwrap();
+    preferences.await.unwrap().unwrap();
+    cx.executor().run_until_parked();
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.automatic.reset();
+            app._display_preferences_task = None;
+        })
+    });
+}
+
+/// " · unavailable" marks a tab while its repository cannot be opened
+/// and clears once it opens: a tab opened on a folder that holds no
+/// repository is marked, and opened again once one is there, it reads
+/// as its name alone.
+#[gpui::test]
+async fn an_unavailable_tab_clears_once_its_repository_opens(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let arriving = fixture.path().join("arriving");
+    let label = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[1];
+            (app.tab_label(tab).0, tab.error.is_some())
+        })
+    };
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(arriving.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    assert_eq!(label(cx), ("arriving · unavailable".into(), true));
+    crate::views::tests::fixture_repository(&arriving);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    settle_tab_test(&app, cx).await;
+    assert_eq!(label(cx), ("arriving".into(), false), "opened, it clears");
+}
+
+/// Asks for a quiet read as the local watcher does for a change made
+/// outside the app, and waits for it to land.
+fn quiet_read_landed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    quiet_read_of(
+        app,
+        cx,
+        crate::local_refresh::LocalChange {
+            worktree: true,
+            ..Default::default()
+        },
+    );
+}
+
+/// As [`quiet_read_landed`], for the watcher's `change`.
+fn quiet_read_of(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    change: crate::local_refresh::LocalChange,
+) {
+    // The subscription is made on the operation thread.
+    app.read_with(cx, |app, _| app.operations.drain());
+    cx.executor().run_until_parked();
+    app.update(cx, |app, _| app.automatic.report_local_change(change));
+    quiet_reads_landed(app, cx);
+}
+
+/// Waits for the quiet reads the window has asked for to land, the one
+/// running and any waiting behind it, on the reader's thread they read
+/// on, which neither `run_until_parked` nor a drain of the operation
+/// thread waits for.
+fn quiet_reads_landed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    for _ in 0..16 {
+        cx.executor().run_until_parked();
+        if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+            crate::views::tests::draw(cx);
+            return;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    panic!("the quiet read never landed");
+}
+
+/// Ends Git's search for a repository at `fixture`, the temporary
+/// directory that holds the History window's repository, so that the
+/// repository with its `.git` moved away is no repository, wherever the
+/// temporary directory lies. Git looks for `.git` in each folder above
+/// one that has none, and a folder inside a work tree opens that work
+/// tree (`RepositorySession::open`): under a temporary directory inside a
+/// checkout, as one under its `.local/` is, Refresh with the `.git` away
+/// opened the checkout, 500 commits with no mark. Git refuses an invalid
+/// `.git` file rather than look further up.
+fn stop_discovery_at(fixture: &tempfile::TempDir) {
+    std::fs::write(fixture.path().join(".git"), "no repository here\n").unwrap();
+}
+
+/// A tab's mark states its repository's current state: Refresh that
+/// cannot open the repository, its `.git` moved away, marks the tab; a
+/// quiet read the watcher asks for while it is still away keeps the
+/// mark, and so does one that reads the working state but not History
+/// (a branch naming a missing commit); once it reads whole, the next
+/// quiet read clears the mark and the opening error the window and the
+/// Projects page showed, and brings History back, as an explicit
+/// Refresh does, so closing the last tab shows Projects without that
+/// error. Only Refresh cleared it.
+#[gpui::test]
+async fn a_quiet_read_that_finds_the_repository_clears_its_tab_mark(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    stop_discovery_at(&fixture);
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let (git, away) = (root.join(".git"), root.join(".git-away"));
+    let shown = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            (
+                app.tab_label(tab).0.ends_with(" · unavailable"),
+                app.error.is_some(),
+                app.commits.len(),
+            )
+        })
+    };
+    std::fs::rename(&git, &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(shown(cx), (true, true, 0), "Refresh cannot open it");
+    quiet_read_landed(&app, cx);
+    assert_eq!(
+        shown(cx),
+        (true, true, 0),
+        "a quiet read that fails keeps it"
+    );
+    // Back, but with a branch naming a missing commit: the working state
+    // reads, History does not, so the repository is not readable whole.
+    std::fs::rename(&away, &git).unwrap();
+    let broken = git.join("refs/heads/broken");
+    std::fs::write(&broken, "1111111111111111111111111111111111111111\n").unwrap();
+    quiet_read_landed(&app, cx);
+    assert_eq!(
+        shown(cx),
+        (true, true, 0),
+        "a quiet read whose History fails keeps it"
+    );
+    std::fs::remove_file(&broken).unwrap();
+    quiet_read_landed(&app, cx);
+    assert_eq!(
+        shown(cx),
+        (false, false, 1),
+        "one that finds the repository clears it, History back"
+    );
+    // The Projects page's opening error went with it: closing the last
+    // tab meets the person with no alert about the repository.
+    let close = cx
+        .debug_bounds("repository-tab-close-0")
+        .expect("the tab's close button");
+    cx.simulate_click(close.center(), gpui::Modifiers::default());
+    crate::native_accessibility::written::forget();
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(app.read_with(cx, |app, _| app.page), AppPage::Projects);
+    assert_eq!(
+        crate::native_accessibility::written::announced_from("project-hub-error"),
+        Vec::new(),
+        "no stale opening error on Projects"
+    );
+}
+
+/// A tab scoped to a branch is readable whole only once History reads
+/// that branch: back, but with the branch gone, a quiet read finds the
+/// working state and the branches but not the History the failed Open
+/// cleared (`Retained`), so the mark and the opening error stay rather
+/// than leave "No commits yet" with nothing to say why. Refresh opens
+/// All history then.
+#[gpui::test]
+async fn a_quiet_read_whose_scope_vanished_keeps_the_tab_mark(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    stop_discovery_at(&fixture);
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::fixture_git(&root, &["branch", "topic"]);
+    let topic = worker::Scope::Branch {
+        name: "topic".into(),
+        remote: false,
+    };
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open(
+                root.clone(),
+                Some(("topic".into(), topic.clone())),
+                window,
+                cx,
+            )
+        })
+    });
+    crate::views::tests::settle(&app, cx).await;
+    let shown = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            (
+                app.tab_label(tab).0.ends_with(" · unavailable"),
+                app.error.is_some(),
+                app.scope.as_ref().map(|scope| scope.1.clone()),
+            )
+        })
+    };
+    assert_eq!(
+        shown(cx),
+        (false, false, Some(topic.clone())),
+        "scoped to topic"
+    );
+    let (git, away) = (root.join(".git"), root.join(".git-away"));
+    std::fs::rename(&git, &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(
+        shown(cx),
+        (true, true, Some(topic.clone())),
+        "Refresh cannot open it"
+    );
+    std::fs::rename(&away, &git).unwrap();
+    crate::views::tests::fixture_git(&root, &["branch", "-D", "topic"]);
+    quiet_read_landed(&app, cx);
+    assert_eq!(
+        shown(cx),
+        (true, true, Some(topic)),
+        "a quiet read whose scope vanished keeps it"
+    );
+    assert_eq!(app.read_with(cx, |app, _| app.commits.len()), 0);
+}
+
+/// Makes `folder`, the test's own temporary directory, a work tree with
+/// one commit, "Enclosing commit", and returns its root, so a repository
+/// inside it is nested in another wherever that directory lies. Git's
+/// own `init`, since the app's refuses a folder that holds anything.
+fn enclosing_work_tree(folder: &Path) -> PathBuf {
+    use crate::views::tests::{fixture_git, fixture_identity};
+    fixture_git(folder, &["init", "-q", "-b", "main"]);
+    fixture_identity(folder);
+    std::fs::write(folder.join("enclosing.txt"), "enclosing\n").unwrap();
+    fixture_git(folder, &["add", "enclosing.txt"]);
+    fixture_git(folder, &["commit", "-qm", "Enclosing commit"]);
+    gitturtle_core::GitRepository::open(folder)
+        .unwrap()
+        .path()
+        .to_owned()
+}
+
+/// What the window shows of its first tab: how many tabs, the tab's
+/// path, whether it is marked " · unavailable", the window's error, its
+/// repository's path and History's subjects.
+type FirstTab = (
+    usize,
+    PathBuf,
+    bool,
+    Option<String>,
+    Option<PathBuf>,
+    Vec<String>,
+);
+fn first_tab(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> FirstTab {
+    app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        (
+            app.repository_tabs.tabs.len(),
+            tab.path.clone(),
+            app.tab_label(tab).0.ends_with(" · unavailable"),
+            app.error.clone(),
+            app.repository.as_ref().map(|repo| repo.path().to_owned()),
+            app.commits
+                .iter()
+                .map(|commit| commit.subject.clone())
+                .collect(),
+        )
+    })
+}
+
+/// A tab stays on the repository the person opened. The History
+/// fixture lies inside another work tree, and with its `.git` away Git
+/// looks in the folder above and finds that one. A quiet read the
+/// watcher asks for finds the repository gone, and the tab is read as
+/// Refresh reads it: marked " · unavailable", History saying "Could not
+/// open repository" and why, the enclosing repository's commit never
+/// shown and its root never the tab's, and the saved session keeps the
+/// tab's path. Refresh keeps that. Both once opened the enclosing
+/// repository in the tab, with no mark and no error, and the next write
+/// would have gone there. With its `.git` back, the next quiet read
+/// finds the repository and clears the mark.
+#[gpui::test]
+async fn a_tab_never_moves_to_the_work_tree_enclosing_its_repository(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let enclosing = enclosing_work_tree(fixture.path());
+    assert_eq!(
+        first_tab(&app, cx),
+        (
+            1,
+            root.clone(),
+            false,
+            None,
+            Some(root.clone()),
+            vec!["fixture notes".into()]
+        ),
+        "the History fixture"
+    );
+    let (git, away) = (root.join(".git"), fixture.path().join("narrow-git-away"));
+    std::fs::rename(&git, &away).unwrap();
+    let gone = |cx: &mut VisualTestContext, after: &str| {
+        let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+        assert_eq!(
+            (tabs, path, marked, repository, subjects),
+            (
+                1,
+                root.clone(),
+                true,
+                Some(root.clone()),
+                Vec::<String>::new()
+            ),
+            "{after}: marked, on its own repository"
+        );
+        let error = error.expect("the window says why");
+        assert!(
+            error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                && error.contains(&format!(
+                    "finds the repository at {} there",
+                    enclosing.display()
+                )),
+            "{after}: {error}"
+        );
+        assert!(
+            cx.debug_bounds("empty-state").is_some(),
+            "{after}: History says it could not open the repository"
+        );
+        let saved = app.read_with(cx, |app, _| app.repository_tabs.saved());
+        assert_eq!(saved.tabs[0].path.path(), root, "{after}: the saved path");
+        assert!(!saved.tabs[0].unresolved);
+    };
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    gone(cx, "a quiet read");
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    gone(cx, "Refresh");
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    gone(cx, "a quiet read of a marked tab");
+
+    std::fs::rename(&away, &git).unwrap();
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(
+        first_tab(&app, cx),
+        (
+            1,
+            root.clone(),
+            false,
+            None,
+            Some(root),
+            vec!["fixture notes".into()]
+        ),
+        "back, it clears"
+    );
+}
+
+/// A tab restored at launch is a passive reopen too: saved by an older
+/// session, with no word on how it was opened, its path is the root its
+/// open resolved, and with that repository's `.git` gone, inside another
+/// work tree, the restore marks it " · unavailable" and says why rather
+/// than open the enclosing repository in it, and the session saved
+/// after keeps its path. It once restored the enclosing repository.
+#[gpui::test]
+async fn a_restored_tab_never_opens_the_work_tree_enclosing_its_repository(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let enclosing = enclosing_work_tree(fixture.path());
+    let inner = crate::views::tests::fixture_repository(enclosing.join("inner"));
+    let root = inner.path().to_owned();
+    let saved: Session = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "tabs": [{ "path": root.to_str().expect("a UTF-8 fixture path") }],
+        "active": 0,
+    }))
+    .unwrap();
+    std::fs::rename(root.join(".git"), fixture.path().join("inner-git-away")).unwrap();
+    let destination = isolated_session("restored-gone.json");
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        root.clone(),
+        saved,
+        destination.clone(),
+        size(px(1000.), px(680.)),
+    );
+    let cx = &mut window_cx;
+    settle_tab_test(&app, cx).await;
+    let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+    assert_eq!(
+        (tabs, path, marked, repository, subjects),
+        (1, root.clone(), true, None, Vec::<String>::new()),
+        "restored marked, on its own repository"
+    );
+    let error = error.expect("the window says why");
+    // No Git directories saved: a `.git` gone and one never there are the
+    // same on disk, so it says what works for both.
+    assert!(
+        error.starts_with(&format!(
+            "This tab's folder {} has no repository of its own:",
+            root.display()
+        )) && error.contains(&enclosing.display().to_string()),
+        "{error}"
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.save_repository_session(window, cx)));
+    settle_tab_test(&app, cx).await;
+    let after = Session::load_at(&destination).unwrap();
+    assert_eq!(after.tabs.len(), 1);
+    assert_eq!(after.tabs[0].path.path(), root, "the saved path stays");
+}
+
+/// A tab an older session saved on a folder inside a work tree, with no
+/// Git directories captured, has no repository of its own to bring
+/// back: the tab is marked, and its message says what the person can do
+/// about it, which Open Repository on that folder then does. It read
+/// "The repository at … is gone … Restore its .git and refresh" for
+/// good, about a folder that never held a `.git`.
+#[gpui::test]
+async fn a_saved_tab_inside_a_work_tree_says_what_can_be_done(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let enclosing = enclosing_work_tree(fixture.path());
+    let folder = enclosing.join("sub").join("folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    let saved: Session = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "tabs": [{ "path": folder.to_str().expect("a UTF-8 fixture path") }],
+        "active": 0,
+    }))
+    .unwrap();
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        folder.clone(),
+        saved,
+        isolated_session("saved-inside-a-work-tree.json"),
+        size(px(1000.), px(680.)),
+    );
+    let cx = &mut window_cx;
+    settle_tab_test(&app, cx).await;
+    let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+    assert_eq!(
+        (tabs, path, marked, repository, subjects),
+        (1, folder.clone(), true, None, Vec::<String>::new()),
+        "marked, and opening nothing"
+    );
+    let error = error.expect("the window says why");
+    assert_eq!(
+        error,
+        format!(
+            "This tab's folder {} has no repository of its own: Git finds the repository at {} there, which this tab does not open. To open that repository here, choose this folder with Open Repository; otherwise close this tab.",
+            folder.display(),
+            enclosing.display()
+        )
+    );
+
+    // What it says works.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(folder.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+    assert_eq!(
+        (tabs, path, marked, error, repository),
+        (1, enclosing.clone(), false, None, Some(enclosing.clone())),
+        "Open Repository on the folder opens the repository found there"
+    );
+    assert_eq!(subjects, vec!["Enclosing commit".to_owned()]);
+}
+
+/// The session is saved as tabs change, and the person asks for none of
+/// those saves, so a preference writer that is merely behind is not a
+/// failure: a queue other saves have filled refuses the save in silence
+/// and it asks again until the newest session is stored. A refusal once
+/// read "Repository session: Background executor is busy" beneath the
+/// commit message.
+#[gpui::test]
+async fn a_writer_that_is_behind_never_fails_the_session_save(cx: &mut TestAppContext) {
+    use crate::workspace::REFUSED_SAVE_RETRY;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let destination = fixture.path().join("session-behind-a-busy-writer.json");
+    let saved = destination.clone();
+    cx.update(|_, cx| app.update(cx, |app, _| app.repository_tabs.save_path = Some(saved)));
+    // The wait before a session save, and then the ask's own turn.
+    let wait = std::time::Duration::from_millis(250);
+    let pass = |time: std::time::Duration, cx: &mut VisualTestContext| {
+        cx.executor().advance_clock(time);
+        cx.executor().run_until_parked();
+    };
+    let answer = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+    };
+    let error =
+        |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.draft_save_error.clone());
+    let change = |group: &str, cx: &mut VisualTestContext| {
+        let group = group.to_owned();
+        cx.update(|_, cx| app.update(cx, |app, _| app.repository_tabs.groups.push(group)));
+    };
+    pass(wait, cx);
+    answer(cx);
+
+    let held = app.read_with(cx, |app, _| app.preferences_writer.hold_reached());
+    let fillers: Vec<_> = (0..8)
+        .map(|_| app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(()))))
+        .collect();
+    for mut filler in fillers {
+        assert!(matches!(filler.try_recv(), Ok(None)), "the queue fills");
+    }
+    change("Refused", cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.save_repository_session(window, cx)));
+    pass(wait, cx);
+    assert_eq!(error(cx), None);
+    // Still full: refused again, and still nothing to report.
+    pass(REFUSED_SAVE_RETRY, cx);
+    pass(wait, cx);
+    assert_eq!(error(cx), None);
+
+    drop(held);
+    answer(cx);
+    let stored = |cx: &mut VisualTestContext| {
+        answer(cx);
+        Session::load_at(&destination)
+            .map(|session| session.groups)
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        stored(cx),
+        Vec::<String>::new(),
+        "only asking again brings it"
+    );
+
+    change("Newest", cx);
+    pass(REFUSED_SAVE_RETRY, cx);
+    pass(wait, cx);
+    assert_eq!(
+        stored(cx),
+        vec!["Refused".to_owned(), "Newest".to_owned()],
+        "the newest session reaches the store"
+    );
+    assert_eq!(error(cx), None);
+}
+
+/// A writer whose thread has stopped can never take the save, so asking
+/// again could not help: the window says so.
+#[gpui::test]
+async fn a_stopped_writer_still_reports_the_session_save(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    app.read_with(cx, |app, _| app.preferences_writer.drain());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.preferences_writer = crate::operations::SerialExecutor::stopped("stopped");
+            app.save_repository_session(window, cx);
+        })
+    });
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(250));
+    cx.executor().run_until_parked();
+    let error = app
+        .read_with(cx, |app, _| app.draft_save_error.clone())
+        .expect("the failure is reported");
+    assert!(error.starts_with("Repository session:"), "{error}");
+    assert!(
+        app.read_with(cx, |app, _| app.repository_tabs.save_retry.is_none()),
+        "nothing asks again"
+    );
+}
+
+/// A worktree's row opens that worktree's own root, as Git lists it, and
+/// nothing else: the linked worktree lies inside the main work tree,
+/// which lies inside another, and with its `.git` file gone Git finds
+/// the main work tree from its folder. Its row opens a tab of its own,
+/// marked " · unavailable" with the reason, and leaves the main tab as
+/// it was; it once opened the main work tree, the new tab folded into
+/// the main one, with no word that the worktree had gone.
+#[gpui::test]
+async fn a_worktree_row_never_opens_the_work_tree_enclosing_its_worktree(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    enclosing_work_tree(fixture.path());
+    let linked = root.join("linked");
+    crate::views::tests::fixture_git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            linked.to_str().expect("a UTF-8 fixture path"),
+        ],
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    let linked = linked.canonicalize().unwrap();
+    let row = app.update(cx, |app, cx| {
+        app.nav_mode = crate::NavMode::Worktrees;
+        app.rebuild_navigation(cx);
+        app.nav_rows
+            .iter()
+            .position(|row| {
+                matches!(row, crate::NavRow::Worktree(index)
+                    if app.worktrees[*index].path.canonicalize().ok().as_ref() == Some(&linked))
+            })
+            .expect("the linked worktree's row")
+    });
+    std::fs::remove_file(linked.join(".git")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.activate_navigation(row, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let tabs = &app.repository_tabs.tabs;
+        assert_eq!(tabs.len(), 2, "a tab of its own");
+        assert_eq!(tabs[0].path, root, "the main tab as it was");
+        assert!(tabs[0].error.is_none());
+        assert_eq!(app.repository_tabs.active, Some(1));
+        assert_eq!(tabs[1].path.canonicalize().unwrap(), linked);
+        assert!(app.tab_label(&tabs[1]).0.ends_with(" · unavailable"));
+        let error = app.error.clone().expect("the window says why");
+        assert!(
+            error.starts_with(&format!(
+                "The repository at {} is gone.",
+                tabs[1].path.display()
+            )) && error.contains(&format!("finds the repository at {} there", root.display())),
+            "{error}"
+        );
+        assert!(app.repository.is_none() && app.commits.is_empty());
+    });
+}
+
+/// The History fixture inside another work tree, with its `.git` moved
+/// away and quiet reads held, so only the read a test asks for runs:
+/// the window, its root, the enclosing root and how the first tab reads
+/// once that read has landed: marked, on its own repository, with a
+/// reason that names the enclosing repository, nothing of it shown.
+async fn gone_inside_another(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    PathBuf,
+    PathBuf,
+) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let enclosing = enclosing_work_tree(fixture.path());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    (fixture, app, cx, root, enclosing)
+}
+fn assert_gone(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    tab: usize,
+    root: &Path,
+    enclosing: &Path,
+    after: &str,
+) {
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[tab];
+        assert_eq!(app.repository_tabs.active, Some(tab), "{after}");
+        assert_eq!(shown.path, root, "{after}: on its own repository");
+        assert!(
+            app.tab_label(shown).0.ends_with(" · unavailable"),
+            "{after}: marked"
+        );
+        let error = app.error.clone().expect("the window says why");
+        assert!(
+            error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                && error.contains(&format!(
+                    "finds the repository at {} there",
+                    enclosing.display()
+                )),
+            "{after}: {error}"
+        );
+        assert!(app.commits.is_empty(), "{after}: no enclosing history");
+        // The enclosing repository's status names its own file and the
+        // tab's folder; the tab's own earlier status may still be shown.
+        let enclosing_entry =
+            |path: &Path| path == Path::new("enclosing.txt") || path.starts_with("narrow");
+        assert!(
+            app.work_status.as_ref().is_none_or(|status| {
+                !status
+                    .entries
+                    .iter()
+                    .any(|entry| enclosing_entry(&entry.path))
+            }),
+            "{after}: no enclosing working state"
+        );
+    });
+}
+
+/// Show latest reads the shown repository's latest history from its own
+/// root and installs it in place: with the `.git` away inside another
+/// work tree, it once installed the enclosing repository's history in
+/// the tab. It now marks the tab and says why, as Refresh does.
+#[gpui::test]
+async fn show_latest_never_installs_the_enclosing_repository(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Show latest");
+}
+
+/// Refresh in Changes reads the working state on the operation thread:
+/// with the `.git` away inside another work tree, it once showed the
+/// enclosing repository's status rows under the tab. It now marks the
+/// tab and says why, as History's Refresh does, and shows none of them.
+#[gpui::test]
+async fn refresh_in_changes_never_shows_the_enclosing_status(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let enclosing = enclosing_work_tree(fixture.path());
+    std::fs::write(fixture.path().join("enclosing.txt"), "changed\n").unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    assert!(
+        app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working
+            && app.repository_tabs.tabs[0].error.is_none()),
+        "in Changes, readable"
+    );
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh in Changes");
+    assert!(
+        app.read_with(cx, |app, _| app.working_rows.is_empty()),
+        "no enclosing rows"
+    );
+}
+
+/// The History fixture with its `.git` moved away and no repository
+/// enclosing it: how the first tab reads once a read has found nothing
+/// there. Marked, on its own repository, saying the reasons any folder
+/// that is not a repository gets (`repository_access::explain`) in its
+/// mark and the window, never that the repository is gone, which is
+/// only for another repository Git finds at its path.
+fn assert_not_a_repository(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    root: &Path,
+    after: &str,
+) {
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[0];
+        assert_eq!(shown.path, root, "{after}: on its own repository");
+        assert!(
+            app.tab_label(shown).0.ends_with(" · unavailable"),
+            "{after}: marked"
+        );
+        let error = app.error.clone().expect("the window says why");
+        assert!(
+            error.starts_with("This folder is not an available Git repository.")
+                && error.contains(&format!("Folder: {}", root.display()))
+                && !error.contains("is gone"),
+            "{after}: {error}"
+        );
+        assert_eq!(
+            shown.error.as_ref(),
+            Some(&error),
+            "{after}: the mark's reason"
+        );
+        assert!(app.commits.is_empty(), "{after}: no history");
+    });
+}
+
+/// With its `.git` gone and no repository enclosing its folder, Refresh
+/// fails as any open of a folder that is not a repository does, and the
+/// tab is marked with those reasons; the saved session keeps its path.
+#[gpui::test]
+async fn refresh_with_no_repository_found_says_the_folder_is_not_one(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_not_a_repository(&app, cx, &root, "Refresh");
+    let saved = app.read_with(cx, |app, _| app.repository_tabs.saved());
+    assert_eq!(saved.tabs[0].path.path(), root, "the saved path");
+}
+
+/// Show latest, with the tab's `.git` gone and no repository enclosing
+/// its folder, marks the tab as Refresh does, with the reasons any
+/// folder that is not a repository gets. It once left the tab unmarked,
+/// its history still shown, under "Could not read local history: …".
+#[gpui::test]
+async fn show_latest_with_no_repository_found_marks_the_tab(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_not_a_repository(&app, cx, &root, "Show latest");
+}
+
+/// Refresh in Changes, with its `.git` gone and no repository enclosing
+/// its folder, marks the tab through its Open, which says the reasons
+/// any folder that is not a repository gets; Refresh again in the
+/// marked tab adds nothing beside them. It once said "Working tree: The
+/// repository at … is gone. Git finds no repository there" above them.
+#[gpui::test]
+async fn refresh_in_changes_with_no_repository_found_says_only_why(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    assert!(
+        app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working
+            && app.work_status.is_some()
+            && app.repository_tabs.tabs[0].error.is_none()),
+        "in Changes, readable"
+    );
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    assert_not_a_repository(&app, cx, &root, "Refresh in Changes");
+    assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
+    // The failed Open shows History; Changes again, and Refresh there.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    let after = "Refresh in the marked tab's Changes";
+    assert_not_a_repository(&app, cx, &root, after);
+    app.read_with(cx, |app, _| {
+        assert!(app.mode == WorkspaceMode::Working, "{after}: in Changes");
+        assert_eq!(app.operation_error, None, "{after}: nothing beside it");
+        assert!(app.work_status.is_none(), "{after}: no status");
+    });
+}
+
+/// A marked tab's explicit Refresh in Changes states the reason that is
+/// true now: marked with no repository found, once a work tree comes to
+/// enclose its folder the mark names what Git now finds, in the words an
+/// Open would use, and the window and Projects with it. The tab stays
+/// on its own repository and in Changes, and opens nothing else. Where
+/// nothing is found again, the mark goes back to those reasons. It once
+/// kept the mark's old reason.
+#[gpui::test]
+async fn refresh_in_changes_states_the_marked_tab_s_current_reason(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    assert_not_a_repository(&app, cx, &root, "marked by Refresh");
+    let projects = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, cx| {
+            app.hub.read(cx).shown_error().map(str::to_owned)
+        })
+    };
+    assert!(projects(cx).is_some(), "Projects says the same");
+    let refresh_in_changes = async |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+    };
+    // Git starts finding another repository at the tab's folder. The
+    // window's error follows the mark, whatever it said by then.
+    let enclosing = enclosing_work_tree(fixture.path());
+    cx.update(|_, cx| app.update(cx, |app, _| app.error = None));
+    refresh_in_changes(cx).await;
+    let after = "Refresh once Git finds another repository";
+    assert_gone(&app, cx, 0, &root, &enclosing, after);
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[0];
+        assert_eq!(shown.error, app.error, "{after}: the mark's reason");
+        assert!(app.mode == WorkspaceMode::Working, "{after}: in Changes");
+        assert_eq!(app.operation_error, None, "{after}: nothing beside it");
+        assert_eq!(
+            app.repository.as_ref().map(|repo| repo.path().to_owned()),
+            Some(root.clone()),
+            "{after}: its own repository, no other"
+        );
+    });
+    assert_eq!(
+        projects(cx),
+        app.read_with(cx, |app, _| app.error.clone()),
+        "{after}: Projects says the same"
+    );
+
+    // And back: nothing found again, the reasons a folder gets.
+    std::fs::remove_dir_all(fixture.path().join(".git")).unwrap();
+    refresh_in_changes(cx).await;
+    assert_not_a_repository(&app, cx, &root, "Refresh once nothing is found again");
+    app.read_with(cx, |app, _| {
+        assert!(app.mode == WorkspaceMode::Working, "in Changes");
+        assert_eq!(app.operation_error, None, "nothing beside it");
+    });
+}
+
+/// A read that found a reason for a tab's mark lands to find the mark
+/// gone, a quiet read having cleared it meanwhile: the read's own
+/// failure still says what it did, and marks nothing. Lost with the
+/// mark, nothing said why Changes had emptied.
+#[gpui::test]
+async fn a_marked_read_s_failure_says_what_it_did_once_the_mark_has_gone(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, _root) = settled_history_window(cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.working_read_failed(
+                worker::MarkedReadFailed {
+                    reason: "the reason an Open gives".into(),
+                    read: anyhow::anyhow!("the status read failed"),
+                }
+                .into(),
+                window,
+                cx,
+            )
+        })
+    });
+    assert_eq!(
+        operation_error(&app, cx),
+        Some("Working tree: the status read failed".into())
+    );
+    app.read_with(cx, |app, _| {
+        assert!(app.repository_tabs.tabs[0].error.is_none(), "no mark made");
+        assert_eq!(app.error, None, "no reason shown");
+    });
+}
+
+/// A quiet read the watcher asks for, with the tab's `.git` gone and no
+/// repository enclosing its folder, reads the tab as Refresh reads it:
+/// marked, with the reasons any folder that is not a repository gets,
+/// and nothing beside them; a quiet read of the marked tab keeps that.
+/// It once left the tab unmarked, its history still shown, under
+/// "Local refresh:" and Git's own "not a git repository".
+#[gpui::test]
+async fn a_quiet_read_with_no_repository_found_marks_the_tab(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    // The window's own first reads, the rescan the watcher's setup asks
+    // for among them, land before the `.git` goes: one running across
+    // the move reads the working state and then fails reading History.
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    assert_eq!(app.read_with(cx, |app, _| app.operation_error_text()), None);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+    for after in ["a quiet read", "a quiet read of the marked tab"] {
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        assert_not_a_repository(&app, cx, &root, after);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error_text()),
+            None,
+            "{after}: nothing beside it"
+        );
+    }
+}
+
+/// `operation_error` as the window holds it.
+fn operation_error(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<String> {
+    app.read_with(cx, |app, _| app.operation_error_text())
+}
+
+/// Has the shown tab's quiet read fail with `error`, as its reply lands.
+fn quiet_read_fails(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    error: impl Into<anyhow::Error>,
+) {
+    let error = error.into();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.quiet_read_failed(error, window, cx)));
+}
+
+/// A History window whose first reads have landed, quiet reads free to
+/// start, and the root of its repository.
+async fn settled_history_window(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    PathBuf,
+) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+    (fixture, app, cx, root)
+}
+
+/// A quiet read that finds the marked tab's repository changed as it
+/// reopened it, at its own path, writes no banner: the mark says it,
+/// and such a banner once outlived the mark.
+#[gpui::test]
+async fn a_quiet_read_that_finds_it_changed_while_opening_writes_no_banner_beside_the_mark(
+    cx: &mut TestAppContext,
+) {
+    let (_fixture, app, cx, _root, _third_git) = marked_by_a_swapped_git(cx).await;
+    let (path, generation) = app.read_with(cx, |app, _| {
+        (app.path.clone().expect("a repository"), app.generation)
+    });
+    quiet_read_fails(
+        &app,
+        cx,
+        gitturtle_core::CoreError::ChangedWhileOpening {
+            found: Some(path.clone()),
+            path,
+        },
+    );
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(operation_error(&app, cx), None, "the mark says it");
+    app.read_with(cx, |app, _| {
+        assert!(app.repository_tabs.tabs[0].error.is_some(), "still marked");
+        assert_eq!(app.generation, generation, "a marked tab asks for no Open");
+    });
+}
+
+/// The same read of an unmarked tab has no mark to say it: it keeps the
+/// banner, which the next quiet read that succeeds takes away, and runs
+/// no Open, which would leave Changes and cancel an open form for a
+/// failure that may pass.
+#[gpui::test]
+async fn a_quiet_read_that_finds_it_changed_while_opening_keeps_the_banner_on_an_unmarked_tab(
+    cx: &mut TestAppContext,
+) {
+    let (_fixture, app, cx, root) = settled_history_window(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    let generation = app.read_with(cx, |app, _| app.generation);
+    quiet_read_fails(
+        &app,
+        cx,
+        gitturtle_core::CoreError::ChangedWhileOpening {
+            found: Some(root.clone()),
+            path: root.clone(),
+        },
+    );
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(
+        operation_error(&app, cx),
+        Some(format!(
+            "Local refresh: The repository at {} changed while it was opened. Open it again.",
+            root.display()
+        )),
+        "nothing else says it"
+    );
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.generation, generation, "no Open");
+        assert!(app.mode == WorkspaceMode::Working, "still in Changes");
+        assert!(app.repository_tabs.tabs[0].error.is_none(), "not marked");
+    });
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(operation_error(&app, cx), None, "the next good read");
+}
+
+/// The next quiet read that succeeds takes a "Local refresh:" banner
+/// away, and a banner a write put in that slot, however it is worded,
+/// stays: a passive read never clears a write's failure.
+#[gpui::test]
+async fn the_next_quiet_read_takes_only_its_own_banner(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root) = settled_history_window(cx).await;
+    let settle_read = async |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+        quiet_read_landed(app, cx);
+        crate::views::tests::settle(app, cx).await;
+    };
+
+    quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+    let banner = "Local refresh: the read stopped".to_owned();
+    assert_eq!(operation_error(&app, cx), Some(banner), "the banner");
+    settle_read(&app, cx).await;
+    assert_eq!(
+        operation_error(&app, cx),
+        None,
+        "the next good read clears it"
+    );
+
+    // A write's failure in the same words stays, whichever read lands.
+    let written = "Local refresh: a hook refused the commit".to_owned();
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.tab_operation_feedback(&root, None, Some(written.clone().into()), cx)
+        })
+    });
+    settle_read(&app, cx).await;
+    assert_eq!(
+        operation_error(&app, cx),
+        Some(written.clone()),
+        "a write's stays"
+    );
+    quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+    assert_eq!(
+        operation_error(&app, cx),
+        Some(written.clone()),
+        "a read does not replace a write's failure"
+    );
+    settle_read(&app, cx).await;
+    assert_eq!(
+        operation_error(&app, cx),
+        Some(written.clone()),
+        "nor clear it"
+    );
+
+    // A write's failure over the read's banner stays too.
+    cx.update(|_, cx| app.update(cx, |app, _| app.operation_error = None));
+    quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.tab_operation_feedback(&root, None, Some(written.clone().into()), cx)
+        })
+    });
+    settle_read(&app, cx).await;
+    assert_eq!(operation_error(&app, cx), Some(written), "over the banner");
+}
+
+/// A quiet read's banner draws the line core typed for its failure, its
+/// report whole behind Details…, and the next good read takes that
+/// failure by the whole of it: another failure with the same report and
+/// a line of its own is not the banner this read wrote, and stays.
+#[gpui::test]
+async fn a_quiet_read_s_banner_keeps_its_summary_and_goes_by_its_whole_failure(
+    cx: &mut TestAppContext,
+) {
+    let (_fixture, app, cx, _root) = settled_history_window(cx).await;
+    let report = "Local refresh: the whole report\nof what Git said";
+    quiet_read_fails(
+        &app,
+        cx,
+        gitturtle_core::CoreError::NotARepository {
+            message: "the whole report\nof what Git said".into(),
+            summary: Some("the line that says it".into()),
+        },
+    );
+    app.read_with(cx, |app, _| {
+        let shown = app.operation_error.as_ref().expect("the banner");
+        assert_eq!(
+            shown.banner().as_ref(),
+            "Local refresh: the line that says it"
+        );
+        assert_eq!(&**shown, report, "its report whole");
+    });
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.operation_error = Some(crate::views::OperationFailure::summarized(
+                report.to_owned(),
+                Some("a write's own line".to_owned()),
+            ));
+        })
+    });
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let shown = app.operation_error.as_ref().expect("not the read's banner");
+        assert_eq!(shown.banner().as_ref(), "a write's own line");
+    });
+}
+
+/// A banner left behind by a tab switch comes back with its tab and
+/// still goes with that tab's next good read, whenever it lands.
+#[gpui::test]
+async fn a_local_refresh_banner_goes_with_its_tab(cx: &mut TestAppContext) {
+    let (fixture, app, cx, _root) = settled_history_window(cx).await;
+    let banner = "Local refresh: the read stopped".to_owned();
+    quiet_read_fails(&app, cx, anyhow::anyhow!("the read stopped"));
+    assert_eq!(
+        operation_error(&app, cx),
+        Some(banner.clone()),
+        "the banner"
+    );
+    open_another_tab(&app, cx, &fixture.path().join("other")).await;
+    assert_eq!(operation_error(&app, cx), None, "another tab's slot");
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    assert_eq!(operation_error(&app, cx), Some(banner), "back with its tab");
+    // The switch starts the tab's rescan on the reader's thread, and the
+    // watch it sets up on the operation thread asks for another as it
+    // lands: both are waited for. `settle_tab_test` forgets a tab's quiet
+    // reads as it ends, the banner they wrote among them: on a slow host
+    // the rescan still read then, and was dropped with the banner it
+    // would have taken.
+    app.read_with(cx, |app, _| app.operations.drain());
+    quiet_reads_landed(&app, cx);
+    assert_eq!(
+        operation_error(&app, cx),
+        None,
+        "its next good read clears it"
+    );
+}
+
+/// A folder's permissions taken away until this drops, so a test that
+/// takes them leaves a temporary directory that can be removed, however
+/// it ends.
+#[cfg(unix)]
+struct DeniedFolder {
+    path: PathBuf,
+    mode: u32,
+}
+
+#[cfg(unix)]
+impl DeniedFolder {
+    fn new(path: &Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Self {
+            path: path.to_owned(),
+            mode,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DeniedFolder {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode)).unwrap();
+    }
+}
+
+/// Whether this process is denied a mode-000 folder: root enters one.
+#[cfg(unix)]
+fn denied_a_locked_folder() -> bool {
+    let locked = tempfile::tempdir().unwrap();
+    let denied = DeniedFolder::new(locked.path());
+    let refused = std::fs::read_dir(locked.path()).is_err();
+    drop(denied);
+    refused
+}
+
+/// Which folder's permissions a test takes away.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum Denied {
+    /// The folder above the repository, so it cannot be reached.
+    Parent,
+    /// The repository's own folder, its metadata still readable from a
+    /// parent that stays searchable.
+    Repository,
+}
+
+#[cfg(unix)]
+impl Denied {
+    fn apply(self, fixture: &tempfile::TempDir, root: &Path) -> DeniedFolder {
+        DeniedFolder::new(match self {
+            Self::Parent => fixture.path(),
+            Self::Repository => root,
+        })
+    }
+}
+
+/// A folder whose parent lost search permission, read by a quiet read,
+/// could not be checked: the tab is not marked and keeps its history,
+/// and the banner says the folder could not be read and why, never that
+/// it is gone. Giving the permission back, the next read decides: it
+/// once read as a folder gone, marked until that read.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_quiet_read_that_cannot_check_the_folder_marks_nothing(cx: &mut TestAppContext) {
+    quiet_read_cannot_check(cx, Denied::Parent).await;
+}
+
+/// The repository's own folder denied says the same, its metadata still
+/// readable: past a check of that alone, the failure came raw from
+/// Git.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_quiet_read_of_a_denied_repository_folder_marks_nothing(cx: &mut TestAppContext) {
+    quiet_read_cannot_check(cx, Denied::Repository).await;
+}
+
+#[cfg(unix)]
+async fn quiet_read_cannot_check(cx: &mut TestAppContext, which: Denied) {
+    if !denied_a_locked_folder() {
+        return;
+    }
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+    let shows = app.read_with(cx, |app, _| app.commits.len());
+    assert!(shows > 0, "history shown");
+
+    let denied = which.apply(&fixture, &root);
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[0];
+        assert!(shown.error.is_none(), "nothing marked");
+        assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+        assert_eq!(app.error, None, "no failed Open");
+        assert_eq!(app.commits.len(), shows, "history stays");
+        let banner = app.operation_error.clone().expect("the read says why");
+        assert!(
+            banner.starts_with(&format!("Local refresh: Could not read {}", root.display()))
+                && banner.contains("Permission denied")
+                && !banner.contains("gone"),
+            "{banner}"
+        );
+    });
+
+    drop(denied);
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[0];
+        assert!(shown.error.is_none(), "unmarked");
+        assert_eq!(app.commits.len(), shows, "history stays");
+    });
+}
+
+/// An explicit Refresh that cannot check the folder fails as an Open:
+/// the window says it could not be read, the tab keeps its state, marked
+/// nothing new, and the next read that finds the folder decides, bringing
+/// History back and taking the words with it.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_refresh_that_cannot_check_the_folder_marks_nothing_new(cx: &mut TestAppContext) {
+    refresh_cannot_check(cx, Denied::Parent).await;
+}
+
+/// History's Refresh of the repository's own denied folder agrees with
+/// the quiet read: it once failed raw past the metadata check and marked
+/// the tab.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_refresh_of_a_denied_repository_folder_marks_nothing_new(cx: &mut TestAppContext) {
+    refresh_cannot_check(cx, Denied::Repository).await;
+}
+
+#[cfg(unix)]
+async fn refresh_cannot_check(cx: &mut TestAppContext, which: Denied) {
+    if !denied_a_locked_folder() {
+        return;
+    }
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+    let shows = app.read_with(cx, |app, _| app.commits.len());
+    assert!(shows > 0, "history shown");
+
+    let denied = which.apply(&fixture, &root);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[0];
+        assert!(shown.error.is_none(), "nothing marked");
+        assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+        let error = app.error.clone().expect("the window says why");
+        assert!(
+            error.contains(&format!("Could not read {}", root.display()))
+                && error.contains("Permission denied")
+                && !error.contains("gone"),
+            "{error}"
+        );
+    });
+
+    drop(denied);
+    quiet_read_landed(&app, cx);
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert!(app.repository_tabs.tabs[0].error.is_none(), "unmarked");
+        assert_eq!(app.error, None, "the read found it");
+        assert_eq!(app.commits.len(), shows, "History back");
+    });
+}
+
+/// A Refresh in Changes that cannot check the folder, its parent's
+/// search permission lost, fails its working read as
+/// `gitturtle_core::CouldNotCheck` and leaves no status and no read
+/// running: nothing claims a branch or a detached HEAD, the picker
+/// saying the failure and the way back
+/// (`GitTurtle::working_status_not_read`). The picker, Fetch, Pull, Push
+/// and the composer fell to "Detached HEAD" while Changes said "Changes
+/// unavailable". With the permission back, Refresh reads the branch
+/// again.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_refresh_in_changes_that_cannot_check_the_folder_claims_no_branch(
+    cx: &mut TestAppContext,
+) {
+    if !denied_a_locked_folder() {
+        return;
+    }
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    // Tall enough for the composer's full form, with its branch line.
+    cx.simulate_resize(size(px(1280.), px(1200.)));
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(picker().as_deref(), Some("main"), "read");
+
+    let denied = Denied::Parent.apply(&fixture, &root);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert!(!app.shown_tab_unavailable(), "nothing marked");
+        assert!(app.working_status_not_read(), "no status, no read running");
+    });
+    crate::views::tests::assert_claims_no_branch(
+        &app,
+        cx,
+        &format!("Working tree: Could not read {}", root.display()),
+        "a folder that cannot be checked",
+    );
+
+    drop(denied);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_eq!(picker().as_deref(), Some("main"), "read again");
+}
+
+/// A marked tab's navigation lists no branch, worktree or count read
+/// before the mark: in each mode it says what the mark says, as the
+/// header does, with the mark's way back in its tooltip, and its keys
+/// open nothing on what it no longer lists. It listed "LOCAL BRANCHES 1"
+/// over "main", of a repository the tab can no longer open, and Shift
+/// F10 opened that branch's actions. A Refresh that finds the
+/// repository again lists them again.
+#[gpui::test]
+async fn a_marked_tab_s_navigation_lists_nothing_from_before(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    let local = "nav-section/LOCAL BRANCHES/1";
+    // Shift F10 on the branch row, which opens its actions where it is
+    // listed; the menu, if any, is put away again.
+    let manage = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.nav_cursor =
+                    (app.nav_rows.iter()).position(|row| matches!(row, NavRow::Branch(..)));
+                window.focus(&app.nav_focus, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        app.update(cx, |app, _| app.nav_menu.take().is_some())
+    };
+    draw(cx);
+    assert!(
+        cx.debug_bounds(local).is_some(),
+        "the count before the mark"
+    );
+    assert!(
+        cx.debug_bounds("navigation-unavailable").is_none(),
+        "nothing to say before the mark"
+    );
+    assert!(manage(cx), "Shift F10 opens the branch's actions");
+
+    let away = fixture.path().join("git-away");
+    std::fs::rename(root.join(".git"), &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    assert!(
+        app.read_with(cx, |app, _| !app.branches.is_empty()),
+        "the branches read before the mark are kept"
+    );
+    assert!(!manage(cx), "Shift F10 opens nothing from before");
+    for (mode, line) in [
+        (NavMode::Local, "Branches unavailable"),
+        (NavMode::Remote, "Remote branches unavailable"),
+        (NavMode::Worktrees, "Worktrees unavailable"),
+    ] {
+        app.update(cx, |app, cx| {
+            app.nav_mode = mode;
+            app.rebuild_navigation(cx);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("navigation-unavailable").is_some(),
+            "{line}: said"
+        );
+        assert_eq!(
+            crate::empty_state::shown("navigation-unavailable").as_deref(),
+            Some(line),
+            "{line}: its words"
+        );
+        let way_back = crate::native_accessibility::written::get("navigation-unavailable-line")
+            .and_then(|line| line.node.description().map(str::to_owned));
+        assert_eq!(
+            way_back.as_deref(),
+            Some(crate::branch_actions::UNAVAILABLE_WAY_BACK),
+            "{line}: the mark's way back"
+        );
+        for row in ["nav-row-0", "nav-row-1", "nav-row-2"] {
+            assert!(cx.debug_bounds(row).is_none(), "{line}: {row} not listed");
+        }
+        for section in [
+            local,
+            "nav-section/REMOTE BRANCHES/0",
+            "nav-section/WORKTREES/1",
+        ] {
+            assert!(cx.debug_bounds(section).is_none(), "{line}: {section}");
+        }
+    }
+    app.update(cx, |app, cx| {
+        app.nav_mode = NavMode::Local;
+        app.rebuild_navigation(cx);
+        cx.notify();
+    });
+
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "unmarked"
+    );
+    assert!(cx.debug_bounds(local).is_some(), "listed again");
+    assert!(cx.debug_bounds("navigation-unavailable").is_none());
+}
+
+/// A branch's menu open as the tab's mark lands closes, as a resize
+/// closes it (`GitTurtle::close_menus_for_the_mark`): no menu is drawn,
+/// focus moves from it to the mark's way back, the navigation's
+/// Refresh, the keyboard hint goes and the tree is named by its line and
+/// the way back. It was hidden, never closed: focus stayed on a menu no
+/// frame drew, Escape doing nothing, the hint still offered the tree's
+/// keys, and as the mark cleared the menu came back, still focused,
+/// with its actions on the branch from before. The mark clearing brings
+/// no menu back.
+#[gpui::test]
+async fn a_branch_menu_open_as_the_mark_lands_closes_to_the_way_back(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    let tree_name = || {
+        crate::native_accessibility::written::get("repository-navigation")
+            .and_then(|tree| tree.node.label().map(str::to_owned))
+    };
+    // Wide enough for the keyboard hint below the tree.
+    cx.simulate_resize(size(px(1480.), px(980.)));
+    draw(cx);
+    let panels = app.read_with(cx, |app, _| app.history_panels.clone());
+    cx.update(|window, cx| {
+        panels.update(cx, |panels, cx| {
+            panels.resize_panel(0, px(320.), window, cx)
+        })
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("navigation-hint").is_some(),
+        "the keyboard hint at rest"
+    );
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.nav_cursor =
+                (app.nav_rows.iter()).position(|row| matches!(row, NavRow::Branch(..)));
+            window.focus(&app.nav_focus, cx);
+            cx.notify();
+        })
+    });
+    draw(cx);
+    cx.simulate_keystrokes("shift-f10");
+    draw(cx);
+    assert!(
+        cx.debug_bounds("navigation-menu-overlay").is_some(),
+        "the branch's menu is drawn"
+    );
+    assert!(
+        cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+        "focus is in it"
+    );
+
+    // As a quiet read finds the repository gone (`tab_repository_gone`).
+    let away = fixture.path().join("moved-away");
+    std::fs::rename(root.join(".git"), &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    assert!(
+        app.read_with(cx, |app, _| app.nav_menu.is_none()),
+        "the menu is closed"
+    );
+    assert!(
+        cx.debug_bounds("navigation-menu-overlay").is_none(),
+        "no menu is drawn"
+    );
+    assert!(
+        cx.debug_bounds("navigation-refresh").is_some(),
+        "the way back is drawn"
+    );
+    assert!(
+        cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+        "focus is on the way back"
+    );
+    assert!(
+        cx.debug_bounds("navigation-hint").is_none(),
+        "no hint offers the tree's keys"
+    );
+    assert_eq!(
+        tree_name(),
+        Some(format!(
+            "Branches unavailable. {}",
+            crate::branch_actions::UNAVAILABLE_WAY_BACK
+        )),
+        "the tree's name gives the line and the way back, in the mark's words"
+    );
+
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "unmarked"
+    );
+    assert!(
+        cx.debug_bounds("nav-section/LOCAL BRANCHES/1").is_some(),
+        "the branches listed again"
+    );
+    assert!(
+        app.read_with(cx, |app, _| app.nav_menu.is_none())
+            && cx.debug_bounds("navigation-menu-overlay").is_none(),
+        "no menu comes back"
+    );
+    assert!(
+        cx.debug_bounds("navigation-hint").is_some(),
+        "the hint is back"
+    );
+}
+
+/// A button's menu open as the tab's mark lands closes too, as a resize
+/// closes it, focus moving from it to the mark's way back: here the
+/// branch picker's, which on a marked tab offers no menu. It stayed
+/// open over the "Unavailable" picker, its items acting on the branches
+/// from before.
+#[gpui::test]
+async fn a_button_menu_open_as_the_mark_lands_closes_to_the_way_back(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    const ITEM: &str = "menu-item: Find or create a branch… · MenuItem";
+    draw(cx);
+    let picker = cx
+        .debug_bounds("current-branch")
+        .expect("the branch picker");
+    cx.simulate_click(picker.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert!(
+        cx.debug_bounds(ITEM).is_some(),
+        "the picker's menu is drawn"
+    );
+    assert!(
+        cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+        "focus is in it"
+    );
+
+    let away = fixture.path().join("moved-away");
+    std::fs::rename(root.join(".git"), &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    assert!(cx.debug_bounds(ITEM).is_none(), "the menu is closed");
+    assert!(
+        !cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+        "focus left it"
+    );
+    assert!(
+        cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+        "focus is on the way back"
+    );
+
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "unmarked"
+    );
+    assert!(cx.debug_bounds(ITEM).is_none(), "no menu comes back");
+}
+
+/// Focus in Settings' Name as a quiet read finds the repository gone
+/// goes on to the mark's way back, the navigation's Refresh, once the
+/// Open that read asks for marks the tab, and takes it there once: the
+/// Open's return to History gave it to the list the marked tab draws
+/// empty, where a key does nothing, since a marked tab's Name and Email
+/// leave the Tab order (decided 2026-11-14).
+#[gpui::test]
+async fn a_marked_tab_s_way_back_takes_focus_from_a_settings_identity_field(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    // Focus events carry focus paths only in an active window.
+    cx.update(|window, _| window.activate_window());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    settle(&app, cx).await;
+    let (name, way_back, list) = app.read_with(cx, |app, cx| {
+        (
+            app.identity_name_for_test().focus_handle(cx),
+            app.mark_way_back.clone(),
+            app.focus.clone(),
+        )
+    });
+    cx.update(|window, cx| window.focus(&name, cx));
+    draw(cx);
+    // Every control focus comes to, in order, as a screen reader says it.
+    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::<&str>::new()));
+    let _listening = cx.update(|window, cx| {
+        [(list, "the list"), (way_back.clone(), "the way back")].map(|(handle, name)| {
+            let heard = heard.clone();
+            window.on_focus_in(&handle, cx, move |_, _| heard.borrow_mut().push(name))
+        })
+    });
+
+    let away = fixture.path().join("moved-away");
+    std::fs::rename(root.join(".git"), &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    assert!(
+        cx.debug_bounds("navigation-refresh").is_some(),
+        "the way back is drawn"
+    );
+    assert!(
+        cx.update(|window, _| way_back.is_focused(window)),
+        "focus is on the way back"
+    );
+    let heard = heard.borrow().clone();
+    assert_eq!(
+        (
+            heard.iter().filter(|name| **name == "the way back").count(),
+            heard.last().copied()
+        ),
+        (1, Some("the way back")),
+        "the way back is said once, last: {heard:?}"
+    );
+    std::fs::rename(&away, root.join(".git")).unwrap();
+}
+
+/// A row's right-click menu open as the tab's mark lands closes, focus
+/// moving from it to the mark's way back: here a commit's in History,
+/// whose row the marked tab no longer draws, the menu going with it.
+/// Before the mark's close, focus the menu held never reached the way
+/// back.
+#[gpui::test]
+async fn a_right_click_menu_open_as_the_mark_lands_closes_to_the_way_back(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    const ITEM: &str = "menu-item: Revert this commit… · MenuItem";
+    draw(cx);
+    let row = cx.debug_bounds("history-row-0").expect("a commit row");
+    let pointer = point(row.left() + px(16.), row.center().y);
+    cx.simulate_mouse_move(pointer, None, gpui::Modifiers::default());
+    cx.simulate_mouse_down(
+        pointer,
+        gpui::MouseButton::Right,
+        gpui::Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        pointer,
+        gpui::MouseButton::Right,
+        gpui::Modifiers::default(),
+    );
+    cx.executor().run_until_parked();
+    draw(cx);
+    draw(cx);
+    assert!(
+        cx.debug_bounds(ITEM).is_some(),
+        "the commit's menu is drawn"
+    );
+    assert!(
+        cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+        "focus is in it"
+    );
+
+    let away = fixture.path().join("moved-away");
+    std::fs::rename(root.join(".git"), &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    assert!(cx.debug_bounds(ITEM).is_none(), "the menu is closed");
+    assert!(
+        !cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+        "focus left it"
+    );
+    assert!(
+        cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+        "focus is on the way back"
+    );
+}
+
+/// The Linux Main Menu open as the tab's mark lands closes too, by the
+/// mark's close itself, the one every tab change uses
+/// (`GitTurtle::close_menus_for_the_mark`), and focus moves from it to
+/// the mark's way back, the navigation's Refresh, never back to the
+/// list it opened from: opened for the repository read before the mark,
+/// its items acted on that repository. The mark clearing brings no menu
+/// back.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn the_main_menu_open_as_the_mark_lands_closes_to_the_way_back(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    let quick = crate::command_palette::COMMANDS
+        .iter()
+        .find(|spec| spec.id == crate::command_palette::CommandId::QuickOpen)
+        .expect("Quick Open is a command")
+        .label;
+    let drawn = |cx: &mut VisualTestContext| {
+        ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+            cx.debug_bounds(format!("menu-item: {quick} · {role}").leak())
+                .is_some()
+        })
+    };
+    let list = app.read_with(cx, |app, _| app.focus.clone());
+    cx.update(|window, cx| list.focus(window, cx));
+    draw(cx);
+    let trigger = cx.debug_bounds("main-menu").expect("the Main Menu button");
+    cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert!(drawn(cx), "the Main Menu is drawn");
+    assert!(
+        cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+        "focus is in it"
+    );
+
+    let dismissed = crate::native_accessibility::tab_dismissals();
+    let away = fixture.path().join("moved-away");
+    std::fs::rename(root.join(".git"), &away).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    assert!(!drawn(cx), "the Main Menu is closed");
+    assert!(
+        crate::native_accessibility::tab_dismissals() > dismissed,
+        "closed by the mark's close itself"
+    );
+    assert!(
+        !cx.update(|window, _| crate::native_accessibility::focus_in_menu(window)),
+        "focus left it"
+    );
+    assert!(
+        cx.update(|window, cx| app.read(cx).mark_way_back.is_focused(window)),
+        "focus is on the way back"
+    );
+    assert!(
+        !cx.update(|window, _| list.is_focused(window)),
+        "not back on the list it opened from"
+    );
+
+    std::fs::rename(&away, root.join(".git")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle(&app, cx).await;
+    draw(cx);
+    assert!(
+        !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "unmarked"
+    );
+    assert!(!drawn(cx), "no menu comes back");
+}
+
+/// Refresh pressed under "Branches unavailable" on a tab its read leaves
+/// marked gives focus back to that Refresh, whether Return presses it,
+/// held with its repeats marked held and, as X11 sends them, fresh, the
+/// pointer while it holds focus or the Refresh shortcut there, and so
+/// does the Refresh shortcut on the rail's Open repository, the way back
+/// where the rail stands in the navigation's place
+/// (`GitTurtle::return_to_the_way_back`). Open's return to History took
+/// focus to the list the marked tab draws empty, where Return again did
+/// nothing.
+#[gpui::test]
+async fn a_refresh_that_leaves_the_tab_marked_gives_focus_back_to_the_way_back(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    draw(cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    let (way_back, list) =
+        app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+    let refresh_keys = crate::shortcuts::resolve_key("primary-r", cfg!(target_os = "macos"));
+    // GPUI presses a focused Button as Return comes up.
+    let enter = |cx: &mut VisualTestContext, is_held: bool| {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            is_held,
+            prefer_character_input: false,
+        });
+        draw(cx);
+    };
+    let release = |cx: &mut VisualTestContext| {
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+    };
+    for (route, way) in [
+        ("Return", "navigation-refresh"),
+        ("a held Return", "navigation-refresh"),
+        ("the pointer", "navigation-refresh"),
+        ("the shortcut", "navigation-refresh"),
+        ("the shortcut", "rail-open"),
+    ] {
+        if way == "rail-open" {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_sidebar(window, cx)));
+            draw(cx);
+        }
+        assert!(cx.debug_bounds(way).is_some(), "{route} on {way}: drawn");
+        cx.update(|window, cx| window.focus(&way_back, cx));
+        draw(cx);
+        let before = app.read_with(cx, |app, _| app.generation);
+        match route {
+            "Return" => {
+                enter(cx, false);
+                release(cx);
+            }
+            "a held Return" => {
+                enter(cx, false);
+                enter(cx, true);
+                enter(cx, true);
+                enter(cx, false);
+                enter(cx, false);
+                release(cx);
+            }
+            "the pointer" => {
+                let bounds = cx.debug_bounds(way).expect(way);
+                cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            }
+            _ => cx.simulate_keystrokes(&refresh_keys),
+        }
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.generation) > before,
+            "{route} on {way}: the repository is read again"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "{route} on {way}: still marked"
+        );
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "{route} on {way}: focus is back on the way back"
+        );
+        assert!(
+            !cx.update(|window, _| list.is_focused(window)),
+            "{route} on {way}: not on the empty list"
+        );
+    }
+}
+
+/// Refresh pressed on a marked tab's way back keeps focus there for the
+/// whole read, never passing through the commit list the tab draws
+/// empty (`GitTurtle::open_keeps_the_way_back`), by Return, the pointer
+/// and the Refresh shortcut on the navigation's Refresh and the
+/// shortcut on the rail's Open repository: every frame of the held read
+/// draws focus on the way back and nothing else takes focus, so a
+/// screen reader says "Refresh" once. A read that clears the mark gives
+/// focus to the list as the Refresh goes. Open's return to History took
+/// focus to the list at once, and only the read's end brought it back.
+#[gpui::test]
+async fn a_marked_tab_s_refresh_keeps_focus_for_its_whole_read(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    // Focus events carry focus paths only in an active window.
+    cx.update(|window, _| window.activate_window());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    draw(cx);
+    let moved = fixture.path().join("moved-away");
+    std::fs::rename(root.join(".git"), &moved).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    let (way_back, list) =
+        app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+    // Every control focus comes to, in order, from the press on.
+    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::<&str>::new()));
+    let _listening = cx.update(|window, cx| {
+        [
+            (list.clone(), "the list"),
+            (way_back.clone(), "the way back"),
+        ]
+        .map(|(handle, name)| {
+            let heard = heard.clone();
+            window.on_focus_in(&handle, cx, move |_, _| heard.borrow_mut().push(name))
+        })
+    });
+    let refresh_keys = crate::shortcuts::resolve_key("primary-r", cfg!(target_os = "macos"));
+    let press = |cx: &mut VisualTestContext, route: &str, way: &'static str| match route {
+        "Return" => {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            });
+        }
+        "the pointer" => {
+            let bounds = cx.debug_bounds(way).expect(way);
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        }
+        _ => cx.simulate_keystrokes(&refresh_keys),
+    };
+    // Draws the held read's frames, each with focus on the way back.
+    let held_frames = |cx: &mut VisualTestContext, when: &str| {
+        for frame in 0..3 {
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.loading.is_some()),
+                "{when}: the read is held"
+            );
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(way_back.clone()),
+                "{when}: frame {frame} of the read draws focus on the way back"
+            );
+        }
+    };
+    for (route, way) in [
+        ("Return", "navigation-refresh"),
+        ("the pointer", "navigation-refresh"),
+        ("the shortcut", "navigation-refresh"),
+        ("the shortcut", "rail-open"),
+    ] {
+        let when = format!("{route} on {way}");
+        if way == "rail-open" {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_sidebar(window, cx)));
+            draw(cx);
+        }
+        assert!(cx.debug_bounds(way).is_some(), "{when}: drawn");
+        cx.update(|window, cx| window.focus(&way_back, cx));
+        draw(cx);
+        heard.borrow_mut().clear();
+        let before = app.read_with(cx, |app, _| app.generation);
+        let held = hold_reads(&app, cx);
+        press(cx, route, way);
+        assert!(
+            app.read_with(cx, |app, _| app.generation) > before,
+            "{when}: the repository is read again"
+        );
+        held_frames(cx, &when);
+        drop(held);
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "{when}: still marked"
+        );
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(way_back.clone()),
+            "{when}: focus stays on the way back"
+        );
+        assert_eq!(
+            *heard.borrow(),
+            Vec::<&str>::new(),
+            "{when}: focus never moved, so Refresh is said once"
+        );
+    }
+
+    // Found again, the read clears the mark and its way back with it.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_sidebar(window, cx)));
+    draw(cx);
+    std::fs::rename(&moved, root.join(".git")).unwrap();
+    cx.update(|window, cx| window.focus(&way_back, cx));
+    draw(cx);
+    heard.borrow_mut().clear();
+    let held = hold_reads(&app, cx);
+    press(cx, "Return", "navigation-refresh");
+    held_frames(cx, "Return on a tab found again");
+    drop(held);
+    settle(&app, cx).await;
+    draw(cx);
+    assert!(
+        !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "unmarked"
+    );
+    assert!(
+        cx.debug_bounds("navigation-refresh").is_none(),
+        "the way back goes with the mark"
+    );
+    assert_eq!(
+        drawn_focus(&app, cx),
+        Some(list.clone()),
+        "focus goes to the list the read fills"
+    );
+    assert_eq!(*heard.borrow(), ["the list"], "once, as the read ends");
+    assert_eq!(
+        app.read_with(cx, |app, _| app.repository_tabs.open_focus),
+        OpenFocus::Elsewhere,
+        "the Open's focus is forgotten as it succeeds"
+    );
+}
+
+/// The navigation's Refresh under the mark's line says why a running
+/// write refuses it, as the other refused controls do
+/// (`refusing_with_reason`): announced unavailable at once, and dimmed
+/// with the busy reason in its tooltip once the write looks busy, or at
+/// once as a press is refused. A press refused as it begins stays
+/// refused for its whole press (`GitTurtle::way_back_key_down`,
+/// `GitTurtle::way_back_pointer_down`): Return held, its repeats marked
+/// held and, as X11 sends them, fresh, through the write's end reads
+/// nothing as it comes up, and nor does the pointer's release after the
+/// write; the next press reads the repository again. It was drawn
+/// enabled, its tooltip only its name and shortcut, a press doing
+/// nothing, and a Return held through the write's end refreshed as it
+/// came up.
+#[gpui::test]
+async fn a_marked_tab_s_refresh_says_why_a_write_refuses_its_whole_press(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    use crate::workspace::refusals::{self, Refusal};
+    const KEY: &str = "navigation-refresh";
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    draw(cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+    let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+    let busy = |cx: &mut VisualTestContext, write: Option<&'static str>| {
+        app.update(cx, |app, _| app.operation_busy = write);
+        draw(cx);
+    };
+    let looks_busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.busy_shown());
+    let enter = |cx: &mut VisualTestContext, is_held: bool| {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            is_held,
+            prefer_character_input: false,
+        });
+        draw(cx);
+    };
+    let release = |cx: &mut VisualTestContext| {
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        draw(cx);
+    };
+    let shortcut = crate::shortcuts::label(crate::shortcuts::ShortcutId::Refresh);
+    let refusal = |announced, dimmed| Some(Refusal { announced, dimmed });
+    assert_eq!(refusals::get(KEY), refusal(false, false), "offered at rest");
+    assert_eq!(
+        refusals::tooltip(KEY).as_deref(),
+        Some(format!("Refresh · {shortcut}").as_str())
+    );
+
+    busy(cx, Some("Fetching…"));
+    assert_eq!(
+        refusals::get(KEY),
+        refusal(true, false),
+        "a write refuses it at once, dimmed only once it looks busy"
+    );
+    cx.update(|window, cx| window.focus(&way_back, cx));
+    draw(cx);
+    let before = generation(cx);
+    enter(cx, false);
+    assert!(
+        looks_busy(cx),
+        "a refused Return shows the busy look at once"
+    );
+    assert_eq!(refusals::get(KEY), refusal(true, true), "dimmed at once");
+    assert_eq!(
+        refusals::tooltip(KEY).as_deref(),
+        Some(format!("Refresh · {} · {shortcut}", crate::workspace::BUSY_REASON).as_str()),
+        "its tooltip says why"
+    );
+    for is_held in [true, true, false, false] {
+        enter(cx, is_held);
+    }
+    busy(cx, None);
+    assert_eq!(
+        refusals::get(KEY),
+        refusal(false, false),
+        "offered again as the write ends"
+    );
+    for is_held in [true, false] {
+        enter(cx, is_held);
+    }
+    release(cx);
+    settle(&app, cx).await;
+    assert_eq!(
+        generation(cx),
+        before,
+        "the refused Return reads nothing as it comes up after the write"
+    );
+    assert!(
+        cx.update(|window, _| way_back.is_focused(window)),
+        "focus stays on Refresh"
+    );
+    enter(cx, false);
+    release(cx);
+    settle(&app, cx).await;
+    assert!(
+        generation(cx) > before,
+        "the next Return reads the repository again"
+    );
+
+    busy(cx, Some("Fetching…"));
+    let before = generation(cx);
+    let center = cx.debug_bounds(KEY).expect("the Refresh").center();
+    cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(cx);
+    assert!(
+        looks_busy(cx),
+        "a refused click shows the busy look at once"
+    );
+    assert_eq!(refusals::get(KEY), refusal(true, true), "dimmed at once");
+    busy(cx, None);
+    cx.simulate_mouse_up(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+    settle(&app, cx).await;
+    assert_eq!(
+        generation(cx),
+        before,
+        "the refused click reads nothing as it comes up after the write"
+    );
+    cx.simulate_click(center, gpui::Modifiers::default());
+    settle(&app, cx).await;
+    assert!(
+        generation(cx) > before,
+        "the next click reads the repository again"
+    );
+}
+
+/// A press of the marked tab's Refresh refused as it began ends as
+/// FU45-A5's rule ends a refused press (`GitTurtle::way_back_key_down`,
+/// `GitTurtle::way_back_pointer_down`): a key's at its key-up or as focus
+/// moves to another control inside the window, never as the window goes
+/// inactive, so a Return held through an X11 keyboard grab and the
+/// write's end presses nothing with its next repeat or its key-up; a
+/// key's refuses no click, so with its key-up lost outside the window a
+/// click after the write reads once, and the lost key-up costs one key
+/// press at most; a key going down never ends the pointer's, so the
+/// pointer's release over the Refresh after the write presses nothing
+/// though a letter was typed meanwhile; and the pointer's ends as it
+/// comes up, off the Refresh as well as over it, dimmed, so the next
+/// Return reads once. The window going inactive ended a key's press, the
+/// next repeat after the write arming the Refresh; a key's press whose
+/// key-up was lost refused every later click; any key going down ended
+/// the pointer's, its release reading; and released off the Refresh, or
+/// over it dimmed, which makes no click, the pointer's stayed refused,
+/// and so did every Return after the write.
+#[gpui::test]
+async fn a_marked_tab_s_refused_refresh_press_ends_only_as_it_ends(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    const KEY: &str = "navigation-refresh";
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    // Focus events carry focus paths only in an active window.
+    cx.update(|window, _| window.activate_window());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    draw(cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    let (way_back, list) =
+        app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+    let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+    let busy = |cx: &mut VisualTestContext, write: Option<&'static str>| {
+        app.update(cx, |app, _| app.operation_busy = write);
+        draw(cx);
+    };
+    let key_down = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
+            is_held,
+            prefer_character_input: false,
+        });
+        draw(cx);
+    };
+    let key_up = |cx: &mut VisualTestContext, key: &str| {
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
+        });
+        draw(cx);
+    };
+    let focus = |cx: &mut VisualTestContext, handle: &FocusHandle| {
+        cx.update(|window, cx| window.focus(handle, cx));
+        draw(cx);
+    };
+    let looks_busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.busy_shown());
+    // What the Refresh draws with no write running, whatever press is
+    // refused: no busy look, and its tooltip its name and shortcut.
+    let at_rest = |cx: &mut VisualTestContext, at: &str| {
+        assert!(!looks_busy(cx), "{at}: no busy look without a write");
+        assert_eq!(
+            crate::workspace::refusals::tooltip(KEY).as_deref(),
+            Some(
+                format!(
+                    "Refresh · {}",
+                    crate::shortcuts::label(crate::shortcuts::ShortcutId::Refresh)
+                )
+                .as_str()
+            ),
+            "{at}: its tooltip gives its name and shortcut"
+        );
+    };
+
+    // The window going inactive mid-hold, as an X11 keyboard grab
+    // takes it, keeps a key's press.
+    focus(cx, &way_back);
+    busy(cx, Some("Fetching…"));
+    let before = generation(cx);
+    key_down(cx, "enter", false);
+    cx.deactivate_window();
+    cx.update(|window, _| window.activate_window());
+    draw(cx);
+    assert!(
+        cx.update(|window, _| way_back.is_focused(window)),
+        "focus comes back to the Refresh"
+    );
+    busy(cx, None);
+    key_down(cx, "enter", true);
+    key_down(cx, "enter", false);
+    key_up(cx, "enter");
+    settle(&app, cx).await;
+    assert_eq!(
+        generation(cx),
+        before,
+        "a press held through the window going inactive reads nothing"
+    );
+    key_down(cx, "enter", false);
+    key_up(cx, "enter");
+    settle(&app, cx).await;
+    assert!(generation(cx) > before, "the next Return: it reads again");
+
+    // A key's press refuses no click: its key-up lost outside the
+    // window, a click after the write reads once; and the key press the
+    // lost key-up costs, one at most, Space's here, refused with
+    // Return's, ends that too, so the next Return reads.
+    busy(cx, Some("Fetching…"));
+    let before = generation(cx);
+    key_down(cx, "enter", false);
+    cx.deactivate_window();
+    cx.update(|window, _| window.activate_window());
+    draw(cx);
+    busy(cx, None);
+    at_rest(cx, "the key-up lost outside the window");
+    let center = cx.debug_bounds(KEY).expect("the Refresh").center();
+    cx.simulate_click(center, gpui::Modifiers::default());
+    settle(&app, cx).await;
+    assert_eq!(
+        generation(cx),
+        before + 1,
+        "a click after a key-up lost outside the window reads once"
+    );
+    assert!(
+        cx.update(|window, _| way_back.is_focused(window)),
+        "focus stays on the Refresh"
+    );
+    key_down(cx, "space", false);
+    at_rest(cx, "the key press the lost key-up costs");
+    key_up(cx, "space");
+    settle(&app, cx).await;
+    assert_eq!(
+        generation(cx),
+        before + 1,
+        "the one key press the lost key-up costs"
+    );
+    key_down(cx, "enter", false);
+    key_up(cx, "enter");
+    settle(&app, cx).await;
+    assert_eq!(generation(cx), before + 2, "the next Return reads once");
+
+    // Focus moving to another control inside the window ends it: the
+    // next Return there reads.
+    busy(cx, Some("Fetching…"));
+    let before = generation(cx);
+    key_down(cx, "enter", false);
+    focus(cx, &list);
+    busy(cx, None);
+    focus(cx, &way_back);
+    key_down(cx, "enter", false);
+    key_up(cx, "enter");
+    settle(&app, cx).await;
+    assert!(
+        generation(cx) > before,
+        "a Return after focus moved: it reads again"
+    );
+
+    // A key going down keeps the pointer's press: pressed while the
+    // Refresh is offered, not yet dimmed, and released over it once the
+    // write has ended. Any key going down puts the window in keyboard
+    // modality, in which GPUI hovers nothing, so a release straight
+    // after it drops the click its press queued, refused or not: the
+    // pointer moves on the Refresh, still held, as a hand does, which
+    // hovers it again, and its release then clicks.
+    let center = cx.debug_bounds(KEY).expect("the Refresh").center();
+    let nudged = center + gpui::point(px(1.), px(0.));
+    busy(cx, Some("Fetching…"));
+    assert!(!looks_busy(cx), "offered as the press begins");
+    let before = generation(cx);
+    cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(cx);
+    assert!(looks_busy(cx), "the press is refused as it begins");
+    busy(cx, None);
+    assert!(
+        cx.update(|window, _| way_back.is_focused(window)),
+        "the letter goes to the Refresh"
+    );
+    key_down(cx, "a", false);
+    key_up(cx, "a");
+    cx.simulate_mouse_move(
+        nudged,
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    draw(cx);
+    cx.simulate_mouse_up(nudged, gpui::MouseButton::Left, gpui::Modifiers::default());
+    settle(&app, cx).await;
+    assert_eq!(
+        generation(cx),
+        before,
+        "the refused click reads nothing though a letter was typed"
+    );
+    let press_return = |cx: &mut VisualTestContext| {
+        focus(cx, &way_back);
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+    };
+    press_return(cx);
+    settle(&app, cx).await;
+    assert_eq!(generation(cx), before + 1, "the next Return reads once");
+    // With no write the same press, the letter and the move on the
+    // Refresh with it, reads once: its release does click there.
+    let before = generation(cx);
+    cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(cx);
+    key_down(cx, "a", false);
+    key_up(cx, "a");
+    cx.simulate_mouse_move(
+        nudged,
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    draw(cx);
+    cx.simulate_mouse_up(nudged, gpui::MouseButton::Left, gpui::Modifiers::default());
+    settle(&app, cx).await;
+    assert_eq!(
+        generation(cx),
+        before + 1,
+        "with no write the same press reads once"
+    );
+
+    // The pointer's press ends as it comes up over the Refresh, dimmed
+    // as the press is refused, which makes no click.
+    busy(cx, Some("Fetching…"));
+    assert!(!looks_busy(cx), "offered as the press begins");
+    let before = generation(cx);
+    cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(cx);
+    assert_eq!(
+        crate::workspace::refusals::get(KEY),
+        Some(crate::workspace::refusals::Refusal {
+            announced: true,
+            dimmed: true,
+        }),
+        "dimmed as the press is refused"
+    );
+    cx.simulate_mouse_up(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(cx);
+    busy(cx, None);
+    assert_eq!(generation(cx), before, "released, it reads nothing");
+    press_return(cx);
+    settle(&app, cx).await;
+    assert_eq!(generation(cx), before + 1, "the next Return reads once");
+
+    // The pointer's press ends as it comes up off the Refresh.
+    busy(cx, Some("Fetching…"));
+    let before = generation(cx);
+    let bounds = cx.debug_bounds(KEY).expect("the Refresh");
+    let off = gpui::point(center.x, bounds.top() - px(12.));
+    cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(cx);
+    cx.simulate_mouse_move(
+        off,
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    cx.simulate_mouse_up(off, gpui::MouseButton::Left, gpui::Modifiers::default());
+    draw(cx);
+    busy(cx, None);
+    assert_eq!(generation(cx), before, "released off it, it reads nothing");
+    focus(cx, &way_back);
+    key_down(cx, "enter", false);
+    key_up(cx, "enter");
+    settle(&app, cx).await;
+    assert!(generation(cx) > before, "the next Return: it reads again");
+}
+
+/// Return or Space pressed on the marked tab's Refresh while the other
+/// key's refused press is down is refused with it, though the write has
+/// ended, and its key-up leaves the first key's press refused
+/// (`GitTurtle::way_back_key_down`), in either key order and whichever
+/// comes up first: the first key's repeats after it and its key-up press
+/// nothing, and the next press of it reads once. The second key going
+/// down ended the first's press, so the press GPUI armed on the second
+/// key-down was made at whichever key-up came next, and read.
+#[gpui::test]
+async fn a_marked_tab_s_refused_refresh_key_press_refuses_the_other_key(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    cx.update(|window, _| window.activate_window());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    draw(cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+    let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+    let busy = |cx: &mut VisualTestContext, write: Option<&'static str>| {
+        app.update(cx, |app, _| app.operation_busy = write);
+        draw(cx);
+    };
+    let key_down = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
+            is_held,
+            prefer_character_input: false,
+        });
+        draw(cx);
+    };
+    let key_up = |cx: &mut VisualTestContext, key: &str| {
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
+        });
+        draw(cx);
+    };
+    let tooltip = format!(
+        "Refresh · {}",
+        crate::shortcuts::label(crate::shortcuts::ShortcutId::Refresh)
+    );
+    cx.update(|window, cx| window.focus(&way_back, cx));
+    draw(cx);
+    for (first, second, first_up_first) in [
+        ("enter", "space", false),
+        ("space", "enter", false),
+        ("enter", "space", true),
+    ] {
+        busy(cx, Some("Fetching…"));
+        let before = generation(cx);
+        key_down(cx, first, false);
+        busy(cx, None);
+        key_down(cx, second, false);
+        // Refused with the first, it draws nothing of the write that
+        // ended: no busy look, its tooltip its name and shortcut.
+        assert!(
+            !app.read_with(cx, |app, _| app.busy_shown()),
+            "{second} refused after the write: no busy look ({first} up first: \
+             {first_up_first})"
+        );
+        assert_eq!(
+            crate::workspace::refusals::tooltip("navigation-refresh").as_deref(),
+            Some(tooltip.as_str()),
+            "{second} refused after the write: its tooltip gives its name and \
+             shortcut ({first} up first: {first_up_first})"
+        );
+        if first_up_first {
+            key_up(cx, first);
+            key_down(cx, second, true);
+            key_up(cx, second);
+        } else {
+            key_up(cx, second);
+            // The first key's repeats, marked held and, as X11 sends
+            // them, fresh, then its key-up.
+            key_down(cx, first, true);
+            key_down(cx, first, false);
+            key_up(cx, first);
+        }
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before,
+            "{second} pressed while a refused {first} is down reads nothing \
+             ({first} up first: {first_up_first})"
+        );
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "focus stays on the Refresh"
+        );
+        key_down(cx, first, false);
+        key_up(cx, first);
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before + 1,
+            "the next {first} reads once ({first} up first: {first_up_first})"
+        );
+    }
+}
+
+/// A Return or Space held in Settings' Name as the read that marks the
+/// tab gives focus on to the mark's way back presses nothing there, as
+/// its press began on Name (decided 2026-11-14: a press acts only on the
+/// control it began on; `GitTurtle::way_back_key_down`): its repeats,
+/// marked held and, as X11 sends them, fresh or a release with its
+/// press, and its key-up read nothing, while a fresh press after its
+/// key-up reads once. The repeats armed the Refresh, so a release with
+/// its press, and the key-up, read the repository again.
+#[gpui::test]
+async fn a_marked_tab_s_refresh_takes_no_press_that_began_elsewhere(cx: &mut TestAppContext) {
+    use crate::branch_actions::tests::REPEATS;
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    // Focus events carry focus paths only in an active window.
+    cx.update(|window, _| window.activate_window());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let away = fixture.path().join("moved-away");
+    let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+    // A key event as the window gets it, with no frame or task between
+    // it and the next, as a release and its press come together.
+    let key = |cx: &mut VisualTestContext, name: &str, down: Option<bool>| {
+        let keystroke = gpui::Keystroke::parse_with_os(name, crate::shortcuts::host_os()).unwrap();
+        let input = match down {
+            Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke,
+                is_held,
+                prefer_character_input: false,
+            }),
+            None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+        };
+        cx.update(|window, cx| window.dispatch_event(input, cx));
+    };
+    let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+    for name in ["enter", "space"] {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(&app, cx).await;
+        let field = app.read_with(cx, |app, cx| app.identity_name_for_test().focus_handle(cx));
+        cx.update(|window, cx| window.focus(&field, cx));
+        draw(cx);
+        key(cx, name, Some(false));
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "{name}: marked"
+        );
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "{name}: focus goes on to the way back, the key still down"
+        );
+        let before = generation(cx);
+        let held = REPEATS
+            .iter()
+            .copied()
+            .chain(std::iter::once(("its key-up", &[None][..])));
+        for (repeat, events) in held {
+            for down in events {
+                key(cx, name, *down);
+            }
+            settle(&app, cx).await;
+            assert_eq!(
+                generation(cx),
+                before,
+                "{name}, {repeat}: the press that began on Name reads nothing"
+            );
+        }
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "{name}: focus stays on the way back"
+        );
+        key(cx, name, Some(false));
+        key(cx, name, None);
+        settle(&app, cx).await;
+        assert_eq!(
+            generation(cx),
+            before + 1,
+            "{name}: a fresh press after the key-up reads once"
+        );
+        // Found again, so the next key's read can mark the tab.
+        std::fs::rename(&away, root.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "{name}: found again"
+        );
+    }
+}
+
+/// The rail's Open repository, the mark's way back where the rail stands
+/// in the navigation's place, takes no press that began on another
+/// control either: in a window too narrow for the navigation, a Return
+/// or Space held in Settings' Name as the read that marks the tab gives
+/// focus on to it opens no folder chooser, its repeats, marked held and,
+/// as X11 sends them, fresh or a release with its press, and its key-up
+/// included, while a fresh press after its key-up opens one, once. It
+/// held the way back's focus with none of the Refresh's capture, so the
+/// held key's repeats armed it and its key-up, or a release with its
+/// press, opened the chooser (FU44-D9's code and design re-checks).
+#[gpui::test]
+async fn a_marked_tab_s_rail_open_takes_no_press_that_began_elsewhere(cx: &mut TestAppContext) {
+    use crate::branch_actions::tests::REPEATS;
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    // Focus events carry focus paths only in an active window.
+    cx.update(|window, _| window.activate_window());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    // Too narrow for the navigation, so the rail stands in its place.
+    cx.simulate_resize(size(px(700.), px(900.)));
+    draw(cx);
+    let away = fixture.path().join("moved-away");
+    // A key event as the window gets it, with no frame or task between
+    // it and the next, as a release and its press come together.
+    let key = |cx: &mut VisualTestContext, name: &str, down: Option<bool>| {
+        let keystroke = gpui::Keystroke::parse_with_os(name, crate::shortcuts::host_os()).unwrap();
+        let input = match down {
+            Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke,
+                is_held,
+                prefer_character_input: false,
+            }),
+            None => gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+        };
+        cx.update(|window, cx| window.dispatch_event(input, cx));
+    };
+    let way_back = app.read_with(cx, |app, _| app.mark_way_back.clone());
+    for name in ["enter", "space"] {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(&app, cx).await;
+        let field = app.read_with(cx, |app, cx| app.identity_name_for_test().focus_handle(cx));
+        cx.update(|window, cx| window.focus(&field, cx));
+        draw(cx);
+        key(cx, name, Some(false));
+        std::fs::rename(root.join(".git"), &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "{name}: marked"
+        );
+        assert!(
+            cx.debug_bounds("rail-open").is_some()
+                && cx.debug_bounds("navigation-refresh").is_none(),
+            "{name}: the rail's Open repository is the way back"
+        );
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "{name}: focus goes on to it, the key still down"
+        );
+        let held = REPEATS
+            .iter()
+            .copied()
+            .chain(std::iter::once(("its key-up", &[None][..])));
+        for (repeat, events) in held {
+            for down in events {
+                key(cx, name, *down);
+            }
+            settle(&app, cx).await;
+            assert!(
+                !cx.did_prompt_for_paths(),
+                "{name}, {repeat}: the press that began on Name opens no folder chooser"
+            );
+        }
+        assert!(
+            cx.update(|window, _| way_back.is_focused(window)),
+            "{name}: focus stays on the rail's Open repository"
+        );
+        key(cx, name, Some(false));
+        key(cx, name, None);
+        settle(&app, cx).await;
+        assert!(
+            cx.did_prompt_for_paths(),
+            "{name}: a fresh press after the key-up opens the folder chooser"
+        );
+        cx.simulate_path_prompt_response(|_| None);
+        settle(&app, cx).await;
+        assert!(!cx.did_prompt_for_paths(), "{name}: one chooser");
+        // Found again, so the next key's read can mark the tab.
+        std::fs::rename(&away, root.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            !app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+            "{name}: found again"
+        );
+    }
+}
+
+/// The window losing keyboard focus, to another app or to nothing in it
+/// focused, ends every Return and Space press it noted, whose key-up it
+/// may then never get (decided 2026-11-14 night, by the 2026-11-11 latch
+/// rule: a press latch ends on a lost key-up, focus leaving the view or
+/// the window), so the next press of that key on a marked tab's Refresh
+/// reads. A press begun on the list, its key-up lost so, was kept, and
+/// the Refresh took that next press for the one that began elsewhere
+/// and refused it, once, with nothing to say why (FU44-D9's code
+/// re-check). Each first press here sends no key-up: the window never
+/// gets it.
+#[gpui::test]
+async fn a_marked_tab_s_refresh_takes_a_press_after_the_window_lost_keyboard_focus(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    // Focus events carry focus paths only in an active window.
+    cx.update(|window, _| window.activate_window());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("moved-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.tab_repository_gone(window, cx)));
+    settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+        "marked"
+    );
+    let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
+    let key = |cx: &mut VisualTestContext, name: &str, down: bool| {
+        let keystroke = gpui::Keystroke::parse_with_os(name, crate::shortcuts::host_os()).unwrap();
+        let input = if down {
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke,
+                is_held: false,
+                prefer_character_input: false,
+            })
+        } else {
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke })
+        };
+        cx.update(|window, cx| window.dispatch_event(input, cx));
+    };
+    let (way_back, list) =
+        app.read_with(cx, |app, _| (app.mark_way_back.clone(), app.focus.clone()));
+    for name in ["enter", "space"] {
+        for lost in ["another app takes focus", "nothing in the window has focus"] {
+            cx.update(|window, cx| window.focus(&list, cx));
+            draw(cx);
+            key(cx, name, true);
+            if lost == "another app takes focus" {
+                cx.deactivate_window();
+                draw(cx);
+                cx.update(|window, _| window.activate_window());
+            } else {
+                cx.update(|window, cx| window.blur(cx));
+            }
+            draw(cx);
+            cx.update(|window, cx| window.focus(&way_back, cx));
+            draw(cx);
+            let before = generation(cx);
+            key(cx, name, true);
+            key(cx, name, false);
+            settle(&app, cx).await;
+            assert_eq!(
+                generation(cx),
+                before + 1,
+                "{name}, {lost}: the next press on the Refresh reads once"
+            );
+        }
+    }
+}
+
+/// An explicit Open of a marked tab's folder whose snapshot names a
+/// repository another tab already shows, as the work tree enclosing the
+/// folder can be once the folder's own `.git` has gone, merges into that
+/// tab as a new tab's Open does (`tab_snapshot_accepted`): the marked tab
+/// goes, and the other is shown, read once and unmarked, so no two tabs
+/// hold one repository.
+#[gpui::test]
+async fn a_recapture_onto_a_repository_another_tab_shows_merges_into_it(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let enclosing = enclosing_work_tree(fixture.path());
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(enclosing.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    std::fs::rename(root.join(".git"), fixture.path().join("root-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.tabs.len(), 2);
+        assert_eq!(app.repository_tabs.active, Some(0));
+        assert!(
+            app.repository_tabs.tabs[0].error.is_some(),
+            "Refresh marks it"
+        );
+    });
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let paths: Vec<_> = (app.repository_tabs.tabs.iter())
+            .map(|tab| tab.path.clone())
+            .collect();
+        assert_eq!(paths, vec![enclosing.clone()], "the marked tab goes");
+        assert_eq!(app.repository_tabs.active, Some(0), "the other shown");
+        assert_eq!(app.path.as_ref(), Some(&enclosing));
+        assert!(!app.shown_tab_unavailable(), "unmarked");
+        assert_eq!(app.error, None);
+    });
+}
+
+/// A cold tab shown again is opened by its captured root: with its
+/// `.git` away inside another work tree, the switch once opened the
+/// enclosing repository in it. It now shows the tab marked, on its own
+/// repository, and leaves the other tab as it was.
+#[gpui::test]
+async fn a_cold_switch_never_opens_the_enclosing_repository(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let enclosing = enclosing_work_tree(fixture.path());
+    let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(other.path().to_owned(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "a cold switch");
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.tabs.len(), 2);
+        assert_eq!(app.repository_tabs.tabs[1].path, other.path());
+    });
+}
+
+/// A cold tab shown again names the Git directory it captured at its
+/// root, which the reopen must find there: with its `.git` swapped for
+/// a third repository's gitfile while another tab was shown, the switch
+/// once opened that third repository in it, the root being the same.
+#[gpui::test]
+async fn a_cold_switch_never_takes_a_swapped_git_entry(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+    let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+    let third_git = gitturtle_core::GitRepository::open(third.path())
+        .unwrap()
+        .git_dir()
+        .to_owned();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(other.path().to_owned(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", third_git.display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(
+        &app,
+        cx,
+        0,
+        &root,
+        &third_git,
+        "a cold switch to a swapped .git",
+    );
+}
+
+/// Regaining focus with the tab's `.git` gone and no repository
+/// enclosing its folder sets up the watcher again and asks for a quiet
+/// read: the tab is marked with the reasons any folder that is not a
+/// repository gets, and nothing says "Some changes need Refresh" beside
+/// them. The watcher's setup once failed as Git's own "not a git
+/// repository" into that warning.
+#[gpui::test]
+async fn regained_focus_with_no_repository_found_says_only_why(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    // What the window's activation observer asks for (`main.rs`).
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.ensure_local_watcher(true, window, cx);
+            app.queue_automatic_refresh(
+                crate::local_refresh::LocalChange {
+                    rescan: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        })
+    });
+    for _ in 0..4 {
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+    }
+    assert_not_a_repository(&app, cx, &root, "regained focus");
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.operation_error, None, "nothing beside the mark");
+        assert_eq!(
+            app.automatic.watch_warning(),
+            None,
+            "the watcher's setup marked the tab instead"
+        );
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("local-refresh-warning").is_none(),
+        "no \"Some changes need Refresh\" beside the mark"
+    );
+}
+
+/// The watcher's setup failing after Git reported the administration
+/// directories, its watch refused as when the host's inotify instances
+/// run out, warns only while the tab's repository is still the one at
+/// its path. With the tab's `.git` swapped for a third repository's
+/// gitfile, whose directories Git then reports, the tab is marked and
+/// names that repository, with no "Some changes need Refresh" beside
+/// the mark. The refused watch once warned there and left the tab
+/// unmarked, and with no watcher nothing marked it later.
+#[gpui::test]
+async fn a_refused_watch_warns_only_while_the_repository_is_still_there(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+    let third_git = gitturtle_core::GitRepository::open(third.path())
+        .unwrap()
+        .git_dir()
+        .to_owned();
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let refuse_watch = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.watch_through(crate::local_refresh::Backend::Unavailable, window, cx)
+            })
+        });
+    };
+
+    refuse_watch(&app, cx);
+    for _ in 0..2 {
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+    }
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[0];
+        assert!(
+            !app.tab_label(shown).0.ends_with(" · unavailable"),
+            "still there: unmarked"
+        );
+        assert_eq!(app.error, None, "still there");
+        let warning = app
+            .automatic
+            .watch_warning()
+            .expect("still there: the watcher's warning");
+        assert!(
+            warning.starts_with("Automatic refresh could not start.")
+                && warning.contains("Create native local-change watcher"),
+            "{warning}"
+        );
+    });
+    assert!(
+        cx.debug_bounds("local-refresh-warning").is_some(),
+        "still there: \"Some changes need Refresh\""
+    );
+
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", third_git.display()),
+    )
+    .unwrap();
+    refuse_watch(&app, cx);
+    for _ in 0..2 {
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+    }
+    let after = "a refused watch of a swapped .git";
+    assert_gone(&app, cx, 0, &root, &third_git, after);
+    app.read_with(cx, |app, _| {
+        assert_eq!(
+            app.automatic.watch_warning(),
+            None,
+            "{after}: marked instead"
+        );
+        assert_eq!(
+            app.operation_error, None,
+            "{after}: nothing beside the mark"
+        );
+    });
+    assert!(
+        cx.debug_bounds("local-refresh-warning").is_none(),
+        "{after}: no \"Some changes need Refresh\" beside the mark"
+    );
+}
+
+/// A tab restored at launch is reopened by its saved root as it was
+/// saved, never resolved again: with that root turned into a link to
+/// another repository while the app was closed, the restore marks the
+/// tab " · unavailable" and says why, on its own path, rather than open
+/// the other repository in it.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_restored_tab_whose_root_became_a_link_is_marked_not_switched(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
+    let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+    let root = repository.path().to_owned();
+    let saved: Session = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "tabs": [{ "path": root.to_str().expect("a UTF-8 fixture path") }],
+        "active": 0,
+    }))
+    .unwrap();
+    std::fs::rename(&root, fixture.path().join("moved")).unwrap();
+    std::os::unix::fs::symlink(other.path(), &root).unwrap();
+    let destination = isolated_session("restored-linked.json");
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        root.clone(),
+        saved,
+        destination,
+        size(px(1000.), px(680.)),
+    );
+    let cx = &mut window_cx;
+    settle_tab_test(&app, cx).await;
+    let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+    assert_eq!(
+        (tabs, path, marked, repository, subjects),
+        (1, root.clone(), true, None, Vec::<String>::new()),
+        "restored marked, on its own path"
+    );
+    let error = error.expect("the window says why");
+    assert!(
+        error.starts_with(&format!("The repository at {} is gone.", root.display()))
+            && error.contains(&other.path().display().to_string()),
+        "{error}"
+    );
+}
+
+/// A tab restored at launch whose saved root reaches its repository
+/// through a folder that is a link, as macOS reaches every temporary
+/// folder through `/var` (a link to `/private/var`), opens that
+/// repository unmarked and takes its real root, and Refresh keeps it; a
+/// tab saved at its real root with its Git directories, whose folder
+/// was then moved and linked back from its old place, opens the same
+/// way when it is switched to cold. Compared as saved, both were marked
+/// " · unavailable", where they opened before.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_restored_tab_reached_through_a_linked_folder_opens(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    for folder in ["real", "kept"] {
+        std::fs::create_dir(base.join(folder)).unwrap();
+    }
+    let first = fixture_repository(base.join("real/first"));
+    let second = fixture_repository(base.join("kept/second"));
+    for (repository, subject) in [(&first, "First fixture"), (&second, "Second fixture")] {
+        fixture_git(
+            repository.path(),
+            &["commit", "--allow-empty", "-m", subject],
+        );
+    }
+    std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+    let through = base.join("link/first");
+    let captured = worker::GitDirectories::of(&second);
+    let tab = |path: &Path, git_directories| SavedTab {
+        path: SavedPath::new(path),
+        bookmark: Bookmark::default(),
+        unresolved: false,
+        git_directories,
+    };
+    let saved = Session {
+        version: 1,
+        active: 0,
+        tabs: vec![
+            tab(&through, None),
+            tab(
+                second.path(),
+                Some(SavedGitDirectories {
+                    git_dir: SavedPath::new(&captured.git_dir),
+                    common: SavedPath::new(&captured.common),
+                    git_dir_inode: captured.inodes.git_dir,
+                    common_inode: captured.inodes.common,
+                    git_dir_birth: captured.inodes.git_dir_birth,
+                    common_birth: captured.inodes.common_birth,
+                }),
+            ),
+        ],
+        ..Default::default()
+    };
+    // Moved on the one filesystem and linked back: its inodes are kept.
+    std::fs::rename(base.join("kept"), base.join("moved")).unwrap();
+    std::os::unix::fs::symlink(base.join("moved"), base.join("kept")).unwrap();
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        through,
+        saved,
+        isolated_session("restored-through-a-link.json"),
+        size(px(1000.), px(680.)),
+    );
+    let cx = &mut window_cx;
+    let opened = |cx: &mut VisualTestContext, index: usize, root: &Path, subject: &str| {
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(index), "{subject}");
+            let tab = &app.repository_tabs.tabs[index];
+            assert!(
+                !app.tab_label(tab).0.ends_with(" · unavailable"),
+                "{subject}: marked, {:?}",
+                app.error
+            );
+            assert_eq!(app.error, None, "{subject}");
+            assert_eq!(tab.path, root, "{subject}: the tab takes its real root");
+            assert_eq!(
+                app.repository.as_ref().map(|repository| repository.path()),
+                Some(root),
+                "{subject}"
+            );
+            assert_eq!(
+                app.commits
+                    .iter()
+                    .map(|commit| commit.subject.as_str())
+                    .collect::<Vec<_>>(),
+                [subject]
+            );
+        });
+    };
+    settle_tab_test(&app, cx).await;
+    opened(cx, 0, first.path(), "First fixture");
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle_tab_test(&app, cx).await;
+    opened(cx, 0, first.path(), "First fixture");
+
+    let moved = base.join("moved/second");
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    settle_tab_test(&app, cx).await;
+    opened(cx, 1, &moved, "Second fixture");
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle_tab_test(&app, cx).await;
+    opened(cx, 1, &moved, "Second fixture");
+}
+
+/// A folder that is a link to a repository's own folder opens that
+/// repository in a tab that takes its real root, as Git reports it;
+/// Refresh opens it again, and so does the restore of the session saved
+/// after it, unmarked.
+#[cfg(unix)]
+#[gpui::test]
+async fn an_opened_link_to_a_repository_folder_refreshes_and_restores(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    let repository = fixture_repository(base.join("repository"));
+    fixture_git(
+        repository.path(),
+        &["commit", "--allow-empty", "-m", "Linked fixture"],
+    );
+    let root = repository.path().to_owned();
+    let link = base.join("link-to-repository");
+    std::os::unix::fs::symlink(&root, &link).unwrap();
+    let destination = isolated_session("opened-through-a-link.json");
+    let opened = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext, after: &str| {
+        assert_eq!(
+            first_tab(app, cx),
+            (
+                1,
+                root.clone(),
+                false,
+                None,
+                Some(root.clone()),
+                vec!["Linked fixture".to_owned()]
+            ),
+            "{after}"
+        );
+    };
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        link,
+        Session::default(),
+        destination.clone(),
+        size(px(1000.), px(680.)),
+    );
+    settle_tab_test(&app, &mut window_cx).await;
+    opened(&app, &mut window_cx, "opened");
+    window_cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    settle_tab_test(&app, &mut window_cx).await;
+    opened(&app, &mut window_cx, "Refresh");
+    window_cx
+        .update(|window, cx| app.update(cx, |app, cx| app.save_repository_session(window, cx)));
+    settle_tab_test(&app, &mut window_cx).await;
+
+    let saved = Session::load_at(&destination).unwrap();
+    let (restored, mut window_cx) = open_tab_window(
+        cx,
+        saved.tabs[0].path.path(),
+        saved,
+        isolated_session("restored-after-a-link.json"),
+        size(px(1000.), px(680.)),
+    );
+    settle_tab_test(&restored, &mut window_cx).await;
+    opened(&restored, &mut window_cx, "restored");
+}
+
+/// A malformed saved `git_directories` degrades alone to none captured:
+/// the session loads every tab and its library, a well-formed tab's
+/// directories with them. Failing the whole file, it once dropped every
+/// tab, the library and its groups.
+#[test]
+fn a_malformed_saved_git_directory_degrades_alone() {
+    let file = isolated_session("malformed-directories.json");
+    std::fs::create_dir_all(file.parent().expect("a folder")).unwrap();
+    let session = serde_json::json!({
+        "version": 1,
+        "tabs": [
+            { "path": "/a", "git_directories": 5 },
+            { "path": "/b", "git_directories": { "git_dir": "/b/.git" } },
+            { "path": "/c", "git_directories": { "git_dir": "/c/.git", "common": "/c/.git" } },
+            { "path": "/d", "git_directories": { "git_dir": "/d/.git", "common": "/d/.git", "git_dir_inode": "x" } },
+            { "path": "/e", "git_directories": { "git_dir": "/e/.git", "common": "/e/.git", "git_dir_inode": 7, "common_inode": 8 } },
+        ],
+        "active": 1,
+        "library": [{ "path": "/b" }],
+    });
+    std::fs::write(&file, serde_json::to_vec(&session).unwrap()).unwrap();
+    let loaded = Session::load_at(&file).expect("the session loads");
+    assert_eq!(loaded.tabs.len(), 5);
+    assert_eq!(loaded.active, 1);
+    assert_eq!(loaded.library.len(), 1);
+    for index in [0, 1, 3] {
+        assert!(loaded.tabs[index].git_directories.is_none(), "{index}");
+    }
+    let state = State::from_session(loaded);
+    assert_eq!(
+        state.tabs[2].git_dir,
+        Some(worker::GitDirectories {
+            git_dir: "/c/.git".into(),
+            common: "/c/.git".into(),
+            inodes: worker::DirectoryInodes::default(),
+            restored: true,
+        }),
+        "saved before inodes were kept: nothing to compare"
+    );
+    assert_eq!(
+        state.tabs[4].git_dir.as_ref().map(|tab| tab.inodes),
+        Some(worker::DirectoryInodes {
+            git_dir: Some(7),
+            common: Some(8),
+            ..Default::default()
+        })
+    );
+}
+
+/// Each Git directory's identity, as the window compares a capture
+/// with the repository its status was read from: its inode and, where
+/// both opens read one, its birth time and its device, so an inode
+/// number taken again after a delete, or the same number on another
+/// filesystem, is another repository, and a filesystem that records no
+/// birth time compares the inode alone. At other paths only these tell,
+/// so both opens must have read the inodes: equal birth times without
+/// them are not the same repository.
+#[test]
+fn a_git_directory_s_identity_is_its_inode_and_birth_time() {
+    let directories = |at: &str, inode: Option<u64>, birth: Option<u64>| {
+        let birth = birth.map(std::time::Duration::from_secs);
+        worker::GitDirectories {
+            git_dir: PathBuf::from(at).join(".git"),
+            common: PathBuf::from(at).join(".git"),
+            inodes: worker::DirectoryInodes {
+                git_dir: inode,
+                common: inode,
+                git_dir_birth: birth,
+                common_birth: birth,
+                git_dir_device: Some(1),
+                common_device: Some(1),
+            },
+            restored: false,
+        }
+    };
+    let on_device = |at: &str, device: Option<u64>| {
+        let mut directories = directories(at, Some(7), Some(100));
+        directories.inodes.git_dir_device = device;
+        directories.inodes.common_device = device;
+        directories
+    };
+    let shown = directories("/x/repo", Some(7), Some(100));
+    for (found, same, what) in [
+        (
+            directories("/x/repo", Some(7), Some(100)),
+            true,
+            "unchanged",
+        ),
+        (
+            directories("/x/repo", Some(7), Some(200)),
+            false,
+            "an inode taken again",
+        ),
+        (
+            directories("/x/repo", Some(7), None),
+            true,
+            "no birth time read",
+        ),
+        (
+            directories("/x/repo", Some(8), Some(100)),
+            false,
+            "another inode",
+        ),
+        (
+            directories("/x/repo", None, None),
+            true,
+            "nothing read to compare",
+        ),
+        (
+            directories("/y/repo", Some(7), Some(100)),
+            true,
+            "moved and linked back",
+        ),
+        (
+            directories("/y/repo", Some(7), Some(200)),
+            false,
+            "elsewhere, born later",
+        ),
+        (
+            directories("/y/repo", Some(8), Some(100)),
+            false,
+            "another repository",
+        ),
+        (
+            directories("/y/repo", Some(7), None),
+            true,
+            "elsewhere, no birth time read",
+        ),
+        (
+            directories("/y/repo", None, None),
+            false,
+            "elsewhere, nothing read here",
+        ),
+        (
+            on_device("/x/repo", Some(2)),
+            false,
+            "the same inode on another filesystem",
+        ),
+        (
+            on_device("/y/repo", Some(2)),
+            false,
+            "elsewhere, the same inode on another filesystem",
+        ),
+        (
+            on_device("/y/repo", None),
+            true,
+            "elsewhere, no device read",
+        ),
+    ] {
+        assert_eq!(same_git_directories(&shown, &found), same, "{what}");
+    }
+    let unknown = directories("/x/repo", None, None);
+    for (found, what) in [
+        (
+            directories("/y/repo", None, None),
+            "elsewhere, nothing read either side",
+        ),
+        (
+            directories("/y/repo", Some(7), Some(100)),
+            "elsewhere, nothing read there",
+        ),
+    ] {
+        assert!(!same_git_directories(&unknown, &found), "{what}");
+    }
+    let mut common_later = shown.clone();
+    common_later.inodes.common_birth = Some(std::time::Duration::from_secs(200));
+    assert!(
+        !same_git_directories(&shown, &common_later),
+        "the common directory's inode taken again"
+    );
+    let mut common_elsewhere = shown.clone();
+    common_elsewhere.inodes.common_device = Some(2);
+    assert!(
+        !same_git_directories(&shown, &common_elsewhere),
+        "the common directory's inode on another filesystem"
+    );
+    assert!(
+        !same_git_directories(
+            &directories("/x/repo", None, Some(100)),
+            &directories("/y/repo", None, Some(100)),
+        ),
+        "elsewhere, a birth time without an inode"
+    );
+}
+
+/// A session saved before birth times were kept restores its tabs and
+/// compares their inodes, as it did: the tab opens where its repository
+/// is the one it saved, and is marked where a re-clone at its path took
+/// another inode. The birth times a session saves now are optional
+/// fields such a session lacks.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_session_saved_before_birth_times_compares_the_inodes(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    let repository = fixture_repository(base.join("repository"));
+    fixture_git(
+        repository.path(),
+        &["commit", "--allow-empty", "-m", "Before"],
+    );
+    let root = repository.path().to_owned();
+    let saved = saved_with_inodes(&repository, "before-births-saved.json");
+    let mut older = serde_json::to_value(&saved).unwrap();
+    let directories = &mut older["tabs"][0]["git_directories"];
+    let fields = directories.as_object_mut().expect("saved with the tab");
+    if repository.git_dir_birth().is_some() {
+        assert!(fields.contains_key("git_dir_birth"), "{fields:?}");
+    }
+    fields.remove("git_dir_birth");
+    fields.remove("common_birth");
+    let older: Session = serde_json::from_value(older).unwrap();
+    let directories = older.tabs[0].git_directories.as_ref().expect("loaded");
+    assert_eq!(
+        (directories.git_dir_birth, directories.common_birth),
+        (None, None),
+        "none saved"
+    );
+    assert_eq!(directories.git_dir_inode, repository.git_dir_inode());
+    let restore = |cx: &mut TestAppContext, name: &str| {
+        open_tab_window(
+            cx,
+            root.clone(),
+            older.clone(),
+            isolated_session(name),
+            size(px(1000.), px(680.)),
+        )
+    };
+
+    let (app, mut window_cx) = restore(cx, "before-births-first.json");
+    settle_tab_test(&app, &mut window_cx).await;
+    app.read_with(&window_cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        assert!(tab.error.is_none(), "{:?}", tab.error);
+        assert_eq!(app.commits[0].subject, "Before");
+    });
+
+    // Moved aside rather than deleted, which could free the inode for
+    // the new `.git` to take.
+    std::fs::rename(&root, base.join("before")).unwrap();
+    let cloned = fixture_repository(&root);
+    fixture_git(cloned.path(), &["commit", "--allow-empty", "-m", "After"]);
+    assert_ne!(cloned.git_dir_inode(), repository.git_dir_inode());
+    let (app, mut window_cx) = restore(cx, "before-births-second.json");
+    settle_tab_test(&app, &mut window_cx).await;
+    assert_marked_for(&app, &mut window_cx, &root, cloned.git_dir());
+}
+
+/// A syntax error inside `git_directories` is a malformed file, reported
+/// as a syntax error in any other field is; only a value that parses
+/// but has the wrong shape degrades alone. Swallowed, a token that failed
+/// part way let the rest of the file load as if the field were absent.
+#[test]
+fn a_syntax_error_in_saved_git_directories_is_a_malformed_file() {
+    let file = isolated_session("malformed-syntax.json");
+    std::fs::create_dir_all(file.parent().expect("a folder")).unwrap();
+    for malformed in [
+        br#"{"version":1,"tabs":[{"path":"/a","git_directories":tx}],"active":0}"#.as_slice(),
+        br#"{"version":1,"tabs":[{"path":tx}],"active":0}"#,
+    ] {
+        std::fs::write(&file, malformed).unwrap();
+        let error = Session::load_at(&file).expect_err("the file is malformed");
+        assert!(
+            error
+                .downcast_ref::<serde_json::Error>()
+                .is_some_and(serde_json::Error::is_syntax),
+            "{error:#}"
+        );
+    }
+}
+
+/// A tab's captured Git directories are saved with the session and
+/// named by its first reopen after a restart: a linked worktree's
+/// `commondir` re-pointed at another repository, or a `.git` swapped for
+/// a third repository's gitfile, while the app was closed marks the tab
+/// and says what Git finds, rather than take the other repository's refs
+/// and objects with the root unchanged. A session saved without them, as
+/// every older one, loads as it did.
+#[gpui::test]
+async fn a_restored_tab_names_the_git_directories_it_saved(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let main = fixture_repository(fixture.path().join("main"));
+    let linked = fixture.path().join("linked");
+    fixture_git(
+        main.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked",
+            linked.to_str().expect("a UTF-8 fixture path"),
+        ],
+    );
+    let linked = gitturtle_core::GitRepository::open(&linked).unwrap();
+    let swapped = fixture_repository(fixture.path().join("swapped"));
+    let other = fixture_repository(fixture.path().join("other"));
+    let third = fixture_repository(fixture.path().join("third"));
+    let tab = |path: &Path| serde_json::json!({ "path": path.to_str().expect("UTF-8") });
+    let older: Session = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "tabs": [tab(linked.path()), tab(swapped.path())],
+        "active": 0,
+    }))
+    .unwrap();
+    assert!(older.tabs.iter().all(|tab| tab.git_directories.is_none()));
+    let mut state = State::from_session(older);
+    assert!(
+        state
+            .tabs
+            .iter()
+            .all(|tab| tab.resolved && tab.git_dir.is_none()),
+        "an older session loads as it did"
+    );
+    state.tabs[0].git_dir = Some(worker::GitDirectories::of(&linked));
+    state.tabs[1].git_dir = Some(worker::GitDirectories::of(&swapped));
+    let file = isolated_session("saved-directories.json");
+    state.saved().save_at(&file).unwrap();
+    let saved = Session::load_at(&file).unwrap();
+    assert!(
+        saved.tabs.iter().all(|tab| tab.git_directories.is_some()),
+        "saved with each tab"
+    );
+
+    std::fs::write(
+        linked.git_dir().join("commondir"),
+        format!("{}\n", other.git_dir().display()),
+    )
+    .unwrap();
+    std::fs::rename(
+        swapped.path().join(".git"),
+        fixture.path().join("swapped-git-away"),
+    )
+    .unwrap();
+    std::fs::write(
+        swapped.path().join(".git"),
+        format!("gitdir: {}\n", third.git_dir().display()),
+    )
+    .unwrap();
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        linked.path().to_owned(),
+        saved,
+        isolated_session("saved-directories-after.json"),
+        size(px(1000.), px(680.)),
+    );
+    let cx = &mut window_cx;
+    settle_tab_test(&app, cx).await;
+    let marked = |cx: &mut VisualTestContext, index: usize, root: &Path, found: &Path| {
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(index));
+            let tab = &app.repository_tabs.tabs[index];
+            assert_eq!(tab.path, root);
+            assert!(app.tab_label(tab).0.ends_with(" · unavailable"), "marked");
+            let error = app.error.clone().expect("the window says why");
+            assert!(
+                error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                    && error.contains(&found.display().to_string()),
+                "{error}"
+            );
+            assert!(app.commits.is_empty(), "nothing of the other repository");
+        });
+    };
+    marked(cx, 0, linked.path(), other.git_dir());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    settle_tab_test(&app, cx).await;
+    marked(cx, 1, swapped.path(), third.git_dir());
+}
+
+/// A session saved with `repository`'s tab as it holds it once its
+/// snapshot is accepted, read back from a file as a launch reads it.
+#[cfg(unix)]
+fn saved_with_inodes(repository: &gitturtle_core::GitRepository, name: &str) -> Session {
+    let path = repository.path().to_str().expect("UTF-8");
+    let older: Session = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "tabs": [{ "path": path }],
+        "active": 0,
+    }))
+    .unwrap();
+    let mut state = State::from_session(older);
+    let captured = worker::GitDirectories::of(repository);
+    state.tabs[0].git_dir = Some(captured.clone());
+    let file = isolated_session(name);
+    state.saved().save_at(&file).unwrap();
+    let saved = Session::load_at(&file).unwrap();
+    let directories = saved.tabs[0]
+        .git_directories
+        .as_ref()
+        .expect("saved with the tab");
+    assert_eq!(directories.git_dir_inode, captured.inodes.git_dir);
+    assert_eq!(directories.common_inode, captured.inodes.common);
+    assert_eq!(directories.git_dir_birth, captured.inodes.git_dir_birth);
+    assert_eq!(directories.common_birth, captured.inodes.common_birth);
+    saved
+}
+
+/// `app`'s only tab, marked for `found`, shows nothing of it.
+#[cfg(unix)]
+fn assert_marked_for(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    root: &Path,
+    found: &Path,
+) {
+    app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        assert_eq!(tab.path, root);
+        assert!(app.tab_label(tab).0.ends_with(" · unavailable"), "marked");
+        let error = app.error.clone().expect("the window says why");
+        assert!(
+            error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                && error.contains(&found.display().to_string()),
+            "{error}"
+        );
+        assert!(app.commits.is_empty(), "nothing of the other repository");
+    });
+}
+
+/// A folder above a restored tab's root, re-pointed while the app was
+/// closed to another of the person's repositories with the root's folder
+/// name, reaches the same paths and is told by the inodes the session
+/// saved: the tab is marked as for a swapped `.git`, with the same
+/// words, and shows none of that repository. Compared by path alone,
+/// it took the other repository, writes following it.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_restored_tab_whose_folder_above_was_re_pointed_is_marked(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    for folder in ["projects", "elsewhere"] {
+        std::fs::create_dir(base.join(folder)).unwrap();
+    }
+    let repository = fixture_repository(base.join("projects/shared-name"));
+    let other = fixture_repository(base.join("elsewhere/shared-name"));
+    for (repository, subject) in [(&repository, "Own fixture"), (&other, "Other fixture")] {
+        fixture_git(
+            repository.path(),
+            &["commit", "--allow-empty", "-m", subject],
+        );
+    }
+    let root = repository.path().to_owned();
+    let saved = saved_with_inodes(&repository, "folder-above-saved.json");
+    std::fs::rename(base.join("projects"), base.join("projects-away")).unwrap();
+    std::os::unix::fs::symlink(base.join("elsewhere"), base.join("projects")).unwrap();
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        root.clone(),
+        saved,
+        isolated_session("folder-above-after.json"),
+        size(px(1000.), px(680.)),
+    );
+    let cx = &mut window_cx;
+    settle_tab_test(&app, cx).await;
+    assert_marked_for(&app, cx, &root, other.git_dir());
+}
+
+/// A repository cloned again at a restored tab's path has new inodes and
+/// is refused as a re-pointed folder is, which it cannot be told from.
+/// Closing the tab and opening the folder adopts it: a fresh open has
+/// no saved fields, and the tab it makes holds the new repository's.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_restored_tab_refuses_a_re_clone_until_its_folder_is_opened_again(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    let repository = fixture_repository(base.join("repository"));
+    fixture_git(
+        repository.path(),
+        &["commit", "--allow-empty", "-m", "Before"],
+    );
+    let root = repository.path().to_owned();
+    let saved = saved_with_inodes(&repository, "re-clone-saved.json");
+    // Moved aside rather than deleted, which could free the inode for
+    // the new `.git` to take.
+    std::fs::rename(&root, base.join("before")).unwrap();
+    let cloned = fixture_repository(&root);
+    fixture_git(cloned.path(), &["commit", "--allow-empty", "-m", "After"]);
+    assert_ne!(cloned.git_dir_inode(), repository.git_dir_inode());
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        root.clone(),
+        saved,
+        isolated_session("re-clone-after.json"),
+        size(px(1000.), px(680.)),
+    );
+    let cx = &mut window_cx;
+    settle_tab_test(&app, cx).await;
+    assert_marked_for(&app, cx, &root, cloned.git_dir());
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.close_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    assert!(app.read_with(cx, |app, _| app.repository_tabs.tabs.is_empty()));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        assert_eq!(tab.path, root);
+        assert!(tab.error.is_none(), "unmarked");
+        assert!(!app.tab_label(tab).0.ends_with(" · unavailable"));
+        assert_eq!(app.error, None);
+        assert_eq!(
+            app.commits
+                .iter()
+                .map(|commit| commit.subject.as_str())
+                .collect::<Vec<_>>(),
+            ["After"]
+        );
+        assert_eq!(
+            tab.git_dir.as_ref(),
+            Some(&worker::GitDirectories::of(&cloned)),
+            "it holds the new repository's, as a tab of this run does"
+        );
+    });
+}
+
+/// QA-107: a tab marked as it is restored cold, from a saved session
+/// whose repository was cloned again while the app was closed, opens
+/// Projects on the selected action tab with its ring whole, at 13 pt in
+/// a full window and 18 pt in a 461 × 490 half tile, as every other way
+/// onto the page does. Focus stayed on History's list, which Projects
+/// does not draw, so the page showed no focus and a screen reader was
+/// left on the window itself.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_marked_tab_restored_cold_opens_projects_on_its_ringed_first_stop(
+    cx: &mut TestAppContext,
+) {
+    use crate::appearance::{ThemeChoice, custom::ThemeSelection};
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    let repository = fixture_repository(base.join("repository"));
+    fixture_git(
+        repository.path(),
+        &["commit", "--allow-empty", "-m", "Before"],
+    );
+    let root = repository.path().to_owned();
+    let saved = saved_with_inodes(&repository, "first-stop-saved.json");
+    // Moved aside rather than deleted, which could free the inode for
+    // the new `.git` to take.
+    std::fs::rename(&root, base.join("before")).unwrap();
+    let cloned = fixture_repository(&root);
+    for (text, width, height) in [(13, 1280., 800.), (18, 461., 490.)] {
+        let at = format!("{text} pt in {width} × {height}");
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            root.clone(),
+            saved.clone(),
+            isolated_session(&format!("first-stop-after-{text}.json")),
+            size(px(width), px(height)),
+        );
+        let cx = &mut window_cx;
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            app.update(cx, |app, cx| {
+                app.settings.theme = ThemeSelection::BuiltIn(ThemeChoice::Midnight);
+                app.settings.follow_system = false;
+                app.apply_appearance(window, cx);
+            });
+            crate::appearance::apply_text_sizes(text, 12, window, cx);
+        });
+        settle_tab_test(&app, cx).await;
+        assert_marked_for(&app, cx, &root, cloned.git_dir());
+        crate::tags::tests::draw(cx);
+        cx.update(|window, cx| {
+            let app = app.read(cx);
+            assert!(app.page == AppPage::Projects, "{at}");
+            assert!(
+                app.hub.read(cx).selected_mode_focused(window),
+                "{at}: the selected action tab holds focus"
+            );
+            assert!(
+                app.app_focus.contains_focused(window, cx),
+                "{at}: inside the window's handlers"
+            );
+        });
+        crate::tags::tests::assert_ring_painted(cx, "project-mode-Open", &at);
+        crate::tags::tests::assert_rings_whole(cx, &["project-mode-Open"]);
+        // The reason begins in the view the ring leaves it.
+        let reason = crate::tags::tests::rendered(cx, "project-hub-error");
+        let view = app.read_with(cx, |app, cx| app.hub.read(cx).body_scroll().bounds());
+        assert!(
+            reason.top() < view.bottom() && reason.top() >= view.top(),
+            "{at}: the reason {reason:?} begins in {view:?}"
+        );
+    }
+}
+
+/// A session saved on a repository whose `.git` was then swapped for a
+/// gitfile to a third repository while the app was closed, and a file
+/// added to its folder, restored cold in a window that opens Projects on
+/// its first stop with the mark's reason, the tab's folder among the
+/// recent projects. Returns the fixture, the window and the third
+/// repository's Git directory.
+#[cfg(unix)]
+async fn restored_marked_with_its_row(
+    cx: &mut TestAppContext,
+    name: &str,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    VisualTestContext,
+    PathBuf,
+) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    let repository = fixture_repository(base.join("repository"));
+    fixture_git(
+        repository.path(),
+        &["commit", "--allow-empty", "-m", "Before"],
+    );
+    let root = repository.path().to_owned();
+    let saved = saved_with_inodes(&repository, &format!("{name}-saved.json"));
+    let third = fixture_repository(base.join("third"));
+    fixture_git(third.path(), &["commit", "--allow-empty", "-m", "Third"]);
+    let third_git = third.git_dir().to_owned();
+    std::fs::rename(root.join(".git"), base.join("away-git")).unwrap();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", third_git.display()),
+    )
+    .unwrap();
+    // A change for the header to count once the tab is captured afresh
+    // ([`assert_recaptured`]).
+    std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        root.clone(),
+        saved,
+        isolated_session(&format!("{name}-after.json")),
+        size(px(1280.), px(800.)),
+    );
+    settle_tab_test(&app, &mut window_cx).await;
+    let hub = app.read_with(&window_cx, |app, _| app.hub.clone());
+    window_cx.update(|_, cx| hub.update(cx, |hub, cx| hub.set_recent(vec![root], cx)));
+    crate::views::tests::draw(&mut window_cx);
+    (fixture, app, window_cx, third_git)
+}
+
+/// Enter going down in the window, a held key's repeat where `is_held`.
+fn enter_down(cx: &mut VisualTestContext, is_held: bool) {
+    cx.simulate_event(gpui_kit::KeyDownEvent {
+        keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+        is_held,
+        prefer_character_input: false,
+    });
+    crate::views::tests::draw(cx);
+}
+
+fn enter_up(cx: &mut VisualTestContext) {
+    cx.simulate_event(gpui_kit::KeyUpEvent {
+        keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+    });
+    crate::views::tests::draw(cx);
+}
+
+/// A restored marked tab's Projects page as it opened: focus on
+/// `focus`, the mark's reason said, the tab still marked and nothing
+/// opened or captured.
+#[cfg(unix)]
+fn assert_nothing_opened(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    focus: Option<&FocusHandle>,
+    third_git: &Path,
+    at: &str,
+) {
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        let hub = app.hub.read(cx);
+        assert_eq!(app.page, AppPage::Projects, "{at}");
+        match focus {
+            Some(focus) => assert!(focus.is_focused(window), "{at}: focus stays"),
+            None => assert!(hub.selected_mode_focused(window), "{at}: focus stays"),
+        }
+        assert!(hub.shown_error().is_some(), "{at}: the reason stays");
+        assert!(!hub.shown_busy(), "{at}: nothing opens");
+        let tab = &app.repository_tabs.tabs[0];
+        assert!(tab.error.is_some(), "{at}: still marked");
+        assert_ne!(
+            tab.git_dir.as_ref().map(|dirs| dirs.git_dir.as_path()),
+            Some(third_git),
+            "{at}: nothing captured"
+        );
+    });
+}
+
+/// Enter or Space on a restored marked tab's first stop, the action tab
+/// already selected, does nothing: it cleared the mark's reason and moved
+/// focus to the recent search, where a held Enter's next repeat opened
+/// the first recent project, the marked tab, a fresh capture nobody
+/// asked for. Held as repeats marked held (macOS, Wayland) or as fresh
+/// presses (X11), with an unpaired release among them, the key presses
+/// nothing that moves focus.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_held_enter_on_a_restored_marked_tab_s_first_stop_opens_nothing(cx: &mut TestAppContext) {
+    let (_fixture, app, mut window_cx, third_git) =
+        restored_marked_with_its_row(cx, "held-first-stop").await;
+    let cx = &mut window_cx;
+    assert_nothing_opened(&app, cx, None, &third_git, "at launch");
+    cx.simulate_keystrokes("space");
+    crate::views::tests::draw(cx);
+    assert_nothing_opened(&app, cx, None, &third_git, "Space");
+    enter_down(cx, false);
+    for _ in 0..4 {
+        enter_down(cx, true);
+    }
+    assert_nothing_opened(&app, cx, None, &third_git, "held, its repeats marked");
+    enter_up(cx);
+    settle_tab_test(&app, cx).await;
+    assert_nothing_opened(&app, cx, None, &third_git, "released");
+    for _ in 0..4 {
+        enter_down(cx, false);
+    }
+    // X11's unpaired auto-release, its next press a fresh one.
+    enter_up(cx);
+    enter_down(cx, false);
+    enter_down(cx, false);
+    enter_up(cx);
+    settle_tab_test(&app, cx).await;
+    assert_nothing_opened(&app, cx, None, &third_git, "X11's repeats");
+}
+
+/// The recent search's Enter opens only for a press that began in the
+/// field and is not held: an Enter that began on another control, its
+/// X11 repeat arriving as a fresh press once focus moved to the search,
+/// and a held repeat open nothing; a fresh press there opens the first
+/// recent project.
+#[cfg(unix)]
+#[gpui::test]
+async fn the_recent_search_opens_only_for_an_enter_that_began_in_it(cx: &mut TestAppContext) {
+    let (_fixture, app, mut window_cx, third_git) =
+        restored_marked_with_its_row(cx, "search-enter").await;
+    let cx = &mut window_cx;
+    let search = app.read_with(cx, |app, cx| app.hub.read(cx).search_focus(cx));
+    // Begun on the first stop, then focus moves to the search, as a
+    // press that moves focus does.
+    enter_down(cx, false);
+    cx.update(|window, cx| search.focus(window, cx));
+    crate::views::tests::draw(cx);
+    enter_down(cx, false);
+    assert_nothing_opened(&app, cx, Some(&search), &third_git, "an X11 repeat");
+    enter_down(cx, true);
+    assert_nothing_opened(&app, cx, Some(&search), &third_git, "a marked repeat");
+    enter_up(cx);
+    settle_tab_test(&app, cx).await;
+    // Held from the field itself, its repeats open nothing either.
+    enter_down(cx, true);
+    assert_nothing_opened(&app, cx, Some(&search), &third_git, "held in the field");
+    enter_up(cx);
+    settle_tab_test(&app, cx).await;
+    // A fresh press in the field opens the first recent project.
+    enter_down(cx, false);
+    enter_up(cx);
+    settle_tab_test(&app, cx).await;
+    let root = app.read_with(cx, |app, _| app.repository_tabs.tabs[0].path.clone());
+    assert_recaptured(&app, cx, 0, &root, &third_git);
+}
+
+/// The recent search opens nothing for a modified Enter, which its
+/// field reports as another Enter or not at all, nor for an Enter that
+/// goes down while an input method composes there, which commits the
+/// composition; a plain press, its text committed, then opens the first
+/// recent project. Acted on as a raw key-down that checked neither, each
+/// opened it. A modified press leaves nothing noted for a plain Enter
+/// the field reports with no key-down: noted for it, and taken only by
+/// the plain Enter, it opened the project then.
+#[cfg(unix)]
+#[gpui::test]
+async fn the_recent_search_opens_nothing_for_a_modified_or_composing_enter(
+    cx: &mut TestAppContext,
+) {
+    use gpui::EntityInputHandler as _;
+    let (_fixture, app, mut window_cx, third_git) =
+        restored_marked_with_its_row(cx, "search-modified-enter").await;
+    let cx = &mut window_cx;
+    let (search, field) = app.read_with(cx, |app, cx| {
+        let hub = app.hub.read(cx);
+        (hub.search_focus(cx), hub.search_field())
+    });
+    cx.update(|window, cx| search.focus(window, cx));
+    crate::views::tests::draw(cx);
+    let press = |cx: &mut VisualTestContext, keys: &str| {
+        let keystroke =
+            gpui_kit::Keystroke::parse_with_os(keys, crate::shortcuts::host_os()).unwrap();
+        cx.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        crate::views::tests::draw(cx);
+        cx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+        crate::views::tests::draw(cx);
+    };
+    for keys in ["ctrl-enter", "cmd-enter", "alt-enter", "shift-enter"] {
+        press(cx, keys);
+        settle_tab_test(&app, cx).await;
+        assert_nothing_opened(&app, cx, Some(&search), &third_git, keys);
+        // A plain Enter the field reports with no key-down of its own.
+        cx.update(|_, cx| {
+            field.update(cx, |_, cx| {
+                cx.emit(gpui_kit::component::input::InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                })
+            })
+        });
+        crate::views::tests::draw(cx);
+        settle_tab_test(&app, cx).await;
+        let after = format!("{keys}, then a reported Enter");
+        assert_nothing_opened(&app, cx, Some(&search), &third_git, &after);
+    }
+    // "repo" composing, which the recent project's folder matches.
+    cx.update(|window, cx| {
+        field.update(cx, |field, cx| {
+            field.replace_and_mark_text_in_range(None, "repo", None, window, cx)
+        })
+    });
+    crate::views::tests::draw(cx);
+    press(cx, "enter");
+    settle_tab_test(&app, cx).await;
+    assert_nothing_opened(&app, cx, Some(&search), &third_git, "composing");
+    cx.update(|window, cx| field.update(cx, |field, cx| field.unmark_text(window, cx)));
+    crate::views::tests::draw(cx);
+    press(cx, "enter");
+    settle_tab_test(&app, cx).await;
+    let root = app.read_with(cx, |app, _| app.repository_tabs.tabs[0].path.clone());
+    assert_recaptured(&app, cx, 0, &root, &third_git);
+}
+
+/// A window on a whole tab that has switched to `gone`, a cold tab whose
+/// repository is no longer there, its read held so the test can act
+/// before it fails and the window shows Projects.
+fn switch_to_gone_cold_tab(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    gone: PathBuf,
+) -> crate::worker::ReaderHeld {
+    let index = app.update(cx, |app, _| {
+        app.repository_tabs.tabs.push(Tab {
+            path: gone,
+            resolved: true,
+            git_dir: None,
+            saved: Bookmark::default(),
+            warm: None,
+            error: None,
+            before_mark: None,
+        });
+        app.repository_tabs.tabs.len() - 1
+    });
+    let held = hold_reads(app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(index, window, cx)));
+    crate::views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.repository.is_none()),
+        "the cold tab is read with no repository in the window"
+    );
+    held
+}
+
+/// Lets the held read of [`switch_to_gone_cold_tab`] fail, and draws
+/// Projects, which the window shows in its place.
+async fn fail_held_read(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    held: crate::worker::ReaderHeld,
+) {
+    drop(held);
+    settle_tab_test(app, cx).await;
+    crate::views::tests::draw(cx);
+    assert_eq!(app.read_with(cx, |app, _| app.page), AppPage::Projects);
+}
+
+/// Focus the person moved while the tab was read stays theirs only
+/// where Projects draws it: a tab strip control keeps focus, and the
+/// navigation's filter, which Projects does not draw, gives way to the
+/// selected action tab as the frame that draws the page ends. Left
+/// there, focus rested on a control no frame drew and no key reached.
+#[gpui::test]
+async fn a_failed_cold_restore_keeps_only_the_focus_projects_draws(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let held = switch_to_gone_cold_tab(&app, cx, fixture.path().join("gone-filter"));
+    cx.update(|window, cx| {
+        app.read(cx)
+            .nav_search
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window, cx)
+    });
+    crate::views::tests::draw(cx);
+    fail_held_read(&app, cx, held).await;
+    cx.update(|window, cx| {
+        assert!(
+            app.read(cx).hub.read(cx).selected_mode_focused(window),
+            "the filter gives way to the page's first stop"
+        );
+    });
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    crate::views::tests::draw(cx);
+    let held = switch_to_gone_cold_tab(&app, cx, fixture.path().join("gone-menu"));
+    let strip_control = cx.update(|window, cx| {
+        let root = app.read(cx).app_focus.clone();
+        root.focus(window, cx);
+        window.focus_next(cx);
+        window.focused(cx).expect("Tab reaches the tab strip")
+    });
+    crate::views::tests::draw(cx);
+    fail_held_read(&app, cx, held).await;
+    cx.update(|window, _| {
+        assert!(
+            strip_control.is_focused(window),
+            "Projects draws the tab strip, whose control keeps focus"
+        );
+    });
+}
+
+/// A dialog open as the read fails keeps focus, and its close lands on
+/// the page's first stop rather than the list the tab was read with,
+/// which Projects does not draw.
+#[gpui::test]
+async fn a_failed_cold_restore_under_a_dialog_returns_to_the_first_stop(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let held = switch_to_gone_cold_tab(&app, cx, fixture.path().join("gone"));
+    cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+    crate::views::tests::draw(cx);
+    fail_held_read(&app, cx, held).await;
+    cx.update(|window, cx| {
+        assert!(window.has_active_dialog(cx), "the dialog stays open");
+        assert!(
+            !app.read(cx).hub.read(cx).selected_mode_focused(window),
+            "and keeps focus"
+        );
+        window.close_dialog(cx);
+    });
+    crate::views::tests::draw(cx);
+    crate::views::tests::draw(cx);
+    cx.update(|window, cx| {
+        assert!(
+            app.read(cx).hub.read(cx).selected_mode_focused(window),
+            "its close lands on the page's first stop"
+        );
+    });
+}
+
+/// A repository cloned again at the shown tab's path during the run,
+/// brought in by `read`: the tab's directories and inodes follow, so the
+/// next session save holds the ones that are now true and a window
+/// restored from that save finds the tab whole. They once stayed as
+/// captured and the launch after marked the tab. The tab of another
+/// repository takes nothing.
+#[cfg(unix)]
+async fn a_tab_follows_a_repository_cloned_again(
+    cx: &mut TestAppContext,
+    name: &str,
+    read: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext),
+) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    let fixture = tempfile::tempdir().unwrap();
+    let base = fixture.path().canonicalize().unwrap();
+    let repository = fixture_repository(base.join("repository"));
+    fixture_git(
+        repository.path(),
+        &["commit", "--allow-empty", "-m", "Before"],
+    );
+    let root = repository.path().to_owned();
+    let window_size = size(px(1000.), px(680.));
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        root.clone(),
+        Session::default(),
+        isolated_session(&format!("{name}-first.json")),
+        window_size,
+    );
+    // Keeps the watcher, as `settle_tab_test` does not: a quiet read
+    // comes through it.
+    crate::views::tests::settle(&app, &mut window_cx).await;
+    // The rescan that follows the watcher's setup lands first: running
+    // as the repository moves, it finds no repository and marks the tab.
+    quiet_read_landed(&app, &mut window_cx);
+    // Moved aside rather than deleted, which could free the inode for
+    // the new `.git` to take.
+    std::fs::rename(&root, base.join("before")).unwrap();
+    let cloned = fixture_repository(&root);
+    fixture_git(cloned.path(), &["commit", "--allow-empty", "-m", "After"]);
+    assert_ne!(cloned.git_dir_inode(), repository.git_dir_inode());
+
+    read(&app, &mut window_cx);
+    crate::views::tests::settle(&app, &mut window_cx).await;
+    let other = fixture_repository(base.join("other"));
+    let saved = app.update(&mut window_cx, |app, _| {
+        app.repository_tabs.follow_read_repository(&other);
+        app.repository_tabs.saved()
+    });
+    let directories = saved.tabs[0]
+        .git_directories
+        .as_ref()
+        .expect("saved with the tab");
+    assert_eq!(directories.git_dir.path(), cloned.git_dir());
+    assert_eq!(directories.git_dir_inode, cloned.git_dir_inode());
+    assert_eq!(directories.common_inode, cloned.common_dir_inode());
+
+    let (restored, mut window_cx) = open_tab_window(
+        cx,
+        root.clone(),
+        saved,
+        isolated_session(&format!("{name}-second.json")),
+        window_size,
+    );
+    settle_tab_test(&restored, &mut window_cx).await;
+    restored.read_with(&window_cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        assert!(tab.error.is_none(), "{:?}", tab.error);
+        assert!(!app.tab_label(tab).0.ends_with(" · unavailable"));
+        assert_eq!(app.commits[0].subject, "After");
+    });
+}
+
+/// A quiet read of a change in the Git directory reads History, which
+/// brings the repository cloned again in.
+#[cfg(unix)]
+#[gpui::test]
+async fn a_quiet_read_takes_a_repository_cloned_again_into_the_tab(cx: &mut TestAppContext) {
+    a_tab_follows_a_repository_cloned_again(cx, "quiet-read", |app, cx| {
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        app.update(cx, |app, _| {
+            app.automatic
+                .report_local_change(crate::local_refresh::LocalChange {
+                    git: true,
+                    ..Default::default()
+                })
+        });
+        // Found cloned again, the repository's status is read on the
+        // operation thread and its watch is made again, whose rescan
+        // follows (`apply_quiet_refresh`).
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            let reading = app.read_with(cx, |app, _| {
+                app.automatic.quiet_read_requested() || app.status_task.is_some()
+            });
+            if !reading {
+                return;
+            }
+            app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.operations.drain();
+            });
+        }
+        panic!("the quiet read and the status read it asked for never landed");
+    })
+    .await;
+}
+
+/// Show latest installs the snapshot it reads in place, past the
+/// acceptance an Open's snapshot takes.
+#[cfg(unix)]
+#[gpui::test]
+async fn show_latest_takes_a_repository_cloned_again_into_the_tab(cx: &mut TestAppContext) {
+    a_tab_follows_a_repository_cloned_again(cx, "show-latest", |app, cx| {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)))
+    })
+    .await;
+}
+
+/// An explicit Open of the folder a marked tab shows is a fresh
+/// capture: it names no root or Git directory, and once accepted the
+/// tab takes the repository Git finds there and its mark clears. It
+/// once reopened the tab by its old identity and was refused again.
+#[gpui::test]
+async fn an_explicit_open_of_a_marked_tab_s_folder_captures_it_afresh(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        let shown = &app.repository_tabs.tabs[0];
+        assert_eq!(shown.path, root, "the same tab");
+        assert!(shown.error.is_none(), "its mark cleared");
+        assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+        assert_eq!(
+            shown.git_dir.as_ref().map(|dirs| dirs.git_dir.as_path()),
+            Some(third_git.as_path())
+        );
+        assert_eq!(
+            app.repository
+                .as_ref()
+                .map(|repository| repository.git_dir()),
+            Some(third_git.as_path()),
+            "the repository found there"
+        );
+    });
+}
+
+/// The History fixture with its `.git` swapped for a gitfile to a third
+/// repository's Git directory and quiet reads held, marked " ·
+/// unavailable" by Refresh, then a file added to its folder that no read
+/// has seen: the window, the tab's root and the third repository's Git
+/// directory. The fixture's folder held nothing else to count, so a
+/// header that read "Changes" after a fresh capture said nothing of
+/// whether it was read ([`assert_recaptured`]).
+async fn marked_by_a_swapped_git(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    PathBuf,
+    PathBuf,
+) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+    let third_git = third.git_dir().to_owned();
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", third_git.display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.repository_tabs.tabs[0].error.is_some()),
+        "Refresh marks the tab"
+    );
+    std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+    (fixture, app, cx, root, third_git)
+}
+
+/// Opens a tab on a new repository at `path` and lands its read.
+async fn open_another_tab(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, path: &Path) {
+    let repository = crate::views::tests::fixture_repository(path);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(repository.path().to_owned(), window, cx)
+        })
+    });
+    settle_tab_test(app, cx).await;
+}
+
+/// History's single commit and a clone of its repository at `twin`,
+/// which lists the same commit, so each History row has the same ID in
+/// either tab, as two clones of one project's have.
+fn clone_of_history(fixture: &tempfile::TempDir, twin: &str) -> PathBuf {
+    crate::tags::tests::git(fixture.path(), &["clone", "--quiet", "narrow", twin]);
+    fixture.path().join(twin)
+}
+
+/// Whether the History commit's right-click menu is drawn, by its
+/// Cherry-pick item, offered or refused.
+fn commit_menu_drawn(cx: &mut VisualTestContext) -> bool {
+    ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+        cx.debug_bounds(format!("menu-item: Cherry-pick this commit… · {role}").leak())
+            .is_some()
+    })
+}
+
+/// Opens the right-click menu of History's first row, focused, and
+/// draws it; returns whether it is drawn.
+fn right_click_first_commit(cx: &mut VisualTestContext) -> bool {
+    let row = cx
+        .debug_bounds("history-row-0")
+        .expect("History's first row");
+    let pointer = point(row.left() + px(16.), row.center().y);
+    cx.simulate_mouse_move(pointer, None, gpui::Modifiers::default());
+    cx.simulate_mouse_down(
+        pointer,
+        gpui::MouseButton::Right,
+        gpui::Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        pointer,
+        gpui::MouseButton::Right,
+        gpui::Modifiers::default(),
+    );
+    cx.executor().run_until_parked();
+    crate::views::tests::draw(cx);
+    crate::views::tests::draw(cx);
+    commit_menu_drawn(cx)
+}
+
+/// Whether an open right-click menu holds focus, so a key pressed now
+/// is pressed from inside it rather than from the list beneath it.
+fn right_click_menu_holds_focus(cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, cx| crate::native_accessibility::pointer_menu_return(window, cx))
+        .is_some()
+}
+
+/// What the window shows once the shown tab changed: whether the
+/// commit's menu is drawn, whether a right-click menu holds focus, the
+/// shown tab and what holds focus.
+async fn after_tab_change(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+) -> (bool, bool, Option<usize>, Option<FocusHandle>) {
+    settle_tab_test(app, cx).await;
+    crate::views::tests::draw(cx);
+    crate::views::tests::draw(cx);
+    (
+        commit_menu_drawn(cx),
+        cx.update(|window, cx| crate::native_accessibility::pointer_menu_return(window, cx))
+            .is_some(),
+        app.read_with(cx, |app, _| app.repository_tabs.active),
+        cx.update(|window, cx| window.focused(cx)),
+    )
+}
+
+/// Binds the app's keys as its launch does, the menus' own before the
+/// shortcuts, so a keystroke reaches what it reaches in the app: a test
+/// window binds none, and a shortcut pressed in it matches nothing.
+fn bind_app_keys(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        crate::native_accessibility::bind_keys(cx);
+        crate::shortcuts::bind_keys(cx);
+    });
+}
+
+/// History in the first of two tabs, the second a clone of its
+/// repository listing the same commit, with the app's keys bound and the
+/// first commit selected by a click, which focuses the list.
+async fn clones_in_two_tabs(
+    cx: &mut TestAppContext,
+) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    bind_app_keys(cx);
+    let twin = clone_of_history(&fixture, "twin");
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(twin, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    crate::views::tests::draw(cx);
+    let row = cx
+        .debug_bounds("history-row-0")
+        .expect("History's first row");
+    cx.simulate_click(row.center(), gpui::Modifiers::default());
+    crate::views::tests::draw(cx);
+    (fixture, app, cx)
+}
+
+/// The live regions the frames drawn since [`written::forget`] announce,
+/// by element ID: what assistive technology says of its own as the
+/// shown tab changes, beside the name of what takes focus.
+///
+/// [`written::forget`]: crate::native_accessibility::written::forget
+fn announced_since_forget() -> Vec<String> {
+    crate::native_accessibility::written::announced_from("")
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The name assistive technology reads for what holds focus, History's
+/// list or the navigator, as the last frame drawn wrote it; `None` where
+/// neither holds it.
+fn focused_name(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<String> {
+    let (list, navigator) = app.read_with(cx, |app, _| (app.focus.clone(), app.nav_focus.clone()));
+    let id = cx.update(|window, _| {
+        if list.is_focused(window) {
+            Some("history-pane")
+        } else if navigator.is_focused(window) {
+            Some("repository-navigation")
+        } else {
+            None
+        }
+    })?;
+    let written = crate::native_accessibility::written::get(id)?;
+    written.node.label().map(str::to_owned)
+}
+
+/// A new tab opened while a History commit's right-click menu is open,
+/// as Open…'s folder panel, which does not block the window, lets a
+/// person choose one, closes the menu as the tab changes: the new tab, a
+/// clone listing the same commit, draws no menu built from the tab left
+/// and takes focus where a new tab opened from the navigator with no
+/// menu open puts it, on its History list, which says its name, and
+/// nothing is announced. The row is right-clicked while the navigator
+/// holds focus, so the closed menu, which gives focus back where it was
+/// as it opened, would put it on the navigator: the list holds it
+/// because the new tab gave it there. The menu stayed open over the new
+/// tab's row; then, gone only with the frame that took its row away, it
+/// was not closed by the change.
+#[gpui::test]
+async fn a_commit_s_right_click_menu_closes_as_a_new_tab_opens(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let (first, second) = (
+        clone_of_history(&fixture, "first"),
+        clone_of_history(&fixture, "second"),
+    );
+    let row = cx
+        .debug_bounds("history-row-0")
+        .expect("History's first row");
+    cx.simulate_click(row.center(), gpui::Modifiers::default());
+    crate::views::tests::draw(cx);
+    let (list, navigator) = app.read_with(cx, |app, _| (app.focus.clone(), app.nav_focus.clone()));
+    cx.update(|window, cx| navigator.focus(window, cx));
+    crate::views::tests::draw(cx);
+    // Where a new tab opened from the navigator with no menu open puts
+    // focus.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(first, window, cx)));
+    let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| navigator.focus(window, cx));
+    crate::views::tests::draw(cx);
+    let on_navigator = cx.update(|window, _| navigator.is_focused(window));
+    let opened = right_click_first_commit(cx);
+    let gives_back =
+        cx.update(|window, cx| crate::native_accessibility::pointer_menu_return(window, cx));
+    let dismissed = crate::native_accessibility::tab_dismissals();
+    crate::native_accessibility::written::forget();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(second, window, cx)));
+    let (drawn, held, active, focus) = after_tab_change(&app, cx).await;
+    let named = focused_name(&app, cx);
+    let said = announced_since_forget();
+    assert!(on_navigator, "the navigator holds focus");
+    assert!(opened, "a right-click opens the commit's menu");
+    assert!(
+        gives_back == Some(Some(navigator.clone())),
+        "which holds focus, to give it back to the navigator as it closes"
+    );
+    assert_eq!(active, Some(2), "the new tab shows");
+    assert!(!drawn, "the menu closes as the new tab shows");
+    assert!(
+        crate::native_accessibility::tab_dismissals() > dismissed,
+        "closed by the tab change itself"
+    );
+    assert!(!held, "and holds no focus");
+    assert!(
+        focus.is_some() && focus == unmenued && focus == Some(list),
+        "the new tab takes focus where it does with no menu open, on its list"
+    );
+    assert!(
+        focus != Some(navigator),
+        "the closed menu gives none back to the navigator it was opened from"
+    );
+    assert_eq!(
+        named.as_deref(),
+        Some("Commit history"),
+        "which says its name"
+    );
+    assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+}
+
+/// Whether the branch picker's menu is drawn, by its Manage another
+/// branch… item, offered or refused.
+fn picker_menu_drawn(cx: &mut VisualTestContext) -> bool {
+    ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+        cx.debug_bounds(format!("menu-item: Manage another branch… · {role}").leak())
+            .is_some()
+    })
+}
+
+/// The branch picker's menu belongs to the tab that drew it: left open
+/// as a new tab opens, as Open…'s folder panel, which does not block the
+/// window, lets a person choose one, it closes as the new tab shows,
+/// which takes focus where a new tab opened from the navigator with no
+/// menu open puts it, on its History list: the closed menu gives none
+/// back to the navigator that held focus as it opened, and nothing is
+/// announced. Built from the tab left, the menu stayed open over the new
+/// tab's picker, the same Button in its header, where its choices did
+/// nothing, as they act only on the repository they were built for.
+#[gpui::test]
+async fn the_branch_picker_s_menu_closes_as_a_new_tab_opens(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let (first, second) = (
+        clone_of_history(&fixture, "first"),
+        clone_of_history(&fixture, "second"),
+    );
+    let (list, navigator) = app.read_with(cx, |app, _| (app.focus.clone(), app.nav_focus.clone()));
+    cx.update(|window, cx| navigator.focus(window, cx));
+    crate::views::tests::draw(cx);
+    // Where a new tab opened from the navigator with no menu open puts
+    // focus.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(first, window, cx)));
+    let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| navigator.focus(window, cx));
+    crate::views::tests::draw(cx);
+    let on_navigator = cx.update(|window, _| navigator.is_focused(window));
+    let picker = cx
+        .debug_bounds("current-branch")
+        .expect("the branch picker");
+    cx.simulate_click(picker.center(), gpui::Modifiers::default());
+    crate::views::tests::draw(cx);
+    crate::views::tests::draw(cx);
+    let opened = picker_menu_drawn(cx);
+    let dismissed = crate::native_accessibility::tab_dismissals();
+    crate::native_accessibility::written::forget();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(second, window, cx)));
+    let (_, _, active, focus) = after_tab_change(&app, cx).await;
+    let drawn = picker_menu_drawn(cx);
+    let said = announced_since_forget();
+    assert!(on_navigator, "the navigator holds focus");
+    assert!(opened, "a click opens the picker's menu");
+    assert_eq!(active, Some(2), "the new tab shows");
+    assert!(!drawn, "the menu closes as the new tab shows");
+    assert!(
+        crate::native_accessibility::tab_dismissals() > dismissed,
+        "closed by the tab change itself"
+    );
+    assert!(
+        focus.is_some() && focus == unmenued && focus == Some(list),
+        "the new tab takes focus where it does with no menu open, on its list"
+    );
+    assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+}
+
+/// Opens History's commit menu from the keyboard, Shift+F10 on the
+/// list's selected row, and draws it; returns whether it is open, drawn
+/// and holding focus.
+fn open_commit_menu_by_key(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> bool {
+    cx.simulate_keystrokes("shift-f10");
+    crate::views::tests::draw(cx);
+    crate::views::tests::draw(cx);
+    let list = app.read_with(cx, |app, _| app.focus.clone());
+    let held = cx.update(|window, cx| window.focused(cx).is_some() && !list.is_focused(window));
+    app.read_with(cx, |app, _| app.commit_menu.is_some()) && held && commit_menu_drawn(cx)
+}
+
+/// History's commit menu opened by Shift+F10 belongs to the tab that
+/// drew it: the palette's Move repository tab right, run from the
+/// palette its shortcut opened while the menu held focus, closes it as
+/// the tab moves, and focus goes back to the list it was opened from,
+/// which a move leaves shown, with nothing announced. Its blur closed it
+/// on a switch or a close, which focus the tab shown, but a move left it
+/// open over the moved tab, holding focus.
+#[gpui::test]
+async fn a_commit_s_keyboard_menu_closes_as_its_tab_moves(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+    let list = app.read_with(cx, |app, _| app.focus.clone());
+    let opened = open_commit_menu_by_key(&app, cx);
+    let palette = crate::shortcuts::resolve_key("primary-shift-p", cfg!(target_os = "macos"));
+    cx.simulate_keystrokes(&palette);
+    crate::views::tests::draw(cx);
+    let asked = cx.update(|window, cx| window.has_active_dialog(cx));
+    cx.simulate_input("Move repository tab right");
+    crate::views::tests::draw(cx);
+    crate::native_accessibility::written::forget();
+    cx.simulate_keystrokes("enter");
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+    });
+    let (drawn, _, active, focus) = after_tab_change(&app, cx).await;
+    let open = app.read_with(cx, |app, _| app.commit_menu.is_some());
+    let moved = app.read_with(cx, |app, _| {
+        app.repository_tabs
+            .tabs
+            .first()
+            .map(|tab| tab.path.ends_with("twin"))
+    });
+    let said = announced_since_forget();
+    assert!(
+        opened,
+        "Shift+F10 opens the commit's menu, which holds focus"
+    );
+    assert!(asked, "the palette's shortcut opens it over the menu");
+    assert!(
+        active == Some(1) && moved == Some(true),
+        "the tab moves right, and stays shown"
+    );
+    assert!(!open && !drawn, "the menu closes as its tab moves");
+    assert!(
+        focus == Some(list),
+        "focus goes back to the list it was opened from"
+    );
+    assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+}
+
+/// History's commit menu opened by Shift+F10 closes as another tab
+/// shows, Ctrl+Tab pressed while the menu holds focus, by the app's
+/// bound keys: the other clone's tab shows, focus where Ctrl+Tab from
+/// the list with no menu open puts it, on that tab's list, nothing of
+/// the menu drawn, and nothing announced. The tab change itself
+/// dismisses it, as it dismisses every menu, beside its blur as the tab
+/// shown takes focus and its row, which no longer holds its commit once
+/// another repository shows, neither of which a move brings.
+#[gpui::test]
+async fn a_commit_s_keyboard_menu_closes_as_another_tab_shows(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+    // Where Ctrl+Tab from the list with no menu open puts focus.
+    cx.simulate_keystrokes("ctrl-tab");
+    let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+    cx.simulate_keystrokes("ctrl-tab");
+    settle_tab_test(&app, cx).await;
+    crate::views::tests::draw(cx);
+    let opened = open_commit_menu_by_key(&app, cx);
+    let dismissed = crate::native_accessibility::tab_dismissals();
+    crate::native_accessibility::written::forget();
+    cx.simulate_keystrokes("ctrl-tab");
+    let (drawn, _, active, focus) = after_tab_change(&app, cx).await;
+    let open = app.read_with(cx, |app, _| app.commit_menu.is_some());
+    let said = announced_since_forget();
+    assert!(
+        opened,
+        "Shift+F10 opens the commit's menu, which holds focus"
+    );
+    assert_eq!(active, Some(1), "Ctrl+Tab shows the second tab");
+    assert!(!open && !drawn, "the menu closes as that tab shows");
+    assert!(
+        crate::native_accessibility::tab_dismissals() > dismissed,
+        "closed by the tab change itself"
+    );
+    assert!(
+        focus.is_some() && focus == unmenued,
+        "focus is where a switch with no menu open puts it"
+    );
+    assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+}
+
+/// A History commit's right-click menu belongs to the tab that drew it,
+/// and the tab shortcuts act from inside it as they do from the list:
+/// Ctrl+Tab, and Ctrl+Shift+Tab, pressed while the menu holds focus,
+/// show the other clone's tab, which lists the same commit, and close
+/// the menu, focus where the same key with no menu open puts it, on that
+/// tab's list, nothing of the first tab's menu drawn or holding focus,
+/// and nothing announced. Kept by its row's ID, the menu stayed open
+/// over the second tab's row, built from the first tab, and took focus
+/// back from the tab shown.
+#[gpui::test]
+async fn a_commit_s_right_click_menu_closes_as_ctrl_tab_shows_another_tab(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+    for key in ["ctrl-tab", "ctrl-shift-tab"] {
+        // Where the key from the list with no menu open puts focus.
+        cx.simulate_keystrokes(key);
+        let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        crate::views::tests::draw(cx);
+        let opened = right_click_first_commit(cx);
+        let menu_held = right_click_menu_holds_focus(cx);
+        crate::native_accessibility::written::forget();
+        cx.simulate_keystrokes(key);
+        let (drawn, held, active, focus) = after_tab_change(&app, cx).await;
+        let said = announced_since_forget();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        crate::views::tests::draw(cx);
+        assert!(
+            opened && menu_held,
+            "{key}: a right-click opens the commit's menu, which holds focus as the key is \
+             pressed"
+        );
+        assert_eq!(active, Some(1), "{key} shows the second tab");
+        assert!(!drawn, "{key}: the menu closes as the second tab shows");
+        assert!(!held, "{key}: and holds no focus");
+        assert!(
+            focus.is_some() && focus == unmenued,
+            "{key}: focus is where the key with no menu open puts it"
+        );
+        assert_eq!(said, Vec::<String>::new(), "{key}: nothing is announced");
+    }
+}
+
+/// Ctrl+W, pressed with a History commit's right-click menu open and
+/// holding focus, closes the menu with its tab, as from the list: the
+/// other clone's tab shows, its first row the same commit, focus where a
+/// switch to it puts it, on its list, nothing of the menu drawn, and
+/// nothing announced. The menu stayed open over that row.
+#[gpui::test]
+async fn a_commit_s_right_click_menu_closes_with_its_tab(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = clones_in_two_tabs(cx).await;
+    // Where a switch from the list with no menu open puts focus.
+    cx.simulate_keystrokes("ctrl-tab");
+    let (_, _, _, unmenued) = after_tab_change(&app, cx).await;
+    cx.simulate_keystrokes("ctrl-tab");
+    settle_tab_test(&app, cx).await;
+    crate::views::tests::draw(cx);
+    let opened = right_click_first_commit(cx);
+    let menu_held = right_click_menu_holds_focus(cx);
+    let close = crate::shortcuts::resolve_key("primary-w", cfg!(target_os = "macos"));
+    crate::native_accessibility::written::forget();
+    cx.simulate_keystrokes(&close);
+    let (drawn, held, active, focus) = after_tab_change(&app, cx).await;
+    let tabs = app.read_with(cx, |app, _| app.repository_tabs.tabs.len());
+    let said = announced_since_forget();
+    assert!(
+        opened && menu_held,
+        "a right-click opens the commit's menu, which holds focus as the key is pressed"
+    );
+    assert!(
+        tabs == 1 && active == Some(0),
+        "Ctrl+W closes the first tab"
+    );
+    assert!(!drawn, "the menu closes with its tab");
+    assert!(!held, "and holds no focus");
+    assert!(
+        focus.is_some() && focus == unmenued,
+        "focus is where a switch to the tab shown puts it"
+    );
+    assert_eq!(said, Vec::<String>::new(), "nothing is announced");
+}
+
+/// An explicit Open of a marked tab's folder from another tab reads it
+/// afresh too: what the tab retained goes, so its switch opens it, and
+/// the tab takes the repository Git finds there, its mark cleared. It
+/// once showed the tab as retained and opened nothing, its root and Git
+/// directory already cleared, so a quiet read that found the repository
+/// left it unmarked with nothing captured, saved as unresolved.
+#[gpui::test]
+async fn an_explicit_open_of_a_marked_tab_s_folder_from_another_tab_captures_it_afresh(
+    cx: &mut TestAppContext,
+) {
+    let (fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+    open_another_tab(&app, cx, &fixture.path().join("other")).await;
+    assert!(
+        app.read_with(cx, |app, _| app.repository_tabs.active == Some(1)
+            && app.repository_tabs.tabs[0].warm.is_some()),
+        "the marked tab retained, another shown"
+    );
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.active, Some(0), "the marked tab shown");
+        let shown = &app.repository_tabs.tabs[0];
+        assert_eq!(shown.path, root, "the same tab");
+        assert!(shown.error.is_none(), "its mark cleared");
+        assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+        assert!(shown.resolved);
+        assert_eq!(
+            shown.git_dir.as_ref().map(|dirs| dirs.git_dir.as_path()),
+            Some(third_git.as_path())
+        );
+        assert_eq!(
+            app.repository
+                .as_ref()
+                .map(|repository| repository.git_dir()),
+            Some(third_git.as_path()),
+            "the repository found there"
+        );
+        assert!(!app.repository_tabs.saved().tabs[0].unresolved);
+    });
+}
+
+/// QA-107: where the tab is marked the header says what the mark says,
+/// in the full bars and the compact ones. "Changes · 1" and the branch
+/// came from the last status read, kept beside the mark; with no status
+/// read the picker read "Detached HEAD", of a repository that cannot be
+/// opened. The picker refuses its menu, which listed the branches from
+/// before, and the edge's "No remote" goes with its action. The profile
+/// picker names no author and its tooltip no address from before, read
+/// from the configuration of the repository the tab cannot open.
+#[gpui::test]
+async fn a_marked_tab_s_header_shows_nothing_from_before(cx: &mut TestAppContext) {
+    use crate::branch_actions::PICKER_LABEL;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::draw(cx);
+    let before = app.read_with(cx, |app, _| app.changes_label());
+    assert!(before.starts_with("Changes · "), "a count: {before}");
+    assert_eq!(
+        PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
+        Some("main")
+    );
+    assert!(
+        app.read_with(cx, |app, _| app.repository_edge().is_some()),
+        "the edge before the mark: no remote"
+    );
+    let read_identity = |cx: &mut VisualTestContext| {
+        app.update(cx, |app, cx| {
+            app.profile = Some(gitturtle_core::GitProfile {
+                name: "Ada Lovelace".into(),
+                email: "ada@example.invalid".into(),
+                private_worktree: false,
+                ..app.profile.clone().unwrap_or_default()
+            });
+            cx.notify();
+        });
+        crate::views::tests::draw(cx);
+    };
+    let picker_drawn =
+        || crate::profiles::PROFILE_PICKER_DRAWN.with(|drawn| drawn.borrow().clone());
+    read_identity(cx);
+    assert_eq!(
+        picker_drawn(),
+        Some((
+            "Git profile: Ada Lovelace. Choose or manage profiles".into(),
+            "Ada Lovelace <ada@example.invalid> · Repository configuration shared by linked worktrees"
+                .into()
+        )),
+        "the identity before the mark"
+    );
+
+    std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::draw(cx);
+    assert!(app.read_with(cx, |app, _| app.shown_tab_unavailable()));
+    // The identity read before, kept beside the mark.
+    read_identity(cx);
+    let says_the_mark = |cx: &mut VisualTestContext, at: &str| {
+        assert_eq!(
+            app.read_with(cx, |app, _| app.changes_label()),
+            "Changes",
+            "{at}: no count from before"
+        );
+        assert_eq!(
+            picker_drawn(),
+            Some((
+                "Git profile: Profiles. Choose or manage profiles".into(),
+                "Choose or manage named Git author profiles".into()
+            )),
+            "{at}: no identity from before"
+        );
+        assert_eq!(
+            PICKER_LABEL.with(|label| label.borrow().clone()).as_deref(),
+            Some("Unavailable"),
+            "{at}: no branch from before"
+        );
+        let refusal = crate::workspace::refusals::get("current-branch").expect("drawn");
+        assert!(
+            refusal.dimmed && refusal.announced,
+            "{at}: refuses its menu"
+        );
+        assert_eq!(
+            crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get("current-branch").cloned())
+                .as_deref(),
+            Some("Repository unavailable · Refresh, or choose a repository with Open Repository"),
+            "{at}: the way back, in the mark's words"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.repository_edge().is_none()),
+            "{at}: no edge from before"
+        );
+        assert!(cx.debug_bounds("branch-edge").is_none(), "{at}: its line");
+        assert!(cx.debug_bounds("branch-sync-state").is_none(), "{at}");
+    };
+    says_the_mark(cx, "the status kept beside the mark");
+    cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+    cx.simulate_resize(size(px(461.), px(490.)));
+    crate::views::tests::draw(cx);
+    says_the_mark(cx, "the compact bars");
+    assert_eq!(
+        crate::views::COMPACT_LABELS
+            .with(|names| names.borrow().get("changes-tab").cloned())
+            .as_deref(),
+        Some("Changes"),
+        "the compact toggle's name"
+    );
+    assert!(
+        cx.debug_bounds("changes-count-badge").is_none(),
+        "the compact toggle's badge"
+    );
+    app.update(cx, |app, cx| {
+        app.work_status = None;
+        cx.notify();
+    });
+    crate::views::tests::draw(cx);
+    says_the_mark(cx, "no status read");
+}
+
+/// Where the tab is marked, Fetch, Pull and Push refuse and say the mark
+/// as the branch picker does, with a remote configured and without one.
+/// With the status absent they read it as a detached HEAD, Pull and Push
+/// saying "Switch to a local branch before pulling or pushing", and
+/// Fetch stayed "Fetch from origin", a remote from before, and pressed.
+/// Targets' Switch and Create refuse there too, with a branch named,
+/// their tooltips saying the mark after what they do: they stayed
+/// available toward the repository the tab can no longer open.
+#[gpui::test]
+async fn a_marked_tab_s_git_actions_refuse_and_say_the_mark(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let tooltip = |id: &str| {
+        crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
+    };
+    let with_a_remote = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.remotes.push(gitturtle_core::Remote {
+                    name: "origin".into(),
+                    url: "https://example.invalid/fixture.git".into(),
+                    push_url: "https://example.invalid/fixture.git".into(),
+                });
+                app.remote_name
+                    .update(cx, |input, cx| input.set_value("origin", window, cx));
+                app.remote_branch
+                    .update(cx, |input, cx| input.set_value("main", window, cx));
+                cx.notify();
+            })
+        });
+        crate::views::tests::draw(cx);
+    };
+    let destination = || crate::workspace::TARGETS_DESTINATION.with(|line| line.borrow().clone());
+    let branch_forms = [
+        ("checkout-branch", "Switch to the named local branch"),
+        ("create-branch", "Create and switch to a branch from HEAD"),
+    ];
+    let says_the_mark = |at: &str, compact: bool| {
+        for (id, label) in [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")] {
+            let refusal = crate::workspace::refusals::get(id).expect("drawn");
+            assert!(refusal.announced && refusal.dimmed, "{at}: {id} refuses");
+            let reason = crate::branch_actions::UNAVAILABLE_REASON;
+            let said = if compact {
+                format!("{label} · {reason}")
+            } else {
+                reason.to_owned()
+            };
+            assert_eq!(tooltip(id), Some(said), "{at}: {id}'s tooltip");
+            if compact {
+                assert_eq!(
+                    crate::views::COMPACT_LABELS
+                        .with(|names| names.borrow().get(id).cloned())
+                        .as_deref(),
+                    Some(format!("{label}: {reason}").as_str()),
+                    "{at}: {id}'s name"
+                );
+            }
+        }
+        // Targets' line names no remote or branch from before either.
+        assert_eq!(
+            destination().as_deref(),
+            Some(crate::branch_actions::UNAVAILABLE_REASON),
+            "{at}: where Push goes"
+        );
+        if !compact {
+            for (id, purpose) in branch_forms {
+                let refusal = crate::workspace::refusals::get(id).expect("drawn");
+                assert!(refusal.announced && refusal.dimmed, "{at}: {id} refuses");
+                assert_eq!(
+                    tooltip(id),
+                    Some(format!(
+                        "{purpose} · {}",
+                        crate::branch_actions::UNAVAILABLE_REASON
+                    )),
+                    "{at}: {id}'s tooltip"
+                );
+            }
+        }
+    };
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.git_actions_open = true;
+            app.branch_name
+                .update(cx, |input, cx| input.set_value("topic", window, cx));
+            cx.notify();
+        })
+    });
+    with_a_remote(cx);
+    let before = destination().expect("Targets' line");
+    assert!(
+        before.starts_with("Push to origin/main · "),
+        "before the mark: {before}"
+    );
+    for (id, purpose) in branch_forms {
+        let refusal = crate::workspace::refusals::get(id).expect("drawn");
+        assert!(
+            !refusal.announced && !refusal.dimmed,
+            "before the mark: {id} with a branch named"
+        );
+        assert_eq!(tooltip(id).as_deref(), Some(purpose), "before the mark");
+    }
+    app.update(cx, |app, cx| {
+        app.remotes.clear();
+        cx.notify();
+    });
+    crate::views::tests::draw(cx);
+    std::fs::rename(root.join(".git"), fixture.path().join("git-away")).unwrap();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::draw(cx);
+    assert!(app.read_with(cx, |app, _| app.shown_tab_unavailable()));
+    says_the_mark("no remote", false);
+    with_a_remote(cx);
+    says_the_mark("a remote", false);
+    cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+    cx.simulate_resize(size(px(461.), px(490.)));
+    crate::views::tests::draw(cx);
+    says_the_mark("the compact bar, a remote", true);
+    app.update(cx, |app, cx| {
+        app.remotes.clear();
+        cx.notify();
+    });
+    crate::views::tests::draw(cx);
+    says_the_mark("the compact bar, no remote", true);
+
+    // A click does nothing: no write starts.
+    let fetch = crate::tags::tests::rendered(cx, "fetch");
+    cx.simulate_click(fetch.center(), gpui::Modifiers::default());
+    crate::views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.operation_busy.is_none()),
+        "nothing runs"
+    );
+}
+
+/// Presses the Projects page's row for `path`, as a person would.
+fn press_projects_row(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, path: &Path) {
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    cx.update(|window, cx| {
+        hub.update(cx, |hub, cx| hub.set_recent(vec![path.to_owned()], cx));
+        app.update(cx, |app, cx| app.show_projects(window, cx));
+    });
+    crate::views::tests::draw(cx);
+    let row = cx
+        .debug_bounds("recent-project-0")
+        .expect("the project's row");
+    cx.simulate_click(row.center(), gpui::Modifiers::default());
+}
+
+/// The tab at `index` took the repository found at its folder from a
+/// Projects row: the same tab, shown on the repository page, its mark
+/// gone and that repository's Git directory captured. Once its status
+/// read has landed, the header says that repository's working state, as
+/// the mark had hidden it: the count of the one file added while the
+/// tab was marked, which only a status read since then finds, the branch
+/// and the edge. Until it lands the header shows none
+/// ([`assert_a_fresh_capture_shows_nothing_from_before`]).
+fn assert_recaptured(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    index: usize,
+    root: &Path,
+    git_dir: &Path,
+) {
+    crate::views::tests::draw(cx);
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.changes_label(), "Changes · 1", "the header's count");
+        // Counted by a read since the mark: the status from before it,
+        // of the Git directory the tab had, counted another change.
+        let counted = app.header_status().map(|status| {
+            (status.entries.iter())
+                .map(|entry| (entry.path.as_path(), entry.untracked))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            counted,
+            Some(vec![(Path::new("untracked.txt"), true)]),
+            "the file added while the tab was marked"
+        );
+        assert_eq!(
+            app.repository_edge(),
+            Some(crate::empty_state::RepositoryEdge::NoRemote),
+            "its edge"
+        );
+    });
+    assert_eq!(
+        crate::branch_actions::PICKER_LABEL
+            .with(|label| label.borrow().clone())
+            .as_deref(),
+        Some("main"),
+        "its branch"
+    );
+    assert!(cx.debug_bounds("branch-edge").is_some(), "its edge's line");
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.page, AppPage::Repository, "the tab is shown");
+        assert_eq!(app.repository_tabs.active, Some(index));
+        let tab = &app.repository_tabs.tabs[index];
+        assert_eq!(tab.path, root, "the same tab");
+        assert!(tab.error.is_none(), "its mark cleared");
+        assert!(!app.tab_label(tab).0.ends_with(" · unavailable"));
+        assert_eq!(app.error, None, "nothing left to say");
+        assert_eq!(
+            tab.git_dir.as_ref().map(|dirs| dirs.git_dir.as_path()),
+            Some(git_dir),
+            "the repository found there, by the accepted snapshot"
+        );
+        assert_eq!(
+            app.repository.as_ref().map(|repo| repo.git_dir()),
+            Some(git_dir)
+        );
+    });
+}
+
+/// QA-107 check 1.2: the Projects page's row for the shown marked tab
+/// reads its folder afresh, as the Local workspaces row and Open do. It
+/// went back to the tab through `open`, and the tab stayed unavailable
+/// with the reason it had.
+#[gpui::test]
+async fn a_projects_row_captures_the_shown_marked_tab_afresh(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+    press_projects_row(&app, cx, &root);
+    settle_tab_test(&app, cx).await;
+    assert_recaptured(&app, cx, 0, &root, &third_git);
+}
+
+/// The same from another tab: pressed behind the tab shown, the row's
+/// `open` became a switch, which reads the tab's own identity again.
+#[gpui::test]
+async fn a_projects_row_captures_a_marked_tab_behind_another_afresh(cx: &mut TestAppContext) {
+    let (fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+    open_another_tab(&app, cx, &fixture.path().join("other")).await;
+    press_projects_row(&app, cx, &root);
+    settle_tab_test(&app, cx).await;
+    assert_recaptured(&app, cx, 0, &root, &third_git);
+}
+
+/// A fresh capture of the shown marked tab through `route`, which asks
+/// for it as a person would, shows and acts on nothing from the Git
+/// directory the tab had until the status read of the one found lands.
+/// The tab read on branch `before`, its upstream on `origin` (bare
+/// `a.git`), a file staged and a title typed; then its `.git` became a
+/// third repository's gitfile, with `origin` at bare `b.git`, a commit on
+/// `main` and a file of its own staged that no read has shown, and
+/// History's Refresh marked it, keeping the status read before. With the
+/// operation executor held, the accepted snapshot's status read waits:
+/// in the frame the mark clears in, and in Changes opened after it,
+/// there is no count, branch, remote, Targets value or row from before,
+/// and Fetch, Pull, Push and Commit refuse. Opened again in place, the
+/// tab kept the status read before, so until the read landed Push
+/// pushed the third repository's `main` to its own `origin`, and Commit
+/// committed its staged file, never shown, under the title typed for
+/// the other (security probes W1 and W3, FU39-A4).
+pub(crate) async fn assert_a_fresh_capture_shows_nothing_from_before(
+    cx: &mut TestAppContext,
+    route: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext, &Path),
+) {
+    assert_a_capture_shows_nothing_from_before(cx, Replaced::Marked, route).await;
+}
+
+/// How [`assert_a_capture_shows_nothing_from_before`] puts the third
+/// repository where the tab's was.
+#[derive(Clone, Copy, PartialEq)]
+enum Replaced {
+    /// The tab's `.git` becomes the third repository's gitfile, which
+    /// History's Refresh marks: `route` reads the marked tab's folder.
+    Marked,
+    /// The third repository's Git directory moves to the tab's `.git`,
+    /// as a re-clone at the path leaves it, which marks nothing.
+    InPlace,
+    /// The tab, opened at `x/repo`, sees `x` moved aside and linked to
+    /// `y`, whose `repo` is the third repository: a folder above the
+    /// root re-pointed, which a reopen follows (`worker::FoldersAbove`)
+    /// and which marks nothing.
+    Above,
+}
+
+/// [`assert_a_fresh_capture_shows_nothing_from_before`], with the third
+/// repository put where the tab's was as `replaced` says; `route` then
+/// reads the folder, marked or not.
+async fn assert_a_capture_shows_nothing_from_before(
+    cx: &mut TestAppContext,
+    replaced: Replaced,
+    route: impl FnOnce(&Entity<GitTurtle>, &mut VisualTestContext, &Path),
+) {
+    use crate::views::tests::{fixture_git, fixture_git_output, fixture_repository};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let base = fixture.path().to_owned();
+    let root = if replaced == Replaced::Above {
+        for folder in ["x", "y"] {
+            std::fs::create_dir_all(base.join(folder)).unwrap();
+        }
+        let repository = fixture_repository(base.join("x").join("repo"));
+        std::fs::write(repository.path().join("before.txt"), "before\n").unwrap();
+        fixture_git(repository.path(), &["add", "before.txt"]);
+        fixture_git(repository.path(), &["commit", "-q", "-m", "Before"]);
+        let root = repository.path().to_owned();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        root
+    } else {
+        app.read_with(cx, |app, _| app.path.clone().expect("a repository"))
+    };
+    let read = |dir: &Path, args: &[&str]| {
+        let output = fixture_git_output(dir, args);
+        (output.status.success()).then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let tip = |bare: &Path, branch: &str| read(bare, &["rev-parse", "--verify", "-q", branch]);
+    let (bare_a, bare_b) = (base.join("a.git"), base.join("b.git"));
+    for bare in [&bare_a, &bare_b] {
+        fixture_git(
+            &base,
+            &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+        );
+    }
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    fixture_git(&root, &["switch", "-c", "before"]);
+    fixture_git(
+        &root,
+        &["remote", "add", "origin", bare_a.to_str().unwrap()],
+    );
+    fixture_git(&root, &["push", "-q", "-u", "origin", "before"]);
+    // A branch in a folder the navigation shows open.
+    fixture_git(&root, &["branch", "old/kept"]);
+    std::fs::write(root.join("staged.txt"), "the person's\n").unwrap();
+    fixture_git(&root, &["add", "staged.txt"]);
+    let third = fixture_repository(if replaced == Replaced::Above {
+        base.join("y").join("repo")
+    } else {
+        base.join("third")
+    });
+    std::fs::write(third.path().join("third.txt"), "third\n").unwrap();
+    fixture_git(third.path(), &["add", "third.txt"]);
+    fixture_git(third.path(), &["commit", "-q", "-m", "Third"]);
+    // Its current branch in a folder, which the found repository's
+    // navigation opens as an Open's does.
+    fixture_git(third.path(), &["switch", "-q", "-c", "team/third"]);
+    fixture_git(
+        third.path(),
+        &["remote", "add", "origin", bare_b.to_str().unwrap()],
+    );
+    std::fs::write(third.path().join("planted.txt"), "not the person's\n").unwrap();
+    fixture_git(third.path(), &["add", "planted.txt"]);
+    let third_git = third.git_dir().to_owned();
+    let pushed = tip(&bare_a, "refs/heads/before");
+    // Settled before Changes opens: opened in the same update, it
+    // cancelled the Refresh's snapshot, and History had no rows from
+    // before for a capture to forget.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.commit_title.update(cx, |title, cx| {
+                title.set_value("The person's title", window, cx)
+            });
+            app.show_history(window, cx);
+            app.git_actions_open = true;
+        })
+    });
+    crate::views::tests::settle(&app, cx).await;
+    // History shows the replaced repository: its newest commit selected,
+    // its changed files loaded, and the folder of its branch `old/kept`
+    // open.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let newest = *app.visible.first().expect("a row from before");
+            app.select_commit(newest, window, cx);
+            app.expanded_folders.insert("local:old".into());
+            app.rebuild_navigation(cx);
+        })
+    });
+    crate::views::tests::settle(&app, cx).await;
+    let before = app.read_with(cx, |app, _| {
+        let selected = app.selected_commit.expect("a commit selected");
+        assert!(!app.files.is_empty(), "its changed files loaded");
+        assert!(
+            app.expanded_folders.contains("local:old"),
+            "its folder open"
+        );
+        assert!(
+            (app.commits.iter()).all(|commit| commit.subject != "Third"),
+            "the replaced repository's rows"
+        );
+        app.commits[selected].oid.clone()
+    });
+    let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+    assert_eq!(picker().as_deref(), Some("before"), "read before the mark");
+    assert_eq!(
+        app.read_with(cx, |app, _| app.changes_label()),
+        if replaced == Replaced::Above {
+            "Changes · 1"
+        } else {
+            "Changes · 2"
+        }
+    );
+    assert!(
+        !crate::workspace::refusals::get("push")
+            .expect("drawn")
+            .announced
+    );
+
+    let found_git = match replaced {
+        Replaced::InPlace => {
+            std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+            std::fs::rename(&third_git, root.join(".git")).unwrap();
+            root.join(".git")
+        }
+        Replaced::Marked => {
+            std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+            std::fs::write(
+                root.join(".git"),
+                format!("gitdir: {}\n", third_git.display()),
+            )
+            .unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.shown_tab_unavailable()),
+                "Refresh marks the tab"
+            );
+            third_git.clone()
+        }
+        Replaced::Above => {
+            std::fs::rename(base.join("x"), base.join("x-away")).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(base.join("y"), base.join("x")).unwrap();
+            #[cfg(not(unix))]
+            unreachable!("a folder above is re-pointed through a link");
+            third_git.clone()
+        }
+    };
+    let identity = |app: &GitTurtle| {
+        (app.repository.as_ref()).map(|repo| (repo.git_dir().to_owned(), repo.git_dir_inode()))
+    };
+    let shown = app.read_with(cx, |app, _| identity(app));
+    assert_eq!(
+        read(
+            &base,
+            &[
+                "--git-dir",
+                found_git.to_str().unwrap(),
+                "cat-file",
+                "-e",
+                &format!("{before}^{{commit}}"),
+            ]
+        ),
+        None,
+        "the selected commit is not the found repository's"
+    );
+    if replaced != Replaced::Marked {
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                (app.selected_commit).map(|index| app.commits[index].oid.clone()),
+                Some(before.clone()),
+                "still selected as the route starts"
+            );
+        });
+    }
+
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    route(&app, cx, &root);
+    for _ in 0..16 {
+        let installed = app.read_with(cx, |app, _| {
+            identity(app).is_some_and(|found| Some(found) != shown) && app.loading.is_none()
+        });
+        if installed {
+            break;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+    }
+    app.update(cx, |app, cx| {
+        assert_eq!(app.page, AppPage::Repository, "the snapshot installed");
+        assert!(!app.shown_tab_unavailable(), "its mark cleared");
+        assert!(app.status_task.is_some(), "its status read waits");
+        app.git_actions_open = true;
+        cx.notify();
+    });
+    let frame = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        })
+    };
+    let refuses = |cx: &mut VisualTestContext, id: &'static str, at: &str| {
+        let bounds = crate::tags::tests::rendered(cx, id);
+        let refusal = crate::workspace::refusals::get(id).expect("drawn");
+        assert!(refusal.announced && refusal.dimmed, "{at}: {id} refuses");
+        bounds
+    };
+    let nothing_runs = |cx: &mut VisualTestContext, bounds: Bounds<Pixels>, at: &str| {
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None, "{at}");
+    };
+    let destination = || crate::workspace::TARGETS_DESTINATION.with(|line| line.borrow().clone());
+    let a = bare_a.display().to_string();
+    frame(cx);
+    // Refused at once, Fetch, Pull and Push look it once the read has
+    // lasted a moment, as a write's look waits (`track_unread_look`).
+    cx.executor()
+        .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+    frame(cx);
+    assert_eq!(
+        app.read_with(cx, |app, _| app.changes_label()),
+        "Changes",
+        "no count from before"
+    );
+    assert_ne!(picker().as_deref(), Some("before"), "no branch from before");
+    assert!(
+        destination().is_none_or(|line| !line.contains("before") && !line.contains(&a)),
+        "Targets names no remote from before: {:?}",
+        destination()
+    );
+    app.read_with(cx, |app, cx| {
+        assert!(app.header_status().is_none(), "no status from before");
+        assert!(app.remotes.is_empty(), "no remote from before");
+        assert_eq!(
+            app.remote_name.read(cx).value().as_ref(),
+            "",
+            "Targets' remote"
+        );
+        assert_eq!(
+            app.remote_branch.read(cx).value().as_ref(),
+            "",
+            "Targets' branch"
+        );
+    });
+    // History lists and retains nothing of the replaced repository and
+    // selects as an Open does, the found repository's newest row with
+    // its changed files, so its row menu offers a write on that commit
+    // only, and the navigation's folders are the found one's: its
+    // current branch's open, the replaced one's closed.
+    let found_row = |subject: &str| subject == "Third";
+    app.read_with(cx, |app, _| {
+        let subjects = (app.commits.iter())
+            .map(|commit| commit.subject.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            subjects.iter().all(|subject| found_row(subject)),
+            "no row from before: {subjects:?}"
+        );
+        assert_eq!(
+            app.automatic.retained_commit, None,
+            "no row retained from before"
+        );
+        assert_eq!(
+            (app.selected_commit).map(|index| app.commits[index].subject.as_str()),
+            Some("Third"),
+            "the found repository's newest row selected"
+        );
+        assert_eq!(
+            (app.files.iter())
+                .map(|file| file.path().to_owned())
+                .collect::<Vec<_>>(),
+            [PathBuf::from("third.txt")],
+            "its changed files"
+        );
+        assert_eq!(
+            app.expanded_folders,
+            HashSet::from(["local:team".to_owned()]),
+            "the navigation's folders"
+        );
+        assert_eq!(
+            app.expanded_folders,
+            crate::navigation::current_ancestors(&app.branches)
+        );
+    });
+    cx.update(|window, cx| {
+        let focus = app.read(cx).focus.clone();
+        window.focus(&focus, cx);
+        window.dispatch_action(Box::new(crate::native_accessibility::RowActions), cx);
+    });
+    frame(cx);
+    let offered = app.update(cx, |app, cx| {
+        let offered = (app.commit_menu.take()).and_then(|_| {
+            let commit = app.commits.get(app.selected_commit?)?;
+            Some(commit.subject.clone())
+        });
+        cx.notify();
+        offered
+    });
+    assert_eq!(
+        offered.as_deref(),
+        Some("Third"),
+        "the row menu offers a write on the found repository's commit only"
+    );
+    frame(cx);
+    let actions = ["fetch", "pull", "push"].map(|id| (id, refuses(cx, id, "History")));
+    for (id, bounds) in actions {
+        nothing_runs(cx, bounds, id);
+    }
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    frame(cx);
+    app.read_with(cx, |app, _| {
+        assert!(app.working_rows.is_empty(), "no Changes row from before");
+        assert!(app.actionable_working_rows().is_empty(), "nothing to stage");
+    });
+    assert!(
+        cx.debug_bounds("working-header-count").is_none(),
+        "Changes: no count"
+    );
+    if cx.debug_bounds("commit-staged").is_some() {
+        let commit = refuses(cx, "commit-staged", "Changes");
+        nothing_runs(cx, commit, "Commit");
+    }
+    let push = refuses(cx, "push", "Changes");
+    nothing_runs(cx, push, "Push in Changes");
+
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    assert_eq!(
+        picker().as_deref(),
+        Some("team/third"),
+        "the branch read since"
+    );
+    app.read_with(cx, |app, cx| {
+        let staged = app.header_status().map(|status| {
+            (status.entries.iter())
+                .filter(|entry| entry.staged.is_some())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            staged,
+            Some(vec![PathBuf::from("planted.txt")]),
+            "its own index"
+        );
+        assert_eq!(
+            (app.remotes.iter())
+                .map(|remote| remote.url.as_str())
+                .collect::<Vec<_>>(),
+            [bare_b.to_str().unwrap()],
+            "its own remote"
+        );
+        assert_eq!(app.remote_name.read(cx).value().as_ref(), "origin");
+        assert_eq!(app.remote_branch.read(cx).value().as_ref(), "team/third");
+        assert_eq!(app.operation_notice, None, "nothing ran");
+    });
+    frame(cx);
+    assert_eq!(
+        destination().as_deref(),
+        Some(format!("Push to origin/team/third · {}", bare_b.display()).as_str()),
+        "Targets name its own remote"
+    );
+    assert_eq!(
+        read(&bare_b, &["for-each-ref"]).as_deref(),
+        Some(""),
+        "Push pushed nothing"
+    );
+    assert_eq!(tip(&bare_a, "refs/heads/before"), pushed);
+    assert_eq!(
+        read(
+            &base,
+            &[
+                "--git-dir",
+                found_git.to_str().unwrap(),
+                "log",
+                "-1",
+                "--format=%s"
+            ]
+        )
+        .as_deref(),
+        Some("Third"),
+        "Commit committed nothing"
+    );
+    if replaced == Replaced::Above {
+        // Back as it was, so the folder's removal stays inside it.
+        std::fs::remove_file(base.join("x")).unwrap();
+        std::fs::rename(base.join("x-away"), base.join("x")).unwrap();
+    }
+}
+
+#[gpui::test]
+async fn a_projects_row_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
+    assert_a_fresh_capture_shows_nothing_from_before(cx, press_projects_row).await;
+}
+
+/// History's Refresh that finds another repository's Git directory at
+/// the tab's own `.git`, as a re-clone at the path leaves it, captures
+/// it afresh, unmarked as it is: until its status read lands, Push and
+/// Commit refuse and nothing read of the replaced one is shown, and then
+/// Targets name its own remote. Opened again in place, the tab kept the
+/// status read before, so Push pushed the found repository's branch to
+/// its own remote while Targets named the other's (security probe N1,
+/// FU39-A5).
+#[gpui::test]
+async fn a_refresh_that_finds_another_git_directory_in_place_captures_it_afresh(
+    cx: &mut TestAppContext,
+) {
+    assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    })
+    .await;
+}
+
+/// Show latest over a re-clone at the tab's path captures it afresh,
+/// and a Refresh that follows it shows nothing from before either. A
+/// sequencing check only: the capture forgot the status's repository
+/// (`GitTurtle::working_identity`), so this Refresh compares the found
+/// repository with the window's handle, itself, and runs as a plain
+/// Refresh, which reads everything again. The comparison with the
+/// repository the shown status was read from rather than the handle
+/// (security probe S2, FU44-A) is held by
+/// `a_refresh_compares_the_status_s_repository_not_the_window_s_handle`.
+#[gpui::test]
+async fn a_refresh_after_show_latest_over_a_re_clone_captures_it_afresh(cx: &mut TestAppContext) {
+    assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+        for _ in 0..16 {
+            if app.read_with(cx, |app, _| app.loading.is_none()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    })
+    .await;
+}
+
+/// A Refresh compares the repository it finds with the one the shown
+/// working status and remotes were read from, never with the window's
+/// handle: with the handle on a re-clone at the tab's path already, the
+/// status and remotes shown still the replaced repository's, a Refresh
+/// that finds the re-clone forgets them before the found one's status
+/// lands. Compared with the handle, it compared the re-clone with itself
+/// and kept them.
+#[gpui::test]
+async fn a_refresh_compares_the_status_s_repository_not_the_window_s_handle(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let base = fixture.path().to_owned();
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let remote = base.join("a.git");
+    fixture_git(
+        &root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let read = app.read_with(cx, |app, _| {
+        assert_eq!(app.remotes.len(), 1, "the remote read");
+        app.working_identity.clone().expect("the status read")
+    });
+    let third = fixture_repository(base.join("third"));
+    fixture_git(
+        third.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Third"],
+    );
+    std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+    std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+    let found = gitturtle_core::GitRepository::open(&root).unwrap();
+    assert!(!same_git_directories(
+        &read,
+        &worker::GitDirectories::of(&found)
+    ));
+    // The handle on the re-clone, the status shown the other's.
+    app.update(cx, |app, _| app.repository = Some(found));
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    for _ in 0..16 {
+        if app.read_with(cx, |app, _| app.loading.is_none()) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+    }
+    app.read_with(cx, |app, _| {
+        let subjects = (app.commits.iter())
+            .map(|commit| commit.subject.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(subjects, ["Third"], "the snapshot installed");
+        assert!(app.remotes.is_empty(), "no remote from before");
+        assert!(app.work_status.is_none(), "no status from before");
+        assert!(app.status_task.is_some(), "its status read waits");
+    });
+    drop(held);
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert!(app.remotes.is_empty(), "the re-clone has none");
+        assert!(app.work_status.is_some(), "its own status read");
+    });
+}
+
+/// A working status is labelled with the repository whose handle read
+/// it, the one the window held as it asked for the read, never with the
+/// handle it holds as the read lands: a read of one repository that
+/// lands after the handle moved to another names the one it read, which
+/// every later capture is compared with. Labelled at its landing, it
+/// named the other.
+#[gpui::test]
+async fn a_status_read_names_the_repository_that_read_it(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+    let read = app.read_with(cx, |app, _| {
+        worker::GitDirectories::of(app.repository.as_ref().expect("opened"))
+    });
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+    // The handle moves while the read waits.
+    app.update(cx, |app, _| app.repository = Some(other.clone()));
+    drop(held);
+    for _ in 0..16 {
+        cx.executor().run_until_parked();
+        if app.read_with(cx, |app, _| app.status_task.is_none()) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.operations.drain());
+    }
+    app.read_with(cx, |app, _| {
+        assert!(app.status_task.is_none(), "the status read landed");
+        assert_eq!(app.working_identity.as_ref(), Some(&read));
+        assert_ne!(read, worker::GitDirectories::of(&other));
+    });
+}
+
+/// A status read asked for again while the first still waits in the
+/// operation executor takes it over with the newer request's handle:
+/// with the handle moved meanwhile to a re-clone at the tab's path, the
+/// status that lands is the re-clone's, labelled with it. The waiting
+/// read once kept the handle it was built with and answered the newer
+/// request, so the status was labelled with the replaced repository
+/// (security re-check O1, FU44-C2).
+#[gpui::test]
+async fn a_status_read_taken_over_names_the_newer_request_s_repository(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let base = fixture.path().to_owned();
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let replaced = app.read_with(cx, |app, _| {
+        worker::GitDirectories::of(app.repository.as_ref().expect("opened"))
+    });
+    let third = fixture_repository(base.join("third"));
+    fixture_git(
+        third.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Third"],
+    );
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+    std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+    std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+    let found = gitturtle_core::GitRepository::open(&root).unwrap();
+    let found_directories = worker::GitDirectories::of(&found);
+    assert!(!same_git_directories(&replaced, &found_directories));
+    // The handle moves to the re-clone and Changes is read again while
+    // the first read still waits.
+    app.update(cx, |app, _| app.repository = Some(found));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+    drop(held);
+    for _ in 0..16 {
+        cx.executor().run_until_parked();
+        if app.read_with(cx, |app, _| app.status_task.is_none()) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.operations.drain());
+    }
+    app.read_with(cx, |app, _| {
+        assert!(app.status_task.is_none(), "the status read landed");
+        assert_eq!(app.working_identity.as_ref(), Some(&found_directories));
+    });
+}
+
+/// Two bare remotes and the window's repository pushed to the first; a
+/// third repository with a commit of its own and the second as its
+/// `origin`, to be moved to the tab's `.git` as a re-clone at the path
+/// leaves it ([`ReClone::in_place`]).
+struct ReClone {
+    base: PathBuf,
+    root: PathBuf,
+    bare_a: PathBuf,
+    bare_b: PathBuf,
+    pushed: Option<String>,
+    third_git: PathBuf,
+}
+
+impl ReClone {
+    fn prepare(base: &Path, root: &Path) -> Self {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        let (bare_a, bare_b) = (base.join("a.git"), base.join("b.git"));
+        for bare in [&bare_a, &bare_b] {
+            fixture_git(
+                base,
+                &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+            );
+        }
+        fixture_git(root, &["remote", "add", "origin", bare_a.to_str().unwrap()]);
+        fixture_git(root, &["push", "-q", "-u", "origin", "main"]);
+        let third = fixture_repository(base.join("third"));
+        fixture_git(
+            third.path(),
+            &["commit", "-q", "--allow-empty", "-m", "Third"],
+        );
+        fixture_git(
+            third.path(),
+            &["remote", "add", "origin", bare_b.to_str().unwrap()],
+        );
+        let clone = Self {
+            base: base.to_owned(),
+            root: root.to_owned(),
+            pushed: None,
+            third_git: third.git_dir().to_owned(),
+            bare_a,
+            bare_b,
+        };
+        Self {
+            pushed: clone.tip(&clone.bare_a, "refs/heads/main"),
+            ..clone
+        }
+    }
+
+    fn tip(&self, git_dir: &Path, reference: &str) -> Option<String> {
+        let output = crate::views::tests::fixture_git_output(
+            &self.base,
+            &[
+                "--git-dir",
+                git_dir.to_str().unwrap(),
+                "rev-parse",
+                "--verify",
+                "-q",
+                reference,
+            ],
+        );
+        (output.status.success()).then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    /// The third repository's Git directory moved to the tab's `.git`,
+    /// the replaced one aside.
+    fn in_place(&self) {
+        std::fs::rename(self.root.join(".git"), self.base.join("before-git-away")).unwrap();
+        std::fs::rename(&self.third_git, self.root.join(".git")).unwrap();
+    }
+
+    /// The tab's repository cloned again from the remote it pushed to,
+    /// `main` at the same commit tracking the same branch, its Git
+    /// directory moved to the tab's `.git` and the replaced one aside, as
+    /// deleting the folder's `.git` and cloning again leaves it: the
+    /// status the tab shows reads the same, and only the Git directory's
+    /// identity tells the two apart.
+    fn again_in_place(&self, elsewhere: &Path) {
+        let again = elsewhere.join("again");
+        crate::views::tests::fixture_git(
+            elsewhere,
+            &[
+                "clone",
+                "-q",
+                self.bare_a.to_str().unwrap(),
+                again.to_str().unwrap(),
+            ],
+        );
+        std::fs::rename(self.root.join(".git"), self.base.join("before-git-away")).unwrap();
+        std::fs::rename(again.join(".git"), self.root.join(".git")).unwrap();
+    }
+
+    /// Neither remote took a push: the first holds what the tab pushed
+    /// before, the second nothing.
+    fn assert_remotes_untouched(&self) {
+        assert_eq!(
+            self.tip(&self.bare_b, "refs/heads/main"),
+            None,
+            "Push pushed nothing"
+        );
+        assert_eq!(self.tip(&self.bare_a, "refs/heads/main"), self.pushed);
+    }
+
+    /// The write refused before Git started, in a marked tab's words:
+    /// at the tab's root Git now finds the repository at its `.git`.
+    fn assert_refused(&self, app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let error = app.read_with(cx, |app, _| {
+            (app.operation_error.as_ref()).map(|error| error.banner().to_string())
+        });
+        let words = format!(
+            "Git now finds the repository at {}",
+            self.root.join(".git").display()
+        );
+        assert!(
+            error.as_deref().is_some_and(
+                |error| error.contains(&words) && error.contains("Git was not started")
+            ),
+            "refused: {error:?}"
+        );
+    }
+}
+
+/// A Push from a warm tab whose path was cloned again while another tab
+/// was shown, pressed before any read has seen the re-clone (the tab's
+/// rescan held), is refused before Git starts: the handle's Git
+/// directory is another directory now, by its inode, so neither remote
+/// takes anything. It once pushed the found repository's `main` to its
+/// own remote while Targets named the replaced one's (security probe
+/// C2b, FU44-C).
+#[gpui::test]
+async fn a_push_from_a_warm_tab_cloned_again_in_place_is_refused(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let clone = ReClone::prepare(fixture.path(), &root);
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    open_another_tab(&app, cx, &fixture.path().join("other")).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    clone.in_place();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    // What the switch asked for lands before Push is drawn: the shown
+    // tab's watch is set up on the operation thread, which neither the
+    // reader's idle wait nor a park waits for. Landing it first is a
+    // precaution: no reply of it can then land, and draw, between the
+    // press and the release.
+    for _ in 0..8 {
+        app.read_with(cx, |app, _| app.operations.drain());
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+        if app.read_with(cx, |app, _| app.automatic.replies_landed()) {
+            break;
+        }
+    }
+    app.update(cx, |app, cx| {
+        assert!(app.automatic.replies_landed(), "the switch's reads landed");
+        assert_eq!(
+            app.path.as_deref(),
+            Some(root.as_path()),
+            "the warm tab shown"
+        );
+        app.git_actions_open = true;
+        cx.notify();
+    });
+    crate::views::tests::draw(cx);
+    let push = cx.debug_bounds("push").expect("Push drawn");
+    assert_eq!(
+        crate::workspace::refusals::get("push").map(|refusal| (refusal.announced, refusal.dimmed)),
+        Some((false, false)),
+        "offered, as no read has seen the re-clone"
+    );
+    // Held across the click: refused before Git starts, the write
+    // answers within microseconds, and its reply, landing in the
+    // click's own park, once ended the busy spell before it was read.
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.simulate_click(push.center(), gpui::Modifiers::default());
+    assert!(
+        app.read_with(cx, |app, _| app.operation_busy.is_some()),
+        "Push submitted"
+    );
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    clone.assert_refused(&app, cx);
+    clone.assert_remotes_untouched();
+}
+
+/// A write submitted before its repository was cloned again in place,
+/// and run once a Refresh that found the re-clone has landed, is refused
+/// before Git starts: it carries the handle of the replaced repository,
+/// whose Git directory is another directory now, so no branch is made
+/// in either repository. The branch was once created and checked out in
+/// the found repository (security probe C3, FU44-C).
+#[gpui::test]
+async fn a_write_run_after_a_re_clone_in_place_is_refused(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let clone = ReClone::prepare(fixture.path(), &root);
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.write(
+                gitturtle_core::WriteCommand::CreateBranch {
+                    name: "made-after".into(),
+                    start_point: None,
+                },
+                "Creating branch…",
+                window,
+                cx,
+            )
+        })
+    });
+    assert!(
+        app.read_with(cx, |app, _| app.operation_busy.is_some()),
+        "submitted"
+    );
+    clone.in_place();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    for _ in 0..6 {
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+    }
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    clone.assert_refused(&app, cx);
+    for git_dir in [root.join(".git"), clone.base.join("before-git-away")] {
+        assert_eq!(
+            clone.tip(&git_dir, "refs/heads/made-after"),
+            None,
+            "no branch made in {}",
+            git_dir.display()
+        );
+    }
+}
+
+/// A press in Changes of a write that reads only the working state
+/// after it.
+#[derive(Clone, Copy, Debug)]
+enum WorkingPress {
+    /// The row's Stage control.
+    Stage,
+    /// Changes' Stage all.
+    StageAll,
+    /// Discard…'s review, confirmed.
+    Discard,
+}
+
+/// `press` on the untracked `fresh.txt`, after the tab's repository was
+/// cloned again in place from its remote where no read has seen it
+/// ([`ReClone::again_in_place`]), is refused before Git starts, writes
+/// nothing in either repository, and leads to its own recovery: the tab
+/// reads the repository again, so without a Refresh it holds the found
+/// repository, its status and history, the refusal says so, and the
+/// same press then writes there. Read through the window's handle, the
+/// working state after it came back under the replaced repository's
+/// identity, the same as before, so nothing else read again and every
+/// such press was refused until Refresh (FU44-C4 re-check S2).
+async fn a_refused_press_reads_the_repository_again(cx: &mut TestAppContext, press: WorkingPress) {
+    use crate::views::tests::fixture_git_output;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let clone = ReClone::prepare(fixture.path(), &root);
+    // The imported commit checked out, so its file reads as unchanged.
+    crate::views::tests::fixture_git(&root, &["reset", "--hard", "--quiet"]);
+    std::fs::write(root.join("fresh.txt"), "the person's\n").unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    settle_tab_test(&app, cx).await;
+    // The tab watched as the window watches a shown tab: the settle
+    // forgets the watch, and the write's working read then subscribed
+    // afresh, whose rescan read the repository again and found the
+    // re-clone whatever the write asked for, so these tests passed
+    // with the recapture removed. Watched, that read checks the watch
+    // and reads the working state only, as it does in the product.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.ensure_local_watcher(false, window, cx)));
+    // Nothing waits to read: the press's own read is the only one that
+    // can find the re-clone.
+    let quiet = |app: &GitTurtle, _: &App| {
+        app.automatic.watching()
+            && !app.automatic.quiet_read_requested()
+            && app.automatic.replies_landed()
+            && app.status_task.is_none()
+    };
+    for _ in 0..16 {
+        cx.executor().run_until_parked();
+        if app.read_with(cx, quiet) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.operations.drain());
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    assert!(app.read_with(cx, quiet), "the opening reads landed");
+    crate::path_filter::filters_land(&app, cx);
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    if let WorkingPress::Discard = press {
+        let entry = app.read_with(cx, |app, _| {
+            (app.work_status.as_ref().expect("a status").entries.iter())
+                .find(|entry| entry.path == Path::new("fresh.txt"))
+                .cloned()
+                .expect("the untracked row")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(entry, window, cx)));
+        for _ in 0..8 {
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::draw(cx);
+            if cx.debug_bounds("confirm-discard").is_some() {
+                break;
+            }
+        }
+    }
+    let replaced = app.read_with(cx, |app, _| {
+        (app.repository.as_ref().expect("opened")).git_dir_inode()
+    });
+    let elsewhere = tempfile::tempdir().unwrap();
+    clone.again_in_place(elsewhere.path());
+    let found = gitturtle_core::GitRepository::open(&root).unwrap();
+    assert_ne!(found.git_dir_inode(), replaced, "another Git directory");
+    let row = app.read_with(cx, |app, _| {
+        let entries = &app.work_status.as_ref().expect("a status").entries;
+        (app.working_rows.iter())
+            .position(|row| {
+                matches!(row, crate::workspace::WorkingRow::File(index, _)
+                    if entries[*index].path == Path::new("fresh.txt"))
+            })
+            .expect("fresh.txt's row")
+    });
+    let selector = match press {
+        WorkingPress::Stage => format!("working-stage-{row}"),
+        WorkingPress::StageAll => "stage-all".to_owned(),
+        WorkingPress::Discard => "confirm-discard".to_owned(),
+    };
+    let selector: &'static str = selector.leak();
+    crate::views::tests::draw(cx);
+    let control = cx.debug_bounds(selector).expect(selector);
+    let held = app.read_with(cx, |app, _| app.operations.hold());
+    cx.simulate_click(control.center(), gpui::Modifiers::default());
+    assert!(
+        app.read_with(cx, |app, _| app.operation_busy.is_some()),
+        "{press:?} submitted"
+    );
+    app.update(cx, |app, _| {
+        assert!(
+            !app.automatic.quiet_read_requested() && app.automatic.watching(),
+            "{press:?}: no read but the write's own waits, the tab watched"
+        );
+        app.automatic.hold_quiet_reads(false);
+    });
+    drop(held);
+    let landed = |app: &GitTurtle, _: &App| {
+        app.repository
+            .as_ref()
+            .is_some_and(|repo| repo.git_dir_inode() == found.git_dir_inode())
+            && app.operation_busy.is_none()
+            && !app.automatic.quiet_read_requested()
+            && app.automatic.replies_landed()
+            && app.status_task.is_none()
+    };
+    for _ in 0..16 {
+        cx.executor().run_until_parked();
+        if app.read_with(cx, landed) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.operations.drain());
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    assert!(
+        app.read_with(cx, landed),
+        "{press:?}: the tab read the found repository, with no Refresh"
+    );
+    settle_tab_test(&app, cx).await;
+    clone.assert_refused(&app, cx);
+    let banner = app.read_with(cx, |app, _| {
+        (app.operation_error.as_ref()).map(|error| error.banner().to_string())
+    });
+    // What stays true once the read has landed, as it has here and as
+    // it does a frame or two after the refusal, while the banner stays
+    // until dismissed: "…, and the tab reads the repository again."
+    // outlived the read.
+    assert!(
+        banner.as_deref().is_some_and(|banner| banner
+            .ends_with(". Nothing was written; the tab now shows the repository found there.")),
+        "{press:?}: it says what the tab shows: {banner:?}"
+    );
+    // Nothing written: neither index holds the file, which is still
+    // there with its bytes.
+    for git_dir in [root.join(".git"), clone.base.join("before-git-away")] {
+        let staged = fixture_git_output(
+            &root,
+            &[
+                "--git-dir",
+                git_dir.to_str().unwrap(),
+                "--work-tree",
+                root.to_str().unwrap(),
+                "ls-files",
+                "--stage",
+                "--",
+                "fresh.txt",
+            ],
+        );
+        assert!(
+            staged.status.success() && staged.stdout.is_empty(),
+            "{press:?}: nothing staged in {}",
+            git_dir.display()
+        );
+    }
+    assert_eq!(
+        std::fs::read(root.join("fresh.txt")).unwrap(),
+        b"the person's\n",
+        "{press:?}: nothing discarded"
+    );
+    // The found repository's state, with no Refresh.
+    let head = fixture_git_output(&root, &["rev-parse", "HEAD"]);
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    app.read_with(cx, |app, _| {
+        assert_eq!(
+            app.working_identity.as_ref(),
+            Some(&worker::GitDirectories::of(&found)),
+            "{press:?}: the status is the found repository's"
+        );
+        assert_eq!(
+            app.work_status
+                .as_ref()
+                .and_then(|status| status.head.clone()),
+            Some(head.clone()),
+            "{press:?}: its HEAD"
+        );
+        assert_eq!(
+            app.commits.first().map(|commit| commit.oid.clone()),
+            Some(head),
+            "{press:?}: History shows the found repository's newest commit"
+        );
+    });
+    clone.assert_remotes_untouched();
+    // The same press again writes, in the found repository only.
+    if let WorkingPress::Discard = press {
+        return;
+    }
+    crate::views::tests::draw(cx);
+    let control = cx.debug_bounds(selector).expect(selector);
+    cx.simulate_click(control.center(), gpui::Modifiers::default());
+    let write = (app.update(cx, |app, _| app.operation_task.take())).expect("written");
+    write.await;
+    settle_tab_test(&app, cx).await;
+    for (git_dir, staged) in [
+        (root.join(".git"), true),
+        (clone.base.join("before-git-away"), false),
+    ] {
+        let index = fixture_git_output(
+            &root,
+            &[
+                "--git-dir",
+                git_dir.to_str().unwrap(),
+                "--work-tree",
+                root.to_str().unwrap(),
+                "ls-files",
+                "--stage",
+                "--",
+                "fresh.txt",
+            ],
+        );
+        assert_eq!(
+            !index.stdout.is_empty(),
+            staged,
+            "{press:?} again: staged in the found repository only ({})",
+            git_dir.display()
+        );
+    }
+}
+
+#[gpui::test]
+async fn a_stage_refused_after_a_re_clone_reads_the_repository_again(cx: &mut TestAppContext) {
+    a_refused_press_reads_the_repository_again(cx, WorkingPress::Stage).await;
+}
+
+#[gpui::test]
+async fn a_stage_all_refused_after_a_re_clone_reads_the_repository_again(cx: &mut TestAppContext) {
+    a_refused_press_reads_the_repository_again(cx, WorkingPress::StageAll).await;
+}
+
+#[gpui::test]
+async fn a_discard_refused_after_a_re_clone_reads_the_repository_again(cx: &mut TestAppContext) {
+    a_refused_press_reads_the_repository_again(cx, WorkingPress::Discard).await;
+}
+
+/// The refusal of a write through a repository at a 74-character root
+/// under `base`, as macOS's per-user temporary folder gives one, after
+/// another repository's Git directory took its `.git`: core's sentence
+/// around both paths, followed by what the window does, as the write's
+/// reply builds it.
+fn a_refusal_at_a_74_character_root(base: &Path) -> crate::views::OperationFailure {
+    use crate::views::tests::fixture_repository;
+    std::fs::create_dir_all(base).unwrap();
+    let pad = 74_usize
+        .checked_sub(base.as_os_str().len() + 1)
+        .filter(|pad| *pad > 0)
+        .expect("a temporary folder shorter than 74 characters");
+    let root = base.join("r".repeat(pad));
+    assert_eq!(root.as_os_str().len(), 74);
+    let repository = fixture_repository(&root);
+    let third = fixture_repository(base.join("third"));
+    std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+    std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+    let error = gitturtle_core::run_controlled(Default::default(), || {
+        repository.execute(&gitturtle_core::WriteCommand::CreateBranch {
+            name: "made-after".into(),
+            start_point: None,
+        })
+    })
+    .expect_err("refused");
+    assert!(gitturtle_core::write_refused(&error), "{error:#}");
+    crate::views::OperationFailure::of(&error).followed_by(crate::workspace::REFUSED_READ_AGAIN)
+}
+
+/// `refusal` in the banner of `app`'s window, `window` in size at
+/// `interface` pt, Midnight with the app's key bindings, as the focus
+/// sweep walks a window.
+fn a_refusal_shown(
+    app: &Entity<GitTurtle>,
+    cx: &mut gpui::VisualTestContext,
+    refusal: crate::views::OperationFailure,
+    interface: u8,
+    window: Size<Pixels>,
+) {
+    crate::focus_ring::sweep::prepare(app, cx);
+    cx.simulate_resize(window);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.settings.interface_text_size = interface;
+            let code = app.settings.code_text_size;
+            appearance::apply_text_sizes(interface, code, window, cx);
+            app.operation_error = Some(refusal);
+            cx.notify();
+        })
+    });
+    crate::views::tests::draw(cx);
+}
+
+/// At the largest interface text size, 18 pt, in a 461 × 490 half
+/// tile, a refusal taller than its line's box is never cut by the box's
+/// clip (DESIGN.md, "One responsive order"): the box holds the most
+/// whole lines a scaled 100 px holds, inside the banner's row with its
+/// padding and the row inside the window, Details… and Dismiss whole
+/// beside it. Its words scroll inside it, cued by the toolkit's
+/// scrollbar, and it is a Tab stop, by Tab and by Shift+Tab, ringed on
+/// its own edge and read by the alert's whole report, which Down
+/// scrolls a whole line at a time to the refusal's last sentence, and
+/// Up back, focus staying on it. It scrolled with nothing to say so and
+/// no key to reach that sentence, its bound cutting a line at its foot;
+/// the tests drew it in a 680 px window.
+#[gpui::test]
+async fn a_refused_write_s_box_holds_whole_lines_and_scrolls_by_key_at_18_pt(
+    cx: &mut TestAppContext,
+) {
+    use crate::focus_ring::sweep;
+    use crate::native_accessibility::written;
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    let report = refusal.to_string();
+    assert!(
+        report.ends_with(" Nothing was written; the tab now shows the repository found there."),
+        "the refusal's last sentence: {report}"
+    );
+    let interface = *appearance::INTERFACE_TEXT_RANGE.end();
+    assert_eq!(interface, 18, "the largest interface text size");
+    a_refusal_shown(&app, cx, refusal, interface, size(px(461.), px(490.)));
+    let (line, viewport, device) = cx.update(|window, _| {
+        (
+            crate::image_compare::text_line(appearance::ui_text(11.), window),
+            window.viewport_size(),
+            px(1.) / window.scale_factor(),
+        )
+    });
+    let drawn = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+        cx.debug_bounds(selector).expect(selector)
+    };
+    let (row, kept, text) = (
+        drawn(cx, "operation-error-row"),
+        drawn(cx, "operation-error-summary"),
+        drawn(cx, "operation-error-text"),
+    );
+    let bound = appearance::ui_size(100.);
+    let lines = (bound / line).floor();
+    assert!(lines >= 2., "the bound {bound:?} holds lines of {line:?}");
+    assert!(
+        text.size.height > kept.size.height,
+        "its words are taller than its box: {text:?} in {kept:?}"
+    );
+    assert!(
+        (kept.size.height - line * lines).abs() <= device,
+        "the box holds {lines} whole lines of {line:?}, the most {bound:?} holds: {kept:?}"
+    );
+    assert!(
+        (text.top() - kept.top()).abs() <= device,
+        "its first line starts at the box's top: {text:?} in {kept:?}"
+    );
+    assert!(
+        kept.top() > row.top() && kept.bottom() < row.bottom(),
+        "inside the row and its padding: {kept:?} in {row:?}"
+    );
+    assert!(
+        row.top() >= px(0.) && row.bottom() <= viewport.height,
+        "the row inside the window: {row:?} in {viewport:?}"
+    );
+    let bar = drawn(cx, "operation-error-scrollbar");
+    assert!(
+        bar.size.height > px(0.)
+            && bar.top() >= kept.top() - device
+            && bar.bottom() <= kept.bottom() + device
+            && bar.right() <= kept.right() + device,
+        "the toolkit's scrollbar cues the scroll, over the box: {bar:?} in {kept:?}"
+    );
+    let mut beside = kept.right();
+    for selector in ["operation-error-details", "dismiss-operation-error"] {
+        let button = drawn(cx, selector);
+        assert!(
+            button.left() >= beside
+                && button.top() >= row.top()
+                && button.bottom() <= row.bottom()
+                && button.right() <= row.right()
+                && button.right() <= viewport.width,
+            "{selector} whole beside the line, inside the row and the window: {button:?} \
+             in {row:?}"
+        );
+        beside = button.right();
+    }
+    // A Tab stop by either key, its ring on its own edge.
+    let mut failures = Vec::new();
+    for key in ["tab", "shift-tab"] {
+        let mut reached = false;
+        let mut walked = Vec::new();
+        sweep::walk_each(
+            &app,
+            cx,
+            key,
+            &format!("the refused write's banner by {key}"),
+            interface,
+            &mut walked,
+            &mut |cx, stop, rings| {
+                if !cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+                    return;
+                }
+                reached = true;
+                let kept = drawn(cx, "operation-error-box");
+                let rings: Vec<_> = rings.iter().map(|ring| ring.bounds).collect();
+                if !sweep::rings_edge(&rings, kept) {
+                    failures.push(format!(
+                        "{stop}: no ring on the box's edge, {kept:?}, only {rings:?}"
+                    ));
+                }
+            },
+        );
+        failures.extend(walked);
+        if !reached {
+            failures.push(format!("{key} never focused the refusal's box"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    for _ in 0..80 {
+        if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+            break;
+        }
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+    }
+    let focused = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, _| crate::views::refusal_box_focused(window))
+    };
+    assert!(focused(cx), "Tab reaches the refusal's box");
+    // Read whole: the stop is the alert, named and valued by the whole
+    // report.
+    written::forget();
+    draw(cx);
+    let id = app.read_with(cx, |app, _| app.error_refusals);
+    let node = written::get(&format!("operation-error-summary-{id}"))
+        .expect("the box's node")
+        .node;
+    assert_eq!(
+        node.role(),
+        gpui::accesskit::Role::Alert,
+        "the box is the alert"
+    );
+    assert_eq!(
+        node.label(),
+        Some(report.as_str()),
+        "the stop reads the whole refusal"
+    );
+    let scrolled = |cx: &mut gpui::VisualTestContext| {
+        let (kept, text) = (
+            drawn(cx, "operation-error-summary"),
+            drawn(cx, "operation-error-text"),
+        );
+        (kept.top() - text.top(), kept, text)
+    };
+    let press = |key: &str, cx: &mut gpui::VisualTestContext| {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+    };
+    let (mut at, _, _) = scrolled(cx);
+    assert!(at.abs() <= device, "from its top: {at:?}");
+    let mut steps = 0;
+    loop {
+        press("down", cx);
+        let (now, kept, text) = scrolled(cx);
+        let whole = (now / line).round();
+        assert!(
+            (now - line * whole).abs() <= device,
+            "Down leaves whole lines in the box: {now:?} past its top, lines of {line:?}"
+        );
+        if (now - at).abs() <= device {
+            // At its end: the refusal's last line, its last sentence's
+            // end, at the box's foot, inside it.
+            assert!(
+                (text.bottom() - kept.bottom()).abs() <= device,
+                "Down reaches the refusal's last line: {text:?} in {kept:?}"
+            );
+            break;
+        }
+        assert!(
+            (now - at - line).abs() <= device,
+            "Down scrolls a line: {at:?} to {now:?}"
+        );
+        at = now;
+        steps += 1;
+        assert!(steps < 40, "Down reaches the end");
+    }
+    assert!(steps >= 1, "Down scrolled the box");
+    assert!(focused(cx), "Down keeps focus on the box");
+    press("up", cx);
+    assert!(
+        (scrolled(cx).0 - (at - line)).abs() <= device,
+        "Up scrolls back a line"
+    );
+    assert!(focused(cx), "Up keeps focus on the box");
+}
+
+/// Presses Tab until the refusal's box holds focus.
+fn tab_to_the_refusal_s_box(cx: &mut gpui::VisualTestContext) {
+    for _ in 0..80 {
+        if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+            return;
+        }
+        cx.simulate_keystrokes("tab");
+        crate::views::tests::draw(cx);
+    }
+    panic!("Tab never reached the refusal's box");
+}
+
+/// Whether the installed Button ring is painted around `selector`: a
+/// bordered quad the ring's room outside the control.
+fn button_ringed(cx: &mut gpui::VisualTestContext, selector: &'static str) -> bool {
+    let control = cx.debug_bounds(selector).expect(selector);
+    let ring = control.dilate(cx.read(appearance::button_ring_room));
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.border_widths.top.0 > 0.)
+            .any(|quad| {
+                let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                let (origin, extent) = (quad.bounds.origin, quad.bounds.size);
+                let quad = Bounds::new(
+                    point(logical(origin.x), logical(origin.y)),
+                    size(logical(extent.width), logical(extent.height)),
+                );
+                [
+                    (quad.left(), ring.left()),
+                    (quad.top(), ring.top()),
+                    (quad.right(), ring.right()),
+                    (quad.bottom(), ring.bottom()),
+                ]
+                .into_iter()
+                .all(|(drawn, edge)| (drawn - edge).abs() < px(0.5))
+            })
+    })
+}
+
+/// At 18 pt in a 461 × 490 half tile, the refusal's box keeps its 1 px
+/// keyboard ring clear of its words on every side, at the test
+/// platform's scale 2 and at the fractional 1.25 and 1.5 a desktop sets:
+/// the region that clips them, holding its whole lines, lies the Button
+/// ring's room snapped to device pixels inside the ring (3, 3.2 and
+/// 2.67 px), the same on every side, and a wider installed Button ring's
+/// room as File History's failed message keeps it (4 px at 1.5), with
+/// the first glyph at its top left and, scrolled to its end, the last
+/// line at its foot, while the words keep the left edge and the wrap
+/// room a line Git answered has in the banner. Drawn on the box's own
+/// edge, the ring lay over the first column of letters and the first
+/// line's tops; a fixed 3 px kept its room from an installed ring's.
+#[gpui::test]
+async fn a_refused_write_s_ring_clears_its_words_on_every_side_at_18_pt(cx: &mut TestAppContext) {
+    use crate::views::tests::draw;
+    use gpui_kit::component::{FocusRing, Theme};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    let half_tile = size(px(461.), px(490.));
+    // A resize takes the platform's scale again, so each scale is set
+    // after it.
+    let at = |cx: &mut gpui::VisualTestContext, scale: f32| {
+        cx.simulate_resize(half_tile);
+        cx.update(|window, _| window.set_scale_factor(scale));
+        draw(cx);
+        assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+    };
+    let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+    let wider = FocusRing {
+        width: px(2.),
+        gap: px(2.),
+        ..installed
+    };
+    let cases = [(2., None), (1.25, None), (1.5, None), (1.5, Some(wider))];
+    // A line Git answered at each scale, whose edges the words keep.
+    a_refusal_shown(&app, cx, "Short".into(), 18, half_tile);
+    let answered: Vec<_> = cases
+        .iter()
+        .map(|&(scale, _)| {
+            at(cx, scale);
+            cx.debug_bounds("operation-error-summary").expect("a line")
+        })
+        .collect();
+    app.update(cx, |app, cx| {
+        app.operation_error = Some(refusal);
+        cx.notify();
+    });
+    at(cx, cases[0].0);
+    tab_to_the_refusal_s_box(cx);
+    let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+    let drawn = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+        cx.debug_bounds(selector).expect(selector)
+    };
+    for (&(scale, ring), answered) in cases.iter().zip(answered) {
+        // The box keeps focus as the scale changes; Up back to its top.
+        at(cx, scale);
+        let scale = if let Some(ring) = ring {
+            cx.update(|window, cx| {
+                Theme::global_mut(cx).button_focus_ring = ring;
+                app.update(cx, |_, cx| cx.notify());
+                window.refresh();
+            });
+            draw(cx);
+            format!("{scale} with a {:?} Button ring", ring.gap + ring.width)
+        } else {
+            scale.to_string()
+        };
+        for _ in 0..40 {
+            cx.simulate_keystrokes("up");
+            draw(cx);
+        }
+        assert!(
+            cx.update(|window, _| crate::views::refusal_box_focused(window)),
+            "at {scale}, the box keeps focus"
+        );
+        let (line, device, room) = cx.update(|window, cx| {
+            (
+                crate::image_compare::text_line(appearance::ui_text(11.), window),
+                px(1.) / window.scale_factor(),
+                window.pixel_snap(appearance::button_ring_room(cx)),
+            )
+        });
+        let ring = |cx: &mut gpui::VisualTestContext, kept: Bounds<Pixels>| {
+            let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                .into_iter()
+                .filter(|ring| ring.bounds.contains(&kept.center()))
+                .collect();
+            assert!(
+                rings.len() == 1 && rings[0].whole,
+                "at {scale}, one whole ring around the box: {rings:?}"
+            );
+            rings[0].bounds
+        };
+        // The room on every side is the snapped room itself, whole
+        // device pixels: within a device pixel of 3 px, a room the
+        // layout rounds to another pixel count would pass.
+        let clear = |ring: Bounds<Pixels>, kept: Bounds<Pixels>| {
+            [
+                (kept.left() - ring.left(), "left"),
+                (kept.top() - ring.top(), "top"),
+                (ring.right() - kept.right(), "right"),
+                (ring.bottom() - kept.bottom(), "bottom"),
+            ]
+            .into_iter()
+            .filter(|(gap, _)| (*gap - room).abs() > px(0.01))
+            .map(|(gap, side)| format!("{side} {gap:?}"))
+            .collect::<Vec<_>>()
+        };
+        let (kept, text) = (
+            drawn(cx, "operation-error-summary"),
+            drawn(cx, "operation-error-text"),
+        );
+        assert!(
+            (kept.left() - answered.left()).abs() <= device
+                && (kept.right() - answered.right()).abs() <= device,
+            "at {scale}, the banner's left edge and wrap room: {kept:?}, a line Git answered {answered:?}"
+        );
+        assert!(
+            text.size.height > kept.size.height,
+            "at {scale}, its words scroll: {text:?} in {kept:?}"
+        );
+        let around = ring(cx, kept);
+        assert_eq!(
+            clear(around, kept),
+            Vec::<String>::new(),
+            "at {scale}, the ring {room:?} outside the words' region {kept:?}: {around:?}"
+        );
+        assert!(
+            (text.left() - kept.left()).abs() <= device
+                && (text.top() - kept.top()).abs() <= device,
+            "at {scale}, the first glyph at the region's top left: {text:?} in {kept:?}"
+        );
+        assert!(
+            (kept.size.height / line - (kept.size.height / line).round()).abs() * line <= device,
+            "at {scale}, the region holds whole lines of {line:?}: {kept:?}"
+        );
+        for _ in 0..40 {
+            cx.simulate_keystrokes("down");
+            draw(cx);
+        }
+        let (kept, text) = (
+            drawn(cx, "operation-error-summary"),
+            drawn(cx, "operation-error-text"),
+        );
+        assert!(
+            (text.bottom() - kept.bottom()).abs() <= device,
+            "at {scale}, Down reaches the last line, at the region's foot: {text:?} in {kept:?}"
+        );
+        let around = ring(cx, kept);
+        assert_eq!(
+            clear(around, kept),
+            Vec::<String>::new(),
+            "at {scale}, at the end, the ring {room:?} below the last line {kept:?}: {around:?}"
+        );
+    }
+    cx.update(|window, cx| {
+        Theme::global_mut(cx).button_focus_ring = installed;
+        window.refresh();
+    });
+}
+
+/// From the refusal's box, while it scrolls, Tab moves on to Details…
+/// and then Dismiss, and Shift+Tab back to the box: the order they are
+/// read in, the words first.
+#[gpui::test]
+async fn tab_moves_from_a_refused_write_s_box_to_details_then_dismiss(cx: &mut TestAppContext) {
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    a_refusal_shown(&app, cx, refusal, 18, size(px(461.), px(490.)));
+    tab_to_the_refusal_s_box(cx);
+    let at = |cx: &mut gpui::VisualTestContext| {
+        let mut at = Vec::new();
+        if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+            at.push("box");
+        }
+        for (selector, name) in [
+            ("operation-error-details", "Details…"),
+            ("dismiss-operation-error", "Dismiss"),
+        ] {
+            if button_ringed(cx, selector) {
+                at.push(name);
+            }
+        }
+        at
+    };
+    let mut walked = vec![at(cx)];
+    for key in ["tab", "tab", "shift-tab", "shift-tab"] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        walked.push(at(cx));
+    }
+    assert_eq!(
+        walked,
+        [
+            vec!["box"],
+            vec!["Details…"],
+            vec!["Dismiss"],
+            vec!["Details…"],
+            vec!["box"]
+        ],
+        "Tab and Shift+Tab through the banner"
+    );
+}
+
+/// Made to fit while it holds focus, by a window grown around it, the
+/// refusal's box keeps focus, drawing no scrollbar, and the next Tab
+/// moves on to Details…, as it does from the box that scrolls.
+#[gpui::test]
+async fn a_refused_write_s_box_grown_to_fit_keeps_focus_until_the_next_tab(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    a_refusal_shown(&app, cx, refusal, 18, size(px(461.), px(490.)));
+    tab_to_the_refusal_s_box(cx);
+    cx.simulate_resize(size(px(1480.), px(980.)));
+    draw(cx);
+    draw(cx);
+    assert!(
+        cx.debug_bounds("operation-error-scrollbar").is_none(),
+        "the refusal fits the grown window"
+    );
+    assert!(
+        cx.update(|window, _| crate::views::refusal_box_focused(window)),
+        "the box keeps focus"
+    );
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    assert!(
+        button_ringed(cx, "operation-error-details"),
+        "the next Tab moves on to Details…"
+    );
+}
+
+/// While the refusal's box holds focus, the same refusal reported again
+/// opens it at its top, and a shorter one that fits keeps focus on it,
+/// drawing no scrollbar, the next Tab moving on to Details…. Keyed on its
+/// line alone, the same refusal again opened where the last was left
+/// scrolled. Gone as a line Git answered takes the place of a refusal
+/// that replaced another while it held focus, the box gives focus to the
+/// control the first write was refused on, here Targets, which the
+/// window's ring shows on: had the refusal that replaced another noted
+/// the box itself as that control, Targets was lost.
+#[gpui::test]
+async fn a_refused_write_s_box_keeps_focus_as_another_refusal_replaces_it(cx: &mut TestAppContext) {
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+    let device = cx.update(|window, _| px(1.) / window.scale_factor());
+    let targets = tab_to_targets(cx);
+    let report = |failure: crate::views::OperationFailure, cx: &mut gpui::VisualTestContext| {
+        a_failure_reported(&app, cx, Some(failure));
+        draw(cx);
+    };
+    // A write refused while focus rests on Targets.
+    report(refusal.clone(), cx);
+    tab_to_the_refusal_s_box(cx);
+    let scrolled = |cx: &mut gpui::VisualTestContext| {
+        let kept = cx.debug_bounds("operation-error-summary").expect("its box");
+        let text = cx.debug_bounds("operation-error-text").expect("its words");
+        kept.top() - text.top()
+    };
+    for _ in 0..2 {
+        cx.simulate_keystrokes("down");
+        draw(cx);
+    }
+    assert!(scrolled(cx) > device, "Down scrolled the box");
+    report(refusal.clone(), cx);
+    assert!(
+        scrolled(cx).abs() <= device,
+        "the same refusal again opens at its top: {:?}",
+        scrolled(cx)
+    );
+    assert!(
+        cx.update(|window, _| crate::views::refusal_box_focused(window)),
+        "the box keeps focus as the refusal comes again"
+    );
+    a_failure_reported(
+        &app,
+        cx,
+        Some("fatal: unable to access 'https://example.invalid/': Could not resolve host".into()),
+    );
+    let after: Vec<_> = (0..2).map(|_| a_frame(cx)).collect();
+    assert_eq!(
+        after,
+        vec![Some(targets.clone()); 2],
+        "the box gone, focus moves to Targets, where the first write was refused"
+    );
+    assert!(
+        app.read_with(cx, |app, _| app.focus_ring.shows(&targets))
+            && button_ringed(cx, "git-actions-toggle"),
+        "Targets draws the ring the window shows on it"
+    );
+    report(refusal, cx);
+    tabs_to_the_refusal_s_box(cx);
+    report(
+        crate::views::OperationFailure::refused("Git was not started."),
+        cx,
+    );
+    draw(cx);
+    assert!(
+        cx.debug_bounds("operation-error-scrollbar").is_none(),
+        "the shorter refusal fits"
+    );
+    assert!(
+        cx.update(|window, _| crate::views::refusal_box_focused(window)),
+        "the box keeps focus as a shorter refusal replaces it"
+    );
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    assert!(
+        button_ringed(cx, "operation-error-details"),
+        "the next Tab moves on to Details…"
+    );
+}
+
+/// A refused write's box that holds focus as a dialog opens from it,
+/// gone under the dialog as a line Git answered takes the refusal's
+/// place, gives focus to the control the write was refused on, here
+/// Targets, ringed, as the dialog closes and gives focus back to the
+/// box. Let go while the dialog was open, the control was lost and focus
+/// went on to History's commits.
+#[gpui::test]
+async fn a_refused_write_s_box_gone_under_a_dialog_gives_focus_to_the_control_as_it_closes(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+    let targets = tab_to_targets(cx);
+    // A write refused while focus rests on Targets.
+    a_failure_reported(&app, cx, Some(refusal));
+    draw(cx);
+    tab_to_the_refusal_s_box(cx);
+    cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+    draw(cx);
+    a_failure_reported(
+        &app,
+        cx,
+        Some("fatal: unable to access 'https://example.invalid/': Could not resolve host".into()),
+    );
+    draw(cx);
+    draw(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "the dialog stays open"
+    );
+    assert!(
+        cx.debug_bounds("operation-error-box").is_none(),
+        "the line Git answered takes the box's place"
+    );
+    cx.update(|window, cx| window.close_dialog(cx));
+    let after: Vec<_> = (0..2).map(|_| a_frame(cx)).collect();
+    assert_eq!(
+        after,
+        vec![Some(targets.clone()); 2],
+        "as the dialog closes, focus goes on from the box to Targets"
+    );
+    assert!(
+        app.read_with(cx, |app, _| app.focus_ring.shows(&targets))
+            && button_ringed(cx, "git-actions-toggle"),
+        "Targets draws the ring the window shows on it"
+    );
+}
+
+/// `failure` reported in the banner of `app`'s shown tab as a write's
+/// reply reports it (`GitTurtle::tab_operation_feedback`), a fresh
+/// refusal each time; `None` takes the banner away.
+fn a_failure_reported(
+    app: &Entity<GitTurtle>,
+    cx: &mut gpui::VisualTestContext,
+    failure: Option<crate::views::OperationFailure>,
+) {
+    app.update(cx, |app, cx| {
+        let path = app.path.clone().expect("the tab's repository");
+        app.tab_operation_feedback(&path, None, failure, cx);
+        cx.notify();
+    });
+}
+
+/// One frame of `cx`'s window, and where focus is after it.
+fn a_frame(cx: &mut gpui::VisualTestContext) -> Option<FocusHandle> {
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.executor().run_until_parked();
+    cx.update(|window, cx| window.focused(cx))
+}
+
+/// Presses Tab from where focus is until the refusal's box holds it, and
+/// returns the presses taken.
+fn tabs_to_the_refusal_s_box(cx: &mut gpui::VisualTestContext) -> usize {
+    for press in 1..=80 {
+        cx.simulate_keystrokes("tab");
+        crate::views::tests::draw(cx);
+        if cx.update(|window, _| crate::views::refusal_box_focused(window)) {
+            return press;
+        }
+    }
+    panic!("Tab never reached the refusal's box");
+}
+
+/// Presses Tab until Targets draws its ring, and returns its focus.
+fn tab_to_targets(cx: &mut gpui::VisualTestContext) -> FocusHandle {
+    for _ in 0..80 {
+        if button_ringed(cx, "git-actions-toggle") {
+            return cx
+                .update(|window, cx| window.focused(cx))
+                .expect("Targets holds focus");
+        }
+        cx.simulate_keystrokes("tab");
+        crate::views::tests::draw(cx);
+    }
+    panic!("Tab never reached Targets");
+}
+
+/// At 18 pt in a 461 × 490 half tile, a refused write's box that holds
+/// focus as a line Git answered takes the refusal's place gives focus,
+/// in the frame that draws the line, to the control the write was
+/// refused on, where focus rested as the refusal came, here Targets: one
+/// move, heard once, the control ringed, and Tab moving on from it. The
+/// refusal reported again is a Tab stop again, reached from Targets
+/// within the page's stops. Focus once stayed on the box no frame drew, which
+/// the window's ring kept alive: no key reached a binding, so Tab moved
+/// nothing, the new refusal's box, under another handle, never reached.
+#[gpui::test]
+async fn a_refused_write_s_box_gone_with_focus_gives_it_to_the_control_refused_on(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+    let targets = tab_to_targets(cx);
+    // A write refused while focus rests on Targets.
+    a_failure_reported(&app, cx, Some(refusal.clone()));
+    draw(cx);
+    tabs_to_the_refusal_s_box(cx);
+    // From the box round to it again: the page's stops.
+    let cycle = tabs_to_the_refusal_s_box(cx);
+    a_failure_reported(
+        &app,
+        cx,
+        Some("fatal: unable to access 'https://example.invalid/': Could not resolve host".into()),
+    );
+    let after: Vec<_> = (0..4).map(|_| a_frame(cx)).collect();
+    assert_eq!(
+        after,
+        vec![Some(targets.clone()); 4],
+        "focus moves to Targets in the frame that draws the line, once, and stays"
+    );
+    assert!(
+        cx.debug_bounds("operation-error-summary").is_some()
+            && cx.debug_bounds("operation-error-box").is_none(),
+        "the line Git answered takes the box's place"
+    );
+    assert!(
+        button_ringed(cx, "git-actions-toggle"),
+        "Targets draws its ring"
+    );
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    assert_ne!(
+        cx.update(|window, cx| window.focused(cx)),
+        Some(targets.clone()),
+        "Tab moves on from Targets"
+    );
+    cx.simulate_keystrokes("shift-tab");
+    draw(cx);
+    assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(targets));
+    a_failure_reported(&app, cx, Some(refusal));
+    draw(cx);
+    let again = tabs_to_the_refusal_s_box(cx);
+    assert!(
+        again <= cycle,
+        "the refusal again is reached within the page's {cycle} stops: {again}"
+    );
+}
+
+/// A refused write's box that holds focus as nothing takes the refusal's
+/// place, where focus rested on nothing a person can see as the refusal
+/// came, the window's root, gives focus to the shown mode's own list,
+/// History's commits, which the window names as its pane, never to
+/// nothing; Tab moves on from it and reaches the next refusal's box.
+#[gpui::test]
+async fn a_refused_write_s_box_gone_with_focus_and_no_control_gives_it_to_the_list(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    a_refusal_shown(&app, cx, refusal.clone(), 18, size(px(461.), px(490.)));
+    let (root, list) = app.read_with(cx, |app, _| (app.app_focus.clone(), app.focus.clone()));
+    cx.update(|window, cx| window.focus(&root, cx));
+    a_failure_reported(&app, cx, Some(refusal.clone()));
+    draw(cx);
+    tab_to_the_refusal_s_box(cx);
+    app.update(cx, |app, _| app.pane = crate::Pane::Files);
+    a_failure_reported(&app, cx, None);
+    assert_eq!(
+        a_frame(cx),
+        Some(list.clone()),
+        "focus moves to History's commits"
+    );
+    let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+    let edge = cx
+        .debug_bounds("history-list-edge")
+        .expect("the list's edge");
+    let outlines = crate::focus_ring::painted_outlines(cx, accent);
+    assert!(
+        outlines.iter().any(|ring| ring.whole
+            && [
+                (ring.bounds.left(), edge.left()),
+                (ring.bounds.top(), edge.top()),
+                (ring.bounds.right(), edge.right()),
+                (ring.bounds.bottom(), edge.bottom()),
+            ]
+            .into_iter()
+            .all(|(drawn, at)| (drawn - at).abs() < px(0.5))),
+        "History's commits draw their outline whole on their edge {edge:?}: {outlines:?}"
+    );
+    assert!(
+        app.read_with(cx, |app, _| app.pane == crate::Pane::History),
+        "the window names the list's pane"
+    );
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    let moved = cx.update(|window, cx| window.focused(cx));
+    assert!(
+        moved.is_some() && moved != Some(list) && moved != Some(root),
+        "Tab moves on from the list: {moved:?}"
+    );
+    a_failure_reported(&app, cx, Some(refusal));
+    draw(cx);
+    tabs_to_the_refusal_s_box(cx);
+}
+
+/// A refusal that fits its line's box, at 13 pt in a window 1,480 wide,
+/// draws no scrollbar and is no Tab stop, by Tab or by Shift+Tab:
+/// nothing in it is left for a key to reach.
+#[gpui::test]
+async fn a_refused_write_that_fits_its_box_is_no_tab_stop(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    a_refusal_shown(&app, cx, refusal, 13, size(px(1480.), px(980.)));
+    let kept = cx
+        .debug_bounds("operation-error-summary")
+        .expect("its line");
+    let text = cx.debug_bounds("operation-error-text").expect("its words");
+    assert!(
+        (text.size.height - kept.size.height).abs() < px(0.5),
+        "its words fit the box: {text:?} in {kept:?}"
+    );
+    assert!(
+        cx.debug_bounds("operation-error-scrollbar").is_none(),
+        "a refusal that fits draws no scrollbar"
+    );
+    let mut failures = Vec::new();
+    for key in ["tab", "shift-tab"] {
+        sweep::walk_each(
+            &app,
+            cx,
+            key,
+            &format!("the refused write's banner by {key}"),
+            13,
+            &mut failures,
+            &mut |cx, stop, _| {
+                assert!(
+                    !cx.update(|window, _| crate::views::refusal_box_focused(window)),
+                    "{stop}: a refusal that fits is no Tab stop"
+                );
+            },
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A refusal before Git started, of a repository at a 74-character
+/// root as macOS's per-user temporary folder gives one, is laid out
+/// whole on screen, half tile or wide: wrapped inside its box, on as
+/// many lines as its words take, scrolled inside a bounded height
+/// where they take more, and inside the banner's row with its padding.
+/// Cut to one line with an ellipsis, it hid the path Git now finds and
+/// "Git was not started" in any window narrower than about 1,600
+/// pixels, and the row, clipped at 100 pixels, hid the top and bottom
+/// of a taller line.
+#[gpui::test]
+async fn a_refused_write_s_line_is_laid_out_whole_at_every_width(cx: &mut TestAppContext) {
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let refusal = a_refusal_at_a_74_character_root(&fixture.path().join("wrap"));
+    let line = refusal.banner().to_string();
+    let text_size = crate::appearance::ui_text(11.);
+    for width in [461., 1480.] {
+        cx.simulate_resize(size(px(width), px(680.)));
+        // One line's height: a line Git answered, cut to one.
+        app.update(cx, |app, cx| {
+            app.operation_error = Some("Short".into());
+            cx.notify();
+        });
+        draw(cx);
+        let one = cx.debug_bounds("operation-error-summary").expect("a line");
+        app.update(cx, |app, cx| {
+            app.operation_error = Some(refusal.clone());
+            cx.notify();
+        });
+        draw(cx);
+        let at = format!("{width} wide");
+        let row = cx.debug_bounds("operation-error-row").expect("the banner");
+        let summary = cx
+            .debug_bounds("operation-error-summary")
+            .expect("its line");
+        let text = (cx.debug_bounds("operation-error-text")).expect("the refusal's text");
+        let whole = cx.update(|window, _| crate::views::line_widths(&[(&line, text_size)], window));
+        assert!(
+            whole > summary.size.width,
+            "{at}: the line needs more than one line"
+        );
+        assert!(
+            text.size.width <= summary.size.width,
+            "{at}: wrapped inside its box"
+        );
+        // Every line at most the box's width, so the lines laid out
+        // hold the whole line's width only if none was cut.
+        assert!(
+            f32::from(text.size.height) * f32::from(text.size.width)
+                >= f32::from(whole) * f32::from(one.size.height),
+            "{at}: {text:?} holds {whole:?} at {one:?} a line"
+        );
+        assert!(
+            summary.size.height <= crate::appearance::ui_size(100.),
+            "{at}: a bounded height, which scrolls: {summary:?}"
+        );
+        assert!(
+            summary.top() > row.top() && summary.bottom() < row.bottom(),
+            "{at}: inside the row and its padding: {summary:?} in {row:?}"
+        );
+    }
+}
+
+/// Show latest that finds a re-clone at the tab's path installs it in
+/// place as a fresh capture, as an accepted Refresh does: what was read
+/// of the replaced repository goes and the found one's status is read,
+/// so Push and Commit refuse until it lands and Targets then name the
+/// found one's remote. Installed over the status and remotes read
+/// before, Push pushed the found repository's `main` to its own remote
+/// while Targets named the other's (security probe S1, FU44-A).
+#[gpui::test]
+async fn show_latest_over_a_re_clone_captures_it_afresh(cx: &mut TestAppContext) {
+    assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+    })
+    .await;
+}
+
+/// A Refresh that finds the tab's repository through a folder above its
+/// root re-pointed at a folder holding another repository by the same
+/// name, which the reopen follows (`worker::FoldersAbove`), captures it
+/// afresh: at other paths only the inodes tell the repository, and
+/// they differ. Compared only at the same path, it kept the status read
+/// before, and Push pushed the found repository's `main` to its own
+/// remote while Targets named the other's (security probe S3, FU44-A).
+#[cfg(unix)]
+#[gpui::test]
+async fn a_refresh_through_a_re_pointed_folder_above_captures_another_repository_afresh(
+    cx: &mut TestAppContext,
+) {
+    assert_a_capture_shows_nothing_from_before(cx, Replaced::Above, |app, cx, _| {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    })
+    .await;
+}
+
+/// A quiet read of a Git change that finds a re-clone at the tab's path
+/// captures it afresh, as an accepted Refresh does: what was read of the
+/// replaced repository goes and the found one's status is read
+/// explicitly, so Push and Commit refuse until it lands. It once took
+/// the working state its read had gone through the window's handle for,
+/// by path, which may be either repository's.
+#[gpui::test]
+async fn a_quiet_read_that_finds_a_re_clone_captures_it_afresh(cx: &mut TestAppContext) {
+    assert_a_capture_shows_nothing_from_before(cx, Replaced::InPlace, |app, cx, _| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(false);
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        quiet_reads_landed(app, cx);
+        app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+    })
+    .await;
+}
+
+/// A quiet read that finds a re-clone at the tab's path while History
+/// is scoped to a branch the found repository lacks does what an Open
+/// with a vanished scope does: it reads the found repository's All
+/// history in place, says "History scope changed: …. Showing All
+/// history." and drops the scope, so the tab saves neither the scope
+/// nor the pinned tips from before, and History selects its newest row
+/// as an Open does. The replaced history's paging goes with its rows:
+/// kept, Older asked the found repository for the replaced traversal's
+/// next page (FU44-C3's N4). Installing only the found repository's
+/// metadata, it once left History empty under "The displayed history is
+/// retained".
+#[gpui::test]
+async fn a_quiet_read_that_finds_a_re_clone_beside_a_vanished_scope_reads_all_history(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    let page = crate::history_paging::PAGE_SIZE;
+    let (fixture, app, cx) = crate::views::tests::history_window_from(
+        cx,
+        &crate::views::tests::history_script(page + 1, 1),
+    )
+    .await;
+    let base = fixture.path().to_owned();
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    fixture_git(&root, &["branch", "before"]);
+    let scope = worker::Scope::Branch {
+        name: "before".into(),
+        remote: false,
+    };
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open(root.clone(), Some(("before".into(), scope)), window, cx)
+        })
+    });
+    crate::views::tests::settle(&app, cx).await;
+    let paging = |app: &GitTurtle, cx: &App| {
+        (
+            app.history_paging.scope.is_some(),
+            app.history_paging.offset,
+            app.history_paging.next_offset,
+            app.tab_bookmark(cx).pinned.is_some(),
+        )
+    };
+    assert_eq!(
+        app.read_with(cx, paging),
+        (true, 0, Some(page), true),
+        "the scoped history read a page at a time, its scope saved"
+    );
+    let tip = |root: &Path| {
+        let output = crate::views::tests::fixture_git_output(root, &["rev-parse", "HEAD"]);
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let replaced_tip = tip(&root);
+    let third = fixture_repository(base.join("third"));
+    fixture_git(
+        third.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Third"],
+    );
+    std::fs::rename(root.join(".git"), base.join("before-git-away")).unwrap();
+    std::fs::rename(third.git_dir(), root.join(".git")).unwrap();
+    let found_tip = tip(&root);
+    let found = gitturtle_core::GitRepository::open(&root)
+        .unwrap()
+        .git_dir_inode();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.automatic.hold_quiet_reads(false);
+            app.queue_automatic_refresh(
+                crate::local_refresh::LocalChange {
+                    git: true,
+                    worktree: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        })
+    });
+    // Landed once the found repository's status read and watch, which
+    // the capture asks for on the operation thread and which hold the
+    // rescan back, and the history it reads in place have answered too:
+    // the reader's idle wait alone never saw the capture land.
+    let landed = |app: &GitTurtle, _: &App| {
+        app.repository
+            .as_ref()
+            .is_some_and(|repo| repo.git_dir_inode() == found)
+            && app.loading.is_none()
+            && app.task.is_none()
+            && !app.automatic.quiet_read_requested()
+            && app.automatic.replies_landed()
+            && app.status_task.is_none()
+    };
+    for _ in 0..16 {
+        cx.executor().run_until_parked();
+        if app.read_with(cx, landed) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.operations.drain());
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    assert!(
+        app.read_with(cx, landed),
+        "the capture and its reads landed"
+    );
+    app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+    crate::views::tests::settle(&app, cx).await;
+    let (subjects, selected, scope, notice, banner) = app.read_with(cx, |app, cx| {
+        (
+            (app.commits.iter())
+                .map(|commit| commit.subject.clone())
+                .collect::<Vec<_>>(),
+            app.selected_commit,
+            (app.scope.is_some(), app.tab_bookmark(cx).scope.is_some()),
+            app.operation_notice.clone(),
+            app.operation_error_text(),
+        )
+    });
+    assert_eq!(
+        subjects.first().map(String::as_str),
+        Some("Third"),
+        "the found repository's history, newest first: {subjects:?}"
+    );
+    assert!(
+        subjects.len() < page,
+        "no row from before: {} rows",
+        subjects.len()
+    );
+    assert_eq!(
+        selected,
+        Some(0),
+        "its newest row selected, as an Open selects"
+    );
+    assert_eq!(
+        scope,
+        (false, false),
+        "All history, saved without the scope"
+    );
+    assert!(
+        notice.as_deref().is_some_and(|notice| {
+            notice.starts_with("History scope changed: ")
+                && notice.ends_with("Showing All history.")
+        }),
+        "it says so: {notice:?}"
+    );
+    assert!(
+        !banner
+            .as_deref()
+            .is_some_and(|banner| banner.contains("retained")),
+        "no claim of a history it does not show: {banner:?}"
+    );
+    let (next, pinned) = app.read_with(cx, |app, cx| {
+        (app.history_paging.next_offset, app.tab_bookmark(cx).pinned)
+    });
+    assert_eq!(next, None, "no page from before");
+    assert!(
+        matches!(&pinned, Some(SavedHistoryScope::Pinned(tips))
+            if tips.contains(&found_tip) && !tips.contains(&replaced_tip)),
+        "the found repository's tips pinned, none from before: {pinned:?}"
+    );
+}
+
+/// A quiet read that finds the tab's own repository lacking History's
+/// scope, a branch deleted outside the app, keeps the displayed history
+/// as its banner says: its rows, and the paging they were read at, so
+/// Older still continues them and the tab saves their pinned tips and
+/// offset. Only a re-clone's landing drops the paging and reads All
+/// history, its rows gone with the replaced repository (FU44-C5
+/// re-check S1).
+#[gpui::test]
+async fn a_quiet_read_that_finds_the_scope_gone_keeps_the_history_it_shows(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::fixture_git;
+    let page = crate::history_paging::PAGE_SIZE;
+    let (_fixture, app, cx) = crate::views::tests::history_window_from(
+        cx,
+        &crate::views::tests::history_script(page + 1, 1),
+    )
+    .await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    fixture_git(&root, &["branch", "before"]);
+    let scope = worker::Scope::Branch {
+        name: "before".into(),
+        remote: false,
+    };
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open(root.clone(), Some(("before".into(), scope)), window, cx)
+        })
+    });
+    crate::views::tests::settle(&app, cx).await;
+    let paging = |app: &GitTurtle, cx: &App| {
+        (
+            app.history_paging.scope.is_some(),
+            app.history_paging.offset,
+            app.history_paging.next_offset,
+            app.tab_bookmark(cx).pinned.is_some(),
+        )
+    };
+    assert_eq!(app.read_with(cx, paging), (true, 0, Some(page), true));
+    let rows = app.read_with(cx, |app, _| app.commits.len());
+    fixture_git(&root, &["branch", "-D", "before"]);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.automatic.hold_quiet_reads(false);
+            app.queue_automatic_refresh(
+                crate::local_refresh::LocalChange {
+                    git: true,
+                    worktree: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        })
+    });
+    quiet_reads_landed(&app, cx);
+    app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+    crate::views::tests::settle(&app, cx).await;
+    let banner = app.read_with(cx, |app, _| app.operation_error_text());
+    assert!(
+        banner
+            .as_deref()
+            .is_some_and(|banner| banner.contains("The displayed history is retained")),
+        "{banner:?}"
+    );
+    assert_eq!(
+        app.read_with(cx, |app, _| app.commits.len()),
+        rows,
+        "its rows kept"
+    );
+    assert_eq!(
+        app.read_with(cx, paging),
+        (true, 0, Some(page), true),
+        "its paging kept, the bookmark pinned"
+    );
+}
+
+#[gpui::test]
+async fn open_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
+    assert_a_fresh_capture_shows_nothing_from_before(cx, |_, cx, root| {
+        cx.update(|window, cx| window.dispatch_action(Box::new(crate::OpenRepository), cx));
+        assert!(cx.did_prompt_for_paths(), "Open… asks for a folder");
+        cx.simulate_path_prompt_response(|_| Some(vec![root.to_owned()]));
+    })
+    .await;
+}
+
+#[gpui::test]
+async fn a_local_workspaces_row_s_fresh_capture_shows_nothing_from_before(cx: &mut TestAppContext) {
+    assert_a_fresh_capture_shows_nothing_from_before(cx, |app, cx, _| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.toggle_repository_pin(window, cx);
+                app.open_repository_library(window, cx);
+            })
+        });
+        crate::views::tests::draw(cx);
+        let open = crate::tags::tests::rendered(cx, "open-library-repo-0");
+        cx.simulate_click(open.center(), gpui::Modifiers::default());
+    })
+    .await;
+}
+
+/// Until an Open's status read lands, the branch picker names the branch
+/// the accepted snapshot found checked out, or claims none where it
+/// found none, and Fetch, Pull and Push refuse saying the read, as
+/// Changes says it, as does Targets' destination line. The palette's
+/// Branch opens the snapshot's branch, as the picker's "Current branch
+/// settings…" does, and says the read where the snapshot found none.
+/// With no status they read a detached HEAD and no remote: "Detached
+/// HEAD", "Switch to a local branch before pulling or pushing", "No
+/// configured remote selected · Check Targets", "No remote configured"
+/// and "Check out a named local branch first"; then Branch refused the
+/// branch the picker named, saying the read.
+#[gpui::test]
+async fn an_open_says_its_status_is_being_read_until_it_lands(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let topic = fixture_repository(fixture.path().join("topic"));
+    fixture_git(
+        topic.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Topic"],
+    );
+    fixture_git(topic.path(), &["switch", "-q", "-c", "topic"]);
+    let detached = fixture_repository(fixture.path().join("detached"));
+    fixture_git(
+        detached.path(),
+        &["commit", "-q", "--allow-empty", "-m", "One"],
+    );
+    fixture_git(detached.path(), &["switch", "-q", "--detach"]);
+    let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+    let tooltip = |id: &str| {
+        crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
+    };
+    let reading = crate::workspace::READING_WORKING_TREE;
+    let destination = || {
+        crate::workspace::TARGETS_DESTINATION
+            .with(|line| line.borrow().as_ref().map(ToString::to_string))
+    };
+    let branch_reason = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            (app.read(cx)).menu_command_reason(
+                crate::command_palette::CommandId::Branch,
+                window,
+                cx,
+            )
+        })
+    };
+    for (repository, while_read, branch_while_read, read, branch_once_read) in [
+        (&topic, "topic", None, "topic", None),
+        (
+            &detached,
+            crate::branch_actions::READING,
+            Some(reading),
+            "Detached HEAD",
+            Some("Check out a named local branch first"),
+        ),
+    ] {
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(repository.path().to_owned(), window, cx);
+                app.git_actions_open = true;
+            })
+        });
+        for _ in 0..16 {
+            let installed = app.read_with(cx, |app, _| {
+                app.repository.as_ref().map(|repo| repo.git_dir()) == Some(repository.git_dir())
+            });
+            if installed {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.work_status.is_none()
+                && app.status_task.is_some()),
+            "{while_read}: its status read waits"
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            picker().as_deref(),
+            Some(while_read),
+            "the picker while read"
+        );
+        for id in ["fetch", "pull", "push"] {
+            assert!(cx.debug_bounds(id).is_some(), "{while_read}: {id} drawn");
+            let refusal = crate::workspace::refusals::get(id).expect("drawn");
+            assert!(
+                refusal.announced && !refusal.dimmed,
+                "{while_read}: {id} refuses, its look waiting"
+            );
+            let said = tooltip(id).unwrap_or_default();
+            assert!(said.ends_with(reading), "{while_read}: {id} says {said}");
+        }
+        // The look comes once the read has lasted a moment, as a
+        // write's does (`GitTurtle::track_unread_look`).
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        for id in ["fetch", "pull", "push"] {
+            let refusal = crate::workspace::refusals::get(id).expect("drawn");
+            assert!(
+                refusal.announced && refusal.dimmed,
+                "{while_read}: {id} looks refused"
+            );
+        }
+        assert_eq!(
+            destination().as_deref(),
+            Some(reading),
+            "{while_read}: Targets' destination"
+        );
+        assert_eq!(
+            branch_reason(cx),
+            branch_while_read,
+            "{while_read}: the palette's Branch"
+        );
+        if branch_while_read.is_none() {
+            // It opens the snapshot's branch, its settings read as the
+            // picker's "Current branch settings…" reads them.
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let path = app.path.clone();
+                    app.run_menu_command(
+                        crate::command_palette::CommandId::Branch,
+                        &path,
+                        window,
+                        cx,
+                    )
+                })
+            });
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some(crate::branch_actions::PREPARING),
+                "{while_read}: Branch reads its settings"
+            );
+            app.update(cx, |app, _| app.cancel_branch_action());
+        }
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        assert_eq!(picker().as_deref(), Some(read), "the picker once read");
+        for id in ["fetch", "pull", "push"] {
+            let said = tooltip(id).unwrap_or_default();
+            assert!(!said.ends_with(reading), "{read}: {id} says {said}");
+        }
+        let line = destination().unwrap_or_default();
+        assert!(
+            line.starts_with("No remote configured"),
+            "{read}: Targets once read says {line}"
+        );
+        assert_eq!(
+            branch_reason(cx),
+            branch_once_read,
+            "{read}: Branch once read"
+        );
+    }
+}
+
+/// Before an Open's snapshot lands, with no repository installed and no
+/// status read started, the status is not read yet either: the branch
+/// picker reads "Reading…" and Fetch, Pull and Push refuse saying the
+/// read, for an Open of a new path from History and for a cold switch
+/// to a tab that is not marked. Until the snapshot landed they said
+/// "Detached HEAD" and "No configured remote selected · Check Targets"
+/// (FU39-A5 review probe).
+#[gpui::test]
+async fn an_open_says_its_status_is_being_read_before_its_snapshot_lands(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_repository};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    let topic = fixture_repository(fixture.path().join("topic"));
+    fixture_git(
+        topic.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Topic"],
+    );
+    fixture_git(topic.path(), &["switch", "-q", "-c", "topic"]);
+    let picker = || crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+    let tooltip = |id: &str| {
+        crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
+    };
+    let reading = crate::workspace::READING_WORKING_TREE;
+    let assert_reading = |cx: &mut VisualTestContext, route: &str| {
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Repository
+                && app.repository.is_none()
+                && app.loading.is_some()
+                && app.status_task.is_none()),
+            "{route}: its snapshot read waits"
+        );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            picker().as_deref(),
+            Some(crate::branch_actions::READING),
+            "{route}: the picker"
+        );
+        for id in ["fetch", "pull", "push"] {
+            assert!(cx.debug_bounds(id).is_some(), "{route}: {id} drawn");
+            let refusal = crate::workspace::refusals::get(id).expect("drawn");
+            assert!(refusal.announced, "{route}: {id} refuses");
+            let said = tooltip(id).unwrap_or_default();
+            assert!(said.ends_with(reading), "{route}: {id} says {said}");
+        }
+        // Looking it once the read has lasted a moment
+        // (`GitTurtle::track_unread_look`).
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        for id in ["fetch", "pull", "push"] {
+            let refusal = crate::workspace::refusals::get(id).expect("drawn");
+            assert!(refusal.dimmed, "{route}: {id} looks refused");
+        }
+    };
+
+    let held = app.read_with(cx, |app, _| app.worker.hold());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(topic.path().to_owned(), window, cx);
+            app.git_actions_open = true;
+        })
+    });
+    assert_reading(cx, "an Open from History");
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    assert_eq!(picker().as_deref(), Some("topic"), "the Open's branch");
+
+    app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+    let held = app.read_with(cx, |app, _| app.worker.hold());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.switch_repository_tab(0, window, cx);
+            app.git_actions_open = true;
+        })
+    });
+    assert_reading(cx, "a cold switch");
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    assert_eq!(picker().as_deref(), Some("main"), "the switch's branch");
+    for id in ["fetch", "pull", "push"] {
+        let said = tooltip(id).unwrap_or_default();
+        assert!(!said.ends_with(reading), "read: {id} says {said}");
+    }
+}
+
+/// A row whose fresh capture fails keeps the tab's root, Git directories
+/// and mark, and says what the Open found, as Open and the Local
+/// workspaces row do: the tab shown with that failure, which the Projects
+/// page says too when it is opened again.
+#[gpui::test]
+async fn a_projects_row_whose_capture_fails_keeps_the_marked_tab(cx: &mut TestAppContext) {
+    let (fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+    let (git_dir, mark) = app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        (tab.git_dir.clone(), tab.error.clone())
+    });
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+    )
+    .unwrap();
+    press_projects_row(&app, cx, &root);
+    settle_tab_test(&app, cx).await;
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    hub.read_with(cx, |hub, _| assert!(!hub.shown_busy(), "the wait is over"));
+    let said = hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned));
+    let said = said.expect("what the Open found");
+    assert!(!said.contains("is gone"), "not the mark's reason: {said}");
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.page, AppPage::Repository, "the tab shown");
+        assert_eq!(app.error.as_deref(), Some(said.as_str()));
+        let tab = &app.repository_tabs.tabs[0];
+        assert_eq!(tab.path, root, "its root");
+        assert_eq!(tab.git_dir, git_dir, "its Git directories");
+        assert_eq!(tab.error, mark, "its mark as it was");
+        assert!(!app.repository_tabs.saved().tabs[0].unresolved);
+    });
+}
+
+/// A row's fresh capture refused as the switch to its tab is, past the
+/// retained allowance, ends the page's wait and says why under the row,
+/// as the tab limit's refusal is said, and the tab strip says nothing.
+/// Left waiting, every action on the page stayed refused under "Opening
+/// project…" with nothing read; then it ended the wait and said why in
+/// the strip. A whole tab's row refused so left the page waiting.
+#[gpui::test]
+async fn a_projects_row_refused_its_switch_ends_the_pages_wait(cx: &mut TestAppContext) {
+    let (fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+    let other = fixture.path().join("other");
+    open_another_tab(&app, cx, &other).await;
+    open_another_tab(&app, cx, &fixture.path().join("another")).await;
+    let other = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].path.clone());
+    let bytes = app.update(cx, |app, _| {
+        let warm = app.repository_tabs.tabs[1]
+            .warm
+            .as_mut()
+            .expect("the second tab retained");
+        std::mem::replace(&mut warm.bytes, MAX_RETAINED_BYTES + 1)
+    });
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    for (row, what) in [
+        (&root, "the marked tab's row"),
+        (&other, "a whole tab's row"),
+    ] {
+        press_projects_row(&app, cx, row);
+        settle_tab_test(&app, cx).await;
+        hub.read_with(cx, |hub, _| {
+            assert!(!hub.shown_busy(), "{what}: the wait is over");
+            assert!(
+                hub.shown_error()
+                    .is_some_and(|said| said == RETAINED_ALLOWANCE_REFUSAL),
+                "{what}: said under the row"
+            );
+        });
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.page, AppPage::Projects, "{what}");
+            assert_eq!(app.repository_tabs.active, Some(2), "{what}: refused");
+            assert_eq!(
+                app.repository_tabs.refusal, None,
+                "{what}: not in the strip"
+            );
+            let tab = &app.repository_tabs.tabs[0];
+            assert!(tab.error.is_some(), "{what}: its mark as it was");
+            assert!(tab.warm.is_some(), "{what}: what it retained kept");
+        });
+    }
+
+    // A refused switch ends only the wait its own Open began: an Open…
+    // of the marked tab's folder while the page waits for a Clone says
+    // why in the tab strip, the Clone's wait going on.
+    cx.update(|window, cx| {
+        hub.update(cx, |hub, cx| hub.wait_for_clone(cx));
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        });
+    });
+    crate::views::tests::draw(cx);
+    hub.read_with(cx, |hub, _| {
+        assert!(hub.shown_busy(), "the Clone's wait goes on")
+    });
+    app.read_with(cx, |app, _| {
+        assert_eq!(
+            app.repository_tabs.refusal.as_deref(),
+            Some(RETAINED_ALLOWANCE_REFUSAL),
+            "the tab strip says why"
+        );
+    });
+    hub.update(cx, |hub, cx| hub.set_busy(false, cx));
+    app.update(cx, |app, _| {
+        let warm = app.repository_tabs.tabs[1]
+            .warm
+            .as_mut()
+            .expect("the second tab retained");
+        warm.bytes = bytes;
+    });
+    // Asked again, with the allowance back, it reads.
+    press_projects_row(&app, cx, &root);
+    settle_tab_test(&app, cx).await;
+    assert_recaptured(&app, cx, 0, &root, &third_git);
+}
+
+/// Open… of a marked tab's folder chosen while a write runs, which may
+/// start after the picker opened, captures nothing: it says in the tab
+/// strip that it waits for the write, in the words the palette and the
+/// Projects page give it, and the tab keeps its mark, root and Git
+/// directory, as the Projects and pane rows refuse it. It once captured
+/// the tab afresh, and the write, failing safe, then named the replaced
+/// repository on the fresh tab (FU39-A security review). Asked again
+/// once the write ends, it captures the tab.
+#[gpui::test]
+async fn open_refuses_to_capture_a_marked_tab_while_a_write_runs(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+    let open = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| window.dispatch_action(Box::new(crate::OpenRepository), cx));
+        assert!(cx.did_prompt_for_paths(), "Open… asks for a folder");
+    };
+    let captured = app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        (
+            tab.path.clone(),
+            tab.git_dir.as_ref().map(|d| d.git_dir.clone()),
+        )
+    });
+    open(cx);
+    app.update(cx, |app, cx| {
+        app.operation_busy = Some("Pushing branch…");
+        cx.notify();
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![root.clone()]));
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(
+            app.repository_tabs.refusal.as_deref(),
+            Some(crate::workspace::BUSY_REASON),
+            "the tab strip says it waits for the write"
+        );
+        let tab = &app.repository_tabs.tabs[0];
+        assert!(tab.error.is_some(), "its mark as it was");
+        assert_eq!(
+            (
+                tab.path.clone(),
+                tab.git_dir.as_ref().map(|d| d.git_dir.clone())
+            ),
+            captured,
+            "its root and Git directory as they were"
+        );
+        assert!(app.repository_tabs.recapture.is_none(), "nothing read");
+        assert_eq!(app.loading, None, "nothing read");
+    });
+    assert!(
+        cx.debug_bounds("repository-tab-refusal").is_some(),
+        "said beneath the strip"
+    );
+
+    app.update(cx, |app, cx| {
+        app.operation_busy = None;
+        cx.notify();
+    });
+    open(cx);
+    cx.simulate_path_prompt_response(|_| Some(vec![root.clone()]));
+    settle_tab_test(&app, cx).await;
+    assert_recaptured(&app, cx, 0, &root, &third_git);
+}
+
+/// A refused switch changes nothing on a marked tab: an explicit Open of
+/// its folder from another tab, with the tabs retained past their
+/// allowance or with a dialog open, opens nothing and leaves the tab its
+/// root, Git directory, mark and what it retained, so shown again and
+/// refreshed it is a passive reopen still, which never opens the work
+/// tree enclosing it. It once cleared the root and Git directory first,
+/// leaving the tab with nothing captured, saved as unresolved, and that
+/// Refresh opened the enclosing repository in the tab.
+#[gpui::test]
+async fn a_refused_open_of_a_marked_tab_s_folder_changes_nothing_on_it(cx: &mut TestAppContext) {
+    let (fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+    let (git_dir, mark) = app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        (tab.git_dir.clone(), tab.error.clone())
+    });
+    open_another_tab(&app, cx, &fixture.path().join("other")).await;
+    open_another_tab(&app, cx, &fixture.path().join("another")).await;
+    let unchanged = |cx: &mut VisualTestContext, after: &str| {
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(2), "{after}: refused");
+            let tab = &app.repository_tabs.tabs[0];
+            assert_eq!(tab.path, root, "{after}");
+            assert!(tab.resolved, "{after}: its root as captured");
+            assert_eq!(tab.git_dir, git_dir, "{after}: its Git directory");
+            assert_eq!(tab.error, mark, "{after}: its mark as it was");
+            assert!(tab.warm.is_some(), "{after}: what it retained kept");
+            assert!(!app.repository_tabs.saved().tabs[0].unresolved, "{after}");
+        });
+    };
+    let bytes = app.update(cx, |app, _| {
+        let warm = app.repository_tabs.tabs[1]
+            .warm
+            .as_mut()
+            .expect("the second tab retained");
+        std::mem::replace(&mut warm.bytes, MAX_RETAINED_BYTES + 1)
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    unchanged(cx, "past the allowance");
+    assert!(
+        app.read_with(cx, |app, _| app
+            .repository_tabs
+            .refusal
+            .as_deref()
+            .is_some_and(|refusal| refusal.contains("512 MiB"))),
+        "the tab strip says why"
+    );
+    app.update(cx, |app, _| {
+        app.repository_tabs.tabs[1]
+            .warm
+            .as_mut()
+            .expect("the second tab retained")
+            .bytes = bytes;
+    });
+
+    cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    unchanged(cx, "a dialog open");
+    cx.update(|window, cx| window.close_dialog(cx));
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh, shown again");
+}
+
+/// An explicit Open of a marked tab's folder superseded before its read
+/// lands leaves the tab as it was: Refresh pressed meanwhile is a passive
+/// reopen still, which finds the repository gone and never opens the
+/// work tree enclosing it. With the tab's root and Git directory cleared
+/// as the Open was asked, that Refresh once opened the enclosing
+/// repository in the tab.
+#[gpui::test]
+async fn a_superseded_open_of_a_marked_tab_s_folder_leaves_it_as_it_was(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+    let git_dir = app.read_with(cx, |app, _| app.repository_tabs.tabs[0].git_dir.clone());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx);
+            app.refresh(&Refresh, window, cx);
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh after the Open");
+    app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        assert!(tab.resolved && tab.git_dir == git_dir, "as captured");
+        assert!(!app.repository_tabs.saved().tabs[0].unresolved);
+    });
+}
+
+/// The History fixture inside another work tree, marked " ·
+/// unavailable" by Refresh with its `.git` away, and an explicit Open of
+/// its folder that fails, the folder's `.git` a gitfile to nowhere: from
+/// the tab itself or, `from_another`, from a second tab shown meanwhile.
+/// The tab keeps the root, Git directory and mark it had, saved as
+/// resolved, and the window says why the Open failed. With that gitfile
+/// gone, Refresh, a passive reopen still, finds the repository gone, and
+/// Show latest with a gitfile to the enclosing repository's Git
+/// directory, the tab's captured one named, installs none of its
+/// history; neither ever puts the enclosing repository where a write
+/// would go. The failed Open once left the tab
+/// with nothing captured, saved as unresolved, and its next Refresh, an
+/// explicit open too, opened the enclosing repository in the tab.
+async fn a_failed_open_keeps_the_marked_tab(cx: &mut TestAppContext, from_another: bool) {
+    let (fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+    let (git_dir, mark) = app.read_with(cx, |app, _| {
+        let tab = &app.repository_tabs.tabs[0];
+        (
+            tab.git_dir.clone().expect("captured as it opened"),
+            tab.error.clone().expect("marked"),
+        )
+    });
+    if from_another {
+        open_another_tab(&app, cx, &fixture.path().join("other")).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.repository_tabs.active),
+            Some(1)
+        );
+    }
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    let kept = |cx: &mut VisualTestContext, after: &str| {
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(0), "{after}: shown");
+            let tab = &app.repository_tabs.tabs[0];
+            assert_eq!(tab.path, root, "{after}: its root");
+            assert!(tab.resolved, "{after}: its root as captured");
+            assert_eq!(tab.git_dir.as_ref(), Some(&git_dir), "{after}");
+            assert!(
+                app.tab_label(tab).0.ends_with(" · unavailable"),
+                "{after}: marked"
+            );
+            assert!(
+                app.repository.as_ref().is_none_or(
+                    |repo| repo.path() == root && worker::GitDirectories::of(repo) == git_dir
+                ),
+                "{after}: writes would go to no other repository"
+            );
+            let saved = app.repository_tabs.saved();
+            assert_eq!(saved.tabs[0].path.path(), root, "{after}");
+            assert!(!saved.tabs[0].unresolved, "{after}: saved as resolved");
+        });
+    };
+    kept(cx, "the failed Open");
+    app.read_with(cx, |app, _| {
+        assert_eq!(
+            app.repository_tabs.tabs[0].error.as_ref(),
+            Some(&mark),
+            "its mark as it was"
+        );
+        let error = app
+            .error
+            .clone()
+            .expect("the window says why the Open failed");
+        assert!(error != mark && !error.contains("is gone"), "{error}");
+    });
+
+    std::fs::remove_file(root.join(".git")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    kept(cx, "Refresh");
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+
+    let enclosing_git = gitturtle_core::GitRepository::open(&enclosing)
+        .unwrap()
+        .git_dir()
+        .to_owned();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", enclosing_git.display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    kept(cx, "Show latest");
+    assert!(
+        app.read_with(cx, |app, _| app.commits.is_empty()),
+        "Show latest: no enclosing history"
+    );
+}
+
+#[gpui::test]
+async fn a_failed_open_of_the_shown_marked_tab_s_folder_keeps_what_it_captured(
+    cx: &mut TestAppContext,
+) {
+    a_failed_open_keeps_the_marked_tab(cx, false).await;
+}
+
+#[gpui::test]
+async fn a_failed_open_of_a_marked_tab_s_folder_from_another_tab_keeps_what_it_captured(
+    cx: &mut TestAppContext,
+) {
+    a_failed_open_keeps_the_marked_tab(cx, true).await;
+}
+
+/// What the window says for a failed fresh capture of a marked tab's
+/// folder goes with the mark it left in place: with the repository's
+/// `.git` back, a quiet read that finds it readable clears both and
+/// brings History back, where the Open's failure would have stayed
+/// beside it, its text not the mark's.
+#[gpui::test]
+async fn a_failed_open_s_failure_goes_with_the_mark_it_kept(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let enclosing = enclosing_work_tree(fixture.path());
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+    crate::views::tests::settle(&app, cx).await;
+    assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    let error = app.read_with(cx, |app, _| app.error.clone());
+    assert!(
+        error.is_some_and(|error| !error.contains("is gone")),
+        "the Open's failure"
+    );
+    std::fs::remove_file(root.join(".git")).unwrap();
+    std::fs::rename(fixture.path().join("narrow-git-away"), root.join(".git")).unwrap();
+    work_tree_changed(&app, cx).await;
+    assert_eq!(
+        first_tab(&app, cx),
+        (
+            1,
+            root.clone(),
+            false,
+            None,
+            Some(root),
+            vec!["fixture notes".into()]
+        ),
+        "readable again"
+    );
+}
+
+/// Lands the quiet read a change in the shown tab's work tree asks for,
+/// as the watcher would report it, with no watcher needed.
+async fn work_tree_changed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let change = crate::local_refresh::LocalChange {
+                worktree: true,
+                ..Default::default()
+            };
+            app.queue_automatic_refresh(change, window, cx)
+        })
+    });
+    for _ in 0..16 {
+        cx.executor().run_until_parked();
+        if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    crate::views::tests::settle(app, cx).await;
+}
+
+/// A failed fresh capture's word belongs to its own tab: another marked
+/// tab found readable clears its own mark and leaves the first tab's
+/// failure on the Projects page, that tab still unavailable. Kept for
+/// whichever tab was found readable next, the failure once went with
+/// another tab's mark.
+#[gpui::test]
+async fn another_tab_found_readable_keeps_a_failed_open_s_failure(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    enclosing_work_tree(fixture.path());
+    open_another_tab(&app, cx, &fixture.path().join("other")).await;
+    let other = app.read_with(cx, |app, _| app.path.clone().expect("the second tab"));
+    let refresh = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)))
+    };
+    std::fs::rename(other.join(".git"), fixture.path().join("other-git-away")).unwrap();
+    refresh(cx);
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+    refresh(cx);
+    settle_tab_test(&app, cx).await;
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+    )
+    .unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(root.clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    let failure = app.read_with(cx, |app, cx| {
+        let failure = app.error.clone().expect("the Open's failure");
+        assert_eq!(app.hub.read(cx).shown_error(), Some(failure.as_str()));
+        assert!(
+            app.repository_tabs
+                .tabs
+                .iter()
+                .all(|tab| tab.error.is_some())
+        );
+        failure
+    });
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    settle_tab_test(&app, cx).await;
+    std::fs::rename(fixture.path().join("other-git-away"), other.join(".git")).unwrap();
+    work_tree_changed(&app, cx).await;
+    app.read_with(cx, |app, cx| {
+        let tabs = &app.repository_tabs.tabs;
+        assert_eq!(app.repository_tabs.active, Some(1));
+        assert!(tabs[1].error.is_none(), "the second tab readable");
+        assert!(tabs[0].error.is_some(), "the first still unavailable");
+        assert_eq!(
+            app.hub.read(cx).shown_error(),
+            Some(failure.as_str()),
+            "its failure kept"
+        );
+    });
+}
+
+/// A full local library refuses a repository where the person asked:
+/// Create workspace in the Local workspaces dialog says why in the
+/// dialog's own error line, announced at once, lists nothing as added
+/// and draws nothing beneath the tab strip, under the dialog's
+/// backdrop, where the refusal once went while the dialog's list
+/// showed the repository added. Add current on the group is refused
+/// the same way, and once the library has room it adds the repository
+/// and the line goes: it once still said the repository was refused
+/// beside the group that listed it. Each refusal is a fresh node,
+/// announced again: the line kept one node, so the second refusal,
+/// in the same words, went unheard.
+#[gpui::test]
+async fn a_full_library_refuses_in_the_local_workspaces_dialog(cx: &mut TestAppContext) {
+    use crate::native_accessibility::written;
+    use gpui::Modifiers;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    app.update(cx, |app, _| {
+        app.repository_tabs.library = (0..MAX_LIBRARY)
+            .map(|kept| LibraryEntry {
+                path: SavedPath::new(&fixture.path().join(format!("kept-{kept}"))),
+                pinned: false,
+                group: None,
+            })
+            .collect();
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_library(window, cx)));
+    crate::views::tests::draw(cx);
+    let name = cx
+        .debug_bounds("local-workspace-name")
+        .expect("the name field");
+    cx.simulate_click(name.center(), Modifiers::default());
+    cx.simulate_input("Team");
+    let create = cx
+        .debug_bounds("create-local-workspace")
+        .expect("Create workspace");
+    cx.simulate_click(create.center(), Modifiers::default());
+    written::forget();
+    crate::views::tests::draw(cx);
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.library.len(), MAX_LIBRARY, "refused");
+        assert_eq!(app.repository_tabs.groups, vec!["Team".to_owned()]);
+        assert_eq!(
+            app.repository_tabs.refusal, None,
+            "nothing beneath the strip"
+        );
+        assert_eq!(app.error, None);
+    });
+    let refusal = |what: &str| {
+        let announced = written::announced_from("local-workspaces-error");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "{what}: the dialog says why, at once: {announced:?}"
+        );
+        announced[0].0.clone()
+    };
+    let created = refusal("Create workspace");
+    let team = || {
+        written::get("local-workspace-name-0")
+            .and_then(|written| written.node.value().map(str::to_owned))
+            .expect("the group's line")
+    };
+    assert_eq!(team(), "Team · 0 repositories");
+    let add = cx
+        .debug_bounds("assign-workspace-0")
+        .expect("Team's Add current");
+    cx.simulate_click(add.center(), Modifiers::default());
+    written::forget();
+    crate::views::tests::draw(cx);
+    assert!(
+        cx.debug_bounds("local-workspaces-error").is_some(),
+        "Add current is refused in the dialog too"
+    );
+    assert_ne!(
+        refusal("Add current"),
+        created,
+        "the same refusal again is a fresh node, announced again"
+    );
+    assert_eq!(team(), "Team · 0 repositories", "nothing added");
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.library.len(), MAX_LIBRARY, "refused");
+    });
+    app.update(cx, |app, _| {
+        app.repository_tabs.library.pop();
+    });
+    cx.simulate_click(add.center(), Modifiers::default());
+    written::forget();
+    crate::views::tests::draw(cx);
+    assert!(
+        cx.debug_bounds("local-workspaces-error").is_none(),
+        "added, the dialog no longer says it was refused"
+    );
+    assert_eq!(team(), "Team · 1 repository", "the group lists it");
+    app.read_with(cx, |app, _| {
+        let root = app.path.clone().expect("a repository");
+        assert!(
+            app.repository_tabs
+                .library
+                .iter()
+                .any(|entry| entry.path.path() == root && entry.group.as_deref() == Some("Team")),
+            "added to the library, in Team"
+        );
+    });
+}
+
+/// `app` holding `count` tabs, those past its own in folders under `root`.
+fn hold_tabs(app: &mut GitTurtle, root: &Path, count: usize) {
+    for held in app.repository_tabs.tabs.len()..count {
+        app.repository_tabs.tabs.push(Tab {
+            path: root.join(format!("held-{held}")),
+            resolved: true,
+            git_dir: None,
+            saved: Bookmark::default(),
+            warm: None,
+            error: None,
+            before_mark: None,
+        });
+    }
+}
+
+/// At the tab limit no folder is asked for: every route that opens a new
+/// tab through the folder picker says the limit's refusal at once, where
+/// the person acted, and one tab short of the limit each still asks.
+/// Asked first, a person chose a folder only to be told no tab could
+/// hold it.
+#[gpui::test]
+async fn a_new_tab_at_the_limit_is_refused_before_the_picker(cx: &mut TestAppContext) {
+    use crate::command_palette::CommandId;
+    use crate::native_accessibility::written;
+    use crate::views::tests::{draw, settle};
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = fixture.path().to_owned();
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    // Compare draws the rail in this width, its folder among its controls.
+    cx.simulate_resize(size(px(1000.), px(980.)));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle(&app, cx).await;
+    draw(cx);
+    let key = |name: &str| crate::shortcuts::resolve_key(name, cfg!(target_os = "macos"));
+    let (new_tab, open) = (key("primary-t"), key("primary-o"));
+    let focus = app.read_with(cx, |app, _| app.app_focus.clone());
+    cx.update(|window, cx| window.focus(&focus, cx));
+    let click = |cx: &mut VisualTestContext, selector: &'static str| {
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"));
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    };
+    let press_palette = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.run_palette_command(CommandId::Open, window, cx)
+            })
+        })
+    };
+    type Press<'a> = Box<dyn Fn(&mut VisualTestContext) + 'a>;
+    let routes: Vec<(&str, Press)> = vec![
+        (
+            "the New Tab shortcut",
+            Box::new(|cx| cx.simulate_keystrokes(&new_tab)),
+        ),
+        (
+            "the Open shortcut",
+            Box::new(|cx| cx.simulate_keystrokes(&open)),
+        ),
+        (
+            "the menu's action",
+            Box::new(|cx| {
+                cx.update(|window, cx| window.dispatch_action(Box::new(OpenRepository), cx))
+            }),
+        ),
+        ("the command palette", Box::new(press_palette)),
+        (
+            "the strip's +",
+            Box::new(move |cx| click(cx, "new-repository-tab")),
+        ),
+        (
+            "the rail's folder",
+            Box::new(move |cx| click(cx, "rail-open")),
+        ),
+    ];
+    app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS - 1));
+    draw(cx);
+    for (route, press) in &routes {
+        press(cx);
+        assert!(cx.did_prompt_for_paths(), "{route}: below the limit, asked");
+        cx.simulate_path_prompt_response(|_| None);
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.repository_tabs.refusal.clone()),
+            None,
+            "{route}: nothing refused below the limit"
+        );
+    }
+    app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+    draw(cx);
+    let mut nodes = Vec::new();
+    for (route, press) in &routes {
+        written::forget();
+        press(cx);
+        assert!(
+            !cx.did_prompt_for_paths(),
+            "{route}: no folder is asked for"
+        );
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.repository_tabs.refusal.clone())
+                .as_deref(),
+            Some(TAB_LIMIT_REFUSAL),
+            "{route}: refused in the limit's own words"
+        );
+        assert!(
+            cx.debug_bounds("repository-tab-refusal").is_some(),
+            "{route}: the strip says so"
+        );
+        let announced = written::announced_from("repository-tab-refusal");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "{route}: announced at once: {announced:?}"
+        );
+        nodes.push(announced[0].0.clone());
+        app.update(cx, |app, cx| {
+            app.repository_tabs.refusal = None;
+            cx.notify();
+        });
+        draw(cx);
+    }
+    nodes.dedup();
+    assert_eq!(
+        nodes.len(),
+        routes.len(),
+        "each refusal is a fresh node, announced again"
+    );
+    assert_eq!(
+        app.read_with(cx, |app, _| app.repository_tabs.tabs.len()),
+        MAX_TABS,
+        "no tab was opened or marked"
+    );
+    // The Projects page's own picker is refused on the page, as a recent
+    // project's Open is, and one tab short of the limit it still asks.
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.show_projects(window, cx);
+            app.refuse_in_tab_strip("An earlier refusal.", cx);
+        })
+    });
+    draw(cx);
+    written::forget();
+    click(cx, "hub-open-folder");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(!cx.did_prompt_for_paths(), "no folder is asked for");
+    hub.read_with(cx, |hub, _| {
+        assert_eq!(
+            hub.shown_error(),
+            Some(TAB_LIMIT_REFUSAL),
+            "the page says why"
+        );
+        assert!(!hub.shown_busy(), "its actions stay available");
+    });
+    let announced = written::announced_from("project-hub-error");
+    assert!(
+        announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+        "announced at once: {announced:?}"
+    );
+    assert!(
+        cx.debug_bounds("repository-tab-refusal").is_none(),
+        "said once, where the person acted"
+    );
+    app.update(cx, |app, _| {
+        app.repository_tabs.tabs.truncate(MAX_TABS - 1);
+    });
+    click(cx, "hub-open-folder");
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths(), "below the limit, asked");
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+}
+
+/// Choose a repository… refused at the limit says so in the place the
+/// person is looking, directly under the button and inside the visible
+/// body, in a half tile at 13 and 18 pt and in the full window: drawn at
+/// the action panel's foot, the refusal lay about 100 px past the view
+/// at 18 pt in a 461 × 490 window, and the press looked dead.
+#[gpui::test]
+async fn a_refusal_under_choose_a_repository_is_in_view(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+    for (window, interface) in [
+        (size(px(461.), px(490.)), 13),
+        (size(px(461.), px(490.)), 18),
+        (size(px(1480.), px(973.)), 13),
+    ] {
+        sweep::prepare(&app, cx);
+        cx.simulate_resize(window);
+        sweep::interface_size(cx, interface);
+        hub.update(cx, |hub, cx| hub.set_error(None, cx));
+        crate::views::tests::draw(cx);
+        // The worst place the person can have pressed it from: scrolled
+        // only as far as it takes to show the button at the body's foot.
+        let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+        scroll.set_offset(point(px(0.), px(0.)));
+        crate::views::tests::draw(cx);
+        let button = cx.debug_bounds("hub-open-folder").expect("the button");
+        let body = cx.debug_bounds("project-hub-body").expect("the body");
+        let past = button.bottom() - body.bottom();
+        if past > Pixels::ZERO {
+            scroll.set_offset(point(px(0.), -past));
+            crate::views::tests::draw(cx);
+        }
+        let button = cx.debug_bounds("hub-open-folder").expect("the button");
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        crate::views::tests::draw(cx);
+        assert_eq!(
+            hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+                .as_deref(),
+            Some(TAB_LIMIT_REFUSAL),
+            "{window:?} at {interface} pt: refused"
+        );
+        let button = cx.debug_bounds("hub-open-folder").expect("the button");
+        let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+        let body = cx.debug_bounds("project-hub-body").expect("the body");
+        assert!(
+            line.top() >= button.bottom() && line.top() - button.bottom() <= px(24.),
+            "{window:?} at {interface} pt: directly under the button: {button:?}, {line:?}"
+        );
+        assert!(
+            line.top() >= body.top() && line.bottom() <= body.bottom() + px(0.5),
+            "{window:?} at {interface} pt: inside the visible body: {line:?} in {body:?}"
+        );
+    }
+}
+
+/// A ninth tab refused from a recent row leaves that row in view: where
+/// the row and the feedback line can both be seen the page moves only so
+/// far as both show, and where they cannot it keeps its place, the row
+/// where it was, and the refusal is announced politely. Revealing the
+/// line by itself scrolled the pressed row out of view.
+#[gpui::test]
+async fn a_refusal_from_a_recent_row_leaves_that_row_in_view(cx: &mut TestAppContext) {
+    use crate::copy_feedback::tests::announced;
+    use crate::focus_ring::sweep;
+    use crate::native_accessibility::written;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+    let recents: Vec<_> = (0..3)
+        .map(|index| {
+            crate::views::tests::fixture_repository(fixture.path().join(format!("recent-{index}")))
+        })
+        .collect();
+    let paths: Vec<_> = recents.iter().map(|repo| repo.path().to_owned()).collect();
+    let paths_kept = paths.clone();
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    cx.update(|window, cx| {
+        hub.update(cx, |hub, cx| hub.set_recent(paths, cx));
+        app.update(cx, |app, cx| app.show_projects(window, cx));
+    });
+    let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+    let body = |cx: &mut VisualTestContext| cx.debug_bounds("project-hub-body").expect("the body");
+    // The row brought to the body's foot, where the line above it lies
+    // furthest from it.
+    let at_foot = |cx: &mut VisualTestContext, row: &'static str| {
+        scroll.set_offset(point(px(0.), px(0.)));
+        crate::views::tests::draw(cx);
+        let past = cx.debug_bounds(row).expect("the row").bottom() - body(cx).bottom();
+        if past > Pixels::ZERO {
+            scroll.set_offset(point(px(0.), -past));
+            crate::views::tests::draw(cx);
+        }
+    };
+    let press = |cx: &mut VisualTestContext, row: &'static str| {
+        let bounds = cx.debug_bounds(row).expect("the row");
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        written::forget();
+        cx.run_until_parked();
+        crate::views::tests::draw(cx);
+        bounds
+    };
+    // Too far from the line for both to be seen: the page keeps its place.
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    sweep::interface_size(cx, 18);
+    hub.update(cx, |hub, cx| hub.set_error(None, cx));
+    at_foot(cx, "recent-project-1");
+    let before = press(cx, "recent-project-1");
+    assert_eq!(
+        hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+            .as_deref(),
+        Some(TAB_LIMIT_REFUSAL),
+        "refused"
+    );
+    let row = cx.debug_bounds("recent-project-1").expect("the row");
+    let view = body(cx);
+    assert!(
+        (row.top() - before.top()).abs() <= px(0.5),
+        "the row keeps its place: {row:?}, was {before:?}"
+    );
+    assert!(
+        row.top() >= view.top() && row.bottom() <= view.bottom() + px(0.5),
+        "and stays in view: {row:?} in {view:?}"
+    );
+    let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+    assert!(
+        line.bottom() <= view.top() || line.top() >= view.bottom(),
+        "the line stays out of view: {line:?} in {view:?}"
+    );
+    let (_, words) = announced(cx).expect("announced politely");
+    assert!(words.contains("Switch to an open tab"), "{words}");
+    assert!(
+        written::announced_from("project-hub-error").is_empty(),
+        "and not as an alert"
+    );
+    // The row says why where the person acted, in the removed colour and
+    // its own bounds, the whole text in its tooltip.
+    let (location, tooltip, name) = crate::projects::location_drawn(1).expect("the row");
+    assert_eq!(location, TAB_LIMIT_REFUSAL, "the row reads the refusal");
+    let place = paths_kept[1].display().to_string();
+    assert_eq!(
+        tooltip,
+        format!("{TAB_LIMIT_REFUSAL}\n{place}"),
+        "its tooltip holds it whole, and the location it replaces"
+    );
+    assert!(
+        name.contains(TAB_LIMIT_REFUSAL) && name.contains(&place),
+        "its name carries the refusal: {name}"
+    );
+    let removed = cx.read(|cx| crate::appearance::palette(cx).removed);
+    assert_eq!(
+        crate::appearance::drawn_color("recent-project-location-1"),
+        Some(rgb(removed).into()),
+        "in the removed colour"
+    );
+    assert_eq!(
+        cx.debug_bounds("recent-project-1").expect("the row").size,
+        before.size,
+        "in its own bounds"
+    );
+    // The line brought into view, the row reads its place again.
+    let offset = scroll.offset().y + (view.top() - line.top());
+    scroll.set_offset(point(px(0.), offset.min(px(0.))));
+    crate::views::tests::draw(cx);
+    let (location, tooltip, name) = crate::projects::location_drawn(1).expect("the row");
+    assert_ne!(location, TAB_LIMIT_REFUSAL, "the line in view, its place");
+    assert_eq!(tooltip, place, "and its tooltip");
+    assert!(!name.contains(TAB_LIMIT_REFUSAL), "and its name: {name}");
+    // Close enough for both: the page moves only so far as both show,
+    // and the line is the alert it always is.
+    cx.simulate_resize(size(px(461.), px(860.)));
+    hub.update(cx, |hub, cx| hub.set_error(None, cx));
+    at_foot(cx, "recent-project-0");
+    press(cx, "recent-project-0");
+    let row = cx.debug_bounds("recent-project-0").expect("the row");
+    let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+    let view = body(cx);
+    for (name, part) in [("row", row), ("line", line)] {
+        assert!(
+            part.top() >= view.top() && part.bottom() <= view.bottom() + px(0.5),
+            "the {name} shows: {part:?} in {view:?}"
+        );
+    }
+    let alerts = written::announced_from("project-hub-error");
+    assert!(
+        alerts.len() == 1 && alerts[0].1 == written::Announced::ASSERTIVE,
+        "the line it shows is the alert: {alerts:?}"
+    );
+}
+
+/// The Projects page at the tab limit in a `window` at `interface` pt,
+/// with a recent project for each of `names`, the row `row` brought to
+/// the body's foot and pressed, which the limit refuses.
+async fn refused_from_a_row<'a>(
+    cx: &'a mut TestAppContext,
+    names: &[&str],
+    window: Size<Pixels>,
+    interface: u8,
+    row: &'static str,
+) -> (
+    tempfile::TempDir,
+    Vec<PathBuf>,
+    Entity<crate::projects::ProjectHub>,
+    &'a mut VisualTestContext,
+) {
+    use crate::focus_ring::sweep;
+    use crate::views::tests::draw;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+    let paths: Vec<_> = names
+        .iter()
+        .map(|name| {
+            crate::views::tests::fixture_repository(fixture.path().join(name))
+                .path()
+                .to_owned()
+        })
+        .collect();
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    let recents = paths.clone();
+    cx.update(|window, cx| {
+        hub.update(cx, |hub, cx| hub.set_recent(recents, cx));
+        app.update(cx, |app, cx| app.show_projects(window, cx));
+    });
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(window);
+    sweep::interface_size(cx, interface);
+    hub.update(cx, |hub, cx| hub.set_error(None, cx));
+    let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+    scroll.set_offset(point(px(0.), px(0.)));
+    draw(cx);
+    let body = cx.debug_bounds("project-hub-body").expect("the body");
+    let past = cx.debug_bounds(row).expect("the row").bottom() - body.bottom();
+    if past > Pixels::ZERO {
+        scroll.set_offset(point(px(0.), -past));
+        draw(cx);
+    }
+    let pressed = cx.debug_bounds(row).expect("the row");
+    cx.simulate_click(pressed.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(
+        hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+            .as_deref(),
+        Some(TAB_LIMIT_REFUSAL),
+        "refused"
+    );
+    (fixture, paths, hub, cx)
+}
+
+/// A refusal a recent row holds stays with its project: a search that
+/// keeps the project lets the refusal follow it to its new row, one that
+/// hides it shows the refusal on no row, and a new recent list follows
+/// the same rule. Held by list position, typing in the search put the
+/// refusal on whichever project came to stand there.
+#[gpui::test]
+async fn a_row_s_refusal_follows_its_project_through_a_search(cx: &mut TestAppContext) {
+    let (_fixture, paths, hub, cx) = refused_from_a_row(
+        cx,
+        &["other-first", "pressed-row", "other-second"],
+        size(px(461.), px(490.)),
+        18,
+        "recent-project-1",
+    )
+    .await;
+    let refused = |index: usize| {
+        crate::projects::location_drawn(index).expect("the row").0 == TAB_LIMIT_REFUSAL
+    };
+    assert!(refused(1), "the pressed row reads the refusal");
+    let search = |cx: &mut VisualTestContext, query: &str| {
+        cx.update(|window, cx| hub.update(cx, |hub, cx| hub.search_recent(query, window, cx)));
+        crate::views::tests::draw(cx);
+    };
+    search(cx, "pressed-row");
+    assert!(refused(0), "it follows its project to the first row");
+    search(cx, "other-");
+    assert!(
+        !refused(0) && !refused(1),
+        "hidden, no other project takes it"
+    );
+    search(cx, "");
+    assert!(refused(1), "shown again, its row reads it again");
+    let moved = vec![paths[1].clone(), paths[0].clone(), paths[2].clone()];
+    cx.update(|_, cx| hub.update(cx, |hub, cx| hub.set_recent(moved, cx)));
+    crate::views::tests::draw(cx);
+    assert!(
+        refused(0) && !refused(1),
+        "a new recent list keeps it on the project"
+    );
+}
+
+/// The refusal a recent row reads clears the small-label margin on the
+/// row's own fills, at rest, hovered and pressed, in its removed hue:
+/// Nord's token read 4.38:1 on the row's hover fill.
+#[gpui::test]
+async fn a_row_s_refusal_reads_on_the_row_s_own_fills(cx: &mut TestAppContext) {
+    use crate::appearance::{ThemeChoice, custom::contrast};
+    let (_fixture, _paths, _hub, cx) = refused_from_a_row(
+        cx,
+        &["one", "two", "three"],
+        size(px(461.), px(490.)),
+        18,
+        "recent-project-1",
+    )
+    .await;
+    cx.update(|window, cx| ThemeChoice::Nord.apply(Some(window), cx));
+    crate::views::tests::draw(cx);
+    let palette = cx.read(crate::appearance::palette);
+    let fills = palette.control_fills(false, palette.canvas);
+    let Some(drawn) = crate::appearance::drawn_color("recent-project-location-1") else {
+        panic!("the row reads the refusal");
+    };
+    let drawn = u32::from(gpui_kit::Rgba::from(drawn)) >> 8;
+    for fill in fills {
+        assert!(
+            contrast(drawn, fill) >= 4.75,
+            "{drawn:06x} on {fill:06x}: {:.2}:1",
+            contrast(drawn, fill)
+        );
+    }
+    assert_eq!(
+        drawn,
+        palette.small_label(palette.removed, &fills),
+        "the removed hue, moved only as far as it must"
+    );
+}
+
+/// One resize that brings the feedback line into view ends the row's
+/// refusal in the next frame, with no hover or input: the row reads the
+/// line's place from the last frame, and in the wide layout it draws
+/// before the line, so nothing asked for the frame that corrects it.
+#[gpui::test]
+async fn one_resize_that_shows_the_line_ends_the_row_s_refusal(cx: &mut TestAppContext) {
+    let (_fixture, _paths, hub, cx) = refused_from_a_row(
+        cx,
+        &["one", "two", "three"],
+        size(px(461.), px(490.)),
+        13,
+        "recent-project-1",
+    )
+    .await;
+    let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+    // The line a little above the view: the wide layout's roomier padding
+    // brings it in.
+    let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+    let view = cx.debug_bounds("project-hub-body").expect("the body");
+    scroll.set_offset(point(
+        px(0.),
+        (scroll.offset().y + (view.top() - line.top()) - px(6.)).min(px(0.)),
+    ));
+    crate::views::tests::draw(cx);
+    let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+    let view = cx.debug_bounds("project-hub-body").expect("the body");
+    assert!(
+        line.top() < view.top(),
+        "above the view: {line:?} in {view:?}"
+    );
+    assert_eq!(
+        crate::projects::location_drawn(1).expect("the row").0,
+        TAB_LIMIT_REFUSAL,
+        "out of view, the row reads it"
+    );
+    cx.simulate_resize(size(px(1000.), px(490.)));
+    cx.run_until_parked();
+    let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+    let view = cx.debug_bounds("project-hub-body").expect("the body");
+    assert!(
+        line.top() >= view.top() && line.bottom() <= view.bottom() + px(0.5),
+        "the resize brings it into view: {line:?} in {view:?}"
+    );
+    assert_ne!(
+        crate::projects::location_drawn(1).expect("the row").0,
+        TAB_LIMIT_REFUSAL,
+        "the row reads its place in the frame after the resize"
+    );
+}
+
+/// A recent row's press that opened its tab is over: a later refusal at
+/// Choose a repository… answers Choose, revealed as an alert under that
+/// button. Taken for the old press's answer, the line stayed below the
+/// view with a polite announcement.
+#[gpui::test]
+async fn a_refusal_at_choose_after_a_row_opened_is_choose_s_own(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    use crate::native_accessibility::written;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS - 1));
+    let recents: Vec<_> = (0..2)
+        .map(|index| {
+            let repo = crate::views::tests::fixture_repository(
+                fixture.path().join(format!("recent-{index}")),
+            );
+            crate::tags::tests::git(repo.path(), &["commit", "--allow-empty", "-qm", "first"]);
+            repo
+        })
+        .collect();
+    let paths: Vec<_> = recents.iter().map(|repo| repo.path().to_owned()).collect();
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    cx.update(|window, cx| {
+        hub.update(cx, |hub, cx| hub.set_recent(paths, cx));
+        app.update(cx, |app, cx| app.show_projects(window, cx));
+    });
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    sweep::interface_size(cx, 18);
+    crate::views::tests::draw(cx);
+    let scroll = hub.read_with(cx, |hub, _| hub.body_scroll());
+    let body = |cx: &mut VisualTestContext| cx.debug_bounds("project-hub-body").expect("the body");
+    let to_foot = |cx: &mut VisualTestContext, selector: &'static str| {
+        scroll.set_offset(point(px(0.), px(0.)));
+        crate::views::tests::draw(cx);
+        let past = cx.debug_bounds(selector).expect("drawn").bottom() - body(cx).bottom();
+        if past > Pixels::ZERO {
+            scroll.set_offset(point(px(0.), -past));
+            crate::views::tests::draw(cx);
+        }
+    };
+    // The eighth tab, opened from the second row.
+    to_foot(cx, "recent-project-1");
+    let row = cx.debug_bounds("recent-project-1").expect("the row");
+    cx.simulate_click(row.center(), gpui::Modifiers::default());
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.tabs.len(), MAX_TABS, "the row opened");
+        assert_eq!(app.page, AppPage::Repository, "and left the page");
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+    crate::views::tests::draw(cx);
+    to_foot(cx, "hub-open-folder");
+    let button = cx.debug_bounds("hub-open-folder").expect("the button");
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    written::forget();
+    cx.run_until_parked();
+    crate::views::tests::draw(cx);
+    assert_eq!(
+        hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+            .as_deref(),
+        Some(TAB_LIMIT_REFUSAL),
+        "refused at Choose"
+    );
+    let line = cx.debug_bounds("project-hub-error").expect("the refusal");
+    let view = body(cx);
+    assert!(
+        line.top() >= view.top() && line.bottom() <= view.bottom() + px(0.5),
+        "the line under Choose is in view: {line:?} in {view:?}"
+    );
+    let alerts = written::announced_from("project-hub-error");
+    assert!(
+        alerts.len() == 1 && alerts[0].1 == written::Announced::ASSERTIVE,
+        "and is the alert it always is: {alerts:?}"
+    );
+}
+
+/// Closing a tab ends the limit's refusal on the page as well as in the
+/// strip: its cause is gone with the tab, and the next Choose a
+/// repository… asks for a folder. Another refusal is left alone.
+#[gpui::test]
+async fn closing_a_tab_ends_the_limits_refusal_on_the_page(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    app.update(cx, |app, _| hold_tabs(app, &root, MAX_TABS));
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    let close = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let index = app.repository_tabs.tabs.len() - 1;
+                app.close_repository_tab(index, window, cx);
+            })
+        });
+        crate::views::tests::draw(cx);
+    };
+    hub.update(cx, |hub, cx| {
+        hub.set_error(Some("Another error".into()), cx)
+    });
+    close(cx);
+    assert_eq!(
+        hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned))
+            .as_deref(),
+        Some("Another error"),
+        "another refusal stays"
+    );
+    hub.update(cx, |hub, cx| {
+        hub.set_error(Some(TAB_LIMIT_REFUSAL.to_owned()), cx)
+    });
+    close(cx);
+    assert_eq!(
+        hub.read_with(cx, |hub, _| hub.shown_error().map(str::to_owned)),
+        None,
+        "the limit's refusal ends with the tab that caused it"
+    );
+}
+
+/// A ninth tab asked for from the Projects page is refused there,
+/// beside the project the person chose, in the tab strip's words and
+/// announced at once as the page's other feedback is, and the page's
+/// actions are available again. Refused in the window's error alone,
+/// which the page does not show, the hub stayed busy, every action
+/// refused under "Opening project…", with nothing to say why.
+#[gpui::test]
+async fn a_ninth_tab_refused_from_projects_says_so_on_the_page(cx: &mut TestAppContext) {
+    use crate::native_accessibility::written;
+    let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+    app.update(cx, |app, _| {
+        for held in 0..MAX_TABS - 1 {
+            app.repository_tabs.tabs.push(Tab {
+                path: fixture.path().join(format!("held-{held}")),
+                resolved: true,
+                git_dir: None,
+                saved: Bookmark::default(),
+                warm: None,
+                error: None,
+                before_mark: None,
+            });
+        }
+    });
+    let hub = app.read_with(cx, |app, _| app.hub.clone());
+    cx.update(|window, cx| {
+        hub.update(cx, |hub, cx| {
+            hub.set_recent(vec![other.path().to_owned()], cx)
+        });
+        app.update(cx, |app, cx| {
+            app.show_projects(window, cx);
+            // An earlier refusal of the strip's, which the page's own
+            // replaces: one refusal line at a time.
+            app.refuse_in_tab_strip("An earlier refusal.", cx);
+        });
+    });
+    crate::views::tests::draw(cx);
+    let mut nodes = Vec::new();
+    for refusal in ["first", "second"] {
+        let project = cx
+            .debug_bounds("recent-project-0")
+            .expect("the recent project");
+        cx.simulate_click(project.center(), gpui::Modifiers::default());
+        written::forget();
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.repository_tabs.tabs.len(),
+                MAX_TABS,
+                "{refusal}: refused"
+            );
+            assert_eq!(app.page, AppPage::Projects);
+            assert_eq!(app.error, None, "{refusal}: not in the window's error");
+        });
+        hub.read_with(cx, |hub, _| {
+            assert_eq!(
+                hub.shown_error(),
+                Some(TAB_LIMIT_REFUSAL),
+                "{refusal}: the page says why"
+            );
+            assert!(
+                !hub.shown_busy(),
+                "{refusal}: and its actions are available again"
+            );
+        });
+        let announced = written::announced_from("project-hub-error");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "{refusal}: announced at once: {announced:?}"
+        );
+        nodes.push(announced[0].0.clone());
+        assert!(
+            cx.debug_bounds("repository-tab-refusal").is_none(),
+            "{refusal}: said once, where the person acted"
+        );
+    }
+    assert_ne!(
+        nodes[0], nodes[1],
+        "the same refusal again is a fresh node, announced again"
+    );
+}
+
+#[gpui::test]
+async fn rename_tab_waits_for_discovery_and_rejects_stale_or_unavailable_targets(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
+    let canonical = repository.path().to_owned();
+    let nested = canonical.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let unavailable = fixture.path().join("missing");
+    let destination = isolated_session("isolated-session.json");
+    let mut preferences = Preferences::default();
+    preferences
+        .project_names
+        .insert(canonical.clone(), "Turtle 客户端".into());
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                None,
+                preferences,
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(nested.clone(), window, cx);
+            assert!(!app.can_rename_repository_tab(&nested));
+            assert!(!app.can_rename_repository_tab(&canonical));
+        });
+    });
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            assert_eq!(app.repository_tabs.active_path(), Some(canonical.as_path()));
+            assert!(app.can_rename_repository_tab(&canonical));
+            assert_eq!(app.project_name(&canonical), "Turtle 客户端");
+            assert!(!app.can_rename_repository_tab(&nested));
+            app.nav_mode = NavMode::Worktrees;
+            for (query, expected) in [
+                ("turtle 客户端", true),
+                ("repository", true),
+                ("main", true),
+                ("not this project", false),
+                ("", true),
+            ] {
+                app.nav_search
+                    .update(cx, |search, cx| search.set_value(query, window, cx));
+                app.rebuild_navigation(cx);
+                assert_eq!(
+                    app.nav_rows
+                        .iter()
+                        .any(|row| matches!(row, NavRow::Worktree(_))),
+                    expected,
+                    "worktree search must match custom names, paths and branches: {query}"
+                );
+            }
+            // An accepted Git operation does not block app-only naming.
+            app.operation_busy = Some("Fetching");
+            assert!(app.can_rename_repository_tab(&canonical));
+            app.operation_busy = None;
+            app.open_repository_tab(unavailable.clone(), window, cx);
+            assert!(!app.can_rename_repository_tab(&canonical));
+            assert!(!app.can_rename_repository_tab(&unavailable));
+        });
+    });
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            assert!(!app.can_rename_repository_tab(&unavailable));
+            app.switch_repository_tab(0, window, cx);
+            assert!(app.can_rename_repository_tab(&canonical));
+            assert!(!app.can_rename_repository_tab(&unavailable));
+        });
+    });
+    settle_tab_test(&app, cx).await;
+}
+
+#[gpui::test]
+fn fractional_list_scaling_preserves_cold_and_restoring_bookmarks(cx: &mut TestAppContext) {
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        let bookmark = Bookmark {
+            history_y: -3400.,
+            file_y: -4400.,
+            ..Default::default()
+        };
+        let mut state = State {
+            tabs: vec![Tab {
+                path: PathBuf::from("fixture"),
+                resolved: true,
+                git_dir: None,
+                saved: bookmark.clone(),
+                warm: None,
+                error: None,
+                before_mark: None,
+            }],
+            restoring: Some(bookmark.clone()),
+            document_restore: Some(bookmark),
+            ..Default::default()
+        };
+        let mut previous = 1.;
+        for scale in [1.25, 1.15, 1.] {
+            let scales = settings::ListScales::new(
+                previous,
+                scale,
+                appearance::Density::Comfortable,
+                window,
+            );
+            state.rescale_text_viewports(scales, 1., cx);
+            for saved in [
+                &state.tabs[0].saved,
+                state.restoring.as_ref().unwrap(),
+                state.document_restore.as_ref().unwrap(),
+            ] {
+                let history = -100. * f32::from(window.pixel_snap(px(34. * scale)));
+                let files = -100. * f32::from(window.pixel_snap(px(44. * scale)));
+                assert!((saved.history_y - history).abs() < 0.01);
+                assert!((saved.file_y - files).abs() < 0.01);
+            }
+            previous = scale;
+        }
+    });
+}
+
+#[gpui::test]
+async fn desktop_scale_updates_each_window_and_retained_tab_once(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    crate::views::tests::init_app(cx);
+    let mut windows = Vec::new();
+    let mut apps = Vec::new();
+    let mut editors = Vec::new();
+    for index in 0..2 {
+        let repository =
+            crate::views::tests::fixture_repository(fixture.path().join(format!("repo-{index}")));
+        let saved = isolated_session(&format!("session-{index}.json"));
+        let mut captured = None;
+        let window = cx.add_window(|window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            captured = Some(app.clone());
+            gpui_kit::component::Root::new(app, window, cx)
+        });
+        let app = captured.unwrap();
+        let pair = cx.update(|cx| {
+            window
+                .update(cx, |_, window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.repository_tabs.save_path = Some(saved);
+                        app.repository = Some(repository);
+                        let retained = text::editor("retained source\n", "text", None, window, cx);
+                        retained.update(cx, |editor, cx| {
+                            editor.set_selected_range(1..5, cx);
+                            editor.set_scroll_offset(point(px(-40.), px(-400.)), cx);
+                        });
+                        app.before_editor = Some(retained.clone());
+                        app.history_scroll
+                            .0
+                            .borrow()
+                            .base_handle
+                            .set_offset(point(px(-10.), px(-200.)));
+                        app.history_list_layout = Some((size(px(600.), px(400.)), px(34.)));
+                        assert!(app.retain_active_tab(window, cx));
+                        let active = text::editor("active source\n", "text", None, window, cx);
+                        active.update(cx, |editor, cx| {
+                            editor.set_selected_range(2..6, cx);
+                            editor.set_scroll_offset(point(px(-20.), px(-300.)), cx);
+                        });
+                        app.before_editor = Some(active.clone());
+                        app.history_scroll
+                            .0
+                            .borrow()
+                            .base_handle
+                            .set_offset(point(px(-15.), px(-100.)));
+                        (active, retained)
+                    })
+                })
+                .unwrap()
+        });
+        windows.push(window);
+        apps.push(app);
+        editors.push(pair);
+    }
+    cx.executor().run_until_parked();
+    // Publish the same per-App notification used by the Linux bridge,
+    // without changing process-wide font globals shared by parallel tests.
+    cx.update(|cx| {
+        cx.set_global(appearance::DesktopTextScale(1.25));
+        cx.set_global(appearance::DesktopTextScale(1.5));
+    });
+    cx.update(|cx| cx.set_global(appearance::DesktopTextScale(1.5)));
+    for (factor, scale) in [(1.5, 1.5), (1., 1.)] {
+        cx.update(|cx| cx.set_global(appearance::DesktopTextScale(scale)));
+        cx.update(|cx| {
+            for (app, (active, retained)) in apps.iter().zip(&editors) {
+                let app = app.read(cx);
+                assert_eq!(app.before_editor.as_ref(), Some(active));
+                assert_eq!(
+                    active.read(cx).scroll_offset(),
+                    point(px(-20. * factor), px(-300. * factor))
+                );
+                assert_eq!(active.read(cx).selected_range(), 2..6);
+                assert_eq!(
+                    retained.read(cx).scroll_offset(),
+                    point(px(-40. * factor), px(-400. * factor))
+                );
+                assert_eq!(retained.read(cx).selected_range(), 1..5);
+                assert_eq!(
+                    app.history_scroll.0.borrow().base_handle.offset(),
+                    point(px(-15.), px(-100. * factor))
+                );
+                let tab = &app.repository_tabs.tabs[0];
+                let warm = tab.warm.as_ref().unwrap();
+                assert_eq!(
+                    warm.workspace
+                        .history_scroll
+                        .0
+                        .borrow()
+                        .base_handle
+                        .offset(),
+                    point(px(-10.), px(-200. * factor))
+                );
+                assert_eq!(tab.saved.history_y, -200. * factor);
+                assert!(warm.workspace.history_list_layout.is_none());
+                assert_eq!(
+                    app.settings.interface_text_size,
+                    appearance::DEFAULT_INTERFACE_TEXT_SIZE
+                );
+                assert_eq!(
+                    app.settings.code_text_size,
+                    appearance::DEFAULT_CODE_TEXT_SIZE
+                );
+            }
+        });
+    }
+    for (window, app) in windows.into_iter().zip(apps) {
+        cx.update(|cx| {
+            window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap()
+        });
+        let (saved, preferences) = cx.update(|cx| {
+            (
+                app.read(cx)
+                    .repository_tabs
+                    .save_completion
+                    .clone()
+                    .unwrap(),
+                app.read(cx).preferences_writer.submit_read(|| Ok(())),
+            )
+        });
+        saved.await.unwrap();
+        preferences.await.unwrap().unwrap();
+    }
+    cx.executor().run_until_parked();
+}
+
+/// Three frames, each followed by the work it schedules.
+fn draw_tab_frames(cx: &mut VisualTestContext) {
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.executor().run_until_parked();
+    }
+}
+
+/// `commits` linear commits on `main` without a checkout: History lists
+/// the oldest last, at index `commits - 1`.
+fn linear_history_fixture(path: PathBuf, commits: u32) -> GitRepository {
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+
+    let repo = crate::views::tests::fixture_repository(path);
+    let mut input = String::new();
+    for index in 0..commits {
+        let message = format!("history commit {index}");
+        input.push_str(&format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{}\n",
+            1_700_000_000 + index,
+            message.len(),
+            message
+        ));
+    }
+    input.push_str("done\n");
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo.path())
+        .args(["fast-import", "--quiet"])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        command.env_remove(name);
+    }
+    let mut import = command.spawn().unwrap();
+    import
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let imported = import.wait_with_output().unwrap();
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    repo
+}
+
+/// Where a test window saves its tab session, `name` in a directory of the
+/// test process's root that goes with the root at exit. A window's queued
+/// save can run after its test, and a save makes its folder again, so a
+/// session in the test's fixture came back outside it once it was gone.
+fn isolated_session(name: &str) -> PathBuf {
+    preferences::test_directories::until_exit("tab-session").join(name)
+}
+
+/// A window that is `window_size` from its first frame, opening `initial`
+/// with `saved` as its repository session and saving to `save_path`.
+/// `add_window_view` opens a maximized window and runs the deferred open
+/// before it returns: on a loaded host a cold tab's reads can finish
+/// there, and a resize afterwards is a real viewport change over the
+/// restored layout.
+fn open_tab_window(
+    cx: &mut TestAppContext,
+    initial: PathBuf,
+    saved: Session,
+    save_path: PathBuf,
+    window_size: Size<Pixels>,
+) -> (Entity<GitTurtle>, VisualTestContext) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        window_size,
+                    ))),
+                    ..Default::default()
+                },
+                move |window, cx| {
+                    let app = cx.new(|cx| {
+                        let mut app = GitTurtle::new(
+                            Some(initial),
+                            Preferences::default(),
+                            saved,
+                            activity::State::default(),
+                            recovery_drafts::State::default(),
+                            window,
+                            cx,
+                        );
+                        app.repository_tabs.save_path = Some(save_path);
+                        app
+                    });
+                    *captured.borrow_mut() = Some(app.clone());
+                    cx.new(|cx| Root::new(app, window, cx))
+                },
+            )
+        })
+        .unwrap();
+    let app = observed.borrow_mut().take().unwrap();
+    (app, VisualTestContext::from_window(*window, cx))
+}
+
+#[gpui::test]
+async fn cold_tab_restores_rendered_history_offset_without_revealing_manual_selection(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = linear_history_fixture(fixture.path().join("history"), 500);
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    cx.update(|cx| {
+        cx.bind_keys([KeyBinding::new("end", LastRow, Some("GitTurtleList"))]);
+    });
+    let mut expected_y = None;
+    let mut expected_oid = None;
+    // Save End at a resized viewport, restore it cold, then restore an
+    // intentional manual scroll away from that same selected commit.
+    for pass in 0..3 {
+        let saved = if pass == 0 {
+            Session::default()
+        } else {
+            Session::load_at(&destination).unwrap()
+        };
+        if pass > 0 {
+            assert_eq!(Some(px(saved.tabs[0].bookmark.history_y)), expected_y);
+        }
+        // The cold tab restores into a window already at its own size.
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            repo.path().to_owned(),
+            saved,
+            destination.clone(),
+            size(px(1480.), px(981.)),
+        );
+        let window_cx = &mut window_cx;
+        settle_tab_test(&app, window_cx).await;
+        draw_tab_frames(window_cx);
+        if pass == 0 {
+            window_cx.simulate_resize(size(px(1000.), px(680.)));
+            draw_tab_frames(window_cx);
+            window_cx.update(|window, cx| {
+                let focus = app.read(cx).focus.clone();
+                window.focus(&focus, cx);
+            });
+            window_cx.simulate_keystrokes("end");
+            settle_tab_test(&app, window_cx).await;
+            window_cx.simulate_resize(size(px(1480.), px(981.)));
+            draw_tab_frames(window_cx);
+        }
+        window_cx.read(|cx| {
+            let app = app.read(cx);
+            assert_eq!(app.visible.len(), 500);
+            assert_eq!(app.selected_commit, Some(499));
+            let oid = &app.commits[499].oid;
+            if let Some(expected) = &expected_oid {
+                assert_eq!(oid, expected);
+            }
+            let scroll = app.history_scroll.0.borrow();
+            let offset = scroll.base_handle.offset().y;
+            if let Some(expected) = expected_y {
+                assert_eq!(
+                    offset, expected,
+                    "cold first layout must retain the saved viewport"
+                );
+            }
+            let measured = scroll
+                .last_item_size
+                .as_ref()
+                .expect("rendered list geometry");
+            let row_height = measured.contents.height / app.visible.len() as f32;
+            let selected_bottom = offset + row_height * app.visible.len();
+            if pass < 2 {
+                assert!(selected_bottom <= measured.item.height + px(1.));
+                assert!(selected_bottom - row_height >= px(0.));
+            } else {
+                assert!(
+                    selected_bottom > measured.item.height,
+                    "manual scroll stays away from selection"
+                );
+            }
+        });
+        if pass == 1 {
+            let manual_y = window_cx.update(|window, cx| {
+                let (position, delta) = app.update(cx, |app, cx| {
+                    // A real file read is still pending when the wheel
+                    // event arrives; its reply must not reset the viewport.
+                    app.repository_tabs.restoring = Some(app.tab_bookmark(cx));
+                    app.select_commit(499, window, cx);
+                    let scroll = &app.history_scroll.0.borrow().base_handle;
+                    (scroll.bounds().center(), -scroll.offset().y / 2.)
+                });
+                window.dispatch_event(
+                    gpui::PlatformInput::Scroll(gpui::ScrollEvent {
+                        position,
+                        delta: gpui::ScrollDelta::Pixels(point(px(0.), delta)),
+                        modifiers: Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                        source: Default::default(),
+                    }),
+                    cx,
+                );
+                let app = app.read(cx);
+                assert!(app.repository_tabs.restoring.is_some());
+                let moved = app.history_scroll.0.borrow().base_handle.offset().y;
+                assert_ne!(
+                    Some(moved),
+                    expected_y,
+                    "the actual wheel event must scroll"
+                );
+                moved
+            });
+            settle_tab_test(&app, window_cx).await;
+            draw_tab_frames(window_cx);
+            window_cx.read(|cx| {
+                assert_eq!(
+                    app.read(cx)
+                        .history_scroll
+                        .0
+                        .borrow()
+                        .base_handle
+                        .offset()
+                        .y,
+                    manual_y,
+                    "the completed file read must preserve the newer wheel scroll"
+                );
+            });
+        }
+        let completion = window_cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                expected_y = Some(app.history_scroll.0.borrow().base_handle.offset().y);
+                expected_oid = Some(app.commits[499].oid.clone());
+                app.queue_session_snapshot(cx)
+            })
+        });
+        completion.await.unwrap();
+        window_cx.update(|window, _| window.remove_window());
+        let closing = window_cx.cx.update(|cx| {
+            app.read(cx)
+                .repository_tabs
+                .save_completion
+                .clone()
+                .unwrap()
+        });
+        closing.await.unwrap();
+    }
+}
+
+/// A cold tab's changed-files read can land on the first frame after the
+/// window resizes, as it did on a loaded host. That frame still lays
+/// History's table out for the width its previous frame measured, so the
+/// frame after it widens the table without the window changing: the
+/// restored viewport, scrolled away from the selected commit, must stay.
+#[gpui::test]
+async fn restored_viewport_survives_its_last_read_landing_after_a_resize(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = linear_history_fixture(fixture.path().join("history"), 500);
+    crate::views::tests::init_app(cx);
+    // A test window's maximized size, before the window manager tiles it.
+    let (app, mut window_cx) = open_tab_window(
+        cx,
+        repo.path().to_owned(),
+        Session::default(),
+        isolated_session("isolated-session.json"),
+        size(px(1920.), px(1080.)),
+    );
+    let window_cx = &mut window_cx;
+    settle_tab_test(&app, window_cx).await;
+    window_cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(499, window, cx)));
+    settle_tab_test(&app, window_cx).await;
+    window_cx.update(|_, cx| {
+        app.read(cx)
+            .history_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-4000.)))
+    });
+    draw_tab_frames(window_cx);
+    let saved = window_cx.update(|_, cx| app.read(cx).tab_bookmark(cx));
+    assert_eq!(saved.history_y, -4000.);
+    // Restore the bookmark as `finish_tab_snapshot` does once the cold
+    // snapshot is in: the changed-files read is the only one pending
+    // when the window takes its tiled size.
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.repository_tabs.restoring = Some(saved.clone());
+            app.restore_tab_selection(window, cx);
+        })
+    });
+    window_cx.simulate_resize(size(px(1480.), px(981.)));
+    settle_tab_test(&app, window_cx).await;
+    draw_tab_frames(window_cx);
+    window_cx.read(|cx| {
+        let app = app.read(cx);
+        assert!(app.repository_tabs.restoring.is_none(), "the read landed");
+        assert_eq!(app.selected_commit, Some(499));
+        let scroll = app.history_scroll.0.borrow();
+        let offset = scroll.base_handle.offset().y;
+        assert_eq!(
+            offset,
+            px(saved.history_y),
+            "the restored viewport must not reveal the selection"
+        );
+        let measured = scroll
+            .last_item_size
+            .as_ref()
+            .expect("rendered list geometry");
+        let row_height = measured.contents.height / app.visible.len() as f32;
+        assert!(
+            offset + row_height * app.visible.len() > measured.item.height,
+            "the selected commit stays below the restored viewport"
+        );
+    });
+    window_cx.update(|window, _| window.remove_window());
+    let closing = window_cx.cx.update(|cx| {
+        app.read(cx)
+            .repository_tabs
+            .save_completion
+            .clone()
+            .unwrap()
+    });
+    closing.await.unwrap();
+}
+
+#[gpui::test]
+async fn warm_tabs_restore_measured_viewports_with_their_manual_scroll_positions(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let first = crate::views::tests::fixture_repository(fixture.path().join("first"));
+    let second = crate::views::tests::fixture_repository(fixture.path().join("second"));
+    let initial = first.path().to_owned();
+    let next = second.path().to_owned();
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, window_cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    settle_tab_test(&app, window_cx).await;
+    let first_history = Some((size(px(760.), px(440.)), px(34.)));
+    let first_files = Some((size(px(320.), px(260.)), px(44.)));
+    let second_history = Some((size(px(640.), px(380.)), px(34.)));
+    let second_files = Some((size(px(440.), px(210.)), px(44.)));
+    let history_offset = point(px(-30.), px(-680.));
+    let files_offset = point(px(0.), px(-352.));
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // These are the snapshots produced by each list's layout
+            // probe. Exercise the real tab ownership transfer together
+            // with its scroll handles before another frame can measure.
+            app.history_list_layout = first_history;
+            app.file_list_layout = first_files;
+            app.history_scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(history_offset);
+            app.file_scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(files_offset);
+            app.open_repository_tab(next, window, cx);
+            assert!(app.history_list_layout.is_none());
+            assert!(app.file_list_layout.is_none());
+        });
+    });
+    settle_tab_test(&app, window_cx).await;
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.history_list_layout = second_history;
+            app.file_list_layout = second_files;
+            app.switch_repository_tab(0, window, cx);
+            assert_eq!(app.history_list_layout, first_history);
+            assert_eq!(app.file_list_layout, first_files);
+            assert_eq!(
+                app.history_scroll.0.borrow().base_handle.offset(),
+                history_offset
+            );
+            assert_eq!(
+                app.file_scroll.0.borrow().base_handle.offset(),
+                files_offset
+            );
+            app.close_repository_tab(0, window, cx);
+            assert_eq!(app.history_list_layout, second_history);
+            assert_eq!(app.file_list_layout, second_files);
+            app.close_repository_tab(0, window, cx);
+            assert!(app.history_list_layout.is_none());
+            assert!(app.file_list_layout.is_none());
+        });
+    });
+    settle_tab_test(&app, window_cx).await;
+}
+
+/// Compare's unified patch keeps its decorations with its editor. The active tab's figure
+/// counts them and the presentation they were built from, so a decorated patch reaches the
+/// retained-tabs bound that the same patch without them stays within.
+#[gpui::test]
+async fn compare_patch_decorations_count_toward_the_retained_tabs_bound(cx: &mut TestAppContext) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let first = crate::views::tests::fixture_repository(fixture.path().join("first"));
+    let second = crate::views::tests::fixture_repository(fixture.path().join("second"));
+    let initial = first.path().to_owned();
+    let next = second.path().to_owned();
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, window_cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    settle_tab_test(&app, window_cx).await;
+    window_cx
+        .update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(next, window, cx)));
+    settle_tab_test(&app, window_cx).await;
+
+    let (decorated, without) = window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            assert_eq!(app.repository_tabs.active, Some(1));
+            assert!(app.repository_tabs.tabs[0].warm.is_some());
+            let content = Arc::new(text::decorated_patch_content());
+            let Content::Text {
+                patch,
+                presentation,
+                ..
+            } = content.as_ref()
+            else {
+                unreachable!()
+            };
+            let (editor, decoration) = text::editor_with_decorations(
+                patch,
+                "diff",
+                Some(presentation.as_ref()),
+                window,
+                cx,
+            );
+            let presentation = presentation.retained_bytes();
+            let decoration = decoration.expect("a patch editor keeps its decorations");
+            let decorated = decoration.retained_bytes();
+            assert!(decorated > 0, "a patch with changes has decorations");
+            app.text_mode = TextMode::Unified;
+            app.patch_editor = Some(editor);
+            app.content = Some(content);
+            app.patch_decoration = Some(decoration);
+
+            let with = app.tab_retained_bytes();
+            let decoration = app.patch_decoration.take();
+            let without = app.tab_retained_bytes();
+            assert_eq!(with - without, decorated);
+            let content = app.content.take();
+            assert!(without - app.tab_retained_bytes() >= presentation);
+            app.content = content;
+            app.patch_decoration = decoration;
+            (decorated, without)
+        })
+    });
+
+    // Fill the warm tab so the undecorated patch exactly reaches the bound.
+    let at_bound = |app: &mut GitTurtle| {
+        app.repository_tabs.tabs[0]
+            .warm
+            .as_mut()
+            .expect("the first tab stays warm")
+            .bytes = MAX_RETAINED_BYTES - without;
+    };
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            at_bound(app);
+            app.error = None;
+            assert_eq!(app.tab_retained_bytes(), without + decorated);
+            app.switch_repository_tab(0, window, cx);
+            assert_eq!(
+                app.repository_tabs.active,
+                Some(1),
+                "the decorated patch is refused at the bound"
+            );
+            assert!(
+                app.repository_tabs
+                    .refusal
+                    .as_deref()
+                    .is_some_and(|e| e.contains("512 MiB")),
+                "the tab strip says why"
+            );
+            assert_eq!(app.error, None, "not over the preview");
+            assert!(
+                app.patch_decoration.is_some(),
+                "a refusal keeps the preview"
+            );
+
+            app.patch_decoration = None;
+            app.error = None;
+            app.switch_repository_tab(0, window, cx);
+            assert_eq!(
+                app.repository_tabs.active,
+                Some(0),
+                "the same patch without decorations is retained"
+            );
+            assert!(app.error.is_none());
+            assert_eq!(
+                app.repository_tabs.tabs[1]
+                    .warm
+                    .as_ref()
+                    .map(|warm| warm.bytes),
+                Some(without)
+            );
+        })
+    });
+    settle_tab_test(&app, window_cx).await;
+}
+
+#[gpui::test]
+async fn closing_warm_tabs_keeps_open_repository_keyboard_shortcut_reachable(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let paths = (0..4)
+        .map(|index| {
+            crate::views::tests::fixture_repository(
+                fixture.path().join(format!("repository-{index}")),
+            )
+            .path()
+            .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let initial = paths[0].clone();
+    let destination = isolated_session("isolated-session.json");
+    let open_key = if cfg!(target_os = "macos") {
+        "cmd-o"
+    } else {
+        "ctrl-o"
+    };
+    crate::views::tests::init_app(cx);
+    cx.update(|cx| {
+        cx.bind_keys([KeyBinding::new(open_key, OpenRepository, Some("GitTurtle"))]);
+    });
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, window_cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    settle_tab_test(&app, window_cx).await;
+    for path in paths.iter().skip(1) {
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(path.clone(), window, cx)
+            });
+        });
+        settle_tab_test(&app, window_cx).await;
+    }
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.executor().run_until_parked();
+        }
+    }
+    fn click(cx: &mut VisualTestContext, selector: &'static str) {
+        draw(cx);
+        let bounds = cx.debug_bounds(selector).expect("rendered tab control");
+        cx.simulate_click(bounds.center(), Modifiers::default());
+    }
+    // The toolkit leaves mouse focus unchanged. Keyboard navigation can
+    // focus the fourth tab before a mouse switch captures that handle in
+    // the first workspace. The close sequence then removes its target.
+    click(window_cx, "repository-tab-0");
+    settle_tab_test(&app, window_cx).await;
+    draw(window_cx);
+    let retired_focus = window_cx.update(|window, cx| {
+        window.blur(cx);
+        for _ in 0..7 {
+            window.focus_next(cx);
+        }
+        let focus = window.focused(cx).expect("keyboard-focused fourth tab");
+        assert!(app.read(cx).app_focus.contains(&focus, window));
+        focus
+    });
+    click(window_cx, "repository-tab-3");
+    settle_tab_test(&app, window_cx).await;
+    for selector in [
+        "repository-tab-close-3",
+        "repository-tab-close-2",
+        "repository-tab-close-1",
+    ] {
+        click(window_cx, selector);
+        settle_tab_test(&app, window_cx).await;
+    }
+    draw(window_cx);
+    let attached = window_cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert_eq!(app.repository_tabs.tabs.len(), 1);
+        assert_eq!(app.path.as_deref(), Some(paths[0].as_path()));
+        assert!(
+            !app.app_focus.contains(&retired_focus, window),
+            "the previously keyboard-focused tab has been removed"
+        );
+        window
+            .focused(cx)
+            .is_some_and(|focus| app.app_focus.contains(&focus, window))
+    });
+    assert!(!window_cx.did_prompt_for_paths());
+    window_cx.simulate_keystrokes(open_key);
+    assert!(
+        window_cx.did_prompt_for_paths(),
+        "Open shortcut must reach the native picker after repeated warm closes; attached focus={attached}"
+    );
+    assert!(
+        attached,
+        "the restored focus must belong to the visible workspace"
+    );
+    window_cx.simulate_path_prompt_response(|_| None);
+    settle_tab_test(&app, window_cx).await;
+
+    // A surviving editor target must still be restored exactly; fixing a
+    // removed tab must not replace every warm return with generic focus.
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.search.read(cx).focus_handle(cx).focus(window, cx);
+            app.open_repository_tab(paths[1].clone(), window, cx);
+        });
+    });
+    settle_tab_test(&app, window_cx).await;
+    click(window_cx, "repository-tab-close-1");
+    settle_tab_test(&app, window_cx).await;
+    draw(window_cx);
+    window_cx.update(|window, cx| {
+        assert!(
+            app.read(cx)
+                .search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            "warm return must retain the surviving search input focus"
+        );
+    });
+    settle_tab_test(&app, window_cx).await;
+}
+
+/// The tab list scrolls, so GPUI clips everything in it to the list's own
+/// bounds on both axes. The list keeps room inside that clip for the
+/// installed Button focus ring: each tab's and close button's ring, `gap +
+/// width` outside its edge, lies within the content mask the list paints
+/// its tabs in, at scale factors 2, 1.5 and 1: at 1.5 the 3 px room once
+/// laid out as 2⅔ px, as layout rounds a length to the nearest device
+/// pixel, and the clip cut each ring's outer device pixel. The list's
+/// margin gives the room back, so every tab sits where a list without the
+/// room puts it.
+#[gpui::test]
+async fn repository_tab_list_keeps_room_for_every_focus_ring(cx: &mut TestAppContext) {
+    use gpui_kit::component::{FocusRing, Root, Theme};
+    use std::{cell::RefCell, rc::Rc};
+
+    /// Each tab with its close button.
+    const TABS: [[&str; 2]; 2] = [
+        ["repository-tab-0", "repository-tab-close-0"],
+        ["repository-tab-1", "repository-tab-close-1"],
+    ];
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.executor().run_until_parked();
+        }
+    }
+    fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("rendered {selector}"))
+    }
+    /// Every tab control, then the header below the strip.
+    fn layout(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        TABS.into_iter()
+            .flatten()
+            .chain(["repository-header"])
+            .map(|selector| rendered(cx, selector))
+            .collect()
+    }
+    /// The content mask the tab list paints its tabs in, read from the
+    /// fill behind the selected tab and its close button: GPUI keeps a
+    /// filled quad's mask whole, and nothing between the list and that
+    /// fill clips.
+    fn tab_list_mask(
+        cx: &mut VisualTestContext,
+        [tab, close]: [&'static str; 2],
+    ) -> Bounds<Pixels> {
+        let surface = rendered(cx, tab).union(&rendered(cx, close));
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |bounds: Bounds<ScaledPixels>| {
+                let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                Bounds::from_corners(
+                    point(logical(bounds.left()), logical(bounds.top())),
+                    point(logical(bounds.right()), logical(bounds.bottom())),
+                )
+            };
+            let device = px(1. / scale);
+            let masks = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let drawn = logical(quad.bounds);
+                    !quad.background.is_transparent()
+                        && [
+                            (drawn.left(), surface.left()),
+                            (drawn.top(), surface.top()),
+                            (drawn.right(), surface.right()),
+                            (drawn.bottom(), surface.bottom()),
+                        ]
+                        .into_iter()
+                        .all(|(drawn, expected)| (drawn - expected).abs() < device)
+                })
+                .map(|quad| logical(quad.content_mask.bounds))
+                .collect::<Vec<_>>();
+            match masks.as_slice() {
+                [mask, rest @ ..] if rest.iter().all(|other| other == mask) => *mask,
+                _ => panic!("one selected tab surface at {surface:?}, masked by {masks:?}"),
+            }
+        })
+    }
+    /// `mask` holds `ring`, within float error of the device pixels both
+    /// lie on.
+    fn holds(mask: Bounds<Pixels>, ring: Bounds<Pixels>) -> bool {
+        let slack = px(0.01);
+        mask.left() <= ring.left() + slack
+            && mask.top() <= ring.top() + slack
+            && mask.right() + slack >= ring.right()
+            && mask.bottom() + slack >= ring.bottom()
+    }
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let paths = (0..TABS.len())
+        .map(|index| {
+            crate::views::tests::fixture_repository(
+                fixture.path().join(format!("repository-{index}")),
+            )
+            .path()
+            .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let initial = paths[0].clone();
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.apply_appearance(window, cx);
+            app.open_repository_tab(paths[1].clone(), window, cx);
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+    assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
+    let footprint = installed.gap + installed.width;
+
+    // The tab opened last is selected, then the first, at each scale.
+    for scale in [2., 1.5, 1.] {
+        cx.update(|window, _| window.set_scale_factor(scale));
+        for selected in [1, 0] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.switch_repository_tab(selected, window, cx)
+                })
+            });
+            settle_tab_test(&app, cx).await;
+            draw(cx);
+            let mask = tab_list_mask(cx, TABS[selected]);
+            for selector in TABS.into_iter().flatten() {
+                let ring = rendered(cx, selector).dilate(footprint);
+                assert!(
+                    holds(mask, ring),
+                    "at scale {scale}, tab {selected} selected: the ring around \
+                     {selector}, {ring:?}, lies outside the tab list's content mask {mask:?}"
+                );
+            }
+        }
+    }
+    cx.update(|window, _| window.set_scale_factor(2.));
+    draw(cx);
+
+    // Without the room the tabs lay out exactly as they do with it, and
+    // the list clips every ring: the room alone keeps them whole.
+    let with_room = layout(cx);
+    cx.update(|window, cx| {
+        Theme::global_mut(cx).button_focus_ring = FocusRing {
+            width: px(0.),
+            gap: px(0.),
+            ..installed
+        };
+        app.update(cx, |_, cx| cx.notify());
+        window.refresh();
+    });
+    draw(cx);
+    assert_eq!(layout(cx), with_room, "the margin gives the room back");
+    let mask = tab_list_mask(cx, TABS[0]);
+    for selector in TABS.into_iter().flatten() {
+        let ring = rendered(cx, selector).dilate(footprint);
+        assert!(
+            !holds(mask, ring),
+            "without room the list clips the ring around {selector}, {ring:?}, to {mask:?}"
+        );
+    }
+    cx.update(|window, cx| {
+        Theme::global_mut(cx).button_focus_ring = installed;
+        window.refresh();
+    });
+    settle_tab_test(&app, cx).await;
+}
+
+/// At interface text sizes 11, 12, 13 and 18 pt, at desktop text scale
+/// 1.0 and, on Linux (the only desktop that reports one), 0.5, the ring a
+/// focused first tab, a focused close button and a focused last tab draw,
+/// `gap + width` outside their edge, lies inside the window and inside the
+/// content mask the control paints in, the intersection of every
+/// ancestor's. The strip is the window's first row, so where its 36 px
+/// leave less than the ring's room above and below a tab it grows by
+/// exactly what it lacks. Where they already leave the room, at 12 pt and
+/// above at desktop scale 1.0, its minimum height is the 36 px it always
+/// had, so it lays out at that height with every tab and close button
+/// centered above its rule, where they always were. At 11 and 12 pt at
+/// scale factors 1.5 and 1.75 the ring stays inside out to its outer
+/// device pixel. A larger installed ring grows the strip in turn.
+#[gpui::test]
+async fn tab_strip_keeps_every_focus_ring_inside_the_window_at_every_text_size(
+    cx: &mut TestAppContext,
+) {
+    use crate::tags::tests::{content_mask, draw, install_ring, rendered};
+    use gpui_kit::component::{FocusRing, Root, Theme};
+    use std::{cell::RefCell, rc::Rc};
+
+    /// The first tab, its close button and the last tab.
+    const CONTROLS: [&str; 3] = [
+        "repository-tab-0",
+        "repository-tab-close-0",
+        "repository-tab-1",
+    ];
+    /// Moves keyboard focus through the window until `selector` draws a
+    /// focus ring.
+    fn focus(cx: &mut VisualTestContext, selector: &'static str) {
+        cx.update(|window, cx| window.blur(cx));
+        for _ in 0..64 {
+            cx.update(|window, cx| window.focus_next(cx));
+            draw(cx);
+            let element = rendered(cx, selector);
+            if !appearance::painted_button(cx, element).1.is_empty() {
+                return;
+            }
+        }
+        panic!("keyboard focus never reaches {selector}");
+    }
+    /// `outer` holds `inner`, within float error of the device pixels
+    /// both lie on.
+    fn holds(outer: Bounds<Pixels>, inner: Bounds<Pixels>) -> bool {
+        let slack = px(0.01);
+        outer.left() <= inner.left() + slack
+            && outer.top() <= inner.top() + slack
+            && outer.right() + slack >= inner.right()
+            && outer.bottom() + slack >= inner.bottom()
+    }
+    /// Focuses each control in turn and checks that its ring, out to the
+    /// device pixel its outer edge is drawn on (`tab_list_ring_room`),
+    /// lies inside the window and inside the content mask the control
+    /// paints in.
+    fn assert_rings_inside(cx: &mut VisualTestContext, at: &str) {
+        let footprint = cx.update(|window, cx| tab_list_ring_room(window, cx));
+        let viewport = cx.update(|window, _| {
+            Bounds::new(point(Pixels::ZERO, Pixels::ZERO), window.viewport_size())
+        });
+        for selector in CONTROLS {
+            // The ring is the focused Button's child, so it paints in the
+            // mask the Button's own fill paints in.
+            let mask = content_mask(cx, selector);
+            focus(cx, selector);
+            let ring = rendered(cx, selector).dilate(footprint);
+            assert!(
+                holds(viewport, ring),
+                "at {at} the ring around focused {selector}, {ring:?}, leaves the window \
+                 {viewport:?}"
+            );
+            assert!(
+                holds(mask, ring),
+                "at {at} the ring around focused {selector}, {ring:?}, lies outside its \
+                 content mask {mask:?}"
+            );
+        }
+        cx.update(|window, cx| window.blur(cx));
+        draw(cx);
+    }
+    /// The strip leaves exactly the ring's room above and below the first
+    /// tab, inside its rule.
+    fn assert_strip_fits_ring(cx: &mut VisualTestContext, at: &str) {
+        let (footprint, device) = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                px(1. / window.scale_factor()),
+            )
+        });
+        let strip = rendered(cx, "repository-tab-strip");
+        let tab = rendered(cx, CONTROLS[0]);
+        let above = tab.top() - strip.top();
+        let below = strip.bottom() - TAB_STRIP_BORDER - tab.bottom();
+        assert!(
+            (above - footprint).abs() < device && (below - footprint).abs() < device,
+            "at {at} the strip {strip:?} leaves {above:?} above and {below:?} below \
+             {tab:?}, not the ring's {footprint:?}"
+        );
+    }
+    fn set_text_size(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        interface: u8,
+        desktop: f32,
+    ) {
+        cx.update(|window, cx| {
+            #[cfg(target_os = "linux")]
+            appearance::set_desktop_text_scale(desktop, cx);
+            #[cfg(not(target_os = "linux"))]
+            assert_eq!(desktop, 1.0, "only Linux reports a desktop text scale");
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = interface;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(interface, code, window, cx);
+                cx.notify();
+            })
+        });
+    }
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let paths = (0..2)
+        .map(|index| {
+            crate::views::tests::fixture_repository(
+                fixture.path().join(format!("repository-{index}")),
+            )
+            .path()
+            .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let initial = paths[0].clone();
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    cx.simulate_resize(size(px(1000.), px(680.)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.apply_appearance(window, cx);
+            app.open_repository_tab(paths[1].clone(), window, cx);
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+    assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
+    let ring_room = installed.gap + installed.width;
+
+    let desktop_scales: &[f32] = if cfg!(target_os = "linux") {
+        &[1.0, 0.5]
+    } else {
+        &[1.0]
+    };
+    for &desktop in desktop_scales {
+        for interface in [11, 12, 13, 18] {
+            let at = format!("{interface} pt at desktop scale {desktop}");
+            set_text_size(cx, &app, interface, desktop);
+            settle_tab_test(&app, cx).await;
+            draw(cx);
+            assert_rings_inside(cx, &at);
+
+            // The test window draws at scale factor 2 only. At scale
+            // factor 1, as on the native host, GPUI rounds each authored
+            // length to whole pixels before layout, ties toward zero, and
+            // centers a tab in what the strip leaves above its rule: the
+            // room there holds the ring too, as at 11 pt at desktop scale
+            // 1.0, where 36 px alone leave 5 px around a 24 px tab.
+            let whole = |length: Pixels| (f32::from(length) - 0.5).ceil();
+            let around = whole(tab_strip_min_height(ring_room))
+                - f32::from(TAB_STRIP_BORDER)
+                - whole(appearance::ui_size(28.));
+            assert!(
+                around >= 2. * f32::from(ring_room),
+                "at {at} at scale factor 1 the strip leaves {around} px around a tab"
+            );
+
+            let device = cx.update(|window, _| px(1. / window.scale_factor()));
+            if desktop == 1.0 && interface >= 12 {
+                // The strip's 36 px already leave the room, so its minimum
+                // height is exactly what it was and nothing in it moves:
+                // it keeps that height, and every tab and close button
+                // stays centered above its rule.
+                assert_eq!(
+                    tab_strip_min_height(ring_room),
+                    appearance::ui_size(36.),
+                    "at {at} the strip keeps its minimum height"
+                );
+                let strip = rendered(cx, "repository-tab-strip");
+                assert!(
+                    (strip.size.height - appearance::ui_size(36.)).abs() < device,
+                    "at {at} the strip keeps its height, not {strip:?}"
+                );
+                for selector in CONTROLS {
+                    let control = rendered(cx, selector);
+                    let above = control.top() - strip.top();
+                    let below = strip.bottom() - TAB_STRIP_BORDER - control.bottom();
+                    assert!(
+                        (control.size.height - appearance::ui_size(28.)).abs() < device
+                            && (above - below).abs() <= device,
+                        "at {at} {selector}, {control:?}, stays centered in {strip:?}"
+                    );
+                }
+            } else {
+                assert!(
+                    tab_strip_min_height(ring_room) > appearance::ui_size(36.),
+                    "at {at} the strip grows"
+                );
+                assert_strip_fits_ring(cx, &at);
+            }
+        }
+    }
+
+    // At scale factors 1.5 and 1.75 the ring's 3 px end inside a device
+    // pixel, which its outer edge is drawn on: below about 0.875 of the
+    // default size the strip grows for the room rounded up to that pixel
+    // (`tab_list_ring_room`), where it grew for the unrounded 3 px and
+    // the ring's outer pixel fell outside the window above a tab.
+    for scale in [1.5, 1.75] {
+        cx.update(|window, _| window.set_scale_factor(scale));
+        for &desktop in desktop_scales {
+            for interface in [11, 12] {
+                let at = format!("{interface} pt at desktop scale {desktop}, scale {scale}");
+                set_text_size(cx, &app, interface, desktop);
+                settle_tab_test(&app, cx).await;
+                draw(cx);
+                assert_rings_inside(cx, &at);
+            }
+        }
+    }
+    cx.update(|window, _| window.set_scale_factor(2.));
+    settle_tab_test(&app, cx).await;
+
+    // The room follows the installed ring: a 5 px ring's room exceeds what
+    // the strip's 36 px leave at the default size, so the strip grows.
+    set_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE, 1.0);
+    settle_tab_test(&app, cx).await;
+    install_ring(
+        cx,
+        &app,
+        FocusRing {
+            width: px(3.),
+            gap: px(2.),
+            opacity: 1.,
+        },
+    );
+    let at = "13 pt with a 5 px ring";
+    assert_rings_inside(cx, at);
+    assert_strip_fits_ring(cx, at);
+    install_ring(cx, &app, installed);
+    settle_tab_test(&app, cx).await;
+}
+
+/// A tab or close button focused from the keyboard draws its ring whole:
+/// one ring, its four sides on whole device pixels, as wide on every side
+/// and as far from its control on every side, inside the strip above its
+/// rule and inside the content mask it paints in, covered by nothing
+/// painted after it and clear of the tab beside it ([`tab_gap`]); and the
+/// focus moves nothing in the strip. Checked for the first tab, its close
+/// button and the selected second tab at scale factors 1.25, 1.5, 1.75
+/// and 2, at 11, 13 and 18 pt, in a 1480 × 800 and a 461 × 490 window,
+/// with the palette applied. At 11 pt and scale factor 1.25 or 2 the
+/// tabs' 0.25 rem gap once left the close button's ring reaching a device
+/// pixel into the selected tab, whose fill covered it.
+#[gpui::test]
+async fn a_keyboard_focused_tab_draws_its_ring_whole_on_device_pixels(cx: &mut TestAppContext) {
+    use crate::tags::tests::{draw, rendered};
+    use gpui_kit::{ScaledPixels, component::ActiveTheme as _};
+
+    /// What the strip lays out, which focus must not move.
+    const LAYOUT: [&str; 9] = [
+        "repository-tab-strip",
+        "repository-tabs",
+        "repository-tab-frame-0",
+        "repository-tab-frame-1",
+        "repository-tab-0",
+        "repository-tab-1",
+        "repository-tab-close-0",
+        "repository-tab-close-1",
+        "repository-header",
+    ];
+    fn layout(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        LAYOUT
+            .into_iter()
+            .map(|selector| rendered(cx, selector))
+            .collect()
+    }
+    /// Focuses the window's first control, then presses Tab until
+    /// `selector` draws a ring: with nothing focused a key reaches no
+    /// control's context, so Tab alone would focus nothing.
+    fn tab_onto(cx: &mut VisualTestContext, selector: &'static str) {
+        cx.update(|window, cx| {
+            window.blur(cx);
+            window.focus_next(cx);
+        });
+        draw(cx);
+        for _ in 0..64 {
+            let element = rendered(cx, selector);
+            if !appearance::painted_button(cx, element).1.is_empty() {
+                return;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        panic!("Tab never reaches {selector}");
+    }
+    /// A ring the last frame painted, in device pixels.
+    #[derive(Debug)]
+    struct Ring {
+        bounds: Bounds<f32>,
+        /// Left, top, right and bottom.
+        widths: [f32; 4],
+        /// The union of the masks its sides are painted in: GPUI paints a
+        /// border-only quad once per side.
+        mask: Bounds<f32>,
+        /// Every filled quad painted after it that reaches into its band.
+        covered_by: Vec<Bounds<f32>>,
+    }
+    fn rings(cx: &mut VisualTestContext) -> Vec<Ring> {
+        cx.update(|window, cx| {
+            let installed = cx.theme().button_focus_ring;
+            let color = cx.theme().ring.alpha(installed.opacity);
+            let device = |b: Bounds<ScaledPixels>| {
+                Bounds::from_corners(
+                    point(b.left().as_f32(), b.top().as_f32()),
+                    point(b.right().as_f32(), b.bottom().as_f32()),
+                )
+            };
+            let quads = window.painted_quads();
+            let mut rings: Vec<(usize, Ring)> = Vec::new();
+            for (index, quad) in quads.iter().enumerate() {
+                let w = quad.border_widths;
+                let widths = [w.left, w.top, w.right, w.bottom].map(|w| w.as_f32());
+                if !quad.background.is_transparent()
+                    || quad.border_color != color
+                    || widths.iter().all(|w| *w == 0.)
+                {
+                    continue;
+                }
+                let (bounds, mask) = (device(quad.bounds), device(quad.content_mask.bounds));
+                match rings.iter_mut().find(|(_, ring)| ring.bounds == bounds) {
+                    Some((_, ring)) => ring.mask = ring.mask.union(&mask),
+                    None => rings.push((
+                        index,
+                        Ring {
+                            bounds,
+                            widths,
+                            mask,
+                            covered_by: Vec::new(),
+                        },
+                    )),
+                }
+            }
+            for (first, ring) in &mut rings {
+                let (outer, [left, top, right, bottom]) = (ring.bounds, ring.widths);
+                let inner = Bounds::from_corners(
+                    point(outer.left() + left, outer.top() + top),
+                    point(outer.right() - right, outer.bottom() - bottom),
+                );
+                for quad in &quads[*first..] {
+                    let drawn = device(quad.bounds);
+                    let reaches = drawn.left() < outer.right()
+                        && drawn.right() > outer.left()
+                        && drawn.top() < outer.bottom()
+                        && drawn.bottom() > outer.top();
+                    let inside = drawn.left() >= inner.left()
+                        && drawn.right() <= inner.right()
+                        && drawn.top() >= inner.top()
+                        && drawn.bottom() <= inner.bottom();
+                    if !quad.background.is_transparent() && reaches && !inside {
+                        ring.covered_by.push(drawn);
+                    }
+                }
+            }
+            rings.into_iter().map(|(_, ring)| ring).collect()
+        })
+    }
+
+    let (_fixture, app, cx, paths) = strip_window(cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(paths[1].clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+
+    let mut failures = Vec::new();
+    for (width, height) in [(1480., 800.), (461., 490.)] {
+        for scale in [1.25, 1.5, 1.75, 2.] {
+            for interface in [11, 13, 18] {
+                // A resize puts the test window back at scale 2.
+                resize_strip(cx, &app, (interface, width, height)).await;
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    window.blur(cx);
+                });
+                settle_tab_test(&app, cx).await;
+                draw(cx);
+                assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+                let resting = layout(cx);
+                let strip = rendered(cx, "repository-tab-strip");
+                // The second tab is selected: the first close button's
+                // ring meets its frame's fill on the right, the second
+                // tab's meets the first tab's frame on the left.
+                for (control, beside) in [
+                    ("repository-tab-0", None),
+                    (
+                        "repository-tab-close-0",
+                        Some(("repository-tab-frame-1", true)),
+                    ),
+                    ("repository-tab-1", Some(("repository-tab-frame-0", false))),
+                ] {
+                    let at =
+                        format!("{control} at scale {scale}, {interface} pt, {width} x {height}");
+                    tab_onto(cx, control);
+                    if layout(cx) != resting {
+                        failures.push(format!(
+                            "{at}: focus moved the strip from {resting:?} to {:?}",
+                            layout(cx)
+                        ));
+                    }
+                    let to_device = |b: Bounds<Pixels>| {
+                        Bounds::from_corners(
+                            point(f32::from(b.left()) * scale, f32::from(b.top()) * scale),
+                            point(f32::from(b.right()) * scale, f32::from(b.bottom()) * scale),
+                        )
+                    };
+                    let element = to_device(rendered(cx, control));
+                    // The ring around the control; others in the ring's
+                    // colour (a list's accent rule) lie elsewhere.
+                    let rings = rings(cx)
+                        .into_iter()
+                        .filter(|ring| ring.bounds.contains(&element.center()))
+                        .collect::<Vec<_>>();
+                    let [ring] = rings.as_slice() else {
+                        failures.push(format!("{at}: one ring, not {rings:?}"));
+                        continue;
+                    };
+                    let (bounds, widths) = (ring.bounds, ring.widths);
+                    let strip = to_device(strip);
+                    let edges = [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()];
+                    let whole = |v: f32| (v - v.round()).abs() < 0.01;
+                    let gaps = [
+                        element.left() - bounds.left() - widths[0],
+                        element.top() - bounds.top() - widths[1],
+                        bounds.right() - widths[2] - element.right(),
+                        bounds.bottom() - widths[3] - element.bottom(),
+                    ];
+                    let slack = 0.01;
+                    let report = format!(
+                        "{ring:?} with gaps {gaps:?} around {element:?} in strip {strip:?}"
+                    );
+                    if !edges.into_iter().chain(widths).all(whole) {
+                        failures.push(format!("{at}: off the device pixel: {report}"));
+                    }
+                    if widths.iter().any(|w| (w - widths[0]).abs() > slack)
+                        || gaps.iter().any(|g| (g - gaps[0]).abs() > slack)
+                        || gaps[0] < 1. - slack
+                    {
+                        failures.push(format!("{at}: uneven ring: {report}"));
+                    }
+                    // The strip's 1 px rule, as layout rounds a stroke.
+                    let rule = (scale - 0.5_f32).ceil().max(1.);
+                    if bounds.top() < strip.top() - slack
+                        || bounds.bottom() > strip.bottom() - rule + slack
+                    {
+                        failures.push(format!("{at}: outside the strip: {report}"));
+                    }
+                    let mask = ring.mask;
+                    if mask.left() > bounds.left() + slack
+                        || mask.top() > bounds.top() + slack
+                        || mask.right() + slack < bounds.right()
+                        || mask.bottom() + slack < bounds.bottom()
+                    {
+                        failures.push(format!("{at}: clipped: {report}"));
+                    }
+                    if !ring.covered_by.is_empty() {
+                        failures.push(format!("{at}: painted over: {report}"));
+                    }
+                    if let Some((neighbour, right)) = beside {
+                        let neighbour = to_device(rendered(cx, neighbour));
+                        let reaches = if right {
+                            bounds.right() > neighbour.left() + slack
+                        } else {
+                            bounds.left() < neighbour.right() - slack
+                        };
+                        if reaches {
+                            failures.push(format!(
+                                "{at}: into the tab beside it, {neighbour:?}: {report}"
+                            ));
+                        }
+                    }
+                }
+                cx.update(|window, cx| window.blur(cx));
+                draw(cx);
+            }
+        }
+    }
+    cx.update(|window, _| window.set_scale_factor(2.));
+    reset_strip_text(cx, &app);
+    settle_tab_test(&app, cx).await;
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// One case of the strip's ring walk: the window's width and height, its
+/// scale factor and the interface text size.
+#[cfg(target_os = "linux")]
+type StripRingCase = ((f32, f32), f32, u8);
+
+/// The windows, scale factors and text sizes the strip's rings are walked
+/// at ([`the_strip_keeps_a_rings_room_beside_its_tabs_at`]), in the order
+/// one test walked them: a 1480 × 800 window, then a 461 × 490 one, each
+/// at scale factors 1.25, 1.5, 1.75 and 2, and each of those at 11, 13
+/// and 18 pt, twelve cases a window. Each part of the walk runs its own
+/// slice of this list, below.
+#[cfg(target_os = "linux")]
+fn strip_ring_cases() -> Vec<StripRingCase> {
+    [(1480., 800.), (461., 490.)]
+        .into_iter()
+        .flat_map(|window| {
+            [1.25, 1.5, 1.75, 2.].into_iter().flat_map(move |scale| {
+                [11, 13, 18]
+                    .into_iter()
+                    .map(move |interface| (window, scale, interface))
+            })
+        })
+        .collect()
+}
+
+/// The slice of [`strip_ring_cases`] each part of the walk runs, in the
+/// list's order: one window's twelve cases, so a part changes the scale
+/// factor and the text size in place, in the order the one test did, in
+/// a window it lays out at one size.
+/// `the_parts_of_the_strip_ring_walk_run_each_case_once` holds them to
+/// the list.
+#[cfg(target_os = "linux")]
+const STRIP_RINGS_IN_THE_WIDE_WINDOW: std::ops::Range<usize> = 0..12;
+#[cfg(target_os = "linux")]
+const STRIP_RINGS_IN_THE_NARROW_WINDOW: std::ops::Range<usize> = 12..24;
+
+/// The strip keeps a ring's room beside its tab list and between its
+/// controls ([`tab_gap`]): Main Menu focused from the keyboard beside a
+/// selected first tab draws its ring clear of that tab's frame and
+/// covered by nothing painted after it, the first tab's ring stays clear
+/// of Menu, and New tab's and Workspaces' rings stay clear of each other,
+/// as do the window controls' in a client-decorated window, at 11, 13
+/// and 18 pt at scale factors 1.25, 1.5, 1.75 and 2 in a
+/// 1480 × 800 and a 461 × 490 window. At 11 pt and scale factor 1.25 or
+/// 2 the strip's 0.25 rem gap left Menu's ring a device pixel into the
+/// first tab, whose selected fill, painted after it, covered that pixel,
+/// and the first tab's ring a device pixel over Menu; the window
+/// controls' `gap_1` let each control's ring reach a device pixel into
+/// the one beside it.
+///
+/// Walked at `cases`, cases of [`strip_ring_cases`] in the order given,
+/// in a window of its own on two fresh repositories, and every test of
+/// it ends as the one test did, its window back at scale factor 2 and
+/// the default text size: one test took 58.2 s on a hosted runner,
+/// against the 120 s at which nextest ends a test.
+#[cfg(target_os = "linux")]
+async fn the_strip_keeps_a_rings_room_beside_its_tabs_at(
+    cases: &[StripRingCase],
+    cx: &mut TestAppContext,
+) {
+    use crate::tags::tests::{draw, rendered};
+    use gpui_kit::{ScaledPixels, component::ActiveTheme as _};
+
+    /// Focuses the window's first control, then presses Tab until
+    /// `selector` draws a ring.
+    fn tab_onto(cx: &mut VisualTestContext, selector: &'static str) {
+        cx.update(|window, cx| {
+            window.blur(cx);
+            window.focus_next(cx);
+        });
+        draw(cx);
+        for _ in 0..64 {
+            let element = rendered(cx, selector);
+            if !appearance::painted_button(cx, element).1.is_empty() {
+                return;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        panic!("Tab never reaches {selector}");
+    }
+    /// Each ring the last frame painted around the centre of `element`,
+    /// in device pixels, with every filled quad painted after it that
+    /// reaches into its band.
+    type Ring = (Bounds<f32>, Vec<Bounds<f32>>);
+    fn rings_around(cx: &mut VisualTestContext, element: Bounds<f32>) -> Vec<Ring> {
+        cx.update(|window, cx| {
+            let installed = cx.theme().button_focus_ring;
+            let color = cx.theme().ring.alpha(installed.opacity);
+            let device = |b: Bounds<ScaledPixels>| {
+                Bounds::from_corners(
+                    point(b.left().as_f32(), b.top().as_f32()),
+                    point(b.right().as_f32(), b.bottom().as_f32()),
+                )
+            };
+            let quads = window.painted_quads();
+            let mut rings: Vec<Ring> = Vec::new();
+            for (index, quad) in quads.iter().enumerate() {
+                let w = quad.border_widths;
+                let [left, top, right, bottom] =
+                    [w.left, w.top, w.right, w.bottom].map(|w| w.as_f32());
+                let outer = device(quad.bounds);
+                if !quad.background.is_transparent()
+                    || quad.border_color != color
+                    || [left, top, right, bottom].iter().all(|w| *w == 0.)
+                    || !outer.contains(&element.center())
+                    || rings.iter().any(|(ring, _)| *ring == outer)
+                {
+                    continue;
+                }
+                let inner = Bounds::from_corners(
+                    point(outer.left() + left, outer.top() + top),
+                    point(outer.right() - right, outer.bottom() - bottom),
+                );
+                let covered = quads[index..]
+                    .iter()
+                    .filter(|quad| !quad.background.is_transparent())
+                    .map(|quad| device(quad.bounds))
+                    .filter(|drawn| {
+                        let reaches = drawn.left() < outer.right()
+                            && drawn.right() > outer.left()
+                            && drawn.top() < outer.bottom()
+                            && drawn.bottom() > outer.top();
+                        let inside = drawn.left() >= inner.left()
+                            && drawn.right() <= inner.right()
+                            && drawn.top() >= inner.top()
+                            && drawn.bottom() <= inner.bottom();
+                        reaches && !inside
+                    })
+                    .collect();
+                rings.push((outer, covered));
+            }
+            rings
+        })
+    }
+
+    let _decorated = Decorated::on();
+
+    let (_fixture, app, cx, paths) = strip_window(cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(paths[1].clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+
+    let mut failures = Vec::new();
+    for ((width, height), scale, interface) in cases.iter().copied() {
+        // A resize puts the test window back at scale 2.
+        resize_strip(cx, &app, (interface, width, height)).await;
+        cx.update(|window, cx| {
+            window.set_scale_factor(scale);
+            window.blur(cx);
+        });
+        settle_tab_test(&app, cx).await;
+        draw(cx);
+        assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+        assert_eq!(
+            cx.update(|_, cx| app.read(cx).repository_tabs.active),
+            Some(0),
+            "the first tab is selected"
+        );
+        // Each control and the one beside it, on its right or
+        // its left: the first tab's frame is selected, so its
+        // fill is painted after Menu's ring.
+        for (control, beside, right) in [
+            ("main-menu", "repository-tab-frame-0", true),
+            ("repository-tab-0", "main-menu", false),
+            ("new-repository-tab", "repository-workspaces", true),
+            ("repository-workspaces", "new-repository-tab", false),
+            ("minimize-window", "maximize-window", true),
+            ("maximize-window", "minimize-window", false),
+            ("maximize-window", "close-window", true),
+            ("close-window", "maximize-window", false),
+        ] {
+            let at = format!("{control} at scale {scale}, {interface} pt, {width} x {height}");
+            tab_onto(cx, control);
+            let to_device = |b: Bounds<Pixels>| {
+                Bounds::from_corners(
+                    point(f32::from(b.left()) * scale, f32::from(b.top()) * scale),
+                    point(f32::from(b.right()) * scale, f32::from(b.bottom()) * scale),
+                )
+            };
+            let element = to_device(rendered(cx, control));
+            let rings = rings_around(cx, element);
+            let [(ring, covered)] = rings.as_slice() else {
+                failures.push(format!("{at}: one ring, not {rings:?}"));
+                continue;
+            };
+            let neighbour = to_device(rendered(cx, beside));
+            let slack = 0.01;
+            let reaches = if right {
+                ring.right() > neighbour.left() + slack
+            } else {
+                ring.left() < neighbour.right() - slack
+            };
+            if reaches {
+                failures.push(format!(
+                    "{at}: its ring {ring:?} reaches into {beside} {neighbour:?}"
+                ));
+            }
+            if !covered.is_empty() {
+                failures.push(format!(
+                    "{at}: its ring {ring:?} is painted over by {covered:?}"
+                ));
+            }
+        }
+        cx.update(|window, cx| window.blur(cx));
+        draw(cx);
+    }
+    cx.update(|window, _| window.set_scale_factor(2.));
+    reset_strip_text(cx, &app);
+    settle_tab_test(&app, cx).await;
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// [`the_strip_keeps_a_rings_room_beside_its_tabs_at`] the twelve cases
+/// of the 1480 × 800 window.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn the_strip_keeps_a_rings_room_beside_its_tabs_in_the_wide_window(cx: &mut TestAppContext) {
+    let cases = strip_ring_cases();
+    let part = &cases[STRIP_RINGS_IN_THE_WIDE_WINDOW];
+    the_strip_keeps_a_rings_room_beside_its_tabs_at(part, cx).await;
+}
+
+/// [`the_strip_keeps_a_rings_room_beside_its_tabs_at`] the twelve cases
+/// of the 461 × 490 window.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn the_strip_keeps_a_rings_room_beside_its_tabs_in_the_narrow_window(
+    cx: &mut TestAppContext,
+) {
+    let cases = strip_ring_cases();
+    let part = &cases[STRIP_RINGS_IN_THE_NARROW_WINDOW];
+    the_strip_keeps_a_rings_room_beside_its_tabs_at(part, cx).await;
+}
+
+/// What only the one walk's order covered. In one window,
+/// [`the_strip_keeps_a_rings_room_beside_its_tabs_at`] the largest text
+/// size in the 1480 × 800 window and then, at the same scale factor, in
+/// the 461 × 490 one: each window's last case in [`strip_ring_cases`].
+/// The one walk laid every text size and scale factor out in the wide
+/// window before it laid it out in the narrow one; each part lays one
+/// window out, so nothing the strip kept for a text size and scale
+/// factor in the wide window is ever read in the narrow one. Which of
+/// Menu's and Workspaces' labels the strip keeps
+/// (`GitTurtle::tab_strip_labels`) depends on the window's width as
+/// well: at 18 pt the narrow strip gives both up for its tabs. With the
+/// wide window's two labels kept there for the text size and scale
+/// factor, the walk finds New tab's ring and Workspaces' painted over,
+/// which fails this test as it failed the one walk, and neither part.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn the_strip_keeps_a_rings_room_beside_its_tabs_as_one_window_narrows(
+    cx: &mut TestAppContext,
+) {
+    let cases = strip_ring_cases();
+    let wide = cases[STRIP_RINGS_IN_THE_WIDE_WINDOW.end - 1];
+    let narrow = cases[STRIP_RINGS_IN_THE_NARROW_WINDOW.end - 1];
+    let (.., scale, interface) = wide;
+    assert_eq!(
+        (narrow.1, narrow.2),
+        (scale, interface),
+        "one scale factor and text size in both windows"
+    );
+    assert_eq!(
+        cases.iter().map(|(.., interface)| *interface).max(),
+        Some(interface),
+        "the largest text size, whose narrow strip gives both labels up"
+    );
+    the_strip_keeps_a_rings_room_beside_its_tabs_at(&[wide, narrow], cx).await;
+}
+
+/// The two parts of the strip's ring walk run [`strip_ring_cases`]
+/// between them, each case once and in the list's order, and each part
+/// runs one case at least: a case added to the list that no part takes
+/// fails here, as does one two parts take. Each part holds one window's
+/// cases, the wide part the wider window's, so no part resizes between
+/// the two.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_parts_of_the_strip_ring_walk_run_each_case_once() {
+    let cases = strip_ring_cases();
+    let parts = [
+        STRIP_RINGS_IN_THE_WIDE_WINDOW,
+        STRIP_RINGS_IN_THE_NARROW_WINDOW,
+    ];
+    assert!(
+        parts.iter().all(|part| !part.is_empty()),
+        "a part runs no case: {parts:?}"
+    );
+    let run: Vec<_> = parts
+        .iter()
+        .flat_map(|part| cases[part.clone()].iter().copied())
+        .collect();
+    assert_eq!(run, cases);
+    let [wide, narrow] = parts.map(|part| {
+        let (window, ..) = cases[part.start];
+        assert!(
+            cases[part.clone()]
+                .iter()
+                .all(|(other, ..)| *other == window),
+            "the part {part:?} walks more than one window"
+        );
+        window
+    });
+    assert!(wide.0 > narrow.0, "{wide:?} is no wider than {narrow:?}");
+}
+
+/// Draws the test's window as client-decorated, with its controls,
+/// while it lives, and as GPUI's test window once it is dropped.
+#[cfg(target_os = "linux")]
+struct Decorated;
+
+#[cfg(target_os = "linux")]
+impl Decorated {
+    fn on() -> Self {
+        crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(true));
+        Self
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Decorated {
+    fn drop(&mut self) {
+        crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(false));
+    }
+}
+
+/// In a client-decorated window, whose strip draws the window controls
+/// and, after the tabs inside the list, the drag region, the tabs take
+/// exactly the room `GitTurtle::tab_list_room` predicts for them, the
+/// room `window_chrome::strip_width` leaves: the list, between Menu and
+/// New tab, holds that room, one gap and the drag region's least width
+/// inside its ring's room on either side, and a tab whose name the strip
+/// cuts spans exactly that room. At 13 and 18 pt in 461 × 490 and
+/// 640 × 680 windows at scale factors 1.25, 1.5 and 2. The exact-fit
+/// tests above lay the strip out undecorated, where the decorated room
+/// goes unchecked.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn a_decorated_strip_gives_its_tabs_the_room_predicted(cx: &mut TestAppContext) {
+    use crate::tags::tests::{draw, rendered};
+
+    let _decorated = Decorated::on();
+    let (_fixture, app, cx, paths) = strip_window(cx).await;
+    app.update(cx, |app, cx| {
+        app.project_names
+            .insert(paths[0].clone(), "a much longer repository name".to_owned());
+        cx.notify();
+    });
+    let mut failures = Vec::new();
+    let mut cut = 0;
+    for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 640., 680.)] {
+        for scale in [1.25, 1.5, 2.] {
+            // A resize puts the test window back at scale 2.
+            resize_strip(cx, &app, (interface, width, height)).await;
+            cx.update(|window, _| window.set_scale_factor(scale));
+            settle_tab_test(&app, cx).await;
+            draw(cx);
+            let at = format!("{interface} pt in {width} × {height} at {scale}x");
+            for control in ["minimize-window", "maximize-window", "close-window"] {
+                if cx.debug_bounds(control).is_none() {
+                    failures.push(format!("{at}: {control} is not drawn"));
+                }
+            }
+            let (room, ring, gap, drag, whole) = cx.update(|window, cx| {
+                let app = app.read(cx);
+                let labels = app.tab_strip_labels(window, cx);
+                (
+                    app.tab_list_room(labels, app.tab_strip_labelled_actions(window), window, cx),
+                    tab_list_ring_room(window, cx),
+                    tab_gap(window),
+                    window.pixel_snap(appearance::ui_size(32.)),
+                    app.tabs_whole_width(window),
+                )
+            });
+            let list = rendered(cx, "repository-tabs").size.width - ring * 2. - gap - drag;
+            if (list - room).abs() >= px(0.01) {
+                failures.push(format!(
+                    "{at}: the list holds {list:?} for its tabs, predicted {room:?}"
+                ));
+            }
+            if whole > room {
+                cut += 1;
+                let tab = rendered(cx, "repository-tab-frame-0").size.width;
+                if (tab - room).abs() >= px(0.01) {
+                    failures.push(format!(
+                        "{at}: the cut tab is {tab:?} wide, not the {room:?} predicted"
+                    ));
+                }
+            }
+        }
+    }
+    cx.update(|window, _| window.set_scale_factor(2.));
+    reset_strip_text(cx, &app);
+    settle_tab_test(&app, cx).await;
+    assert!(cut > 0, "some window cuts the tab's name");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The text sizes and windows the narrow tab strip tests lay out.
+const STRIP_SIZES: [(u8, f32, f32); 6] = [
+    (13, 1480., 980.),
+    (13, 640., 680.),
+    (13, 461., 490.),
+    (18, 1480., 980.),
+    (18, 640., 680.),
+    (18, 461., 490.),
+];
+
+/// A 1480 × 980 window on two fresh repositories, "compact" and
+/// "second", the first open in the only tab, and their paths. Keep the
+/// returned directory until the test ends.
+async fn strip_window(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    [PathBuf; 2],
+) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let paths = ["compact", "second"].map(|name| {
+        crate::views::tests::fixture_repository(fixture.path().join(name))
+            .path()
+            .to_owned()
+    });
+    let initial = paths[0].clone();
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    cx.simulate_resize(size(px(1480.), px(980.)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+    settle_tab_test(&app, cx).await;
+    (fixture, app, cx, paths)
+}
+
+/// Lays the strip's window out at `interface` pt in `width` × `height`.
+async fn resize_strip(
+    cx: &mut VisualTestContext,
+    app: &Entity<GitTurtle>,
+    (interface, width, height): (u8, f32, f32),
+) {
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.settings.interface_text_size = interface;
+            let code = app.settings.code_text_size;
+            appearance::apply_text_sizes(interface, code, window, cx);
+            cx.notify();
+        })
+    });
+    cx.simulate_resize(size(px(width), px(height)));
+    settle_tab_test(app, cx).await;
+    crate::tags::tests::draw(cx);
+}
+
+/// Puts the strip's window back at the default interface size.
+fn reset_strip_text(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let size = appearance::DEFAULT_INTERFACE_TEXT_SIZE;
+            app.settings.interface_text_size = size;
+            let code = app.settings.code_text_size;
+            appearance::apply_text_sizes(size, code, window, cx);
+        })
+    });
+}
+
+/// A tab's width with `name` whole, and at its floor, the name's first
+/// character and ellipsis, both with the tab's insets.
+fn tab_widths(cx: &mut VisualTestContext, name: &str) -> (Pixels, Pixels) {
+    cx.update(|window, _| {
+        let weight = window.text_style().font_weight;
+        let size = appearance::ui_text(12.);
+        let insets = appearance::ui_size(crate::LABEL_INSET * 2.);
+        let width = |text: &str| crate::views::shaped_width(text, size, weight, window);
+        let cut = format!("{}…", &name[..1]);
+        (
+            insets + width(name).ceil(),
+            insets + width(&cut).floor() + px(1.),
+        )
+    })
+}
+
+/// Content before decoration: a tab too wide for the strip's list cuts
+/// its name, never its close button. At 13 and 18 pt in 461 and 640 px
+/// windows the close button and the ring a focused one draws,
+/// `button_ring_room` outside its edge, lie whole inside the list's clip
+/// and the window, right of the tab, which is no wider than its whole
+/// label and no narrower than its first character and ellipsis, so it
+/// never shows a lone one. The native fixture's "compact" is whole in
+/// every window: at 18 pt in the 461 × 490 half tile, where the list's
+/// clip was about 116 px beside a labelled Menu and Workspaces and the
+/// button was once cut, then the name, both are icons
+/// (`tab_strip_actions_become_icons_before_a_tab_name_is_cut`). In a
+/// 1480 × 980 window the tab keeps the width it had, the long name its
+/// scaled 220 px. With two tabs, the list scrolls only once both names
+/// are down to their floors, and no tab overlaps the next.
+#[gpui::test]
+async fn a_narrow_tab_strip_cuts_the_name_before_the_close_button(cx: &mut TestAppContext) {
+    use crate::tags::tests::{content_mask, draw, holds, rendered};
+
+    /// The list's clip, read from the first tab, which the pointer can
+    /// always reach, and the window's bounds.
+    fn clips(cx: &mut VisualTestContext) -> (Bounds<Pixels>, Bounds<Pixels>) {
+        let mask = content_mask(cx, "repository-tab-0");
+        cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+        draw(cx);
+        let viewport = cx.update(|window, _| {
+            Bounds::new(point(Pixels::ZERO, Pixels::ZERO), window.viewport_size())
+        });
+        (mask, viewport)
+    }
+
+    let (_fixture, app, cx, paths) = strip_window(cx).await;
+
+    let (ring_room, device) = cx.update(|window, cx| {
+        (
+            appearance::button_ring_room(cx),
+            px(1. / window.scale_factor()),
+        )
+    });
+
+    for name in ["compact", "a much longer repository name"] {
+        app.update(cx, |app, cx| {
+            app.project_names.insert(paths[0].clone(), name.to_owned());
+            cx.notify();
+        });
+        for sizes in STRIP_SIZES {
+            let (interface, width, height) = sizes;
+            let at = format!("{name:?} at {interface} pt in {width} × {height}");
+            resize_strip(cx, &app, sizes).await;
+            let (whole, floor) = tab_widths(cx, name);
+            let tab = rendered(cx, "repository-tab-0");
+            let close = rendered(cx, "repository-tab-close-0");
+            let (mask, viewport) = clips(cx);
+            let ring = close.dilate(ring_room);
+            assert!(
+                holds(mask, ring) && holds(viewport, ring),
+                "{at}: the close button {close:?} and its ring {ring:?} are cut by the \
+                 list's clip {mask:?} or the window {viewport:?}"
+            );
+            assert!(
+                (close.size.width - appearance::ui_size(28.)).abs() < device
+                    && tab.right() <= close.left() + device,
+                "{at}: the close button {close:?} keeps its size right of the tab {tab:?}"
+            );
+            // A tab was never wider than its scaled 220 px.
+            let widest = whole.min(appearance::ui_size(220.));
+            assert!(
+                tab.size.width >= floor - device && tab.size.width <= widest + device,
+                "{at}: the tab {tab:?} lies between its first character and ellipsis \
+                 {floor:?} and its whole label {whole:?}"
+            );
+            let cut = tab.size.width < whole - device;
+            if width > 1000. {
+                assert!(
+                    (tab.size.width - widest).abs() < device,
+                    "{at}: the tab {tab:?} keeps its width {widest:?}"
+                );
+            } else if name == "compact" {
+                assert!(!cut, "{at}: the name is whole in {tab:?}");
+            } else {
+                assert!(cut, "{at}: the long name is cut in {tab:?}");
+            }
+        }
+    }
+
+    // Two tabs: each keeps its floor and its close button beside it, and
+    // where both close buttons cannot be whole, both names are at their
+    // floors and the list scrolls.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(paths[1].clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    for sizes in STRIP_SIZES {
+        let (interface, width, height) = sizes;
+        let at = format!("two tabs at {interface} pt in {width} × {height}");
+        resize_strip(cx, &app, sizes).await;
+        let (mask, viewport) = clips(cx);
+        let tabs = [
+            (
+                "a much longer repository name",
+                "repository-tab-0",
+                "repository-tab-close-0",
+            ),
+            ("second", "repository-tab-1", "repository-tab-close-1"),
+        ]
+        .map(|(name, tab, close)| {
+            let (_, floor) = tab_widths(cx, name);
+            let (tab, close) = (rendered(cx, tab), rendered(cx, close));
+            assert!(
+                tab.size.width >= floor - device && tab.right() <= close.left() + device,
+                "{at}: {name:?}, {tab:?}, keeps its floor {floor:?} left of {close:?}"
+            );
+            (tab, close, floor)
+        });
+        assert!(
+            tabs[0].1.right() <= tabs[1].0.left() + device,
+            "{at}: the first close button {:?} overlaps the second tab {:?}",
+            tabs[0].1,
+            tabs[1].0
+        );
+        let whole = tabs.iter().all(|(_, close, _)| {
+            let ring = close.dilate(ring_room);
+            holds(mask, ring) && holds(viewport, ring)
+        });
+        let floored = tabs
+            .iter()
+            .all(|(tab, _, floor)| tab.size.width < *floor + device);
+        assert!(
+            whole || floored,
+            "{at}: a close button is cut in {mask:?} before both names reach their \
+             floors: {tabs:?}"
+        );
+    }
+    reset_strip_text(cx, &app);
+}
+
+/// One responsive order in the tab strip: Menu (on Linux) and Workspaces
+/// keep their labels only where every tab's name is whole beside them,
+/// and become 28 px icons, keeping their names, "Main Menu" and
+/// "Workspaces and tab actions", before a tab's name is cut, one at a
+/// time, Workspaces' first, and only where the tabs need the room. At 13
+/// and 18 pt in 461 ×
+/// 490, 640 × 680 and 1480 × 980 windows, with one tab named "compact" or
+/// "a much longer repository name" and then with "second" beside it, the
+/// form drawn is the one `tab_strip_labels` decides before layout, and
+/// the list takes the room `tab_list_room` predicts for it; a labelled
+/// control is as wide as predicted, while one shows every tab is whole,
+/// and a control drawn as its icon would not fit its label: the room the
+/// whole tabs leave empty in the list is less than the label takes. At 18
+/// pt in the 461 × 490 half tile, where "compact" was cut to "com…"
+/// beside a 100 px Menu and a 173 px Workspaces and then both became
+/// icons with about 175 px of the list empty, Menu keeps its label beside
+/// Workspaces' icon and the name is whole.
+#[gpui::test]
+async fn tab_strip_actions_become_icons_before_a_tab_name_is_cut(cx: &mut TestAppContext) {
+    use crate::tags::tests::{draw, rendered};
+    use crate::views::{COMPACT_NAMES, TabStripLabels};
+
+    let (_fixture, app, cx, paths) = strip_window(cx).await;
+    let (ring_room, device) = cx.update(|window, cx| {
+        (
+            appearance::button_ring_room(cx),
+            px(1. / window.scale_factor()),
+        )
+    });
+    let controls: &[(&str, &str)] = if cfg!(target_os = "linux") {
+        &[
+            ("main-menu", "Main Menu"),
+            ("repository-workspaces", "Workspaces and tab actions"),
+        ]
+    } else {
+        &[("repository-workspaces", "Workspaces and tab actions")]
+    };
+    let mut forms = std::collections::BTreeSet::new();
+    for tabs in [1, 2] {
+        if tabs == 2 {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.open_repository_tab(paths[1].clone(), window, cx)
+                })
+            });
+            settle_tab_test(&app, cx).await;
+        }
+        for name in ["compact", "a much longer repository name"] {
+            app.update(cx, |app, cx| {
+                app.project_names.insert(paths[0].clone(), name.to_owned());
+                cx.notify();
+            });
+            for sizes in STRIP_SIZES {
+                let (interface, width, height) = sizes;
+                let at = format!("{name:?} of {tabs} tabs at {interface} pt in {width} × {height}");
+                resize_strip(cx, &app, sizes).await;
+                COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+                draw(cx);
+                let names = COMPACT_NAMES.with(|names| names.borrow().clone());
+                let (labels, room, (menu, workspaces), whole, icon) = cx.update(|window, cx| {
+                    let app = app.read(cx);
+                    let labels = app.tab_strip_labels(window, cx);
+                    (
+                        labels,
+                        app.tab_list_room(
+                            labels,
+                            app.tab_strip_labelled_actions(window),
+                            window,
+                            cx,
+                        ),
+                        app.tab_strip_labelled_actions(window),
+                        app.tabs_whole_width(window),
+                        window.pixel_snap(appearance::ui_size(28.)),
+                    )
+                });
+                forms.insert((interface, width as u32, tabs, name, labels));
+                // A label is measured as layout lays it out, so a
+                // labelled control is predicted as wide as it is drawn.
+                for &(control, accessible) in controls {
+                    let (labelled, wide) = match control {
+                        "main-menu" => (labels.menu, menu),
+                        _ => (labels.workspaces, workspaces),
+                    };
+                    let drawn = rendered(cx, control).size.width;
+                    let predicted = if labelled { wide } else { icon };
+                    assert!(
+                        (drawn - predicted).abs() < px(0.01),
+                        "{at}: {control} is {drawn:?}, predicted {predicted:?} wide"
+                    );
+                    assert_eq!(
+                        names.get(control).copied(),
+                        (!labelled).then_some(accessible),
+                        "{at}: {control}'s compact name"
+                    );
+                    // Its label gave way because the tabs need its room.
+                    assert!(
+                        labelled || room - whole < wide - icon,
+                        "{at}: {control} is its icon beside {:?} of empty list, which \
+                         holds the {:?} its label adds",
+                        room - whole,
+                        wide - icon
+                    );
+                }
+                // The list's bounds hold the ring's room on either side.
+                let list = rendered(cx, "repository-tabs").size.width - ring_room * 2.;
+                assert!(
+                    (list - room).abs() < px(0.01),
+                    "{at}: the tab list takes {list:?}, predicted {room:?}"
+                );
+                let names = [name, "second"];
+                for index in 0..tabs {
+                    let (whole, _) = tab_widths(cx, names[index]);
+                    let whole = whole.min(appearance::ui_size(220.));
+                    let tab = rendered(cx, ["repository-tab-0", "repository-tab-1"][index]);
+                    assert!(
+                        !labels.any() || tab.size.width >= whole - device,
+                        "{at}: tab {index}, {tab:?}, is cut to less than {whole:?} \
+                         beside labelled actions"
+                    );
+                }
+            }
+        }
+    }
+    // Each form is reached where its room is: both labels where the tabs
+    // leave room, Menu's alone beside "compact" at 18 pt in the 461 × 490
+    // half tile, where Linux draws Menu, and both icons beside the long
+    // name there.
+    let labelled = |menu: bool, workspaces| TabStripLabels {
+        menu: menu && cfg!(target_os = "linux"),
+        workspaces,
+    };
+    assert!(
+        forms.contains(&(13, 1480, 1, "compact", labelled(true, true))),
+        "{forms:?}"
+    );
+    assert!(
+        !cfg!(target_os = "linux")
+            || forms.contains(&(18, 461, 1, "compact", labelled(true, false))),
+        "{forms:?}"
+    );
+    assert!(
+        forms.iter().any(|form| form.4 == TabStripLabels::default()),
+        "{forms:?}"
+    );
+    reset_strip_text(cx, &app);
+}
+
+/// A tab label is laid out once for windows at two scale factors drawn
+/// in turn, as a monitor of each shows them: the cache keeps its whole
+/// pixel and each read rounds it to that window's device pixels, so at
+/// 1.5 it lands on a third of a pixel and at 2 on a half. Keyed by the
+/// scale factor, the cache's one entry was laid out again at each change.
+#[gpui::test]
+async fn tab_labels_are_laid_out_once_across_scale_factors(cx: &mut TestAppContext) {
+    let (_fixture, _app, cx, _paths) = strip_window(cx).await;
+    let label = "a much longer repository name";
+    // The label's width at `scale`, and the lines its read laid out.
+    let read = |cx: &mut VisualTestContext, scale: f32| {
+        let layouts = || crate::views::LINE_LAYOUTS.with(|count| count.get());
+        cx.update(|window, _| {
+            window.set_scale_factor(scale);
+            let before = layouts();
+            let key = crate::views::LineKey::current(window);
+            let width = tab_label_widths(label, 0, &key, window).0;
+            (width, layouts() - before)
+        })
+    };
+    let first = [read(cx, 1.5).0, read(cx, 2.).0];
+    for turn in 0..3 {
+        for (scale, width) in [1.5, 2.].into_iter().zip(first) {
+            assert_eq!(
+                read(cx, scale),
+                (width, 0),
+                "turn {turn} at {scale}: its own width, with no label laid out again"
+            );
+        }
+    }
+    for (width, scale) in first.into_iter().zip([1.5, 2.]) {
+        let device = f32::from(width) * scale;
+        assert!(
+            (device - device.round()).abs() < 0.001,
+            "{width:?} on a device pixel at {scale}"
+        );
+    }
+    cx.update(|window, _| window.set_scale_factor(2.));
+}
+
+/// A tab cut to its floor keeps the floor whole at scale factor 1.5:
+/// in a window too narrow for its name, at 13, 17 and 18 pt, the tab
+/// lays out at its floor, no narrower than its laid-out insets and the
+/// floor's whole pixel, the room its first character and ellipsis need.
+/// The floor in whole pixels lies off the device grid there for every
+/// other width, as at 13 pt, and layout once rounded such a tab a third
+/// of a pixel narrower; the floor is now rounded up to a device pixel, as
+/// the label is. The insets are each snapped as layout snaps the label's
+/// padding: at 17 pt their scaled sum rounded a device pixel short of
+/// the two paddings. The window is too narrow on every platform's strip:
+/// where its 160 px leave the drawn tab room past its floor, it gives
+/// that room up (macOS 15, without Linux's Menu, drew the tab 56 px wide
+/// there at 13 pt).
+#[gpui::test]
+async fn a_tab_at_its_floor_keeps_it_whole_at_a_fractional_scale(cx: &mut TestAppContext) {
+    use crate::tags::tests::rendered;
+
+    let (_fixture, app, cx, paths) = strip_window(cx).await;
+    let name = "a much longer repository name";
+    app.update(cx, |app, cx| {
+        app.project_names.insert(paths[0].clone(), name.to_owned());
+        cx.notify();
+    });
+    let mut off_grid = 0;
+    for interface in [13, 17, 18] {
+        let at = format!("{interface} pt");
+        resize_strip(cx, &app, (interface, 160., 490.)).await;
+        // A resize lays the window out at its own scale factor again.
+        cx.update(|window, _| window.set_scale_factor(1.5));
+        crate::tags::tests::draw(cx);
+        let (insets, floor, device) = cx.update(|window, _| {
+            assert_eq!(window.scale_factor(), 1.5, "{at}");
+            let weight = window.text_style().font_weight;
+            let size = appearance::ui_text(12.);
+            let cut = crate::views::shaped_width("a…", size, weight, window);
+            (
+                tab_label_insets(window),
+                cut.floor() + px(1.),
+                px(1. / window.scale_factor()),
+            )
+        });
+        let device_floor = f32::from(floor) * 1.5;
+        off_grid += usize::from((device_floor - device_floor.round()).abs() > 0.01);
+        // Too narrow for the name on every platform: 160 px leaves the
+        // tab at its floor beside Linux's Menu, but macOS's strip holds
+        // no Menu (`TabStripLabels`), and there the list kept 84 px at
+        // 13 pt and the tab 56. Where the drawn tab has room past its
+        // floor, the window gives up that room and a pixel more.
+        let past = rendered(cx, "repository-tab-0").size.width - (insets + floor);
+        if past >= device {
+            let narrower = 160. - (f32::from(past) * 1.5).ceil() / 1.5 - 1.;
+            resize_strip(cx, &app, (interface, narrower, 490.)).await;
+            cx.update(|window, _| window.set_scale_factor(1.5));
+            crate::tags::tests::draw(cx);
+        }
+        let tab = rendered(cx, "repository-tab-0");
+        assert!(
+            tab.size.width >= insets + floor - px(0.01),
+            "{at}: the tab {tab:?} is narrower than its insets {insets:?} and floor {floor:?}"
+        );
+        assert!(
+            tab.size.width < insets + floor + device,
+            "{at}: the tab {tab:?} stands at its floor {floor:?}, the window too narrow"
+        );
+    }
+    assert!(off_grid > 0, "a floor lies off the device grid at 1.5");
+    reset_strip_text(cx, &app);
+    cx.update(|window, _| window.set_scale_factor(2.));
+}
+
+/// The strip's choice measures every tab's whole label on each frame
+/// (`tabs_whole_width`), and on a frame where no tab changed that
+/// allocates nothing: each label is written into one buffer the thread
+/// keeps and read from the label cache, under the line key the window's
+/// root render read as it began (`LineKey::frame`), which reading again
+/// within the render allocates nothing either. It once formatted each
+/// tab's label, copied its project's name and read the key, three
+/// allocations per tab, and collected the widths, one more per frame;
+/// then read the key on its own, which builds the window's text style,
+/// whose default font features GPUI allocates. In a frame the window
+/// draws, the root render reads the key once and the strip, measuring
+/// and drawing its tabs, reads none of its own: without the root
+/// render's key the strip read two each frame, which the measurements
+/// below, each under a key the test opens, would not see. The labels it
+/// measures are the tabs' own: a renamed project's name, and a folder's
+/// name with a running write's "· working".
+#[gpui::test]
+async fn the_tab_strip_measures_its_tabs_without_allocating(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, paths) = strip_window(cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(paths[1].clone(), window, cx)
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    app.update(cx, |app, cx| {
+        app.project_names
+            .insert(paths[0].clone(), "a much longer repository name".into());
+        cx.notify();
+    });
+    crate::tags::tests::draw(cx);
+    // One frame the window draws, every view built: the strip's line
+    // keys as the strip's own source reads them.
+    crate::views::line_key_reads::watch("repository_tabs.rs");
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let reads = crate::views::line_key_reads::take();
+    crate::views::line_key_reads::stop();
+    assert_eq!(
+        reads,
+        crate::views::line_key_reads::Reads {
+            frames: 1,
+            shared: 2,
+            read: 0
+        },
+        "the root render reads the line key once, and the strip's measurement and its \
+         tabs share it"
+    );
+    // Reading the line key within the window's root render, which reads
+    // it once as it begins.
+    let key = cx.update(|window, _| {
+        let _frame = crate::views::LineKey::frame(window);
+        let before = allocations();
+        let _ = crate::views::LineKey::current(window);
+        allocations() - before
+    });
+    assert_eq!(key, 0, "reading the line key within the render allocates");
+    // The tab list's whole width, and what measuring it allocates within
+    // the window's root render.
+    let measure = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            let _frame = crate::views::LineKey::frame(window);
+            let app = app.read(cx);
+            let before = allocations();
+            let whole = app.tabs_whole_width(window);
+            (whole, allocations() - before)
+        })
+    };
+    let labels = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            app.repository_tabs
+                .tabs
+                .iter()
+                .map(|tab| app.tab_label(tab).0)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        labels(cx),
+        ["a much longer repository name", "second"],
+        "each tab's label is its project's name"
+    );
+    let (whole, _) = measure(cx);
+    for frame in 0..3 {
+        assert_eq!(
+            measure(cx),
+            (whole, 0),
+            "frame {frame}: the same width, with nothing allocated"
+        );
+    }
+    // A tab that changes is measured again, and then allocates nothing.
+    app.update(cx, |app, cx| {
+        app.operation_busy = Some("Fetching…");
+        app.operation_repository = Some(paths[1].clone());
+        cx.notify();
+    });
+    crate::tags::tests::draw(cx);
+    cx.executor()
+        .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+    crate::tags::tests::draw(cx);
+    assert_eq!(
+        labels(cx),
+        ["a much longer repository name", "second · working"],
+        "the busy tab's label reports its work"
+    );
+    let (working, _) = measure(cx);
+    assert!(working > whole, "{working:?} for the longer label");
+    assert_eq!(measure(cx), (working, 0), "nothing allocated");
+    app.update(cx, |app, cx| {
+        app.operation_busy = None;
+        app.operation_repository = None;
+        cx.notify();
+    });
+}
+
+/// Every clip that keeps room for the ring a focused Button draws outside
+/// its edge keeps exactly the installed ring's room,
+/// `appearance::button_ring_room`, and follows a ring of another size:
+/// the repository tab list, the Tags list, the Reflog list and the Your
+/// themes list. The Your themes list's room is also the room its page
+/// reveal keeps around a revealed row, and the room its strips cover
+/// while the rows stand off a boundary (`rows_off_boundary`).
+#[gpui::test]
+async fn every_ring_room_follows_the_installed_ring(cx: &mut TestAppContext) {
+    use crate::tags::tests::{content_mask, draw, install_ring, rendered, tagged_repository};
+    use appearance::{ThemeChoice, custom::CustomTheme};
+    use gpui_kit::component::{FocusRing, Root, Theme, WindowExt};
+    use std::{cell::RefCell, rc::Rc};
+
+    /// How far inside `mask` the nearest of `control`'s edges stands.
+    fn room_kept(mask: Bounds<Pixels>, control: Bounds<Pixels>) -> Pixels {
+        [
+            control.left() - mask.left(),
+            control.top() - mask.top(),
+            mask.right() - control.right(),
+            mask.bottom() - control.bottom(),
+        ]
+        .into_iter()
+        .fold(Pixels::MAX, Pixels::min)
+    }
+    fn assert_room(what: &str, kept: Pixels, room: Pixels) {
+        assert!(
+            (kept - room).abs() < px(0.01),
+            "{what} keeps {kept:?} of room, not the installed ring's {room:?}"
+        );
+    }
+    fn shown(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+        settings::shown(cx, selector).unwrap_or_else(|| panic!("{selector} is rendered"))
+    }
+    fn seed(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, count: u32) {
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                let themes = (1..=count)
+                    .map(|n| {
+                        let base = ThemeChoice::ALL[(n as usize - 1) % ThemeChoice::ALL.len()];
+                        CustomTheme::from_base(n, format!("Seed {n:02}"), base)
+                    })
+                    .collect();
+                app.set_custom_themes(themes, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+    }
+    fn scroll_rows(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, y: Pixels) {
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.theme_editor
+                    .rows_scroll()
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(Pixels::ZERO, y));
+                app.notify_settings_page(cx);
+            })
+        });
+        draw(cx);
+    }
+    fn scroll_page(cx: &mut VisualTestContext, app: &Entity<GitTurtle>, y: Pixels) {
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.theme_editor
+                    .page_scroll()
+                    .set_offset(point(Pixels::ZERO, y));
+                app.notify_settings_page(cx);
+            })
+        });
+        draw(cx);
+    }
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = tagged_repository(fixture.path());
+    let initial = repo.path().to_owned();
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    cx.update(|cx| {
+        // A dialog otherwise slides in on a wall-clock animation.
+        cx.set_reduce_motion(true);
+    });
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    cx.simulate_resize(size(px(1000.), px(680.)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+    settle_tab_test(&app, cx).await;
+
+    // A ring of another size than the palette's: 1 px wide, 1 px out.
+    // Smaller, so the window's own edge, 3.5 px above the strip's tabs,
+    // does not clip before the tab list does.
+    let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
+    assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
+    let ring = FocusRing {
+        width: px(1.),
+        gap: px(1.),
+        ..installed
+    };
+    install_ring(cx, &app, ring);
+    let room = cx.read(appearance::button_ring_room);
+    assert_eq!(room, px(2.), "the helper follows the installed ring");
+
+    // The repository tab list. The window's deferred open adds the tab
+    // before any read, and the settles above ran it, so the frame
+    // `install_ring` drew already holds the tab: nothing to wait for.
+    let tab = rendered(cx, "repository-tab-0");
+    assert_room(
+        "the tab list",
+        room_kept(content_mask(cx, "repository-tab-0"), tab),
+        room,
+    );
+
+    // The Tags list.
+    // Tags opens once its list, read on the operation executor's own
+    // thread, lands: wait for that read rather than for wall-clock time.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+    crate::tags::tests::read_lands(&app, cx).await;
+    draw(cx);
+    let row = rendered(cx, "tag-row-0");
+    assert_room(
+        "the Tags list",
+        room_kept(content_mask(cx, "tag-row-0"), row),
+        room,
+    );
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    // The Reflog list.
+    // The Reflog reads on a thread of its own; its browser waits for that
+    // read to land rather than for wall-clock time.
+    let browser =
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_reflog_browser(window, cx)));
+    crate::focus_ring::sweep::Opened::finish(browser, cx);
+    draw(cx);
+    let entry = rendered(cx, "reflog-entry-0");
+    assert_room(
+        "the Reflog list",
+        room_kept(content_mask(cx, "reflog-entry-0"), entry),
+        room,
+    );
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    // The Your themes list: the room above its first row and below its
+    // last, over the rows' box, which the list clips at its own bounds.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    seed(cx, &app, 4);
+    let list = shown(cx, "custom-themes-rows");
+    let rows_box = shown(cx, "custom-themes-rows-box");
+    let first = shown(cx, "custom-theme-1");
+    let last = shown(cx, "custom-theme-4");
+    assert_room("the Your themes list above", first.top() - list.top(), room);
+    assert_room(
+        "the Your themes list below",
+        list.bottom() - last.bottom(),
+        room,
+    );
+    assert_eq!(
+        (first.top(), last.bottom()),
+        (rows_box.top(), rows_box.bottom()),
+        "the room moves no row: the rows fill their box"
+    );
+
+    // The page reveal keeps the same room around the revealed row: with
+    // the rows' box flush against the page's bottom, focusing the last
+    // row's Delete… scrolls the page by the room and no further.
+    let viewport = shown(cx, "settings-scroll");
+    let offset = cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset().y);
+    scroll_page(cx, &app, offset + viewport.bottom() - rows_box.bottom());
+    assert_eq!(
+        shown(cx, "custom-themes-rows-box").bottom(),
+        viewport.bottom(),
+        "the rows' box is flush against the page's bottom"
+    );
+    let handle = cx.update(|_, cx| app.read(cx).theme_editor.row_focus(4, cx));
+    cx.update(|window, cx| {
+        theme_editor::State::focus_row_action(
+            &handle,
+            theme_editor::RowFocus::Action(2),
+            window,
+            cx,
+        )
+    });
+    draw(cx);
+    let last = shown(cx, "custom-theme-4");
+    let list = shown(cx, "custom-themes-rows");
+    assert_room(
+        "the page reveal below the last row",
+        viewport.bottom() - last.bottom(),
+        room,
+    );
+    assert_eq!(
+        list.bottom(),
+        viewport.bottom(),
+        "the page reveals the list's own room, and no more"
+    );
+    cx.update(|window, cx| window.blur(cx));
+    draw(cx);
+
+    // The strips cover exactly the room while the rows stand off a row
+    // boundary, and are absent on one.
+    seed(cx, &app, 32);
+    scroll_page(cx, &app, Pixels::ZERO);
+    scroll_rows(cx, &app, px(-10.));
+    let list = shown(cx, "custom-themes-rows");
+    let rows_box = shown(cx, "custom-themes-rows-box");
+    let top = shown(cx, "custom-themes-ring-room-top");
+    let bottom = shown(cx, "custom-themes-ring-room-bottom");
+    assert_eq!(
+        top,
+        Bounds::new(list.origin, size(list.size.width, room)),
+        "the top strip is the room above the rows"
+    );
+    assert_eq!(
+        bottom,
+        Bounds::new(
+            point(list.left(), rows_box.bottom()),
+            size(list.size.width, room)
+        ),
+        "the bottom strip is the room below them"
+    );
+    assert_eq!(bottom.bottom(), list.bottom());
+    scroll_rows(cx, &app, Pixels::ZERO);
+    assert!(
+        !settings::page_shows(cx, "custom-themes-ring-room-top"),
+        "on a boundary the room is the ring's"
+    );
+
+    cx.update(|window, cx| {
+        Theme::global_mut(cx).button_focus_ring = installed;
+        window.refresh();
+    });
+    settle_tab_test(&app, cx).await;
+}
+
+#[gpui::test]
+async fn closing_the_last_repository_tab_keeps_application_actions_reachable(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
+    let path = repository.path().to_owned();
+    let destination = isolated_session("isolated-session.json");
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, window_cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(path),
+                Preferences::default(),
+                Session::default(),
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    settle_tab_test(&app, window_cx).await;
+    window_cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        app.update(cx, |app, cx| {
+            assert_eq!(app.repository_tabs.tabs.len(), 1);
+            app.focus.focus(window, cx);
+            app.page_return_focus = Some(app.focus.clone());
+            app.close_repository_tab(0, window, cx);
+            assert!(app.page == AppPage::Projects);
+            assert!(app.page_return_focus.is_none());
+        });
+        window.draw(cx).clear(cx);
+        // Focus is on the page's selected action tab, drawn with its
+        // ring, inside the window's own handlers.
+        app.update(cx, |app, cx| {
+            assert!(app.hub.read(cx).selected_mode_focused(window));
+            assert!(app.app_focus.contains_focused(window, cx));
+        });
+        window.dispatch_action(Box::new(ShowSettings), cx);
+    });
+    window_cx.executor().run_until_parked();
+    assert!(app.read_with(window_cx, |app, _| app.page == AppPage::Settings));
+    settle_tab_test(&app, window_cx).await;
+}
+
+#[gpui::test]
+async fn new_tab_and_latest_bookmark_survive_actual_window_close_with_full_save_queue(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Root;
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+    };
+
+    cx.executor().allow_parking();
+    cx.executor().set_block_on_ticks(100..=100);
+    let fixture = tempfile::tempdir().unwrap();
+    let first = crate::views::tests::fixture_repository(fixture.path().join("first"));
+    let second = crate::views::tests::fixture_repository(fixture.path().join("new-tab"));
+    let first_path = first.path().canonicalize().unwrap();
+    let second_path = second.path().canonicalize().unwrap();
+    let save_path = isolated_session("isolated-session.json");
+    let saved = Session {
+        version: 1,
+        active: 0,
+        tabs: vec![SavedTab {
+            path: SavedPath::new(&first_path),
+            bookmark: Bookmark::default(),
+            unresolved: false,
+            git_directories: None,
+        }],
+        ..Default::default()
+    };
+    saved.clone().save_at(&save_path).unwrap();
+    crate::views::tests::init_app(cx);
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let destination = save_path.clone();
+    let (root_view, window_cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(first_path),
+                Preferences::default(),
+                saved,
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    settle_tab_test(&app, window_cx).await;
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(second_path.clone(), window, cx);
+        })
+    });
+    settle_tab_test(&app, window_cx).await;
+    // Opening and accepting metadata must save both tabs even if no switch,
+    // reorder, group action or later close ever occurs.
+    let persisted = Session::load_at(&save_path).unwrap();
+    assert_eq!(persisted.tabs.len(), 2);
+    assert_eq!(persisted.tabs[persisted.active].path.path(), second_path);
+    assert!(persisted.tabs[persisted.active].bookmark.query.is_empty());
+
+    let (release, gate) = mpsc::channel();
+    let (started, running) = futures::channel::oneshot::channel();
+    let blocker = app.read_with(window_cx, |app, _| {
+        app.preferences_writer.submit(move || {
+            let _ = started.send(());
+            gate.recv()?;
+            Ok(())
+        })
+    });
+    running.await.unwrap();
+    let queued = app.read_with(window_cx, |app, _| {
+        (0..7)
+            .map(|_| app.preferences_writer.submit(|| Ok(())))
+            .collect::<Vec<_>>()
+    });
+    let accepted = window_cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            // The accepted session snapshot occupies the eighth queue slot.
+            app.queue_session_snapshot(cx)
+        })
+    });
+    let refused = app.read_with(window_cx, |app, _| app.preferences_writer.submit(|| Ok(())));
+    assert!(refused.await.unwrap().is_err());
+    let search = app.read_with(window_cx, |app, _| app.search.clone());
+    let weak = app.downgrade();
+    drop(app);
+    drop(root_view);
+    window_cx.update(|window, cx| {
+        // The shared widget value changes immediately before the window is
+        // removed. The earlier accepted snapshot does not contain it.
+        search.update(cx, |input, cx| {
+            input.set_value("last query before closing", window, cx)
+        });
+        window.open_dialog(cx, |dialog, _, _| {
+            dialog.title("Open dialog during window close")
+        });
+        assert!(window.has_active_dialog(cx));
+        window.remove_window();
+    });
+    window_cx.cx.update(|cx| assert!(cx.windows().is_empty()));
+    assert!(
+        weak.upgrade().is_none(),
+        "the window and GitTurtle view must really be released"
+    );
+    assert!(
+        Session::load_at(&save_path).unwrap().tabs[1]
+            .bookmark
+            .query
+            .is_empty()
+    );
+    // Resolve the real executor from a background task during GPUI's actual
+    // shutdown wait. The removed window cannot own the final completion.
+    let released = Arc::new(AtomicBool::new(false));
+    let during_shutdown = released.clone();
+    window_cx
+        .executor()
+        .spawn(async move {
+            release.send(()).unwrap();
+            during_shutdown.store(true, Ordering::SeqCst);
+        })
+        .detach();
+    cx.quit();
+    // Shutdown steps this task only while a quit future is still pending.
+    assert!(
+        released.load(Ordering::SeqCst),
+        "shutdown must wait on the accepted session save"
+    );
+    blocker.await.unwrap().unwrap();
+    for response in queued {
+        response.await.unwrap().unwrap();
+    }
+    // GPUI stops waiting after 200 ms of real time, so slow disk I/O can
+    // still be writing the coalesced close snapshot when quit returns.
+    accepted.await.unwrap();
+    let restored = Session::load_at(&save_path).unwrap();
+    assert_eq!(restored.tabs.len(), 2);
+    assert_eq!(restored.tabs[restored.active].path.path(), second_path);
+    assert_eq!(
+        restored.tabs[restored.active].bookmark.query,
+        "last query before closing"
+    );
+    let restored_state = State::from_session(restored);
+    assert_eq!(restored_state.active_path(), Some(second_path.as_path()));
+    assert_eq!(
+        restored_state.tabs[restored_state.active.unwrap()]
+            .saved
+            .query,
+        "last query before closing"
+    );
+}
+
+#[gpui::test]
+async fn cold_legacy_quick_source_restores_history_without_inventing_a_file_change(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = crate::views::tests::fixture_repository(fixture.path().join("history"));
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args([
+            "-c",
+            "user.name=Session Fixture",
+            "-c",
+            "user.email=session@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "A commit with no changed files",
+        ])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let selected = repo.history(1).unwrap().remove(0);
+    let source_path = PathBuf::from("lfs-corrupt.glb");
+    let source = FileChange {
+        old_path: None,
+        new_path: Some(source_path.clone()),
+        old_oid: None,
+        new_oid: None,
+        old_mode: "000000".into(),
+        new_mode: "100644".into(),
+        status: gitturtle_core::ChangeStatus::Added,
+    };
+    let destination = isolated_session("isolated-session.json");
+    let saved = Session {
+        version: 1,
+        tabs: vec![SavedTab {
+            path: SavedPath::new(repo.path()),
+            bookmark: Bookmark {
+                selected_oid: Some(selected.oid.clone()),
+                selection: Some(SavedCommit::new(&selected)),
+                comparison: Some(SavedFile::new(&source)),
+                selected_file: Some(SavedPath::new(&source_path)),
+                compare: true,
+                ..Default::default()
+            },
+            unresolved: false,
+            git_directories: None,
+        }],
+        ..Default::default()
+    };
+    // Reproduce a session written by the older Quick Open path, then use
+    // the production loader and cold startup rather than constructing a
+    // pre-sanitized in-memory bookmark.
+    std::fs::write(&destination, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let restored = Session::load_at(&destination).unwrap();
+    crate::views::tests::init_app(cx);
+    let initial = repo.path().to_owned();
+    let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+    let observed = captured.clone();
+    let (_, window_cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let mut app = GitTurtle::new(
+                Some(initial),
+                Preferences::default(),
+                restored,
+                activity::State::default(),
+                recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            app.repository_tabs.save_path = Some(destination);
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    settle_tab_test(&app, window_cx).await;
+    window_cx.read(|cx| {
+        let app = app.read(cx);
+        assert!(app.mode == WorkspaceMode::History);
+        assert_eq!(app.commits[app.selected_commit.unwrap()].oid, selected.oid);
+        assert!(app.files.is_empty(), "the selected commit has no changes");
+        assert!(app.selected_file.is_none());
+        assert!(app.content.is_none());
+        assert!(app.repository_tabs.restoring.is_none());
+        let bookmark = app.tab_bookmark(cx);
+        assert!(!bookmark.compare);
+        assert!(bookmark.comparison.is_none());
+        assert!(bookmark.selected_file.is_none());
+    });
+}
+
+#[gpui::test]
+async fn startup_installs_root_before_restoring_six_tabs_and_respects_initial_path(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Root;
+    use std::{cell::RefCell, rc::Rc};
+
+    cx.executor().allow_parking();
+    let fixture = tempfile::tempdir().unwrap();
+    let settings = preferences::settings_path().unwrap();
+    // In a directory of this test process's root, never the user's settings.
+    assert!(
+        settings
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("gitturtle-app-tests-")
+    );
+    let paths: Vec<_> = (0..7)
+        .map(|index| fixture.path().join(format!("repository-{index}")))
+        .collect();
+    for path in [&paths[3], &paths[6]] {
+        let repo = crate::views::tests::fixture_repository(path);
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args([
+                "-c",
+                "user.name=Startup Fixture",
+                "-c",
+                "user.email=startup@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial fixture commit",
+            ])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    crate::views::tests::init_app(cx);
+    // The first initial path is the saved active repository; the second
+    // represents an explicit CLI path that takes precedence over that tab.
+    for initial_index in [3, 6] {
+        let mut saved = Session {
+            version: 1,
+            active: 3,
+            tabs: paths[..6]
+                .iter()
+                .map(|path| SavedTab {
+                    path: SavedPath::new(path),
+                    bookmark: Bookmark::default(),
+                    unresolved: false,
+                    git_directories: None,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        saved.tabs[3].bookmark.scope = Some((
+            "Saved main scope".into(),
+            SavedScope::Branch {
+                name: "main".into(),
+                remote: false,
+            },
+        ));
+        let initial = paths[initial_index].clone();
+        let expected = initial.canonicalize().unwrap();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    saved,
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                assert!(app.path.is_none(), "opening must wait for the actual Root");
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow().as_ref().unwrap().clone();
+        window_cx.executor().run_until_parked();
+        window_cx.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx));
+            app.update(cx, |app, _| {
+                assert_eq!(
+                    app.path.as_ref().map(|path| path.canonicalize().unwrap()),
+                    Some(expected.clone())
+                );
+                assert_eq!(
+                    app.repository_tabs.tabs.len(),
+                    if initial_index == 3 { 6 } else { 7 }
+                );
+                assert_eq!(
+                    app.scope.as_ref().map(|scope| scope.0.as_str()),
+                    if initial_index == 3 {
+                        Some("Saved main scope")
+                    } else {
+                        None
+                    }
+                );
+            });
+        });
+        // Drain actual worker replies and persistence before destroying the
+        // test platform; it must not receive wakes from an old executor.
+        for _ in 0..8 {
+            let tasks = window_cx.update(|_, cx| {
+                app.update(cx, |app, _| {
+                    [
+                        app.task.take(),
+                        app.status_task.take(),
+                        app.integration_task.take(),
+                        app.repository_tabs.save_pending.take(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                })
+            });
+            if tasks.is_empty() {
+                break;
+            }
+            for task in tasks {
+                task.await;
+            }
+            window_cx.executor().run_until_parked();
+        }
+        window_cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                assert_eq!(
+                    app.repository
+                        .as_ref()
+                        .map(|repo| repo.path().canonicalize().unwrap()),
+                    Some(expected.clone())
+                );
+                app.automatic.reset();
+                app._display_preferences_task = None;
+            })
+        });
+        let (operations, preferences, worker) = app.read_with(window_cx, |app, _| {
+            (
+                app.operations.submit_read(|| Ok(())),
+                app.preferences_writer.submit_read(|| Ok(())),
+                app.worker.submit(Job::ReleaseHistory),
+            )
+        });
+        operations.await.unwrap().unwrap();
+        preferences.await.unwrap().unwrap();
+        worker.await.unwrap().unwrap();
+        window_cx.executor().run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn shared_inputs_start_empty_for_new_tabs_and_restore_independent_warm_queries(
+    cx: &mut TestAppContext,
+) {
+    struct Probe([Entity<InputState>; 6]);
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Input::new(&self.0[0])
+        }
+    }
+    cx.update(gpui_kit::init);
+    let (probe, cx) = cx.add_window_view(|window, cx| {
+        Probe(std::array::from_fn(|_| {
+            cx.new(|cx| InputState::new(window, cx))
+        }))
+    });
+    cx.update(|window, cx| {
+        let inputs = probe.read(cx).0.clone();
+        for (input, value) in inputs.iter().zip([
+            "change 11000",
+            "feature/",
+            "src/",
+            "draft-branch",
+            "origin",
+            "main",
+        ]) {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+        let first_tab = TabInputs::capture(inputs.each_ref(), window, cx);
+        TabInputs::default().restore(inputs.each_ref(), window, cx);
+        assert!(inputs.iter().all(|input| input.read(cx).value().is_empty()));
+
+        // Editing the new repository must not change the retained first tab.
+        inputs[0].update(cx, |input, cx| {
+            input.set_value("new repository query", window, cx)
+        });
+        let second_tab = TabInputs::capture(inputs.each_ref(), window, cx);
+        first_tab.restore(inputs.each_ref(), window, cx);
+        assert_eq!(inputs[0].read(cx).value().as_ref(), "change 11000");
+        assert_eq!(inputs[1].read(cx).value().as_ref(), "feature/");
+        let first_tab = TabInputs::capture(inputs.each_ref(), window, cx);
+        second_tab.restore(inputs.each_ref(), window, cx);
+        assert_eq!(inputs[0].read(cx).value().as_ref(), "new repository query");
+        assert!(
+            inputs[1..]
+                .iter()
+                .all(|input| input.read(cx).value().is_empty())
+        );
+        first_tab.restore(inputs.each_ref(), window, cx);
+        assert_eq!(inputs[0].read(cx).value().as_ref(), "change 11000");
+    });
+}
+
+#[test]
+fn workspace_text_exposes_full_repository_and_group_description() {
+    let description = "Pinned repository /projects/one/same-name, workspace Related";
+    let text = workspace_text("repository-description", description).truncate();
+    let mut node = gpui::accesskit::Node::new(text.a11y_role().expect("named text role"));
+    text.write_a11y_info(&mut node);
+    // A label is named by its value.
+    assert_eq!(node.role(), Role::Label);
+    assert_eq!(node.value(), Some(description));
+    let other = workspace_text("other-repository", "/projects/two/same-name");
+    let mut other_node = gpui::accesskit::Node::new(other.a11y_role().unwrap());
+    other.write_a11y_info(&mut other_node);
+    assert_ne!(node.value(), other_node.value());
+}
+
+/// A workspace name Local workspaces refuses is an alert announced at
+/// once, as a whole, as every form's refusal is: it was an alert with no
+/// live region, which an assistive technology is never asked to
+/// announce, so a screen reader heard nothing when Create workspace
+/// refused an empty name.
+#[gpui::test]
+async fn a_refused_workspace_name_is_announced_at_once(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    // The dialog otherwise slides in on the wall clock, and under load
+    // its button moved between the press and the release: no click.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    crate::focus_ring::sweep::open_dialog(&app, cx, "Local workspaces", |app, window, cx| {
+        app.open_repository_library(window, cx)
+    })
+    .await;
+    assert!(cx.debug_bounds("local-workspaces-error").is_none());
+    native_accessibility::written::forget();
+    crate::copy_feedback::tests::click(cx, "create-local-workspace");
+    views::tests::settle(&app, cx).await;
+    assert!(
+        cx.debug_bounds("local-workspaces-error").is_some(),
+        "an empty name is refused in the dialog"
+    );
+    assert_eq!(
+        native_accessibility::written::announced_from("local-workspaces-error"),
+        vec![(
+            "local-workspaces-error-1".to_owned(),
+            native_accessibility::written::Announced::ASSERTIVE
+        )]
+    );
+    cx.update(|window, cx| window.close_dialog(cx));
+    views::tests::draw(cx);
+}
+
+fn session(paths: &[&str], active: usize) -> Session {
+    Session {
+        version: 1,
+        tabs: paths
+            .iter()
+            .map(|path| SavedTab {
+                path: SavedPath::Text((*path).into()),
+                bookmark: Bookmark::default(),
+                unresolved: false,
+                git_directories: None,
+            })
+            .collect(),
+        active,
+        ..Default::default()
+    }
+}
+fn commit(oid: &str) -> Commit {
+    Commit {
+        oid: oid.into(),
+        parents: vec!["first-parent".into(), "second-parent".into()],
+        author: "Author\t名".into(),
+        timestamp: -42,
+        subject: "Subject\ncontinued".into(),
+        body: "Body\nwith literal metadata".into(),
+    }
+}
+#[test]
+fn reorder_and_roundtrip_keep_active_repository_and_independent_bookmarks() {
+    let mut saved = session(&["/fixture/one", "/fixture/two", "/fixture/three"], 1);
+    saved.tabs[0].bookmark.query = "one query".into();
+    saved.tabs[1].bookmark.query = "two query".into();
+    saved.tabs[1].bookmark.parent = 1;
+    let mut tabs = State::from_session(saved);
+    tabs.reorder(1, 0);
+    tabs.reorder(2, 1);
+    assert_eq!(tabs.active_path(), Some(Path::new("/fixture/two")));
+    let output: Session =
+        serde_json::from_slice(&serde_json::to_vec(&tabs.saved()).unwrap()).unwrap();
+    assert_eq!(output.active, 0);
+    assert_eq!(output.tabs[0].bookmark.query, "two query");
+    assert_eq!(output.tabs[0].bookmark.parent, 1);
+    assert_eq!(output.tabs[2].bookmark.query, "one query");
+    assert!(tabs.tabs.iter().all(|tab| tab.warm.is_none()));
+}
+#[test]
+fn normalization_preserves_active_identity_when_invalid_and_duplicate_entries_are_removed() {
+    let mut saved = session(
+        &["relative", "/fixture/one", "/fixture/one", "/fixture/two"],
+        3,
+    );
+    saved.tabs[3].bookmark.query = "界".repeat(2000);
+    saved.tabs[3].bookmark.history_y = f32::NAN;
+    saved.tabs[3].bookmark.zoom = -1.;
+    saved.tabs[3].bookmark.inspector_width = Some(f32::INFINITY);
+    saved.normalize();
+    assert_eq!(saved.tabs.len(), 2);
+    assert_eq!(saved.active, 1);
+    let bookmark = &saved.tabs[1].bookmark;
+    assert!(bookmark.query.len() <= 4096);
+    assert!(bookmark.query.chars().all(|character| character == '界'));
+    assert_eq!(bookmark.history_y, 0.);
+    assert_eq!(bookmark.zoom, 1.);
+    assert_eq!(bookmark.inspector_width, None);
+}
+#[test]
+fn loading_session_is_bounded_and_keeps_unavailable_repositories_for_recovery() {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("session.json");
+    let unavailable = fixture.path().join("removed-worktree");
+    let mut saved = session(&[], 0);
+    saved.tabs.push(SavedTab {
+        path: SavedPath::new(&unavailable),
+        bookmark: Bookmark::default(),
+        unresolved: false,
+        git_directories: None,
+    });
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let loaded = Session::load_at(&path).unwrap();
+    assert_eq!(loaded.tabs[0].path.path(), unavailable);
+    assert!(!unavailable.exists());
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(MAX_SESSION_BYTES as u64 + 1).unwrap();
+    assert!(
+        Session::load_at(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds")
+    );
+    std::fs::write(&path, br#"{"version":999}"#).unwrap();
+    assert!(
+        Session::load_at(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("version")
+    );
+}
+#[test]
+fn saving_a_session_preserves_corrupt_and_unsupported_restart_data() {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("session.json");
+    for original in [b"{truncated".as_slice(), br#"{"version":999}"#] {
+        std::fs::write(&path, original).unwrap();
+        // Startup may show an empty/default view, but a later navigation
+        // or quit save cannot replace the original recovery material.
+        let recovered = Session::load_at(&path).unwrap_or_default();
+        assert!(recovered.save_at(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    std::fs::remove_file(&path).unwrap();
+    session(&["/fixture/one"], 0).save_at(&path).unwrap();
+    session(&["/fixture/two"], 0).save_at(&path).unwrap();
+    assert_eq!(
+        Session::load_at(&path).unwrap().tabs[0].path.path(),
+        Path::new("/fixture/two")
+    );
+}
+#[test]
+fn library_pins_and_groups_survive_closing_tabs_without_becoming_open_readers() {
+    let mut saved = session(&["/fixture/one", "/fixture/two"], 0);
+    saved.groups = vec!["Related projects".into()];
+    saved.library = vec![LibraryEntry {
+        path: SavedPath::Text("/fixture/one".into()),
+        pinned: true,
+        group: Some("Related projects".into()),
+    }];
+    let mut tabs = State::from_session(saved);
+    tabs.tabs.clear();
+    tabs.active = None;
+    let mut restored: Session =
+        serde_json::from_slice(&serde_json::to_vec(&tabs.saved()).unwrap()).unwrap();
+    restored.normalize();
+    assert!(restored.tabs.is_empty());
+    assert_eq!(restored.groups, ["Related projects"]);
+    assert!(restored.library[0].pinned);
+    assert_eq!(
+        restored.library[0].group.as_deref(),
+        Some("Related projects")
+    );
+}
+#[test]
+fn normalization_bounds_open_tabs_library_and_group_memberships() {
+    let mut saved = session(&[], 0);
+    saved.tabs = (0..12)
+        .map(|index| SavedTab {
+            path: SavedPath::Text(format!("/fixture/{index}")),
+            bookmark: Bookmark::default(),
+            unresolved: false,
+            git_directories: None,
+        })
+        .collect();
+    saved.active = 11;
+    saved.groups = (0..20).map(|index| format!("group-{index}")).collect();
+    saved.groups.push("invalid\nname".into());
+    saved.library = (0..150)
+        .map(|index| LibraryEntry {
+            path: SavedPath::Text(format!("/fixture/{index}")),
+            pinned: true,
+            group: Some("group-19".into()),
+        })
+        .collect();
+    saved.normalize();
+    assert_eq!(saved.tabs.len(), MAX_TABS);
+    assert_eq!(saved.active, 0);
+    assert_eq!(saved.groups.len(), MAX_GROUPS);
+    assert_eq!(saved.library.len(), MAX_LIBRARY);
+    assert!(saved.library.iter().all(|entry| entry.group.is_none()));
+}
+#[test]
+fn selected_identity_outside_window_is_retained_once_without_replacing_visible_commits() {
+    let target = commit("captured-selection");
+    let saved = Bookmark {
+        selected_oid: Some(target.oid.clone()),
+        selection: Some(SavedCommit::new(&target)),
+        parent: 1,
+        ..Default::default()
+    };
+    let mut commits = vec![commit("visible-first"), commit("visible-second")];
+    let mut graph = vec![graph::GraphRow::default(); 2];
+    let mut retained = None;
+    assert_eq!(
+        restore_selected_identity(&saved, &mut commits, &mut graph, &mut retained),
+        Some(2)
+    );
+    assert_eq!(retained, Some(2));
+    assert_eq!(commits[0].oid, "visible-first");
+    assert_eq!(commits[2].parents[1], "second-parent");
+    assert_eq!(
+        restore_selected_identity(&saved, &mut commits, &mut graph, &mut retained),
+        Some(2)
+    );
+    assert_eq!(commits.len(), 3);
+    assert_eq!(graph.len(), 3);
+    let mismatched = Bookmark {
+        selected_oid: Some("different".into()),
+        ..saved
+    };
+    assert_eq!(
+        restore_selected_identity(&mismatched, &mut commits, &mut graph, &mut retained),
+        None
+    );
+    assert_eq!(commits.len(), 3);
+}
+#[test]
+fn captured_comparison_roundtrip_preserves_each_blob_mode_parent_and_document_choice() {
+    let old = PathBuf::from("before name.pdf");
+    let new = PathBuf::from("after name.pdf");
+    let file = FileChange {
+        old_path: Some(old),
+        new_path: Some(new),
+        old_oid: Some("before-blob".into()),
+        new_oid: Some("after-blob".into()),
+        old_mode: "100644".into(),
+        new_mode: "100755".into(),
+        status: gitturtle_core::ChangeStatus::Renamed,
+    };
+    let saved = Bookmark {
+        selected_oid: Some("merge".into()),
+        selection: Some(SavedCommit::new(&commit("merge"))),
+        comparison: Some(SavedFile::new(&file)),
+        origins: [Some("parent-2".into()), Some("merge".into())],
+        model: [
+            Some(model_view::Bookmark {
+                target: [1., 2., 3.],
+                yaw: -std::f64::consts::FRAC_PI_4,
+                pitch: 0.6,
+                span: 42.,
+                linked: false,
+                wireframe: true,
+            }),
+            Some(model_view::Bookmark {
+                target: [-1., -2., -3.],
+                yaw: 1.2,
+                pitch: -0.2,
+                span: 13.,
+                linked: false,
+                wireframe: false,
+            }),
+        ],
+        parent: 1,
+        zoom: 2.5,
+        text_mode: "markdown".into(),
+        compare: true,
+        ..Default::default()
+    };
+    let mut session = session(&["/fixture"], 0);
+    session.tabs[0].bookmark = saved.clone();
+    let mut restored: Session =
+        serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+    restored.normalize();
+    let restored = &restored.tabs[0].bookmark;
+    assert_eq!(restored.comparison.as_ref().unwrap().file(), file);
+    assert_eq!(
+        restored.selection.as_ref().unwrap().commit(),
+        commit("merge")
+    );
+    assert_eq!(restored.origins, saved.origins);
+    assert_eq!(restored.parent, 1);
+    assert_eq!(restored.zoom, 2.5);
+    assert_eq!(restored.text_mode, "markdown");
+    assert!(restored.compare);
+    assert_eq!(
+        serde_json::to_value(&restored.model).unwrap(),
+        serde_json::to_value(&saved.model).unwrap()
+    );
+}
+#[test]
+fn captured_added_and_deleted_comparisons_keep_their_absent_side_on_restart() {
+    for added in [false, true] {
+        let file = FileChange {
+            old_path: (!added).then(|| PathBuf::from("model.glb")),
+            new_path: added.then(|| PathBuf::from("model.glb")),
+            old_oid: (!added).then(|| "deleted-blob".into()),
+            new_oid: added.then(|| "added-blob".into()),
+            old_mode: if added { "000000" } else { "100644" }.into(),
+            new_mode: if added { "100644" } else { "000000" }.into(),
+            status: if added {
+                gitturtle_core::ChangeStatus::Added
+            } else {
+                gitturtle_core::ChangeStatus::Deleted
+            },
+        };
+        let mut saved = session(&["/fixture"], 0);
+        saved.tabs[0].bookmark = Bookmark {
+            comparison: Some(SavedFile::new(&file)),
+            compare: true,
+            ..Default::default()
+        };
+        let mut restored: Session =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        restored.normalize();
+        assert!(restored.tabs[0].bookmark.compare);
+        assert_eq!(
+            restored.tabs[0]
+                .bookmark
+                .comparison
+                .as_ref()
+                .unwrap()
+                .file(),
+            file
+        );
+    }
+}
+#[test]
+#[cfg(unix)]
+fn session_preserves_non_utf8_repository_and_comparison_paths() {
+    use std::os::unix::ffi::OsStringExt;
+    let path = PathBuf::from(std::ffi::OsString::from_vec(
+        b"/fixture/byte-\xff\n\t".to_vec(),
+    ));
+    let file = FileChange {
+        old_path: Some(path.clone()),
+        new_path: None,
+        old_oid: Some("deleted".into()),
+        new_oid: None,
+        old_mode: "120000".into(),
+        new_mode: "000000".into(),
+        status: gitturtle_core::ChangeStatus::Deleted,
+    };
+    let mut saved = session(&[], 0);
+    saved.tabs.push(SavedTab {
+        path: SavedPath::new(&path),
+        bookmark: Bookmark {
+            comparison: Some(SavedFile::new(&file)),
+            ..Default::default()
+        },
+        unresolved: false,
+        git_directories: None,
+    });
+    let mut restored: Session =
+        serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+    restored.normalize();
+    assert_eq!(restored.tabs[0].path.path(), path);
+    assert_eq!(
+        restored.tabs[0]
+            .bookmark
+            .comparison
+            .as_ref()
+            .unwrap()
+            .file(),
+        file
+    );
+}
+
+/// The places a comparison restored with a tab is saved with, here its
+/// zoom and a PDF page, belong to that tab. Left while the comparison's
+/// read runs, the tab keeps them in its bookmark, as a session saved
+/// then does, and in its warm state, and as it returns it reads the
+/// comparison again, whose reply restores them. The window keeps none:
+/// the tab shown in its place, in Compare at a zoom of its own, keeps
+/// that zoom as the window returns from Settings or Projects, and so
+/// does the tab shown when the restoring one is closed. The window kept
+/// them, so the next tab took up the left one's zoom on a return from
+/// Settings, and the left tab's bookmark saved the window's zoom and no
+/// PDF page, which it came back without.
+#[gpui::test]
+async fn a_tab_left_mid_restore_keeps_its_comparisons_places(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    let second = tempfile::tempdir().unwrap();
+    let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+    std::fs::write(repo.path().join("notes.txt"), "second notes\n").unwrap();
+    crate::tags::tests::git(repo.path(), &["add", "notes.txt"]);
+    crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+    let places = |saved: &Bookmark| {
+        serde_json::to_value((saved.zoom, &saved.pdf, &saved.model, &saved.markdown)).unwrap()
+    };
+    let show_page =
+        |page: AppPage, app: &mut GitTurtle, window: &mut Window, cx: &mut Context<GitTurtle>| {
+            match page {
+                AppPage::Settings => app.show_settings(window, cx),
+                _ => app.show_projects(window, cx),
+            }
+            assert!(app.page == page);
+        };
+    // The first tab shows its file in Compare, at a zoom of its own.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let zoom = 1.5;
+    app.update(cx, |app, _| {
+        assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+        app.zoom = zoom;
+    });
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let saved = app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.active, Some(1));
+        let commit = &app.commits[app.selected_commit.expect("a selected commit")];
+        let file = app.files.first().expect("the second tab's file");
+        Bookmark {
+            selected_oid: Some(commit.oid.clone()),
+            selection: Some(SavedCommit::new(commit)),
+            comparison: Some(SavedFile::new(file)),
+            origins: [commit.parents.first().cloned(), Some(commit.oid.clone())],
+            selected_file: Some(SavedPath::new(file.path())),
+            pdf: [
+                None,
+                Some(
+                    serde_json::from_value(
+                        serde_json::json!({"page": 3, "zoom": 1.25, "linked": false}),
+                    )
+                    .unwrap(),
+                ),
+            ],
+            zoom: 2.5,
+            compare: true,
+            ..Default::default()
+        }
+    });
+    // The second tab restores its comparison, whose read the reader
+    // holds, idle first so nothing it ran before counts as running.
+    let restore = |app: &mut GitTurtle, window: &mut Window, cx: &mut Context<GitTurtle>| {
+        app.clear_preview();
+        app.repository_tabs.restoring = Some(saved.clone());
+        app.restore_tab_selection(window, cx);
+        assert_eq!(app.loading, Some(RESTORED_PREVIEW_LABEL));
+    };
+    let held = app.read_with(cx, |app, _| {
+        app.worker.wait_idle();
+        app.worker.hold()
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            restore(app, window, cx);
+            assert_eq!(
+                places(&app.tab_bookmark(cx)),
+                places(&saved),
+                "a session saved mid-restore keeps the comparison's places"
+            );
+            app.switch_repository_tab(0, window, cx);
+            assert!(
+                app.repository_tabs.document_restore.is_none(),
+                "the left tab's places leave the window with it"
+            );
+            assert_eq!(app.zoom, zoom, "the first tab shows at its own zoom");
+            let left = &app.repository_tabs.tabs[1];
+            assert_eq!(
+                places(&left.saved),
+                places(&saved),
+                "its bookmark keeps them"
+            );
+            assert!(
+                left.warm
+                    .as_ref()
+                    .is_some_and(|warm| warm.document_restore.is_some()),
+                "its warm state keeps them"
+            );
+        })
+    });
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    for page in [AppPage::Settings, AppPage::Projects] {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                show_page(page, app, window, cx);
+                app.return_from_page(window, cx);
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Repository && app.repository_tabs.active == Some(0));
+            assert_eq!(
+                app.zoom, zoom,
+                "the first tab keeps its zoom on the return from {page:?}"
+            );
+        });
+    }
+    // Shown again, the left tab reads its comparison again and restores
+    // the places it was saved with.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.switch_repository_tab(1, window, cx);
+            assert_eq!(
+                app.loading,
+                Some(RESTORED_PREVIEW_LABEL),
+                "the comparison is read again"
+            );
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+        assert_eq!(app.zoom, 2.5, "the tab comes back at its saved zoom");
+        assert!(app.repository_tabs.document_restore.is_none());
+    });
+    // Closed while its read runs, the tab takes its places with it.
+    let held = app.read_with(cx, |app, _| {
+        app.worker.wait_idle();
+        app.worker.hold()
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            restore(app, window, cx);
+            app.close_repository_tab(1, window, cx);
+            assert_eq!(app.repository_tabs.active, Some(0));
+            assert!(app.repository_tabs.document_restore.is_none());
+            assert_eq!(app.zoom, zoom);
+        })
+    });
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            show_page(AppPage::Settings, app, window, cx);
+            app.return_from_page(window, cx);
+            assert_eq!(app.zoom, zoom, "the first tab keeps its zoom");
+        })
+    });
+}
+
+/// Where a cold tab's restore stands as it is left: its snapshot read,
+/// the changed files of its saved selection, or its saved comparison.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ColdStage {
+    History,
+    Changes,
+    Comparison,
+}
+
+/// The bookmark a cold tab is restored from belongs to that tab. Left
+/// at any stage of its restore for a warm tab, or closed, it leaves the
+/// window none: the tab shown reveals its selection as History's
+/// viewport changes and keeps its own zoom, widths, text mode and
+/// selection through its Refresh and a commit selection, reading
+/// nothing of the left tab's. The left tab, left before its comparison
+/// is read, stays cold with its bookmark, so it comes back with its
+/// selection, comparison, zoom and widths. Left in the window, the
+/// bookmark stopped the next tab's reveal, its Refresh took up the left
+/// tab's zoom, widths and comparison, read in the wrong repository, and
+/// the left tab came back warm without its selection; left before its
+/// snapshot landed, that snapshot closed the tab shown.
+#[gpui::test]
+async fn a_cold_tab_left_mid_restore_takes_its_bookmark_with_it(cx: &mut TestAppContext) {
+    let (_first, app, cx) =
+        crate::views::tests::history_window_from(cx, crate::views::tests::history_script(60, 1))
+            .await;
+    let second = tempfile::tempdir().unwrap();
+    let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+    std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+    crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+    crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+    let first_path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+    let json = |saved: &Bookmark| serde_json::to_value(saved).unwrap();
+    // The second tab shows its file in Compare, at its own zoom, text
+    // mode and widths, and is left for the first.
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let second_oid = app.update(cx, |app, _| {
+        assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+        app.zoom = 2.5;
+        app.text_mode = TextMode::Split;
+        app.settings.navigation_width = 310.;
+        app.settings.inspector_width = 430.;
+        app.commits[0].oid.clone()
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    // The first tab selects its oldest commit, below History's viewport
+    // once scrolled to the top, at a zoom and widths of its own.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.zoom = 1.5;
+            app.settings.navigation_width = 250.;
+            app.settings.inspector_width = 380.;
+            app.select_commit(59, window, cx);
+        })
+    });
+    settle_tab_test(&app, cx).await;
+    let (compared, first_oid) = app.read_with(cx, |app, _| {
+        let mut saved = app.repository_tabs.tabs[1].saved.clone();
+        saved.pdf[1] = Some(
+            serde_json::from_value(serde_json::json!({"page": 3, "zoom": 1.25, "linked": false}))
+                .unwrap(),
+        );
+        (saved, app.commits[59].oid.clone())
+    });
+    assert!(compared.comparison.is_some() && compared.zoom == 2.5);
+    let mut selected = compared.clone();
+    selected.comparison = None;
+    selected.compare = false;
+    let first_tab = |app: &GitTurtle, tabs: usize, when: &str| {
+        assert_eq!(
+            app.repository_tabs.tabs.len(),
+            tabs,
+            "{when}: no tab closes"
+        );
+        assert_eq!(app.repository_tabs.active, Some(0), "{when}");
+        assert_eq!(app.path.as_ref(), Some(&first_path), "{when}");
+        assert!(
+            app.repository_tabs.restoring.is_none(),
+            "{when}: no bookmark waits"
+        );
+        assert!(app.repository_tabs.document_restore.is_none(), "{when}");
+        assert!(app.mode == WorkspaceMode::History, "{when}: History stays");
+        assert_eq!(app.zoom, 1.5, "{when}: its own zoom");
+        assert!(app.text_mode == TextMode::Unified, "{when}: its text mode");
+        assert_eq!(
+            (app.settings.navigation_width, app.settings.inspector_width),
+            (250., 380.),
+            "{when}: its own widths"
+        );
+        assert!(
+            app.files
+                .iter()
+                .all(|file| file.path() != Path::new("second.txt")),
+            "{when}: nothing of the left tab's is read"
+        );
+    };
+    let selected_oid = |app: &GitTurtle| {
+        app.selected_commit
+            .and_then(|index| app.commits.get(index))
+            .map(|commit| commit.oid.clone())
+    };
+    let shows_selection = |app: &GitTurtle| {
+        let scroll = app.history_scroll.0.borrow();
+        let offset = -scroll.base_handle.offset().y;
+        let measured = scroll.last_item_size.as_ref().expect("History's geometry");
+        let row = measured.contents.height / app.visible.len() as f32;
+        let index = app.visible.iter().position(|&i| i == 59).unwrap() as f32;
+        row * index >= offset && row * (index + 1.) <= offset + measured.item.height
+    };
+    let mut height = 680.;
+    for (stage, saved, close) in [
+        (ColdStage::History, &compared, false),
+        (ColdStage::Changes, &selected, false),
+        (ColdStage::Comparison, &compared, false),
+        (ColdStage::Changes, &selected, true),
+    ] {
+        // The second tab is cold, as a launch leaves every tab but the
+        // one shown, and is restored with its read held at `stage`.
+        app.update(cx, |app, _| {
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = saved.clone();
+        });
+        let mut held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(1, window, cx);
+                assert!(app.repository_tabs.restoring.is_some());
+                assert_eq!(app.loading, Some("Reading local history…"));
+            })
+        });
+        if stage != ColdStage::History {
+            drop(held);
+            held = app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            });
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                let label = match stage {
+                    ColdStage::Changes => "Reading changed files…",
+                    _ => RESTORED_PREVIEW_LABEL,
+                };
+                assert_eq!(app.loading, Some(label), "{stage:?}");
+                assert_eq!(
+                    app.repository_tabs.restoring.is_some(),
+                    stage == ColdStage::Changes
+                );
+            });
+        }
+        let when = format!("{stage:?}{}", if close { ", closed" } else { "" });
+        let tabs = if close { 1 } else { 2 };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                if close {
+                    app.close_repository_tab(1, window, cx);
+                    first_tab(app, tabs, &when);
+                    return;
+                }
+                app.switch_repository_tab(0, window, cx);
+                first_tab(app, tabs, &when);
+                let left = &app.repository_tabs.tabs[1];
+                if stage == ColdStage::Comparison {
+                    assert!(
+                        left.warm
+                            .as_ref()
+                            .is_some_and(|warm| warm.document_restore.is_some()),
+                        "{when}: its comparison is read again on return"
+                    );
+                } else {
+                    assert!(left.warm.is_none(), "{when}: the left tab stays cold");
+                    assert_eq!(json(&left.saved), json(saved), "{when}: its bookmark");
+                }
+            })
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            first_tab(app, tabs, &format!("{when}, its read ended"));
+            assert_eq!(selected_oid(app), Some(first_oid.clone()), "{when}");
+        });
+        // Scrolled away from its selection, History reveals it as its
+        // viewport changes.
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            app.history_scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(point(px(0.), px(0.)))
+        });
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| assert!(!shows_selection(app), "{when}"));
+        height = if height == 680. { 600. } else { 680. };
+        cx.simulate_resize(size(px(1000.), px(height)));
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(shows_selection(app), "{when}: the selection is revealed")
+        });
+        // Refreshed, and with a commit selected, the first tab keeps
+        // its own.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            first_tab(app, tabs, &format!("{when}, refreshed"));
+            assert_eq!(selected_oid(app), Some(first_oid.clone()), "{when}");
+            assert!(app.content.is_none(), "{when}: no comparison is read");
+        });
+        for index in [58, 59] {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(index, window, cx)));
+            settle_tab_test(&app, cx).await;
+        }
+        app.read_with(cx, |app, _| {
+            first_tab(app, tabs, &format!("{when}, a commit selected"));
+            assert_eq!(selected_oid(app), Some(first_oid.clone()), "{when}");
+            assert!(!app.files.is_empty(), "{when}: its own files");
+        });
+        if close {
+            // The last tab closed mid-restore leaves no bookmark either.
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.repository_tabs.restoring = Some(app.tab_bookmark(cx));
+                    app.close_repository_tab(0, window, cx);
+                    assert!(app.repository_tabs.tabs.is_empty());
+                    assert!(app.repository_tabs.restoring.is_none(), "{when}");
+                })
+            });
+            break;
+        }
+        // Shown again, the second tab comes back as it was saved. Left
+        // warm while its comparison was read, it reads it once, under
+        // its own label (`resume_tab_documents`), before a returning
+        // tab's preview would be read again (`resume_tab_preview`).
+        let previews = app.read_with(cx, |app, _| app.worker.previews());
+        let comparison = stage == ColdStage::Comparison;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(1, window, cx);
+                if comparison {
+                    assert_eq!(app.loading, Some(RESTORED_PREVIEW_LABEL), "{when}");
+                    assert_eq!(app.worker.previews(), previews + 1, "{when}: one read");
+                }
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            if comparison {
+                assert_eq!(app.worker.previews(), previews + 1, "{when}: read once");
+            }
+            assert_eq!(app.repository_tabs.active, Some(1), "{when}");
+            assert_eq!(selected_oid(app), Some(second_oid.clone()), "{when}");
+            let file = app.selected_file.and_then(|index| app.files.get(index));
+            assert_eq!(
+                file.map(FileChange::path),
+                Some(Path::new("second.txt")),
+                "{when}: its file"
+            );
+            assert_eq!(
+                app.mode == WorkspaceMode::Compare,
+                saved.compare,
+                "{when}: its comparison"
+            );
+            if saved.compare {
+                assert!(app.content.is_some(), "{when}: its comparison shows");
+                assert_eq!(app.zoom, 2.5, "{when}: at its zoom");
+                assert!(app.text_mode == TextMode::Split, "{when}");
+            }
+            assert_eq!(
+                (app.settings.navigation_width, app.settings.inspector_width),
+                (310., 430.),
+                "{when}: its widths"
+            );
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: restored");
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+    }
+}
+
+/// A warm tab left while its comparison's preview is read reads it
+/// again as it is shown again: one read, of the same file, whose reply
+/// shows. Back still cancels such a read and stays in History when the
+/// reply would have landed. The switch cancelled the read, and the tab
+/// came back in Compare with its file selected, no content and nothing
+/// reading it.
+#[gpui::test]
+async fn a_tab_left_while_its_preview_is_read_reads_it_again(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    let second = tempfile::tempdir().unwrap();
+    let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+    std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+    crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+    crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let shown = |app: &GitTurtle| {
+        app.selected_file
+            .and_then(|index| app.files.get(index))
+            .cloned()
+    };
+    let hold = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        })
+    };
+    // The first tab's preview is read, held, as the tab is left.
+    let held = hold(cx);
+    let file = cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.select_file(0, window, cx);
+            assert_eq!(app.loading, Some(PREVIEW_LABEL));
+            let file = shown(app).expect("a selected file");
+            app.switch_repository_tab(1, window, cx);
+            file
+        })
+    });
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    for back in [false, true] {
+        let held = hold(cx);
+        let previews = app.read_with(cx, |app, _| app.worker.previews());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(0, window, cx);
+                assert!(app.mode == WorkspaceMode::Compare);
+                assert_eq!(shown(app).as_ref(), Some(&file), "its file stays selected");
+                assert_eq!(
+                    app.loading,
+                    Some(PREVIEW_LABEL),
+                    "its preview is read again"
+                );
+                assert_eq!(app.worker.previews(), previews + 1, "once");
+                if back {
+                    app.automatic.hold_quiet_reads(true);
+                    app.back_to_history(window, cx);
+                    assert_eq!(app.loading, None, "Back cancels the read");
+                }
+            })
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.worker.previews(),
+                previews + 1,
+                "nothing reads it twice"
+            );
+            if back {
+                assert!(
+                    app.mode == WorkspaceMode::History,
+                    "the reply opens nothing"
+                );
+                assert!(app.content.is_none());
+            } else {
+                assert!(app.mode == WorkspaceMode::Compare);
+                assert_eq!(shown(app).as_ref(), Some(&file));
+                assert!(app.content.is_some(), "its reply shows");
+            }
+        });
+        if !back {
+            // Left again while it is read, for Back on the return.
+            let held = hold(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.clear_preview();
+                    app.load_file(0, window, cx);
+                    assert_eq!(app.loading, Some(PREVIEW_LABEL));
+                    app.switch_repository_tab(1, window, cx);
+                })
+            });
+            drop(held);
+            settle_tab_test(&app, cx).await;
+        }
+    }
+}
+
+/// A warm tab left while its Quick Open working-tree source is read
+/// reads it again as it returns, as it was opened, by one tracked read
+/// and no comparison read: the file's working content shows. Read again
+/// as a comparison, the source asked for neither side's object, since
+/// its working side has none, and showed an empty file.
+#[gpui::test]
+async fn a_tab_left_while_its_source_is_read_reads_it_again(cx: &mut TestAppContext) {
+    use gitturtle_core::{HistoryCancellation, PathScope};
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    // The fixture's history is imported: its file is checked out and
+    // changed, for a working-tree source of its own.
+    let first_path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+    crate::tags::tests::git(&first_path, &["reset", "--quiet", "--hard"]);
+    std::fs::write(first_path.join("notes.txt"), "working notes\n").unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+    std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+    crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+    crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let hold = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        })
+    };
+    let reads = |app: &GitTurtle| (app.worker.previews(), app.worker.tracked_previews());
+    // The source is read, held, as the tab is left.
+    let held = hold(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let repo = app.repository.clone().expect("a repository");
+            let paths = repo
+                .search_tracked_paths(
+                    &PathScope::Worktree,
+                    "notes",
+                    &HistoryCancellation::default(),
+                )
+                .expect("tracked paths");
+            let entry = paths.entries.first().expect("the file").clone();
+            app.show_tracked_file(paths.scope, entry, window, cx);
+            assert_eq!(app.loading, Some("Reading tracked file…"));
+            app.switch_repository_tab(1, window, cx);
+        })
+    });
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    let held = hold(cx);
+    let (previews, tracked) = app.read_with(cx, |app, _| reads(app));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.switch_repository_tab(0, window, cx);
+            assert!(app.is_quick_source(), "the source stays shown");
+            assert_eq!(
+                app.loading,
+                Some("Reading tracked file…"),
+                "it is read again"
+            );
+            assert_eq!(reads(app), (previews, tracked + 1), "by its tracked read");
+        })
+    });
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(reads(app), (previews, tracked + 1), "once");
+        assert!(app.mode == WorkspaceMode::Compare && app.is_quick_source());
+        assert!(
+            matches!(
+                app.content.as_deref(),
+                Some(Content::Text { new, .. }) if new == "working notes\n"
+            ),
+            "its working content shows"
+        );
+    });
+}
+
+/// A cold tab's restore ends as a read the person asks for in the tab
+/// takes the place of its own, here Quick Open while its saved
+/// selection's changed files are read, or as its own read fails: left,
+/// the tab stays warm with what it shows, its Quick Open source and its
+/// selection, and comes back with them. Left cold all the same, as while
+/// its restore still waits for its own read, it dropped its source and
+/// came back restored from its bookmark, the restore having waited for a
+/// reply that never came.
+#[gpui::test]
+async fn a_tab_whose_restore_is_replaced_or_fails_is_left_warm(cx: &mut TestAppContext) {
+    use gitturtle_core::{HistoryCancellation, PathScope};
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    let second = tempfile::tempdir().unwrap();
+    let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+    std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+    crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+    crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let oid = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let saved = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+    assert_eq!(saved.selected_oid.as_deref(), Some(oid.as_str()));
+    let hold = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        })
+    };
+    let selected_oid = |app: &GitTurtle| {
+        app.selected_commit
+            .and_then(|index| app.commits.get(index))
+            .map(|commit| commit.oid.clone())
+    };
+    let shows_source = |app: &GitTurtle| {
+        app.is_quick_source()
+            && matches!(
+                app.content.as_deref(),
+                Some(Content::Text { new, .. }) if new == "second notes\n"
+            )
+    };
+    for failed in [false, true] {
+        let when = if failed { "failed" } else { "Quick Open" };
+        // The second tab is cold, as a launch leaves it, and restored,
+        // its saved selection's changed files read, held.
+        app.update(cx, |app, _| {
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = saved.clone();
+        });
+        let held = hold(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        drop(held);
+        let held = hold(cx);
+        cx.executor().run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.loading, Some("Reading changed files…"), "{when}");
+            assert!(app.repository_tabs.restoring.is_some(), "{when}");
+        });
+        if failed {
+            // Its commit's tree is gone, so the read fails.
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "HEAD^{tree}"])
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            let tree = String::from_utf8(output.stdout).unwrap();
+            let tree = tree.trim();
+            std::fs::remove_file(
+                repo.path()
+                    .join(".git/objects")
+                    .join(&tree[..2])
+                    .join(&tree[2..]),
+            )
+            .unwrap();
+            drop(held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| assert!(app.error.is_some(), "{when}"));
+        } else {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let repo = app.repository.clone().expect("a repository");
+                    let paths = repo
+                        .search_tracked_paths(
+                            &PathScope::Worktree,
+                            "second",
+                            &HistoryCancellation::default(),
+                        )
+                        .expect("tracked paths");
+                    let entry = paths.entries.first().expect("the file").clone();
+                    app.show_tracked_file(paths.scope, entry, window, cx);
+                })
+            });
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| assert!(shows_source(app), "{when}"));
+        }
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.repository_tabs.restoring.is_none(),
+                "{when}: its restore ends"
+            );
+        });
+        // Left, it stays warm, and comes back as it was left.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(0, window, cx);
+                assert!(
+                    app.repository_tabs.tabs[1].warm.is_some(),
+                    "{when}: left warm"
+                );
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{when}");
+            if failed {
+                assert!(app.mode == WorkspaceMode::History, "{when}");
+                assert_eq!(
+                    selected_oid(app),
+                    Some(oid.clone()),
+                    "{when}: its selection"
+                );
+            } else {
+                assert!(shows_source(app), "{when}: its source");
+            }
+        });
+        if !failed {
+            // Its selection waits under the source.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert!(app.mode == WorkspaceMode::History, "{when}");
+                assert_eq!(
+                    selected_oid(app),
+                    Some(oid.clone()),
+                    "{when}: its selection"
+                );
+            });
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+    }
+}
+
+/// A cold tab restored onto a merge's second parent reads the first
+/// parent's changes and then, in their place, the saved parent's: that
+/// read is the restore's own, so the restore goes on and lands its saved
+/// parent and file. Taken for a read the person asked for, it ended the
+/// restore.
+#[gpui::test]
+async fn a_restore_onto_a_merge_parent_keeps_its_bookmark(cx: &mut TestAppContext) {
+    let script = "commit refs/heads/main\nmark :1\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 4\nbase\nM 100644 inline base.txt\ndata 5\nbase\n\ncommit refs/heads/side\nmark :2\ncommitter Fixture <fixture@example.invalid> 1700000001 +0000\ndata 4\nside\nfrom :1\nM 100644 inline side.txt\ndata 5\nside\n\ncommit refs/heads/main\nmark :3\ncommitter Fixture <fixture@example.invalid> 1700000002 +0000\ndata 5\nmerge\nfrom :1\nmerge :2\nM 100644 inline main.txt\ndata 5\nmain\n\ndone\n";
+    let (_first, app, cx) = crate::views::tests::history_window_from(cx, script).await;
+    let second = tempfile::tempdir().unwrap();
+    let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+    std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+    crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+    crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    // The merge is selected against its second parent, its second file
+    // selected.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.change_parent(1, window, cx)));
+    settle_tab_test(&app, cx).await;
+    app.update(cx, |app, _| app.selected_file = Some(1));
+    let shown = |app: &GitTurtle| {
+        (
+            app.parent,
+            app.files
+                .iter()
+                .map(|file| file.path().to_owned())
+                .collect::<Vec<_>>(),
+            app.selected_file,
+        )
+    };
+    let left = app.read_with(cx, |app, _| {
+        assert_eq!(app.commits[0].parents.len(), 2, "a merge");
+        shown(app)
+    });
+    assert_eq!(
+        left,
+        (
+            1,
+            vec![PathBuf::from("main.txt"), PathBuf::from("side.txt")],
+            Some(1)
+        )
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    settle_tab_test(&app, cx).await;
+    // Cold, it is restored, its reads held one at a time.
+    app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+    let hold = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        })
+    };
+    let held = hold(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    drop(held);
+    let held = hold(cx);
+    cx.executor().run_until_parked();
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.loading, Some("Reading comparison…"));
+        assert!(
+            app.repository_tabs.restoring.is_some(),
+            "its own read goes on"
+        );
+    });
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert!(app.repository_tabs.restoring.is_none(), "restored");
+        assert_eq!(shown(app), left, "its saved parent's changes and file");
+    });
+}
+
+/// A second tab whose last commit changes `notes.txt` and `report.pdf`
+/// from the commit before, opened beside the first and shown.
+async fn open_compared_tab(
+    app: &Entity<GitTurtle>,
+    root: &Path,
+    cx: &mut VisualTestContext,
+) -> GitRepository {
+    let repo = crate::views::tests::fixture_repository(root.join("second"));
+    for version in ["first", "second"] {
+        std::fs::write(repo.path().join("notes.txt"), format!("{version} notes\n")).unwrap();
+        std::fs::write(
+            repo.path().join("report.pdf"),
+            format!("%PDF-1.4\n% {version}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"),
+        )
+        .unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "notes.txt", "report.pdf"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", version]);
+    }
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(app, cx).await;
+    repo
+}
+
+/// Saves the shown second tab on `name` in its commit `commit`, in
+/// Compare or selected in History, shows the first tab and leaves the
+/// second cold with that bookmark, as a launch leaves it.
+async fn leave_tab_cold_on(
+    app: &Entity<GitTurtle>,
+    commit: usize,
+    name: &str,
+    compare: bool,
+    cx: &mut VisualTestContext,
+) {
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.back_to_history(window, cx);
+            app.select_commit(commit, window, cx);
+        })
+    });
+    settle_tab_test(app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let index = app
+                .files
+                .iter()
+                .position(|file| file.path() == Path::new(name))
+                .expect("the commit changes it");
+            if compare {
+                app.select_file(index, window, cx);
+            } else {
+                app.selected_file = Some(index);
+            }
+        })
+    });
+    settle_tab_test(app, cx).await;
+    let saved = app.read_with(cx, |app, cx| app.tab_bookmark(cx));
+    assert_eq!(
+        saved.comparison.is_some(),
+        compare,
+        "{name}: its comparison"
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(app, cx).await;
+    draw_tab_frames(cx);
+    app.update(cx, |app, _| {
+        let tab = &mut app.repository_tabs.tabs[1];
+        tab.warm = None;
+        tab.saved = saved;
+    });
+}
+
+/// The control holding focus, where the last frame drew it inside the
+/// window's root, which itself draws no focus.
+fn drawn_focus(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<FocusHandle> {
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        window
+            .focused(cx)
+            .filter(|focus| *focus != app.app_focus && app.app_focus.contains(focus, window))
+    })
+}
+
+/// Holds the repository reader once it is idle, so its next read waits.
+fn hold_reads(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> crate::worker::ReaderHeld {
+    app.read_with(cx, |app, _| {
+        app.worker.wait_idle();
+        app.worker.hold()
+    })
+}
+
+/// A cold tab whose restore lands in Compare, on a PDF or on a text
+/// diff, focuses its changed-file list as choosing the file does, and
+/// one that lands in History focuses History's commit list as History's
+/// entry does. Every frame of the restore draws the control holding
+/// focus, and a key then acts: Escape goes back to History, Up selects
+/// the commit above. Showing the tab put focus on History's list, which
+/// the restored comparison does not draw, so keys reached none of the
+/// window's shortcuts until a click on a file row.
+#[gpui::test]
+async fn a_cold_restore_focuses_what_its_page_draws(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+    for (commit, name, compare) in [
+        (0, "report.pdf", true),
+        (0, "notes.txt", true),
+        (1, "notes.txt", false),
+    ] {
+        let when = format!("{name} in {}", if compare { "Compare" } else { "History" });
+        leave_tab_cold_on(&app, commit, name, compare, cx).await;
+        // Shown, it reads its snapshot with History's list focused.
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.loading, Some("Reading local history…"), "{when}");
+        });
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(list.clone()),
+            "{when}: its snapshot"
+        );
+        // Its next stage: the comparison, or the saved commit's changes.
+        drop(held);
+        let held = hold_reads(&app, cx);
+        cx.executor().run_until_parked();
+        draw_tab_frames(cx);
+        let stage = if compare {
+            RESTORED_PREVIEW_LABEL
+        } else {
+            "Reading changed files…"
+        };
+        let shown = if compare { &files } else { &list };
+        app.read_with(cx, |app, _| assert_eq!(app.loading, Some(stage), "{when}"));
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(shown.clone()),
+            "{when}: {stage}"
+        );
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: restored");
+            assert_eq!(app.mode == WorkspaceMode::Compare, compare, "{when}");
+            let file = app.selected_file.and_then(|index| app.files.get(index));
+            assert_eq!(file.map(FileChange::path), Some(Path::new(name)), "{when}");
+            assert!(!compare || app.content.is_some(), "{when}: its comparison");
+        });
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(shown.clone()),
+            "{when}: restored"
+        );
+        if compare {
+            cx.simulate_keystrokes("escape");
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.mode == WorkspaceMode::History,
+                    "{when}: Escape goes back"
+                );
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: back");
+        } else {
+            cx.simulate_keystrokes("up");
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.selected_commit, Some(0), "{when}: Up selects");
+            });
+        }
+    }
+}
+
+/// Focus the person moves while a cold tab is restored is theirs as the
+/// restore lands in Compare: a control Compare draws too, the window's
+/// first control, in the tab strip every repository page draws, reached
+/// by the keyboard while the snapshot is read, keeps it; one Compare
+/// takes away, the navigation's filter, gives way to the changed-file
+/// list as the frame that draws Compare ends. Settings opened over the
+/// restore keeps its focus; Back returns to the changed-file list, not
+/// to History's list where showing the tab had put focus, nor to the
+/// navigation's filter, which Settings opened from it returned to.
+/// History's search shortcut pressed meanwhile opens History's search
+/// as the restore lands instead
+/// (`a_search_asked_for_while_a_tab_loads_opens_as_it_lands`).
+#[gpui::test]
+async fn a_cold_restore_keeps_focus_the_person_moved(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, files, navigation) = app.read_with(cx, |app, cx| {
+        (
+            app.focus.clone(),
+            app.file_focus.clone(),
+            app.nav_search.read(cx).focus_handle(cx),
+        )
+    });
+    for moved in [
+        "tab strip",
+        "navigation",
+        "settings",
+        "navigation, then settings",
+    ] {
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        // The person moves focus while the snapshot is read.
+        match moved {
+            // Next Control from nothing focused: the window's first.
+            "tab strip" => cx.update(|window, cx| {
+                window.blur(cx);
+                window.focus_next(cx);
+            }),
+            "navigation" => cx.update(|window, cx| window.focus(&navigation, cx)),
+            "settings" => {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)))
+            }
+            // Settings opened from the navigation's filter returns to
+            // that filter, which Compare takes away.
+            _ => {
+                cx.update(|window, cx| window.focus(&navigation, cx));
+                draw_tab_frames(cx);
+                assert_eq!(drawn_focus(&app, cx), Some(navigation.clone()));
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+                app.read_with(cx, |app, _| {
+                    assert_eq!(app.page_return_focus, Some(navigation.clone()), "{moved}");
+                });
+            }
+        }
+        draw_tab_frames(cx);
+        let before = cx.update(|window, cx| window.focused(cx));
+        match moved {
+            "tab strip" => {
+                let kept = before.clone().expect("the window's first control");
+                assert!(kept != list && kept != files, "{moved}: neither list");
+                assert_eq!(drawn_focus(&app, cx), Some(kept), "{moved}: drawn");
+            }
+            // Drawn where History shows it, so only the frame that
+            // draws Compare takes it away.
+            "navigation" => assert_eq!(drawn_focus(&app, cx), Some(navigation.clone())),
+            _ => assert!(before.is_some() && before != Some(files.clone()), "{moved}"),
+        }
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{moved}: restored");
+            assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+        });
+        let after = cx.update(|window, cx| window.focused(cx));
+        match moved {
+            "tab strip" => {
+                assert_eq!(after, before, "the person's control keeps focus");
+                assert_eq!(drawn_focus(&app, cx), before, "drawn in Compare");
+            }
+            "navigation" => {
+                assert_eq!(
+                    drawn_focus(&app, cx),
+                    Some(files.clone()),
+                    "{moved}: not stranded"
+                );
+            }
+            _ => {
+                assert_eq!(after, before, "{moved}: the page keeps its focus");
+                cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+                draw_tab_frames(cx);
+                assert_eq!(
+                    drawn_focus(&app, cx),
+                    Some(files.clone()),
+                    "{moved}: back from the page"
+                );
+            }
+        }
+    }
+}
+
+/// History's search, asked for by its shortcut while a tab's snapshot
+/// is read, opens in that tab once it can show it, never Projects: as a
+/// cold tab's restore lands in Compare, which the search leaves for
+/// History, as one that stays in History lands its snapshot, and as a
+/// new tab's snapshot lands. Focus the person moves meanwhile keeps its
+/// place, and the search does not open. With no repository read yet,
+/// History, which the shortcut showed, was Projects, whose own control
+/// took focus, so the key acted on another page.
+#[gpui::test]
+async fn a_search_asked_for_while_a_tab_loads_opens_as_it_lands(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, files, search, navigation) = app.read_with(cx, |app, cx| {
+        (
+            app.focus.clone(),
+            app.file_focus.clone(),
+            app.search.read(cx).focus_handle(cx),
+            app.nav_search.read(cx).focus_handle(cx),
+        )
+    });
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+    for (commit, compare, moved) in [(0, true, false), (1, false, false), (0, true, true)] {
+        let when = format!(
+            "{} restore{}",
+            if compare { "Compare" } else { "History" },
+            if moved { ", focus moved" } else { "" }
+        );
+        leave_tab_cold_on(&app, commit, "notes.txt", compare, cx).await;
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}");
+        cx.simulate_keystrokes(find);
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Repository, "{when}: the tab stays");
+            assert!(app.repository.is_none(), "{when}: still read");
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+        if moved {
+            cx.update(|window, cx| window.focus(&navigation, cx));
+            draw_tab_frames(cx);
+        }
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.repository_tabs.restoring.is_none()),
+            "{when}: restored"
+        );
+        if moved {
+            assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+            assert_eq!(drawn_focus(&app, cx), Some(files.clone()), "{when}");
+        } else {
+            assert!(
+                app.read_with(cx, |app, _| app.page == AppPage::Repository
+                    && app.mode == WorkspaceMode::History),
+                "{when}: History shows"
+            );
+            assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+        }
+    }
+
+    // A new tab, opened from the shown one.
+    let third = crate::views::tests::fixture_repository(root.path().join("third"));
+    std::fs::write(third.path().join("notes.txt"), "third\n").unwrap();
+    crate::tags::tests::git(third.path(), &["add", "notes.txt"]);
+    crate::tags::tests::git(third.path(), &["commit", "--quiet", "-m", "third"]);
+    let held = hold_reads(&app, cx);
+    let path = third.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    draw_tab_frames(cx);
+    assert_eq!(
+        app.read_with(cx, |app, _| app.loading),
+        Some("Reading local history…"),
+        "the new tab reads its snapshot"
+    );
+    let before = focused(cx);
+    cx.simulate_keystrokes(find);
+    draw_tab_frames(cx);
+    assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+    assert_eq!(focused(cx), before, "focus stays where the key found it");
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.path.as_deref(), Some(third.path()), "the new tab");
+        assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::History);
+    });
+    assert_eq!(drawn_focus(&app, cx), Some(search), "History's search");
+}
+
+/// History's search, asked for while a cold tab's snapshot is read,
+/// opens where a restore bound for Compare ends in History instead: a
+/// bookmark in Compare, as an older session saved it, whose file the
+/// saved commit no longer changes or that chose none
+/// (`restore_tab_file`), and one whose changed files' read fails, which
+/// ends the restore (`request`). Held for a Compare that never came,
+/// the search was lost, and focus stayed on History's list.
+#[gpui::test]
+async fn a_search_asked_for_while_a_compare_restore_ends_in_history_opens_there(
+    cx: &mut TestAppContext,
+) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, search) = app.read_with(cx, |app, cx| {
+        (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+    });
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    // The failed read comes last: it takes the commit's tree away.
+    for (when, file) in [
+        ("its file gone", Some("gone.txt")),
+        ("no file chosen", None),
+        ("its read failed", Some("notes.txt")),
+    ] {
+        let failed = when == "its read failed";
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        app.update(cx, |app, _| {
+            let saved = &mut app.repository_tabs.tabs[1].saved;
+            saved.comparison = None;
+            saved.compare = true;
+            saved.selected_file = file.map(|name| SavedPath::new(Path::new(name)));
+        });
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        cx.simulate_keystrokes(find);
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository.is_none(), "{when}: still read");
+            assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+        drop(held);
+        if failed {
+            // The snapshot lands, and the saved commit's changed files
+            // are read without its tree.
+            let held = hold_reads(&app, cx);
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.loading, Some("Reading changed files…"), "{when}");
+                assert!(app.repository_tabs.restoring.is_some(), "{when}");
+            });
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "HEAD^{tree}"])
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            let tree = String::from_utf8(output.stdout).unwrap();
+            let tree = tree.trim();
+            std::fs::remove_file(
+                repo.path()
+                    .join(".git/objects")
+                    .join(&tree[..2])
+                    .join(&tree[2..]),
+            )
+            .unwrap();
+            drop(held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| assert!(app.error.is_some(), "{when}"));
+        }
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+            assert!(
+                app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                "{when}: History shows"
+            );
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+    }
+}
+
+/// History's search, asked for while a cold tab's snapshot is read,
+/// opens where the restore's search for its saved query ends with no
+/// page, failed or dropped: that ends the restore in History, short of
+/// the Compare an older session's bookmark was bound for
+/// (`continue_history_search`). Held for a Compare that never came, the
+/// search was lost, and focus stayed on History's list.
+#[gpui::test]
+async fn a_search_asked_for_while_a_restores_search_fails_opens_in_history(
+    cx: &mut TestAppContext,
+) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, search) = app.read_with(cx, |app, cx| {
+        (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+    });
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+    let bookmark = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+    for (round, when) in ["its search failed", "its search dropped"]
+        .into_iter()
+        .enumerate()
+    {
+        let failed = when == "its search failed";
+        if round > 0 {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+        }
+        app.update(cx, |app, _| {
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = Bookmark {
+                comparison: None,
+                compare: true,
+                query: "second".into(),
+                // A commit the repository no longer has, the saved
+                // search's scope, fails its search.
+                pinned: failed.then(|| SavedHistoryScope::Commit("1".repeat(40))),
+                offset: 0,
+                ..bookmark.clone()
+            };
+        });
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        cx.simulate_keystrokes(find);
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository.is_none(), "{when}: still read");
+            assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+        // The snapshot lands, and the saved query is searched once its
+        // typing pause is over, its page read while the reader is held.
+        drop(held);
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert!(app.repository.is_some(), "{when}: landed");
+            assert!(app.repository_tabs.restoring.is_some(), "{when}");
+            assert!(app.history_search_pending(), "{when}: searched");
+        });
+        let held = hold_reads(&app, cx);
+        cx.executor()
+            .advance_clock(crate::history_search::SEARCH_DEBOUNCE);
+        cx.executor().run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.loading, Some("Searching repository history…"), "{when}");
+            assert!(app.repository_tabs.restoring.is_some(), "{when}");
+        });
+        if !failed {
+            // Dropped unanswered, as a newer read drops one waiting.
+            app.read_with(cx, |app, _| app.worker.cancel());
+        }
+        drop(held);
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert!(!app.history_search_pending(), "{when}: answered");
+            assert_eq!(
+                app.history_search_empty().map(|(title, _)| title),
+                Some(if failed {
+                    "Search could not complete"
+                } else {
+                    "Search paused"
+                }),
+                "{when}"
+            );
+        });
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+            assert!(
+                app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                "{when}: History shows"
+            );
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+    }
+}
+
+/// History's search, asked for while a cold tab's snapshot is read,
+/// opens where a restore bound for Compare, as an older session's
+/// bookmark with no captured comparison is, finds no saved commit to
+/// select in its saved query's results or its saved page, and no saved
+/// selection: the restore ends there in History
+/// (`restore_tab_selection`). Held for a Compare that never came, the
+/// search was lost, and focus stayed on History's list.
+#[gpui::test]
+async fn a_search_asked_for_while_a_restore_finds_no_commit_opens_in_history(
+    cx: &mut TestAppContext,
+) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, search) = app.read_with(cx, |app, cx| {
+        (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+    });
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+    let bookmark = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+    let tip = bookmark.selected_oid.clone().expect("the tip is selected");
+    for (round, when) in ["its query's results", "its saved page"]
+        .into_iter()
+        .enumerate()
+    {
+        let searched = round == 0;
+        if round > 0 {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+        }
+        app.update(cx, |app, _| {
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = Bookmark {
+                comparison: None,
+                compare: true,
+                selection: None,
+                // The tip, which neither the search for the older
+                // commit nor the page past the tip lists.
+                selected_oid: Some(tip.clone()),
+                query: if searched {
+                    "first".into()
+                } else {
+                    String::new()
+                },
+                pinned: (!searched).then(|| SavedHistoryScope::Commit(tip.clone())),
+                offset: usize::from(!searched),
+                ..bookmark.clone()
+            };
+        });
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        cx.simulate_keystrokes(find);
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository.is_none(), "{when}: still read");
+            assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+        drop(held);
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+        assert!(
+            app.read_with(cx, |app, _| app.repository.is_some()),
+            "{when}: landed"
+        );
+        if searched {
+            // The saved query is searched once its typing pause is over.
+            assert!(
+                app.read_with(cx, |app, _| app.repository_tabs.restoring.is_some()),
+                "{when}: restoring"
+            );
+            cx.executor()
+                .advance_clock(crate::history_search::SEARCH_DEBOUNCE);
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+            assert!(!app.commits.is_empty(), "{when}: its rows are listed");
+            assert_eq!(app.selected_commit, None, "{when}: no saved commit");
+            assert!(
+                app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                "{when}: History shows"
+            );
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+    }
+}
+
+/// A read the person starts while a cold tab's restore bound for
+/// Compare still reads, Down in History's list, ends the restore and
+/// drops History's search asked for while the snapshot was read
+/// (`end_replaced_restore`): the later action wins, and focus stays on
+/// the list, on the commit Down chose. Held, the search waited for a
+/// Compare the restore no longer reached, to open over the person's
+/// choice at some later landing.
+#[gpui::test]
+async fn a_read_the_person_starts_during_a_restore_drops_the_held_search(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let list = app.read_with(cx, |app, _| app.focus.clone());
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+    app.update(cx, |app, _| {
+        let saved = &mut app.repository_tabs.tabs[1].saved;
+        saved.comparison = None;
+        assert!(saved.compare, "a bookmark in Compare");
+    });
+    let held = hold_reads(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    draw_tab_frames(cx);
+    cx.simulate_keystrokes(find);
+    draw_tab_frames(cx);
+    assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "kept");
+    drop(held);
+    // The snapshot lands, and the saved commit's changed files are read
+    // while the reader is held.
+    let held = hold_reads(&app, cx);
+    cx.executor().run_until_parked();
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.loading, Some("Reading changed files…"));
+        assert!(app.repository_tabs.restore_lands_in_compare(), "restoring");
+        assert!(app.repository_tabs.pending_search.is_some(), "held");
+        assert_eq!(app.selected_commit, Some(0), "the saved commit");
+    });
+    assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "on the list");
+    cx.simulate_keystrokes("down");
+    app.read_with(cx, |app, _| {
+        assert!(app.repository_tabs.restoring.is_none(), "Down ends it");
+        assert!(app.repository_tabs.pending_search.is_none(), "and drops it");
+    });
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.selected_commit, Some(1), "the commit Down chose");
+        assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::History);
+    });
+    assert_eq!(drawn_focus(&app, cx), Some(list), "focus stays on the list");
+}
+
+/// A cold tab's restore whose saved page lies past the end, as after a
+/// fetch at a shallower depth cut its saved scope's history to the
+/// snapshot's own rows, shows the newest page in its place
+/// (`receive_history_page`), and with no saved commit for that page to
+/// list ends in History there, where History's search asked for while
+/// the snapshot was read opens. So does one whose last page, asked for
+/// in that page's place, a write starting meanwhile refuses, one whose
+/// page is refused while a write runs, one whose saved query, past
+/// 4 KiB, the search refuses (`finish_tab_snapshot`),
+/// and one whose saved query a write running as its typing pause ends
+/// keeps from being searched (`continue_history_search`). Left set with
+/// no read under way, the restore never ended, and the search it held
+/// never opened.
+#[gpui::test]
+async fn a_restore_with_no_page_to_read_ends_and_opens_the_held_search(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, search) = app.read_with(cx, |app, cx| {
+        (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+    });
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+    let bookmark = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+    let tip = bookmark.selected_oid.clone().expect("the tip is selected");
+    for (round, when) in [
+        "its page past the end",
+        "its page refused",
+        "its query past 4 KiB",
+        "its search refused while a write runs",
+        "its last page refused",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = round == 1;
+        let long_query = round == 2;
+        let search_refused = round == 3;
+        let last_refused = round == 4;
+        if round > 0 {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+        }
+        app.update(cx, |app, _| {
+            // The snapshot reads the tab's two commits as a full page,
+            // so the next one starts at the saved offset.
+            app.limit = 2;
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = if long_query || search_refused {
+                Bookmark {
+                    comparison: None,
+                    compare: true,
+                    query: if long_query {
+                        "x".repeat(4097)
+                    } else {
+                        "first".into()
+                    },
+                    pinned: None,
+                    offset: 0,
+                    ..bookmark.clone()
+                }
+            } else {
+                Bookmark {
+                    comparison: None,
+                    compare: true,
+                    // No saved commit for the page shown to list.
+                    selection: None,
+                    selected_oid: None,
+                    pinned: Some(SavedHistoryScope::Commit(tip.clone())),
+                    offset: 2,
+                    ..bookmark.clone()
+                }
+            };
+        });
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        cx.simulate_keystrokes(find);
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository.is_none(), "{when}: still read");
+            assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+        if refused {
+            // A write runs as the snapshot lands.
+            app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+        }
+        drop(held);
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        // The snapshot lands, and its saved page waits for the reader.
+        let page_held = last_refused.then(|| app.read_with(cx, |app, _| app.worker.hold()));
+        cx.executor().run_until_parked();
+        if let Some(page_held) = page_held {
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_some(), "{when}: restoring");
+                assert_eq!(app.loading, Some("Reading older history…"), "{when}");
+            });
+            // A write starts before the empty page at the end lands, and
+            // refuses the last page the window asks for in its place:
+            // the restore ends there with the snapshot's rows.
+            app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+            drop(page_held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert_eq!(app.loading, None, "{when}: nothing read");
+                assert_eq!(
+                    (app.history_paging.offset, app.visible.len()),
+                    (0, 2),
+                    "{when}: the snapshot's rows"
+                );
+            });
+            app.update(cx, |app, _| app.operation_busy = None);
+        }
+        if refused {
+            app.update(cx, |app, _| app.operation_busy = None);
+        } else if long_query {
+            assert_eq!(
+                app.read_with(cx, |app, _| app
+                    .history_search_empty()
+                    .map(|(title, _)| title)),
+                Some("Search could not complete"),
+                "{when}: refused"
+            );
+        } else if search_refused {
+            // The saved query waits out its typing pause, and a write
+            // runs as it ends.
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_some(), "{when}: restoring");
+                assert!(app.history_search_pending(), "{when}: its pause");
+            });
+            app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+            cx.executor()
+                .advance_clock(crate::history_search::SEARCH_DEBOUNCE);
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert!(!app.history_search_pending(), "{when}: not searched");
+                assert_eq!(app.loading, None, "{when}: nothing read");
+            });
+            app.update(cx, |app, _| app.operation_busy = None);
+        } else {
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            // The newest page, which holds the whole history, shows in
+            // the saved page's place.
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.history_paging.offset, 0, "{when}: the newest page");
+                assert_eq!(app.visible.len(), 2, "{when}: its rows");
+            });
+        }
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository.is_some(), "{when}: landed");
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+            assert!(
+                app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                "{when}: History shows"
+            );
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+    }
+}
+
+/// A cold tab's restore whose saved page is not read, refused as a write
+/// runs when its snapshot lands or failed as its saved scope's commit is
+/// gone, leaves History's paging on the history the snapshot shows
+/// (`request_history_page_in`), and Older then continues that history.
+/// The saved scope, pinned as the page was asked for, stayed under the
+/// snapshot's rows: Older read that scope's next page there, skipping
+/// the commit between the two tips, or failed on every press where the
+/// saved scope's commit was gone. Read, the page replaces the snapshot's
+/// rows whatever its offset, since it lists another scope.
+#[gpui::test]
+async fn a_restores_unread_page_leaves_paging_on_the_shown_history(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = tempfile::tempdir().unwrap();
+    let repo = linear_history_fixture(root.path().join("history"), 3);
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let listed = |app: &GitTurtle| {
+        app.commits
+            .iter()
+            .map(|commit| commit.oid.clone())
+            .collect::<Vec<_>>()
+    };
+    let (history, bookmark) = app.read_with(cx, |app, cx| (listed(app), app.tab_bookmark(cx)));
+    assert_eq!(history.len(), 3, "the tab lists its history");
+    for when in ["its page refused", "its page failed", "its page landed"] {
+        let refused = when == "its page refused";
+        let landed = when == "its page landed";
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        if landed {
+            // A quiet read after the landing would replace rows at the
+            // top of History with the snapshot's own.
+            crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        }
+        app.update(cx, |app, _| {
+            // The snapshot reads one row, which leaves Older a page.
+            app.limit = 1;
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = Bookmark {
+                comparison: None,
+                compare: false,
+                selection: None,
+                selected_oid: None,
+                selected_file: None,
+                query: String::new(),
+                // A page into the history saved while the middle commit
+                // was the tip, or of a commit the repository lost since.
+                pinned: Some(SavedHistoryScope::Commit(if refused || landed {
+                    history[1].clone()
+                } else {
+                    "1".repeat(40)
+                })),
+                offset: 1,
+                ..bookmark.clone()
+            };
+        });
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        if refused {
+            // A write runs as the snapshot lands.
+            app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+        }
+        drop(held);
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+        if refused {
+            app.update(cx, |app, _| app.operation_busy = None);
+        }
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        if landed {
+            // The saved scope's page, offset 1 of the middle commit's
+            // history, replaces the snapshot's row, whose offset it
+            // would continue: appended, it listed the tip and then the
+            // oldest commit, the middle one skipped at the seam.
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert_eq!(app.error, None, "{when}: read");
+                assert_eq!(listed(app), history[2..], "{when}: its page alone");
+                assert_eq!(app.history_paging.offset, 1, "{when}: at its offset");
+                // The window takes the page's scope with its rows, and
+                // the page's end: it ends that history, so Older stops.
+                assert_eq!(
+                    app.history_paging.scope,
+                    Some(gitturtle_core::HistoryScope::FromCommit(history[1].clone())),
+                    "{when}: in the saved scope"
+                );
+                assert_eq!(app.history_paging.next_offset, None, "{when}: at its end");
+            });
+            continue;
+        }
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+            assert_eq!(listed(app), history[..1], "{when}: the snapshot's row");
+            assert_eq!(app.history_paging.next_offset, Some(1), "{when}");
+        });
+        let older = cx.debug_bounds("load-more").expect("Older is drawn");
+        cx.simulate_click(older.center(), Modifiers::default());
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.error, None, "{when}: Older read");
+            assert_eq!(listed(app), history, "{when}: Older continues it");
+        });
+    }
+}
+
+/// A cold tab's restore whose saved page lies at or past the end of its
+/// saved scope's history, as after a fetch at a shallower depth, shows
+/// the last page's worth of rows up to that end, in that
+/// scope, and selects the saved commit where that page lists it
+/// (`receive_history_page`). The empty page at the end emptied History's
+/// window, and a page past it failed the restore's read, leaving the
+/// snapshot's rows under an error.
+#[gpui::test]
+async fn a_restores_page_past_the_end_shows_the_last_page(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    let root = tempfile::tempdir().unwrap();
+    let page = history_paging::PAGE_SIZE;
+    let total = page + 20;
+    let repo = linear_history_fixture(root.path().join("history"), total as u32);
+    let path = repo.path().to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+    settle_tab_test(&app, cx).await;
+    let listed = |app: &GitTurtle| {
+        app.commits
+            .iter()
+            .map(|commit| commit.oid.clone())
+            .collect::<Vec<_>>()
+    };
+    let (tip, bookmark) = app.read_with(cx, |app, cx| {
+        assert_eq!(app.history_paging.next_offset, Some(page), "a page listed");
+        (app.commits[0].oid.clone(), app.tab_bookmark(cx))
+    });
+    // The whole history, newest first.
+    let history = repo
+        .history(total + 1)
+        .unwrap()
+        .into_iter()
+        .map(|commit| commit.oid)
+        .collect::<Vec<_>>();
+    assert_eq!(history.len(), total, "the fixture's history");
+    let oldest = history[total - 1].clone();
+    for (offset, when) in [(total, "at the end"), (total + page, "past the end")] {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.update(cx, |app, _| {
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = Bookmark {
+                comparison: None,
+                compare: false,
+                selection: None,
+                selected_oid: Some(oldest.clone()),
+                selected_file: None,
+                query: String::new(),
+                pinned: Some(SavedHistoryScope::Commit(tip.clone())),
+                offset,
+                ..bookmark.clone()
+            };
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+            assert_eq!(app.error, None, "{when}: read");
+            // A full page, whose end Older's empty read then confirms.
+            assert_eq!(
+                (app.history_paging.offset, app.history_paging.next_offset),
+                (total - page, Some(total)),
+                "{when}: the last page"
+            );
+            assert_eq!(listed(app), history[total - page..], "{when}: its rows");
+            assert_eq!(app.visible.len(), page, "{when}: listed");
+            assert_eq!(
+                app.selected_commit
+                    .map(|index| app.commits[index].oid.clone()),
+                Some(oldest.clone()),
+                "{when}: the saved commit"
+            );
+        });
+    }
+}
+
+/// Another warm tab shown from Settings forgets the control Back would
+/// have returned focus to in the tab Settings was opened from, as every
+/// way out of Settings to a page that places focus itself does
+/// (`forget_page_return`): the tab gives focus back to its own control.
+/// The return once stayed set, the left tab's control, for no Back.
+#[gpui::test]
+async fn a_warm_tab_shown_from_settings_forgets_backs_return(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let list = app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.active, Some(1));
+        assert!(
+            app.repository_tabs.tabs[0].warm.is_some(),
+            "the first is warm"
+        );
+        app.focus.clone()
+    });
+    cx.update(|window, cx| window.focus(&list, cx));
+    draw_tab_frames(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert!(app.page == AppPage::Settings, "Settings shows");
+        assert_eq!(app.page_return_focus, Some(list.clone()), "Back's return");
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.repository_tabs.active, Some(0), "the first tab shows");
+        assert!(app.page == AppPage::Repository, "on the repository page");
+        assert!(app.page_return_focus.is_none(), "forgotten");
+    });
+}
+
+/// A comparison whose preview landed while Settings showed, its tab then
+/// left from Settings and shown again, draws its text in the frame that
+/// draws the tab, as Back builds it (`resume_repository_page`): built only
+/// by Back, the tab came back reading "Loading text…" until the file's
+/// next read.
+#[gpui::test]
+async fn a_preview_landed_under_settings_draws_as_its_tab_returns(cx: &mut TestAppContext) {
+    use crate::views::tests::{draw, fixture_repository, history_window, settle};
+    let (fixture, app, cx) = history_window(cx).await;
+    let other = fixture_repository(fixture.path().join("other"));
+    let held = app.read_with(cx, |app, _| app.worker.hold());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    draw(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    draw(cx);
+    drop(held);
+    app.read_with(cx, |app, _| app.worker.wait_idle());
+    settle(&app, cx).await;
+    draw(cx);
+    app.read_with(cx, |app, _| {
+        assert!(
+            app.page == AppPage::Settings
+                && app.content.is_some()
+                && app.text_mode == crate::TextMode::Unified,
+            "the preview lands while Settings shows"
+        );
+        assert!(
+            app.patch_editor.is_none(),
+            "with no editor on a hidden page"
+        );
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_repository_tab(other.path().to_owned(), window, cx)
+        })
+    });
+    settle(&app, cx).await;
+    draw(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+    // The frame that draws the tab.
+    crate::width_walk::frame(cx);
+    app.read_with(cx, |app, _| {
+        assert!(
+            app.page == AppPage::Repository && app.mode == WorkspaceMode::Compare,
+            "the tab returns to its comparison"
+        );
+        assert!(
+            app.patch_editor.is_some(),
+            "its text is built in the frame that draws the tab"
+        );
+    });
+}
+
+/// A menu opened while a cold tab's snapshot is read, by a click on the
+/// tab strip's Workspaces button, which leaves focus where it was, keeps
+/// focus as the restore lands in Compare. Closed by Escape after that,
+/// it gives focus back to what it was opened from, History's commit
+/// list, which Compare does not draw, and focus goes on to the
+/// changed-file list as the landing puts it, so the next Escape goes
+/// back to History. Given back to History's list alone, focus rested on
+/// nothing drawn and keys reached none of the window's shortcuts.
+#[gpui::test]
+async fn a_menu_closed_after_a_cold_restore_lands_leaves_focus_drawn(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+    let item = "menu-item: Manage saved workspaces… · MenuItem";
+    // Focus leaving a control reaches its listeners only in the active
+    // window, as the person's is.
+    cx.update(|window, _| window.activate_window());
+    leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+    let held = hold_reads(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    draw_tab_frames(cx);
+    assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "its snapshot");
+    let trigger = cx
+        .debug_bounds("repository-workspaces")
+        .expect("the Workspaces button");
+    cx.simulate_click(trigger.center(), Modifiers::default());
+    draw_tab_frames(cx);
+    assert!(cx.debug_bounds(item).is_some(), "the menu opened");
+    let menu = drawn_focus(&app, cx).expect("the menu holds focus");
+    assert!(menu != list && menu != files, "the menu holds focus");
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert!(app.repository_tabs.restoring.is_none(), "restored");
+        assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+    });
+    assert!(cx.debug_bounds(item).is_some(), "the menu stays open");
+    assert_eq!(drawn_focus(&app, cx), Some(menu), "the menu keeps focus");
+    cx.simulate_keystrokes("escape");
+    draw_tab_frames(cx);
+    assert!(cx.debug_bounds(item).is_none(), "Escape closed the menu");
+    assert_eq!(
+        drawn_focus(&app, cx),
+        Some(files),
+        "on the changed-file list"
+    );
+    cx.simulate_keystrokes("escape");
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert!(app.mode == WorkspaceMode::History, "Escape goes back");
+    });
+    assert_eq!(drawn_focus(&app, cx), Some(list), "History's list");
+}
+
+/// A dialog, Local workspaces, or the Workspaces menu, opened in the
+/// update a cold tab's restore lands in Compare, before any frame has
+/// drawn it, keeps focus through the frames that draw Compare: the
+/// landing finds focus on what opened, which no frame has drawn yet,
+/// rather than on History's list, where showing the tab put it. Closed,
+/// each gives focus back to History's list, which Compare does not
+/// draw, and focus goes on to the changed-file list. The landing once
+/// took focus no frame had drawn for stranded and moved it to that list
+/// at once: the dialog lost its focus to the page under it, and the
+/// menu, which takes focus again as the next frame builds it, gave it
+/// back on Escape to History's list with nothing watching it, where no
+/// key reached the window's shortcuts.
+#[gpui::test]
+async fn what_opens_in_the_update_a_cold_restore_lands_keeps_focus(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+    let item = "menu-item: Manage saved workspaces… · MenuItem";
+    // Focus leaving a control reaches its listeners only in the active
+    // window, as the person's is.
+    cx.update(|window, _| window.activate_window());
+    for opened in ["dialog", "menu"] {
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.repository_tabs.restoring.is_none(),
+                "{opened}: restored"
+            );
+            assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+        });
+        let position = cx
+            .debug_bounds("repository-workspaces")
+            .expect("the Workspaces button")
+            .center();
+        // The landing's update, with focus where it finds it: on
+        // History's list, where showing the tab put it, and then on
+        // what opened since the last frame.
+        let held = cx.update(|window, cx| {
+            window.focus(&list, cx);
+            if opened == "dialog" {
+                app.update(cx, |app, cx| app.open_repository_library(window, cx));
+            } else {
+                let (button, modifiers) = (MouseButton::Left, Modifiers::default());
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        button,
+                        position,
+                        modifiers,
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        button,
+                        position,
+                        modifiers,
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+            }
+            let held = window.focused(cx).expect("what opened takes focus");
+            assert!(
+                held != list && window.context_stack().is_empty(),
+                "{opened}: focus on what no frame has drawn yet"
+            );
+            app.update(cx, |app, cx| app.land_restore_focus(window, cx));
+            held
+        });
+        draw_tab_frames(cx);
+        let kept = cx.update(|window, cx| {
+            held.contains_focused(window, cx) && !window.context_stack().is_empty()
+        });
+        assert!(
+            kept,
+            "{opened}: keeps focus through the frames that draw Compare"
+        );
+        if opened == "dialog" {
+            assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+            cx.update(|window, cx| window.close_dialog(cx));
+        } else {
+            assert!(cx.debug_bounds(item).is_some(), "the menu opened");
+            assert!(
+                drawn_focus(&app, cx).is_some_and(|focus| focus != list && focus != files),
+                "the menu holds focus"
+            );
+            cx.simulate_keystrokes("escape");
+        }
+        draw_tab_frames(cx);
+        assert!(cx.debug_bounds(item).is_none(), "{opened}: closed");
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(files.clone()),
+            "{opened}: closed, on the changed-file list"
+        );
+    }
+}
+
+/// A cold tab whose bookmark is in Compare without a captured
+/// comparison, as an older session saved it, restores its file in
+/// Compare from the saved commit's changes (`restore_tab_file`). A
+/// dialog opened over the restore, Local workspaces, keeps focus as the
+/// file is chosen: the file is still selected and shown, and closing
+/// the dialog gives focus to the changed-file list. The restore once
+/// chose the file as a click does and focused that list under the
+/// dialog, whose keys then reached the page behind it.
+#[gpui::test]
+async fn restoring_a_tabs_file_leaves_focus_in_an_open_dialog(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let files = app.read_with(cx, |app, _| app.file_focus.clone());
+    leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+    app.update(cx, |app, _| {
+        let saved = &mut app.repository_tabs.tabs[1].saved;
+        saved.comparison = None;
+        assert!(saved.compare, "a bookmark in Compare");
+    });
+    // Shown, it reads its snapshot while the dialog opens.
+    let held = hold_reads(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+    draw_tab_frames(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_library(window, cx)));
+    draw_tab_frames(cx);
+    let dialog = cx.update(|window, cx| {
+        assert!(window.has_active_dialog(cx), "the dialog opened");
+        window.focused(cx).expect("the dialog holds focus")
+    });
+    assert!(dialog != files, "the dialog holds focus");
+    drop(held);
+    settle_tab_test(&app, cx).await;
+    draw_tab_frames(cx);
+    app.read_with(cx, |app, _| {
+        assert!(app.repository_tabs.restoring.is_none(), "restored");
+        assert!(app.mode == WorkspaceMode::Compare, "its file is chosen");
+        let file = app.selected_file.and_then(|index| app.files.get(index));
+        assert_eq!(file.map(FileChange::path), Some(Path::new("notes.txt")));
+        assert!(app.content.is_some(), "and shown");
+    });
+    cx.update(|window, cx| {
+        assert!(window.has_active_dialog(cx), "the dialog stays open");
+        assert_eq!(window.focused(cx), Some(dialog), "the dialog keeps focus");
+        window.close_dialog(cx);
+    });
+    draw_tab_frames(cx);
+    assert_eq!(
+        drawn_focus(&app, cx),
+        Some(files),
+        "closed, on the changed-file list"
+    );
+}
+
+/// Settings or Projects shown over the restore of a cold tab whose
+/// bookmark is in Compare without a captured comparison keeps focus on
+/// its control as the file is chosen from the saved commit's changes
+/// (`restore_tab_file`), as it does over a captured comparison's
+/// restore: the file is still selected and shown, and Back from the
+/// page focuses the changed-file list, not History's list, where
+/// showing the tab put focus. The restore once chose the file as a
+/// click does and focused that list under the page, which draws none
+/// of it, so keys reached no drawn control.
+#[gpui::test]
+async fn restoring_a_tabs_file_leaves_focus_on_the_page_shown_over_it(cx: &mut TestAppContext) {
+    let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    let root = tempfile::tempdir().unwrap();
+    let _repo = open_compared_tab(&app, root.path(), cx).await;
+    let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+    for (page, name) in [
+        (AppPage::Settings, "Settings"),
+        (AppPage::Projects, "Projects"),
+    ] {
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        app.update(cx, |app, _| {
+            let saved = &mut app.repository_tabs.tabs[1].saved;
+            saved.comparison = None;
+            assert!(saved.compare, "{name}: a bookmark in Compare");
+        });
+        // Shown, it reads its snapshot while the page is shown over it.
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                if page == AppPage::Settings {
+                    app.show_settings(window, cx);
+                } else {
+                    app.show_projects(window, cx);
+                }
+            })
+        });
+        draw_tab_frames(cx);
+        assert!(app.read_with(cx, |app, _| app.page == page), "{name} shown");
+        let control = drawn_focus(&app, cx).expect("the page's control holds focus");
+        assert!(
+            control != files && control != list,
+            "{name}: its own control"
+        );
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "{name}: restored");
+            assert!(app.page == page, "{name}: still shown");
+            assert!(
+                app.mode == WorkspaceMode::Compare,
+                "{name}: its file chosen"
+            );
+            let file = app.selected_file.and_then(|index| app.files.get(index));
+            assert_eq!(file.map(FileChange::path), Some(Path::new("notes.txt")));
+            assert!(app.content.is_some(), "{name}: and shown");
+        });
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(control),
+            "{name}: its control keeps focus"
+        );
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.page_return_focus,
+                Some(files.clone()),
+                "{name}: Back returns to the changed-file list itself"
+            );
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::Compare);
+        });
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(files.clone()),
+            "{name}: back, on the changed-file list"
+        );
+    }
+}
+
+/// A focus return that gives way as the frame ends, to a control the
+/// frame drew nowhere in the tab, focuses Compare's changed-file list
+/// with the pane it is: the window names the Files pane, as choosing a
+/// file does, whatever pane it named before, and the next arrow key
+/// moves the file selection. The fallback once focused the list and
+/// left the pane named History, so the pane a File history or Blame
+/// opened from there kept, and returned focus to, was History's commit
+/// list, which Compare does not draw.
+#[gpui::test]
+async fn a_focus_return_giving_way_names_the_pane_it_focuses(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = crate::views::tests::history_window_from(
+        cx,
+        "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\nM 100644 inline other.txt\ndata 6\nother\n\ndone\n",
+    )
+    .await;
+    cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+    settle_tab_test(&app, cx).await;
+    draw_tab_frames(cx);
+    let (files, navigation) = app.read_with(cx, |app, cx| {
+        assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+        (
+            app.file_focus.clone(),
+            app.nav_search.read(cx).focus_handle(cx),
+        )
+    });
+    // Focus returns, as a switch to this tab returns it, to the
+    // navigation's filter, which Compare does not draw, with the window
+    // naming History's pane.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.pane = Pane::History;
+            app.repository_tabs.focus_return = Some(FocusReturn {
+                page: AppPage::Repository,
+                path: app.path.clone(),
+                held: app.app_focus.clone(),
+                focus: Some(navigation.clone()),
+            });
+            app.app_focus.focus(window, cx);
+        })
+    });
+    draw_tab_frames(cx);
+    assert_eq!(drawn_focus(&app, cx), Some(files), "the changed-file list");
+    app.read_with(cx, |app, _| {
+        assert!(app.pane == Pane::Files, "the pane it focuses");
+        assert_eq!(app.selected_file, Some(0));
+    });
+    cx.simulate_keystrokes("down");
+    settle_tab_test(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.selected_file, Some(1), "Down moves the file selection");
+        assert!(app.pane == Pane::Files);
+    });
+}
+
+/// Under More contrast the selected repository tab, whose `selected`
+/// frame joins its Button to its close button, draws one 1 px edge in the
+/// kit's resting edge over that frame (`appearance::resting_edge`), at
+/// rest and with the pointer over its Button, and none over either
+/// Button inside it: its Button rests on the frame's fill with none of
+/// its own (`appearance::control_button_variant_on_fill`), so the kit
+/// draws no second edge. Off, the frame draws no edge and its Button
+/// keeps the shared helper's selected fill, in Midnight and Braden; the
+/// frame and both Buttons keep their bounds.
+#[gpui::test]
+async fn the_selected_tab_draws_one_resting_edge_over_its_frame(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    views::tests::settle(&app, cx).await;
+    let selectors = [
+        "repository-tab-frame-0",
+        "repository-tab-0",
+        "repository-tab-close-0",
+    ];
+    for theme in [
+        appearance::ThemeChoice::Midnight,
+        appearance::ThemeChoice::Daylight,
+    ] {
+        for hovered in [false, true] {
+            let [off, on] = [false, true].map(|more| {
+                cx.update(|window, cx| {
+                    appearance::set_more_contrast(more, cx);
+                    theme.apply(Some(window), cx);
+                });
+                views::tests::draw(cx);
+                let bounds = selectors.map(|selector| {
+                    cx.debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{selector} drawn"))
+                });
+                let pointer = if hovered {
+                    bounds[1].center()
+                } else {
+                    point(px(1.), px(1.))
+                };
+                cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                views::tests::draw(cx);
+                let edges = appearance::painted_edges(cx, bounds[0]);
+                let tab = appearance::painted_button(cx, bounds[1]).0;
+                (bounds, edges, tab)
+            });
+            let at = format!("{theme:?} hovered {hovered}");
+            assert_eq!(on.0, off.0, "{at}: the frame and Buttons keep their bounds");
+            assert!(off.1.is_empty(), "{at}: off, no edge: {:?}", off.1);
+            let (edge, selected) = cx.update(|_, cx| {
+                let palette = appearance::palette(cx);
+                (palette.resting_edge(), palette.selected)
+            });
+            let [drawn] = on.1[..] else {
+                panic!("{at}: one edge in the frame: {:?}", on.1);
+            };
+            let over = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
+                [
+                    (a.left(), b.left()),
+                    (a.top(), b.top()),
+                    (a.right(), b.right()),
+                    (a.bottom(), b.bottom()),
+                ]
+                .into_iter()
+                .all(|(a, b)| (a - b).abs() < px(0.5))
+            };
+            assert!(
+                drawn.one_px && drawn.color == edge && over(drawn.bounds, on.0[0]),
+                "{at}: #{edge:06x} over the frame {:?}: {drawn:?}",
+                on.0[0]
+            );
+            if !hovered {
+                let fill = gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(selected)));
+                assert_eq!(off.2, [fill], "{at}: off, the Button fills as the helper");
+                assert!(on.2.is_empty(), "{at}: on, no fill of its own: {:?}", on.2);
+            }
+        }
+    }
+    cx.update(|window, cx| {
+        appearance::set_more_contrast(false, cx);
+        appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+    });
+}
+
+#[gpui::test]
+async fn clone_and_create_refuse_at_tab_limit_before_touching_disk(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    // Fill tabs up to MAX_TABS.
+    app.update(cx, |app, _| {
+        while app.repository_tabs.tabs.len() < MAX_TABS {
+            let index = app.repository_tabs.tabs.len();
+            let path = dir.path().join(format!("slot-{index}"));
+            app.repository_tabs.tabs.push(Tab {
+                path,
+                resolved: false,
+                git_dir: None,
+                saved: Bookmark::default(),
+                warm: None,
+                error: None,
+                before_mark: None,
+            });
+        }
+    });
+    let create_dest = dir.path().join("should-not-exist-create");
+    let clone_dest = dir.path().join("should-not-exist-clone");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.project_event(
+                &projects::ProjectEvent::Create {
+                    destination: create_dest.clone(),
+                    branch: "main".into(),
+                },
+                window,
+                cx,
+            );
+            app.project_event(
+                &projects::ProjectEvent::Clone {
+                    source: "https://example.invalid/repo.git".into(),
+                    destination: clone_dest.clone(),
+                },
+                window,
+                cx,
+            );
+        });
+    });
+    assert!(
+        !create_dest.exists(),
+        "Create at tab limit must refuse before touching disk"
+    );
+    assert!(
+        !clone_dest.exists(),
+        "Clone at tab limit must refuse before touching disk"
+    );
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_busy),
+        None,
+        "no background Git write should start when at tab limit"
+    );
+}

@@ -6136,7 +6136,7 @@ mod render_tests {
                 );
             } else {
                 assert!(
-                    orca.ends_with(&[waiting_row.clone(), said.clone()]),
+                    orca.ends_with(&[waiting_row, said]),
                     "Orca speaks the row the query selected, waiting, and after the row's rename \
                      the status's place: {orca:?}"
                 );
@@ -6415,7 +6415,7 @@ mod render_tests {
         let own = if shortcuts::LIST_SPEAKS_SELECTION {
             Vec::new()
         } else {
-            vec![reached.clone()]
+            vec![reached]
         };
         assert_eq!(
             heard.take(),
@@ -6555,7 +6555,7 @@ mod render_tests {
         // where the list speaks the moves, the rest says the command Up
         // reached, whole.
         let again = if shortcuts::LIST_SPEAKS_SELECTION {
-            vec![back.clone()]
+            vec![back]
         } else {
             Vec::new()
         };

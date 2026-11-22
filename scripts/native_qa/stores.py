@@ -17,7 +17,7 @@ import stat
 import time
 from pathlib import Path
 
-# `STORE_VERSION` in crates/app/src/preferences.rs; test_runenv's StoreTest checks it.
+# `STORE_VERSION` in crates/prefs/src/preferences.rs; test_runenv's StoreTest checks it.
 STORE_VERSION = 6
 # The preference store, relative to a launch's run directory (`runenv.RunDirs.preferences`).
 PREFERENCES = "config/gitturtle/preferences.json"

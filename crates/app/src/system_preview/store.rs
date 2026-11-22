@@ -355,12 +355,16 @@ fn open_private(path: &Path) -> Result<File> {
     };
     let directory = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(
+            (rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
         .open(path)
         .with_context(refused)?;
     let metadata = directory.metadata()?;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let user = unsafe { libc::geteuid() };
+    let user = rustix::process::geteuid().as_raw();
     ensure!(metadata.is_dir() && metadata.uid() == user, refused());
     Ok(directory)
 }
@@ -370,7 +374,12 @@ fn open_private(path: &Path) -> Result<File> {
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(
+            (rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
         .open(path)?
         .set_permissions(fs::Permissions::from_mode(mode))
 }
@@ -415,8 +424,7 @@ mod tests {
         // A handler's Save As starts here, and nothing saved here survives
         // eviction or quitting, so nothing can be saved here.
         assert_eq!(mode(&copy.directory), 0o500);
-        // SAFETY: geteuid has no preconditions; root ignores the mode.
-        if unsafe { libc::geteuid() } != 0 {
+        if !rustix::process::geteuid().is_root() {
             let saved = fs::write(copy.directory.join("Edited.pdf"), b"edits");
             assert_eq!(
                 saved.unwrap_err().kind(),
@@ -425,10 +433,11 @@ mod tests {
         }
         assert_eq!(mode(&session.join("lock")), 0o600);
         // The handed-over descriptor is read-only and is the written file.
-        // SAFETY: `copy.file` is an open descriptor owned by this test.
-        let flags =
-            unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&copy.file), libc::F_GETFL) };
-        assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
+        let flags = rustix::fs::fcntl_getfl(&copy.file).unwrap();
+        assert_eq!(
+            flags & rustix::fs::OFlags::ACCMODE,
+            rustix::fs::OFlags::RDONLY
+        );
         assert_eq!(
             copy.file.metadata().unwrap().ino(),
             fs::metadata(&copy.path).unwrap().ino()
@@ -551,7 +560,7 @@ mod tests {
         fs::write(outside.join("keep"), b"keep").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("session-link")).unwrap();
 
-        let later = Store::new(root.clone());
+        let later = Store::new(root);
         assert_eq!(later.remove_stale().unwrap(), 1);
         assert!(!ended.exists());
         assert!(live.path.exists(), "a running session's copies stay");

@@ -70,10 +70,76 @@ class Violation:
         return f"{self.path}:{self.line}: [{self.rule}] {self.message}"
 
 
+CFG_TOKEN_RE = re.compile(r'\s*(?:(?P<lparen>\()|(?P<rparen>\))|(?P<comma>,)|(?P<eq>=)|(?P<str>"(?:\\.|[^"\\])*")|(?P<ident>[A-Za-z_][A-Za-z0-9_]*))')
+
+
+def _eval_cfg_without_test(expr: str) -> str:
+    """Evaluate a Rust cfg(...) expression in 3-valued logic (T/F/U) assuming
+    `test` and `feature = "test-support"` are both false and all other
+    predicates are unknown.
+    """
+    expr = expr.strip()
+    tokens: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(expr):
+        match = CFG_TOKEN_RE.match(expr, pos)
+        if not match or match.end() == pos:
+            return "U"
+        kind = match.lastgroup
+        if kind is not None:
+            tokens.append((kind, match.group(kind)))
+        pos = match.end()
+    idx = 0
+
+    def parse_expr() -> str:
+        nonlocal idx
+        if idx >= len(tokens):
+            return "U"
+        kind, val = tokens[idx]
+        if kind != "ident":
+            idx += 1
+            return "U"
+        idx += 1
+        if idx < len(tokens) and tokens[idx][0] == "lparen":
+            idx += 1
+            args: list[str] = []
+            while idx < len(tokens) and tokens[idx][0] != "rparen":
+                args.append(parse_expr())
+                if idx < len(tokens) and tokens[idx][0] == "comma":
+                    idx += 1
+            if idx < len(tokens) and tokens[idx][0] == "rparen":
+                idx += 1
+            if val == "not":
+                inner = args[0] if args else "U"
+                return {"T": "F", "F": "T", "U": "U"}[inner]
+            if val == "all":
+                if any(a == "F" for a in args):
+                    return "F"
+                return "T" if all(a == "T" for a in args) else "U"
+            if val == "any":
+                if any(a == "T" for a in args):
+                    return "T"
+                return "F" if args and all(a == "F" for a in args) else "U"
+            return "U"
+        if idx < len(tokens) and tokens[idx][0] == "eq":
+            idx += 1
+            rhs = ""
+            if idx < len(tokens) and tokens[idx][0] in ("str", "ident"):
+                rhs = tokens[idx][1].strip('"')
+                idx += 1
+            if val == "feature" and rhs == "test-support":
+                return "F"
+            return "U"
+        return "F" if val == "test" else "U"
+
+    return parse_expr()
+
+
 def _is_test_cfg(expr: str) -> bool:
-    """Return True when a #[cfg(...)] expression gates code to test builds."""
-    cleaned = re.sub(r"\bnot\s*\([^)]*\)", "", expr)
-    return bool(re.search(r"\btest\b", cleaned))
+    """Return True only when a #[cfg(...)] expression cannot evaluate to true
+    in production builds (where `test` and `feature = "test-support"` are false).
+    """
+    return _eval_cfg_without_test(expr) == "F"
 
 
 def _blank_preserving_newlines(segment: str) -> str:
@@ -223,15 +289,29 @@ def discover_test_only_modules(src_root: Path, contents: dict[Path, str] | None 
             continue
         for mod_match in MOD_DECL_RE.finditer(text):
             mod_name = mod_match.group(1)
-            prefix = text[max(0, mod_match.start() - 400) : mod_match.start()]
+            prefix = text[max(0, mod_match.start() - 600) : mod_match.start()]
+            # Walk backward across contiguous outer attributes (including multi-line
+            # #[cfg(all(\n    test,\n    ...\n))] forms), blank lines, and comments.
             lines = prefix.splitlines()
             attr_lines: list[str] = []
+            bracket_depth = 0
             for line in reversed(lines):
                 stripped = line.strip()
                 if not stripped or stripped.startswith("//"):
+                    if bracket_depth > 0:
+                        attr_lines.append(stripped)
                     continue
-                if stripped.startswith("#[") or stripped.endswith("]") or stripped.startswith("cfg("):
+                if bracket_depth > 0:
                     attr_lines.append(stripped)
+                    bracket_depth += stripped.count("]") - stripped.count("[")
+                    if bracket_depth < 0:
+                        bracket_depth = 0
+                    continue
+                if stripped.startswith("#[") or stripped.endswith("]"):
+                    attr_lines.append(stripped)
+                    bracket_depth += stripped.count("]") - stripped.count("[")
+                    if bracket_depth < 0:
+                        bracket_depth = 0
                 else:
                     break
             attrs = "\n".join(reversed(attr_lines))
@@ -298,7 +378,12 @@ def _find_render_bodies(no_strings: str, with_strings: str) -> list[tuple[int, s
     return bodies
 
 
-def _check_cargo_toml(root: Path, crate_rel: str, forbidden_prefixes: tuple[str, ...]) -> list[Violation]:
+def _check_cargo_toml(
+    root: Path,
+    crate_rel: str,
+    forbidden_exact: tuple[str, ...],
+    forbidden_prefixes: tuple[str, ...] = ("gpui",),
+) -> list[Violation]:
     path = root / crate_rel / "Cargo.toml"
     if not path.is_file():
         return []
@@ -315,11 +400,25 @@ def _check_cargo_toml(root: Path, crate_rel: str, forbidden_prefixes: tuple[str,
         if isinstance(target, dict) and isinstance(target.get("dependencies"), dict):
             dep_tables.append(target["dependencies"])
     for table in dep_tables:
-        for dep in sorted(table):
-            if any(dep == prefix or dep.startswith(prefix) for prefix in forbidden_prefixes):
+        for dep, spec in sorted(table.items()):
+            if dep in forbidden_exact or any(
+                dep == prefix or dep.startswith(prefix + "-") or dep.startswith(prefix + "_")
+                for prefix in forbidden_prefixes
+            ):
                 violations.append(
                     Violation(rel, 1, "crate-boundary", f"forbidden production dependency {dep!r} in {crate_rel}")
                 )
+            if isinstance(spec, dict):
+                features = spec.get("features") or []
+                if isinstance(features, list) and "test-support" in features:
+                    violations.append(
+                        Violation(
+                            rel,
+                            1,
+                            "test-support-isolation",
+                            f"production dependency {dep!r} enables `test-support` feature in {crate_rel}",
+                        )
+                    )
     return violations
 
 
@@ -328,28 +427,43 @@ def check_repo(root: Path) -> list[Violation]:
     root = root.resolve()
     violations: list[Violation] = []
 
-    # 1. git-core crate attributes and dependency boundary.
-    git_core_lib = root / "crates/git-core/src/lib.rs"
-    if git_core_lib.is_file():
-        lib_with_strings, _ = sanitize_rust(git_core_lib.read_text(encoding="utf-8"))
-        if "#![forbid(unsafe_code)]" not in lib_with_strings:
-            violations.append(
-                Violation("crates/git-core/src/lib.rs", 1, "git-core-safety", "missing `#![forbid(unsafe_code)]`")
-            )
-        if "#![cfg_attr(not(test), deny(clippy::unwrap_used))]" not in lib_with_strings:
-            violations.append(
-                Violation(
-                    "crates/git-core/src/lib.rs",
-                    1,
-                    "git-core-safety",
-                    "missing `#![cfg_attr(not(test), deny(clippy::unwrap_used))]`",
+    # 1. Headless crate safety attributes and dependency boundaries.
+    for crate_rel, forbid_attr in (
+        ("crates/git-core", "#![forbid(unsafe_code)]"),
+        ("crates/theme", "#![forbid(unsafe_code)]"),
+        ("crates/diff-model", "#![forbid(unsafe_code)]"),
+        ("crates/github", "#![forbid(unsafe_code)]"),
+        ("crates/prefs", '#![cfg_attr(not(any(test, feature = "test-support")), forbid(unsafe_code))]'),
+        ("crates/preview", None),
+    ):
+        lib_path = root / crate_rel / "src/lib.rs"
+        if lib_path.is_file():
+            rel_lib = f"{crate_rel}/src/lib.rs"
+            lib_with_strings, _ = sanitize_rust(lib_path.read_text(encoding="utf-8"))
+            if forbid_attr and forbid_attr not in lib_with_strings:
+                violations.append(
+                    Violation(rel_lib, 1, "crate-safety", f"missing `{forbid_attr}`")
                 )
-            )
-    violations.extend(_check_cargo_toml(root, "crates/git-core", ("gpui", "gitturtle-preview", "gitturtle")))
-    violations.extend(_check_cargo_toml(root, "crates/preview", ("gpui", "gitturtle-core", "gitturtle")))
+            if "#![cfg_attr(not(test), deny(clippy::unwrap_used))]" not in lib_with_strings:
+                violations.append(
+                    Violation(
+                        rel_lib,
+                        1,
+                        "crate-safety",
+                        "missing `#![cfg_attr(not(test), deny(clippy::unwrap_used))]`",
+                    )
+                )
 
-    # 2–4. Source scans across workspace crates.
-    for crate_name in ("git-core", "preview", "app"):
+    violations.extend(_check_cargo_toml(root, "crates/git-core", ("gitturtle-preview", "gitturtle-theme", "gitturtle-diff-model", "gitturtle-prefs", "gitturtle-github", "gitturtle")))
+    violations.extend(_check_cargo_toml(root, "crates/preview", ("gitturtle-core", "gitturtle-theme", "gitturtle-diff-model", "gitturtle-prefs", "gitturtle-github", "gitturtle")))
+    violations.extend(_check_cargo_toml(root, "crates/theme", ("gitturtle-core", "gitturtle-preview", "gitturtle-diff-model", "gitturtle-prefs", "gitturtle-github", "gitturtle")))
+    violations.extend(_check_cargo_toml(root, "crates/diff-model", ("gitturtle-theme", "gitturtle-prefs", "gitturtle-github", "gitturtle-preview", "gitturtle")))
+    violations.extend(_check_cargo_toml(root, "crates/prefs", ("gitturtle-github", "gitturtle-preview", "gitturtle")))
+    violations.extend(_check_cargo_toml(root, "crates/github", ("gitturtle-preview", "gitturtle")))
+    violations.extend(_check_cargo_toml(root, "crates/app", (), forbidden_prefixes=()))
+
+    # 2–4. Source scans across all workspace crates.
+    for crate_name in ("git-core", "preview", "theme", "diff-model", "prefs", "github", "app"):
         src_root = root / "crates" / crate_name / "src"
         if not src_root.is_dir():
             continue

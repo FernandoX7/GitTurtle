@@ -1,18 +1,17 @@
 //! A coalesced, bounded in-memory path index. Rendering only shares ready row
 //! identities; Unicode normalization and matching happen on one background lane.
 use crate::{FileChange, GitTurtle, SerialExecutor, WorkspaceMode};
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use gpui_kit::{App, Context, ScrollStrategy, Task, Window};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
-pub(super) const MAX_PATHS: usize = 100_000;
-pub(super) const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
-pub(super) const MAX_QUERY_BYTES: usize = 4096;
-
-pub(super) type Index = Vec<[String; 2]>;
+pub(super) use gitturtle_diff_model::path_filter::{
+    Index, MAX_INDEX_BYTES, MAX_PATHS, MAX_QUERY_BYTES, checkpoint, matching, prepare_index,
+    prepare_paths,
+};
 /// The filter worker's answer: the index it prepared and the rows matching.
 type Answer =
     std::result::Result<Result<(Arc<Index>, Arc<[usize]>)>, futures::channel::oneshot::Canceled>;
@@ -84,89 +83,6 @@ pub(crate) fn filters_land(
         app.read_with(cx, |app, _| app.file_paths.drain());
     }
     panic!("the path filter never answered");
-}
-
-pub(super) fn checkpoint(cancellation: &AtomicU64, ticket: u64) -> Result<()> {
-    ensure!(
-        cancellation.load(Ordering::Relaxed) == ticket,
-        "Path filter superseded"
-    );
-    Ok(())
-}
-fn prepare_index(files: &[FileChange], cancellation: &AtomicU64, ticket: u64) -> Result<Index> {
-    ensure!(
-        files.len() <= MAX_PATHS,
-        "Path filtering supports up to 100,000 changed files. Clear the filter to browse every file."
-    );
-    prepare_paths(
-        files
-            .iter()
-            .map(|file| [file.old_path.as_deref(), file.new_path.as_deref()]),
-        cancellation,
-        ticket,
-    )
-}
-pub(super) fn prepare_paths<'a>(
-    paths: impl Iterator<Item = [Option<&'a std::path::Path>; 2]>,
-    cancellation: &AtomicU64,
-    ticket: u64,
-) -> Result<Index> {
-    let mut bytes = 0;
-    let mut index = Vec::new();
-    for (i, paths) in paths.enumerate() {
-        ensure!(
-            i < MAX_PATHS,
-            "Path filtering supports up to 100,000 changed files. Clear the filter to browse every file."
-        );
-        if i % 128 == 0 {
-            checkpoint(cancellation, ticket)?;
-        }
-        let mut entry = [String::new(), String::new()];
-        for (side, path) in paths.into_iter().enumerate() {
-            if let Some(path) = path {
-                let display = path.to_string_lossy();
-                ensure!(
-                    display.len() <= 64 * 1024,
-                    "A changed path exceeds the 64 KiB filter limit. Clear the filter to browse every file."
-                );
-                ensure!(
-                    display.len() <= MAX_INDEX_BYTES - bytes,
-                    "Changed paths exceed the 16 MiB filter limit. Clear the filter to browse every file."
-                );
-                entry[side] = display.to_lowercase();
-                bytes += entry[side].len();
-                ensure!(
-                    bytes <= MAX_INDEX_BYTES,
-                    "Changed paths exceed the 16 MiB filter limit. Clear the filter to browse every file."
-                );
-            }
-        }
-        index.push(entry);
-    }
-    Ok(index)
-}
-pub(super) fn matching(
-    index: &Index,
-    query: &str,
-    cancellation: &AtomicU64,
-    ticket: u64,
-) -> Result<Arc<[usize]>> {
-    ensure!(
-        query.len() <= MAX_QUERY_BYTES,
-        "Path filter queries must be at most 4,096 bytes."
-    );
-    let query = query.to_lowercase();
-    let mut rows = Vec::new();
-    for (i, paths) in index.iter().enumerate() {
-        if i % 128 == 0 {
-            checkpoint(cancellation, ticket)?;
-        }
-        if paths.iter().any(|path| path.contains(&query)) {
-            rows.push(i);
-        }
-    }
-    checkpoint(cancellation, ticket)?;
-    Ok(rows.into())
 }
 
 impl GitTurtle {

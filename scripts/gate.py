@@ -74,8 +74,12 @@ GIT_ISOLATION_PREFIX = (
 )
 FALLBACK_CRATES = {
     "crates/app": "gitturtle",
+    "crates/diff-model": "gitturtle-diff-model",
     "crates/git-core": "gitturtle-core",
+    "crates/github": "gitturtle-github",
+    "crates/prefs": "gitturtle-prefs",
     "crates/preview": "gitturtle-preview",
+    "crates/theme": "gitturtle-theme",
 }
 WIDEN_PREFIXES = ("vendor/", ".cargo/", ".config/")
 WIDEN_FILES = {
@@ -301,14 +305,24 @@ def removed_tests(root: Path, base: str | None) -> int:
     return sum(1 for line in out.splitlines() if REMOVED_TEST.match(line))
 
 
+SIBLING_TEST_PATH = re.compile(r'#\s*\[\s*path\s*=\s*"([^"]+_tests\.rs)"\s*\]')
+
+
 def gpui_test_names(root: Path, sources: tuple[str, ...]) -> list[str]:
     names: list[str] = []
+    seen: set[Path] = set()
     for relative in sources:
         path = root / relative
-        if not path.exists():
+        if not path.exists() or path in seen:
             continue
+        seen.add(path)
         text = path.read_text(encoding="utf-8", errors="replace")
         names.extend(GPUI_TEST_FN.findall(text))
+        for sibling_name in SIBLING_TEST_PATH.findall(text):
+            sibling = path.parent / sibling_name
+            if sibling.is_file() and sibling not in seen:
+                seen.add(sibling)
+                names.extend(GPUI_TEST_FN.findall(sibling.read_text(encoding="utf-8", errors="replace")))
     return sorted(set(names))
 
 

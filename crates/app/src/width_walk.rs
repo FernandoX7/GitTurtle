@@ -2437,7 +2437,7 @@ const DIALOG_SITES: &[(&str, &str, Walked)] = {
             Left("needs a Git LFS pointer; the fixture has none"),
         ),
         (
-            "main.rs",
+            "lib.rs",
             "choose_repository",
             Left("opens only when the system's folder picker fails"),
         ),
@@ -2649,8 +2649,9 @@ fn code_only(source: &str) -> String {
 /// `#[cfg(test)]`, from its attribute to the end of its braces or its `;`.
 /// Also returns the modules declared that way without a body, `mod name;`,
 /// whose files are compiled only for tests.
-fn test_only_lines(code: &str) -> (Vec<bool>, Vec<String>) {
+fn test_only_lines(code: &str, raw: &str) -> (Vec<bool>, Vec<(Option<String>, String)>) {
     let lines: Vec<&str> = code.lines().collect();
+    let raw_lines: Vec<&str> = raw.lines().collect();
     let mut test = vec![false; lines.len()];
     let mut modules = Vec::new();
     let mut line = 0;
@@ -2662,8 +2663,17 @@ fn test_only_lines(code: &str) -> (Vec<bool>, Vec<String>) {
         }
         let (mut depth, mut opened) = (0usize, false);
         let mut end = line;
+        let mut path_attr: Option<String> = None;
         'item: for (at, text) in lines.iter().enumerate().skip(line) {
             end = at;
+            if !opened
+                && let Some(raw_line) = raw_lines.get(at)
+                && let Some(rest) = raw_line.trim_start().strip_prefix("#[path")
+                && let Some(start) = rest.find('"')
+                && let Some(stop) = rest[start + 1..].find('"')
+            {
+                path_attr = Some(rest[start + 1..start + 1 + stop].to_owned());
+            }
             let item = if at == line {
                 &text[text.find(")]").map_or(0, |close| close + 2)..]
             } else {
@@ -2691,7 +2701,7 @@ fn test_only_lines(code: &str) -> (Vec<bool>, Vec<String>) {
                             .and_then(|declared| declared.rsplit_once("mod "))
                             .map(|(_, name)| name.trim())
                         {
-                            modules.push(name.to_owned());
+                            modules.push((path_attr.take(), name.to_owned()));
                         }
                         break 'item;
                     }
@@ -2745,38 +2755,45 @@ fn dialog_sites() -> Vec<(String, String)> {
     let mut paths = Vec::new();
     files(&src, &mut paths);
     paths.sort();
-    let sources: Vec<(PathBuf, String)> = paths
+    let sources: Vec<(PathBuf, String, String)> = paths
         .into_iter()
         .map(|path| {
-            let code = code_only(&std::fs::read_to_string(&path).expect("a source file"));
-            (path, code)
+            let raw = std::fs::read_to_string(&path).expect("a source file");
+            let code = code_only(&raw);
+            (path, raw, code)
         })
         .collect();
     // A module declared under `#[cfg(test)]` is compiled only for tests,
     // with every module inside it.
     let mut test_dirs = Vec::new();
-    for (path, code) in &sources {
+    let mut test_files = Vec::new();
+    for (path, raw, code) in &sources {
         let named = path
             .file_stem()
-            .is_some_and(|stem| stem == "main" || stem == "mod");
+            .is_some_and(|stem| stem == "main" || stem == "lib" || stem == "mod");
         let dir = if named {
             path.parent().unwrap().to_owned()
         } else {
             path.with_extension("")
         };
-        for module in test_only_lines(code).1 {
-            test_dirs.push(dir.join(&module));
+        for (path_attr, module) in test_only_lines(code, raw).1 {
+            if let Some(rel) = path_attr {
+                test_files.push(path.parent().unwrap().join(rel));
+            } else {
+                test_dirs.push(dir.join(&module));
+            }
         }
     }
     let mut sites = Vec::new();
-    for (path, code) in &sources {
-        if test_dirs
-            .iter()
-            .any(|dir| path.starts_with(dir) || path.with_extension("") == *dir)
+    for (path, raw, code) in &sources {
+        if test_files.contains(path)
+            || test_dirs
+                .iter()
+                .any(|dir| path.starts_with(dir) || path.with_extension("") == *dir)
         {
             continue;
         }
-        let test = test_only_lines(code).0;
+        let test = test_only_lines(code, raw).0;
         let lines: Vec<&str> = code.lines().collect();
         for (at, line) in lines.iter().enumerate() {
             if test[at] {

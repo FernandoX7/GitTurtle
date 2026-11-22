@@ -29,7 +29,7 @@
   "constants": [
     {
       "name": "built_in_themes",
-      "source": "crates/app/src/appearance.rs",
+      "source": "crates/theme/src/palette.rs",
       "kind": "regex_int",
       "pattern": "impl ThemeChoice\\s*\\{[\\s\\S]*?pub const ALL:\\s*\\[Self;\\s*(\\d+)\\]",
       "docs": [
@@ -40,7 +40,7 @@
     },
     {
       "name": "max_custom_themes",
-      "source": "crates/app/src/preferences.rs",
+      "source": "crates/theme/src/lib.rs",
       "kind": "rust_const_int",
       "symbol": "MAX_CUSTOM_THEMES",
       "docs": [
@@ -152,7 +152,7 @@
       ]
     },
     {
-      "code_prefixes": ["crates/app/src/appearance.rs", "crates/app/src/appearance/"],
+      "code_prefixes": ["crates/theme/", "crates/app/src/appearance.rs", "crates/app/src/appearance/"],
       "docs": [
         "DESIGN.md",
         "docs/design/tokens-and-palettes.md",
@@ -161,11 +161,19 @@
       ]
     },
     {
-      "code_prefixes": ["crates/app/src/repository_tabs.rs", "crates/app/src/history_paging.rs"],
+      "code_prefixes": ["crates/diff-model/", "crates/prefs/", "crates/app/src/repository_tabs.rs", "crates/app/src/history_paging.rs", "crates/app/src/worker/"],
       "docs": [
         "docs/architecture.md",
         "crates/app/AGENTS.md",
         "docs/user-guide.md"
+      ]
+    },
+    {
+      "code_prefixes": ["crates/github/", "crates/app/src/github_view.rs", "crates/app/src/github_view/"],
+      "docs": [
+        "docs/github-collaboration.md",
+        "docs/architecture.md",
+        "crates/app/AGENTS.md"
       ]
     },
     {

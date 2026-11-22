@@ -170,14 +170,10 @@ pub(super) struct DecodedView {
 }
 impl DecodedView {
     pub fn bytes(&self) -> &[u8] {
-        // SAFETY: initialized u32 storage is valid as bytes; length is at most
-        // words.len()*4, and the immutable borrow prevents concurrent mutation.
-        unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast(), self.length) }
+        &bytemuck::cast_slice(&self.words)[..self.length]
     }
     fn bytes_mut(&mut self) -> &mut [u8] {
-        // SAFETY: all u32 bit patterns are valid and the exclusive borrow covers
-        // the initialized allocation. The visible byte length excludes padding.
-        unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr().cast(), self.length) }
+        &mut bytemuck::cast_slice_mut(&mut self.words)[..self.length]
     }
 }
 fn zeroed_words(length: usize) -> Result<Vec<u32>> {

@@ -2025,8 +2025,7 @@ mod tests {
                         for styles in [
                             combine_highlights(base.clone(), [(range.clone(), find)])
                                 .collect::<Vec<_>>(),
-                            combine_highlights([(range.clone(), find)], base.clone())
-                                .collect::<Vec<_>>(),
+                            combine_highlights([(range, find)], base).collect::<Vec<_>>(),
                         ] {
                             let drawn = styles.iter().find(|(r, _)| r.contains(&start)).unwrap().1;
                             assert_eq!(

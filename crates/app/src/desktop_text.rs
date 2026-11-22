@@ -84,7 +84,7 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
                 None => observe.await,
             }
         };
-        let _ = futures::future::Abortable::new(observing, cancellation).await;
+        let _ = Box::pin(futures::future::Abortable::new(observing, cancellation)).await;
     });
     let updates = cx.spawn(async move |cx| {
         let mut ready = Some(ready);
@@ -440,9 +440,13 @@ pub(super) fn exited_unreaped(pid: libc::pid_t) -> bool {
 /// accept signal zero.
 #[cfg(all(test, target_os = "linux"))]
 fn reaped(pid: libc::pid_t) -> bool {
-    // SAFETY: signal zero checks existence and does not send a signal.
-    let gone = unsafe { libc::kill(pid, 0) } == -1;
-    gone && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    let Some(pid) = rustix::process::Pid::from_raw(pid) else {
+        return true;
+    };
+    matches!(
+        rustix::process::test_kill_process(pid),
+        Err(rustix::io::Errno::SRCH)
+    )
 }
 
 /// Tests: lets one read poll of real time pass with the test executor's
@@ -762,7 +766,6 @@ mod portal {
     use futures::{FutureExt as _, StreamExt as _};
     use gpui_kit::BackgroundExecutor;
     use std::io::Read as _;
-    use std::os::fd::AsRawFd as _;
     use std::process::{Child, ChildStdout, Command, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1305,12 +1308,11 @@ mod portal {
                 .ok()?,
         );
         let mut stdout = child.0.stdout.take()?;
-        let fd = stdout.as_raw_fd();
-        // SAFETY: stdout owns this valid pipe descriptor throughout both calls.
-        let nonblocking_ok = unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFL);
-            flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
-        };
+        let nonblocking_ok = rustix::fs::fcntl_getfl(&stdout)
+            .and_then(|flags| {
+                rustix::fs::fcntl_setfl(&stdout, flags | rustix::fs::OFlags::NONBLOCK)
+            })
+            .is_ok();
         if !nonblocking_ok {
             return None;
         }
@@ -1750,12 +1752,7 @@ mod portal {
             let (sleeper, pid) = output("exec sleep 30", Duration::from_millis(40), false);
             assert_eq!(sleeper, None);
             assert!(started.elapsed() < Duration::from_secs(2));
-            // SAFETY: signal zero checks existence and does not send a signal.
-            assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(libc::ESRCH)
-            );
+            assert!(super::super::reaped(pid));
         }
 
         /// A process another thread spawns while a query's child starts holds
@@ -1799,10 +1796,8 @@ mod portal {
             });
             super::super::pass_real_time(&cx.executor());
             let answered = result.lock().unwrap().take();
-            if let Some(holder) = pid("holder") {
-                // SAFETY: the sleeper holds the pipe for 30 s, so the id is
-                // still its own.
-                unsafe { libc::kill(holder, libc::SIGKILL) };
+            if let Some(holder) = pid("holder").and_then(rustix::process::Pid::from_raw) {
+                let _ = rustix::process::kill_process(holder, rustix::process::Signal::KILL);
             }
             assert_eq!(answered, Some(Some("True|1".into())));
         }
@@ -2468,9 +2463,12 @@ mod tests {
             );
             assert_eq!(family(cx), "Desktop Mono");
 
-            crate::appearance::ThemeChoice::Daylight
-                .palette()
-                .apply(true, None, cx);
+            {
+                use crate::appearance::PaletteExt as _;
+                crate::appearance::ThemeChoice::Daylight
+                    .palette()
+                    .apply(true, None, cx);
+            }
             assert_eq!(family(cx), "Desktop Mono");
 
             set_system_code_font(false, cx);
@@ -2903,7 +2901,10 @@ mod tests {
         use crate::views::tests::{draw, history_window_from, settle};
         use gpui_kit::{Modifiers, Pixels, Point, VisualTestContext, point, px};
         let (_fixture, app, cx) = history_window_from(cx, gif_commit()).await;
-        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|_, cx| {
+            use crate::appearance::ThemeChoiceExt as _;
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx)
+        });
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
         // Play GIF's middle: 14 px into its 28 px row, which ends 4 px above

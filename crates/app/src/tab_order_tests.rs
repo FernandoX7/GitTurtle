@@ -2008,7 +2008,7 @@ fn show_quick_source(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, query:
                 .search_tracked_paths(&PathScope::Worktree, query, &HistoryCancellation::default())
                 .expect("tracked paths");
             let entry = paths.entries.first().expect("the file").clone();
-            app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+            app.show_tracked_file(paths.scope, entry, window, cx);
         })
     });
 }

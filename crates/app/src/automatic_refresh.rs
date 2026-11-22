@@ -482,7 +482,8 @@ impl GitTurtle {
                     Ok(Ok(Output::QuietRefresh(refresh))) => {
                         // Before it lands, so a banner this read writes
                         // finds the slot free.
-                        this.automatic.clear_failure(&mut this.operation_error);
+                        this.automatic
+                            .clear_failure(&mut this.workspace.operation_error);
                         // Read whole, the repository is readable again: a
                         // tab marked by a failed Open states that, as an
                         // explicit Refresh's accepted snapshot does. A read
@@ -550,12 +551,14 @@ impl GitTurtle {
     ) {
         if error.is::<worker::RepositoryGone>() {
             self.tab_repository_gone(window, cx);
-        } else if !(error.is::<gitturtle_core::ChangedWhileOpening>()
-            && self.shown_tab_unavailable())
+        } else if !(matches!(
+            gitturtle_core::CoreError::from_anyhow(&error),
+            Some(gitturtle_core::CoreError::ChangedWhileOpening { .. })
+        ) && self.shown_tab_unavailable())
         {
             self.automatic.report_failure(
                 crate::views::OperationFailure::of_read("Local refresh", &error),
-                &mut self.operation_error,
+                &mut self.workspace.operation_error,
             );
         }
     }
@@ -652,8 +655,9 @@ impl GitTurtle {
                 // snapshot is: the rows it would keep below the newest, or
                 // beside a search, went with the replaced repository.
                 Ok(worker::QuietHistory::Refreshed(snapshot)) if replaced => {
-                    self.history_updates
-                        .clear_scope_error(&mut self.operation_error);
+                    self.workspace
+                        .history_updates
+                        .clear_scope_error(&mut self.workspace.operation_error);
                     self.history_updates.captured(&snapshot);
                     self.install_current_history(snapshot, true, window, cx);
                 }
@@ -687,11 +691,11 @@ impl GitTurtle {
                     self.repository = Some(metadata.repository);
                     self.rebuild_navigation(cx);
                     if !replaced {
-                        self.history_updates.report_scope_error(
+                        self.workspace.history_updates.report_scope_error(
                             &error,
                             summary.as_deref(),
                             vanished.as_ref(),
-                            &mut self.operation_error,
+                            &mut self.workspace.operation_error,
                         );
                     }
                 }
