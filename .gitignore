@@ -7,3 +7,4 @@
 __pycache__/
 *.py[cod]
 /.hypervisor/
+.claude/scheduled_tasks.lock

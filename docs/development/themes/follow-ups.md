@@ -4,7 +4,7 @@ All 13 tasks in [`tasks.json`](tasks.json) are accepted and on `claude/themes`, 
 
 **Closed on September 25, 2026.** Every item below is done, obsolete or moved: 22 (EVIDENCE-GAPS) and 23 (PRESS-DISTINCT) are tasks in the development backlog, [`docs/development/tasks.json`](../tasks.json). The controller follow-ups under [Outside this branch](#outside-this-branch) are development tooling, not themes work, and stay open there. The rest of this file is the initiative's record.
 
-Sources are cited by file and section. `HANDOFF.md` means [the handoff](../HANDOFF.md) as of `5a17c4c`, which later sessions rewrite. Paths under `.local/themes-evidence/` are the coordinator's local, unversioned review bundles.
+Sources are cited by file and section. `HANDOFF.md` refers to the historical `docs/development/HANDOFF.md` as of `5a17c4c` (later replaced by `docs/development/STATE.md`). Paths under `.local/themes-evidence/` are the coordinator's local, unversioned review bundles.
 
 ## Owner decisions
 

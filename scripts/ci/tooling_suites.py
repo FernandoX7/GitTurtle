@@ -3,21 +3,15 @@
 
   python3 scripts/ci/tooling_suites.py run --directory <measurements>
 
-`run` is the tooling job's one test step. It starts six processes at once, each through
-`scripts/ci/metrics.py measure` and in a session of its own: the agent-loop suite as three groups,
-then the native-QA, operator and CI-helper suites with the commands they always had. All six run
-to their end whatever the others do, nothing is run twice, and the step fails when one of them
-fails, ran no test, or the groups do not hold every agent-loop test exactly once. Only the
-driver's own deadline (`DEADLINE`, behind the job's limit) ends a process: what it cuts is named,
-every process's output is still printed, and the step fails.
+`run` is the tooling job's one test step. It starts the development-tooling suites side by side,
+each through `scripts/ci/metrics.py measure` and in a session of its own (`dev-tooling`,
+`gate-tooling`, `native-qa-tooling`, and optionally `ci-tests`). All processes run to their end
+whatever the others do, nothing is run twice, and the step fails when any suite fails or runs no
+test. Only the driver's own deadline (`DEADLINE`, behind the job's limit) ends a process: what it
+cuts is named, every process's output is still printed, and the step fails.
 
-The agent-loop tests are dealt, not listed: each group discovers the suite as
-`python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'` does, sorts the
-tests by id and keeps every third one from its own place, in that order. A test of one class
-therefore stays beside its neighbours and the class and module fixtures still run around them, and
-a new test or module is dealt without a list to edit. Each group records the ids it hands to
-unittest; when the six have ended, a discovery of the driver's own must find exactly those ids,
-each in one group, or the step fails and names every id that differs.
+When sharded group discovery (`GROUPS > 0`) is configured, `group` and `ids` deal discovered tests
+deterministically across groups and prove every test ran exactly once.
 
 A process's output is captured and printed whole once all six have ended, in the order they are
 listed here, inside a log group of its name. Every such line is printed behind the collector's
@@ -54,14 +48,14 @@ import unittest
 HERE = Path(__file__).resolve()
 ROOT = HERE.parents[2]
 METRICS = ROOT / "scripts/ci/metrics.py"
-# The agent-loop suite's discovery, as its own step always ran it.
-AGENT_LOOP = ("-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py")
-GROUPS = 3
-# The other suites: the measurement's name and the interpreter arguments its step always had.
+# Sharded group count (0 when no suite requires multi-group sharding).
+AGENT_LOOP = ()
+GROUPS = 0
+# Tooling suites: the measurement's name and the interpreter arguments.
 SUITES = (
+    ("dev-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-t", "scripts", "-p", "test_*.py")),
+    ("gate-tooling", ("-B", "-m", "unittest", "scripts/test_gate.py", "scripts/test_claude_rm_hook.py")),
     ("native-qa-tooling", ("-m", "unittest", "discover", "-s", "scripts/native_qa", "-t", "scripts", "-p", "test_*.py")),
-    ("operator-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/operator", "-p", "test_*.py")),
-    ("dev-tooling", ("-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-p", "test_*.py")),
     ("ci-tests", ("-m", "unittest", "discover", "-s", "scripts/ci/tests", "-p", "test_*.py")),
 )
 HEARTBEAT = 30.0
@@ -187,7 +181,7 @@ def prove(discovered, groups):
 # The processes.
 
 def plan(records, discovery=AGENT_LOOP, count=GROUPS, suites=SUITES):
-    """The step's processes in the order their output is printed, and the driver's own discovery."""
+    """The step's processes in the order their output is printed, and optional sharded discovery."""
     jobs = []
     for index in range(count):
         record = records / f"group-{index + 1}.json"
@@ -195,6 +189,8 @@ def plan(records, discovery=AGENT_LOOP, count=GROUPS, suites=SUITES):
                         (sys.executable, str(HERE), "group", "--index", str(index), "--of", str(count),
                          "--record", str(record), *discovery), record))
     jobs += [Job(name, (sys.executable, *arguments), None) for name, arguments in suites]
+    if not count:
+        return jobs, None
     record = records / "discovery.json"
     return jobs, Job("agent-tooling-discovery",
                      (sys.executable, str(HERE), "ids", "--record", str(record), *discovery), record)

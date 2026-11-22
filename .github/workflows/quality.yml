@@ -104,7 +104,7 @@ jobs:
         run: python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11), "Python 3.11 or newer is required"'
       - name: Validate development guidance
         run: python3 scripts/ci/metrics.py measure --name guidance --directory "$RUNNER_TEMP/ci-metrics" -- python3 scripts/check-agent-guidance.py
-      - name: Test development, native-QA, operator and CI tooling side by side
+      - name: Test development, gate, native-QA and CI tooling side by side
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
             python3 scripts/ci/tooling_suites.py run --skip-ci-tests --directory "$RUNNER_TEMP/ci-metrics"

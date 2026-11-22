@@ -794,30 +794,26 @@ class DeadlineTests(Fixtures):
 
 
 class PlanTests(unittest.TestCase):
-    def test_the_step_is_six_processes_with_the_commands_the_four_steps_had(self):
+    def test_the_step_runs_the_four_tooling_suites_side_by_side(self):
         jobs, listing = suites.plan(Path("/records"))
         self.assertEqual([job.name for job in jobs],
-                         ["agent-tooling-1-of-3", "agent-tooling-2-of-3", "agent-tooling-3-of-3",
-                          "native-qa-tooling", "operator-tooling", "dev-tooling", "ci-tests"])
-        discovery = ("-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py")
-        for index, job in enumerate(jobs[:3]):
-            self.assertEqual(job.command, (sys.executable, str(DRIVER), "group", "--index", str(index), "--of", "3",
-                                           "--record", f"/records/group-{index + 1}.json", *discovery))
-            self.assertEqual(job.record, Path(f"/records/group-{index + 1}.json"))
-        self.assertEqual([job.command for job in jobs[3:]], [
+                         ["dev-tooling", "gate-tooling", "native-qa-tooling", "ci-tests"])
+        self.assertIsNone(listing)
+        self.assertEqual([job.command for job in jobs], [
+            (sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-t", "scripts", "-p", "test_*.py"),
+            (sys.executable, "-B", "-m", "unittest", "scripts/test_gate.py", "scripts/test_claude_rm_hook.py"),
             (sys.executable, "-m", "unittest", "discover", "-s", "scripts/native_qa", "-t", "scripts", "-p", "test_*.py"),
-            (sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/operator", "-p", "test_*.py"),
-            (sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-p", "test_*.py"),
             (sys.executable, "-m", "unittest", "discover", "-s", "scripts/ci/tests", "-p", "test_*.py")])
-        self.assertEqual([job.record for job in jobs[3:]], [None, None, None, None])
-        self.assertEqual(listing.command, (sys.executable, str(DRIVER), "ids", "--record", "/records/discovery.json", *discovery))
+        self.assertEqual([job.record for job in jobs], [None, None, None, None])
         # Every name is one the collector accepts, and the records sort by suite in its summary.
         metrics = suites.collector()
-        for job in (*jobs, listing):
+        for job in jobs:
             self.assertTrue(metrics.NAME.fullmatch(job.name), job.name)
-        # A start folder that is where the tests say it is: a renamed suite must not leave a group of nothing.
-        for folder in ("scripts/agent_loop", "scripts/native_qa", "scripts/operator", "scripts/dev", "scripts/ci/tests"):
+        # Every suite folder and explicit test file exists where the plan says it does.
+        for folder in ("scripts/dev", "scripts/native_qa", "scripts/ci/tests"):
             self.assertTrue(any((ROOT / folder).glob("test_*.py")), folder)
+        for path in ("scripts/test_gate.py", "scripts/test_claude_rm_hook.py"):
+            self.assertTrue((ROOT / path).is_file(), path)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -840,7 +836,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([step.split("\n", 1)[0] for step in steps[1:]], [
             "name: Verify Python runtime",
             "name: Validate development guidance",
-            "name: Test development, native-QA, operator and CI tooling side by side",
+            "name: Test development, gate, native-QA and CI tooling side by side",
             "name: Check CI collector syntax and help",
             "name: Summarize CI measurements",
             "name: Preserve CI measurements and sanitized diagnostics"])
@@ -848,7 +844,7 @@ class WorkflowTests(unittest.TestCase):
         # agent-tooling passes --skip-ci-tests there and runs all suites on macOS.
         self.assertEqual(
             steps[3],
-            "name: Test development, native-QA, operator and CI tooling side by side\n"
+            "name: Test development, gate, native-QA and CI tooling side by side\n"
             "        run: |\n"
             '          if [ "${{ runner.os }}" = "Linux" ]; then\n'
             '            python3 scripts/ci/tooling_suites.py run --skip-ci-tests --directory "$RUNNER_TEMP/ci-metrics"\n'

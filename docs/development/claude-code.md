@@ -57,38 +57,15 @@ Every role runs on Opus 5.5 (`claude-opus-5-5`); roles differ only in effort. Ag
 
 ## Session length
 
-Work to about 40% of the context window, then hand off; the rule and its reasons
-live in [`CLAUDE.md`](../../CLAUDE.md#session-length).
+Work in bounded sessions and hand off cleanly before context degrades. Keep [`STATE.md`](STATE.md) (`<= 60` lines, overwritten) current with active branches, commits, and next steps, and graduate durable lessons into `.agents/skills/`.
 
-The unattended loop already holds to it structurally, and that is deliberate:
-every attempt is a fresh process, agents cap `maxTurns` (40 for `Explore`, 60–120
-for reviewers, 200 for implementers), and the controller caps `--max-turns` and
-`--session-minutes`. Raising a cap so one session can finish a task trades a
-bounded risk for an unbounded one; prefer splitting the task.
+## Retired unattended controller
 
-An interactive coordinator has no such cap and is where this goes wrong, because
-a long coordinating session accumulates run state, evidence paths and candidate
-shas that exist nowhere else. Two habits make stopping cheap:
+The earlier standalone unattended loop (`scripts/agent-loop.py`, `scripts/agent_loop/`, `scripts/operator/`, and `gitturtle-operate-loop`) was retired in November 2026 in favor of direct multi-agent coordinator sessions, isolated CoW worktrees (`scripts/dev/worktree.py`), canonical `.agents/roles/` and `.agents/skills/` synced via `scripts/dev/sync_adapters.py`, and universal `.githooks/`.
 
-- Keep [`HANDOFF.md`](HANDOFF.md) current as you go, recording run directories,
-  candidate shas and evidence paths when they are produced rather than at the end.
-- Preserve accepted work onto the branch before stopping. Accepted commits live
-  in the run's `accepted` checkout, not your worktree, and a saved run pins its
-  controller by digest — once a harness fix lands, that run resumes only on its
-  saved, unfixed controller, and anything left only inside it is stranded if that
-  controller cannot finish it. Land each task with
-  `scripts/operator/land.py --run <run> --task <task>` as it is accepted rather
-  than as one batch at the end.
+## Models and inheritance
 
-## Unattended loop
-
-The existing controller runs Claude sessions with `python3 scripts/agent-loop.py run --tool claude ...`; the [runbook](README.md) documents the options, the per-attempt routing (one model for every session by default: the base effort first, a higher effort on the retry, the `implementer-hard` role afterwards at `--hard-effort`, `medium` for a docs or tooling task's first attempt, and a separate effort for the reviewers), the settings snapshot each session receives, how a result left as text is read and an unreadable one retried once, and the pause when a usage limit is reached. Task contracts, evidence, attestations, acceptance and the private accepted branch work exactly as they do for Codex. Every session is a fresh process with the task contract, the previous attempt's reason, the task's coordinator notes and a turn cap; the controller runs the gates and a separate read-only verifier and never trusts the implementer's summary. When a candidate needs native, performance, package or vendor evidence, the verifier and any security review run before that evidence is gathered, and the verifier runs again once it is attested ([order](README.md#native-and-external-attestations)), so a defect no evidence can fix spends the attempt before a capture session does. Frames, records and the dated validation entry go in one evidence commit on top of the candidate, registered with `attest --evidence-commit`; acceptance fast-forwards to it without a rebuild ([procedure](README.md#evidence-committed-on-top-of-the-candidate)). The loop keeps implementing other tasks while up to `--max-awaiting-evidence` candidates (default 3) wait for evidence, and when only evidence is outstanding it idles, uncharged to `--max-minutes`, instead of exiting. When an acceptance moves the head, it replays each pending candidate and its evidence commit onto it without an implementer session, so a clean replay with green gates keeps its attempt and needs only a `qa.py recheck` of the committed frames ([concurrency and rebase](README.md#pending-candidates-concurrency-and-rebase)). Implementer sessions run with bypass permissions inside the private attempt clone; `--sandbox on` additionally wraps Bash in the Claude Code sandbox, which on Linux needs `bwrap` and `socat` installed (`--sandbox auto`, the default, enables it only when both are present).
-
-The operator steers a running loop with three commands, none of which needs the loop stopped, killed or resumed. `python3 scripts/agent-loop.py note --run R --task T --text "…"` (or `--file F`) gives the task's later implementer sessions coordinator guidance that never changes its contract or acceptance, and shows it to the reviewers as context only ([coordinator notes](README.md#coordinator-notes)). `attest` registers evidence for a parked candidate. While the loop holds the run, both queue in the run's inbox, and the controller applies or refuses each one when the step in progress ends (never inside a step), within 30 seconds while the loop idles for evidence, or at the next `resume`. `status --run R` shows the run state with the pending requests and the latest outcomes under `inbox`.
-
-A coordinator session operates the loop with the [`gitturtle-operate-loop`](../../.agents/skills/gitturtle-operate-loop/SKILL.md) skill and the `scripts/operator/` tools ([runbook](README.md#operate-a-run)). `start.sh` and `resume.sh` run it in tmux without the session's `CLAUDE*` variables, which would otherwise reach every child session. `resume.sh` runs the run's saved controller, so a run started before a harness change resumes on its original code. A Monitor on `watch.sh` relays one line per event, and `land.py` turns each accepted task into a squash-merged PR. A short prompt that names the run or queue and the owner's model and effort choices is then enough to take a run over.
-
-Watch the host for anything that writes into a checkout behind the run. An editor or another agent tool that mirrors Claude's configuration files into `.codex/` or `.agents/skills/` no longer rejects a candidate: untracked files under those two roots are left out of the candidate and listed as `mirror_untracked` on the task record, because nothing a candidate may add lives there. A change to a tracked file under them, or an untracked file anywhere else, is still judged by the task scope and the protected paths. The [decision record](2026-09-17-claude-code-support.md#an-untracked-mirror-stops-a-run-from-accepting-anything) records how the sweep was recognized and worked around while a run was pinned to the earlier controller digest.
+All canonical roles in `.agents/roles/` and generated adapters in `.claude/agents/` and `.codex/agents/` omit hardcoded `model` and `effort` overrides so delegated work inherits the caller's active session settings (enforced by `scripts/check-agent-guidance.py`). Choose model and effort per session rather than pinning them in project config.
 
 ## Definition of done
 

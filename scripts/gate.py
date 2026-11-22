@@ -763,13 +763,16 @@ def build_stages(
         )
         stages.append(
             Stage(
-                "controller-tests",
-                [sys.executable, "-m", "unittest", "discover", "-s", "scripts/agent_loop", "-t", "scripts", "-p", "test_*.py"],
-                reproduce="(umask 077 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py')",
-                # The controller refuses group-writable records; a host umask of 002
-                # would otherwise fail its suite without any code defect.
-                umask=0o077,
-                note="umask 077",
+                "dev-tooling-tests",
+                [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/dev", "-t", "scripts", "-p", "test_*.py"],
+                reproduce="python3 -B -m unittest discover -s scripts/dev -t scripts -p 'test_*.py'",
+            )
+        )
+        stages.append(
+            Stage(
+                "gate-tests",
+                [sys.executable, "-B", "-m", "unittest", "scripts/test_gate.py", "scripts/test_claude_rm_hook.py"],
+                reproduce="python3 -B -m unittest scripts/test_gate.py scripts/test_claude_rm_hook.py",
             )
         )
 

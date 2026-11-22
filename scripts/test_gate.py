@@ -212,12 +212,15 @@ class FilterTests(unittest.TestCase):
         self.assertEqual(kept[1], "warning[license-not-encountered] license was not encountered NCSA")
         self.assertIn("cargo-deny diagnostics: error=1, summary=1, warning=1", kept)
 
-    def test_controller_tests_stage_sets_umask(self):
+    def test_dev_tooling_and_gate_stages_are_scheduled_in_full_tier(self):
         scope = gate.Scope(("gitturtle-core",), True, True, ())
         with tempfile.TemporaryDirectory() as tmp:
             stages = gate.build_stages("full", scope, Path(tmp), {name: False for name in gate.OPTIONAL_TOOLS}, None, False, CRATES, Path(tmp))
-        stage = next(stage for stage in stages if stage.name == "controller-tests")
-        self.assertEqual(stage.umask, 0o077)
+        by_name = {stage.name: stage for stage in stages}
+        self.assertIn("dev-tooling-tests", by_name)
+        self.assertIn("gate-tests", by_name)
+        self.assertIn("scripts/dev", by_name["dev-tooling-tests"].argv)
+        self.assertIn("scripts/test_gate.py", by_name["gate-tests"].argv)
 
     def test_plain_first_error_from_panic(self):
         kept, first = gate.filter_plain(["thread 'main' panicked at scripts/x.rs:4:2:", "boom"])
@@ -322,7 +325,7 @@ class StageTests(unittest.TestCase):
         self.assertEqual(stages[-1].reproduce, "cargo check --locked --workspace --all-targets")
 
     def test_stages_without_a_rust_build_run_first(self):
-        build_free = {"format", "typos", "machete", "insta", "privacy", "deny", "audit", "guidance", "controller-tests"}
+        build_free = {"format", "typos", "machete", "insta", "privacy", "deny", "audit", "guidance", "dev-tooling-tests", "gate-tests"}
         scopes = (
             (gate.Scope(("gitturtle-core",), False, True, ()), "clippy"),
             (gate.Scope(tuple(sorted(CRATES.values())), True, True, ()), "clippy"),
@@ -390,7 +393,7 @@ class StageTests(unittest.TestCase):
             scope = gate.Scope(("gitturtle-core",), True, True, ())
             stages = gate.build_stages("full", scope, root, self.tools(nextest=True, mutants=True, deny=True, audit=True), base, False, CRATES, root)
         names = [stage.name for stage in stages]
-        for expected in ("doctests", "doc", "insta", "deny", "audit", "mutants", "release", "guidance", "controller-tests"):
+        for expected in ("doctests", "doc", "insta", "deny", "audit", "mutants", "release", "guidance", "dev-tooling-tests", "gate-tests"):
             self.assertIn(expected, names)
         mutants = next(stage for stage in stages if stage.name == "mutants")
         self.assertTrue(mutants.clear_target_dir)

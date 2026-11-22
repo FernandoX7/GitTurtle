@@ -64,7 +64,7 @@ For packaging or performance work, also run `cargo build --release --locked -p g
 
 Docs-only changes need link, command and diff checks. Artwork changes need verification of their consumers and derived resources; see [asset conventions](assets/icons/README.md). Neither requires unrelated Rust tests.
 
-Development-controller changes use `python3 scripts/check-agent-guidance.py` and `umask 022 && python3 -m unittest discover -s scripts/agent_loop -t scripts -p 'test_*.py'`. Follow the [development workflow](docs/development/README.md) for task contracts, isolated runs and evidence; product checks apply when those changes also affect the client.
+Development-tooling changes use `python3 scripts/check-agent-guidance.py`, `python3 -B -m unittest discover -s scripts/dev -t scripts -p 'test_*.py'`, and `python3 -B -m unittest scripts/test_gate.py scripts/test_claude_rm_hook.py`. Follow the [development workflow](docs/development/README.md) for roles, skills, and evidence; product checks apply when those changes also affect the client.
 
 CI changes also use `python3 -m unittest discover -s scripts/ci/tests -p 'test_*.py'`
 and pinned actionlint 1.7.12 on both Quality and Website workflows. The
@@ -74,7 +74,7 @@ and pinned actionlint 1.7.12 on both Quality and Website workflows. The
 
 Always use atomic [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): each commit contains one cohesive change and its necessary code, tests and documentation. Use the form `type(optional-scope): description`, with `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore` or `revert`. Mark an incompatible change with `!` after the type/scope or a `BREAKING CHANGE:` footer. For example, `fix(history): retain selection after refresh` should include the correction and its relevant regression coverage and documentation.
 
-Stage explicit intended paths and inspect the staged diff before each commit. Preserve unrelated staged and working changes. Never amend or rewrite published history without authorization. In coordinated agent work, the coordinator owns the index and commits; the [unattended controller](docs/development/README.md) owns commits inside its isolated checkout, and its workers return file changes without committing.
+Stage explicit intended paths and inspect the staged diff before each commit. Preserve unrelated staged and working changes. Never amend or rewrite published history without authorization. Enable repository hooks once per clone via `git config core.hooksPath .githooks`. In coordinated work, the coordinator owns the index and commits.
 
 ## Send a pull request
 
