@@ -3,45 +3,16 @@
 //! Native extraction can allocate internally and is not preemptible. Only the
 //! selected page is requested; Rust buffers and the returned UTF-8 are bounded.
 use super::*;
-use std::ffi::c_char;
+use objc2::msg_send;
+use objc2::rc::{Allocated, Retained, autoreleasepool};
+use objc2::runtime::{AnyClass, AnyObject};
+use objc2_foundation::{NSData, NSRange, NSString};
+use std::ptr::NonNull;
 
 #[link(name = "PDFKit", kind = "framework")]
 unsafe extern "C" {
     #[link_name = "OBJC_CLASS_$_PDFDocument"]
     static PDF_DOCUMENT_CLASS: c_void;
-}
-#[link(name = "objc")]
-unsafe extern "C" {
-    fn sel_registerName(name: *const c_char) -> Ref;
-    fn objc_msgSend();
-    fn objc_release(object: Ref);
-    fn objc_autoreleasePoolPush() -> Ref;
-    fn objc_autoreleasePoolPop(pool: Ref);
-}
-#[repr(C)]
-struct Range {
-    location: isize,
-    length: isize,
-}
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFStringGetLength(string: Ref) -> isize;
-    fn CFStringGetCharacters(string: Ref, range: Range, buffer: *mut u16);
-}
-
-struct AutoreleasePool(Ref);
-impl AutoreleasePool {
-    fn new() -> Self {
-        // SAFETY: this private pool is popped on the same worker stack after all
-        // native document/page/string uses, including error and cancellation exits.
-        Self(unsafe { objc_autoreleasePoolPush() })
-    }
-}
-impl Drop for AutoreleasePool {
-    fn drop(&mut self) {
-        // SAFETY: the corresponding push belongs to this stack and is popped once.
-        unsafe { objc_autoreleasePoolPop(self.0) }
-    }
 }
 
 pub(crate) fn decode_pdf_page_text(
@@ -50,51 +21,37 @@ pub(crate) fn decode_pdf_page_text(
     check: impl Fn() -> Result<()>,
 ) -> Result<PdfPageText> {
     check()?;
-    let _pool = AutoreleasePool::new();
-    let data = data(bytes)?;
-    // SAFETY: these signatures match PDFKit's public Objective-C selectors.
-    // initWithData receives toll-free bridged CFData/NSData and retains its own
-    // reference. No URL, action, script, annotation, or external resource API is
-    // called. Owned releases the document before data and the autorelease pool.
-    unsafe {
-        let object: unsafe extern "C" fn(Ref, Ref) -> Ref =
-            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        let with_object: unsafe extern "C" fn(Ref, Ref, Ref) -> Ref =
-            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        let boolean: unsafe extern "C" fn(Ref, Ref) -> i8 =
-            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        let count: unsafe extern "C" fn(Ref, Ref) -> usize =
-            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        let indexed: unsafe extern "C" fn(Ref, Ref, usize) -> Ref =
-            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        let allocated = object(
-            ptr::addr_of!(PDF_DOCUMENT_CLASS).cast(),
-            sel_registerName(c"alloc".as_ptr()),
-        );
-        ensure!(!allocated.is_null(), "Cannot allocate PDF text document");
-        // An Objective-C initializer consumes the allocated receiver, including
-        // on failure. Retain ownership only of its returned instance.
-        let document = Owned::new(
-            with_object(
-                allocated,
-                sel_registerName(c"initWithData:".as_ptr()),
-                data.raw,
-            ),
-            objc_release,
-            "Cannot read PDF text; corrupt or unsupported document",
-        )?;
+    autoreleasepool(|_| {
+        let data = NSData::with_bytes(bytes);
+        // SAFETY: `OBJC_CLASS_$_PDFDocument` is the static Objective-C `Class`
+        // object exported by `PDFKit.framework`, and these selectors match
+        // PDFKit's public Objective-C API (`PDFDocument`, `PDFPage`).
+        // `initWithData:` receives an in-memory `NSData` and retains its own
+        // reference; no URL, action, script, annotation, or external resource
+        // API is called. `Retained` releases Objective-C instances before the
+        // surrounding autorelease pool exits.
+        let document: Retained<AnyObject> = unsafe {
+            let cls = &*(&raw const PDF_DOCUMENT_CLASS).cast::<AnyClass>();
+            let allocated: Allocated<AnyObject> = msg_send![cls, alloc];
+            let initialized: Option<Retained<AnyObject>> =
+                msg_send![allocated, initWithData: &*data];
+            initialized.context("Cannot read PDF text; corrupt or unsupported document")?
+        };
         check()?;
+        // SAFETY: `PDFDocument.isLocked` returns Objective-C `BOOL`.
+        let locked: bool = unsafe { msg_send![&*document, isLocked] };
         ensure!(
-            boolean(document.raw, sel_registerName(c"isLocked".as_ptr())) == 0,
+            !locked,
             "PDF is password protected; text extraction is unavailable"
         );
-        let page_count = count(document.raw, sel_registerName(c"pageCount".as_ptr()));
+        // SAFETY: `PDFDocument.pageCount` returns `NSUInteger` (`usize` on 64-bit macOS).
+        let page_count: usize = unsafe { msg_send![&*document, pageCount] };
         ensure!(page_count > 0, "PDF contains no pages");
         ensure!(
             page_count <= MAX_PDF_PAGES,
             "PDF page count exceeds the 100,000-page navigation bound"
         );
-        // pageAtIndex: raises an Objective-C exception for an out-of-range index.
+        // `pageAtIndex:` raises an Objective-C exception for an out-of-range index.
         ensure!(
             page_index < page_count,
             "PDF page {} is outside this document's {}",
@@ -102,48 +59,37 @@ pub(crate) fn decode_pdf_page_text(
             crate::metadata::counted(page_count, "page", "pages")
         );
         check()?;
-        let page = indexed(
-            document.raw,
-            sel_registerName(c"pageAtIndex:".as_ptr()),
-            page_index,
-        );
-        ensure!(
-            !page.is_null(),
-            "PDF page is unavailable for text extraction"
-        );
+        // SAFETY: `page_index < page_count` is verified above and `PDFDocument.pageAtIndex:`
+        // returns an optional `PDFPage *`.
+        let page: Retained<AnyObject> = unsafe {
+            let page: Option<Retained<AnyObject>> = msg_send![&*document, pageAtIndex: page_index];
+            page.context("PDF page is unavailable for text extraction")?
+        };
         check()?;
-        let string = object(page, sel_registerName(c"string".as_ptr()));
+        // SAFETY: `PDFPage.string` returns an optional `NSString *`.
+        let string: Option<Retained<NSString>> = unsafe { msg_send![&*page, string] };
         check()?;
-        if string.is_null() {
+        let Some(string) = string else {
             return Ok(PdfPageText {
                 text: None,
                 truncated: false,
             });
-        }
-        // PDFPage.string returns a borrowed NSString, toll-free bridged to
-        // CFString. It stays alive through the surrounding autorelease pool.
-        bounded_text(string, &check)
-    }
+        };
+        bounded_text(&string, &check)
+    })
 }
 
-unsafe fn bounded_text(string: Ref, check: &impl Fn() -> Result<()>) -> Result<PdfPageText> {
-    // SAFETY: caller provides a live NSString/CFString for this stack lifetime.
-    let length = usize::try_from(unsafe { CFStringGetLength(string) })?;
+fn bounded_text(string: &NSString, check: &impl Fn() -> Result<()>) -> Result<PdfPageText> {
+    let length = string.len_utf16();
     let copied = length.min(MAX_PDF_PAGE_TEXT_BYTES);
     // At most 512 KiB UTF-16 scratch, independent of the native string length.
     let mut utf16 = vec![0u16; copied];
     if copied > 0 {
-        // SAFETY: the requested range is inside the validated string length and
-        // the output vector has exactly enough initialized UTF-16 code units.
+        let buffer = NonNull::new(utf16.as_mut_ptr()).expect("non-empty Vec buffer is non-null");
+        // SAFETY: `0..copied` is within `string.len_utf16()` and `utf16` has
+        // exactly `copied` initialized `u16` code units.
         unsafe {
-            CFStringGetCharacters(
-                string,
-                Range {
-                    location: 0,
-                    length: copied as isize,
-                },
-                utf16.as_mut_ptr(),
-            );
+            string.getCharacters_range(buffer, NSRange::new(0, copied));
         }
     }
     let mut truncated = copied < length;
@@ -180,15 +126,6 @@ unsafe fn bounded_text(string: Ref, check: &impl Fn() -> Result<()>) -> Result<P
 mod tests {
     use super::*;
 
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFStringCreateWithCharacters(
-            allocator: Ref,
-            characters: *const u16,
-            count: isize,
-        ) -> Ref;
-    }
-
     fn pdf(texts: &[&str]) -> Vec<u8> {
         let mut output = b"%PDF-1.4\n".to_vec();
         let font = 3 + texts.len() * 2;
@@ -204,7 +141,10 @@ mod tests {
             ),
         ];
         for (index, text) in texts.iter().enumerate() {
-            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font} 0 R >> >> /Contents {} 0 R >>", 4 + index * 2));
+            objects.push(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font} 0 R >> >> /Contents {} 0 R >>",
+                4 + index * 2
+            ));
             let stream = format!("BT /F1 12 Tf 40 740 Td ({text}) Tj ET");
             objects.push(format!(
                 "<< /Length {} >>\nstream\n{stream}\nendstream",
@@ -284,18 +224,8 @@ mod tests {
             "水".repeat(MAX_PDF_PAGE_TEXT_BYTES),
             format!("{}🦀tail", "a".repeat(MAX_PDF_PAGE_TEXT_BYTES - 1)),
         ] {
-            let utf16: Vec<_> = original.encode_utf16().collect();
-            // SAFETY: CFString copies initialized UTF-16 and Owned releases it.
-            let native = unsafe {
-                Owned::new(
-                    CFStringCreateWithCharacters(ptr::null(), utf16.as_ptr(), utf16.len() as isize),
-                    CFRelease,
-                    "test string",
-                )
-                .unwrap()
-            };
-            // SAFETY: this live CFString is valid for the call's duration.
-            let extracted = unsafe { bounded_text(native.raw, &|| Ok(())) }.unwrap();
+            let native = NSString::from_str(&original);
+            let extracted = bounded_text(&native, &|| Ok(())).unwrap();
             assert!(extracted.truncated);
             let text = extracted.text.unwrap();
             assert!(text.len() <= MAX_PDF_PAGE_TEXT_BYTES);

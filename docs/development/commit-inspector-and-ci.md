@@ -1,7 +1,7 @@
 # Commit inspector and delivery initiative
 
-Status: authorized feature intake, September 15, 2026. The source queue is
-[tasks.json](tasks.json); this document describes its intended outcomes and the
+Status: authorized feature intake, September 15, 2026. The historical source queue was
+`tasks.json` (retired in November 2026); this document describes its intended outcomes and the
 coordinator checkpoints that the current runner cannot complete by itself.
 No implementation, unattended run, repository-setting change or release was
 started when this list was created.

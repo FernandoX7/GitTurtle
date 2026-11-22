@@ -1150,14 +1150,15 @@ impl GitTurtle {
                         return div().into_any_element();
                     }
                     if file_history {
-                        this.render_revision_metadata(this.file_history_entry().unwrap(), &rows, cx)
+                        let Some(entry) = this.file_history_entry() else {
+                            return div().into_any_element();
+                        };
+                        this.render_revision_metadata(entry, &rows, cx)
                     } else {
-                        this.render_commit_metadata(
-                            this.message_commit(false).unwrap(),
-                            &rows,
-                            window,
-                            cx,
-                        )
+                        let Some(commit) = this.message_commit(false) else {
+                            return div().into_any_element();
+                        };
+                        this.render_commit_metadata(commit, &rows, window, cx)
                     }
                 })
                 .unwrap_or_else(|_| div().into_any_element())

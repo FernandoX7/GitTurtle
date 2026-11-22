@@ -81,7 +81,7 @@ sends it once the item leaves the bus
 
 ## Consumer and coverage
 
-GPUI's Linux backend `gpui-pre-linux` 0.3.4 depends on `accesskit_unix`
+GPUI's Linux backend `gpui-pre-linux` 0.3.12 depends on `accesskit_unix`
 0.22 and creates one `accesskit_unix::Adapter` for each X11 or Wayland
 window (`src/linux/x11/window.rs`, `src/linux/wayland/window.rs`); every
 object it adds to or removes from the AT-SPI tree goes through

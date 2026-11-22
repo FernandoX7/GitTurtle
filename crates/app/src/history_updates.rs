@@ -103,11 +103,10 @@ impl State {
         };
         let message = sentence(error);
         if operation_error.is_none() || operation_error.as_deref() == self.scope_error.as_deref() {
-            *operation_error = Some(crate::views::OperationFailure::summarized(
-                message.clone(),
-                summary.map(sentence),
-            ));
-            self.scope_error = Some(message);
+            let failure =
+                crate::views::OperationFailure::summarized(message, summary.map(sentence));
+            self.scope_error = Some((*failure).to_owned());
+            *operation_error = Some(failure);
             self.reported_vanished = vanished.cloned();
         }
     }

@@ -19,5 +19,5 @@ Read [DESIGN.md](../../../DESIGN.md) and [crates/app/AGENTS.md](../../../crates/
 ## Testing & open backlog awareness
 
 - Prove color/focus/layout changes with `#[gpui::test]` using `ThemeChoice::Midnight.apply(None, cx)` + `window.painted_quads()` and `debug_bounds` (see [gitturtle-gpui-testing](../gitturtle-gpui-testing/SKILL.md)).
-- Keep known open UI/a11y deficits in view rather than assuming parity: macOS VoiceOver off-screen clip bounds & alert readback need real macOS verification, Linux portal `high-contrast` -> `MoreContrast` wiring is pending, and narrow half-tile (`461 × 490`, 18 pt) project-pane layout remains tracked in [docs/native-accessibility.md](../../../docs/native-accessibility.md).
+- Keep known open UI/a11y deficits in view rather than assuming parity: macOS VoiceOver off-screen clip bounds & alert readback need real macOS verification, and narrow half-tile (`461 × 490`, 18 pt) project-pane layout remains tracked in [docs/native-accessibility.md](../../../docs/native-accessibility.md).
 - Tag every UI/input/a11y PR explicitly with which host/backend was exercised vs unverified (e.g., `"Verified on Linux XWayland | Unverified on macOS / Wayland"`).

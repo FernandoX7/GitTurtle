@@ -766,13 +766,14 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   Refresh and copyable Details. Ignore-rule edits reconsider affected coverage,
   including shared and global excludes. Refresh or returning focus retries
   degraded coverage. See the [local refresh contract](../crates/app/docs/navigation-and-refresh.md#local-refresh).
-- Reduced motion follows the desktop through the XDG settings portal: the
-  appearance `reduced-motion` (1 reduces), GNOME's
+- Reduced motion and increased contrast follow the desktop through the XDG
+  settings portal: the appearance `reduced-motion` (1 reduces), GNOME's
   `org.gnome.desktop.a11y.interface` `reduced-motion` (`reduce`) and
-  `org.gnome.desktop.interface` `enable-animations` (false). Any one of them
-  asking reduces motion; unknown values and missing keys ask for nothing. The
-  appearance `contrast` and GNOME's `high-contrast` are read but do not change
-  the palette yet; there is no transparency preference. Omarchy's settings
+  `org.gnome.desktop.interface` `enable-animations` (false), plus appearance
+  `contrast` (1 increases) and GNOME's `high-contrast` (true) driving More
+  contrast when Settings → Increase contrast is set to Follow system. Any
+  matching key enables the preference; unknown values and missing keys ask for
+  nothing, and there is no transparency preference. Omarchy's settings
   backend, xdg-desktop-portal-gtk, does not publish the appearance
   `reduced-motion`, so there the GNOME keys decide. Omarchy has no switch for
   any of these keys: they stay at their defaults until set with `gsettings`

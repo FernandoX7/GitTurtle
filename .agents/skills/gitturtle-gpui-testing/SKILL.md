@@ -1,6 +1,6 @@
 ---
 name: gitturtle-gpui-testing
-description: Write, run, and stabilize #[gpui::test] view tests for GitTurtle's crates/app (TestAppContext, add_window_view, simulate_* input, run_until_parked, painted_quads, debug_bounds, accessibility_label, deterministic seeds, and iteration sweeps). Use for any UI behavior, layout, theme, focus, or accessibility change.
+description: "Write, run, and stabilize #[gpui::test] view tests for GitTurtle's crates/app (TestAppContext, add_window_view, simulate_* input, run_until_parked, painted_quads, debug_bounds, accessibility_label, deterministic seeds, and iteration sweeps). Use for any UI behavior, layout, theme, focus, or accessibility change."
 ---
 
 # GPUI view tests

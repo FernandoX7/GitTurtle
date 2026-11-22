@@ -45,6 +45,10 @@ pub(crate) fn alert_error_line(
     cx: &mut App,
 ) -> crate::copy_feedback::Alerted {
     let text = text.into();
+    let text = match gitturtle_core::strip_bidi_controls(&text) {
+        std::borrow::Cow::Borrowed(_) => text,
+        std::borrow::Cow::Owned(stripped) => stripped,
+    };
     let alerted = crate::copy_feedback::alert(
         window,
         cx,
@@ -208,13 +212,14 @@ thread_local! {
 fn kept_line(id: &'static str, text: &str) -> (ElementId, SharedString) {
     #[cfg(test)]
     let before = crate::test_support::allocations();
+    let text = gitturtle_core::strip_bidi_controls(text);
     let kept = KEPT_LINES.with_borrow_mut(|lines| {
         let line = lines.entry(id).or_insert_with(|| KeptLine {
             key: SharedString::from(format!("{id}/laid-out")).into(),
             whole: SharedString::default(),
         });
-        if !native_accessibility::carries_accessible_text(&line.whole, text) {
-            line.whole = native_accessibility::bounded_accessible_text(text);
+        if !native_accessibility::carries_accessible_text(&line.whole, text.as_ref()) {
+            line.whole = native_accessibility::bounded_accessible_text(text.as_ref());
         }
         (line.key.clone(), line.whole.clone())
     });
@@ -310,6 +315,7 @@ thread_local! {
 /// [`ERROR_TOOLTIP_LINES`] lines, within [`ERROR_TOOLTIP_BYTES`], with an
 /// ellipsis where more follows; the line's accessible value keeps the rest.
 pub(crate) fn error_tooltip(report: &str) -> SharedString {
+    let report = gitturtle_core::strip_bidi_controls(report);
     let mut lines = report.lines();
     let mut shown = lines
         .by_ref()

@@ -26,8 +26,6 @@ PROTECTED_PREFIXES = (
     "scripts/check-docs-sync.py",
     "docs/doc-manifest.json",
     "scripts/gate.py",
-    "docs/development/tasks.json",
-    "docs/development/task.schema.json",
     "docs/development/security-review.md",
     "deny.toml",
     "clippy.toml",
@@ -252,7 +250,7 @@ def check_staged_diff(diff_text: str) -> list[str]:
             remaining_new_lines -= 1
             body = raw[1:]
             if current_path and current_path not in SELF_TEST_PATHS:
-                if current_path.endswith((".md", ".yml", ".yaml", ".toml", ".json", ".py", ".sh", ".html", ".css", ".js")):
+                if current_path.endswith((".rs", ".md", ".yml", ".yaml", ".toml", ".json", ".py", ".sh", ".html", ".css", ".js")):
                     if CONFLICT_MARKER.match(body):
                         issues.append(f"{current_path}:{line_no}: merge conflict marker")
                 if current_path.startswith(("crates/", "vendor/", "scripts/")) and PROBE_MARKER.search(body):
@@ -318,7 +316,10 @@ def run_pre_commit(repo: Path) -> int:
     issues = check_staged_paths(
         added_or_modified,
         all_touched=all_touched,
-        loop_mode=os.environ.get("GITTURTLE_LOOP") == "1",
+        loop_mode=(
+            os.environ.get("GITTURTLE_PROTECT_PATHS") == "1"
+            or os.environ.get("GITTURTLE_LOOP") == "1"
+        ),
         queue=active_queue(),
     )
     diff = subprocess.run(

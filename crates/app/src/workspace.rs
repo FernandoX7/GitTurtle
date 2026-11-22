@@ -6639,7 +6639,12 @@ impl GitTurtle {
             }
             WorkingRow::File(index, area) => {
                 use crate::native_accessibility::DrawnButton as _;
-                let entry = &self.shown_working_status().unwrap().entries[index];
+                let Some(entry) = self
+                    .shown_working_status()
+                    .and_then(|status| status.entries.get(index))
+                else {
+                    return div().into_any_element();
+                };
                 let paths = entry.paths();
                 let row_path = entry.path.clone();
                 let ignore_entry = std::rc::Rc::new(entry.clone());

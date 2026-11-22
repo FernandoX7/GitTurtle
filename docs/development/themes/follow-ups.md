@@ -2,7 +2,7 @@
 
 All 13 tasks in [`tasks.json`](tasks.json) are accepted and on `claude/themes`, which is open as pull request #23 with every check green at `5a17c4c`. This file is the verified list of what is still open, each item checked against HEAD `5a17c4c` on 2026-09-23. It is the work queue for finishing the initiative.
 
-**Closed on September 25, 2026.** Every item below is done, obsolete or moved: 22 (EVIDENCE-GAPS) and 23 (PRESS-DISTINCT) are tasks in the development backlog, [`docs/development/tasks.json`](../tasks.json). The controller follow-ups under [Outside this branch](#outside-this-branch) are development tooling, not themes work, and stay open there. The rest of this file is the initiative's record.
+**Closed on September 25, 2026.** Every item below is done, obsolete or moved: 22 (EVIDENCE-GAPS) and 23 (PRESS-DISTINCT) were tasks in the historical development backlog (`docs/development/tasks.json`, retired November 2026). The controller follow-ups under [Outside this branch](#outside-this-branch) are development tooling, not themes work, and stay open there. The rest of this file is the initiative's record.
 
 Sources are cited by file and section. `HANDOFF.md` refers to the historical `docs/development/HANDOFF.md` as of `5a17c4c` (later replaced by `docs/development/STATE.md`). Paths under `.local/themes-evidence/` are the coordinator's local, unversioned review bundles.
 
@@ -151,12 +151,12 @@ The "Landed" lines of items 11-18 and 20 cite two native passes on Linux X11 at 
     - Acceptance: hover is `p.hover` composited over the surface beneath, and pressed is `p.selected`, measured distinct on rows and headers.
     - Evidence changed: resting frames are unchanged if only hover and pressed change. No committed themes frame is known to show a hovered or pressed helper button, because the drivers park the pointer, but audit `docs/evidence/` before claiming none. It adds new hover and pressed frames. Kind: native, design.
     - Landed: `ec341d6` (translucent hover and pressed layers from `Palette::control_fill`), `79d5c65` (`Palette::control_label` keeps the label at 4.5:1 on every fill) and `1625b2f` (selected helpers share that label). The design reviewer accepted pressed as a `selected` layer rather than an opaque fill, because an opaque fill is not distinct in Rosé Pine. Evidence is in the [September 24 entry](../../validation/2026-09.md#september-24-shared-button-hover-and-pressed-states).
-22. **EVIDENCE-GAPS (moved): what no capture attests yet.** Since September 25, 2026 this is `themes-evidence-gaps-linux` and `themes-evidence-gaps-macos` in the development backlog, [`docs/development/tasks.json`](../tasks.json), which carries its list.
-23. **PRESS-DISTINCT (moved): some palettes keep `selected` too close to `hover` for the shared button's pressed state.** Since September 25, 2026 this is `themes-press-distinct` in [`docs/development/tasks.json`](../tasks.json), which carries the measurements, the proposed rule and the acceptance.
+22. **EVIDENCE-GAPS (moved): what no capture attests yet.** Since September 25, 2026 this moved to `themes-evidence-gaps-linux` and `themes-evidence-gaps-macos` in the historical development backlog (`docs/development/tasks.json`, retired November 2026).
+23. **PRESS-DISTINCT (moved): some palettes keep `selected` too close to `hover` for the shared button's pressed state.** Since September 25, 2026 this moved to `themes-press-distinct` in the historical development backlog (`docs/development/tasks.json`, retired November 2026).
 
 ## Outside this branch
 
-**Commit inspector and CI queue.** [`docs/development/tasks.json`](../tasks.json) is resolved on `main`: ten tasks are integrated, and `ci-codeql` is superseded as recorded in [`docs/ci-codeql.md`](../../ci-codeql.md). The coordinator checkpoints C0 to C4 in [the initiative note](../commit-inspector-and-ci.md#coordinator-checkpoints) are still open. They need a real Mac, Apple credentials and hosted samples:
+**Commit inspector and CI queue.** The historical `docs/development/tasks.json` queue (retired November 2026) is resolved on `main`: ten tasks are integrated, and `ci-codeql` is superseded as recorded in [`docs/ci-codeql.md`](../../ci-codeql.md). The coordinator checkpoints C0 to C4 in [the initiative note](../commit-inspector-and-ci.md#coordinator-checkpoints) are still open. They need a real Mac, Apple credentials and hosted samples:
 - the `ui-commit-messages` macOS matrix;
 - the `dist-macos-package` run on a Mac;
 - C1 cache medians, tails and negative cases;

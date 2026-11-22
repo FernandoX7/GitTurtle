@@ -528,6 +528,8 @@ def which_tools() -> dict[str, bool]:
 
 def base_env(clear_target_dir: bool = False) -> dict[str, str]:
     env = dict(os.environ)
+    # Respect the repository's rust-toolchain.toml even if the host exports RUSTUP_TOOLCHAIN.
+    env.pop("RUSTUP_TOOLCHAIN", None)
     env["CARGO_TERM_COLOR"] = "never"
     env["INSTA_UPDATE"] = "no"
     env.setdefault("CARGO_INCREMENTAL", "1")
@@ -782,6 +784,34 @@ def build_stages(
                 reproduce="python3 -B -m unittest scripts/test_gate.py scripts/test_claude_rm_hook.py",
             )
         )
+        stages.append(
+            Stage(
+                "ci-tests",
+                [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/ci/tests", "-p", "test_*.py"],
+                reproduce="python3 -B -m unittest discover -s scripts/ci/tests -p 'test_*.py'",
+            )
+        )
+        stages.append(
+            Stage(
+                "native-qa-tests",
+                [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/native_qa", "-t", "scripts", "-p", "test_*.py"],
+                reproduce="python3 -B -m unittest discover -s scripts/native_qa -t scripts -p 'test_*.py'",
+            )
+        )
+        stages.append(
+            Stage(
+                "website-guides",
+                [sys.executable, "-B", "website/build_guides.py", "--check"],
+                reproduce="python3 -B website/build_guides.py --check",
+            )
+        )
+        stages.append(
+            Stage(
+                "website-check",
+                [sys.executable, "-B", "website/check.py"],
+                reproduce="python3 -B website/check.py",
+            )
+        )
 
     if scope.rust_changed or scope.workspace:
         # Workspace clippy type-checks every target that `cargo check
@@ -838,8 +868,15 @@ def build_stages(
     if tier == "fast":
         return isolate_test_stages(stages, scratch)
 
+    # Match CI's doctest filter: keeping default target selection reuses the
+    # workspace test build instead of recompiling proc-macro deps for `--doc`.
     stages.append(
-        Stage("doctests", ["cargo", "test", "--doc", "--workspace", "--locked"], reproduce="cargo test --doc --workspace --locked")
+        Stage(
+            "doctests",
+            ["cargo", "test", "--locked", "--workspace", "--", "(line "],
+            kind="cargo-test",
+            reproduce='cargo test --locked --workspace -- "(line "',
+        )
     )
     stages.append(
         Stage(

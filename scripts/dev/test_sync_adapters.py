@@ -101,6 +101,22 @@ class SyncAdaptersTests(unittest.TestCase):
         parsed = tomllib.loads(sync_adapters.render_codex_agent(role))
         self.assertEqual(parsed["developer_instructions"], "Line 1\x07\rLine 2\n")
 
+    def test_parse_role_preserves_quoted_hash_and_escapes_and_rejects_unquoted_hash(self):
+        quoted = self.root / ".agents/roles/code-reviewer.md"
+        quoted.write_text(
+            '---\nname: code-reviewer\ndescription: "Check #[gpui::test] \\"quoted\\" \\\\ paths"\n---\nBody.\n',
+            encoding="utf-8",
+        )
+        spec = sync_adapters.parse_role(quoted)
+        self.assertEqual(spec.description, 'Check #[gpui::test] "quoted" \\ paths')
+        unquoted = self.root / ".agents/roles/code-reviewer.md"
+        unquoted.write_text(
+            "---\nname: code-reviewer\ndescription: Check #[gpui::test] unquoted\n---\nBody.\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError):
+            sync_adapters.parse_role(unquoted)
+
 
 if __name__ == "__main__":
     unittest.main()

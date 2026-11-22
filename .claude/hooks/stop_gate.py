@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Stop/SubagentStop hook: run the fast gate when Rust files changed.
 
-Exit 2 blocks the turn with the gate report so Claude fixes red checks before
-claiming completion. It gives up after two attempts per session (a red gate or
-a timeout each count as one) so the verdict stays with the verifier and the
-controller. A cold target directory, a missing tool, or a non-Rust change never
-blocks and never starts a long build; the hook tells Claude to run the gate
-itself instead.
+Exit 2 blocks the turn with the gate report so red checks are fixed before
+claiming completion. Gives up after two consecutive failures per session and
+resets the counter once the gate passes. A cold target directory, a missing
+tool, or a non-Rust change never blocks and never starts a long build.
 """
+from __future__ import annotations
+
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 
 MAX_ATTEMPTS = 2
 GATE_TIMEOUT = 150
@@ -20,23 +20,58 @@ RUST_SUFFIXES = (".rs", "Cargo.toml", "Cargo.lock")
 RUST_ROOTS = ("crates/", "vendor/", "Cargo.toml", "Cargo.lock")
 
 
+def _is_rust_path(path: str) -> bool:
+    return path.startswith(RUST_ROOTS) and path.endswith(RUST_SUFFIXES)
+
+
 def rust_changes(cwd: Path) -> bool:
     try:
         status = subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=all"],
-            cwd=cwd, capture_output=True, text=True, timeout=20, check=False,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return False
     for line in status.splitlines():
         path = line[3:].strip().split(" -> ")[-1]
-        if path.startswith(RUST_ROOTS) and path.endswith(RUST_SUFFIXES):
+        if _is_rust_path(path):
             return True
+    # Also detect committed Rust edits on a feature branch ahead of main/origin/main.
+    for base in ("main", "origin/main"):
+        try:
+            diff = subprocess.run(
+                ["git", "diff", "--name-only", f"{base}...HEAD"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            break
+        if diff.returncode == 0:
+            if any(_is_rust_path(line.strip()) for line in diff.stdout.splitlines() if line.strip()):
+                return True
+            break
     return False
 
 
+def resolve_target_dir(cwd: Path) -> Path:
+    configured = os.environ.get("CARGO_TARGET_DIR")
+    if configured:
+        return Path(configured)
+    worktree_target = cwd / ".local" / "target"
+    if worktree_target.is_dir():
+        return worktree_target
+    return cwd / "target"
+
+
 def target_is_warm(cwd: Path) -> bool:
-    target = Path(os.environ.get("CARGO_TARGET_DIR") or cwd / "target")
+    target = resolve_target_dir(cwd)
     return (target / "debug" / "deps").is_dir() and (target / ".rustc_info.json").exists()
 
 
@@ -68,10 +103,19 @@ def main() -> int:
     attempts = int(counter.read_text().strip() or 0) if counter.exists() else 0
     if attempts >= MAX_ATTEMPTS:
         return 0
+    env = dict(os.environ)
+    env.pop("RUSTUP_TOOLCHAIN", None)
+    if not env.get("CARGO_TARGET_DIR"):
+        env["CARGO_TARGET_DIR"] = str(resolve_target_dir(cwd))
     try:
         result = subprocess.run(
             [sys.executable, str(gate), "fast", "--quiet"],
-            cwd=cwd, capture_output=True, text=True, timeout=GATE_TIMEOUT, check=False,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=GATE_TIMEOUT,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         counter.write_text(str(attempts + 1))
@@ -84,6 +128,7 @@ def main() -> int:
         sys.stderr.write(f"stop gate: could not run the fast gate: {error}\n")
         return 0
     if result.returncode == 0:
+        counter.unlink(missing_ok=True)
         return 0
     if result.returncode != 1:
         sys.stderr.write((result.stdout or "")[-2000:] + (result.stderr or "")[-1000:])

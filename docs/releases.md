@@ -33,8 +33,9 @@ trusted-ref policy. It never creates or moves a tag.
    bytes. It also checks the remote tag and current main revision. The declared
    Quality run must be a successful `push` or `workflow_dispatch` run from this
    repository at that source. Actual successful jobs must include formatting,
-   both shards of both platform test jobs (`Rust tests · macos-15 · 1/2`,
-   `Rust tests · macos-15 · 2/2`, `Rust tests · ubuntu-24.04 · 1/2` and
+   all three macOS test shards (`Rust tests · macos-15 · 1/3`,
+   `Rust tests · macos-15 · 2/3` and `Rust tests · macos-15 · 3/3`), both
+   Ubuntu test shards (`Rust tests · ubuntu-24.04 · 1/2` and
    `Rust tests · ubuntu-24.04 · 2/2`), both platform Clippy jobs, the three release jobs
    (`Rust release · macos-26`, `Rust release · ubuntu-24.04` and
    `Rust release · ubuntu-24.04-arm`) and the Quality gate, whichever platforms

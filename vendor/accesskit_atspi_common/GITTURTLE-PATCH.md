@@ -202,7 +202,7 @@ source.
 
 ## Consumer and coverage
 
-GPUI's Linux backend `gpui-pre-linux` 0.3.4 creates an `accesskit_unix` 0.22.1
+GPUI's Linux backend `gpui-pre-linux` 0.3.12 creates an `accesskit_unix` 0.22.1
 adapter for each X11 or Wayland window; `accesskit_unix` serves AT-SPI
 `Accessible.GetState` from this crate's `PlatformNode::state()`. The vendored
 `gpui-base` patch already sets the AccessKit disabled property on disabled

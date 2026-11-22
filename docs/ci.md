@@ -76,8 +76,8 @@ For pull requests:
 - Claude Code configuration (`.claude/**` and any file named `CLAUDE.md`) routes
   like `AGENTS.md` and `.agents/`. No build or package reads it: the guidance check
   validates its agents, skills, settings structure, hook paths and syntax and links,
-  and the agent-loop suite in the tooling lane runs the path-protection hook
-  (`test_claude_hooks`) and the controller's Claude adapter.
+  and the `dev-tooling` suite in the tooling lane runs the hook and guard tests
+  (`test_claude_hooks`, `test_guards`).
 - Pure product edits (`crates/`, `vendor/` outside `AGENTS.md`/`CLAUDE.md`,
   `assets/`, `.cargo/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
   `deny.toml`, `typos.toml`) run the full `product` lane (formatting, locked
@@ -1478,39 +1478,23 @@ one-minute load average was still 45 from its own start. Every pass ran under
 per-test accounting, which the job does not carry. The measurement's three
 groups were whole modules; the job deals single tests.
 
-The job's four test steps are now one,
-`Test development, native-QA, operator and CI tooling side by side`, which runs
-`python3 scripts/ci/tooling_suites.py run`. It starts six processes at once, each
-under `metrics.py measure` and in a session of its own: three groups of the
-agent-loop suite, then the native-QA, operator and CI-helper suites with exactly
-the commands their steps had. Their records are `agent-tooling-1-of-3` to
-`agent-tooling-3-of-3`, `native-qa-tooling`, `operator-tooling` and `ci-tests`;
-the summary and the diagnostics artifact show one row and one log for each.
+The job's test step,
+`Test development, gate, native-QA and CI tooling side by side`, runs
+`python3 scripts/ci/tooling_suites.py run` (with `--skip-ci-tests` on Linux,
+where the dedicated `ci-tests` job covers `scripts/ci/tests`). When this step
+was introduced it started six processes (three sharded groups of the since-retired
+`scripts/agent_loop` suite plus `native-qa-tooling`, `operator-tooling`, and
+`ci-tests`); after `scripts/agent_loop` and `scripts/operator` were retired it
+starts the four active tooling suites side by side, each under
+`metrics.py measure` and in a session of its own: `dev-tooling`, `gate-tooling`,
+`native-qa-tooling`, and `ci-tests`. Their records appear as one row and one log
+group each in the summary and diagnostics artifact.
 
-- **The agent-loop tests are dealt, not listed.** Each group discovers the suite
-  as before (`-s scripts/agent_loop -t scripts -p 'test_*.py'`), sorts the tests
-  by id and keeps every third one from its own place, in that order. A class's
-  tests stay next to each other and its fixtures run around them, and a new
-  test or module needs no edit anywhere. By the measurement's per-test seconds
-  the largest group is 9 % over an equal third on both platforms; dealing whole
-  modules in turn is up to 66 % over, and whole classes up to 22 %. A group is
-  unittest's own program with only its loader changed.
-- **Nothing is lost silently.** Each group records the ids it hands to
-  unittest. When the six have ended, a discovery of the driver's own must find
-  exactly those ids, each in one group; any difference fails the step and names
-  every id. A process that ran no test fails it too. A module that cannot be
-  imported fails as before: unittest reports it as a failed test, which is dealt
-  like any other. A `TestCase` class imported by name into a second test module
-  (`from agent_loop.test_a import Base`) is discovered twice under one id and
-  now fails the step by name, where the old step ran it twice; import the module
-  instead (`from agent_loop import test_a`, then `test_a.Base`), so that the
-  class is not a name of the second module and is collected once. The proof
-  guards against accidents, not against hostile test code: a test runs as the
-  same user and could rewrite another group's record of its ids.
-- **All six run to their end, and any failure fails the step.** No process is
-  ended because another failed, and nothing is retried or allowed to fail; only
-  the driver's own deadline, below, ends a process. The last lines name each
-  process with its exit status, its seconds and its test count.
+- **All suites run to their end, and any failure fails the step.** No process is
+  ended because another failed, nothing is retried or allowed to fail, and any
+  suite that runs zero tests fails the step; only the driver's own deadline,
+  below, ends a process. The last lines name each process with its exit status,
+  its seconds and its test count.
 - **Output is printed whole, in a fixed order, after the last process ends**,
   each process in a log group of its name, so suites are never interleaved.
   Every such line is printed behind the collector's `[ci] ` prefix, and only
@@ -1522,10 +1506,9 @@ the summary and the diagnostics artifact show one row and one log for each.
   and the driver applies it again to every line, whoever prefixed it, which
   changes nothing in a line that already had it: the collector makes harmless
   what it reads from a suite, but a test runs as the same user and can write to
-  the collector's output directly. A test id that the driver names is treated
-  the same way. The driver's own lines are the group markers and those that
-  start with `tooling-suites: `. Until the end the step prints only a line
-  every 30 s that names what is still running.
+  the collector's output directly. The driver's own lines are the group markers
+  and those that start with `tooling-suites: `. Until the end the step prints
+  only a line every 30 s that names what is still running.
 - **The driver has a deadline of its own, 510 s from its start,** behind the
   job's unchanged limit of 10 minutes. It is stricter than that limit, never
   wider, and nothing is run again after it. Without it, a hang that reached the
@@ -1534,23 +1517,20 @@ the summary and the diagnostics artifact show one row and one log for each.
   driver sends SIGTERM to
   the session of each collector that has not ended, and SIGKILL 10 s later to
   those still there. It then prints every process's output as on a normal end,
-  names each process it cut with its seconds, does not attempt the proof, and
-  fails the step. A SIGTERM or SIGINT sent to the driver is passed on to the
-  collectors and ends the same way: no proof, and the step fails. The deadline
-  ends the collectors, not necessarily the suites: a suite that handles or
-  ignores SIGTERM can outlive its collector, and is left to the runner's own
-  cleanup at the job's end. A collector that had to be killed leaves no record,
-  so the summary has no row for it. In 61 retained macOS runs the steps before
-  this one took 8.3 to 29.5 s by the log's first line and up to 31.1 s counted
-  from the job's start: 31 + 510 + 10 s of grace is 551 s, about 49 s inside the
-  job's 600 s.
+  names each process it cut with its seconds, and fails the step. A SIGTERM or
+  SIGINT sent to the driver is passed on to the collectors and ends the same
+  way, failing the step. The deadline ends the collectors, not necessarily the
+  suites: a suite that handles or ignores SIGTERM can outlive its collector,
+  and is left to the runner's own cleanup at the job's end. A collector that
+  had to be killed leaves no record, so the summary has no row for it. In 61
+  retained macOS runs the steps before this one took 8.3 to 29.5 s by the log's
+  first line and up to 31.1 s counted from the job's start: 31 + 510 + 10 s of
+  grace is 551 s, about 49 s inside the job's 600 s.
 
-To run one group again as the job ran it (`--index` counts from 0, so this is
-`agent-tooling-2-of-3`):
+To run the full tooling suites locally as the job runs them:
 
 ```sh
-python3 scripts/ci/tooling_suites.py group --index 1 --of 3 --record /tmp/ids.json \
-  -s scripts/agent_loop -t scripts -p 'test_*.py'
+python3 scripts/ci/tooling_suites.py run --directory /tmp/gt-ci-check
 ```
 
 The first hosted runs of the new step were the pull request's own, Quality
