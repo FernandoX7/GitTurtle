@@ -48,7 +48,9 @@ async fn rows_arrived(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         // `run_until_parked` cannot wait for.
         app.update(cx, |app, _| app.file_paths.executor().drain());
         cx.executor().run_until_parked();
-        if !app.read_with(cx, |app, _| app.working_paths.pending) {
+        if !app.read_with(cx, |app, _| {
+            app.working_paths.pending || app.status_task.is_some()
+        }) {
             break;
         }
     }
@@ -608,7 +610,21 @@ async fn heading_action_under_a_still_pointer(
     press_lands(app, cx).await;
     assert!(
         app.read_with(cx, |app, _| app.still_over_moved_rows()),
-        "the rows moved under the still pointer"
+        "the rows moved under the still pointer (position={position}, action={action}, pointer={pointer:?}, mouse={:?}, still={:?}, busy={:?}, op_err={:?}, read_err={:?}, pending={}, quiet={}, rows={})",
+        cx.update(|window, _| window.mouse_position()),
+        app.read_with(cx, |app, _| app
+            .still_pointer
+            .as_ref()
+            .map(|s| (s.at, s.position, s.area, s.moved))),
+        app.read_with(cx, |app, _| app.operation_busy),
+        app.read_with(cx, |app, _| app
+            .operation_error
+            .as_ref()
+            .map(|e| e.banner())),
+        app.read_with(cx, |app, _| app.working_read_failure.clone()),
+        app.read_with(cx, |app, _| app.working_paths.pending),
+        app.read_with(cx, |app, _| app.automatic.quiet_read_running()),
+        app.read_with(cx, |app, _| app.working_rows.len()),
     );
     let arrived = cx.debug_bounds(action).expect(action);
     assert!(

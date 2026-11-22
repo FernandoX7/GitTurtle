@@ -500,8 +500,8 @@ mod tests {
     #[test]
     fn degrades_to_git_metadata_only_on_path_and_byte_limits_without_retaining_sets() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().join("repo");
-        let repo = GitRepository::init(&root, "main").unwrap();
+        let repo = GitRepository::init(temp.path().join("repo"), "main").unwrap();
+        let root = repo.path().to_path_buf();
         for i in 0..8 {
             let sub = root.join(format!("dir_{i}"));
             fs::create_dir_all(&sub).unwrap();
@@ -544,8 +544,8 @@ mod tests {
     #[test]
     fn invalidate_ignores_resets_to_actual_exclude_bytes_and_errors_do_not_leak_budget() {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().join("repo");
-        let repo = GitRepository::init(&root, "main").unwrap();
+        let repo = GitRepository::init(temp.path().join("repo"), "main").unwrap();
+        let root = repo.path().to_path_buf();
         fs::write(root.join(".gitignore"), "*.tmp\n").unwrap();
         fs::write(root.join("a.txt"), "a\n").unwrap();
         git(&root, &["add", "."]);
