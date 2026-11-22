@@ -181,6 +181,7 @@ jobs:
         with:
           phase: finish
           profile: release
+          target: ${{ matrix.target }}
       - name: Summarize build measurements
         if: always()
         run: python3 scripts/ci/metrics.py summary --directory "$RUNNER_TEMP/release-metrics" >> "$GITHUB_STEP_SUMMARY"

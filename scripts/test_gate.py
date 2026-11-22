@@ -219,8 +219,15 @@ class FilterTests(unittest.TestCase):
         by_name = {stage.name: stage for stage in stages}
         self.assertIn("dev-tooling-tests", by_name)
         self.assertIn("gate-tests", by_name)
+        self.assertIn("ci-tests", by_name)
+        self.assertIn("native-qa-tests", by_name)
+        self.assertIn("website-guides", by_name)
+        self.assertIn("website-check", by_name)
         self.assertIn("scripts/dev", by_name["dev-tooling-tests"].argv)
         self.assertIn("scripts/test_gate.py", by_name["gate-tests"].argv)
+        self.assertEqual(by_name["doctests"].argv, ["cargo", "test", "--locked", "--workspace", "--", "(line "])
+        with patch.dict(os.environ, {"RUSTUP_TOOLCHAIN": "stable"}):
+            self.assertNotIn("RUSTUP_TOOLCHAIN", gate.base_env())
 
     def test_plain_first_error_from_panic(self):
         kept, first = gate.filter_plain(["thread 'main' panicked at scripts/x.rs:4:2:", "boom"])
@@ -325,7 +332,11 @@ class StageTests(unittest.TestCase):
         self.assertEqual(stages[-1].reproduce, "cargo check --locked --workspace --all-targets")
 
     def test_stages_without_a_rust_build_run_first(self):
-        build_free = {"format", "typos", "machete", "docs-sync", "insta", "privacy", "deny", "audit", "guidance", "dev-tooling-tests", "gate-tests"}
+        build_free = {
+            "format", "typos", "machete", "docs-sync", "insta", "privacy", "deny", "audit",
+            "guidance", "dev-tooling-tests", "gate-tests", "ci-tests", "native-qa-tests",
+            "website-guides", "website-check",
+        }
         scopes = (
             (gate.Scope(("gitturtle-core",), False, True, ()), "clippy"),
             (gate.Scope(tuple(sorted(CRATES.values())), True, True, ()), "clippy"),

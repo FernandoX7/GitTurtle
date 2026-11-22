@@ -199,15 +199,21 @@ class NoticeTests(unittest.TestCase):
         target = "aarch64-apple-darwin"
         value = dict(target=target, cargo_lock_sha256="a" * 64, dependencies=[{}], review_required=[])
         self.assertTrue(packages.notice_state(0, value, target, "a" * 64))
+        # As shipped macOS has no known gaps: legacy objc crates must fail if they return.
         for missing in (["block-0.1.6"], ["leaky-cow-0.1.1", "block-0.1.6", "leak-0.1.2", "objc_exception-0.1.2"]):
             value["review_required"] = missing
-            self.assertFalse(packages.notice_state(2, value, target, "a" * 64))
-        # The resolved `mac` and the long-replaced `ufbx` 0.11.3 would be new gaps again.
-        for code, missing in [(1, ["block-0.1.6"]), (0, ["block-0.1.6"]), (2, []), (2, ["new-gap-1.0"]),
-                              (2, ["mac-0.1.1"]), (2, ["block-0.1.6", "ufbx-0.11.3"]), (2, None)]:
-            value["review_required"] = missing
-            with self.subTest(code=code, missing=missing), self.assertRaises(packages.Error):
-                packages.notice_state(code, value, target, "a" * 64)
+            with self.subTest(shipped_missing=missing), self.assertRaisesRegex(packages.Error, "new gaps"):
+                packages.notice_state(2, value, target, "a" * 64)
+        # Explicit documented gaps (when configured) still withhold only on exact exit-2 subsets.
+        with patch.dict(packages.KNOWN_GAPS, {target: {"sample-gap-1.0", "sample-gap-2.0"}}):
+            for missing in (["sample-gap-1.0"], ["sample-gap-2.0", "sample-gap-1.0"]):
+                value["review_required"] = missing
+                self.assertFalse(packages.notice_state(2, value, target, "a" * 64))
+            for code, missing in [(1, ["sample-gap-1.0"]), (0, ["sample-gap-1.0"]), (2, []), (2, ["new-gap-1.0"]),
+                                  (2, ["mac-0.1.1"]), (2, ["sample-gap-1.0", "ufbx-0.11.3"]), (2, None)]:
+                value["review_required"] = missing
+                with self.subTest(code=code, missing=missing), self.assertRaises(packages.Error):
+                    packages.notice_state(code, value, target, "a" * 64)
 
     def test_linux_has_no_known_gap_so_any_missing_notice_fails(self):
         for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
@@ -637,28 +643,32 @@ class PrepareTests(unittest.TestCase):
                                      "github-output", "summary.md"):
                         self.assertFalse((root / withheld).exists(), withheld)
 
-    def test_macos_known_gaps_withhold_the_archive_whatever_the_upload_set_lists(self):
-        gaps = sorted(packages.KNOWN_GAPS[self.MAC])
-        self.assertEqual(gaps, ["block-0.1.6", "leak-0.1.2", "leaky-cow-0.1.1", "objc_exception-0.1.2"])
-        seen = []
-        # As shipped the summary also says that completing the notices would not start an upload.
-        for uploads, ending in ((None, f"{self.INCOMPLETE} Separately, {self.MAC_HELD}.\n"),
-                                (self.EVERYBODY, f"{self.INCOMPLETE}\n")):
-            with self.subTest(uploads=uploads):
-                root, calls, verify, _ = self.prepare(self.MAC, gaps, uploads=uploads)
+    def test_macos_has_no_known_gaps_and_rejects_any_missing_notice(self):
+        self.assertEqual(packages.KNOWN_GAPS[self.MAC], set())
+        for missing in (["block-0.1.6"], ["objc_exception-0.1.2"], ["new-crate-1.0.0"]):
+            with self.subTest(missing=missing):
+                root, calls, verify, checks = self.prepare(self.MAC, missing, refusal="new gaps")
+                self.assertEqual(len(calls), 1)
+                verify.assert_not_called()
+                checks.assert_not_called()
+                self.assertFalse((root / "work/publish").exists())
+
+    def test_schedule_event_verifies_package_locally_without_uploading(self):
+        for target, label in self.LINUX_LABELS.items():
+            with self.subTest(target=target):
+                root, calls, verify, _ = self.prepare(target, [], event="schedule")
                 self.assertEqual(len(calls), 2)
-                self.assertNotIn("--distribution", calls[1])
-                self.assertIs(verify.call_args.kwargs["complete"], False)
+                self.assertIn("--distribution", calls[1])
+                self.assertIs(verify.call_args.kwargs["complete"], True)
                 self.assertFalse((root / "work/publish").exists())
                 report, output, summary = self.left_behind(root)
+                self.assertEqual(report["event"], "schedule")
                 self.assertIs(report["upload_eligible"], False)
-                self.assertEqual(report["license_review_required"], gaps)
-                self.assertEqual(output, f"eligible=false\nartifact-name={report['artifact_name']}\n"
-                                         "macos-arm64-eligible=false\n")
-                self.assertTrue(summary.endswith(ending), summary)
-                self.assertNotIn("Complete notices verified", summary)
-                seen.append((calls, report, output, summary.removesuffix(ending)))
-        self.assertEqual(seen[0], seen[1])
+                self.assertEqual(
+                    output,
+                    f"eligible=false\nartifact-name={report['artifact_name']}\n{label}-eligible=false\n",
+                )
+                self.assertIn("Scheduled cache-seed runs do not upload CI package artifacts", summary)
 
 
 LINUX_LABELS = ("linux-x86_64", "linux-aarch64")

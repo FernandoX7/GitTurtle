@@ -9347,7 +9347,7 @@ impl OperationFailure {
     /// and the path Git now finds, and cut to one line on screen it lost
     /// them in any window narrower than about 1,600 pixels.
     pub(crate) fn of(error: &anyhow::Error) -> Self {
-        let report = format!("{error:#}");
+        let report = gitturtle_core::strip_bidi_controls(&format!("{error:#}")).into_owned();
         if gitturtle_core::write_refused(error) {
             let banner = first_line_with_text(&report).to_owned().into();
             return Self {
@@ -9362,6 +9362,7 @@ impl OperationFailure {
     /// This failure with `sentence`, what the window does about it, after
     /// its report and its line alike.
     pub(crate) fn followed_by(self, sentence: &str) -> Self {
+        let sentence = gitturtle_core::strip_bidi_controls(sentence);
         Self {
             report: format!("{} {sentence}", self.report),
             banner: format!("{} {sentence}", self.banner).into(),
@@ -9370,17 +9371,20 @@ impl OperationFailure {
     }
 
     /// `error`, a read's failure named by `what`: "`what`: …", in its report
-    /// and its line alike.
+    /// and its line alike, redacted and stripped of Unicode bidi overrides so
+    /// echoed Git config values cannot leak through `Details…` or banners.
     pub(crate) fn of_read(what: &str, error: &anyhow::Error) -> Self {
-        Self::summarized(
-            format!("{what}: {error:#}"),
-            gitturtle_core::failure_summary(error).map(|line| format!("{what}: {line}")),
-        )
+        let report = gitturtle_core::redact_diagnostic(&format!("{what}: {error:#}"));
+        let summary = gitturtle_core::failure_summary(error)
+            .map(|line| gitturtle_core::redact_diagnostic(&format!("{what}: {line}")));
+        Self::summarized(report, summary)
     }
 
     /// `report`, whose banner line is `summary` where it has one, otherwise
     /// its first line with text.
     pub(crate) fn summarized(report: String, summary: Option<String>) -> Self {
+        let report = gitturtle_core::strip_bidi_controls(&report).into_owned();
+        let summary = summary.map(|line| gitturtle_core::strip_bidi_controls(&line).into_owned());
         let banner = banner_line(summary.as_deref().unwrap_or(&report));
         Self {
             report,
@@ -10521,13 +10525,15 @@ impl GitTurtle {
     fn status_line_drawn_text(&self, fit: &StatusFit) -> SharedString {
         let line = self.status_first_line();
         let shown = fit.parts.map_or(line.text, |end| &line.text[..end]);
-        let bounded = native_accessibility::bounded_accessible_text(shown);
+        let shown = gitturtle_core::strip_bidi_controls(shown);
+        let bounded = native_accessibility::bounded_accessible_text(shown.as_ref());
         // A line longer than the bound ends in the bound's ellipsis.
         if !line.ellipsis || bounded.len() < shown.len() {
             return bounded;
         }
-        let kept =
-            crate::text_cut::trim_end_clusters(shown, |c| c.is_whitespace() || ".,;:".contains(c));
+        let kept = crate::text_cut::trim_end_clusters(shown.as_ref(), |c| {
+            c.is_whitespace() || ".,;:".contains(c)
+        });
         format!("{kept}…").into()
     }
 
@@ -10567,7 +10573,8 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut App,
     ) -> native_accessibility::StaticText<Stateful<Div>> {
-        let text = self.status_text();
+        let raw_text = self.status_text();
+        let text = gitturtle_core::strip_bidi_controls(raw_text);
         let first = self.status_first_line();
         // The texts built for the status and its fit, kept across frames,
         // so a frame that draws the same status builds and copies neither.
@@ -10579,13 +10586,16 @@ impl GitTurtle {
             .clone();
         let (whole, drawn) = {
             let mut kept = kept.borrow_mut();
-            if !kept.as_ref().is_some_and(|kept| kept.is(text, fit.parts)) {
+            if !kept
+                .as_ref()
+                .is_some_and(|kept| kept.is(text.as_ref(), fit.parts))
+            {
                 #[cfg(test)]
                 STATUS_TEXT_BUILT.with(|built| built.set(built.get() + 1));
-                let whole = native_accessibility::bounded_accessible_text(text);
+                let whole = native_accessibility::bounded_accessible_text(text.as_ref());
                 // The whole text is drawn where it is one line and no part
                 // gives way, without a copy of its own.
-                let drawn = if fit.parts.is_none() && first.text.len() == text.len() {
+                let drawn = if fit.parts.is_none() && first.text.len() == raw_text.len() {
                     whole.clone()
                 } else {
                     self.status_line_drawn_text(fit)
@@ -10979,6 +10989,9 @@ impl Render for GitTurtle {
                 self.page == AppPage::Repository && self.operation_error.is_none(),
                 |el| {
                     el.children(self.operation_notice.as_ref().map(|notice| {
+                        let notice: SharedString = gitturtle_core::strip_bidi_controls(notice)
+                            .into_owned()
+                            .into();
                         div()
                             .px_4()
                             .py_2()

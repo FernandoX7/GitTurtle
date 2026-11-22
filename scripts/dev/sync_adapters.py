@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -83,8 +84,21 @@ def parse_role(path: Path) -> RoleSpec:
         if key in FORBIDDEN_ROLE_KEYS:
             raise ValueError(f"{path}: role must omit {key!r} to inherit session settings")
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
+        if value.startswith('"'):
+            try:
+                value = str(tomllib.loads("value = " + value)["value"])
+            except tomllib.TOMLDecodeError as error:
+                raise ValueError(f"{path}: invalid quoted frontmatter value for {key!r}") from error
+        elif value.startswith("'"):
+            match_quote = re.fullmatch(r"'((?:[^']|'')*)'\s*(?:#.*)?", value)
+            if not match_quote:
+                raise ValueError(f"{path}: invalid single-quoted frontmatter value for {key!r}")
+            value = match_quote[1].replace("''", "'")
+        else:
+            if re.search(r"\s#", value):
+                raise ValueError(
+                    f"{path}: unquoted '#' in frontmatter value for {key!r}; quote the value"
+                )
         fields[key] = value
     name = fields.get("name", "").strip()
     if not name or name != path.stem or not ROLE_NAME_RE.match(name):

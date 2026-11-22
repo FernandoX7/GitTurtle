@@ -34,12 +34,12 @@ precede release cache cleanup. The download and the checks of the downloaded
 package run in the later job, which restores and saves no cache. Cache accounting
 covers the entire target root, including the explicit target subdirectory. The
 stable Quality gate requires all three release matrix jobs and both package
-transfer jobs, and for each Linux package the pair of what the two said. Product,
-package, native asset, workflow and
+transfer jobs, and for each Linux package the pair of what the two said. Product, package, native asset, workflow and
 `scripts/ci/packages.py` changes run those jobs; documentation-only PR routing remains
-inexpensive. Every main push and manual run requires full coverage, including
-documentation-, website- and tooling-only changes, to verify packages and seed
-the trusted caches.
+inexpensive. Product merges to `main` and manual runs verify packages and seed
+the trusted caches; pure docs, records, website, and tooling merges to `main`
+skip the Rust product rebuild, and weekly scheduled cache-seed runs verify
+packaging locally (`--event schedule`) without uploading CI artifacts.
 
 ## License boundary and availability
 
@@ -89,15 +89,13 @@ artifacts, for `linux` one package for each Linux target (x86-64 and AArch64)
 and their assembly; only its GitHub Release also waits for `publish` and the
 `gitturtle-release` environment, which is not set up yet.
 
-While the macOS known gaps remain, exit 2 is checked against that exact inventory,
-a development package is created and verified locally, and the Actions summary
-says **Download unavailable; C0 incomplete and C3 open**, and that the macOS
-upload is separately held. The archive is withheld;
-it is never included in the diagnostics artifact. A newly missing notice, malformed
-inventory or any other collector failure fails the package job. This allowance is
-not license clearance and does not mark hosted transfer or the initiative complete.
-When authoritative notices are supplied, the same code takes the strict
-complete-notice path automatically; the macOS upload stays held as above.
+All declared targets (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+and `aarch64-apple-darwin`) now have empty `KNOWN_GAPS` in `scripts/ci/packages.py`:
+every target runs strict notice collection (`--require-complete`) and any
+missing notice fails the job immediately. Linux archives upload on push, PR,
+and manual dispatch (skipped on weekly `schedule` cache-seed runs); macOS
+archives remain held inside their job until macOS distribution and signing are
+decided.
 
 ## Find and verify a download
 

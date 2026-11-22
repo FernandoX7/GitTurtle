@@ -1858,7 +1858,11 @@ impl Render for QuickForm {
             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                 range
                     .map(|index| {
-                        let entry = &this.page.as_ref().unwrap().entries[index];
+                        let Some(entry) =
+                            this.page.as_ref().and_then(|page| page.entries.get(index))
+                        else {
+                            return div().into_any_element();
+                        };
                         let path = entry.path.display().to_string();
                         // The row's ID is the path it shows, by its bytes,
                         // rather than its place in the results, so the window's

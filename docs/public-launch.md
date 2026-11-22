@@ -132,12 +132,13 @@ instructions. Website publication does not clear or authorize a binary release.
   [notice inventory and source requirements](../THIRD_PARTY_NOTICES.md).
   Linux strict collection passes since November 15, 2026: the
   [exact-source review](licenses/linux-notice-review.md) records the evidence
-  and how the `mac` 0.1.1 and Rust `ufbx` wrapper notices were resolved. macOS
-  has four undecided records; the Linux pass does not clear them. The pass
-  is not a release: by the owner's decision of the same day, Quality uploads
+  and how the `mac` 0.1.1 and Rust `ufbx` wrapper notices were resolved. With
+  GPUI Kit 0.10.0 / GPUI 0.3.12 (`objc2`), macOS strict collection passes as
+  well (`KNOWN_GAPS` is empty on all declared targets). The pass
+  is not a release: by the owner's decision of November 15, 2026, Quality uploads
   the verified Linux CI archive as a seven-day Actions artifact, which is a CI
   build (GitHub Releases is the release channel), and macOS archives stay held
-  until macOS distribution is decided (`HOSTED_UPLOAD_PLATFORMS` in
+  until macOS distribution and signing are decided (`HOSTED_UPLOAD_PLATFORMS` in
   `scripts/ci/packages.py`; [CI package downloads](ci-artifacts.md#license-boundary-and-availability)).
 - [ ] Build and test the exact release source/target, record the executable and
   archive hashes, and include the generated licenses and any required sources.

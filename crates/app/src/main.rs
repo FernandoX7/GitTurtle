@@ -1128,6 +1128,13 @@ impl GitTurtle {
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
         this.install_tab_quit_observer(window, cx);
+        register_app_window(window, &cx.entity(), cx);
+        let weak_close = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_window, cx| {
+            weak_close
+                .read_with(cx, |app, _| app.operation_busy.is_none())
+                .unwrap_or(true)
+        });
         #[cfg(target_os = "linux")]
         this.subscriptions
             .push(cx.observe_button_layout_changed(window, |_, window, cx| {
@@ -3706,7 +3713,7 @@ fn main() {
             .apply(None, cx);
         let applied_contrast = appearance::more_contrast(cx);
         shortcuts::bind_keys(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &Quit, cx| quit_if_idle(cx));
         cx.on_action(|_: &HideApplication, cx| cx.hide());
         cx.on_action(|_: &HideOtherApplications, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAllApplications, cx| cx.unhide_other_apps());
@@ -3774,6 +3781,58 @@ fn main() {
         })
         .detach();
     });
+}
+
+#[derive(Default)]
+struct OpenAppWindows(Vec<(gpui::AnyWindowHandle, WeakEntity<GitTurtle>)>);
+
+impl gpui::Global for OpenAppWindows {}
+
+pub(crate) fn register_app_window(window: &Window, entity: &Entity<GitTurtle>, cx: &mut App) {
+    if !cx.has_global::<OpenAppWindows>() {
+        cx.set_global(OpenAppWindows::default());
+    }
+    let handle = window.window_handle();
+    let weak = entity.downgrade();
+    let open = cx.windows();
+    cx.update_global::<OpenAppWindows, _>(|state, _| {
+        state
+            .0
+            .retain(|(existing, entry)| open.contains(existing) && entry.upgrade().is_some());
+        if !state
+            .0
+            .iter()
+            .any(|(existing, entry)| *existing == handle || entry.entity_id() == weak.entity_id())
+        {
+            state.0.push((handle, weak));
+        }
+    });
+}
+
+pub(crate) fn any_window_operation_busy(cx: &App) -> bool {
+    any_window_operation_busy_excluding(None, cx)
+}
+
+pub(crate) fn any_window_operation_busy_excluding(
+    except: Option<gpui::AnyWindowHandle>,
+    cx: &App,
+) -> bool {
+    let open = cx.windows();
+    cx.try_global::<OpenAppWindows>().is_some_and(|state| {
+        state.0.iter().any(|(handle, entry)| {
+            except != Some(*handle)
+                && open.contains(handle)
+                && entry
+                    .upgrade()
+                    .is_some_and(|app| app.read(cx).operation_busy.is_some())
+        })
+    })
+}
+
+pub(crate) fn quit_if_idle(cx: &mut App) {
+    if !any_window_operation_busy(cx) {
+        cx.quit();
+    }
 }
 
 /// Opt-in `gitturtle.*_frame_ms` interaction traces; see
@@ -5357,5 +5416,116 @@ pub(crate) mod phrase_tests {
         runs.iter()
             .map(|run| crate::views::shaped_width(run, size, FontWeight::NORMAL, window))
             .fold(px(0.), Pixels::max)
+    }
+
+    #[gpui::test]
+    async fn window_close_and_quit_respect_operation_busy(cx: &mut TestAppContext) {
+        crate::views::tests::init_app(cx);
+        let mut app = None;
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            app = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let app = app.expect("GitTurtle entity initialized");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let quit_menu_disabled = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| cx.get_menus())
+                .unwrap_or_default()
+                .into_iter()
+                .find(|menu| menu.name.as_ref() == "GitTurtle")
+                .expect("the GitTurtle application menu")
+                .items
+                .into_iter()
+                .find_map(|item| match item {
+                    gpui::OwnedMenuItem::Action { name, disabled, .. }
+                        if name == "Quit GitTurtle" =>
+                    {
+                        Some(disabled)
+                    }
+                    _ => None,
+                })
+                .expect("Quit GitTurtle menu item")
+        };
+
+        cx.executor().run_until_parked();
+        assert!(cx.update(|_, cx| !any_window_operation_busy(cx)));
+        assert!(
+            !quit_menu_disabled(&mut cx),
+            "Quit GitTurtle menu item should be enabled when idle"
+        );
+        assert!(
+            cx.simulate_close(),
+            "OS close should be allowed when no write operation is running"
+        );
+
+        app.update(&mut cx, |app, cx| {
+            app.operation_busy = Some("Committing…");
+            cx.notify();
+        });
+        cx.executor().run_until_parked();
+        assert!(cx.update(|_, cx| any_window_operation_busy(cx)));
+        assert!(
+            quit_menu_disabled(&mut cx),
+            "Quit GitTurtle menu item must be disabled while a Git write operation is active"
+        );
+        assert!(
+            !cx.simulate_close(),
+            "OS close must be refused while a Git write operation is active"
+        );
+
+        app.update(&mut cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        cx.executor().run_until_parked();
+        assert!(cx.update(|_, cx| !any_window_operation_busy(cx)));
+        assert!(
+            !quit_menu_disabled(&mut cx),
+            "Quit GitTurtle menu item must be re-enabled once operation_busy clears"
+        );
+        assert!(
+            cx.simulate_close(),
+            "OS close must succeed again once operation_busy clears"
+        );
+    }
+
+    #[test]
+    fn read_failure_details_and_tooltips_redact_secrets_and_strip_bidi() {
+        let error = anyhow::anyhow!(
+            "Git status failed: fatal: invalid 'status.showUntrackedFiles' value: \
+             'https://user:s3cr3t@example.invalid/repo.git?token=rawtok \
+             \u{202A}a\u{202E}txt.exe\u{2066}b\u{2069}'"
+        );
+        let failure = crate::views::OperationFailure::of_read("Status", &error)
+            .followed_by("Check\u{202E} config.");
+        let report: &str = &failure;
+        let banner = failure.banner();
+        for shown in [report, banner.as_ref()] {
+            assert!(!shown.contains("s3cr3t"), "leaked password in {shown:?}");
+            assert!(!shown.contains("rawtok"), "leaked token in {shown:?}");
+            assert!(
+                shown.contains("[redacted]"),
+                "missing redaction in {shown:?}"
+            );
+            assert!(
+                !shown
+                    .chars()
+                    .any(|ch| matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+                "bidi control survived in {shown:?}"
+            );
+        }
+        let tip = crate::tags::error_tooltip("fatal: \u{202E}spoofed\u{2066}path\u{2069}");
+        assert_eq!(tip.as_ref(), "fatal: spoofedpath");
     }
 }

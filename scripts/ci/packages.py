@@ -39,12 +39,12 @@ TARGETS = {"x86_64-unknown-linux-gnu": "linux-x86_64", "aarch64-unknown-linux-gn
            "aarch64-apple-darwin": "macos-arm64"}
 # This records C0's known gaps, not license exemptions. Any remaining gap blocks
 # upload; a new gap fails validation and requires explicit inventory review.
-# Linux has had none since the license review of 2026-11-15, so any gap on
-# either Linux target is new.
+# Linux has had none since 2026-11-15, and macOS cleared its legacy objc crates
+# with GPUI Kit 0.10.0 / GPUI 0.3.12, so any gap on any target is new.
 KNOWN_GAPS = {
     "x86_64-unknown-linux-gnu": set(),
     "aarch64-unknown-linux-gnu": set(),
-    "aarch64-apple-darwin": {"block-0.1.6", "objc_exception-0.1.2", "leak-0.1.2", "leaky-cow-0.1.1"},
+    "aarch64-apple-darwin": set(),
 }
 # The platforms whose verified complete-notice archive Quality uploads. Being
 # listed here is the only way a platform uploads: no flag, environment variable
@@ -418,9 +418,11 @@ def prepare(args):
     inventory = identity.read_json(output / "strict-notices/dependencies.json")
     complete = notice_state(code, inventory, args.target, lock)
     # The one read of the upload set: it decides the upload, never how the package is built or checked.
+    # Scheduled cache-seed runs verify packaging locally without uploading CI artifacts.
     platform = platform_of(args.target)
     listed = platform in HOSTED_UPLOAD_PLATFORMS
-    upload = complete and listed
+    scheduled = args.event == "schedule"
+    upload = complete and listed and not scheduled
     stem = f"GitTurtle-{version}-{revision[:12]}-{TARGETS[args.target]}-release"
     prepared = output / "prepared"
     prepared.mkdir()
@@ -481,6 +483,9 @@ def prepare(args):
                     f"`{expected['artifact_name']}`, kept {UPLOAD_RETENTION_DAYS} days. The later job "
                     "`Package transfer` downloads and verifies that artifact: this job's green does not say that it "
                     "did. It is an early-development CI build, not a release.\n")
+    elif complete and scheduled:
+        summary += ("Complete notices verified. Scheduled cache-seed runs do not upload CI package artifacts. "
+                    "The verified complete-notice archive stays in this job and is not uploaded.\n")
     elif complete:
         summary += f"Complete notices verified. **Download unavailable: {held}; C3 hosted transfer remains open.** "
         summary += "The verified complete-notice archive stays in this job and is not uploaded.\n"
@@ -631,7 +636,7 @@ def main():
     prepared.add_argument("--target", choices=TARGETS, required=True)
     prepared.add_argument("--revision", required=True)
     prepared.add_argument("--directory", type=Path, required=True)
-    prepared.add_argument("--event", choices=("push", "pull_request", "workflow_dispatch"), required=True)
+    prepared.add_argument("--event", choices=("push", "pull_request", "workflow_dispatch", "schedule"), required=True)
     prepared.add_argument("--run-id", required=True)
     prepared.add_argument("--attempt", required=True)
     prepared.add_argument("--output", type=Path)

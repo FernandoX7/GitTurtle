@@ -407,5 +407,31 @@ class ImageMetadataTests(unittest.TestCase):
         ])
 
 
+class FrontmatterQuotingTests(unittest.TestCase):
+    def test_skill_frontmatter_rejects_unquoted_hash_and_preserves_quoted_hash(self):
+        fields, errors = guidance._frontmatter_strings(
+            '---\nname: sample\ndescription: "Run #[gpui::test] \\"safely\\" \\\\ always"\n---\n'
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(fields["description"], 'Run #[gpui::test] "safely" \\ always')
+
+        _, bad_errors = guidance._frontmatter_strings(
+            "---\nname: sample\ndescription: Run #[gpui::test] unquoted\n---\n"
+        )
+        self.assertTrue(any("unquoted '#'" in err for err in bad_errors), bad_errors)
+
+    def test_agent_frontmatter_preserves_quoted_hash_and_unescapes(self):
+        fields, errors = guidance._frontmatter_values(
+            '---\nname: reviewer\ndescription: "Check #[gpui::test] \\"quoted\\" # note"\n---\n'
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(fields["description"], 'Check #[gpui::test] "quoted" # note')
+
+        _, bad_errors = guidance._frontmatter_values(
+            "---\nname: reviewer\ndescription: Check #[gpui::test] unquoted\n---\n"
+        )
+        self.assertTrue(any("unquoted '#'" in err for err in bad_errors), bad_errors)
+
+
 if __name__ == "__main__":
     unittest.main()

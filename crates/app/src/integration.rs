@@ -520,6 +520,8 @@ impl BannerFit {
 /// Details…, and Stashes' beside a Review restore… that Git could not
 /// prepare.
 pub(crate) fn show_error_details(error: &str, window: &mut Window, cx: &mut App) {
+    let cleaned = gitturtle_core::strip_bidi_controls(error);
+    let error = cleaned.as_ref();
     let full: Arc<str> = Arc::from(error);
     let display = if error.len() > 64 * 1024 {
         format!(

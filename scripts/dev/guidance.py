@@ -706,6 +706,10 @@ def _frontmatter_strings(text: str) -> tuple[dict[str, str], list[str]]:
                 errors.append(f"invalid quoted skill field: {key}")
                 value = ""
         else:
+            if re.search(r"\s#", value):
+                errors.append(
+                    f"unquoted '#' in skill field {key}; quote the value so YAML does not truncate it"
+                )
             value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
             if (value.startswith(("[", "{", "&", "*", "!")) or
                     value.lower() in {"true", "false", "null", "~"} or
@@ -758,22 +762,39 @@ def _frontmatter_values(text: str) -> tuple[dict[str, object], list[str]]:
         key, value = match.groups()
         if key in values:
             errors.append(f"duplicate agent field: {key}")
-        value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+        value = value.strip()
         if value == "":
             items = []
             while index < end and re.match(r"^\s+-\s*", lines[index]):
                 items.append(re.sub(r"^\s+-\s*", "", lines[index]).strip().strip("\"'"))
                 index += 1
             values[key] = items
-        elif value.startswith("[") and value.endswith("]"):
-            values[key] = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
-        elif value.startswith(("\"", "'")) and value.endswith(value[0]) and len(value) >= 2:
-            values[key] = value[1:-1]
-        elif value.startswith(("{", "&", "*", "!", "|", ">")):
-            values[key] = None
-            errors.append(f"unsupported agent field value: {key}")
+        elif value.startswith("\""):
+            try:
+                values[key] = tomllib.loads("value = " + value)["value"]
+            except tomllib.TOMLDecodeError:
+                errors.append(f"invalid quoted agent field: {key}")
+                values[key] = ""
+        elif value.startswith("'"):
+            match_quote = re.fullmatch(r"'((?:[^']|'')*)'\s*(?:#.*)?", value)
+            if match_quote:
+                values[key] = match_quote[1].replace("''", "'")
+            else:
+                errors.append(f"invalid quoted agent field: {key}")
+                values[key] = ""
         else:
-            values[key] = value
+            if re.search(r"\s#", value) and key == "description":
+                errors.append(
+                    f"unquoted '#' in agent field {key}; quote the value so YAML does not truncate it"
+                )
+            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+            if value.startswith("[") and value.endswith("]"):
+                values[key] = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+            elif value.startswith(("{", "&", "*", "!", "|", ">")):
+                values[key] = None
+                errors.append(f"unsupported agent field value: {key}")
+            else:
+                values[key] = value
     return values, errors
 
 

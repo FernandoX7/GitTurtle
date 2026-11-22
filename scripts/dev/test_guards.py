@@ -41,6 +41,15 @@ class GuardsTests(unittest.TestCase):
         ])
         self.assertTrue(any("merge conflict marker" in item for item in guards.check_staged_diff(conflict)))
 
+        rs_conflict = "\n".join([
+            "diff --git a/crates/app/src/main.rs b/crates/app/src/main.rs",
+            "+++ b/crates/app/src/main.rs",
+            "@@ -1,0 +1,2 @@",
+            "+" + "<" * 7 + " HEAD",
+            "+fn main() {}",
+        ])
+        self.assertTrue(any("crates/app/src/main.rs:1: merge conflict marker" in item for item in guards.check_staged_diff(rs_conflict)))
+
         # Valid 7-char Markdown Setext H1 heading must not false-positive.
         setext = "\n".join([
             "diff --git a/docs/notes.md b/docs/notes.md",
@@ -108,6 +117,25 @@ class GuardsTests(unittest.TestCase):
             msg.write_text("chore: bad\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n", encoding="utf-8")
             bad = subprocess.run([str(ROOT / ".githooks/commit-msg"), str(msg)], cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(bad.returncode, 1)
+
+    def test_pre_commit_honors_gitturtle_protect_paths_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+            (repo / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+            subprocess.run(["git", "add", "AGENTS.md"], cwd=repo, check=True)
+            previous_protect = os.environ.pop("GITTURTLE_PROTECT_PATHS", None)
+            previous_loop = os.environ.pop("GITTURTLE_LOOP", None)
+            try:
+                self.assertEqual(guards.run_pre_commit(repo), 0)
+                os.environ["GITTURTLE_PROTECT_PATHS"] = "1"
+                self.assertEqual(guards.run_pre_commit(repo), 1)
+            finally:
+                os.environ.pop("GITTURTLE_PROTECT_PATHS", None)
+                if previous_protect is not None:
+                    os.environ["GITTURTLE_PROTECT_PATHS"] = previous_protect
+                if previous_loop is not None:
+                    os.environ["GITTURTLE_LOOP"] = previous_loop
 
 
 if __name__ == "__main__":

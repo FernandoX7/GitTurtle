@@ -399,6 +399,7 @@ impl Render for PrimaryMenu {
 pub(super) struct MenuState {
     repository: bool,
     busy: Option<&'static str>,
+    other_window_busy: bool,
     projects_refused: bool,
     workspace: bool,
     unsettled: bool,
@@ -438,10 +439,12 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
     let MenuState {
         repository,
         busy,
+        other_window_busy,
         projects_refused,
         ..
     } = state;
     let busy = busy.is_some();
+    let any_busy = busy || other_window_busy;
     let action = |label: &str, action: Box<dyn Action>, enabled: bool| MenuItem::Action {
         name: label.to_owned().into(),
         action,
@@ -459,7 +462,7 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
             MenuItem::action("Hide Others", HideOtherApplications),
             MenuItem::action("Show All", ShowAllApplications),
             MenuItem::separator(),
-            MenuItem::action("Quit GitTurtle", Quit),
+            action("Quit GitTurtle", Box::new(Quit), !any_busy),
         ]),
         Menu::new("File").items([
             action("Open Repository…", Box::new(OpenRepository), !busy),
@@ -561,7 +564,9 @@ impl GitTurtle {
     /// compares is a few fields, and the palette's reason, which clones the
     /// selection's scope, is read only as they change.
     pub(super) fn update_native_menus(&mut self, window: &Window, cx: &mut App) {
-        let state = self.menu_state();
+        let mut state = self.menu_state();
+        state.other_window_busy =
+            crate::any_window_operation_busy_excluding(Some(window.window_handle()), cx);
         if self.menu_state == Some(state) {
             return;
         }
@@ -587,6 +592,7 @@ impl GitTurtle {
         MenuState {
             repository: self.repository.is_some(),
             busy: self.operation_busy,
+            other_window_busy: false,
             projects_refused: self.projects_refusal().0,
             workspace: self.page == AppPage::Repository,
             unsettled: self.write_unsettled(),

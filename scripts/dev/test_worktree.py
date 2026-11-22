@@ -136,6 +136,42 @@ class WorktreeTests(unittest.TestCase):
             self.assertEqual(worktree.main(["--root", str(root), "rm", "dirty-wt", "--force", "--delete-branch"]), 0)
             self.assertFalse(wt.exists())
 
+    def test_rm_deletes_branch_even_when_worktree_dir_was_manually_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = (Path(tmp) / "repo").resolve()
+            root.mkdir()
+            init_fixture_repo(root)
+            self.assertEqual(
+                worktree.main(["--root", str(root), "new", "gone-wt", "--branch", "fix/gone-wt", "--no-seed"]),
+                0,
+            )
+            wt = root / ".local" / "wt" / "gone-wt"
+            import shutil
+            shutil.rmtree(wt)
+            self.assertEqual(worktree.main(["--root", str(root), "rm", "gone-wt", "--delete-branch"]), 0)
+            check = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", "refs/heads/fix/gone-wt"],
+                cwd=root, check=False,
+            )
+            self.assertNotEqual(check.returncode, 0, "branch should be deleted even when worktree dir was already gone")
+
+    def test_warm_release_builds_release_gitturtle_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = (Path(tmp) / "repo").resolve()
+            root.mkdir()
+            init_fixture_repo(root)
+            ok = subprocess.CompletedProcess(args=["cargo"], returncode=0)
+            with (
+                mock.patch.object(worktree, "find_main_root", return_value=root),
+                mock.patch.object(worktree.subprocess, "run", return_value=ok) as patched,
+            ):
+                rc = worktree.main(["--root", str(root), "warm", "--release"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(
+                patched.call_args.args[0],
+                ["cargo", "build", "--locked", "--release", "-p", "gitturtle"],
+            )
+
     def test_gc_reports_and_prunes_only_unprotected_stale_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = (Path(tmp) / "repo").resolve()

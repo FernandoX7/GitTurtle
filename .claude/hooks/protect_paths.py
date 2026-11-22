@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: delegate protected-path checks to scripts/dev/guards.py."""
+"""PreToolUse hook: delegate protected-path checks to scripts/dev/guards.py.
+
+Active when `GITTURTLE_PROTECT_PATHS=1` (or legacy `GITTURTLE_LOOP=1`) is set
+for unattended or bounded subagent sessions. Interactive sessions leave it off
+so authorized policy and guidance updates can be made directly.
+"""
+from __future__ import annotations
 
 import json
 import os
@@ -14,7 +20,7 @@ from dev.guards import active_queue, path_protection_reason  # noqa: E402
 
 
 def main() -> int:
-    if os.environ.get("GITTURTLE_LOOP") != "1":
+    if os.environ.get("GITTURTLE_PROTECT_PATHS") != "1" and os.environ.get("GITTURTLE_LOOP") != "1":
         return 0
     try:
         data = json.load(sys.stdin)
@@ -29,9 +35,9 @@ def main() -> int:
     if reason is None:
         return 0
     sys.stderr.write(
-        f"protected path in a loop session: {reason}. Guidance, agent, skill, "
-        "guard, task-policy and gate-configuration files cannot change during a "
-        "loop attempt; return `blocked` with a concrete proposal instead.\n"
+        f"protected path in a guarded session: {reason}. Guidance, agent, skill, "
+        "guard, and gate-configuration files cannot change while path protection "
+        "is enabled; report the proposed policy edit to the coordinator instead.\n"
     )
     return 2
 

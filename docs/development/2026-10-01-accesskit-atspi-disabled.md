@@ -1,6 +1,6 @@
 # AccessKit AT-SPI disabled state (2026-10-01)
 
-Research for task `atspi-disabled-state` in [`tasks.json`](tasks.json), using the [research template](research-template.md).
+Research for task `atspi-disabled-state` in the historical `tasks.json` queue (retired November 2026), using the [research template](research-template.md).
 
 ## Decision and scope
 

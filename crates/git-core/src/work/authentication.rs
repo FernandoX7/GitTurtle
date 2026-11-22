@@ -149,20 +149,29 @@ impl OperationControl {
         answer
     }
     fn redact(&self, input: &str) -> String {
-        redact_diagnostic(&self.without_answers(input))
+        redact_diagnostic(&self.without_answers_and_bidi(input))
     }
     /// What the authentication dialog shows of `prompt`, its only reader;
     /// progress, failures and diagnostics take [`Self::redact`].
     fn redact_prompt(&self, prompt: &str) -> String {
-        shown_prompt(&self.without_answers(prompt))
+        shown_prompt(&self.without_answers_and_bidi(prompt))
     }
-    fn without_answers(&self, input: &str) -> String {
+    fn without_answers_and_bidi(&self, input: &str) -> String {
         let state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut output = input.to_owned();
         for secret in &state.secrets {
             output = output.replace(secret, "[redacted]");
         }
-        output
+        let stripped = crate::strip_bidi_controls(&output);
+        if matches!(stripped, std::borrow::Cow::Owned(_)) {
+            let mut output = stripped.into_owned();
+            for secret in &state.secrets {
+                output = output.replace(secret, "[redacted]");
+            }
+            output
+        } else {
+            output
+        }
     }
 }
 
@@ -610,7 +619,8 @@ impl Drop for AskpassServer {
 /// how a prompt such as OpenSSH's `user@host's password: ` ends. The line
 /// ends at its `\n`, so a value after a carriage return is still cut.
 pub fn redact_diagnostic(input: &str) -> String {
-    hide_url_credentials(input)
+    let input = crate::strip_bidi_controls(input);
+    hide_url_credentials(&input)
         .lines()
         .map(|line| match first_credential_marker_end(line) {
             Some(end) if !line[end..].trim().is_empty() => {
@@ -2846,5 +2856,33 @@ os._exit(0)
                 cancelled.elapsed()
             );
         }
+    }
+
+    #[test]
+    fn bidi_split_askpass_secret_is_still_redacted_in_diagnostics_and_prompts() {
+        let control = OperationControl::default();
+        control
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .secrets
+            .push("ephemeral-secret-42".to_owned());
+        let split = "fatal: echoed ephemeral-\u{202E}secret-\u{2066}42\u{2069} here";
+        let redacted = control.redact(split);
+        assert!(
+            !redacted.contains("ephemeral-secret-42"),
+            "secret leaked after bidi stripping: {redacted}"
+        );
+        assert!(redacted.contains("[redacted]"), "{redacted}");
+        assert!(!redacted.contains('\u{202E}') && !redacted.contains('\u{2066}'));
+
+        let prompt = "Password for 'https://alice@example.com': ephemeral-\u{202E}secret-42";
+        let redacted_prompt = control.redact_prompt(prompt);
+        assert!(
+            !redacted_prompt.contains("ephemeral-secret-42"),
+            "prompt leaked secret after bidi stripping: {redacted_prompt}"
+        );
+        assert!(!redacted_prompt.contains('\u{202E}'));
     }
 }

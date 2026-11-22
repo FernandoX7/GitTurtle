@@ -411,13 +411,17 @@ impl GitRepository {
                 bytes
             },
         };
-        let preview = if area == ChangeArea::Unstaged && file.new_mode == "160000" {
-            TextPreview::Patch(format!(
-                "Submodule working copy changed.\nIndex commit: {}\nOpen the submodule repository to inspect its checked-out commit and working files.\n",
-                file.old_oid.as_deref().unwrap_or("(not present in index)")
-            ))
+        let (preview, computed_edits) = if area == ChangeArea::Unstaged && file.new_mode == "160000"
+        {
+            (
+                TextPreview::Patch(format!(
+                    "Submodule working copy changed.\nIndex commit: {}\nOpen the submodule repository to inspect its checked-out commit and working files.\n",
+                    file.old_oid.as_deref().unwrap_or("(not present in index)")
+                )),
+                None,
+            )
         } else {
-            preview_bytes(&file, &old, &new)
+            preview_bytes_with_edits(&file, &old, &new, true)
         };
         let mut result = WorktreePreview {
             file,
@@ -427,7 +431,7 @@ impl GitRepository {
             partial: None,
             partial_unavailable: None,
         };
-        match self.partial_diff(entry, area, &result) {
+        match self.partial_diff(entry, area, &result, computed_edits) {
             Ok(diff) => result.partial = Some(diff),
             Err(error) => result.partial_unavailable = Some(error.to_string()),
         }
@@ -439,6 +443,7 @@ impl GitRepository {
         entry: &StatusEntry,
         area: ChangeArea,
         preview: &WorktreePreview,
+        computed_edits: Option<(Vec<PartialEdit>, usize)>,
     ) -> Result<PartialDiff> {
         let file = &preview.file;
         ensure!(
@@ -512,7 +517,13 @@ impl GitRepository {
                 );
             }
         }
-        PartialDiff::new(self.path.clone(), entry.path.clone(), area, preview)
+        PartialDiff::from_edits(
+            self.path.clone(),
+            entry.path.clone(),
+            area,
+            preview,
+            computed_edits,
+        )
     }
 
     fn apply_partial(
@@ -1050,40 +1061,25 @@ impl GitRepository {
 }
 
 impl PartialDiff {
-    fn new(
+    fn from_edits(
         root: PathBuf,
         path: PathBuf,
         area: ChangeArea,
         preview: &WorktreePreview,
+        computed_edits: Option<(Vec<PartialEdit>, usize)>,
     ) -> Result<Self> {
         let old = std::str::from_utf8(&preview.old)?;
         let new = std::str::from_utf8(&preview.new)?;
-        let diff = TextDiff::configure()
-            .algorithm(Algorithm::Patience)
-            .timeout(Duration::from_millis(250))
-            .diff_lines(old, new);
-        let mut next_id = 0;
-        let edits: Vec<_> = diff
-            .iter_all_changes()
-            .map(|change| {
-                let kind = match change.tag() {
-                    similar::ChangeTag::Equal => PartialLineKind::Context,
-                    similar::ChangeTag::Insert => PartialLineKind::Addition,
-                    similar::ChangeTag::Delete => PartialLineKind::Deletion,
-                };
-                let change_id = (kind != PartialLineKind::Context).then(|| {
-                    let id = next_id;
-                    next_id += 1;
-                    id
-                });
-                PartialEdit {
-                    kind,
-                    old_index: change.old_index(),
-                    new_index: change.new_index(),
-                    change_id,
-                }
-            })
-            .collect();
+        let (edits, next_id) = match computed_edits {
+            Some(edits) => edits,
+            None => {
+                let diff = TextDiff::configure()
+                    .algorithm(Algorithm::Patience)
+                    .timeout(Duration::from_millis(250))
+                    .diff_lines(old, new);
+                collect_partial_edits(&diff)
+            }
+        };
         ensure!(next_id > 0, "There are no text changes to select.");
         // Merge changed ranges whenever their three lines of context overlap.
         let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
@@ -2153,31 +2149,72 @@ pub(super) fn read_worktree_file(
     bail!("Safe working-copy preview is currently supported on macOS and Linux")
 }
 
+fn collect_partial_edits(diff: &TextDiff<'_, '_, str>) -> (Vec<PartialEdit>, usize) {
+    let mut next_id = 0;
+    let edits = diff
+        .iter_all_changes()
+        .map(|change| {
+            let kind = match change.tag() {
+                similar::ChangeTag::Equal => PartialLineKind::Context,
+                similar::ChangeTag::Insert => PartialLineKind::Addition,
+                similar::ChangeTag::Delete => PartialLineKind::Deletion,
+            };
+            let change_id = (kind != PartialLineKind::Context).then(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            });
+            PartialEdit {
+                kind,
+                old_index: change.old_index(),
+                new_index: change.new_index(),
+                change_id,
+            }
+        })
+        .collect();
+    (edits, next_id)
+}
+
 fn preview_bytes(file: &FileChange, old: &[u8], new: &[u8]) -> TextPreview {
+    preview_bytes_with_edits(file, old, new, false).0
+}
+
+fn preview_bytes_with_edits(
+    file: &FileChange,
+    old: &[u8],
+    new: &[u8],
+    collect_edits: bool,
+) -> (TextPreview, Option<(Vec<PartialEdit>, usize)>) {
     if file.is_submodule()
         && (file.old_path.is_none() || file.old_mode == "160000")
         && (file.new_path.is_none() || file.new_mode == "160000")
     {
-        return TextPreview::Submodule {
-            old_oid: file.old_oid.clone(),
-            new_oid: file.new_oid.clone(),
-        };
+        return (
+            TextPreview::Submodule {
+                old_oid: file.old_oid.clone(),
+                new_oid: file.new_oid.clone(),
+            },
+            None,
+        );
     }
     if old.len() > MAX_DIFF_BYTES
         || new.len() > MAX_DIFF_BYTES
         || old.iter().filter(|b| **b == b'\n').count() > MAX_DIFF_LINES
         || new.iter().filter(|b| **b == b'\n').count() > MAX_DIFF_LINES
     {
-        return TextPreview::TooLarge {
-            old_bytes: old.len(),
-            new_bytes: new.len(),
-        };
+        return (
+            TextPreview::TooLarge {
+                old_bytes: old.len(),
+                new_bytes: new.len(),
+            },
+            None,
+        );
     }
     let (Ok(old_text), Ok(new_text)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
-        return TextPreview::Binary;
+        return (TextPreview::Binary, None);
     };
     if old.contains(&0) || new.contains(&0) {
-        return TextPreview::Binary;
+        return (TextPreview::Binary, None);
     }
     let old_label = file
         .old_path
@@ -2189,10 +2226,12 @@ fn preview_bytes(file: &FileChange, old: &[u8], new: &[u8]) -> TextPreview {
         .as_ref()
         .map(|p| patch_label("b", p))
         .unwrap_or_else(|| "/dev/null".into());
-    let mut patch = TextDiff::configure()
+    let diff = TextDiff::configure()
         .algorithm(Algorithm::Patience)
         .timeout(Duration::from_millis(250))
-        .diff_lines(old_text, new_text)
+        .diff_lines(old_text, new_text);
+    let edits = collect_edits.then(|| collect_partial_edits(&diff));
+    let mut patch = diff
         .unified_diff()
         .context_radius(3)
         .header(&old_label, &new_label)
@@ -2212,7 +2251,7 @@ fn preview_bytes(file: &FileChange, old: &[u8], new: &[u8]) -> TextPreview {
     if patch.is_empty() {
         patch = "File contents are identical.\n".into();
     }
-    TextPreview::Patch(patch)
+    (TextPreview::Patch(patch), edits)
 }
 
 #[cfg(test)]

@@ -2761,11 +2761,9 @@ fn git_failure_summarized(
 /// `fatal:` or `error:`, as a terminal leaves it. Read here, while the two
 /// streams are apart: in a report core's words open the first line, so no
 /// line of Git's first output ever starts one, and a banner reading the
-/// report could only pick the second marker. Always redacted, so the banner
-/// shows nothing a report hid. That is stricter than a report built with
-/// [`reported`], which is read as a terminal leaves it but not redacted: its
-/// commands, local reads and `git config --file` edits, run no network,
-/// helpers or hooks and so have no credential source (decided 2026-11-09).
+/// report could only pick the second marker. Always redacted and stripped of
+/// Unicode bidi override controls, matching [`reported`], so neither the banner
+/// nor `Details…` can leak echoed config credentials or spoofed paths.
 /// A caller passes only the streams its report embeds.
 fn git_failure_line(stderr: &[u8], stdout: &[u8]) -> Option<String> {
     [stderr, stdout].into_iter().find_map(|stream| {
@@ -2876,28 +2874,52 @@ pub(crate) fn redacted_failure(
     }
 }
 
-/// Git's captured output in `bytes` as a message shows it: [`text`] as a
-/// terminal leaves it ([`as_terminal_leaves`]). Every failure that embeds
-/// Git's stdout or stderr reads it through this, before its own words join
-/// it, so a step's progress never runs into the error after it; the
-/// diagnostics that match Git's words read the raw bytes.
-fn reported(bytes: &[u8]) -> String {
-    let text = text(bytes);
-    match as_terminal_leaves(&text) {
-        std::borrow::Cow::Borrowed(_) => text,
-        std::borrow::Cow::Owned(shown) => shown,
+/// Remove Unicode bidirectional override, embedding, and isolate control
+/// characters (`U+202A..=U+202E`, `U+2066..=U+2069`) from untrusted Git
+/// diagnostics, banners, and tooltips so spoofed text cannot disguise a path,
+/// remote URL, or command message.
+pub fn strip_bidi_controls(input: &str) -> std::borrow::Cow<'_, str> {
+    if !input.chars().any(is_bidi_control) {
+        return std::borrow::Cow::Borrowed(input);
     }
+    input
+        .chars()
+        .filter(|ch| !is_bidi_control(*ch))
+        .collect::<String>()
+        .into()
 }
 
-/// [`reported`] for a failure that redacts Git's output: `redact` reads
-/// Git's own text first, and only what it leaves is read as a terminal
-/// leaves it, as a write's outcome is (`GitRepository::execute`). Read the
-/// other way round, a carriage return between a redaction's marker and its
-/// secret, as in "password=\rsecret", left only the secret, which no marker
-/// then names. Decided 2026-11-07: every failure that redacts reads Git's
-/// streams through this.
+fn is_bidi_control(ch: char) -> bool {
+    matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Git's captured output in `bytes` as a message shows it: redacted for
+/// credentials and stripped of Unicode bidi override controls, then rendered
+/// as a terminal leaves it ([`as_terminal_leaves`]). Every failure that embeds
+/// Git's stdout or stderr reads it through this, before its own words join it,
+/// so echoed config values cannot leak credentials into `Details…` reports and
+/// bidi controls cannot disguise a path or remote; diagnostics that match
+/// Git's words read the raw bytes.
+fn reported(bytes: &[u8]) -> String {
+    let raw = text(bytes);
+    let trailing_newline = raw.ends_with('\n') && !raw.contains('\r');
+    let mut out = reported_redacted(bytes, work::redact_stream);
+    if trailing_newline && !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// [`reported`] for a failure that redacts Git's output: bidi controls are
+/// stripped and `redact` reads Git's own text first, and only what it leaves
+/// is read as a terminal leaves it, as a write's outcome is
+/// (`GitRepository::execute`). Read the other way round, a carriage return
+/// between a redaction's marker and its secret, as in "password=\rsecret",
+/// left only the secret, which no marker then names.
 fn reported_redacted(bytes: &[u8], redact: impl FnOnce(&str) -> String) -> String {
-    as_terminal_leaves(&redact(&text(bytes))).into_owned()
+    let raw = text(bytes);
+    let stripped = strip_bidi_controls(&raw);
+    as_terminal_leaves(&redact(&stripped)).into_owned()
 }
 
 /// `output`, Git's reported output, as a terminal leaves it: Git writes a
@@ -4824,6 +4846,44 @@ mod tests {
             assert!(elapsed < Duration::from_secs(2), "{stopped}: {elapsed:?}");
             assert_eq!(Arc::strong_count(&owned), 1, "{stopped}");
         }
+    }
+
+    #[test]
+    fn failed_read_reports_redact_echoed_credentials_and_strip_bidi_controls() {
+        let stderr = concat!(
+            "fatal: invalid 'status.showUntrackedFiles' value: ",
+            "'https://user:s3cr3t@example.invalid/repo.git?token=rawtok ",
+            "\u{202A}a\u{202B}b\u{202C}c\u{202D}d\u{202E}txt.exe",
+            "\u{2066}e\u{2067}f\u{2068}g\u{2069} 🐢'\n"
+        );
+        let failure = git_failure(
+            stderr.as_bytes(),
+            format!("Git status failed: {}", reported(stderr.as_bytes()).trim()),
+        );
+        let report = format!("{failure:#}");
+        let summary = failure_summary(&failure).expect("fatal summary");
+        for shown in [&report, &summary] {
+            assert!(!shown.contains("s3cr3t"), "leaked password in {shown:?}");
+            assert!(!shown.contains("rawtok"), "leaked token in {shown:?}");
+            assert!(
+                shown.contains("[redacted]"),
+                "missing redaction in {shown:?}"
+            );
+            assert!(
+                !shown
+                    .chars()
+                    .any(|ch| matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+                "bidi control survived in {shown:?}"
+            );
+            assert!(shown.contains("txt.exe"), "lost visible text in {shown:?}");
+            assert!(shown.contains("🐢"), "lost normal Unicode in {shown:?}");
+        }
+
+        // Bidi override inside a credential marker cannot bypass redaction.
+        let spoofed = "fatal: pass\u{202E}word=MY_HIDDEN_VAL";
+        let cleaned = reported(spoofed.as_bytes());
+        assert!(!cleaned.contains("MY_HIDDEN_VAL"), "{cleaned:?}");
+        assert!(cleaned.contains("password=[redacted]"), "{cleaned:?}");
     }
 }
 

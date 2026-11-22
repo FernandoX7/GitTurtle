@@ -2315,6 +2315,8 @@ dependencies = [
  "meshopt",
  "moxcms",
  "mp4parse",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
  "resvg 0.50.0",
  "roxmltree 0.21.2",
  "serde",

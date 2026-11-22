@@ -160,9 +160,10 @@ def cmd_warm(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.pop("RUSTUP_TOOLCHAIN", None)
     env["CARGO_TARGET_DIR"] = str(target_base)
-    cmd = ["cargo", "test", "--locked", "--workspace", "--no-run"]
     if args.release:
-        cmd.append("--release")
+        cmd = ["cargo", "build", "--locked", "--release", "-p", "gitturtle"]
+    else:
+        cmd = ["cargo", "test", "--locked", "--workspace", "--no-run"]
     result = subprocess.run(cmd, cwd=root, env=env, check=False)
     if result.returncode != 0:
         raise WorktreeError(f"{' '.join(cmd)} failed with exit {result.returncode}")
@@ -170,11 +171,32 @@ def cmd_warm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _registered_worktree_branch(root: Path, wt_path: Path) -> str | None:
+    """Look up the branch registered for `wt_path` in `git worktree list --porcelain`."""
+    listed = run_git(root, "worktree", "list", "--porcelain", check=False)
+    if listed.returncode != 0:
+        return None
+    target_str = str(wt_path.resolve())
+    current_path: str | None = None
+    current_branch: str | None = None
+    for line in listed.stdout.splitlines() + [""]:
+        if not line.strip():
+            if current_path == target_str and current_branch:
+                return current_branch
+            current_path = None
+            current_branch = None
+        elif line.startswith("worktree "):
+            current_path = str(Path(line[len("worktree "):]).resolve())
+        elif line.startswith("branch refs/heads/"):
+            current_branch = line[len("branch refs/heads/"):]
+    return None
+
+
 def cmd_rm(args: argparse.Namespace) -> int:
     root = find_main_root(args.root)
     name = validate_name(args.name)
     wt_path = root / ".local" / "wt" / name
-    branch: str | None = None
+    branch: str | None = _registered_worktree_branch(root, wt_path)
     if wt_path.exists() or wt_path.is_symlink():
         if wt_path.is_symlink():
             raise WorktreeError(f"refusing to remove symlinked worktree path: {wt_path}")
@@ -210,6 +232,11 @@ def cmd_rm(args: argparse.Namespace) -> int:
         rm_args.extend(["--", str(wt_path)])
         run_git(root, *rm_args)
     run_git(root, "worktree", "prune")
+    if args.delete_branch and not branch:
+        default_branch = f"wt/{name}"
+        exists = run_git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{default_branch}", check=False)
+        if exists.returncode == 0:
+            branch = default_branch
     if args.delete_branch and branch and branch != "main":
         flag = "-D" if args.force else "-d"
         run_git(root, "branch", flag, "--", branch)
@@ -310,7 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_new.set_defaults(func=cmd_new)
 
     p_warm = sub.add_parser("warm", help="Incrementally warm .local/target-base")
-    p_warm.add_argument("--release", action="store_true", help="Also warm release test artifacts")
+    p_warm.add_argument("--release", action="store_true", help="Warm the release gitturtle binary instead of debug tests")
     p_warm.set_defaults(func=cmd_warm)
 
     p_rm = sub.add_parser("rm", help="Remove a worktree under .local/wt/<name> and its target")
