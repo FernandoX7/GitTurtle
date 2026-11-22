@@ -164,6 +164,7 @@ gpui_kit::actions!(
         ToggleProjectPane,
         BackHistory,
         ShowProjects,
+        ShowAbout,
         ShowSettings,
         ShowChanges,
         QuickOpenFile,
@@ -297,6 +298,19 @@ enum TextMode {
     After,
     Diagrams,
     Markdown,
+}
+impl TextMode {
+    const COUNT: usize = 6;
+    fn index(self) -> usize {
+        match self {
+            Self::Unified => 0,
+            Self::Split => 1,
+            Self::Before => 2,
+            Self::After => 3,
+            Self::Diagrams => 4,
+            Self::Markdown => 5,
+        }
+    }
 }
 #[derive(Clone, Copy, PartialEq)]
 enum NavMode {
@@ -553,6 +567,10 @@ struct GitTurtle {
     working_rows: Vec<workspace::WorkingRow>,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
     working_scroll: UniformListScrollHandle,
+    /// Last prepainted vertical offset of `working_scroll`, for nested wheel chaining.
+    working_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// Nested wheel-chaining scroll state for Working Changes' selection bar.
+    working_selection_scroll: tags::NestedScroll,
     /// The Working inspector's list and composer as one scrolling area,
     /// where the body cannot hold the list's floor and the composer with its
     /// Description section: Tab and Shift+Tab reveal each composer stop whole
@@ -585,6 +603,10 @@ struct GitTurtle {
     /// The Columns panel's own focus, around its controls: a press on the
     /// button that closes the panel asks whether focus is inside it.
     columns_panel_focus: FocusHandle,
+    /// Stable focus handles for Compare's text-mode toggle buttons and its
+    /// collapsed mode menu so resizing between them transfers focus cleanly.
+    text_mode_focus: [FocusHandle; TextMode::COUNT],
+    text_mode_menu_focus: FocusHandle,
     git_actions_open: bool,
     layout_trace: Option<(
         Size<Pixels>,
@@ -993,6 +1015,8 @@ impl GitTurtle {
             working_rows: Vec::new(),
             working_selected: None,
             working_scroll: UniformListScrollHandle::new(),
+            working_scroll_rest: std::rc::Rc::default(),
+            working_selection_scroll: tags::NestedScroll::default(),
             working_body: focus_reveal::FocusReveal::new(focus_reveal::Trigger::Keyboard),
             working_travel: motion::RowTravel::Idle,
             still_pointer: None,
@@ -1017,6 +1041,8 @@ impl GitTurtle {
             column_menu: false,
             columns_focus: cx.focus_handle(),
             columns_panel_focus: cx.focus_handle(),
+            text_mode_focus: std::array::from_fn(|_| cx.focus_handle()),
+            text_mode_menu_focus: cx.focus_handle(),
             git_actions_open: false,
             layout_trace: None,
             history_horizontal: ScrollHandle::new(),
@@ -2388,7 +2414,12 @@ impl GitTurtle {
         }
         if reading {
             cx.notify();
-        } else if self.selected_file == Some(index) && self.content.is_some() {
+        } else if self.selected_file == Some(index)
+            && self
+                .content
+                .as_deref()
+                .is_some_and(|content| !content.has_changeable_lfs())
+        {
             self.ensure_editor(window, cx);
             self.trace_frame("file_preview_frame_ms", window, cx);
             cx.notify();
@@ -3666,7 +3697,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     if gpui_kit::guess_compositor() == "Headless" {
         eprintln!(
-            "GitTurtle needs a Wayland or X11 desktop session. Launch it from your desktop's application menu or a terminal inside that session. No display was selected: WAYLAND_DISPLAY or DISPLAY must identify the session, and ZED_HEADLESS must be unset."
+            "GitTurtle needs a Wayland or X11 desktop session. Launch it from your desktop's application menu or a terminal inside that session. No display was selected: WAYLAND_DISPLAY or DISPLAY must identify the session, and headless mode must be unset."
         );
         std::process::exit(1);
     }

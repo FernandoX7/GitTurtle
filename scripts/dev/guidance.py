@@ -917,6 +917,193 @@ def _agent_issues(path: Path, text: str, names: dict[str, Path]
     return issues, instructions if isinstance(instructions, str) else ""
 
 
+CLI_CODE_SPAN_RE = re.compile(r"`(python3\s+(?:-B\s+)?scripts/[^`]+)`")
+CLI_FENCE_LINE_RE = re.compile(r"^\s*(?:\$\s+)?(python3\s+(?:-B\s+)?scripts/\S+.*)$")
+ADR_FILE_RE = re.compile(r"^(\d{4})-[a-z0-9-]+\.md$")
+ADR_LINK_RE = re.compile(r"\[[^\]]+\]\((\d{4}-[a-z0-9-]+\.md)\)")
+
+
+def _inspect_script_cli(script: Path) -> tuple[set[str], set[str], bool]:
+    """Statically inspect a Python script's AST for argparse subcommands and flags.
+
+    Returns `(subcommands, flags, has_subparsers)`. Zero execution side effects.
+    """
+    try:
+        tree = ast.parse(script.read_text(encoding="utf-8", errors="replace"), filename=str(script))
+    except (OSError, SyntaxError):
+        return set(), set(), False
+    subcommands: set[str] = set()
+    flags: set[str] = {"-h", "--help"}
+    has_subparsers = False
+
+    def _const_strings(node: ast.AST) -> list[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            items: list[str] = []
+            for elt in node.elts:
+                items.extend(_const_strings(elt))
+            return items
+        return []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        attr = func.attr if isinstance(func, ast.Attribute) else None
+        if attr == "add_subparsers":
+            has_subparsers = True
+        elif attr == "add_parser" and node.args:
+            has_subparsers = True
+            for name in _const_strings(node.args[0]):
+                subcommands.add(name)
+            for kw in node.keywords:
+                if kw.arg == "aliases":
+                    for alias in _const_strings(kw.value):
+                        subcommands.add(alias)
+        elif attr == "add_argument":
+            for arg in node.args:
+                for opt in _const_strings(arg):
+                    if opt.startswith("-"):
+                        flags.add(opt)
+    return subcommands, flags, has_subparsers
+
+
+def _cli_command_issues(
+    root: Path,
+    path: Path,
+    text: str,
+    cli_cache: dict[Path, tuple[set[str], set[str], bool]],
+) -> list[Issue]:
+    """Smoke-check documented `python3 scripts/...` commands against script paths and argparse."""
+    rel_parts = path.relative_to(root).parts
+    is_target = (
+        path.name == "AGENTS.md"
+        or (len(rel_parts) >= 2 and rel_parts[0] == ".agents" and rel_parts[1] in ("skills", "roles", "workflows"))
+    )
+    if not is_target:
+        return []
+
+    candidates: list[tuple[int, str]] = []
+    in_fence = False
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            match = CLI_FENCE_LINE_RE.match(line)
+            if match:
+                candidates.append((lineno, match.group(1)))
+        else:
+            for match in CLI_CODE_SPAN_RE.finditer(line):
+                candidates.append((lineno, match.group(1)))
+
+    issues: list[Issue] = []
+    for lineno, raw_cmd in candidates:
+        # Stop at shell command separators (`&&`, `||`, `|`, `;`) when validating a single invocation.
+        cmd_part = re.split(r"\s*(?:&&|\|\||\||;)\s*", raw_cmd, maxsplit=1)[0].strip()
+        tokens = cmd_part.split()
+        idx = 1
+        while idx < len(tokens) and tokens[idx].startswith("-"):
+            idx += 1
+        if idx >= len(tokens):
+            continue
+        script_rel = tokens[idx].rstrip(",.)]:;")
+        if "<" in script_rel or "*" in script_rel or "..." in script_rel or not script_rel.endswith(".py"):
+            continue
+        script_path = (root / script_rel).resolve()
+        try:
+            script_path.relative_to(root)
+        except ValueError:
+            continue
+        if not script_path.is_file():
+            issues.append(Issue(path, lineno, f"documented CLI script does not exist: {script_rel}"))
+            continue
+        if script_path not in cli_cache:
+            cli_cache[script_path] = _inspect_script_cli(script_path)
+        subcommands, flags, has_subparsers = cli_cache[script_path]
+        rest = tokens[idx + 1 :]
+        if has_subparsers and subcommands:
+            # Find the first positional subcommand token before `--`.
+            sub_token: str | None = None
+            skip_next = False
+            for tok in rest:
+                if tok == "--":
+                    break
+                if skip_next:
+                    skip_next = False
+                    continue
+                if tok.startswith("-"):
+                    if "=" not in tok and tok in {"--root", "--slot-dir", "--slots", "--base", "--report", "--directory"}:
+                        skip_next = True
+                    continue
+                sub_token = tok
+                break
+            if sub_token and not any(ch in sub_token for ch in "<>[]|*?{}()$"):
+                if sub_token not in subcommands:
+                    allowed = ", ".join(sorted(subcommands))
+                    issues.append(
+                        Issue(
+                            path,
+                            lineno,
+                            f"unknown subcommand {sub_token!r} for {script_rel} (expected one of: {allowed})",
+                        )
+                    )
+        # Validate concrete long flags when argparse flags were statically discovered.
+        if len(flags) > 2:
+            for tok in rest:
+                if tok == "--":
+                    break
+                if tok.startswith("--") and not any(ch in tok for ch in "<>[]|*?{}()$"):
+                    flag = tok.split("=", 1)[0].rstrip(",.)]:;")
+                    if flag not in flags:
+                        issues.append(
+                            Issue(
+                                path,
+                                lineno,
+                                f"unknown flag {flag!r} for {script_rel}",
+                            )
+                        )
+    return issues
+
+
+def _adr_index_issues(root: Path) -> list[Issue]:
+    """Verify docs/decisions/README.md indexes every ADR with sequential numbering."""
+    decisions_dir = root / "docs" / "decisions"
+    readme = decisions_dir / "README.md"
+    if not readme.is_file():
+        return []
+    issues: list[Issue] = []
+    readme_text = readme.read_text(encoding="utf-8", errors="replace")
+    linked = set(ADR_LINK_RE.findall(readme_text))
+    adr_files: list[tuple[int, str]] = []
+    for entry in sorted(decisions_dir.iterdir()):
+        if not entry.is_file() or entry.name == "README.md" or entry.suffix != ".md":
+            continue
+        match = ADR_FILE_RE.match(entry.name)
+        if not match:
+            issues.append(Issue(entry, 1, f"ADR filename must match NNNN-slug.md: {entry.name}"))
+            continue
+        adr_files.append((int(match.group(1)), entry.name))
+    seen_nums: dict[int, str] = {}
+    for num, name in sorted(adr_files):
+        if num in seen_nums:
+            issues.append(Issue(decisions_dir / name, 1, f"duplicate ADR number {num:04d} (already used by {seen_nums[num]})"))
+        seen_nums[num] = name
+        if name not in linked:
+            issues.append(Issue(readme, 1, f"ADR {name} is not indexed in docs/decisions/README.md"))
+    if seen_nums:
+        expected = list(range(1, max(seen_nums) + 1))
+        missing_nums = [n for n in expected if n not in seen_nums]
+        if missing_nums:
+            issues.append(Issue(readme, 1, f"ADR numbering gap(s): {', '.join(f'{n:04d}' for n in missing_nums)}"))
+    for name in sorted(linked):
+        if not (decisions_dir / name).is_file():
+            issues.append(Issue(readme, 1, f"ADR index links missing file docs/decisions/{name}"))
+    return issues
+
+
 def validate(root: Path) -> list[Issue]:
     """Return actionable structural problems in the selected repository."""
     root = root.resolve()
@@ -924,6 +1111,7 @@ def validate(root: Path) -> list[Issue]:
     anchors: dict[Path, set[str]] = {}
     names: dict[str, Path] = {}
     claude_names: dict[str, Path] = {}
+    cli_cache: dict[Path, tuple[set[str], set[str], bool]] = {}
     skip_worktree = _skip_worktree_paths(root)
     claude = root / ".claude"
     for path in guidance_files(root):
@@ -958,9 +1146,11 @@ def validate(root: Path) -> list[Issue]:
             issues.extend(_budget_issues(root, path, text))
             issues.extend(_conflict_marker_issues(path, text))
             issues.extend(_link_issues(root, path, text, anchors, skip_worktree))
+            issues.extend(_cli_command_issues(root, path, text, cli_cache))
     if (root / ".agents" / "roles").is_dir():
         for problem in sync_adapters.check_sync(root):
             issues.append(Issue(root / ".agents" / "roles", 1, problem))
+    issues.extend(_adr_index_issues(root))
     issues.extend(home_path_issues(root))
     issues.extend(image_metadata_issues(root))
     return issues

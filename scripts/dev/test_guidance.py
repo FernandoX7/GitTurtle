@@ -433,5 +433,48 @@ class FrontmatterQuotingTests(unittest.TestCase):
         self.assertTrue(any("unquoted '#'" in err for err in bad_errors), bad_errors)
 
 
+class CliSmokeAndAdrIndexTests(unittest.TestCase):
+    def test_cli_command_smoke_flags_bad_subcommand_and_missing_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "scripts/dev").mkdir(parents=True)
+            (root / "scripts/dev/demo.py").write_text(
+                "import argparse\n"
+                "p = argparse.ArgumentParser()\n"
+                "sub = p.add_subparsers(dest='cmd')\n"
+                "a = sub.add_parser('quiet-on')\n"
+                "a.add_argument('--verbose', action='store_true')\n",
+                encoding="utf-8",
+            )
+            (root / "AGENTS.md").write_text(
+                "Run `python3 scripts/dev/demo.py quiet-on --verbose`.\n"
+                "Bad subcommand: `python3 scripts/dev/demo.py quiet on`.\n"
+                "Bad flag: `python3 scripts/dev/demo.py quiet-on --nope`.\n"
+                "Missing: `python3 scripts/dev/missing.py run`.\n",
+                encoding="utf-8",
+            )
+            issues = guidance._cli_command_issues(root, root / "AGENTS.md", (root / "AGENTS.md").read_text(), {})
+            msgs = [i.message for i in issues]
+            self.assertTrue(any("unknown subcommand 'quiet'" in m for m in msgs), msgs)
+            self.assertTrue(any("unknown flag '--nope'" in m for m in msgs), msgs)
+            self.assertTrue(any("does not exist: scripts/dev/missing.py" in m for m in msgs), msgs)
+
+    def test_adr_index_checks_links_and_numbering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            decisions = root / "docs" / "decisions"
+            decisions.mkdir(parents=True)
+            (decisions / "0001-first.md").write_text("# 0001\n", encoding="utf-8")
+            (decisions / "0003-gap.md").write_text("# 0003\n", encoding="utf-8")
+            (decisions / "README.md").write_text(
+                "| [0001](0001-first.md) |\n| [0002](0002-missing.md) |\n",
+                encoding="utf-8",
+            )
+            msgs = [i.message for i in guidance._adr_index_issues(root)]
+            self.assertTrue(any("0003-gap.md is not indexed" in m for m in msgs), msgs)
+            self.assertTrue(any("numbering gap" in m for m in msgs), msgs)
+            self.assertTrue(any("0002-missing.md" in m for m in msgs), msgs)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@ pub(super) struct State {
     pub confirm_focus: FocusHandle,
     /// The scroll of the confirmation's region, at its top as each confirmation opens.
     pub confirm_scroll: ScrollHandle,
+    pub confirm_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
     /// What the last frame found of the confirmation's lines and the body's view ([`ConfirmFit`]).
     pub confirm_fit: std::rc::Rc<std::cell::Cell<ConfirmFit>>,
     /// The confirmation's form, decided before layout for the width, font and text it was
@@ -43,6 +44,8 @@ pub(super) struct State {
     /// The conversation list's scroll, which Tab moves to show a conversation's actions
     /// (`Panel::conversation_part`), and the focus it last showed.
     pub list_scroll: ScrollHandle,
+    pub list_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
+    pub reply_error_scroll: crate::tags::NestedScroll,
     pub list_revealed: std::rc::Rc<std::cell::RefCell<super::review::FocusObservation>>,
     /// Where the list's blocks start: its conversations and their rows, each comment with
     /// its author's line, so a reveal never cuts one at the list's top.
@@ -456,9 +459,12 @@ impl State {
             // the handle carries it.
             confirm_focus: cx.focus_handle().tab_stop(true),
             confirm_scroll: ScrollHandle::new(),
+            confirm_scroll_rest: Default::default(),
             confirm_fit: Default::default(),
             confirm_form: Default::default(),
             list_scroll: ScrollHandle::new(),
+            list_scroll_rest: Default::default(),
+            reply_error_scroll: Default::default(),
             list_revealed: Default::default(),
             list_blocks: Default::default(),
             list_chrome: Default::default(),
@@ -1031,6 +1037,17 @@ impl Panel {
                 )
                 .track_focus(focus)
                 .track_scroll(&self.conversations.confirm_scroll)
+                .on_prepaint({
+                    let (scroll, rest) = (
+                        self.conversations.confirm_scroll.clone(),
+                        self.conversations.confirm_scroll_rest.clone(),
+                    );
+                    move |_, _, _| rest.set(scroll.offset().y)
+                })
+                .on_scroll(crate::tags::chain_scroll_wheel(
+                    self.conversations.confirm_scroll.clone(),
+                    self.conversations.confirm_scroll_rest.clone(),
+                ))
                 .role(Role::Group)
                 .aria_label(format!(
                     "{}: its destination and what Send sends",
@@ -1330,7 +1347,7 @@ impl Panel {
             // The draft and the outcome under it, which the body shows together as it appears.
             .child(div().debug_selector(||"github-reply-draft".into()).flex().flex_col().gap_2().on_children_prepainted(self.reveal_outcome())
                 .child(div().child(super::review::editor_rows(&self.conversations.input)).child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending)))
-                .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(super::review::clipped(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line)))))
+                .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(super::review::clipped(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().track_scroll(&self.conversations.reply_error_scroll.handle).on_prepaint(self.conversations.reply_error_scroll.observe()).on_scroll(self.conversations.reply_error_scroll.wheel()).child(line)))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(self.button("github-review-reply","Review reply…","",true, cx).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(self.button("github-close-reply","Save and close reply","",false, cx).disabled(self.pending).on_click(cx.listener(|this,event,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);this.hold_enter_on_composer(event,window,cx);cx.notify();})))
@@ -1397,12 +1414,21 @@ impl Panel {
                 .child(div().flex_1())
                 .child(self.button("github-threads-refresh","Refresh conversations","refresh",false, cx).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
             .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(super::review::clipped_lines(crate::native_accessibility::clips_children(div()
-                .on_children_prepainted(move |_, window, cx| {
-                    super::review::record_shown(&list_revealed, &list_scroll, |context| context.get(super::review::PART).is_some_and(|part| part == "conversation-list"), window, cx);
-                    list_blocks.finish();
+                .on_children_prepainted({
+                    let list_rest = self.conversations.list_scroll_rest.clone();
+                    move |_, window, cx| {
+                        list_rest.set(list_scroll.offset().y);
+                        super::review::record_shown(&list_revealed, &list_scroll, |context| context.get(super::review::PART).is_some_and(|part| part == "conversation-list"), window, cx);
+                        list_blocks.finish();
+                    }
                 })
                 .id("github-threads").debug_selector(||"github-threads".into())
-                .track_scroll(&self.conversations.list_scroll).flex_shrink_0().min_w_0().max_h(list_height).overflow_y_scroll().flex().flex_col().gap_3()
+                .track_scroll(&self.conversations.list_scroll)
+                .on_scroll(crate::tags::chain_scroll_wheel(
+                    self.conversations.list_scroll.clone(),
+                    self.conversations.list_scroll_rest.clone(),
+                ))
+                .flex_shrink_0().min_w_0().max_h(list_height).overflow_y_scroll().flex().flex_col().gap_3()
                 .when(visible.is_empty(),|element|element.child(label("github-no-threads",if self.conversations.loaded{"No conversations for this file on the loaded page."}else{"Conversations are unavailable. Refresh conversations to load their current status."}).text_color(rgb(p.muted))))
                 .children(visible.into_iter().enumerate().map(|(index,thread)|{
                     let target=thread.target.clone(); let reply=target.clone(); let resolve=target.clone(); let refresh=target.clone(); let more=target.clone();

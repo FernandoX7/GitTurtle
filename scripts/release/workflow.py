@@ -459,6 +459,19 @@ def assemble(args, context):
         notes += ["", "macOS Gatekeeper, quarantine and native launch evidence remains a separate release-owner requirement.",
                   "Ad-hoc packages are developer test builds and are not Developer ID signed or notarized."]
     (args.output / "RELEASE_NOTES.md").write_text("\n".join(notes) + "\n")
+    sbom_script = ROOT / "scripts" / "generate-sbom.py"
+    if sbom_script.is_file() and (ROOT / "Cargo.lock").is_file():
+        import importlib.util as _importlib_util
+        sbom_spec = _importlib_util.spec_from_file_location("generate_sbom", sbom_script)
+        sbom_mod = _importlib_util.module_from_spec(sbom_spec)
+        sbom_spec.loader.exec_module(sbom_mod)
+        sbom_name = f"GitTurtle-{source['version']}-{source['commit'][:12]}-sbom.cdx.json"
+        sbom_mod.write_sbom(
+            args.output / sbom_name,
+            ROOT,
+            version=source["version"],
+            commit=source["commit"],
+        )
     assets = [github.file_record(p) for p in sorted(args.output.iterdir())]
     (args.output / "SHA256SUMS").write_text("".join(f"{item['sha256']}  {item['name']}\n" for item in assets))
     assets.append(github.file_record(args.output / "SHA256SUMS"))

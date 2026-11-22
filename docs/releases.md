@@ -79,14 +79,17 @@ trusted-ref policy. It never creates or moves a tag.
    parses and hashes archives; it does not execute downloaded binaries. A signed
    Mac package additionally needs the accepted signing report, selected
    certificate/Team ID, final executable digest and final archive digest.
-5. **Publication** is a separate Ubuntu job with `contents: write`, selected only
-   by an explicit `publish: true`. The constant `gitturtle-release` environment
-   must authorize the context after the exact assembled assets are reviewable.
-   It verifies the assembly digest from the producer job, all local asset bytes,
-   remote tag and unchanged successful Quality evidence before any release write.
-   It rechecks the tag around draft creation and before/after publication; C4
-   must additionally establish the protected-tag boundary described below.
-   No PR-generated binary can enter this path.
+5. **Publication** is a separate Ubuntu job with `contents: write`,
+   `id-token: write`, and `attestations: write`, selected only by an explicit
+   `publish: true`. The constant `gitturtle-release` environment must authorize
+   the context after the exact assembled assets are reviewable. It verifies the
+   assembly digest from the producer job, all local asset bytes, remote tag and
+   unchanged successful Quality evidence before any release write, publishes the
+   release once, and attests the assembled `SHA256SUMS` subjects with pinned
+   `actions/attest-build-provenance` (SLSA build provenance, free for public
+   repositories). It rechecks the tag around draft creation and before/after
+   publication; C4 must additionally establish the protected-tag boundary
+   described below. No PR-generated binary can enter this path.
 
 The workflow uses immutable action commits. GitHub's
 [manual workflow trigger](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
@@ -165,9 +168,14 @@ version number.
 ### Release contents and signing provenance
 
 Assembly contains the selected `.tar.gz` and/or `.zip` files, each detached
-`.sha256` and `.manifest.json`, `SHA256SUMS`, `RELEASE_NOTES.md` and
-`release-manifest.json`. A Linux release holds two archives that differ by their
-target only, where `COMMIT12` is the first twelve characters of the source commit:
+`.sha256` and `.manifest.json`, a deterministic CycloneDX 1.5 SBOM
+(`GitTurtle-VERSION-COMMIT12-sbom.cdx.json`, generated from `Cargo.lock` and
+`Cargo.toml` by [`scripts/generate-sbom.py`](../scripts/generate-sbom.py) with
+zero external dependencies — chosen over embedding `cargo-auditable` tables so
+release binaries stay lean and CI requires no extra Rust wrapper tool),
+`SHA256SUMS`, `RELEASE_NOTES.md` and `release-manifest.json`. A Linux release
+holds two archives that differ by their target only, where `COMMIT12` is the
+first twelve characters of the source commit:
 
 - `GitTurtle-VERSION-COMMIT12-linux-x86_64-release.tar.gz` for `x86_64-unknown-linux-gnu`
 - `GitTurtle-VERSION-COMMIT12-linux-aarch64-release.tar.gz` for `aarch64-unknown-linux-gnu`

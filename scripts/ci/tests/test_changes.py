@@ -52,10 +52,14 @@ def needs_for(plan):
         if plan["has_images"]
         else {"image-privacy": {"result": "skipped", "outputs": {}}}
     )
+    seed = changes.is_cache_seed(plan)
     needs = {
         "changes": {"result": "success", "outputs": {
             "plan": json.dumps(plan),
             "has-images": str(plan["has_images"]).lower(),
+            "seed-only": str(seed).lower(),
+            "debug-matrix": json.dumps(changes.DEBUG_MATRIX_SEED if seed else changes.DEBUG_MATRIX_FULL, separators=(",", ":")),
+            "arch-matrix": json.dumps(changes.ARCH_MATRIX_SEED if seed else changes.ARCH_MATRIX_FULL, separators=(",", ":")),
             **{lane: str(plan[lane]).lower() for lane in changes.LANES}}},
         "ci-tests": {"result": "success", "outputs": {}},
         **{job: {"result": "success" if plan[lane] else "skipped", "outputs": {}}
@@ -227,7 +231,13 @@ class GateTests(unittest.TestCase):
                          {"changes", changes.CI_TESTS_JOB, changes.PRIVACY_JOB, *changes.JOBS})
         for job, lane in changes.JOBS.items():
             with self.subTest(job=job):
-                self.assertIn(f"\n    if: needs.changes.outputs.{lane} == 'true'\n", "\n" + jobs[job])
+                if job in ("rust-format", "rust-clippy", "package-transfer"):
+                    self.assertIn(
+                        f"\n    if: needs.changes.outputs.{lane} == 'true' && needs.changes.outputs.seed-only != 'true'\n",
+                        "\n" + jobs[job],
+                    )
+                else:
+                    self.assertIn(f"\n    if: needs.changes.outputs.{lane} == 'true'\n", "\n" + jobs[job])
 
     def test_extra_successful_coverage_is_harmless(self):
         needs = needs_for(changes.classify_paths([b"README.md"]))
@@ -459,12 +469,33 @@ class GitComparisonTests(unittest.TestCase):
                     self.assertEqual(plan["reason"], "classified-paths")
                 changes.validate_plan(plan)
 
-    def test_schedule_event_runs_full_cache_seed_without_image_privacy(self):
+    def test_schedule_event_runs_narrowed_cache_seed_plan_without_image_privacy(self):
         plan = changes.classify_checkout(self.repo, "schedule", {}, "")
-        self.assertEqual(plan, changes.full_plan("scheduled-cache-seed", has_images=False))
+        self.assertEqual(plan, changes.cache_seed_plan())
+        self.assertTrue(changes.is_cache_seed(plan))
         changes.validate_plan(plan)
-        lines = changes.gate(needs_for(plan))
+        needs = needs_for(plan)
+        for job in changes.JOBS:
+            if job not in changes.CACHE_SEED_JOBS:
+                needs[job] = {"result": "skipped", "outputs": {}}
+        lines = changes.gate(needs)
         self.assertEqual(lines[-1], changes.PRIVACY_RESULTS["no-comparison"])
+        self.assertEqual(len(changes.DEBUG_MATRIX_SEED["include"]), 2)
+        self.assertEqual(len(changes.ARCH_MATRIX_SEED["include"]), 1)
+        self.assertTrue(all(item["shard"] == 1 for item in changes.DEBUG_MATRIX_SEED["include"]))
+        self.assertTrue(all(item["shard"] == 1 for item in changes.ARCH_MATRIX_SEED["include"]))
+        # A non-seed plan paired with seed-only flag or seed matrices must fail the gate.
+        full = needs_for(changes.full_plan("main-full-validation"))
+        for key, value in (
+            ("seed-only", "true"),
+            ("debug-matrix", json.dumps(changes.DEBUG_MATRIX_SEED, separators=(",", ":"))),
+            ("arch-matrix", json.dumps(changes.ARCH_MATRIX_SEED, separators=(",", ":"))),
+        ):
+            with self.subTest(key=key):
+                tampered = copy.deepcopy(full)
+                tampered["changes"]["outputs"][key] = value
+                with self.assertRaisesRegex(changes.PolicyError, "classification outputs disagree"):
+                    changes.gate(tampered)
 
     def test_a_pull_request_that_changes_the_collector_runs_every_lane(self):
         self.write("scripts/ci/metrics.py", "collector\n")
@@ -558,7 +589,8 @@ class GitComparisonTests(unittest.TestCase):
         output = dict(line.split("=", 1) for line in output_file.read_text().splitlines())
         self.assertEqual(output["product"], "false")
         self.assertEqual(output["has-images"], "false")
-        self.assertEqual(len(output), 5)
+        self.assertEqual(output["seed-only"], "false")
+        self.assertEqual(len(output), 8)
         self.assertNotIn("guide.md", result.stdout)
         changes.validate_plan(json.loads(output["plan"]))
 

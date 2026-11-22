@@ -515,9 +515,10 @@ class Preparation(Fixture):
             self.assertEqual(checks.call_args.args[2]["target"], target)
             shutil.copytree(upload, self.inputs / f"release-package-{target}-123-1")
         output = self.assemble()
+        sbom_name = f"GitTurtle-0.1.0-{SHA[:12]}-sbom.cdx.json"
         self.assertEqual(sorted(p.name for p in output.iterdir()), sorted(
             [name + suffix for name in archives.values() for suffix in ("", ".manifest.json", ".sha256")]
-            + ["RELEASE_NOTES.md", "SHA256SUMS", "release-manifest.json"]))
+            + [sbom_name, "RELEASE_NOTES.md", "SHA256SUMS", "release-manifest.json"]))
         value = json.loads((output / "release-manifest.json").read_bytes())
         self.assertEqual([(item["target"], item["expected"]["archive"], item["signing"]) for item in value["platforms"]],
                          [(target, archive, "unsigned") for target, archive in archives.items()])
@@ -752,8 +753,30 @@ class Trust(unittest.TestCase):
             name = re.search(r"^    name: (.+)$", block, re.M)
             if not name:
                 continue
-            # Every matrix axis in the name, expanded from `include:` entries or inline lists.
-            if "        include:\n" in block:
+            # Every matrix axis in the name, expanded from `include:`, `fromJSON(...)` in changes.py, or inline lists.
+            if "matrix: ${{ fromJSON(needs.changes.outputs.debug-matrix) }}" in block:
+                import importlib.util as _iu
+                _spec = _iu.spec_from_file_location("ci_changes_check", ROOT / "scripts/ci/changes.py")
+                _mod = _iu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                names = []
+                for entry in _mod.DEBUG_MATRIX_FULL["include"]:
+                    rendered = name.group(1)
+                    for key, value in entry.items():
+                        rendered = rendered.replace(f"${{{{ matrix.{key} }}}}", str(value))
+                    names.append(rendered)
+            elif "matrix: ${{ fromJSON(needs.changes.outputs.arch-matrix) }}" in block:
+                import importlib.util as _iu
+                _spec = _iu.spec_from_file_location("ci_changes_check", ROOT / "scripts/ci/changes.py")
+                _mod = _iu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                names = []
+                for entry in _mod.ARCH_MATRIX_FULL["include"]:
+                    rendered = name.group(1)
+                    for key, value in entry.items():
+                        rendered = rendered.replace(f"${{{{ matrix.{key} }}}}", str(value))
+                    names.append(rendered)
+            elif "        include:\n" in block:
                 inc_block = re.split(r"\n    [a-z]", block.split("        include:\n", 1)[1], maxsplit=1)[0]
                 entries = []
                 for raw in inc_block.splitlines():
@@ -862,9 +885,10 @@ class Publication(Fixture):
         api = FakeGitHub()
         self.publish(api, output)
         archives = [f"GitTurtle-0.1.0-{SHA[:12]}-linux-{machine}-release.tar.gz" for machine in ("aarch64", "x86_64")]
+        sbom_name = f"GitTurtle-0.1.0-{SHA[:12]}-sbom.cdx.json"
         self.assertEqual(sorted(item["name"] for item in api.assets), sorted(
             [name + suffix for name in archives for suffix in ("", ".manifest.json", ".sha256")]
-            + ["RELEASE_NOTES.md", "SHA256SUMS", "release-manifest.json"]))
+            + [sbom_name, "RELEASE_NOTES.md", "SHA256SUMS", "release-manifest.json"]))
 
     def test_identical_retry_reads_all_assets_without_any_remote_write(self):
         output = self.assembled()

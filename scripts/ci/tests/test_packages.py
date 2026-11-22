@@ -1352,7 +1352,8 @@ class QualityUploadTests(unittest.TestCase):
         # Everything above its outputs: it needs the release job, follows the product lane as that job does,
         # runs each leg on the label in its name, and its matrix is two `include` entries and nothing else.
         self.assertEqual(transfer.split("    outputs:\n", 1)[0],
-                         "    needs: [changes, rust-release]\n    if: needs.changes.outputs.product == 'true'\n"
+                         "    needs: [changes, rust-release]\n"
+                         "    if: needs.changes.outputs.product == 'true' && needs.changes.outputs.seed-only != 'true'\n"
                          "    name: Package transfer · ${{ matrix.os }}\n    runs-on: ${{ matrix.os }}\n"
                          "    timeout-minutes: 30\n    strategy:\n      fail-fast: false\n      matrix:\n        include:\n"
                          "          - os: ubuntu-24.04\n            target: x86_64-unknown-linux-gnu\n"

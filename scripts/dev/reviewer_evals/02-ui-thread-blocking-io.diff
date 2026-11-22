@@ -1,0 +1,9 @@
+diff --git a/crates/app/src/views.rs b/crates/app/src/views.rs
+--- a/crates/app/src/views.rs
++++ b/crates/app/src/views.rs
+@@ -15,6 +15,7 @@ impl Render for WindowActionHost {
+     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        let _ = std::fs::write("/tmp/gitturtle-frame.log", b"rendered");
+         div()
+     }
+ }

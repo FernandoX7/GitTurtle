@@ -759,6 +759,8 @@ struct RebaseForm {
     pending: bool,
     closed: bool,
     error: Option<String>,
+    /// Whether the dialog's Confirm comes from Return in the base revision field.
+    field_return: crate::tags::FieldReturn,
     /// Every frame the body was prepainted in, and the frame being
     /// prepainted, for tests that read each frame after a change.
     #[cfg(test)]
@@ -798,6 +800,7 @@ impl RebaseForm {
             pending: false,
             closed: false,
             error: None,
+            field_return: crate::tags::FieldReturn::default(),
             #[cfg(test)]
             painted: Default::default(),
             #[cfg(test)]
@@ -829,6 +832,22 @@ impl RebaseForm {
     /// and whether they look it ([`crate::workspace::dialog_refusal`]).
     fn refusal(&self, cx: &App) -> (bool, bool) {
         crate::workspace::dialog_refusal(&self.owner, self.path.as_deref(), cx)
+    }
+
+    /// Return in the base revision field loads commits rather than confirming
+    /// the dialog's Close action (`tags::FieldReturn`).
+    fn confirm_in_field(
+        &mut self,
+        confirm: &gpui_kit::component::dialog::Confirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let field = self.base.read(cx).focus_handle(cx);
+        if !self.field_return.take() || confirm.secondary || !field.is_focused(window) {
+            cx.propagate();
+            return;
+        }
+        self.load(window, cx);
     }
 
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1174,24 +1193,10 @@ impl RebaseForm {
         // the list rested, so it scrolled the body instead. The reach is the
         // last frame's, so a resize before the next prepaint judges one turn
         // against the old reach, and that prepaint clamps what it leaves.
-        .on_scroll({
-            let (scroll, rest) = (self.scroll.clone(), self.rest.clone());
-            move |_, _, cx| {
-                let state = scroll.0.borrow();
-                let Some(size) = state.last_item_size else {
-                    return;
-                };
-                let reach = (size.contents.height - size.item.height).max(Pixels::ZERO);
-                let offset = state.base_handle.offset();
-                let turned = offset.y.clamp(-reach, Pixels::ZERO);
-                state.base_handle.set_offset(point(offset.x, turned));
-                // Within a rounding error of where it rested, as GPUI
-                // rounds the reach it clamps to.
-                if (rest.replace(turned) - turned).abs() > px(0.01) {
-                    cx.stop_propagation();
-                }
-            }
-        });
+        .on_scroll(crate::tags::chain_uniform_list_wheel(
+            self.scroll.clone(),
+            self.rest.clone(),
+        ));
         // Where the list rests once prepainted, its offset clamped there.
         let rested = {
             let (scroll, rest) = (self.scroll.clone(), self.rest.clone());
@@ -1263,6 +1268,11 @@ impl RebaseForm {
             .pb(room)
             .overflow_y_scroll()
             .track_scroll(self.body.scroll())
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Enter, _, cx| {
+                this.field_return.note(cx);
+                cx.propagate();
+            }))
+            .on_action(cx.listener(Self::confirm_in_field))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
@@ -3203,5 +3213,35 @@ mod tests {
             !app.read_with(cx, |app, _| app.interactive_rebase.dismissed),
             "Changes drops no plan"
         );
+    }
+
+    #[gpui::test]
+    async fn return_in_base_field_loads_commits_instead_of_closing_dialog(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(directory.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_interactive_rebase(None, window, cx))
+        });
+        draw(cx);
+        let form = app.read_with(cx, |app, _| {
+            app.interactive_rebase.draft.clone().expect("the form")
+        });
+        let base_focus = form.read_with(cx, |form, cx| form.base.read(cx).focus_handle(cx));
+        cx.update(|window, cx| base_focus.focus(window, cx));
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Return in the base field must keep Edit local commits… open"
+        );
+        form.read_with(cx, |form, _| {
+            assert!(
+                !form.closed && form.plan.is_some(),
+                "Return in the base field must load the commit plan"
+            );
+        });
     }
 }

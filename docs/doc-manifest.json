@@ -82,6 +82,54 @@
         { "path": "docs/user-guide.md", "pattern": "\\b{value} MiB\\b" },
         { "path": "docs/architecture.md", "pattern": "\\b{value} MiB\\b" }
       ]
+    },
+    {
+      "name": "ci_upload_retention_days",
+      "source": "scripts/ci/packages.py",
+      "kind": "regex_int",
+      "pattern": "(?m)^UPLOAD_RETENTION_DAYS\\s*=\\s*(\\d+)",
+      "docs": [
+        { "path": "docs/ci-artifacts.md", "pattern": "\\b{word_value}-day\\b", "ignore_case": true },
+        { "path": "docs/public-launch.md", "pattern": "\\b{word_value}-day\\b", "ignore_case": true }
+      ]
+    },
+    {
+      "name": "ci_macos_test_shards",
+      "source": "scripts/ci/changes.py",
+      "kind": "regex_int",
+      "pattern": "\"os\":\\s*\"macos-15\"[^\\n]*\"shards\":\\s*(\\d+)",
+      "docs": [
+        { "path": "docs/ci.md", "pattern": "Rust tests · macos-15 · 1/{value}" },
+        { "path": "docs/releases.md", "pattern": "Rust tests · macos-15 · 1/{value}" }
+      ]
+    },
+    {
+      "name": "ci_ubuntu_test_shards",
+      "source": "scripts/ci/changes.py",
+      "kind": "regex_int",
+      "pattern": "\"os\":\\s*\"ubuntu-24\\.04\"[^\\n]*\"shards\":\\s*(\\d+)",
+      "docs": [
+        { "path": "docs/ci.md", "pattern": "Rust tests · ubuntu-24\\.04 · 1/{value}" },
+        { "path": "docs/releases.md", "pattern": "Rust tests · ubuntu-24\\.04 · 1/{value}" }
+      ]
+    },
+    {
+      "name": "ci_actionlint_version",
+      "source": ".github/workflows/quality.yml",
+      "kind": "regex_str",
+      "pattern": "actionlint/releases/download/v([0-9]+\\.[0-9]+\\.[0-9]+)/",
+      "docs": [
+        { "path": "docs/ci.md", "pattern": "actionlint[^\\n]*\\b{value}\\b" }
+      ]
+    }
+  ],
+  "known_gaps_sync": [
+    {
+      "source": "scripts/ci/packages.py",
+      "docs": [
+        { "path": "docs/ci-artifacts.md", "empty_pattern": "(?:empty `KNOWN_GAPS`|`KNOWN_GAPS`[^\\n]*empty)", "ignore_case": true },
+        { "path": "docs/public-launch.md", "empty_pattern": "(?:empty `KNOWN_GAPS`|`KNOWN_GAPS`[^\\n]*empty)", "ignore_case": true }
+      ]
     }
   ],
   "workflows_listed_in": [
@@ -154,9 +202,12 @@
       ]
     },
     {
-      "code_prefixes": [".github/workflows/", "scripts/ci/"],
+      "code_prefixes": [".github/workflows/", "scripts/ci/", "scripts/release/"],
       "docs": [
         "docs/ci.md",
+        "docs/ci-artifacts.md",
+        "docs/releases.md",
+        "docs/public-launch.md",
         "CONTRIBUTING.md"
       ]
     },

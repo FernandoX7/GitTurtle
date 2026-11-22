@@ -3,21 +3,31 @@
 
 Commands:
     python3 scripts/dev/worktree.py new <name> [base] [--branch BRANCH | --detach] [--full] [--no-seed]
-    python3 scripts/dev/worktree.py warm [--release]
+    python3 scripts/dev/worktree.py warm [--release] [--no-slot]
     python3 scripts/dev/worktree.py rm <name> [--delete-branch] [--force]
+    python3 scripts/dev/worktree.py list [--json]
+    python3 scripts/dev/worktree.py status [name] [--json]
+    python3 scripts/dev/worktree.py env <name>
     python3 scripts/dev/worktree.py gc [--days 14] [--prune]
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+try:
+    from . import build_slot
+except ImportError:
+    import build_slot  # type: ignore[no-redef]
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SPARSE_PATTERNS = ("/*", "!/docs/evidence/", "!/docs/benchmarks/")
@@ -157,14 +167,16 @@ def cmd_warm(args: argparse.Namespace) -> int:
     root = find_main_root(args.root)
     target_base = root / ".local" / "target-base"
     target_base.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env.pop("RUSTUP_TOOLCHAIN", None)
-    env["CARGO_TARGET_DIR"] = str(target_base)
     if args.release:
         cmd = ["cargo", "build", "--locked", "--release", "-p", "gitturtle"]
     else:
         cmd = ["cargo", "test", "--locked", "--workspace", "--no-run"]
-    result = subprocess.run(cmd, cwd=root, env=env, check=False)
+    slot_dir = root / ".local" / "build-slots"
+    with build_slot.held_slot(slot_dir, disabled=getattr(args, "no_slot", False)):
+        env = os.environ.copy()
+        env.pop("RUSTUP_TOOLCHAIN", None)
+        env["CARGO_TARGET_DIR"] = str(target_base)
+        result = subprocess.run(cmd, cwd=root, env=env, check=False)
     if result.returncode != 0:
         raise WorktreeError(f"{' '.join(cmd)} failed with exit {result.returncode}")
     print(f"WARMED_TARGET={target_base}")
@@ -289,6 +301,103 @@ def format_bytes(size: int) -> str:
     return f"{size} B"
 
 
+def _managed_worktrees(root: Path) -> list[dict[str, object]]:
+    wt_root = root / ".local" / "wt"
+    entries: list[dict[str, object]] = []
+    if not wt_root.is_dir():
+        return entries
+    for child in sorted(wt_root.iterdir()):
+        if not child.is_dir() or child.is_symlink():
+            continue
+        head = run_git(child, "symbolic-ref", "--short", "HEAD", check=False)
+        branch = head.stdout.strip() if head.returncode == 0 and head.stdout.strip() else "DETACHED"
+        rev = run_git(child, "rev-parse", "--short", "HEAD", check=False)
+        commit = rev.stdout.strip() if rev.returncode == 0 else "unknown"
+        status = run_git(
+            child,
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--",
+            ".",
+            ":(exclude).local/target",
+            check=False,
+        )
+        dirty_count = len([line for line in status.stdout.splitlines() if line.strip()])
+        target_dir = child / ".local" / "target"
+        warm = (target_dir / "debug" / "deps").is_dir() and (target_dir / ".rustc_info.json").exists()
+        entries.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "branch": branch,
+                "commit": commit,
+                "dirty": dirty_count,
+                "target_dir": str(target_dir),
+                "target_warm": warm,
+            }
+        )
+    return entries
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    root = find_main_root(args.root)
+    entries = _managed_worktrees(root)
+    if args.json:
+        print(json.dumps(entries, indent=2, sort_keys=True))
+        return 0
+    if not entries:
+        print("no managed worktrees under .local/wt/")
+        return 0
+    for item in entries:
+        state = "warm" if item["target_warm"] else "cold"
+        dirty = f"{item['dirty']} dirty" if item["dirty"] else "clean"
+        print(f"{item['name']}\t{item['branch']}\t{item['commit']}\t{dirty}\t{state}\t{item['path']}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    root = find_main_root(args.root)
+    entries = _managed_worktrees(root)
+    if args.name:
+        name = validate_name(args.name)
+        entries = [item for item in entries if item["name"] == name]
+        if not entries:
+            raise WorktreeError(f"worktree not found: {root / '.local' / 'wt' / name}")
+    target_base = root / ".local" / "target-base"
+    base_warm = (target_base / "debug" / "deps").is_dir() and (target_base / ".rustc_info.json").exists()
+    payload = {
+        "root": str(root),
+        "target_base": str(target_base),
+        "target_base_warm": base_warm,
+        "worktrees": entries,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(f"root: {root}")
+    print(f"target-base: {'warm' if base_warm else 'cold'} ({target_base})")
+    if not entries:
+        print("worktrees: none")
+    for item in entries:
+        state = "warm" if item["target_warm"] else "cold"
+        dirty = f"{item['dirty']} dirty" if item["dirty"] else "clean"
+        print(f"  {item['name']}: branch={item['branch']} commit={item['commit']} {dirty} target={state}")
+    return 0
+
+
+def cmd_env(args: argparse.Namespace) -> int:
+    root = find_main_root(args.root)
+    name = validate_name(args.name)
+    wt_path = root / ".local" / "wt" / name
+    if not wt_path.is_dir():
+        raise WorktreeError(f"worktree not found: {wt_path}")
+    target_dir = wt_path / ".local" / "target"
+    print(f"export CARGO_TARGET_DIR={shlex.quote(str(target_dir))}")
+    print("unset RUSTUP_TOOLCHAIN")
+    return 0
+
+
 def cmd_gc(args: argparse.Namespace) -> int:
     root = find_main_root(args.root)
     local_dir = root / ".local"
@@ -338,6 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_warm = sub.add_parser("warm", help="Incrementally warm .local/target-base")
     p_warm.add_argument("--release", action="store_true", help="Warm the release gitturtle binary instead of debug tests")
+    p_warm.add_argument("--no-slot", action="store_true", help="Skip acquiring a host build slot")
     p_warm.set_defaults(func=cmd_warm)
 
     p_rm = sub.add_parser("rm", help="Remove a worktree under .local/wt/<name> and its target")
@@ -345,6 +455,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_rm.add_argument("--delete-branch", action="store_true", help="Delete the worktree's local branch")
     p_rm.add_argument("--force", action="store_true", help="Force removal of dirty worktree / unmerged branch")
     p_rm.set_defaults(func=cmd_rm)
+
+    p_list = sub.add_parser("list", help="List managed worktrees under .local/wt/")
+    p_list.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_list.set_defaults(func=cmd_list)
+
+    p_status = sub.add_parser("status", help="Show worktree and target-base status")
+    p_status.add_argument("name", nargs="?", default=None, help="Optional worktree name filter")
+    p_status.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_status.set_defaults(func=cmd_status)
+
+    p_env = sub.add_parser("env", help="Print shell exports for a managed worktree")
+    p_env.add_argument("name", help="Worktree directory name under .local/wt/")
+    p_env.set_defaults(func=cmd_env)
 
     p_gc = sub.add_parser("gc", help="Report .local/ disk usage and optionally prune stale scratch dirs")
     p_gc.add_argument("--days", type=float, default=14.0, help="Staleness threshold in days (default: 14)")

@@ -11,6 +11,7 @@ use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use futures::FutureExt;
 use gitturtle_core::{HistoryCancellation, OperationControl};
+use gpui_kit::base::ElementExt as _;
 use gpui_kit::{
     component::{WindowExt, dialog::DialogFooter},
     prelude::FluentBuilder,
@@ -2645,10 +2646,16 @@ fn finished_save_status(
     match current {
         Err(issue) => issue.save_message(),
         Ok(draft) if empty_pull_draft(&draft) => "",
+        Ok(Draft::Review(review)) if drafts::is_empty_review(&review) => "No local draft yet",
         Ok(_) if !succeeded => "Draft save failed — keep this window open or copy the text",
         Ok(_) if pending => "Saving local draft…",
         Ok(_) => "Draft saved locally",
     }
+}
+
+fn is_recoverable_draft(draft: &Draft) -> bool {
+    !matches!(draft, Draft::Reply(reply) if reply.body.is_empty())
+        && !matches!(draft, Draft::Review(review) if drafts::is_empty_review(review))
 }
 struct Panel {
     review: review::ReviewState,
@@ -3067,6 +3074,13 @@ impl Panel {
             self.save_status = SharedString::default();
             return None;
         }
+        if let Draft::Review(review) = &draft
+            && drafts::is_empty_review(review)
+            && !self.saved.iter().any(|saved| saved.key() == draft.key())
+        {
+            self.save_status = "No local draft yet".into();
+            return None;
+        }
         let form = match draft {
             Draft::Pull(form) => form,
             other => return Some(other),
@@ -3425,9 +3439,12 @@ impl Panel {
         // Whatever is saved from here on is no draft the form has just taken.
         self.restored = false;
         let key = draft.key();
-        if matches!(&draft, Draft::Reply(reply) if reply.body.is_empty()) {
-            // Empty replies are serialized deletions, not recoverable snapshots.
-            // Queue the deletion below while removing it from the visible cache.
+        if matches!(&draft, Draft::Reply(reply) if reply.body.is_empty())
+            || matches!(&draft, Draft::Review(review) if drafts::is_empty_review(review))
+        {
+            // Empty replies and cleared reviews are serialized deletions, not
+            // recoverable snapshots. Queue the deletion below while removing it
+            // from the visible cache.
             self.saved.retain(|saved| saved.key() != key);
         } else if let Some(old) = self.saved.iter_mut().find(|d| d.key() == key) {
             *old = draft.clone();
@@ -3757,7 +3774,70 @@ impl Panel {
             }
         };
         let opener = self.opener();
-        self.run(RequestKind::Load,move|control|{let transport=opener.open()?;let login=transport.login().to_owned();let page=Client(transport).list(&repository,page,&control)?;Ok((page,login,repository))},|result,this,_,cx|match result {Ok((page,login,repository))=>{this.leave_form(cx);this.review.show_list=true;this.confirm=None;this.rows=page.items;this.listed=Some(repository);this.created_only=false;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        self.run(
+            RequestKind::Load,
+            move |control| {
+                let transport = opener.open()?;
+                let login = transport.login().to_owned();
+                let page = Client(transport).list(&repository, page, &control)?;
+                Ok((page, login, repository))
+            },
+            |result, this, window, cx| match result {
+                Ok((page, login, repository)) => {
+                    let held = window.focused(cx).is_some_and(|focus| {
+                        (this.confirm.is_some()
+                            && (focus == this.conversations.confirm_focus
+                                || ["github-confirm-send", "github-edit-submission"]
+                                    .into_iter()
+                                    .any(|id| {
+                                        this.review.buttons.kept(id).as_ref() == Some(&focus)
+                                    })))
+                            || (this.create
+                                && (focus == this.title.read(cx).focus_handle(cx)
+                                    || focus == this.head.read(cx).focus_handle(cx)
+                                    || focus == this.base.read(cx).focus_handle(cx)
+                                    || focus == this.body.read(cx).focus_handle(cx)
+                                    || [
+                                        "github-create-back",
+                                        "Draft",
+                                        "Ready",
+                                        "github-load-templates",
+                                        "github-review-submit",
+                                    ]
+                                    .into_iter()
+                                    .any(|id| {
+                                        this.review.buttons.kept(id).as_ref() == Some(&focus)
+                                    })
+                                    || (0..this.templates.len()).any(|index| {
+                                        this.review
+                                            .buttons
+                                            .kept(("github-template", index))
+                                            .as_ref()
+                                            == Some(&focus)
+                                    })))
+                    });
+                    this.leave_form(cx);
+                    this.review.show_list = true;
+                    this.confirm = None;
+                    this.rows = page.items;
+                    this.listed = Some(repository);
+                    this.created_only = false;
+                    this.page = page.page;
+                    this.has_next = page.has_next;
+                    this.account = Some(login);
+                    this.notice = Some(
+                        "PR list refreshed. Selecting a PR explicitly loads its current review and check status."
+                            .into(),
+                    );
+                    if held {
+                        this.hand_focus_to_content(window, cx);
+                    }
+                }
+                Err(error) => this.error = Some(format!("{error:#}")),
+            },
+            window,
+            cx,
+        );
     }
     fn inspect(&mut self, pull: PullRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -3780,7 +3860,7 @@ impl Panel {
         },|result,this,window,cx|match result {
             Ok((pull,captured,status,files,comments))=>{
                 this.leave_form(cx);this.confirm=None;this.review.reset_content();this.conversations.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
-                this.description=pull.body.as_ref().map(|body|text::editor(body,"markdown",None,window,cx));
+                this.description=pull.body.as_ref().map(|body|text::wrapped_editor(body,"markdown",window,cx));
                 let mut errors=vec![];
                 match status {Ok(status)=>this.status=Some(status),Err(error)=>{this.status=None;errors.push(format!("Review/check status: {error:#}"));}}
                 match files {Ok(page)=>{this.review.files=page.items;this.review.file_page=page.page;this.review.files_next=page.has_next;},Err(error)=>errors.push(format!("Changed files: {error:#}"))}
@@ -5060,14 +5140,15 @@ impl Render for Panel {
                 // margin, so the rows' text keeps the panel's edge, and above the first row and
                 // below the last the room is the list's own (a negative margin there collapsed
                 // the panel's scrolling body to its padding).
-                .child(laid_out(review::clipped_lines(crate::native_accessibility::clips_children(div().on_children_prepainted({let (revealed,scroll,blocks)=(self.review.pull_revealed.clone(),self.review.pull_scroll.clone(),self.review.pull_blocks.clone());let (landed,body,shown)=(created.is_some(),self.review.body_scroll.clone(),self.review.revealed_focus.clone());move|_,window,cx|{
+                .child(laid_out(review::clipped_lines(crate::native_accessibility::clips_children(div().on_children_prepainted({let (revealed,scroll,blocks,pull_rest)=(self.review.pull_revealed.clone(),self.review.pull_scroll.clone(),self.review.pull_blocks.clone(),self.review.pull_scroll_rest.clone());let (landed,body,shown)=(created.is_some(),self.review.body_scroll.clone(),self.review.revealed_focus.clone());move|_,window,cx|{
+                    pull_rest.set(scroll.offset().y);
                     // The focus its rows' reveals showed ([`Panel::pull_part`]).
                     review::record_shown(&revealed,&scroll,|context|context.contains(review::PULL),window,cx);blocks.finish();
                     // A creation's row, the first, which this frame shows with the notice above
                     // the list ([`Created`]): its own reveal, which follows focus and would move
                     // the list or the body a frame later, is made, in the list and in the body.
                     if landed{for (shown,view) in [(&revealed,&scroll),(&shown,&body)]{*shown.borrow_mut()=review::FocusObservation{focus:window.focused(cx),viewport:view.bounds(),rem_size:window.rem_size()};}}}})
-                    .id("github-pr-list").debug_selector(||"github-pr-list".into()).track_scroll(&self.review.pull_scroll).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
+                    .id("github-pr-list").debug_selector(||"github-pr-list".into()).track_scroll(&self.review.pull_scroll).on_scroll(crate::tags::chain_scroll_wheel(self.review.pull_scroll.clone(),self.review.pull_scroll_rest.clone())).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().zip(&self.row_parts).map(|(pull,(_,part))|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row, as the Files list's rows are: it rests on the panel surface,
                         // the selected one on the selected surface, and lifts to the row hover under
@@ -5178,15 +5259,15 @@ impl Render for Panel {
             // The outbound confirmation, its stop a region that scrolls its destination and
             // text ([`Panel::render_confirmation`]).
             .when_some(self.confirm.as_ref(),|element,confirmation|element.child(self.render_confirmation(confirmation,line_for_confirmation,window,cx)))
-            .child(self.part("recovery",div(),cx).flex().flex_wrap().items_center().gap_2().child(self.button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open, cx).debug_selector(||"github-recovery-toggle".into()).mr(-text_inset()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
+            .child(self.part("recovery",div(),cx).flex().flex_wrap().items_center().gap_2().child(self.button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.iter().filter(|draft| is_recoverable_draft(draft)).count()),"",self.review.recovery_open, cx).debug_selector(||"github-recovery-toggle".into()).mr(-text_inset()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
                 .child(phrases("github-passive-policy",if cfg!(target_os="macos"){"Drafts stay on this Mac · outbound actions are explicit"}else{"Drafts stay on this computer · outbound actions are explicit"}).min_w_0().ml(text_inset()).text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
                 .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").ml(text_inset()).text_color(rgb(p.muted)))
-                .child(review::clipped(crate::native_accessibility::clips_children(div().id("github-saved-drafts").debug_selector(||"github-saved-drafts".into()).flex_shrink_0().max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().filter(|draft| !matches!(draft,Draft::Reply(reply) if reply.body.is_empty())).take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();let mark=copy_feedback::Mark::new(("github-copy-draft",index),draft.key());let copy_mark=mark.clone();div().flex_shrink_0().flex().flex_col().gap_1().child(label(("github-draft-identity",index),match &draft {Draft::Reply(reply)=>format!("Reply · {} #{} · {} · {}",reply.target.pull.repository.label(),reply.target.pull.number,reply.target.path,reply.target.account),_=>draft.key()}).ml(text_inset()).text_color(rgb(p.muted)))
+                .child(review::clipped(crate::native_accessibility::clips_children(div().id("github-saved-drafts").debug_selector(||"github-saved-drafts".into()).track_scroll(&self.review.saved_drafts_scroll.handle).on_scroll(self.review.saved_drafts_scroll.wheel()).flex_shrink_0().max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().filter(|draft| is_recoverable_draft(draft)).take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();let mark=copy_feedback::Mark::new(("github-copy-draft",index),draft.key());let copy_mark=mark.clone();div().flex_shrink_0().flex().flex_col().gap_1().child(label(("github-draft-identity",index),match &draft {Draft::Reply(reply)=>format!("Reply · {} #{} · {} · {}",reply.target.pull.repository.label(),reply.target.pull.number,reply.target.path,reply.target.account),_=>draft.key()}).ml(text_inset()).text_color(rgb(p.muted)))
                     .child(div().flex().gap_2().child(self.held_button(("github-copy-draft",index),copy_button(mark,"Copy complete draft", "", cx),cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),"draft",draft.recovery_text())))
-                        .child(self.button(("github-discard-draft",index),"Discard saved draft","",false, cx).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))})))))
+                        .child(self.button(("github-discard-draft",index),"Discard saved draft","",false, cx).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))}))).on_prepaint(self.review.saved_drafts_scroll.observe())))
                 .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · inspect the destination before repeating").ml(text_inset()))
-                    .child(review::clipped(crate::native_accessibility::clips_children(div().id("github-attempt-list").debug_selector(||"github-attempt-list".into()).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)).ml(text_inset()).flex_shrink_0())))))));
+                    .child(review::clipped(crate::native_accessibility::clips_children(div().id("github-attempt-list").debug_selector(||"github-attempt-list".into()).track_scroll(&self.review.attempt_list_scroll.handle).on_scroll(self.review.attempt_list_scroll.wheel()).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)).ml(text_inset()).flex_shrink_0())).on_prepaint(self.review.attempt_list_scroll.observe()))))));
         // The body scrolls inside the room its controls' focus rings take, which its sides
         // give back through their margin; above and below, the dialog's clip of its body
         // allows no margin, so the room is the body's own. While the body overflows, its
@@ -30009,5 +30090,55 @@ mod tests {
         });
         let app = view.borrow().as_ref().unwrap().clone();
         (fixture, app, cx)
+    }
+
+    #[gpui::test]
+    async fn inspecting_pr_and_closing_panel_does_not_save_empty_review_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = repository_window(cx);
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel
+                    .destination
+                    .update(cx, |input, cx| input.set_value("fixture/repo", window, cx));
+                panel.pull = Some(PullRequest {
+                    number: 42,
+                    title: "Clean PR".into(),
+                    body: Some(
+                        "A very long single-line description without hard line breaks.".into(),
+                    ),
+                    draft: false,
+                    state: "open".into(),
+                    user: github::User {
+                        login: "octocat".into(),
+                    },
+                    head: github::Revision {
+                        branch: "feature".into(),
+                        sha: "1111111111111111111111111111111111111111".into(),
+                        label: "fixture:feature".into(),
+                    },
+                    base: github::Revision {
+                        branch: "main".into(),
+                        sha: "2222222222222222222222222222222222222222".into(),
+                        label: "fixture:main".into(),
+                    },
+                });
+                panel.description = Some(text::wrapped_editor(
+                    "A very long single-line description without hard line breaks.",
+                    "markdown",
+                    window,
+                    cx,
+                ));
+                panel.review.show_list = false;
+                // Closing without drafting any review text/comments/event must not queue a draft.
+                assert!(panel.draft_to_save(cx).is_none());
+                assert!(panel.saved.is_empty());
+            });
+        });
     }
 }

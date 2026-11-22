@@ -318,8 +318,10 @@ jobs:
     timeout-minutes: 45
     environment: gitturtle-release
     permissions:
-      contents: write
-      actions: read
+      contents: write # Create and publish the reviewed GitHub Release and its assets.
+      actions: read # Verify prior Quality workflow evidence for this exact commit.
+      id-token: write # Mint OIDC token for Sigstore SLSA build provenance attestation.
+      attestations: write # Store GitHub build provenance attestations for release assets.
     env:
       RELEASE_CONTEXT: ${{ needs.context.outputs.context }}
     steps:
@@ -342,6 +344,10 @@ jobs:
           umask 077
           printf '%s  %s\n' "$ASSEMBLY_SHA256" "$RUNNER_TEMP/release-publication/release-manifest.json" | sha256sum --check --status
           python3 scripts/release/workflow.py publish --directory "$RUNNER_TEMP/release-publication" --report "$RUNNER_TEMP/release-publication-result.json"
+      - name: Attest SLSA build provenance for verified release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/release-publication/SHA256SUMS
       - name: Preserve publication state for success, failure or cancellation
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

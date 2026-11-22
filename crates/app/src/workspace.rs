@@ -1,5 +1,6 @@
 use crate::*;
 use gitturtle_core::{ChangeArea, ChangeStatus, StatusEntry, WriteCommand};
+use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
@@ -2720,6 +2721,9 @@ impl GitTurtle {
                 source,
                 destination,
             } => {
+                if self.refuse_project_at_tab_limit(cx) {
+                    return;
+                }
                 let source = source.clone();
                 let destination = destination.clone();
                 self.create_project(
@@ -2734,6 +2738,9 @@ impl GitTurtle {
                 destination,
                 branch,
             } => {
+                if self.refuse_project_at_tab_limit(cx) {
+                    return;
+                }
                 let destination = destination.clone();
                 let branch = branch.clone();
                 self.create_project(
@@ -5141,7 +5148,11 @@ impl GitTurtle {
             }),
         )
         .size_full()
-        .track_scroll(&self.working_scroll);
+        .track_scroll(&self.working_scroll)
+        .on_scroll(crate::tags::chain_uniform_list_wheel(
+            self.working_scroll.clone(),
+            self.working_scroll_rest.clone(),
+        ));
         let travelling = flight.map(|flight| {
             // Its copy is a picture of the row: it tracks no handle, is no
             // Tab stop and takes no click, and assistive technology meets the
@@ -5225,6 +5236,9 @@ impl GitTurtle {
                         .debug_selector(|| "working-selection".into())
                         .min_h_0()
                         .overflow_y_scroll()
+                        .track_scroll(&self.working_selection_scroll.handle)
+                        .on_prepaint(self.working_selection_scroll.observe())
+                        .on_scroll(self.working_selection_scroll.wheel())
                         .child(self.render_working_selection(forms.compact_selection, cx)),
                 )
                 .into_any_element(),
@@ -5369,10 +5383,12 @@ impl GitTurtle {
                     menu.render("working-row-menu-overlay", Self::dismiss_file_menu, cx)
                 }),
             )
-            .child(
+            .child({
+                let working_scroll_rest = self.working_scroll_rest.clone();
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
+                        working_scroll_rest.set(list_scroll.0.borrow().base_handle.offset().y);
                         pane_controls.record_pane(bounds);
                         list_layout.update(cx, |layout, cx| {
                             if layout.list_size != Some(bounds.size) {
@@ -5404,8 +5420,8 @@ impl GitTurtle {
                     },
                 )
                 .absolute()
-                .inset_0(),
-            );
+                .inset_0()
+            });
         #[cfg(test)]
         let pane = pane
             .children(self.working_probe.recorder(|frame| &mut frame.list))

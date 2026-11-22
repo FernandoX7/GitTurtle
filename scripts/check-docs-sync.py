@@ -112,7 +112,7 @@ def _lockfile_versions(root: Path) -> dict[str, set[str]]:
     return versions
 
 
-def _extract_constant(root: Path, spec: dict) -> int:
+def _extract_constant(root: Path, spec: dict) -> int | str:
     source_rel = spec["source"]
     source, err = _resolve_repo_file(root, source_rel)
     if err or source is None:
@@ -124,6 +124,16 @@ def _extract_constant(root: Path, spec: dict) -> int:
         if not match:
             raise ValueError(f"pattern {spec['pattern']!r} not found in {source_rel}")
         return int(match.group(1).replace("_", ""))
+    if kind == "regex_str":
+        match = re.search(spec["pattern"], text)
+        if not match:
+            raise ValueError(f"pattern {spec['pattern']!r} not found in {source_rel}")
+        return match.group(1)
+    if kind == "regex_count":
+        matches = re.findall(spec["pattern"], text)
+        if not matches:
+            raise ValueError(f"pattern {spec['pattern']!r} not found in {source_rel}")
+        return len(matches)
     symbol = re.escape(spec["symbol"])
     if kind == "rust_const_int":
         match = re.search(
@@ -235,8 +245,8 @@ def _check_constants(root: Path, constants: list[dict]) -> list[SyncIssue]:
         except (OSError, ValueError, re.error) as error:
             issues.append(SyncIssue(spec.get("source", "docs/doc-manifest.json"), str(error)))
             continue
-        word_value = _number_word(value)
-        comma_value = f"{value:,}"
+        word_value = _number_word(value) if isinstance(value, int) else str(value)
+        comma_value = f"{value:,}" if isinstance(value, int) else str(value)
         for target in spec.get("docs", []):
             rel = target["path"]
             path, err = _resolve_repo_file(root, rel)
@@ -368,6 +378,69 @@ def _load_manifest(root: Path, manifest_path: Path | None = None) -> tuple[dict 
     return manifest, []
 
 
+def _check_known_gaps_sync(root: Path, entries: list[dict]) -> list[SyncIssue]:
+    if not entries:
+        return []
+    import ast as _ast
+
+    issues: list[SyncIssue] = []
+    for entry in entries:
+        source_rel = entry["source"]
+        source, err = _resolve_repo_file(root, source_rel)
+        if err or source is None:
+            issues.append(SyncIssue(source_rel, f"invalid KNOWN_GAPS source ({err})"))
+            continue
+        try:
+            tree = _ast.parse(_read_text(source), filename=str(source))
+        except (OSError, SyntaxError) as error:
+            issues.append(SyncIssue(source_rel, f"cannot parse {source_rel}: {error}"))
+            continue
+        gaps: dict[str, set[str]] | None = None
+        for node in tree.body:
+            if isinstance(node, _ast.Assign):
+                if any(isinstance(t, _ast.Name) and t.id == "KNOWN_GAPS" for t in node.targets):
+                    if isinstance(node.value, _ast.Dict):
+                        parsed: dict[str, set[str]] = {}
+                        for k, v in zip(node.value.keys, node.value.values):
+                            if isinstance(k, _ast.Constant) and isinstance(k.value, str):
+                                if isinstance(v, _ast.Call) and isinstance(v.func, _ast.Name) and v.func.id == "set" and not v.args:
+                                    parsed[k.value] = set()
+                                elif isinstance(v, _ast.Set):
+                                    parsed[k.value] = {e.value for e in v.elts if isinstance(e, _ast.Constant) and isinstance(e.value, str)}
+                                else:
+                                    parsed[k.value] = {"<non-empty>"}
+                        gaps = parsed
+                        break
+        if gaps is None:
+            issues.append(SyncIssue(source_rel, "KNOWN_GAPS dict not found"))
+            continue
+        all_empty = all(not items for items in gaps.values())
+        for target in entry.get("docs", []):
+            rel = target["path"]
+            path, err = _resolve_repo_file(root, rel)
+            if err or path is None:
+                issues.append(SyncIssue(rel, f"invalid doc for KNOWN_GAPS sync ({err})"))
+                continue
+            doc_text = _read_text(path)
+            flags = re.IGNORECASE if target.get("ignore_case") else 0
+            if all_empty:
+                pattern = target["empty_pattern"]
+                if not re.search(pattern, doc_text, flags):
+                    issues.append(SyncIssue(rel, f"KNOWN_GAPS doc out of sync (all targets empty): missing {pattern!r}"))
+            elif "non_empty_pattern" in target:
+                pattern = target["non_empty_pattern"]
+                if not re.search(pattern, doc_text, flags):
+                    issues.append(SyncIssue(rel, f"KNOWN_GAPS doc out of sync (non-empty gaps: {gaps}): missing {pattern!r}"))
+            elif re.search(target["empty_pattern"], doc_text, flags):
+                issues.append(
+                    SyncIssue(
+                        rel,
+                        f"KNOWN_GAPS doc out of sync (non-empty gaps: {gaps}): still claims {target['empty_pattern']!r}",
+                    )
+                )
+    return issues
+
+
 def validate(root: Path, manifest_path: Path | None = None) -> list[SyncIssue]:
     root = root.resolve()
     manifest, load_issues = _load_manifest(root, manifest_path)
@@ -379,6 +452,7 @@ def validate(root: Path, manifest_path: Path | None = None) -> list[SyncIssue]:
     issues.extend(_check_rust_version(root, manifest.get("rust_version_docs", [])))
     issues.extend(_check_lockfile_mentions(root, manifest.get("lockfile_crate_mentions", [])))
     issues.extend(_check_constants(root, manifest.get("constants", [])))
+    issues.extend(_check_known_gaps_sync(root, manifest.get("known_gaps_sync", [])))
     issues.extend(_check_workflows(root, manifest.get("workflows_listed_in", [])))
     issues.extend(_check_include_str(root, manifest.get("include_str_roots", [])))
     if manifest.get("check_website_guides"):

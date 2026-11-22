@@ -315,10 +315,10 @@ async fn a_click_after_return_on_done_selects_its_row(cx: &mut TestAppContext) {
     }
 }
 
-/// As [`a_click_after_return_on_done_selects_its_row`], with the dialog
-/// opened from a stash's row, History's first, as on the native route: the
-/// row clicked before Return comes up, and after, is selected and keeps
-/// focus.
+/// As [`a_click_after_return_on_done_selects_its_row`], in a repository that
+/// also holds a stash (which `All history` excludes, keeping the branch tip as
+/// History's first row): the row clicked before Return comes up, and after, is
+/// selected and keeps focus.
 #[gpui::test]
 async fn a_click_after_return_on_done_from_a_stash_row_selects_its_row(cx: &mut TestAppContext) {
     use crate::views::tests::fixture_git;
@@ -333,8 +333,8 @@ async fn a_click_after_return_on_done_from_a_stash_row_selects_its_row(cx: &mut 
     settle(&app, cx).await;
     let first = app.read_with(cx, |app, _| app.commits[app.visible[0]].subject.clone());
     assert!(
-        first.starts_with("On main: Stash number 4"),
-        "History's first row is the stash: {first:?}"
+        !first.starts_with("On main: Stash number 4"),
+        "All history excludes refs/stash: {first:?}"
     );
     click_after_return_on_done(&app, cx, false, &[Timing::BeforeKeyUp, Timing::AfterKeyUp]).await;
 }

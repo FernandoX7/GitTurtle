@@ -665,7 +665,8 @@ impl DirectoryIdentity {
         #[cfg(unix)]
         let (inode, device) = {
             use std::os::unix::fs::MetadataExt;
-            (Some(metadata.ino()), Some(metadata.dev()))
+            let inode = (!directory_has_unstable_inodes(directory)).then_some(metadata.ino());
+            (inode, Some(metadata.dev()))
         };
         #[cfg(not(unix))]
         let (inode, device) = (None, None);
@@ -695,6 +696,67 @@ impl DirectoryIdentity {
         }
         same(self.inode, now.inode) && same(self.device, now.device) && same(self.birth, now.birth)
     }
+}
+
+/// Filesystems whose kernel-synthesized inode numbers change across remounts
+/// or VFS cache evictions (FAT/vfat, exFAT, FUSE, SMB/CIFS). Restored tabs on
+/// these mounts omit the saved inode so intact repositories are not falsely
+/// marked unavailable at launch.
+#[cfg(unix)]
+fn directory_has_unstable_inodes(directory: &Path) -> bool {
+    let Ok(stat) = rustix::fs::statfs(directory) else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    {
+        is_unstable_linux_fs_magic(stat.f_type)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let raw: Vec<u8> = stat
+            .f_fstypename
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8)
+            .collect();
+        let name = String::from_utf8_lossy(&raw).to_ascii_lowercase();
+        is_unstable_macos_fs_name(&name)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = stat;
+        false
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn is_unstable_linux_fs_magic(fs_type: i64) -> bool {
+    matches!(
+        fs_type,
+        0x4d44          // MSDOS_SUPER_MAGIC (FAT / vfat)
+        | 0x2011_BAB0   // EXFAT_SUPER_MAGIC
+        | 0x6573_5546   // FUSE_SUPER_MAGIC (fuse / fuseblk / sshfs / ntfs-3g / exfat-fuse)
+        | 0x6573_5543   // FUSE_CTL_SUPER_MAGIC
+        | 0x517B        // SMB_SUPER_MAGIC
+        | 0xFE53_4D42   // SMB2_SUPER_MAGIC
+        | 0xFF53_4D42 // CIFS_SUPER_MAGIC
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn is_unstable_macos_fs_name(fs_name: &str) -> bool {
+    matches!(
+        fs_name,
+        "msdos"
+            | "exfat"
+            | "fuse"
+            | "fusefs"
+            | "macfuse"
+            | "osxfuse"
+            | "fuse-t"
+            | "smbfs"
+            | "webdav"
+    )
 }
 
 /// A linked worktree's common Git directory, from its `commondir` file
@@ -1665,6 +1727,27 @@ impl GitRepository {
         Ok(trees)
     }
 
+    /// Returns the blob OID currently staged in the index for `path`, or `None`
+    /// if `path` is not present at stage 0 of the index. Passive read only.
+    pub fn index_blob_oid(&self, path: &Path) -> Result<Option<String>> {
+        let mut spec = std::ffi::OsString::from(":0:");
+        spec.push(path.as_os_str());
+        let mut command = git_command(self.target());
+        command
+            .args(["rev-parse", "--verify", "--quiet"])
+            .arg(&spec);
+        let output = bounded_output(command, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let oid = text(&output.stdout).trim().to_owned();
+        if oid.is_empty() {
+            return Ok(None);
+        }
+        validate_oid(&oid)?;
+        Ok(Some(oid))
+    }
+
     pub fn history(&self, limit: usize) -> Result<Vec<Commit>> {
         self.history_impl(None, 0, limit)
     }
@@ -1693,22 +1776,25 @@ impl GitRepository {
         }
         let count = format!("--max-count={limit}");
         let skip = format!("--skip={offset}");
-        let bytes = run_git(
-            self.target(),
-            &[
-                "log",
-                "--topo-order",
-                "--no-show-signature",
-                "--no-decorate",
-                "--encoding=UTF-8",
-                "-z",
-                "--format=%H%x00%P%x00%an%x00%at%x00%s%x00%b",
-                &count,
-                &skip,
-                oid.unwrap_or("--all"),
-                "--",
-            ],
-        )?;
+        let mut args = vec![
+            "log",
+            "--topo-order",
+            "--no-show-signature",
+            "--no-decorate",
+            "--encoding=UTF-8",
+            "-z",
+            "--format=%H%x00%P%x00%an%x00%at%x00%s%x00%b",
+            &count,
+            &skip,
+        ];
+        if let Some(oid) = oid {
+            args.push(oid);
+        } else {
+            args.push("--exclude=refs/stash");
+            args.push("--all");
+        }
+        args.push("--");
+        let bytes = run_git(self.target(), &args)?;
         if bytes.is_empty() {
             return Ok(Vec::new());
         }
@@ -4884,6 +4970,99 @@ mod tests {
         let cleaned = reported(spoofed.as_bytes());
         assert!(!cleaned.contains("MY_HIDDEN_VAL"), "{cleaned:?}");
         assert!(cleaned.contains("password=[redacted]"), "{cleaned:?}");
+    }
+
+    #[test]
+    fn all_history_excludes_refs_stash() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("README.md"), "initial\n").unwrap();
+        git(dir.path(), &["add", "README.md"]);
+        git(dir.path(), &["commit", "-q", "-m", "initial"]);
+        let repo = GitRepository::open(dir.path()).unwrap();
+        std::fs::write(dir.path().join("README.md"), "wip stashed change\n").unwrap();
+        git(dir.path(), &["stash", "push", "-m", "secret stash commit"]);
+        let stash_oid = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "refs/stash"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        assert!(!stash_oid.is_empty());
+
+        let commits = repo.history(50).unwrap();
+        assert!(
+            commits.iter().all(|c| c.oid != stash_oid),
+            "history() must exclude refs/stash"
+        );
+        let cancel = HistoryCancellation::default();
+        let mut traversal = repo
+            .history_traversal(&HistoryScope::AllRefs, &cancel)
+            .unwrap();
+        if let HistoryScope::PinnedRefs(refs) = traversal.scope() {
+            assert!(
+                refs.iter().all(|oid| oid != &stash_oid),
+                "pinned AllRefs scope must exclude refs/stash"
+            );
+        }
+        let page = traversal.next_page(50, &cancel).unwrap();
+        assert!(
+            page.commits.iter().all(|c| c.oid != stash_oid),
+            "AllRefs traversal must exclude refs/stash"
+        );
+    }
+
+    #[test]
+    fn unstable_fs_helpers_recognize_fat_exfat_fuse_and_smb() {
+        for magic in [
+            0x4d44_i64,
+            0x2011_BAB0,
+            0x6573_5546,
+            0x6573_5543,
+            0x517B,
+            0xFE53_4D42,
+            0xFF53_4D42,
+        ] {
+            assert!(is_unstable_linux_fs_magic(magic), "magic {magic:#x}");
+        }
+        assert!(!is_unstable_linux_fs_magic(0xEF53)); // ext4
+        assert!(!is_unstable_linux_fs_magic(0x9123_683E)); // btrfs
+
+        for name in [
+            "msdos", "exfat", "fuse", "fusefs", "macfuse", "osxfuse", "fuse-t", "smbfs", "webdav",
+        ] {
+            assert!(is_unstable_macos_fs_name(name), "fs {name}");
+        }
+        assert!(!is_unstable_macos_fs_name("apfs"));
+        assert!(!is_unstable_macos_fs_name("hfs"));
+    }
+
+    #[test]
+    fn index_blob_oid_reads_staged_blob_passively() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("README.md"), "initial\n").unwrap();
+        git(dir.path(), &["add", "README.md"]);
+        git(dir.path(), &["commit", "-q", "-m", "initial"]);
+        let repo = GitRepository::open(dir.path()).unwrap();
+        let first = repo.index_blob_oid(Path::new("README.md")).unwrap();
+        assert!(first.is_some());
+        std::fs::write(dir.path().join("README.md"), "unstaged edit\n").unwrap();
+        let still_first = repo.index_blob_oid(Path::new("README.md")).unwrap();
+        assert_eq!(still_first, first);
+        git(dir.path(), &["add", "README.md"]);
+        let second = repo.index_blob_oid(Path::new("README.md")).unwrap();
+        assert!(second.is_some());
+        assert_ne!(second, first);
+        assert_eq!(
+            repo.index_blob_oid(Path::new("nonexistent.txt")).unwrap(),
+            None
+        );
     }
 }
 

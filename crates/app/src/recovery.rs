@@ -2491,6 +2491,14 @@ impl StashBrowser {
                                 this.stash_scroll
                                     .scroll_to_item(index, ScrollStrategy::Nearest);
                             }
+                            if this
+                                .content
+                                .as_deref()
+                                .is_some_and(Content::has_changeable_lfs)
+                                && let Some(file_index) = this.selected_file
+                            {
+                                this.select_file(file_index, window, cx);
+                            }
                             this.say_refreshed(window, cx);
                             cx.notify();
                             return;
@@ -3594,35 +3602,86 @@ impl StashBrowser {
                 .into_any_element();
         }
         // Diagrams says it in the failing side's own place.
+        let selected_file = self.selected_file.and_then(|index| self.files().get(index));
+        let missing_lfs =
+            self.content
+                .as_deref()
+                .zip(selected_file)
+                .is_some_and(|(content, file)| {
+                    !crate::lfs_download::preview_targets(content, file).is_empty()
+                });
         let failure = match self.content.as_deref() {
+            Some(Content::Text { lfs_failed, .. }) if self.text_mode != 3 => {
+                crate::lfs_download::side_failures_line(*lfs_failed, ["Before", "After"]).or_else(
+                    || {
+                        missing_lfs.then(|| {
+                            "Git LFS object is unavailable in the local store; its pointer is shown."
+                                .to_owned()
+                        })
+                    },
+                )
+            }
             Some(Content::Text {
                 diagrams,
                 lfs_failed,
                 ..
-            }) if self.text_mode != 3 || diagrams.is_none() => {
+            }) if diagrams.is_none() => {
                 crate::lfs_download::side_failures_line(*lfs_failed, ["Before", "After"])
             }
             _ => None,
         };
         let body = match self.content.as_deref() {
-            Some(Content::Text { diagrams, .. }) if self.text_mode == 3 => {
-                diagrams.as_ref().map_or_else(
-                    || {
-                        div()
-                            .child("No Mermaid diagrams on this file; use Source.")
-                            .into_any_element()
-                    },
-                    |preview| {
-                        crate::rich_preview::render_comparison(
-                            preview,
-                            false,
-                            self.opener(cx),
-                            width,
-                            window,
-                            cx,
-                        )
-                    },
-                )
+            Some(Content::Text {
+                diagrams,
+                old,
+                new,
+                lfs_missing,
+                ..
+            }) if self.text_mode == 3 => {
+                let empty_diagrams = || {
+                    let message = selected_file
+                        .and_then(|file| {
+                            let (path, mode, text, missing) = if file.new_path.is_some() {
+                                (file.new_path.as_deref(), file.new_mode.as_str(), new.as_str(), lfs_missing[1])
+                            } else {
+                                (file.old_path.as_deref(), file.old_mode.as_str(), old.as_str(), lfs_missing[0])
+                            };
+                            let mermaid = path
+                                .and_then(|p| p.extension())
+                                .and_then(|ext| ext.to_str())
+                                .is_some_and(|ext| {
+                                    ext.eq_ignore_ascii_case("mmd")
+                                        || ext.eq_ignore_ascii_case("mermaid")
+                                });
+                            if !mermaid {
+                                return None;
+                            }
+                            match crate::rich_preview::Literal::of(mode, text) {
+                                Some(crate::rich_preview::Literal::Link) => {
+                                    Some("Stored as a symbolic link; inspect it in Source.")
+                                }
+                                Some(crate::rich_preview::Literal::LfsPointer) if missing => Some(
+                                    "Git LFS object is unavailable locally; fetch it or inspect the pointer in Source.",
+                                ),
+                                Some(crate::rich_preview::Literal::LfsPointer) => {
+                                    Some("Git LFS object is not readable as diagram text; use Source.")
+                                }
+                                None => None,
+                            }
+                        })
+                        .unwrap_or("No Mermaid diagrams on this file; use Source.");
+                    div().child(message).into_any_element()
+                };
+                diagrams.as_ref().map_or_else(empty_diagrams, |preview| {
+                    crate::rich_preview::render_comparison(
+                        preview,
+                        false,
+                        self.opener(cx),
+                        width,
+                        window,
+                        cx,
+                    )
+                })
             }
             Some(Content::Rich(preview)) => crate::rich_preview::render_comparison(
                 preview,

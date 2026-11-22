@@ -269,7 +269,13 @@ pub(super) struct ReviewState {
     prepare_generation: u64,
     prepare_task: Option<Task<()>>,
     pub file_scroll: UniformListScrollHandle,
+    pub file_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
     pub line_scroll: UniformListScrollHandle,
+    pub line_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
+    pub pull_scroll_rest: std::rc::Rc<std::cell::Cell<Pixels>>,
+    pub saved_drafts_scroll: crate::tags::NestedScroll,
+    pub attempt_list_scroll: crate::tags::NestedScroll,
+    pub collected_comments_scroll: crate::tags::NestedScroll,
     pub fixture: bool,
     pub fixture_moved: bool,
     pub show_list: bool,
@@ -371,7 +377,13 @@ impl ReviewState {
             prepare_generation: 0,
             prepare_task: None,
             file_scroll: UniformListScrollHandle::new(),
+            file_scroll_rest: Default::default(),
             line_scroll: UniformListScrollHandle::new(),
+            line_scroll_rest: Default::default(),
+            pull_scroll_rest: Default::default(),
+            saved_drafts_scroll: Default::default(),
+            attempt_list_scroll: Default::default(),
+            collected_comments_scroll: Default::default(),
             fixture: std::env::var("GITTURTLE_GITHUB_FIXTURE").is_ok_and(|value| value == "review"),
             fixture_moved: false,
             show_list: true,
@@ -4042,8 +4054,23 @@ impl Panel {
                                         ),
                                     )
                                     .size_full()
-                                    .track_scroll(&self.review.file_scroll),
+                                    .track_scroll(&self.review.file_scroll)
+                                    .on_scroll(
+                                        crate::tags::chain_uniform_list_wheel(
+                                            self.review.file_scroll.clone(),
+                                            self.review.file_scroll_rest.clone(),
+                                        ),
+                                    ),
                                 )
+                                .on_prepaint({
+                                    let (scroll, rest) = (
+                                        self.review.file_scroll.clone(),
+                                        self.review.file_scroll_rest.clone(),
+                                    );
+                                    move |_, _, _| {
+                                        rest.set(scroll.0.borrow().base_handle.offset().y);
+                                    }
+                                })
                                 .debug_selector(|| "github-file-rows".into())
                                 .size_full(),
                             ),
@@ -4478,32 +4505,39 @@ impl Panel {
             .bg(rgb(p.canvas))
             .relative().track_focus(&self.review.line_focus).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
 
-            .child(div().size_full().on_children_prepainted(move |children, window, cx| {
-                // The inset follows the height inside the border, never the other way round,
-                // so this settles in the next frame.
-                if let Some(inner) = children.first()
-                    && measured.get() != inner.size.height
-                {
-                    measured.set(inner.size.height);
-                    window.defer(cx, |window, _| window.refresh());
+            .child(div().size_full().on_children_prepainted({
+                let (scroll, rest) = (
+                    self.review.line_scroll.clone(),
+                    self.review.line_scroll_rest.clone(),
+                );
+                move |children, window, cx| {
+                    rest.set(scroll.0.borrow().base_handle.offset().y);
+                    // The inset follows the height inside the border, never the other way round,
+                    // so this settles in the next frame.
+                    if let Some(inner) = children.first()
+                        && measured.get() != inner.size.height
+                    {
+                        measured.set(inner.size.height);
+                        window.defer(cx, |window, _| window.refresh());
+                    }
                 }
             }).child(div().size_full().pt(EDITOR_PADDING).pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(clipped(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
                 // The selection's edge overlays the row, so its text keeps Source's place.
                 // Each row is a line of the body where the list shows it ([`clipped`]).
                 patch_row(index,row,column,row_height,cx).child(one_line()).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
-            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll)).size_full())))).when(ringed, |pane| pane.child(div().absolute().inset_0().border_1().border_color(rgb(p.accent))))).into_any_element()
+            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll).on_scroll(crate::tags::chain_uniform_list_wheel(self.review.line_scroll.clone(), self.review.line_scroll_rest.clone()))).size_full())))).when(ringed, |pane| pane.child(div().absolute().inset_0().border_1().border_color(rgb(p.accent))))).into_any_element()
     }
     pub(super) fn render_collected(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         div().flex().flex_col().gap_2()
             .child(label("github-review-heading",format!("{} in this review",crate::counted(self.review.comments.len(),"inline comment","inline comments"))).ml(super::text_inset()).font_weight(FontWeight::SEMIBOLD))
             .when(self.review.comments.is_empty(),|element|element.child(label("github-review-empty","Select changed lines in Files to add inline feedback, or send a review summary below.").ml(super::text_inset()).text_color(rgb(p.muted))))
-            .child(clipped(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+            .child(clipped(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).track_scroll(&self.review.collected_comments_scroll.handle).on_scroll(self.review.collected_comments_scroll.wheel()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label(("github-draft-position",index),model::position_label(comment)).font_weight(FontWeight::SEMIBOLD))
                 .child(label(("github-draft-body",index),comment.body.clone()))
                 .child(div().flex().gap_2().child(self.button(("github-edit-inline",index),"Edit","",false, cx).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,event,window,cx|{this.edit_comment(index,window,cx);this.hold_enter_click(event,window,cx);})))
-                    .child(self.button(("github-remove-inline",index),"Remove","",false, cx).disabled(self.pending).on_click(cx.listener(move|this,event,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);this.hold_enter_on_composer(event,window,cx);}})))))))))
+                    .child(self.button(("github-remove-inline",index),"Remove","",false, cx).disabled(self.pending).on_click(cx.listener(move|this,event,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);this.hold_enter_on_composer(event,window,cx);}})))))).on_prepaint(self.review.collected_comments_scroll.observe()))))
             .child(self.render_comment_composer(cx)).into_any_element()
     }
 }

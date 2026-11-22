@@ -216,10 +216,12 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<CompareForm>> {
-        let repo = self
-            .repository
-            .clone()
-            .filter(|_| self.operation_busy.is_none())?;
+        let repo = self.repository.clone()?;
+        if self.operation_busy.is_some() {
+            self.show_busy_look(cx);
+            crate::copy_feedback::alert(window, cx, self.busy_reason());
+            return None;
+        }
         let (before, after, mode) = match self
             .revision_inspection
             .active
@@ -234,7 +236,9 @@ impl GitTurtle {
             _ => ("HEAD~1".into(), "HEAD".into(), ComparisonMode::Endpoints),
         };
         let owner = cx.entity().downgrade();
-        let return_focus = window.focused(cx);
+        let return_focus = crate::native_accessibility::pointer_menu_return(window, cx)
+            .unwrap_or_else(|| window.focused(cx));
+        crate::native_accessibility::close_tab_menus(window, cx);
         let form = cx.new(|cx| {
             CompareForm::new(owner, repo, (before, after, mode), return_focus, window, cx)
         });
@@ -310,17 +314,21 @@ impl GitTurtle {
         {
             return None;
         }
-        let repo = self
-            .repository
-            .clone()
-            .filter(|_| self.operation_busy.is_none())?;
+        let repo = self.repository.clone()?;
+        if self.operation_busy.is_some() {
+            self.show_busy_look(cx);
+            crate::copy_feedback::alert(window, cx, self.busy_reason());
+            return None;
+        }
         let revision = self
             .selected_commit
             .and_then(|i| self.commits.get(i))
             .map_or("HEAD", |c| &c.oid)
             .to_owned();
         let owner = cx.entity().downgrade();
-        let return_focus = window.focused(cx);
+        let return_focus = crate::native_accessibility::pointer_menu_return(window, cx)
+            .unwrap_or_else(|| window.focused(cx));
+        crate::native_accessibility::close_tab_menus(window, cx);
         let form = cx.new(|cx| QuickForm::new(owner, repo, revision, return_focus, window, cx));
         #[cfg(test)]
         OPENED_QUICK_FORM.with(|opened| *opened.borrow_mut() = Some(form.downgrade()));
@@ -4735,6 +4743,44 @@ mod tests {
             focused(cx).as_ref(),
             Some(&after),
             "and Tab the stop after it, as from the pane"
+        );
+    }
+
+    #[gpui::test]
+    async fn quick_open_while_operation_busy_reveals_busy_look_and_announces_reason(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, history_window};
+        let (_fixture, app, cx) = history_window(cx).await;
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            app.busy_look = Default::default();
+            cx.notify();
+        });
+        draw(cx);
+        crate::native_accessibility::written::forget();
+        let opened =
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_quick_form(window, cx)));
+        draw(cx);
+        assert!(
+            opened.is_none(),
+            "Quick Open is refused while Fetching… runs"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.busy_shown()),
+            "refused Quick Open immediately shows busy state"
+        );
+        assert!(
+            crate::native_accessibility::written::announced_from("")
+                .into_iter()
+                .filter_map(|(id, _)| crate::native_accessibility::written::get(&id))
+                .any(|line| {
+                    line.node
+                        .label()
+                        .or_else(|| line.node.value())
+                        .is_some_and(|text| text.contains("Wait for"))
+                }),
+            "refused Quick Open announces the busy reason"
         );
     }
 }

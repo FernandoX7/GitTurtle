@@ -422,7 +422,13 @@ impl GitRepository {
 
     fn pin_history_refs(&self, cancellation: &HistoryCancellation) -> Result<HistoryScope> {
         let mut command = git_command(self.target());
-        command.args(["rev-parse", "--revs-only", "--all", "HEAD"]);
+        command.args([
+            "rev-parse",
+            "--revs-only",
+            "--exclude=refs/stash",
+            "--all",
+            "HEAD",
+        ]);
         let mut bytes = Vec::new();
         let end = stream_history(command, None, cancellation, GIT_TIMEOUT, |chunk| {
             ensure!(

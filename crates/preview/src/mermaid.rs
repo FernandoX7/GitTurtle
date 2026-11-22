@@ -487,4 +487,28 @@ mod tests {
             ordinary.diagrams[0].error
         );
     }
+
+    #[test]
+    fn nodes_named_link_and_click_render_without_link_refusal() {
+        let diagram = "flowchart LR\nLink --> Regular\nClick -.-> Other\n";
+        let rendered = preview(diagram, Path::new("nodes.mmd"), 400, || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert!(
+            rendered.diagrams[0].image.is_some(),
+            "Link/Click node edges must render: {:?}",
+            rendered.diagrams[0].error
+        );
+        let real_link = "flowchart LR\nA --> B\nlink A \"https://example.com\"\n";
+        let refused = preview(real_link, Path::new("real.mmd"), 400, || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert!(refused.diagrams[0].image.is_none());
+        assert!(
+            refused.diagrams[0]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("linked nodes"))
+        );
+    }
 }

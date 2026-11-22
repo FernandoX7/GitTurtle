@@ -16,7 +16,7 @@ use gitturtle_preview::{
 };
 use gpui_kit::{RenderImage, SharedString};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
@@ -238,6 +238,39 @@ pub enum Content {
 }
 
 impl Content {
+    /// Whether this preview holds a Git LFS pointer whose local store state can
+    /// change (missing object that may arrive, or failed object other than TooLarge).
+    pub(crate) fn has_changeable_lfs(&self) -> bool {
+        match self {
+            Self::Images { old, new } => {
+                old.lfs_pointer.is_some()
+                    || new.lfs_pointer.is_some()
+                    || old.literal_is_pointer()
+                    || new.literal_is_pointer()
+            }
+            Self::Rich(preview) => {
+                preview.old.lfs_missing
+                    || preview.new.lfs_missing
+                    || (preview.old.error.is_some()
+                        && preview.old.metadata.format == "Git LFS pointer")
+                    || (preview.new.error.is_some()
+                        && preview.new.metadata.format == "Git LFS pointer")
+            }
+            Self::Text {
+                lfs_missing,
+                lfs_failed,
+                ..
+            } => {
+                lfs_missing.contains(&true)
+                    || lfs_failed
+                        .iter()
+                        .flatten()
+                        .any(|failure| *failure != gitturtle_core::LfsObjectFailure::TooLarge)
+            }
+            _ => false,
+        }
+    }
+
     /// CPU allocations retained by a cache entry. UI-held Arcs and uploaded GPU
     /// textures have independent lifetimes and need their own presentation budget.
     pub(super) fn bytes(&self) -> usize {
@@ -1310,9 +1343,6 @@ impl GitDirectories {
     /// `RepositoryIdentity`, and core before a write (`Identity::replaced`). Reads what the repository's open captured, so it
     /// touches no filesystem.
     fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
-        let differs = |saved: Option<u64>, found: Option<u64>| {
-            self.restored && saved.is_some_and(|saved| found != Some(saved))
-        };
         fn apart<T: PartialEq>(restored: bool, saved: Option<T>, found: Option<T>) -> bool {
             restored
                 && saved
@@ -1321,7 +1351,7 @@ impl GitDirectories {
         }
         let restored = self.restored;
         if repository.git_dir() != self.git_dir
-            || differs(self.inodes.git_dir, repository.git_dir_inode())
+            || apart(restored, self.inodes.git_dir, repository.git_dir_inode())
             || apart(
                 restored,
                 self.inodes.git_dir_birth,
@@ -1330,7 +1360,7 @@ impl GitDirectories {
         {
             Some(repository.git_dir().to_owned())
         } else if repository.common_dir() != self.common
-            || differs(self.inodes.common, repository.common_dir_inode())
+            || apart(restored, self.inodes.common, repository.common_dir_inode())
             || apart(
                 restored,
                 self.inodes.common_birth,
@@ -2094,30 +2124,23 @@ fn execute(
                 retained_bytes <= remaining_bytes,
                 "Search results exceed the 64 MiB display budget. Narrow the query to inspect these matches."
             );
-            let mut topology = previous
-                .into_iter()
-                .map(|(oid, parents)| Commit {
-                    oid,
-                    parents,
-                    author: String::new(),
-                    timestamp: 0,
-                    subject: String::new(),
-                    body: String::new(),
-                })
-                .collect::<Vec<_>>();
-            topology.extend(page.commits.iter().map(|commit| Commit {
-                oid: commit.oid.clone(),
-                parents: commit.parents.clone(),
-                author: String::new(),
-                timestamp: 0,
-                subject: String::new(),
-                body: String::new(),
-            }));
-            let (graph, graph_notice) = layout_graph(&topology, cancellation)?;
+            // Filtered search hits are discontinuous and render without graph edges
+            // (`filtered = true`), so never run the full lane-frontier layout or emit
+            // a spurious "Graph connections hidden" banner when >128 hits accumulate.
+            let total_rows = previous.len().saturating_add(page.commits.len());
+            let node = graph::GraphRow {
+                width: 1,
+                ..Default::default()
+            };
+            let mut graph = Vec::with_capacity(total_rows);
+            for _ in 0..total_rows {
+                cancellation.check()?;
+                graph.push(node.clone());
+            }
             Ok(Output::SearchHistory(SearchResult {
                 page,
                 graph,
-                graph_notice,
+                graph_notice: None,
                 retained_bytes,
             }))
         }
@@ -2176,7 +2199,7 @@ fn execute(
             session
                 .open(repo.path(), root, Some(&captured))
                 .map_err(|error| nothing_found_is_gone(&repo, error))?;
-            let working = WorkingState::read_with_checkpoint(&repo, || {
+            let mut working = WorkingState::read_with_checkpoint(&repo, || {
                 #[cfg(test)]
                 quiet_checkpoint();
                 cancellation.check()
@@ -2229,6 +2252,7 @@ fn execute(
                         .entries
                         .iter()
                         .find(|entry| entry.path == path)
+                        .cloned()
                     else {
                         return Ok(QuietPreview::Absent);
                     };
@@ -2237,10 +2261,10 @@ fn execute(
                         entry.staged.is_some(),
                         entry.unstaged.is_some() || entry.untracked || entry.conflicted,
                     );
-                    let Some(area) = area else {
+                    let Some(mut area) = area else {
                         return Ok(QuietPreview::Absent);
                     };
-                    let Output::WorkingPreview(file, content, _) = execute(
+                    let Output::WorkingPreview(mut file, mut content, _) = execute(
                         Job::WorkingPreview {
                             repo: repo.clone(),
                             entry: entry.clone(),
@@ -2254,6 +2278,55 @@ fn execute(
                     else {
                         unreachable!()
                     };
+                    // If an external `git add` raced between WorkingState::read
+                    // and worktree_preview for an Unstaged view, the index OID
+                    // changed underneath us and old/new would mix pre-add index
+                    // with post-edit worktree. Re-read status and preview once
+                    // so the displayed diff stays self-consistent.
+                    if area == gitturtle_core::ChangeArea::Unstaged
+                        && let Ok(current_index_oid) = repo.index_blob_oid(&entry.path)
+                        && current_index_oid.as_deref() != entry.index_oid()
+                    {
+                        let fresh =
+                            WorkingState::read_with_checkpoint(&repo, || cancellation.check())
+                                .map_err(|error| confined_failure(&repo, error))?;
+                        working = fresh;
+                        let Some(fresh_entry) = working
+                            .status
+                            .entries
+                            .iter()
+                            .find(|item| item.path == path)
+                            .cloned()
+                        else {
+                            return Ok(QuietPreview::Absent);
+                        };
+                        let Some(fresh_area) = crate::workspace::retained_area(
+                            previous_area,
+                            fresh_entry.staged.is_some(),
+                            fresh_entry.unstaged.is_some()
+                                || fresh_entry.untracked
+                                || fresh_entry.conflicted,
+                        ) else {
+                            return Ok(QuietPreview::Absent);
+                        };
+                        let Output::WorkingPreview(re_file, re_content, _) = execute(
+                            Job::WorkingPreview {
+                                repo: repo.clone(),
+                                entry: fresh_entry,
+                                area: fresh_area,
+                                head: working.status.head.clone(),
+                            },
+                            cache,
+                            cancellation,
+                            session,
+                        )?
+                        else {
+                            unreachable!()
+                        };
+                        area = fresh_area;
+                        file = re_file;
+                        content = re_content;
+                    }
                     if area == previous_area
                         && previous_file.as_ref() == Some(&file)
                         && previous_content
@@ -2593,6 +2666,7 @@ fn history_references(
     Ok(HistoryReferences::new(branches, &tags))
 }
 
+#[cfg(test)]
 fn layout_graph(
     commits: &[Commit],
     cancellation: &Cancellation,
@@ -2623,7 +2697,9 @@ fn graph_notice() -> String {
 /// Preflight the graph's frontier and exact edge count without building lane
 /// geometry. This bounds both the quadratic wide-history case and unusual
 /// commits containing enormous parent lists before calling the layout engine.
+#[cfg(test)]
 fn graph_within_budget(commits: &[Commit], cancellation: &Cancellation) -> Result<bool> {
+    use std::collections::HashSet;
     let mut frontier = HashSet::<&str>::new();
     let mut parents = HashSet::new();
     let mut edges = 0usize;
@@ -2782,11 +2858,13 @@ fn supplied_nontext_content(
                 )),
             )));
         }
-        Ok(Arc::new(if model {
-            captured_model_side(repo, bytes.to_vec(), path, cancellation)?
-        } else {
-            crate::rich_preview::Side::prepare(bytes.to_vec(), path, || cancellation.check())?
-        }))
+        Ok(Arc::new(captured_rich_side(
+            repo,
+            bytes.to_vec(),
+            path,
+            if model { "model" } else { "file" },
+            cancellation,
+        )?))
     };
     Ok(Some(Content::Rich(crate::rich_preview::Comparison {
         old: side(old, file.old_path.as_deref())?,
@@ -2794,10 +2872,11 @@ fn supplied_nontext_content(
     })))
 }
 
-fn captured_model_side(
+fn captured_rich_side(
     repo: &GitRepository,
     bytes: Vec<u8>,
     path: &Path,
+    kind: &str,
     cancellation: &Cancellation,
 ) -> Result<crate::rich_preview::Side> {
     cancellation.check()?;
@@ -2812,13 +2891,13 @@ fn captured_model_side(
             return crate::rich_preview::Side::prepare(local, path, || cancellation.check());
         }
         Ok(gitturtle_core::LocalLfsObject::Absent) => format!(
-            "This model’s LFS object is unavailable in the local store ({}). No download was attempted.",
+            "This {kind}’s LFS object is unavailable in the local store ({}). No download was attempted.",
             crate::counted(pointer.size, "byte", "bytes")
         ),
         Ok(gitturtle_core::LocalLfsObject::Failed(failure, _)) => {
             crate::lfs_download::failure_sentence(failure)
         }
-        Err(error) => format!("This model’s local LFS object could not be verified: {error:#}."),
+        Err(error) => format!("This {kind}’s local LFS object could not be verified: {error:#}."),
     };
     let mut side = crate::rich_preview::Side::unavailable(path, true, Some(error));
     side.lfs_missing = absent;
@@ -2900,24 +2979,28 @@ fn nontext_history_content(
         .any(gitturtle_preview::model3d::is_model_path);
     // Keep readable and missing sides independent; a missing historical object
     // never substitutes a working file and is never cached as permanently absent.
-    let side = |bytes: Result<Vec<u8>>,
-                path: Option<&Path>|
-     -> Result<Arc<crate::rich_preview::Side>> {
-        let Some(path) = path else {
-            return Ok(Arc::new(crate::rich_preview::Side::unavailable(
-                file.path(),
-                false,
-                None,
-            )));
+    let side =
+        |bytes: Result<Vec<u8>>, path: Option<&Path>| -> Result<Arc<crate::rich_preview::Side>> {
+            let Some(path) = path else {
+                return Ok(Arc::new(crate::rich_preview::Side::unavailable(
+                    file.path(),
+                    false,
+                    None,
+                )));
+            };
+            Ok(Arc::new(match bytes {
+                Ok(bytes) => captured_rich_side(
+                    repo,
+                    bytes,
+                    path,
+                    if model { "model" } else { "file" },
+                    cancellation,
+                )?,
+                Err(error) => {
+                    crate::rich_preview::Side::unavailable(path, true, Some(format!("{error:#}")))
+                }
+            }))
         };
-        Ok(Arc::new(match bytes {
-            Ok(bytes) if model => captured_model_side(repo, bytes, path, cancellation)?,
-            Ok(bytes) => crate::rich_preview::Side::prepare(bytes, path, || cancellation.check())?,
-            Err(error) => {
-                crate::rich_preview::Side::unavailable(path, true, Some(format!("{error:#}")))
-            }
-        }))
-    };
     Ok(Some(Content::Rich(crate::rich_preview::Comparison {
         old: side(old, file.old_path.as_deref())?,
         new: side(new, file.new_path.as_deref())?,
@@ -3157,6 +3240,29 @@ fn text_content(
     if matches!(sources.preview, TextPreview::TooLarge { .. }) {
         if let Some(content) = nontext_history_content(repo, file, cancellation)? {
             return Ok(content);
+        }
+        // `TextPreview::TooLarge` returns empty `sources.old`/`sources.new`,
+        // which would otherwise hide an LFS pointer on the smaller side and
+        // permanently cache the large-file notice. Probe any <=1 KiB side for
+        // an LFS pointer so missing/failing LFS state prevents cache poisoning.
+        for (index, oid) in [file.old_oid.as_deref(), file.new_oid.as_deref()]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(oid) = oid
+                && repo.blob_size(oid).is_ok_and(|size| size <= 1024)
+                && let Ok(bytes) = repo.blob(oid)
+                && let Some(pointer) = detect_lfs_pointer(&bytes)
+            {
+                lfs.pointers[index] = true;
+                match repo.local_lfs_read(&pointer.oid, pointer.size, MAX_INPUT_BYTES) {
+                    Ok(gitturtle_core::LocalLfsObject::Absent) => lfs.missing[index] = true,
+                    Ok(gitturtle_core::LocalLfsObject::Failed(failure, _)) => {
+                        lfs.failed[index] = Some(failure);
+                    }
+                    _ => {}
+                }
+            }
         }
     } else if let Some(content) =
         supplied_nontext_content(repo, file, &sources.old, &sources.new, cancellation)?
@@ -8765,5 +8871,70 @@ pub(crate) mod helper_image_tests {
             assert!(app.mode == WorkspaceMode::History, "Compare stays closed");
             assert!(app.content.is_none(), "no comparison arrives");
         });
+    }
+
+    #[test]
+    fn search_history_over_128_matches_produces_node_only_rows_with_no_graph_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .env("GIT_AUTHOR_NAME", "Tester")
+                .env("GIT_AUTHOR_EMAIL", "tester@example.com")
+                .env("GIT_COMMITTER_NAME", "Tester")
+                .env("GIT_COMMITTER_EMAIL", "tester@example.com")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        for index in 0..135 {
+            std::fs::write(path.join("log.txt"), format!("entry {index}\n")).unwrap();
+            run(&["add", "log.txt"]);
+            run(&["commit", "-q", "-m", &format!("needle commit {index}")]);
+        }
+        let repo = GitRepository::open(path).unwrap();
+        let mut cache = super::PreviewCache::default();
+        let mut session = super::RepositorySession::default();
+        let cancel = super::Cancellation {
+            generation: 1,
+            latest: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            history: gitturtle_core::HistoryCancellation::default(),
+            preparation: None,
+        };
+        let output = super::execute(
+            super::Job::SearchHistory {
+                repo,
+                scope: None,
+                pinned: None,
+                query: "needle".into(),
+                offset: 0,
+                limit: 200,
+                previous: Vec::new(),
+                remaining_bytes: 2 * 1024 * 1024,
+            },
+            &mut cache,
+            &cancel,
+            &mut session,
+        )
+        .unwrap();
+        let super::Output::SearchHistory(result) = output else {
+            panic!("expected SearchHistory output");
+        };
+        assert_eq!(result.page.commits.len(), 135);
+        assert_eq!(result.graph.len(), 135);
+        assert!(
+            result.graph_notice.is_none(),
+            "search hits must not emit spurious Graph connections hidden banner: {:?}",
+            result.graph_notice
+        );
+        assert!(
+            result
+                .graph
+                .iter()
+                .all(|row| row.width == 1 && row.edges.is_empty())
+        );
     }
 }

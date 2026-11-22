@@ -1908,6 +1908,16 @@ pub(crate) fn close_tab_menus(window: &Window, cx: &mut App) {
     *cx.default_global::<ShownTabs>().0.entry(id).or_default() += 1;
 }
 
+/// Dismisses open tab-scoped menus and restores focus to the control behind
+/// any open right-click menu so a dialog, sheet, or page opened right after
+/// captures the real underlying control as its return target.
+pub(crate) fn dismiss_menus_for_overlay(window: &mut Window, cx: &mut App) {
+    if let Some(Some(previous)) = pointer_menu_return(window, cx) {
+        window.focus(&previous, cx);
+    }
+    close_tab_menus(window, cx);
+}
+
 /// Whether keyboard focus is in an open menu, as the last frame drew it
 /// ([`MENU_CONTEXT`]): a button's, a row's or a text field's.
 pub(crate) fn focus_in_menu(window: &Window) -> bool {
@@ -2291,7 +2301,17 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 .filter(|(menu, _)| state.open && !menu.read(cx).is_empty())
         };
         let pressed = shown.as_ref().map(|(_, pressed)| pressed.clone());
-        let overlay = shown.map(|(menu, pressed)| {
+        let overlay = shown.and_then(|(menu, pressed)| {
+            // If a dialog or sheet is already active over the window, dismiss
+            // the menu immediately and skip painting its overlay so it neither
+            // flashes above the modal for a frame nor steals focus back.
+            if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+                let menu = menu.downgrade();
+                window.defer(cx, move |_, cx| {
+                    let _ = menu.update(cx, |_, cx| cx.emit(gpui::DismissEvent));
+                });
+                return None;
+            }
             // Built from what the row showed when it was built; the row
             // shows something else now, so it is built again from that. Its
             // rows being replaced, it waits for the new ones.
@@ -2337,32 +2357,34 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 })
             };
             let viewport = window.viewport_size();
-            deferred(
-                anchored().position(Point::default()).child(
-                    div()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .on_scroll(|_, _, cx| cx.stop_propagation())
-                        // The row's menu is open already, and it holds the
-                        // keys: Shift-F10 or the Menu key in it opens no
-                        // keyboard's menu beside it. Drawn inside the row,
-                        // the menu passed both on to the list or tree, which
-                        // opened its cursor row's menu and focused it; the
-                        // next frame this menu took focus back and that one
-                        // closed, both drawn for a frame.
-                        .on_action(|_: &RowActions, _, _| {})
-                        .on_action(|_: &ManageNavigation, _, _| {})
-                        .child(RowMenu {
-                            row: RowPlace::Pointer(pressed.place),
-                            opened: pressed.opened,
-                            room: menu_bounds(window),
-                            menu: menu.into_any_element(),
-                            close,
-                        }),
-                ),
+            Some(
+                deferred(
+                    anchored().position(Point::default()).child(
+                        div()
+                            .w(viewport.width)
+                            .h(viewport.height)
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
+                            // The row's menu is open already, and it holds the
+                            // keys: Shift-F10 or the Menu key in it opens no
+                            // keyboard's menu beside it. Drawn inside the row,
+                            // the menu passed both on to the list or tree, which
+                            // opened its cursor row's menu and focused it; the
+                            // next frame this menu took focus back and that one
+                            // closed, both drawn for a frame.
+                            .on_action(|_: &RowActions, _, _| {})
+                            .on_action(|_: &ManageNavigation, _, _| {})
+                            .child(RowMenu {
+                                row: RowPlace::Pointer(pressed.place),
+                                opened: pressed.opened,
+                                room: menu_bounds(window),
+                                menu: menu.into_any_element(),
+                                close,
+                            }),
+                    ),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY)
+                .into_any_element(),
             )
-            .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            .into_any_element()
         });
         let mut element = self
             .element
@@ -2534,6 +2556,8 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         move |menu, window, cx| {
                             OpenPointerMenus::close(released, cx);
                             if let Some(previous) = &previous
+                                && !window.has_active_dialog(cx)
+                                && !window.has_active_sheet(cx)
                                 && (menu.focus_handle(cx).contains_focused(window, cx)
                                     || window.focused(cx).is_none())
                             {
@@ -2562,6 +2586,8 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         let closed = menu.entity_id();
                         OpenPointerMenus::close(closed, cx);
                         if let Some(previous) = &previous
+                            && !window.has_active_dialog(cx)
+                            && !window.has_active_sheet(cx)
                             && (handle.contains_focused(window, cx)
                                 || window
                                     .focused(cx)

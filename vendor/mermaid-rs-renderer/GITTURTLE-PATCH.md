@@ -10,6 +10,16 @@ is removed. System font discovery and process-memory metrics remain available;
 Unicode source labels do not require a renderer-owned disk cache. No process
 environment variables or user's files are changed.
 
+`src/parser.rs` tightens `parse_click_line` (`is_click_node_id`) so flowchart
+edges starting from a node named `Link` or `Click` (such as `Link --> Regular`
+or `Click -.-> Other`) are not misparsed as `click`/`link` directives with an
+edge operator as the node ID. Real `click <node> <url>` and `link <node> <url>`
+directives continue to parse into `graph.node_links` so GitTurtle's preview
+guard still refuses them. Covered by `parser::tests::parses_nodes_named_link_and_click` and
+`crates/preview/src/mermaid.rs` (`cargo test --locked -p gitturtle-preview mermaid`;
+upstream crates.io tarball omits `docs/comparison_sources/` required by its own
+layout unit tests).
+
 The four filesystem CLI tests in `tests/cli_suite.rs` and two configuration
 loader tests in `src/config.rs` use private `tempfile::TempDir` directories.
 Upstream used fixed or PID-based names with `create_dir_all` or direct writes,

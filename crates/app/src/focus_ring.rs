@@ -23,8 +23,9 @@ pub(crate) struct FocusRing {
     /// A key was pressed after the last pointer press. Shared with the
     /// window's pointer-press listener, [`FocusRing::pointer_listener`].
     keyboard: Rc<Cell<bool>>,
-    /// The focus whose ring the frame being built draws.
-    ringed: Rc<RefCell<Option<FocusHandle>>>,
+    /// The focus whose ring the frame being built draws, held weakly so hiding
+    /// a control never retains its dropped `FocusHandle`.
+    ringed: Rc<RefCell<Option<WeakFocusHandle>>>,
 }
 
 impl FocusRing {
@@ -37,7 +38,11 @@ impl FocusRing {
         if window.last_input_was_keyboard() {
             self.keyboard.set(true);
         }
-        *self.ringed.borrow_mut() = self.keyboard.get().then(|| window.focused(cx)).flatten();
+        *self.ringed.borrow_mut() = self
+            .keyboard
+            .get()
+            .then(|| window.focused(cx).map(|focus| focus.downgrade()))
+            .flatten();
     }
 
     /// Marks the focus a page opens with, as a key press would, until the
@@ -52,7 +57,12 @@ impl FocusRing {
 
     /// Whether `focus` draws its keyboard ring this frame.
     pub(crate) fn shows(&self, focus: &FocusHandle) -> bool {
-        self.ringed.borrow().as_ref() == Some(focus)
+        self.ringed
+            .borrow()
+            .as_ref()
+            .and_then(WeakFocusHandle::upgrade)
+            .as_ref()
+            == Some(focus)
     }
 
     /// The ring a pane draws on its own edge while `focus`, inside it, shows
@@ -450,4 +460,29 @@ pub(crate) fn assert_input_ringed(
         ring.whole,
         "{field}: a clip cuts the field's ring: {ring:?}"
     );
+}
+
+#[cfg(test)]
+mod weak_focus_tests {
+    use super::FocusRing;
+
+    #[gpui_kit::test]
+    fn focus_ring_does_not_retain_strong_focus_handle(cx: &mut gpui_kit::TestAppContext) {
+        let ring = FocusRing::default();
+        let (_, cx) = cx.add_window_view(|_, _| gpui_kit::Empty);
+        let weak = cx.update(|window, cx| {
+            let handle = cx.focus_handle();
+            let weak = handle.downgrade();
+            handle.focus(window, cx);
+            ring.mark(window);
+            ring.begin_frame(window, cx);
+            assert!(ring.shows(&handle));
+            drop(handle);
+            weak
+        });
+        assert!(
+            weak.upgrade().is_none(),
+            "FocusRing must not retain a strong FocusHandle after the control drops"
+        );
+    }
 }

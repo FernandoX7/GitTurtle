@@ -433,7 +433,8 @@ impl GitTurtle {
             // later modal would keep as its own (`return_modal_to`).
             self.modal_replaced_focus = None;
             if self.app_focus.contains_focused(window, cx) {
-                self.modal_return_focus = window.focused(cx);
+                self.modal_return_focus = native_accessibility::pointer_menu_return(window, cx)
+                    .unwrap_or_else(|| window.focused(cx));
             }
         }
         self.modal_was_open = modal_open;

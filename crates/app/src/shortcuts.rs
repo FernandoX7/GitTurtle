@@ -974,7 +974,8 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
         return;
     }
-    let return_focus = window.focused(cx);
+    let return_focus =
+        native_accessibility::pointer_menu_return(window, cx).unwrap_or_else(|| window.focused(cx));
     let help = cx.new(|cx| ShortcutHelpView::new(return_focus, window, cx));
     #[cfg(test)]
     OPENED_HELP.with_borrow_mut(|opened| *opened = Some(help.downgrade()));

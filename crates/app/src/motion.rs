@@ -3345,7 +3345,15 @@ mod tests {
         rows_arrived(&app, cx).await;
         draw(cx);
         let (offset, height) = (list_offset(&app, cx), row(cx, 58).size.height);
+        // Stop native filesystem notifications before staging so a racing
+        // external watcher read (`after_write: false`) cannot land ahead of
+        // the write-triggered quiet read being tested.
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        cx.update(|_, cx| app.update(cx, |app, _| app.automatic.reset()));
         fixture_git(&fixture.path().join("narrow"), &["add", "f56.txt"]);
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| app.automatic.hold_quiet_reads(false));
+        });
         quietly_read(
             &app,
             cx,

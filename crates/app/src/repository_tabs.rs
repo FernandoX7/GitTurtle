@@ -2518,16 +2518,25 @@ impl GitTurtle {
     /// pressed it, as a recent project's Open is refused
     /// ([`Self::tab_open_requested`]).
     pub(super) fn choose_project_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.repository_tabs.tabs.len() < MAX_TABS {
-            self.hub
-                .update(cx, |hub, cx| hub.choose_folder(true, window, cx));
+        if self.refuse_project_at_tab_limit(cx) {
             return;
+        }
+        self.hub
+            .update(cx, |hub, cx| hub.choose_folder(true, window, cx));
+    }
+    /// Refuse a Projects action (Open Folder, Clone, Create) before touching
+    /// disk when the tab strip is already at [`MAX_TABS`].
+    pub(super) fn refuse_project_at_tab_limit(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.repository_tabs.tabs.len() < MAX_TABS {
+            return false;
         }
         // One refusal line at a time: an earlier strip refusal goes.
         self.repository_tabs.refusal = None;
         self.hub.update(cx, |hub, cx| {
             hub.set_error(Some(TAB_LIMIT_REFUSAL.to_owned()), cx)
         });
+        cx.notify();
+        true
     }
     /// The tab strip's refusal line ([`Self::refuse_in_tab_strip`]) with its
     /// Dismiss, drawn beneath the strip.
@@ -20607,5 +20616,62 @@ pub(crate) mod tests {
             appearance::set_more_contrast(false, cx);
             appearance::ThemeChoice::Midnight.apply(Some(window), cx);
         });
+    }
+
+    #[gpui::test]
+    async fn clone_and_create_refuse_at_tab_limit_before_touching_disk(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // Fill tabs up to MAX_TABS.
+        app.update(cx, |app, _| {
+            while app.repository_tabs.tabs.len() < MAX_TABS {
+                let index = app.repository_tabs.tabs.len();
+                let path = dir.path().join(format!("slot-{index}"));
+                app.repository_tabs.tabs.push(Tab {
+                    path,
+                    resolved: false,
+                    git_dir: None,
+                    saved: Bookmark::default(),
+                    warm: None,
+                    error: None,
+                    before_mark: None,
+                });
+            }
+        });
+        let create_dest = dir.path().join("should-not-exist-create");
+        let clone_dest = dir.path().join("should-not-exist-clone");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.project_event(
+                    &projects::ProjectEvent::Create {
+                        destination: create_dest.clone(),
+                        branch: "main".into(),
+                    },
+                    window,
+                    cx,
+                );
+                app.project_event(
+                    &projects::ProjectEvent::Clone {
+                        source: "https://example.invalid/repo.git".into(),
+                        destination: clone_dest.clone(),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        assert!(
+            !create_dest.exists(),
+            "Create at tab limit must refuse before touching disk"
+        );
+        assert!(
+            !clone_dest.exists(),
+            "Clone at tab limit must refuse before touching disk"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "no background Git write should start when at tab limit"
+        );
     }
 }

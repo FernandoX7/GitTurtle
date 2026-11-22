@@ -16,7 +16,7 @@ match the supplemental notices in `docs/licenses/dependencies.json`.
 ## Changes
 
 Three files are modified: `src/node.rs`, with four changes, `src/adapter.rs`,
-with two, and `src/context.rs`. No other source, manifest or dependency
+with three, and `src/context.rs`. No other source, manifest or dependency
 changes.
 
 ### Disabled controls (`src/node.rs`)
@@ -199,6 +199,21 @@ cache as it leaves the tree, and AccessKit 0.24.1, which carries #819, has
 libatspi dispose it, so Orca 51.1 would read the dialog and the list before
 the next row: carry this change, with its withheld removal, onto the newer
 source.
+
+### Cache and interface teardown on window close (`src/adapter.rs`, `src/context.rs`)
+
+A GitTurtle change, not a backport. Upstream `impl Drop for Adapter` only
+emitted `window_destroyed(root_id)` and removed the adapter from `AppContext`,
+leaving every live node and every kept removed row registered in AT-SPI's
+cache and on D-Bus without `RemoveAccessible` or interface teardown. `Drop`
+now snapshots all included descendants (post-order) plus the root and drains
+`Removed::clear()`, drops locks before callbacks, emits `CacheEvent::Removed`
+and `unregister_interfaces` for every kept removed row, emits
+`State::Defunct`, `CacheEvent::Removed`, and `unregister_interfaces` for every
+live node including the root, and then calls `window_destroyed` and
+`remove_adapter`. Covered by
+`adapter::tests::dropping_an_adapter_emits_remove_accessible_and_unregisters_nodes`
+(`scripts/vendor-crate-test.sh vendor/accesskit_atspi_common`).
 
 ## Consumer and coverage
 

@@ -1,0 +1,10 @@
+diff --git a/crates/git-core/src/work.rs b/crates/git-core/src/work.rs
+--- a/crates/git-core/src/work.rs
++++ b/crates/git-core/src/work.rs
+@@ -910,7 +910,6 @@ impl GitRepository {
+     pub fn delete_branch_unchecked(&self, name: &str) -> Result<()> {
+-        self.verified_repository()?;
+         let mut cmd = normal_command(&self.path);
+         cmd.args(["branch", "-d", "--", name]);
+         Ok(())
+     }

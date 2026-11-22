@@ -35,6 +35,9 @@ jobs:
       tooling: ${{ steps.classify.outputs.tooling }}
       website: ${{ steps.classify.outputs.website }}
       has-images: ${{ steps.classify.outputs.has-images }}
+      seed-only: ${{ steps.classify.outputs.seed-only }}
+      debug-matrix: ${{ steps.classify.outputs.debug-matrix }}
+      arch-matrix: ${{ steps.classify.outputs.arch-matrix }}
       plan: ${{ steps.classify.outputs.plan }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,6 +51,8 @@ jobs:
         run: python3 scripts/check-agent-guidance.py
       - name: Check documentation sync
         run: python3 scripts/check-docs-sync.py
+      - name: Check architectural invariants
+        run: python3 -B scripts/dev/check_invariants.py
       - name: Test routing and gate policy
         run: python3 -B -m unittest scripts/ci/tests/test_changes.py
       - name: Validate Actions workflow with actionlint 1.7.12
@@ -73,6 +78,23 @@ jobs:
           tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
           "$actionlint_dir/actionlint" -version
           "$actionlint_dir/actionlint" -shellcheck='' -pyflakes=''
+      - name: Audit Actions workflows with zizmor 1.32.0
+        run: |
+          zizmor_dir="$RUNNER_TEMP/zizmor-1.32.0"
+          mkdir -p "$zizmor_dir"
+          curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+            --connect-timeout 15 --max-time 60 \
+            --write-out '%{onerror}%{stderr}::error::zizmor download failed at %{urle.host}: %{errormsg} (curl exit %{exitcode})\n' \
+            https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz \
+            --output "$zizmor_dir/zizmor.tar.gz"
+          printf '%s  %s\n' 'bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b' \
+            "$zizmor_dir/zizmor.tar.gz" | sha256sum --check --status || {
+            echo "::error::zizmor archive's SHA-256 is not the pinned one"
+            exit 1
+          }
+          tar -xzf "$zizmor_dir/zizmor.tar.gz" -C "$zizmor_dir" zizmor
+          "$zizmor_dir/zizmor" --version
+          "$zizmor_dir/zizmor" --offline --min-severity medium .github/workflows .github/actions
       - name: Classify changed inputs
         id: classify
         run: python3 scripts/ci/changes.py classify --output "$GITHUB_OUTPUT"
@@ -136,7 +158,7 @@ jobs:
           include-hidden-files: false
   rust-format:
     needs: changes
-    if: needs.changes.outputs.product == 'true'
+    if: needs.changes.outputs.product == 'true' && needs.changes.outputs.seed-only != 'true'
     name: Rust formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -179,31 +201,15 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Every leg at once: 3 macOS shards + 2 Ubuntu shards.
-      # With agent-tooling decoupled from pure crates/ PRs, all 5 free macOS
-      # slots are available for Rust (3 debug shards + 1 clippy + 1 release).
+      # Every leg at once: 3 macOS shards + 2 Ubuntu shards (or 2 shard-1 cache
+      # seed legs on weekly schedule, using 1 macOS slot instead of 3).
       max-parallel: 5
-      matrix:
-        include:
-          - os: macos-15
-            shard: 1
-            shards: 3
-          - os: macos-15
-            shard: 2
-            shards: 3
-          - os: macos-15
-            shard: 3
-            shards: 3
-          - os: ubuntu-24.04
-            shard: 1
-            shards: 2
-          - os: ubuntu-24.04
-            shard: 2
-            shards: 2
+      matrix: ${{ fromJSON(needs.changes.outputs.debug-matrix) }}
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       GIT_CONFIG_NOSYSTEM: 1
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - name: Isolate CI Git configuration
         run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
@@ -278,7 +284,7 @@ jobs:
   # dependencies would leave the test job a cache without its build.
   rust-clippy:
     needs: changes
-    if: needs.changes.outputs.product == 'true'
+    if: needs.changes.outputs.product == 'true' && needs.changes.outputs.seed-only != 'true'
     name: Rust Clippy · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # Clippy already ran inside 45 minutes as the last step of the combined
@@ -295,6 +301,7 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       GIT_CONFIG_NOSYSTEM: 1
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - name: Isolate CI Git configuration
         run: printf 'GIT_CONFIG_GLOBAL=%s/gitturtle-ci-gitconfig\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
@@ -466,17 +473,14 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 2
-      matrix:
-        # As in rust-debug: `shards` is the one place the total is written and
-        # `shard` lists 1 to that total.
-        shard: [1, 2]
-        shards: [2]
+      matrix: ${{ fromJSON(needs.changes.outputs.arch-matrix) }}
     container:
       image: archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       GIT_CONFIG_NOSYSTEM: 1
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
       # rust-cache also exports this after its restore; set here, it holds for
       # the toolchain step and when that restore step fails.
       CARGO_INCREMENTAL: 0
@@ -700,7 +704,7 @@ jobs:
   # and this job's word (docs/ci-artifacts.md).
   package-transfer:
     needs: [changes, rust-release]
-    if: needs.changes.outputs.product == 'true'
+    if: needs.changes.outputs.product == 'true' && needs.changes.outputs.seed-only != 'true'
     name: Package transfer · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # The limit only backs up a hung step. The installation's two commands end

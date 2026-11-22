@@ -2,6 +2,7 @@
 //! unsupported/corrupt store and never discard a draft after an uncertain write.
 use super::conversations::CapturedThread;
 use super::*;
+use anyhow::{Context, ensure};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -172,60 +173,135 @@ pub(crate) fn save_batch(batch: &std::collections::HashMap<String, Change>) -> R
 fn save_at(path: &Path, draft: Draft) -> Result<()> {
     save_batch_at(path, [draft])
 }
-fn save_batch_at(path: &Path, changes: impl IntoIterator<Item = impl Into<Change>>) -> Result<()> {
-    let mut store = load_at(path)?;
-    let mut drafts = Vec::new();
-    for change in changes {
-        match change.into() {
-            Change::Keep(draft) => drafts.push(*draft),
-            // A confirmed creation takes exactly its own draft out, before anything is saved.
-            Change::Created(sent) => store.entries.retain(|entry| !entry.sent_as(&sent)),
-        }
-    }
-    // An empty reply is queued through the same serialized saver as typing.
-    // Removing it here cannot race an earlier accepted save, and completed
-    // conversations do not consume the allowance for unfinished work. Apply
-    // removals first so a coalesced replacement can reuse a just-freed slot.
-    let removals: std::collections::HashSet<_> = drafts
-        .iter()
-        .filter(|draft| matches!(draft, Draft::Reply(reply) if reply.body.is_empty()))
-        .map(Draft::key)
-        .collect();
-    store
-        .entries
-        .retain(|entry| !removals.contains(&entry.key()));
-    for draft in drafts {
-        if matches!(&draft, Draft::Reply(reply) if reply.body.is_empty()) {
-            continue;
-        }
-        let key = draft.key();
-        if let Some(entry) = store.entries.iter_mut().find(|entry| entry.key() == key) {
-            *entry = draft;
-        } else {
-            ensure!(
-                store.entries.len() < MAX_DRAFTS,
-                "GitHub draft store is full. Explicitly discard an older draft before saving another."
-            );
-            store.entries.push(draft);
-        }
-    }
-    let bytes = serde_json::to_vec_pretty(&store)?;
+/// Acquires an exclusive advisory lock on a sibling `.lock` file so concurrent
+/// GitTurtle processes reading-modifying-writing the store never clobber each
+/// other's entries when `atomic_write` replaces the JSON file's inode.
+fn with_store_lock<T>(path: &Path, op: impl FnOnce() -> Result<T>) -> Result<T> {
+    let parent = path
+        .parent()
+        .context("GitHub draft store path has no parent directory")?;
     ensure!(
-        bytes.len() <= MAX_STORE,
-        "GitHub drafts exceed the 16 MiB limit. Existing drafts were preserved."
+        parent.is_absolute(),
+        "GitHub draft store directory must be absolute"
     );
-    crate::preferences::atomic_write(path, &bytes)
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(parent)?;
+    let lock_path = path.with_extension("lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    if let Ok(meta) = std::fs::symlink_metadata(&lock_path) {
+        ensure!(
+            meta.file_type().is_file(),
+            "GitHub draft lock {} must be a regular file",
+            lock_path.display()
+        );
+    }
+    let lock_file = options
+        .open(&lock_path)
+        .with_context(|| format!("Cannot open GitHub draft lock {}", lock_path.display()))?;
+    ensure!(
+        lock_file.metadata()?.is_file(),
+        "GitHub draft lock {} must be a regular file",
+        lock_path.display()
+    );
+    lock_file
+        .lock()
+        .with_context(|| format!("Cannot lock GitHub draft store {}", lock_path.display()))?;
+    op()
+}
+
+/// Whether `draft` is an untouched or cleared draft that should not occupy a
+/// slot in `github-drafts.json`.
+pub(crate) fn is_empty_review(review: &ReviewDraft) -> bool {
+    review.body.is_empty()
+        && review.comments.is_empty()
+        && review
+            .composing
+            .as_ref()
+            .is_none_or(|comment| comment.body.is_empty())
+        && (review.discussion || review.event == ReviewEvent::Comment)
+}
+
+fn is_cleared_draft(draft: &Draft) -> bool {
+    match draft {
+        Draft::Reply(reply) => reply.body.is_empty(),
+        Draft::Review(review) => is_empty_review(review),
+        Draft::Pull(_) => false,
+    }
+}
+
+fn save_batch_at(path: &Path, changes: impl IntoIterator<Item = impl Into<Change>>) -> Result<()> {
+    with_store_lock(path, || {
+        let mut store = load_at(path)?;
+        let mut drafts = Vec::new();
+        for change in changes {
+            match change.into() {
+                Change::Keep(draft) => drafts.push(*draft),
+                // A confirmed creation takes exactly its own draft out, before anything is saved.
+                Change::Created(sent) => store.entries.retain(|entry| !entry.sent_as(&sent)),
+            }
+        }
+        // An empty reply or cleared review is queued through the same serialized
+        // saver as typing. Removing it here cannot race an earlier accepted save,
+        // and untouched/completed items do not consume the allowance for unfinished
+        // work. Apply removals first so a coalesced replacement can reuse a
+        // just-freed slot.
+        let removals: std::collections::HashSet<_> = drafts
+            .iter()
+            .filter(|draft| is_cleared_draft(draft))
+            .map(Draft::key)
+            .collect();
+        store
+            .entries
+            .retain(|entry| !removals.contains(&entry.key()));
+        for draft in drafts {
+            if is_cleared_draft(&draft) {
+                continue;
+            }
+            let key = draft.key();
+            if let Some(entry) = store.entries.iter_mut().find(|entry| entry.key() == key) {
+                *entry = draft;
+            } else {
+                ensure!(
+                    store.entries.len() < MAX_DRAFTS,
+                    "GitHub draft store is full. Explicitly discard an older draft before saving another."
+                );
+                store.entries.push(draft);
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&store)?;
+        ensure!(
+            bytes.len() <= MAX_STORE,
+            "GitHub drafts exceed the 16 MiB limit. Existing drafts were preserved."
+        );
+        crate::preferences::atomic_write(path, &bytes)
+    })
 }
 pub(crate) fn remove_exact(draft: &Draft) -> Result<()> {
     remove_exact_at(&path()?, draft)
 }
 fn remove_exact_at(path: &Path, draft: &Draft) -> Result<()> {
-    let mut store = load_at(path)?;
-    let submitted = serde_json::to_value(draft)?;
-    store
-        .entries
-        .retain(|entry| serde_json::to_value(entry).ok().as_ref() != Some(&submitted));
-    crate::preferences::atomic_write(path, &serde_json::to_vec_pretty(&store)?)
+    with_store_lock(path, || {
+        let mut store = load_at(path)?;
+        let submitted = serde_json::to_value(draft)?;
+        store
+            .entries
+            .retain(|entry| serde_json::to_value(entry).ok().as_ref() != Some(&submitted));
+        crate::preferences::atomic_write(path, &serde_json::to_vec_pretty(&store)?)
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -389,6 +465,71 @@ mod tests {
         assert_eq!(load_at(&path).unwrap().entries[0].text(), edited.text());
         remove_exact_at(&path, &edited).unwrap();
         assert!(load_at(&path).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn concurrent_saves_preserve_all_entries_under_store_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("github-drafts.json");
+        let handles: Vec<_> = (0..8)
+            .map(|index| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for round in 0..4 {
+                        let mut item = reply(&format!("body-{index}-{round}"));
+                        item.target.thread_id = format!("PRRT_thread_{index}_{round}");
+                        save_at(&path, Draft::Reply(item)).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let store = load_at(&path).unwrap();
+        assert_eq!(store.entries.len(), 32);
+    }
+
+    #[test]
+    fn empty_review_draft_is_not_persisted_and_clearing_removes_saved_review() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("github-drafts.json");
+        let base_review = ReviewDraft {
+            pull: reply("x").target.pull,
+            body: String::new(),
+            event: ReviewEvent::Comment,
+            comments: vec![],
+            composing: None,
+            discussion: false,
+        };
+        assert!(is_empty_review(&base_review));
+        assert!(is_empty_review(&ReviewDraft {
+            discussion: true,
+            ..base_review.clone()
+        }));
+        save_at(&path, Draft::Review(base_review.clone())).unwrap();
+        assert!(load_at(&path).unwrap().entries.is_empty());
+
+        let filled = ReviewDraft {
+            body: "Looks solid".into(),
+            ..base_review.clone()
+        };
+        assert!(!is_empty_review(&filled));
+        save_at(&path, Draft::Review(filled)).unwrap();
+        assert_eq!(load_at(&path).unwrap().entries.len(), 1);
+
+        // Clearing back to empty removes the saved review entry cleanly.
+        save_at(&path, Draft::Review(base_review.clone())).unwrap();
+        assert!(load_at(&path).unwrap().entries.is_empty());
+
+        // An explicit Approve event with empty body is preserved as intentional.
+        let approve = ReviewDraft {
+            event: ReviewEvent::Approve,
+            ..base_review
+        };
+        assert!(!is_empty_review(&approve));
+        save_at(&path, Draft::Review(approve)).unwrap();
+        assert_eq!(load_at(&path).unwrap().entries.len(), 1);
     }
 
     #[test]
@@ -1043,49 +1184,51 @@ fn record_reply_outcome_at(
         "GitHub attempt identity exceeds its limit"
     );
     let completed_reply_sha256 = completed.map(reply_fingerprint);
-    let mut attempts = attempts_at(path)?;
-    if let Some(attempt) = attempts
-        .iter_mut()
-        .find(|attempt| attempt.destination == destination)
-    {
-        attempt.outcome = outcome;
-        // A later reply can succeed while every preference save still fails.
-        // Never replace earlier proof: its original text may remain on disk.
-        if let Some(receipt) = completed_reply_sha256 {
-            let receipts = attempt.completed_reply_sha256.get_or_insert_default();
-            if !receipts.contains(&receipt) {
-                ensure!(
-                    receipts.len() < MAX_REPLY_RECEIPTS,
-                    "This conversation reached its 128 completed-reply receipt limit. Prior receipts were preserved; inspect GitHub before sending again."
-                );
-                receipts.push(receipt);
+    with_store_lock(path, || {
+        let mut attempts = attempts_at(path)?;
+        if let Some(attempt) = attempts
+            .iter_mut()
+            .find(|attempt| attempt.destination == destination)
+        {
+            attempt.outcome = outcome;
+            // A later reply can succeed while every preference save still fails.
+            // Never replace earlier proof: its original text may remain on disk.
+            if let Some(receipt) = completed_reply_sha256 {
+                let receipts = attempt.completed_reply_sha256.get_or_insert_default();
+                if !receipts.contains(&receipt) {
+                    ensure!(
+                        receipts.len() < MAX_REPLY_RECEIPTS,
+                        "This conversation reached its 128 completed-reply receipt limit. Prior receipts were preserved; inspect GitHub before sending again."
+                    );
+                    receipts.push(receipt);
+                }
             }
+        } else {
+            if attempts.len() == MAX_ATTEMPTS {
+                let disposable = attempts
+                    .iter()
+                    .position(|attempt| {
+                        attempt
+                            .completed_reply_sha256
+                            .as_ref()
+                            .is_none_or(Vec::is_empty)
+                    })
+                    .ok_or_else(|| anyhow!(
+                        "The GitHub attempt store is full of completed-reply receipts. Existing receipts were preserved; this attempt was not recorded."
+                    ))?;
+                attempts.remove(disposable);
+            }
+            attempts.push(Attempt {
+                destination,
+                outcome,
+                completed_reply_sha256: completed_reply_sha256.map(|receipt| vec![receipt]),
+            });
         }
-    } else {
-        if attempts.len() == MAX_ATTEMPTS {
-            let disposable = attempts
-                .iter()
-                .position(|attempt| {
-                    attempt
-                        .completed_reply_sha256
-                        .as_ref()
-                        .is_none_or(Vec::is_empty)
-                })
-                .ok_or_else(|| anyhow!(
-                    "The GitHub attempt store is full of completed-reply receipts. Existing receipts were preserved; this attempt was not recorded."
-                ))?;
-            attempts.remove(disposable);
-        }
-        attempts.push(Attempt {
-            destination,
-            outcome,
-            completed_reply_sha256: completed_reply_sha256.map(|receipt| vec![receipt]),
-        });
-    }
-    let bytes = serde_json::to_vec_pretty(&attempts)?;
-    ensure!(
-        bytes.len() <= MAX_ATTEMPTS_BYTES,
-        "GitHub attempt record exceeds its 1 MiB limit. Existing outcomes were preserved; this attempt was not recorded."
-    );
-    crate::preferences::atomic_write(path, &bytes)
+        let bytes = serde_json::to_vec_pretty(&attempts)?;
+        ensure!(
+            bytes.len() <= MAX_ATTEMPTS_BYTES,
+            "GitHub attempt record exceeds its 1 MiB limit. Existing outcomes were preserved; this attempt was not recorded."
+        );
+        crate::preferences::atomic_write(path, &bytes)
+    })
 }

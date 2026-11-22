@@ -1265,6 +1265,8 @@ def restored():
         clear(paths)
     if digest((root / "Cargo.lock").read_bytes()) != os.environ["CI_RUST_CACHE_LOCK"]:
         raise ValueError("cache metadata unexpectedly changed the locked dependencies")
+    if os.environ.get("GITHUB_ENV"):
+        output_file("GITHUB_ENV", {"CI_RUST_CACHE_HIT": "true" if hit else "false"})
     elapsed = time.monotonic() - started
     record("rust-cache-restore", elapsed, cache={"hit": hit, "restore_seconds": elapsed},
            details={"key_prefix": os.environ["CI_RUST_CACHE_KEY"],
@@ -1337,8 +1339,13 @@ def main():
                 run_as(account)
             if target and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", target):
                 raise ValueError("unsupported cache target triple")
-            result = bound_payload(root, paths, os.environ["CACHE_PROFILE"], snapshots=snapshots, diagnostics=diagnostics,
-                                   target=target or None)
+            if os.environ.get("CI_RUST_CACHE_HIT") == "true":
+                result = {"save": False, "reason": "exact cache hit already stored",
+                          "snapshots": snapshots, "limit_bytes": None,
+                          "stage_seconds": [], "evicted_packages": []}
+            else:
+                result = bound_payload(root, paths, os.environ["CACHE_PROFILE"], snapshots=snapshots, diagnostics=diagnostics,
+                                       target=target or None)
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             # Cache failure cannot turn already-passed validation into a failure;
             # retain a fixed diagnostic without leaking Cargo output or paths.

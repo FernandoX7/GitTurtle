@@ -3938,6 +3938,41 @@ impl GitTurtle {
                     // options keep theirs.
                     let collapsed =
                         column - window.rem_size() * 1.5 < text_modes_width(&names, window);
+                    // Transfer focus cleanly when resizing hides the mode
+                    // button strip behind the collapsed menu or restores it,
+                    // so keyboard focus is never stranded on an unrendered control.
+                    if collapsed {
+                        if self
+                            .text_mode_focus
+                            .iter()
+                            .any(|handle| handle.is_focused(window))
+                        {
+                            let target = self.text_mode_menu_focus.clone();
+                            window.defer(cx, move |window, cx| {
+                                target.focus(window, cx);
+                            });
+                        }
+                    } else if self.text_mode_menu_focus.is_focused(window)
+                        || self
+                            .text_mode_focus
+                            .iter()
+                            .enumerate()
+                            .any(|(index, handle)| {
+                                handle.is_focused(window)
+                                    && !available.iter().any(|(mode, _)| mode.index() == index)
+                            })
+                    {
+                        let active = available
+                            .iter()
+                            .find(|(mode, _)| *mode == self.text_mode)
+                            .or_else(|| available.first())
+                            .map(|(mode, _)| self.text_mode_focus[mode.index()].clone());
+                        if let Some(target) = active {
+                            window.defer(cx, move |window, cx| {
+                                target.focus(window, cx);
+                            });
+                        }
+                    }
                     let mut modes = div()
                         .flex()
                         .flex_wrap()
@@ -3951,6 +3986,7 @@ impl GitTurtle {
                     for &(mode, name) in available.iter().filter(|_| !collapsed) {
                         modes = modes.child(
                             button(name, name, "", self.text_mode == mode)
+                                .track_focus(&self.text_mode_focus[mode.index()])
                                 .debug_selector(move || name.into())
                                 .toggled(self.text_mode == mode)
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -3977,7 +4013,8 @@ impl GitTurtle {
                         );
                         let menu = crate::in_frame::probed(
                             compact_control_label(
-                                button("text-mode-menu", label, "", false),
+                                button("text-mode-menu", label, "", false)
+                                    .track_focus(&self.text_mode_menu_focus),
                                 "text-mode-menu",
                                 format!("Comparison mode: {label}"),
                             ),
@@ -11301,6 +11338,7 @@ impl Render for GitTurtle {
             )
             .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.open_activity(window, cx);
                 }
             }))
@@ -11334,11 +11372,13 @@ impl Render for GitTurtle {
             // (`App::is_action_available`), which can offer an item built
             // refused.
             .on_action(cx.listener(|this, _: &BrowseStashes, window, cx| {
+                native_accessibility::dismiss_menus_for_overlay(window, cx);
                 let path = this.path.clone();
                 this.run_menu_command(command_palette::CommandId::Stashes, &path, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowHistory, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.show_history(window, cx);
                 }
             }))
@@ -11357,6 +11397,7 @@ impl Render for GitTurtle {
             )
             .on_action(cx.listener(|this, _: &ShortcutHelp, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.shortcut_help(window, cx);
                 }
             }))
@@ -11404,21 +11445,31 @@ impl Render for GitTurtle {
             .on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
             .on_action(cx.listener(|this, _: &ShowProjects, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.show_projects(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowAbout, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.about(window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.show_settings(window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ShowChanges, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.show_working(window, cx);
                 }
             }))
             .on_action(cx.listener(|this, action: &OpenRepository, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.choose_repository(action, window, cx);
                 }
             }))
