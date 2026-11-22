@@ -1,11 +1,13 @@
 //! Worker request execution, snapshot assembly, diff/text preparation, and media decoding.
-use super::cache::{PreviewCache, PreviewKey};
+use super::cache::{PreviewCache, PreviewKey, TrackedPathCache};
 #[cfg(test)]
 use super::session::quiet_checkpoint;
 use super::session::{
     GitDirectories, RepositorySession, confined_failure, ensure_found_at_path,
     no_repository_of_its_own, nothing_found_is_gone, worded_open_failure,
 };
+#[cfg(test)]
+use super::types::Lane;
 use super::types::{
     Content, HistoryReferences, ImageMetadata, ImageSide, Job, MissingScope, Output, QuietHistory,
     QuietPreview, QuietRefresh, Scope, SearchResult, Snapshot, VanishedScope, WorkingSelection,
@@ -16,20 +18,88 @@ use super::{Cancellation, PREVIEW_EDGE};
 use super::{GRAPH_EDGE_LIMIT, GRAPH_LANE_LIMIT};
 use crate::{graph, text::PatchPresentation};
 use anyhow::{Result, anyhow, ensure};
-use gitturtle_core::{Branch, Commit, FileChange, GitRepository, TextPreview, Worktree};
+use gitturtle_core::{
+    BoundedBlob, Branch, Commit, FileChange, GitRepository, TextPreview, Worktree,
+};
 use gitturtle_preview::{
     ImagePreview, MAX_INPUT_BYTES, detect_lfs_pointer, is_image_path, metadata,
 };
 use gpui_kit::RenderImage;
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
+#[cfg(test)]
 pub(super) fn execute(
     job: Job,
     cache: &mut PreviewCache,
+    cancellation: &Cancellation,
+    session: &mut RepositorySession,
+) -> Result<Output> {
+    match job.lane() {
+        Lane::Metadata => execute_metadata(job, cancellation, session),
+        Lane::Preview => execute_preview(job, cache, cancellation),
+    }
+}
+
+fn search_tracked_paths_cached(
+    repo: &GitRepository,
+    scope: &gitturtle_core::PathScope,
+    query: &str,
+    cache: Option<&Arc<Mutex<TrackedPathCache>>>,
+    cancellation: &Cancellation,
+) -> Result<gitturtle_core::TrackedPaths> {
+    let Some(cache) = cache else {
+        return repo.search_tracked_paths(scope, query, &cancellation.history);
+    };
+    match scope {
+        gitturtle_core::PathScope::Worktree => {
+            let fingerprint = repo.index_fingerprint()?;
+            cancellation.check()?;
+            if let Some(fp) = fingerprint.as_ref() {
+                let hit = cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_worktree(repo.path(), fp);
+                if let Some(index) = hit {
+                    return index.search(query, &cancellation.history);
+                }
+            }
+            let index = Arc::new(repo.load_tracked_paths(scope, &cancellation.history)?);
+            cancellation.check()?;
+            if let Some(fp) = fingerprint {
+                cache.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                    repo.path(),
+                    Some(fp),
+                    Arc::clone(&index),
+                );
+            }
+            index.search(query, &cancellation.history)
+        }
+        gitturtle_core::PathScope::Revision(spec) => {
+            let hit = cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_revision(repo.path(), spec);
+            if let Some(index) = hit {
+                return index.search(query, &cancellation.history);
+            }
+            let index = Arc::new(repo.load_tracked_paths(scope, &cancellation.history)?);
+            cancellation.check()?;
+            cache.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                repo.path(),
+                None,
+                Arc::clone(&index),
+            );
+            index.search(query, &cancellation.history)
+        }
+    }
+}
+
+pub(super) fn execute_metadata(
+    job: Job,
     cancellation: &Cancellation,
     session: &mut RepositorySession,
 ) -> Result<Output> {
@@ -38,6 +108,7 @@ pub(super) fn execute(
     match job {
         Job::ReleaseHistory => {
             session.history = None;
+            session.search = None;
             Ok(Output::HistoryReleased)
         }
         Job::HistoryPage {
@@ -48,36 +119,6 @@ pub(super) fn execute(
         } => session
             .history_page(&repo, &scope, offset, limit, cancellation)
             .map(Output::HistoryPage),
-        Job::ReviewText {
-            content,
-            options,
-            prepare_split,
-        } => {
-            let mut content =
-                crate::text_review::prepare(&content, options, || cancellation.check())?;
-            if prepare_split
-                && options == crate::text_review::Options::default()
-                && let Some(upgraded) = ensure_split_in_content(&content)
-            {
-                cancellation.check()?;
-                content = upgraded;
-            }
-            Ok(Output::ReviewText(content, start.elapsed()))
-        }
-        Job::PrepareSplit { content, cache_key } => {
-            let upgraded = if let Some(upgraded) = ensure_split_in_content(&content) {
-                cancellation.check()?;
-                if let Some(key) = cache_key
-                    && cache.entries.contains_key(&key)
-                {
-                    cache.insert(key, Arc::clone(&upgraded));
-                }
-                upgraded
-            } else {
-                content
-            };
-            Ok(Output::SplitPrepared(upgraded))
-        }
         Job::CompareRevisions {
             repo,
             before,
@@ -109,84 +150,18 @@ pub(super) fn execute(
                 Ok(Output::RevisionTargets(targets))
             })
         }
-        Job::TrackedPaths { repo, scope, query } => Ok(Output::TrackedPaths(
-            repo.search_tracked_paths(&scope, &query, &cancellation.history)?,
-        )),
-        Job::TrackedPreview { repo, entry, scope } => {
-            let mut file = repo.tracked_path_change(&entry);
-            if matches!(scope, gitturtle_core::PathScope::Revision(_)) {
-                let mode = file.new_mode.clone();
-                let preview = execute(
-                    Job::Preview {
-                        repo,
-                        file,
-                        origins: crate::markdown_view::Origins::revisions(
-                            None,
-                            match scope {
-                                gitturtle_core::PathScope::Revision(oid) => Some(oid),
-                                _ => None,
-                            },
-                        ),
-                        prepare_split: false,
-                    },
-                    cache,
-                    cancellation,
-                    session,
-                )?;
-                let Output::Preview(content, elapsed) = preview else {
-                    anyhow::bail!("A revision's tracked file was read as something else");
-                };
-                return Ok(Output::TrackedPreview {
-                    mode,
-                    content,
-                    elapsed,
-                });
-            }
-            let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
-            cancellation.check()?;
-            file.new_mode = mode;
-            let mut lfs = LfsSides::default();
-            let mut content = if let Some(content) =
-                supplied_nontext_content(&repo, &file, &[], &bytes, cancellation)?
-            {
-                content
-            } else if let Some(content) =
-                resolved_lfs_text_content(&repo, &file, &[], &bytes, &mut lfs, false, cancellation)?
-            {
-                content
-            } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
-                || bytes.iter().filter(|b| **b == b'\n').count() > gitturtle_core::MAX_DIFF_LINES
-            {
-                Content::Notice("File exceeds the 2 MiB / 100,000-line text preview limit. File history remains available.".into())
-            } else if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
-                Content::Notice(
-                    "Binary or non-UTF-8 working file. File history remains available.".into(),
-                )
-            } else {
-                let source = String::from_utf8(bytes)?;
-                // Quick Open is a source inspection, so no synthetic staged
-                // patch or selected-edit actions are manufactured.
-                prepared_text(String::new(), String::new(), source, false)
-            };
-            lfs.mark(&mut content);
-            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
-            attach_markdown_assets(
-                &mut content,
-                &repo,
-                &file,
-                &crate::markdown_view::Origins {
-                    old: None,
-                    new: Some(gitturtle_core::PreviewAssetScope::Worktree),
-                },
-                cancellation,
-            )?;
-            cancellation.check()?;
-            Ok(Output::TrackedPreview {
-                mode: file.new_mode,
-                content: Arc::new(content),
-                elapsed: start.elapsed(),
-            })
-        }
+        Job::TrackedPaths {
+            repo,
+            scope,
+            query,
+            cache,
+        } => Ok(Output::TrackedPaths(search_tracked_paths_cached(
+            &repo,
+            &scope,
+            &query,
+            cache.as_ref(),
+            cancellation,
+        )?)),
         Job::SearchHistory {
             repo,
             scope,
@@ -213,7 +188,7 @@ pub(super) fn execute(
                 }
             };
             let page =
-                repo.search_history(&pinned, &query, offset, limit, &cancellation.history)?;
+                session.search_history_page(&repo, &pinned, &query, offset, limit, cancellation)?;
             cancellation.check()?;
             let retained_bytes = page
                 .commits
@@ -365,21 +340,14 @@ pub(super) fn execute(
                     let Some(mut area) = area else {
                         return Ok(QuietPreview::Absent);
                     };
-                    let Output::WorkingPreview(mut file, mut content, _) = execute(
-                        Job::WorkingPreview {
-                            repo: repo.clone(),
-                            entry: entry.clone(),
-                            area,
-                            head: working.status.head.clone(),
-                            prepare_split,
-                        },
-                        cache,
+                    let (mut file, mut content) = prepare_working_preview(
+                        &repo,
+                        &entry,
+                        area,
+                        working.status.head.as_deref(),
+                        prepare_split,
                         cancellation,
-                        session,
-                    )?
-                    else {
-                        unreachable!()
-                    };
+                    )?;
                     // If an external `git add` raced between WorkingState::read
                     // and worktree_preview for an Unstaged view, the index OID
                     // changed underneath us and old/new would mix pre-add index
@@ -411,21 +379,14 @@ pub(super) fn execute(
                         ) else {
                             return Ok(QuietPreview::Absent);
                         };
-                        let Output::WorkingPreview(re_file, re_content, _) = execute(
-                            Job::WorkingPreview {
-                                repo: repo.clone(),
-                                entry: fresh_entry,
-                                area: fresh_area,
-                                head: working.status.head.clone(),
-                                prepare_split,
-                            },
-                            cache,
+                        let (re_file, re_content) = prepare_working_preview(
+                            &repo,
+                            &fresh_entry,
+                            fresh_area,
+                            working.status.head.as_deref(),
+                            prepare_split,
                             cancellation,
-                            session,
-                        )?
-                        else {
-                            unreachable!()
-                        };
+                        )?;
                         area = fresh_area;
                         file = re_file;
                         content = re_content;
@@ -465,109 +426,6 @@ pub(super) fn execute(
                 preview,
             })))
         }
-        Job::WorkingPreview {
-            repo,
-            entry,
-            area,
-            head,
-            prepare_split,
-        } => {
-            if entry.conflicted {
-                let presentation =
-                    crate::conflicts::Presentation::prepare(repo.conflict_preview(&entry.path)?);
-                cancellation.check()?;
-                return Ok(Output::WorkingPreview(
-                    presentation.file(),
-                    Arc::new(Content::Conflict(Arc::new(presentation))),
-                    start.elapsed(),
-                ));
-            }
-            let preview = repo.worktree_preview(&entry, area)?;
-            cancellation.check()?;
-            let file = preview.file;
-            let mut partial_diff = preview.partial;
-            let mut unavailable = preview.partial_unavailable;
-            let mut lfs = LfsSides::default();
-            let mut content = if let Some(content) =
-                supplied_nontext_content(&repo, &file, &preview.old, &preview.new, cancellation)?
-            {
-                content
-            } else if let Some(content) = resolved_lfs_text_content(
-                &repo,
-                &file,
-                &preview.old,
-                &preview.new,
-                &mut lfs,
-                prepare_split,
-                cancellation,
-            )? {
-                partial_diff = None;
-                unavailable = Some("This view shows verified LFS object content. Partial staging is unavailable because Git stages the underlying pointer; use whole-file staging.".into());
-                content
-            } else {
-                match preview.preview {
-                    TextPreview::Patch(patch) => prepared_text(
-                        patch,
-                        String::from_utf8(preview.old)?,
-                        String::from_utf8(preview.new)?,
-                        prepare_split,
-                    ),
-                    TextPreview::Binary => {
-                        Content::Notice("Binary file · no text comparison is available.".into())
-                    }
-                    TextPreview::TooLarge {
-                        old_bytes,
-                        new_bytes,
-                    } => Content::Notice(format!(
-                        "Text preview exceeds the display budget · before {} · after {}.",
-                        crate::counted(old_bytes, "byte", "bytes"),
-                        crate::counted(new_bytes, "byte", "bytes")
-                    )),
-                    TextPreview::Submodule { old_oid, new_oid } => Content::Notice(format!(
-                        "Submodule · {} → {}",
-                        old_oid.as_deref().unwrap_or("absent"),
-                        new_oid.as_deref().unwrap_or("absent")
-                    )),
-                }
-            };
-            lfs.mark(&mut content);
-            cancellation.check()?;
-            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
-            let origins = match area {
-                gitturtle_core::ChangeArea::Staged => crate::markdown_view::Origins {
-                    old: head.map(gitturtle_core::PreviewAssetScope::Revision),
-                    new: Some(gitturtle_core::PreviewAssetScope::Index),
-                },
-                gitturtle_core::ChangeArea::Unstaged => crate::markdown_view::Origins {
-                    old: Some(gitturtle_core::PreviewAssetScope::Index),
-                    new: Some(gitturtle_core::PreviewAssetScope::Worktree),
-                },
-            };
-            attach_markdown_assets(&mut content, &repo, &file, &origins, cancellation)?;
-            if let Content::Text {
-                patch,
-                presentation,
-                partial,
-                partial_unavailable,
-                ..
-            } = &mut content
-            {
-                if let Some(diff) = partial_diff {
-                    match crate::partial_view::prepare(patch, presentation, Arc::new(diff)) {
-                        Ok(actions) => *partial = Some(Arc::new(actions)),
-                        Err(error) => unavailable = Some(error.to_string()),
-                    }
-                }
-                *partial_unavailable = unavailable;
-            }
-            cancellation.check()?;
-            // Mutable worktree/index comparisons are deliberately not cached.
-            Ok(Output::WorkingPreview(
-                file,
-                Arc::new(content),
-                start.elapsed(),
-            ))
-        }
         Job::Open {
             path,
             scope,
@@ -606,53 +464,310 @@ pub(super) fn execute(
             cancellation.check()?;
             Ok(Output::Changes(changes, start.elapsed()))
         }
+        Job::Preview { .. }
+        | Job::WorkingPreview { .. }
+        | Job::TrackedPreview { .. }
+        | Job::ReviewText { .. }
+        | Job::PrepareSplit { .. } => {
+            anyhow::bail!("Preview job routed to metadata lane")
+        }
+    }
+}
+
+pub(super) fn execute_preview(
+    job: Job,
+    cache: &mut PreviewCache,
+    cancellation: &Cancellation,
+) -> Result<Output> {
+    let start = Instant::now();
+    cancellation.check()?;
+    match job {
+        Job::ReviewText {
+            content,
+            options,
+            prepare_split,
+        } => {
+            let mut content =
+                crate::text_review::prepare(&content, options, || cancellation.check())?;
+            if prepare_split
+                && options == crate::text_review::Options::default()
+                && let Some(upgraded) = ensure_split_in_content(&content)
+            {
+                cancellation.check()?;
+                content = upgraded;
+            }
+            Ok(Output::ReviewText(content, start.elapsed()))
+        }
+        Job::PrepareSplit { content, cache_key } => {
+            let upgraded = if let Some(upgraded) = ensure_split_in_content(&content) {
+                cancellation.check()?;
+                if let Some(key) = cache_key
+                    && cache.entries.contains_key(&key)
+                {
+                    cache.insert(key, Arc::clone(&upgraded));
+                }
+                upgraded
+            } else {
+                content
+            };
+            Ok(Output::SplitPrepared(upgraded))
+        }
+        Job::TrackedPreview { repo, entry, scope } => {
+            let mut file = repo.tracked_path_change(&entry);
+            if matches!(scope, gitturtle_core::PathScope::Revision(_)) {
+                let mode = file.new_mode.clone();
+                let origins = crate::markdown_view::Origins::revisions(
+                    None,
+                    match scope {
+                        gitturtle_core::PathScope::Revision(oid) => Some(oid),
+                        _ => None,
+                    },
+                );
+                let content = prepare_preview(&repo, &file, &origins, false, cache, cancellation)?;
+                return Ok(Output::TrackedPreview {
+                    mode,
+                    content,
+                    elapsed: start.elapsed(),
+                });
+            }
+            let (mode, bytes) = repo.read_tracked_working_file(&entry)?;
+            cancellation.check()?;
+            file.new_mode = mode;
+            let mut lfs = LfsSides::default();
+            let mut content = if let Some(content) =
+                supplied_nontext_content(&repo, &file, &[], &bytes, cancellation)?
+            {
+                content
+            } else if let Some(content) =
+                resolved_lfs_text_content(&repo, &file, &[], &bytes, &mut lfs, false, cancellation)?
+            {
+                content
+            } else if bytes.len() > gitturtle_core::MAX_DIFF_BYTES
+                || bytes.iter().filter(|b| **b == b'\n').count() > gitturtle_core::MAX_DIFF_LINES
+            {
+                Content::Notice("File exceeds the 2 MiB / 100,000-line text preview limit. File history remains available.".into())
+            } else if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+                Content::Notice(
+                    "Binary or non-UTF-8 working file. File history remains available.".into(),
+                )
+            } else {
+                let source = String::from_utf8(bytes)?;
+                // Quick Open is a source inspection, so no synthetic staged
+                // patch or selected-edit actions are manufactured.
+                prepared_text(String::new(), String::new(), source, false)
+            };
+            lfs.mark(&mut content);
+            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
+            attach_markdown_assets(
+                &mut content,
+                &repo,
+                &file,
+                &crate::markdown_view::Origins {
+                    old: None,
+                    new: Some(gitturtle_core::PreviewAssetScope::Worktree),
+                },
+                cancellation,
+            )?;
+            cancellation.check()?;
+            Ok(Output::TrackedPreview {
+                mode: file.new_mode,
+                content: Arc::new(content),
+                elapsed: start.elapsed(),
+            })
+        }
+        Job::WorkingPreview {
+            repo,
+            entry,
+            area,
+            head,
+            prepare_split,
+        } => {
+            let (file, content) = prepare_working_preview(
+                &repo,
+                &entry,
+                area,
+                head.as_deref(),
+                prepare_split,
+                cancellation,
+            )?;
+            Ok(Output::WorkingPreview(file, content, start.elapsed()))
+        }
         Job::Preview {
             repo,
             file,
             origins,
             prepare_split,
         } => {
-            let key = PreviewKey::with_origins(repo.path(), &file, origins.clone());
-            if let Some(content) = cache.get(&key) {
-                if prepare_split
-                    && matches!(content.as_ref(), Content::Text { split: None, .. })
-                    && let Some(upgraded) = ensure_split_in_content(&content)
-                {
-                    cancellation.check()?;
-                    cache.insert(key, Arc::clone(&upgraded));
-                    return Ok(Output::Preview(upgraded, start.elapsed()));
-                }
-                return Ok(Output::Preview(content, start.elapsed()));
-            }
-            let mut lfs = LfsSides::default();
-            let mut content = text_content(&repo, &file, &mut lfs, prepare_split, cancellation)?;
-            attach_markdown_assets(&mut content, &repo, &file, &origins, cancellation)?;
-            let cacheable = !lfs.store_can_change()
-                && match &content {
-                    Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
-                    Content::Rich(preview) => {
-                        preview.old.error.is_none() && preview.new.error.is_none()
-                    }
-                    Content::Text {
-                        old, new, markdown, ..
-                    } => {
-                        markdown
-                            .as_ref()
-                            .is_none_or(|markdown| markdown.cacheable())
-                            && ![old, new]
-                                .iter()
-                                .any(|source| detect_lfs_pointer(source.as_bytes()).is_some())
-                    }
-                    _ => true,
-                };
-            cancellation.check()?;
-            let content = Arc::new(content);
-            if cacheable {
-                cache.insert(key, Arc::clone(&content));
-            }
+            let content =
+                prepare_preview(&repo, &file, &origins, prepare_split, cache, cancellation)?;
             Ok(Output::Preview(content, start.elapsed()))
         }
+        _ => anyhow::bail!("Metadata job routed to preview lane"),
     }
+}
+
+fn prepare_working_preview(
+    repo: &GitRepository,
+    entry: &gitturtle_core::StatusEntry,
+    area: gitturtle_core::ChangeArea,
+    head: Option<&str>,
+    prepare_split: bool,
+    cancellation: &Cancellation,
+) -> Result<(FileChange, Arc<Content>)> {
+    if entry.conflicted {
+        let presentation =
+            crate::conflicts::Presentation::prepare(repo.conflict_preview(&entry.path)?);
+        cancellation.check()?;
+        return Ok((
+            presentation.file(),
+            Arc::new(Content::Conflict(Arc::new(presentation))),
+        ));
+    }
+    if entry.is_untracked_directory() {
+        let file = FileChange {
+            old_path: None,
+            new_path: Some(entry.path.clone()),
+            old_oid: None,
+            new_oid: None,
+            status: gitturtle_core::ChangeStatus::Added,
+            old_mode: "000000".into(),
+            new_mode: "040000".into(),
+        };
+        return Ok((
+            file,
+            Arc::new(Content::Notice(
+                "Untracked folder or nested repository. Add an ignore rule from its menu or inspect it outside GitTurtle.".into(),
+            )),
+        ));
+    }
+    let preview = repo.worktree_preview(entry, area)?;
+    cancellation.check()?;
+    let file = preview.file;
+    let mut partial_diff = preview.partial;
+    let mut unavailable = preview.partial_unavailable;
+    let mut lfs = LfsSides::default();
+    let mut content = if let Some(content) =
+        supplied_nontext_content(repo, &file, &preview.old, &preview.new, cancellation)?
+    {
+        content
+    } else if let Some(content) = resolved_lfs_text_content(
+        repo,
+        &file,
+        &preview.old,
+        &preview.new,
+        &mut lfs,
+        prepare_split,
+        cancellation,
+    )? {
+        partial_diff = None;
+        unavailable = Some("This view shows verified LFS object content. Partial staging is unavailable because Git stages the underlying pointer; use whole-file staging.".into());
+        content
+    } else {
+        match preview.preview {
+            TextPreview::Patch(patch) => prepared_text(
+                patch,
+                String::from_utf8(preview.old)?,
+                String::from_utf8(preview.new)?,
+                prepare_split,
+            ),
+            TextPreview::Binary => {
+                Content::Notice("Binary file · no text comparison is available.".into())
+            }
+            TextPreview::TooLarge {
+                old_bytes,
+                new_bytes,
+            } => Content::Notice(format!(
+                "Text preview exceeds the display budget · before {} · after {}.",
+                crate::counted(old_bytes, "byte", "bytes"),
+                crate::counted(new_bytes, "byte", "bytes")
+            )),
+            TextPreview::Submodule { old_oid, new_oid } => Content::Notice(format!(
+                "Submodule · {} → {}",
+                old_oid.as_deref().unwrap_or("absent"),
+                new_oid.as_deref().unwrap_or("absent")
+            )),
+        }
+    };
+    lfs.mark(&mut content);
+    cancellation.check()?;
+    attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
+    let origins = match area {
+        gitturtle_core::ChangeArea::Staged => crate::markdown_view::Origins {
+            old: head.map(|oid| gitturtle_core::PreviewAssetScope::Revision(oid.to_owned())),
+            new: Some(gitturtle_core::PreviewAssetScope::Index),
+        },
+        gitturtle_core::ChangeArea::Unstaged => crate::markdown_view::Origins {
+            old: Some(gitturtle_core::PreviewAssetScope::Index),
+            new: Some(gitturtle_core::PreviewAssetScope::Worktree),
+        },
+    };
+    attach_markdown_assets(&mut content, repo, &file, &origins, cancellation)?;
+    if let Content::Text {
+        patch,
+        presentation,
+        partial,
+        partial_unavailable,
+        ..
+    } = &mut content
+    {
+        if let Some(diff) = partial_diff {
+            match crate::partial_view::prepare(patch, presentation, Arc::new(diff)) {
+                Ok(actions) => *partial = Some(Arc::new(actions)),
+                Err(error) => unavailable = Some(error.to_string()),
+            }
+        }
+        *partial_unavailable = unavailable;
+    }
+    cancellation.check()?;
+    // Mutable worktree/index comparisons are deliberately not cached.
+    Ok((file, Arc::new(content)))
+}
+
+fn prepare_preview(
+    repo: &GitRepository,
+    file: &FileChange,
+    origins: &crate::markdown_view::Origins,
+    prepare_split: bool,
+    cache: &mut PreviewCache,
+    cancellation: &Cancellation,
+) -> Result<Arc<Content>> {
+    let key = PreviewKey::with_origins(repo.path(), file, origins.clone());
+    if let Some(content) = cache.get(&key) {
+        if prepare_split
+            && matches!(content.as_ref(), Content::Text { split: None, .. })
+            && let Some(upgraded) = ensure_split_in_content(&content)
+        {
+            cancellation.check()?;
+            cache.insert(key, Arc::clone(&upgraded));
+            return Ok(upgraded);
+        }
+        return Ok(content);
+    }
+    let mut lfs = LfsSides::default();
+    let mut content = text_content(repo, file, &mut lfs, prepare_split, cancellation)?;
+    attach_markdown_assets(&mut content, repo, file, origins, cancellation)?;
+    let cacheable = !lfs.store_can_change()
+        && match &content {
+            Content::Images { old, new } => old.message.is_none() && new.message.is_none(),
+            Content::Rich(preview) => preview.old.error.is_none() && preview.new.error.is_none(),
+            Content::Text {
+                old, new, markdown, ..
+            } => {
+                markdown
+                    .as_ref()
+                    .is_none_or(|markdown| markdown.cacheable())
+                    && ![old, new]
+                        .iter()
+                        .any(|source| detect_lfs_pointer(source.as_bytes()).is_some())
+            }
+            _ => true,
+        };
+    cancellation.check()?;
+    let content = Arc::new(content);
+    if cacheable {
+        cache.insert(key, Arc::clone(&content));
+    }
+    Ok(content)
 }
 
 fn commit_metadata_bytes(commit: &Commit) -> usize {
@@ -675,9 +790,23 @@ pub(super) fn read_snapshot(
     cancellation.check()?;
     let repository = session.open(&path, root, git_dir)?;
     cancellation.check()?;
-    let branches = repository.branches()?;
-    cancellation.check()?;
-    let worktrees = repository.worktrees()?;
+    // Overlap passive `worktrees()` with `branches()` on one bounded scoped
+    // thread (same fallback-to-sequential discipline as `tags()` below).
+    let (branches, worktrees) = std::thread::scope(|threads| -> Result<_> {
+        let beside = std::thread::Builder::new()
+            .name("gitturtle-worktrees".into())
+            .spawn_scoped(threads, || repository.worktrees())
+            .ok();
+        let branches = repository.branches()?;
+        cancellation.check()?;
+        let worktrees = match beside {
+            Some(read) => read
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?,
+            None => repository.worktrees()?,
+        };
+        Ok((branches, worktrees))
+    })?;
     cancellation.check()?;
     let (oid, vanished_scope) = match scope_oid(scope, &branches, &worktrees) {
         Ok(oid) => (oid, None),
@@ -1030,27 +1159,32 @@ fn captured_rich_side(
 fn nontext_history_content(
     repo: &GitRepository,
     file: &FileChange,
+    known_sizes: [Option<usize>; 2],
     cancellation: &Cancellation,
 ) -> Result<Option<Content>> {
     if !regular_preview(file) {
         return Ok(None);
     }
-    let read = |oid: Option<&str>| -> Result<Vec<u8>> {
-        cancellation.check()?;
-        let Some(oid) = oid else {
-            return Ok(Vec::new());
-        };
-        let size = repo.blob_size(oid)?;
-        ensure!(
-            size <= MAX_INPUT_BYTES,
-            "File has {size} bytes, exceeding the 32 MiB captured preview limit"
-        );
-        cancellation.check()?;
-        repo.blob(oid)
-    };
-    let old = read(file.old_oid.as_deref());
     cancellation.check()?;
-    let new = read(file.new_oid.as_deref());
+    let [old_raw, new_raw] = repo.blobs_bounded_independent(
+        [
+            file.old_oid.as_deref().map(|oid| (oid, known_sizes[0])),
+            file.new_oid.as_deref().map(|oid| (oid, known_sizes[1])),
+        ],
+        MAX_INPUT_BYTES,
+    );
+    let unpack = |side: Option<Result<BoundedBlob>>| -> Result<Vec<u8>> {
+        match side {
+            None => Ok(Vec::new()),
+            Some(Ok(BoundedBlob::Bytes(bytes))) => Ok(bytes),
+            Some(Ok(BoundedBlob::TooLarge(size))) => Err(anyhow!(
+                "File has {size} bytes, exceeding the 32 MiB captured preview limit"
+            )),
+            Some(Err(err)) => Err(err),
+        }
+    };
+    let old = unpack(old_raw);
+    let new = unpack(new_raw);
     cancellation.check()?;
     if let (Ok(old), Ok(new)) = (&old, &new) {
         return supplied_nontext_content(repo, file, old, new, cancellation);
@@ -1391,15 +1525,24 @@ fn text_content(
     let sources = match repo.text_preview_with_sources(file) {
         Ok(sources) => sources,
         Err(error) => {
-            if let Some(content) = nontext_history_content(repo, file, cancellation)? {
+            if let Some(content) = nontext_history_content(repo, file, [None, None], cancellation)?
+            {
                 return Ok(content);
             }
             return Err(error);
         }
     };
     cancellation.check()?;
-    if matches!(sources.preview, TextPreview::TooLarge { .. }) {
-        if let Some(content) = nontext_history_content(repo, file, cancellation)? {
+    if let TextPreview::TooLarge {
+        old_bytes,
+        new_bytes,
+    } = sources.preview
+    {
+        let known_sizes = [
+            file.old_oid.as_ref().map(|_| old_bytes),
+            file.new_oid.as_ref().map(|_| new_bytes),
+        ];
+        if let Some(content) = nontext_history_content(repo, file, known_sizes, cancellation)? {
             return Ok(content);
         }
         // `TextPreview::TooLarge` returns empty `sources.old`/`sources.new`,
@@ -1411,8 +1554,7 @@ fn text_content(
             .enumerate()
         {
             if let Some(oid) = oid
-                && repo.blob_size(oid).is_ok_and(|size| size <= 1024)
-                && let Ok(bytes) = repo.blob(oid)
+                && let Ok(BoundedBlob::Bytes(bytes)) = repo.blob_bounded(oid, 1024, None)
                 && let Some(pointer) = detect_lfs_pointer(&bytes)
             {
                 lfs.pointers[index] = true;

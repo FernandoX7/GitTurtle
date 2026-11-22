@@ -279,6 +279,11 @@ impl GitRepository {
                 || unchecked_index
             {
                 None
+            } else if status.untracked_directories_collapsed {
+                Some(
+                    "Removal is unavailable because this worktree contains large collapsed untracked folders whose individual files were not expanded for review. Move or remove them outside GitTurtle, or remove the worktree with Git, then refresh."
+                        .into(),
+                )
             } else {
                 match removal_snapshot::snapshot(&tree.path, &status.entries, &ignored, &mut digest)
                 {

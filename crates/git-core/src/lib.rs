@@ -9,6 +9,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 mod blame;
+mod case_fold;
 mod conflict_blocks;
 mod error;
 mod history;
@@ -47,7 +48,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Condvar, Mutex, PoisonError, mpsc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -269,7 +270,7 @@ pub struct GitRepository {
     path: PathBuf,
     bare: bool,
     identity: Arc<Identity>,
-    batch: Arc<Mutex<Option<BatchReader>>>,
+    batch: Arc<BatchPool>,
 }
 
 /// What an opened repository is, captured once at open: the Git directory
@@ -1239,7 +1240,7 @@ impl GitRepository {
             path: reported.root.clone(),
             bare: reported.bare,
             identity,
-            batch: Arc::new(Mutex::new(None)),
+            batch: Arc::new(BatchPool::default()),
         };
         // Stamp, then ask, as `verify_at_path` orders it: the files that can
         // move the work tree or the common directory were stamped after Git
@@ -1863,47 +1864,184 @@ impl GitRepository {
         parse_changes(&run_git(self.target(), &args)?)
     }
 
+    /// Whether the repository's common object store has a Git commit-graph
+    /// file (`objects/info/commit-graph` or `objects/info/commit-graphs/commit-graph-chain`).
+    /// Zero subprocess spawns; checks the common directory so linked worktrees
+    /// share the main repository's commit-graph.
+    pub fn has_commit_graph(&self) -> bool {
+        let info = self.common_dir().join("objects").join("info");
+        std::fs::symlink_metadata(info.join("commit-graph")).is_ok()
+            || std::fs::symlink_metadata(info.join("commit-graphs").join("commit-graph-chain"))
+                .is_ok()
+    }
+
     pub fn blob(&self, oid: &str) -> Result<Vec<u8>> {
         self.read_object(oid, "blob")
     }
 
+    /// Reads `oid` as a blob if its encoded size is at most `max_bytes`,
+    /// returning `BoundedBlob::TooLarge(size)` without inflating the body when
+    /// it exceeds the bound. Keeps the pooled reader warm on clean size refusals.
+    pub fn blob_bounded(
+        &self,
+        oid: &str,
+        max_bytes: usize,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> Result<BoundedBlob> {
+        validate_oid(oid)?;
+        if let Some(cancel) = cancellation {
+            cancel.check()?;
+        }
+        let mut lease = self.batch.checkout(self.target(), cancellation)?;
+        let (result, clean) = lease.reader().read_object_bounded(
+            oid,
+            "blob",
+            max_bytes.min(MAX_BLOB_BYTES),
+            cancellation,
+        );
+        if clean {
+            lease.mark_clean();
+        }
+        result
+    }
+
+    /// Pipelines independent bounded blob reads for up to two sides (`[old, new]`)
+    /// over a single pooled `cat-file --batch-command --buffer` lease.
+    ///
+    /// A missing, wrong-type, or over-limit side fails independently without
+    /// blocking the other side. Passing `Some(known_size)` skips the `info`
+    /// round-trip for that side.
+    pub fn blobs_bounded_independent(
+        &self,
+        sides: [Option<(&str, Option<usize>)>; 2],
+        max_bytes: usize,
+    ) -> [Option<Result<BoundedBlob>>; 2] {
+        let limit = max_bytes.min(MAX_BLOB_BYTES);
+        let mut out: [Option<Result<BoundedBlob>>; 2] = [None, None];
+        let mut requests: [Option<(String, Option<usize>)>; 2] = [None, None];
+        let mut retry_oids: [Option<&str>; 2] = [None, None];
+        for (idx, side) in sides.into_iter().enumerate() {
+            let Some((oid, known_size)) = side else {
+                continue;
+            };
+            if let Err(err) = validate_oid(oid) {
+                out[idx] = Some(Err(err));
+                continue;
+            }
+            if let Some(size) = known_size
+                && size > limit
+            {
+                out[idx] = Some(Ok(BoundedBlob::TooLarge(size)));
+                continue;
+            }
+            requests[idx] = Some((oid.to_owned(), known_size));
+            retry_oids[idx] = Some(oid);
+        }
+        let requested = [requests[0].is_some(), requests[1].is_some()];
+        if !requested[0] && !requested[1] {
+            return out;
+        }
+        let mut lease = match self.batch.checkout(self.target(), None) {
+            Ok(lease) => lease,
+            Err(err) => {
+                let message = format!("{err:#}");
+                for idx in 0..2 {
+                    if requested[idx] {
+                        out[idx] = Some(Err(anyhow::anyhow!("{message}")));
+                    }
+                }
+                return out;
+            }
+        };
+        let (results, clean) = lease.reader().read_blobs_independent(requests, limit);
+        if clean {
+            lease.mark_clean();
+        }
+        drop(lease);
+        let [r0, r1] = results;
+        if requested[0]
+            && let Some(r0) = r0
+        {
+            out[0] = Some(r0);
+        }
+        if requested[1]
+            && let Some(r1) = r1
+        {
+            out[1] = Some(r1);
+        }
+        // If one side broke the wire (for example, an older Git exiting on a
+        // missing promisor object) before the other side received its own
+        // independent answer, retry any unanswered side on a fresh lease.
+        for idx in 0..2 {
+            if requested[idx]
+                && out[idx].is_none()
+                && let Some(oid) = retry_oids[idx]
+            {
+                out[idx] = Some(self.blob_bounded(oid, limit, None));
+            }
+        }
+        out
+    }
+
     fn read_object(&self, oid: &str, kind: &str) -> Result<Vec<u8>> {
         validate_oid(oid)?;
-        let mut guard = self
-            .batch
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Object reader lock was poisoned"))?;
-        if guard.is_none() {
-            *guard = Some(BatchReader::spawn(self.target())?);
+        let mut lease = self.batch.checkout(self.target(), None)?;
+        let (result, clean) = lease.reader().read_object_checked(oid, kind, None);
+        if clean {
+            lease.mark_clean();
         }
-        let result = guard
-            .as_mut()
-            .expect("initialized above")
-            .read_object(oid, kind);
-        // A failed/oversized read might leave unread protocol bytes. Discard the
-        // process so the next request always starts at a known frame boundary.
-        if result.is_err() {
-            *guard = None;
+        result
+    }
+
+    pub(crate) fn object_header(
+        &self,
+        oid: &str,
+        kind: &str,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> Result<usize> {
+        validate_oid(oid)?;
+        if let Some(cancel) = cancellation {
+            cancel.check()?;
+        }
+        let mut lease = self.batch.checkout(self.target(), cancellation)?;
+        let (result, clean) = lease
+            .reader()
+            .request_header_checked(oid, kind, cancellation);
+        if clean {
+            lease.mark_clean();
         }
         result
     }
 
     /// Read the encoded object size without inflating or transferring its body.
     pub fn blob_size(&self, oid: &str) -> Result<usize> {
-        validate_oid(oid)?;
-        let mut guard = self
-            .batch
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Object reader lock was poisoned"))?;
-        if guard.is_none() {
-            *guard = Some(BatchReader::spawn(self.target())?);
+        self.object_header(oid, "blob", None)
+    }
+
+    /// Pipelines `contents` for up to two blob sides in one flush (used by
+    /// Staged `worktree_preview` when both sides are repository blobs).
+    pub(crate) fn read_blob_pair(
+        &self,
+        old: Option<&str>,
+        new: Option<&str>,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        if let Some(oid) = old {
+            validate_oid(oid)?;
         }
-        let result = guard
-            .as_mut()
-            .expect("initialized above")
-            .request_header("info", oid, "blob");
-        if result.is_err() {
-            *guard = None;
+        if let Some(oid) = new {
+            validate_oid(oid)?;
+        }
+        if old.is_none() && new.is_none() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let mut lease = self.batch.checkout(self.target(), None)?;
+        let (result, clean) = lease.reader().read_blob_pair(
+            old.map(str::to_owned),
+            new.map(str::to_owned),
+            MAX_BLOB_BYTES,
+        );
+        if clean {
+            lease.mark_clean();
         }
         result
     }
@@ -1926,40 +2064,84 @@ impl GitRepository {
                 new: Vec::new(),
             });
         }
-        let old_bytes = file
-            .old_oid
-            .as_deref()
-            .map(|oid| self.preview_side_size(oid, &file.old_mode))
-            .transpose()?
-            .unwrap_or_default();
-        let new_bytes = file
-            .new_oid
-            .as_deref()
-            .map(|oid| self.preview_side_size(oid, &file.new_mode))
-            .transpose()?
-            .unwrap_or_default();
-        if old_bytes > MAX_DIFF_BYTES || new_bytes > MAX_DIFF_BYTES {
-            return Ok(TextPreviewWithSources {
-                preview: TextPreview::TooLarge {
+        let old_is_blob = file.old_oid.is_some() && file.old_mode != "160000";
+        let new_is_blob = file.new_oid.is_some() && file.new_mode != "160000";
+        let (old, new) = if old_is_blob || new_is_blob {
+            let old_sub_bytes = if !old_is_blob {
+                file.old_oid
+                    .as_deref()
+                    .map(|oid| format!("Subproject commit {oid}\n").into_bytes())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let new_sub_bytes = if !new_is_blob {
+                file.new_oid
+                    .as_deref()
+                    .map(|oid| format!("Subproject commit {oid}\n").into_bytes())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let old_blob_oid = old_is_blob.then_some(file.old_oid.as_deref()).flatten();
+            let new_blob_oid = new_is_blob.then_some(file.new_oid.as_deref()).flatten();
+            if let Some(oid) = old_blob_oid {
+                validate_oid(oid)?;
+            }
+            if let Some(oid) = new_blob_oid {
+                validate_oid(oid)?;
+            }
+            let mut lease = self.batch.checkout(self.target(), None)?;
+            let (pair, clean) = lease.reader().read_diff_pair(
+                old_blob_oid.map(str::to_owned),
+                new_blob_oid.map(str::to_owned),
+                MAX_DIFF_BYTES,
+            );
+            if clean {
+                lease.mark_clean();
+            }
+            match pair? {
+                DiffPair::TooLarge {
                     old_bytes,
                     new_bytes,
-                },
-                old: Vec::new(),
-                new: Vec::new(),
-            });
-        }
-        let old = file
-            .old_oid
-            .as_deref()
-            .map(|oid| self.preview_side_bytes(oid, &file.old_mode))
-            .transpose()?
-            .unwrap_or_default();
-        let new = file
-            .new_oid
-            .as_deref()
-            .map(|oid| self.preview_side_bytes(oid, &file.new_mode))
-            .transpose()?
-            .unwrap_or_default();
+                } => {
+                    return Ok(TextPreviewWithSources {
+                        preview: TextPreview::TooLarge {
+                            old_bytes: if old_is_blob {
+                                old_bytes
+                            } else {
+                                old_sub_bytes.len()
+                            },
+                            new_bytes: if new_is_blob {
+                                new_bytes
+                            } else {
+                                new_sub_bytes.len()
+                            },
+                        },
+                        old: Vec::new(),
+                        new: Vec::new(),
+                    });
+                }
+                DiffPair::Bodies { old, new } => (
+                    if old_is_blob { old } else { old_sub_bytes },
+                    if new_is_blob { new } else { new_sub_bytes },
+                ),
+            }
+        } else {
+            let old = file
+                .old_oid
+                .as_deref()
+                .map(|oid| self.preview_side_bytes(oid, &file.old_mode))
+                .transpose()?
+                .unwrap_or_default();
+            let new = file
+                .new_oid
+                .as_deref()
+                .map(|oid| self.preview_side_bytes(oid, &file.new_mode))
+                .transpose()?
+                .unwrap_or_default();
+            (old, new)
+        };
         if old.contains(&0) || new.contains(&0) {
             return Ok(TextPreviewWithSources {
                 preview: TextPreview::Binary,
@@ -2026,14 +2208,6 @@ impl GitRepository {
             old,
             new,
         })
-    }
-
-    fn preview_side_size(&self, oid: &str, mode: &str) -> Result<usize> {
-        if mode == "160000" {
-            Ok(format!("Subproject commit {oid}\n").len())
-        } else {
-            self.blob_size(oid)
-        }
     }
 
     fn preview_side_bytes(&self, oid: &str, mode: &str) -> Result<Vec<u8>> {
@@ -2499,6 +2673,228 @@ fn bounded_output_with(mut command: Command, timeout: Duration, seam: WaitSeam) 
     })
 }
 
+/// Result of a bounded blob read (`info` + optional `contents`) on the shared
+/// object-reader pool.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BoundedBlob {
+    Bytes(Vec<u8>),
+    TooLarge(usize),
+}
+
+enum DiffPair {
+    TooLarge { old_bytes: usize, new_bytes: usize },
+    Bodies { old: Vec<u8>, new: Vec<u8> },
+}
+
+/// Bounded pool of persistent `git cat-file --batch-command --buffer` readers.
+/// Lazy: uncontended callers spawn at most 1 reader; concurrent metadata +
+/// preview lanes spawn at most `BATCH_POOL_LIMIT` (2) readers without mutex
+/// contention. Poisoned readers are killed and reaped outside the pool lock.
+const BATCH_POOL_LIMIT: usize = 2;
+
+#[derive(Default)]
+struct BatchPool {
+    state: Mutex<BatchPoolState>,
+    available: Condvar,
+}
+
+#[derive(Default)]
+struct BatchPoolState {
+    idle: Vec<BatchReader>,
+    in_use: usize,
+}
+
+struct BatchLease<'a> {
+    pool: &'a BatchPool,
+    reader: Option<BatchReader>,
+    /// Defaults to `false` (poisoned) so unwinding/panicking while holding a
+    /// lease can never return a half-consumed reader to the pool.
+    clean: bool,
+}
+
+impl BatchLease<'_> {
+    fn reader(&self) -> &BatchReader {
+        self.reader.as_ref().expect("active batch lease")
+    }
+
+    fn mark_clean(&mut self) {
+        self.clean = true;
+    }
+}
+
+impl Drop for BatchLease<'_> {
+    fn drop(&mut self) {
+        let reader = self.reader.take();
+        let reusable = self.clean && !std::thread::panicking();
+        let to_drop = {
+            let mut state = self
+                .pool
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.in_use = state.in_use.saturating_sub(1);
+            let discarded = if reusable && state.idle.len() < BATCH_POOL_LIMIT {
+                if let Some(r) = reader {
+                    state.idle.push(r);
+                }
+                None
+            } else {
+                reader
+            };
+            self.pool.available.notify_all();
+            discarded
+        };
+        // Kill, wait, and join any poisoned reader completely outside the pool lock.
+        drop(to_drop);
+    }
+}
+
+struct InUseGuard<'a> {
+    pool: &'a BatchPool,
+    armed: bool,
+}
+
+impl Drop for InUseGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut state = self
+                .pool
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.in_use = state.in_use.saturating_sub(1);
+            self.pool.available.notify_all();
+        }
+    }
+}
+
+impl BatchPool {
+    fn checkout(
+        self: &Arc<Self>,
+        target: GitTarget<'_>,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> Result<BatchLease<'_>> {
+        if let Some(cancel) = cancellation {
+            cancel.check()?;
+        }
+        let _cancel_guard = cancellation.map(|cancel| {
+            let pool = Arc::clone(self);
+            cancel.on_cancel(move || {
+                let _guard = pool.state.lock().unwrap_or_else(PoisonError::into_inner);
+                pool.available.notify_all();
+            })
+        });
+        let existing = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            while state.idle.is_empty() && state.in_use >= BATCH_POOL_LIMIT {
+                if let Some(cancel) = cancellation
+                    && cancel.is_cancelled()
+                {
+                    return Err(CoreError::ReadCancelled.into());
+                }
+                state = self
+                    .available
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            if let Some(cancel) = cancellation
+                && cancel.is_cancelled()
+            {
+                return Err(CoreError::ReadCancelled.into());
+            }
+            state.in_use += 1;
+            state.idle.pop()
+        };
+        if let Some(reader) = existing {
+            return Ok(BatchLease {
+                pool: self,
+                reader: Some(reader),
+                clean: false,
+            });
+        }
+        let mut guard = InUseGuard {
+            pool: self,
+            armed: true,
+        };
+        let reader = BatchReader::spawn(target)?;
+        guard.armed = false;
+        Ok(BatchLease {
+            pool: self,
+            reader: Some(reader),
+            clean: false,
+        })
+    }
+
+    #[cfg(test)]
+    fn idle_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .idle
+            .len()
+    }
+}
+
+struct BatchReply {
+    outcome: Mutex<Option<(Result<BatchValue>, bool)>>,
+    ready: Condvar,
+}
+
+impl BatchReply {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            outcome: Mutex::new(None),
+            ready: Condvar::new(),
+        })
+    }
+
+    fn complete(&self, value: Result<BatchValue>, protocol_clean: bool) {
+        let mut guard = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        *guard = Some((value, protocol_clean));
+        self.ready.notify_all();
+    }
+
+    fn wait_arc(
+        self: &Arc<Self>,
+        timeout: Duration,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> (Result<BatchValue>, bool) {
+        let _cancel_guard = cancellation.map(|cancel| {
+            let reply = Arc::clone(self);
+            cancel.on_cancel(move || {
+                let _guard = reply.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+                reply.ready.notify_all();
+            })
+        });
+        let deadline = Instant::now() + timeout;
+        let mut guard = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(done) = guard.take() {
+                return done;
+            }
+            if let Some(cancel) = cancellation
+                && cancel.is_cancelled()
+            {
+                return (Err(CoreError::ReadCancelled.into()), false);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return (
+                    Err(anyhow::anyhow!(
+                        "Git object read exceeded its time limit or disconnected"
+                    )),
+                    false,
+                );
+            }
+            let (next, _) = self
+                .ready
+                .wait_timeout(guard, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner);
+            guard = next;
+        }
+    }
+}
+
 struct BatchReader {
     child: Child,
     requests: mpsc::Sender<BatchRequest>,
@@ -2508,11 +2904,38 @@ struct BatchReader {
 }
 
 enum BatchRequest {
-    Read {
+    ReadHeader {
         oid: String,
         kind: String,
-        contents: bool,
-        response: mpsc::Sender<Result<BatchValue>>,
+        reply: Arc<BatchReply>,
+    },
+    ReadObject {
+        oid: String,
+        kind: String,
+        reply: Arc<BatchReply>,
+    },
+    ReadBounded {
+        oid: String,
+        kind: String,
+        max_bytes: usize,
+        reply: Arc<BatchReply>,
+    },
+    ReadDiffPair {
+        old: Option<String>,
+        new: Option<String>,
+        max_bytes: usize,
+        reply: Arc<BatchReply>,
+    },
+    ReadBlobPair {
+        old: Option<String>,
+        new: Option<String>,
+        max_bytes: usize,
+        reply: Arc<BatchReply>,
+    },
+    ReadBlobsIndependent {
+        sides: [Option<(String, Option<usize>)>; 2],
+        max_bytes: usize,
+        reply: Arc<BatchReply>,
     },
     Stop,
 }
@@ -2520,7 +2943,13 @@ enum BatchRequest {
 enum BatchValue {
     Body(Vec<u8>),
     Size(usize),
+    Bounded(BoundedBlob),
+    DiffPair(DiffPair),
+    BlobPair(Vec<u8>, Vec<u8>),
+    Independent([Option<Result<BoundedBlob>>; 2]),
 }
+
+type BlobPairResult = (Result<(Vec<u8>, Vec<u8>)>, bool);
 
 struct BatchWire {
     input: StopPipe<ChildStdin>,
@@ -2530,7 +2959,7 @@ struct BatchWire {
 impl BatchReader {
     fn spawn(target: GitTarget<'_>) -> Result<Self> {
         let mut command = git_command(target);
-        command.args(["cat-file", "--batch-command"]);
+        command.args(["cat-file", "--batch-command", "--buffer"]);
         Self::spawn_command(command, GIT_TIMEOUT)
     }
 
@@ -2547,24 +2976,101 @@ impl BatchReader {
         let output = BufReader::new(pipes.output);
         let (requests, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
+            /// Ensures `wait_arc` wakes immediately if the wire worker unwinds
+            /// before answering an in-flight request.
+            struct ReplyGuard(Option<Arc<BatchReply>>);
+            impl ReplyGuard {
+                fn finish(&mut self, value: Result<BatchValue>, clean: bool) {
+                    if let Some(reply) = self.0.take() {
+                        reply.complete(value, clean);
+                    }
+                }
+            }
+            impl Drop for ReplyGuard {
+                fn drop(&mut self) {
+                    if let Some(reply) = self.0.take() {
+                        reply.complete(
+                            Err(anyhow::anyhow!(
+                                "Git object reader worker stopped unexpectedly"
+                            )),
+                            false,
+                        );
+                    }
+                }
+            }
             let mut wire = BatchWire { input, output };
-            while let Ok(BatchRequest::Read {
-                oid,
-                kind,
-                contents,
-                response,
-            }) = receiver.recv()
-            {
-                let result = if contents {
-                    wire.read_object(&oid, &kind).map(BatchValue::Body)
-                } else {
-                    wire.request_header("info", &oid, &kind)
-                        .map(BatchValue::Size)
-                };
-                let failed = result.is_err();
-                let _ = response.send(result);
-                if failed {
-                    break;
+            while let Ok(request) = receiver.recv() {
+                match request {
+                    BatchRequest::ReadHeader { oid, kind, reply } => {
+                        let mut guard = ReplyGuard(Some(reply));
+                        let (res, clean) = wire.read_header(&oid, &kind);
+                        guard.finish(res.map(BatchValue::Size), clean);
+                        if !clean {
+                            break;
+                        }
+                    }
+                    BatchRequest::ReadObject { oid, kind, reply } => {
+                        let mut guard = ReplyGuard(Some(reply));
+                        let (res, clean) = wire.read_object(&oid, &kind);
+                        guard.finish(res.map(BatchValue::Body), clean);
+                        if !clean {
+                            break;
+                        }
+                    }
+                    BatchRequest::ReadBounded {
+                        oid,
+                        kind,
+                        max_bytes,
+                        reply,
+                    } => {
+                        let mut guard = ReplyGuard(Some(reply));
+                        let (res, clean) = wire.read_bounded(&oid, &kind, max_bytes);
+                        guard.finish(res.map(BatchValue::Bounded), clean);
+                        if !clean {
+                            break;
+                        }
+                    }
+                    BatchRequest::ReadDiffPair {
+                        old,
+                        new,
+                        max_bytes,
+                        reply,
+                    } => {
+                        let mut guard = ReplyGuard(Some(reply));
+                        let (res, clean) =
+                            wire.read_diff_pair(old.as_deref(), new.as_deref(), max_bytes);
+                        guard.finish(res.map(BatchValue::DiffPair), clean);
+                        if !clean {
+                            break;
+                        }
+                    }
+                    BatchRequest::ReadBlobPair {
+                        old,
+                        new,
+                        max_bytes,
+                        reply,
+                    } => {
+                        let mut guard = ReplyGuard(Some(reply));
+                        let (res, clean) =
+                            wire.read_blob_pair(old.as_deref(), new.as_deref(), max_bytes);
+                        guard.finish(res.map(|(a, b)| BatchValue::BlobPair(a, b)), clean);
+                        if !clean {
+                            break;
+                        }
+                    }
+                    BatchRequest::ReadBlobsIndependent {
+                        sides,
+                        max_bytes,
+                        reply,
+                    } => {
+                        let mut guard = ReplyGuard(Some(reply));
+                        let (res, clean) = wire.read_blobs_independent(&sides, max_bytes);
+                        guard.finish(Ok(BatchValue::Independent(res)), clean);
+                        if !clean {
+                            break;
+                        }
+                    }
+                    BatchRequest::Stop => break,
                 }
             }
         });
@@ -2577,56 +3083,200 @@ impl BatchReader {
         })
     }
 
-    fn request(&self, oid: &str, kind: &str, contents: bool) -> Result<BatchValue> {
-        let (response, result) = mpsc::channel();
-        self.requests
-            .send(BatchRequest::Read {
+    fn send_and_wait(
+        &self,
+        request: BatchRequest,
+        reply: Arc<BatchReply>,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> (Result<BatchValue>, bool) {
+        if self.requests.send(request).is_err() {
+            return (
+                Err(anyhow::anyhow!("Git object reader disconnected")),
+                false,
+            );
+        }
+        reply.wait_arc(self.timeout, cancellation)
+    }
+
+    fn read_object_checked(
+        &self,
+        oid: &str,
+        kind: &str,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> (Result<Vec<u8>>, bool) {
+        let reply = BatchReply::new();
+        let (res, clean) = self.send_and_wait(
+            BatchRequest::ReadObject {
                 oid: oid.into(),
                 kind: kind.into(),
-                contents,
-                response,
-            })
-            .context("Git object reader disconnected")?;
-        result
-            .recv_timeout(self.timeout)
-            .context("Git object read exceeded its time limit or disconnected")?
-    }
-
-    fn read_object(&self, oid: &str, kind: &str) -> Result<Vec<u8>> {
-        match self.request(oid, kind, true)? {
+                reply: Arc::clone(&reply),
+            },
+            reply,
+            cancellation,
+        );
+        let mapped = res.and_then(|val| match val {
             BatchValue::Body(bytes) => Ok(bytes),
             _ => bail!("Unexpected object response"),
-        }
+        });
+        (mapped, clean)
     }
 
-    fn request_header(&self, _request: &str, oid: &str, kind: &str) -> Result<usize> {
-        match self.request(oid, kind, false)? {
+    #[cfg(test)]
+    fn read_object(&self, oid: &str, kind: &str) -> Result<Vec<u8>> {
+        self.read_object_checked(oid, kind, None).0
+    }
+
+    fn request_header_checked(
+        &self,
+        oid: &str,
+        kind: &str,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> (Result<usize>, bool) {
+        let reply = BatchReply::new();
+        let (res, clean) = self.send_and_wait(
+            BatchRequest::ReadHeader {
+                oid: oid.into(),
+                kind: kind.into(),
+                reply: Arc::clone(&reply),
+            },
+            reply,
+            cancellation,
+        );
+        let mapped = res.and_then(|val| match val {
             BatchValue::Size(size) => Ok(size),
             _ => bail!("Unexpected object size response"),
+        });
+        (mapped, clean)
+    }
+
+    fn read_object_bounded(
+        &self,
+        oid: &str,
+        kind: &str,
+        max_bytes: usize,
+        cancellation: Option<&HistoryCancellation>,
+    ) -> (Result<BoundedBlob>, bool) {
+        let reply = BatchReply::new();
+        let (res, clean) = self.send_and_wait(
+            BatchRequest::ReadBounded {
+                oid: oid.into(),
+                kind: kind.into(),
+                max_bytes,
+                reply: Arc::clone(&reply),
+            },
+            reply,
+            cancellation,
+        );
+        let mapped = res.and_then(|val| match val {
+            BatchValue::Bounded(bounded) => Ok(bounded),
+            _ => bail!("Unexpected bounded object response"),
+        });
+        (mapped, clean)
+    }
+
+    fn read_diff_pair(
+        &self,
+        old: Option<String>,
+        new: Option<String>,
+        max_bytes: usize,
+    ) -> (Result<DiffPair>, bool) {
+        let reply = BatchReply::new();
+        let (res, clean) = self.send_and_wait(
+            BatchRequest::ReadDiffPair {
+                old,
+                new,
+                max_bytes,
+                reply: Arc::clone(&reply),
+            },
+            reply,
+            None,
+        );
+        let mapped = res.and_then(|val| match val {
+            BatchValue::DiffPair(pair) => Ok(pair),
+            _ => bail!("Unexpected diff-pair response"),
+        });
+        (mapped, clean)
+    }
+
+    fn read_blob_pair(
+        &self,
+        old: Option<String>,
+        new: Option<String>,
+        max_bytes: usize,
+    ) -> BlobPairResult {
+        let reply = BatchReply::new();
+        let (res, clean) = self.send_and_wait(
+            BatchRequest::ReadBlobPair {
+                old,
+                new,
+                max_bytes,
+                reply: Arc::clone(&reply),
+            },
+            reply,
+            None,
+        );
+        let mapped = res.and_then(|val| match val {
+            BatchValue::BlobPair(a, b) => Ok((a, b)),
+            _ => bail!("Unexpected blob-pair response"),
+        });
+        (mapped, clean)
+    }
+
+    fn read_blobs_independent(
+        &self,
+        sides: [Option<(String, Option<usize>)>; 2],
+        max_bytes: usize,
+    ) -> ([Option<Result<BoundedBlob>>; 2], bool) {
+        let reply = BatchReply::new();
+        let (res, clean) = self.send_and_wait(
+            BatchRequest::ReadBlobsIndependent {
+                sides,
+                max_bytes,
+                reply: Arc::clone(&reply),
+            },
+            reply,
+            None,
+        );
+        match res {
+            Ok(BatchValue::Independent(arr)) => (arr, clean),
+            Ok(_) => (
+                [
+                    Some(Err(anyhow::anyhow!("Unexpected independent blob response"))),
+                    Some(Err(anyhow::anyhow!("Unexpected independent blob response"))),
+                ],
+                false,
+            ),
+            Err(err) => {
+                let message = format!("{err:#}");
+                (
+                    [
+                        Some(Err(anyhow::anyhow!("{message}"))),
+                        Some(Err(anyhow::anyhow!("{message}"))),
+                    ],
+                    false,
+                )
+            }
         }
     }
 }
 
+enum HeaderStatus {
+    Found { kind: String, size: usize },
+    Missing,
+}
+
 impl BatchWire {
-    fn read_object(&mut self, oid: &str, kind: &str) -> Result<Vec<u8>> {
-        let size = self.request_header("contents", oid, kind)?;
-        ensure!(
-            size <= MAX_BLOB_BYTES,
-            "Object is {size} bytes; preview limit is {MAX_BLOB_BYTES} bytes"
-        );
-        let mut bytes = vec![0; size];
-        self.output
-            .read_exact(&mut bytes)
-            .context("Truncated Git object")?;
-        let mut delimiter = [0];
-        self.output.read_exact(&mut delimiter)?;
-        ensure!(delimiter == *b"\n", "Invalid Git object delimiter");
-        Ok(bytes)
+    fn write_batch(&mut self, commands: &str) -> Result<()> {
+        self.input
+            .write_all(commands.as_bytes())
+            .context("Git object reader disconnected")?;
+        self.input.flush().context("Git object reader disconnected")
     }
 
-    fn request_header(&mut self, request: &str, oid: &str, kind: &str) -> Result<usize> {
-        writeln!(self.input, "{request} {oid}").context("Git object reader disconnected")?;
-        self.input.flush()?;
+    /// Reads one `cat-file --batch-command` response header line.
+    /// Returns `Ok(HeaderStatus)` when the protocol framing is intact, or
+    /// `Err(_)` when EOF/I/O/malformed output indicates a broken wire.
+    fn read_header_line(&mut self, oid: &str) -> Result<HeaderStatus> {
         let mut header = String::new();
         let received = self.output.read_line(&mut header)?;
         // Older Git releases exit for a missing promisor object when lazy
@@ -2637,22 +3287,359 @@ impl BatchWire {
             "Git object reader ended before responding for {oid}. The object is either not available locally or the reader failed (automatic fetching is disabled)."
         );
         let fields: Vec<_> = header.split_whitespace().collect();
-        ensure!(
-            fields.len() != 2 || fields[1] != "missing",
-            "Object {oid} is not available locally (automatic fetching is disabled)"
-        );
+        if fields.len() == 2 && fields[1] == "missing" && fields[0].eq_ignore_ascii_case(oid) {
+            return Ok(HeaderStatus::Missing);
+        }
         ensure!(
             fields.len() == 3 && fields[0].eq_ignore_ascii_case(oid),
             "Invalid object response for {oid}: {}",
             header.trim()
         );
-        ensure!(
-            fields[1] == kind,
-            "Object {oid} is a {}, not a {}",
-            fields[1],
-            if kind == "blob" { "file blob" } else { kind }
-        );
-        fields[2].parse().context("Invalid Git object size")
+        let size: usize = fields[2].parse().context("Invalid Git object size")?;
+        Ok(HeaderStatus::Found {
+            kind: fields[1].to_owned(),
+            size,
+        })
+    }
+
+    fn validate_header_kind(oid: &str, expected: &str, status: HeaderStatus) -> Result<usize> {
+        match status {
+            HeaderStatus::Missing => {
+                bail!("Object {oid} is not available locally (automatic fetching is disabled)")
+            }
+            HeaderStatus::Found { kind, size } => {
+                ensure!(
+                    kind == expected,
+                    "Object {oid} is a {kind}, not a {}",
+                    if expected == "blob" {
+                        "file blob"
+                    } else {
+                        expected
+                    }
+                );
+                Ok(size)
+            }
+        }
+    }
+
+    fn read_body(&mut self, size: usize) -> Result<Vec<u8>> {
+        let mut bytes = vec![0; size];
+        self.output
+            .read_exact(&mut bytes)
+            .context("Truncated Git object")?;
+        let mut delimiter = [0];
+        self.output.read_exact(&mut delimiter)?;
+        ensure!(delimiter == *b"\n", "Invalid Git object delimiter");
+        Ok(bytes)
+    }
+
+    fn read_header(&mut self, oid: &str, expected_kind: &str) -> (Result<usize>, bool) {
+        let cmd = format!("info {oid}\nflush\n");
+        if let Err(err) = self.write_batch(&cmd) {
+            return (Err(err), false);
+        }
+        let status = match self.read_header_line(oid) {
+            Ok(status) => status,
+            Err(err) => return (Err(err), false),
+        };
+        // `info` emits no body bytes, so `missing` or wrong kind leaves the
+        // wire completely clean and reusable.
+        (Self::validate_header_kind(oid, expected_kind, status), true)
+    }
+
+    fn read_object(&mut self, oid: &str, expected_kind: &str) -> (Result<Vec<u8>>, bool) {
+        let cmd = format!("contents {oid}\nflush\n");
+        if let Err(err) = self.write_batch(&cmd) {
+            return (Err(err), false);
+        }
+        let status = match self.read_header_line(oid) {
+            Ok(status) => status,
+            Err(err) => return (Err(err), false),
+        };
+        let is_missing = matches!(status, HeaderStatus::Missing);
+        let size = match Self::validate_header_kind(oid, expected_kind, status) {
+            Ok(size) => size,
+            // If `contents` returned `missing`, no body follows (clean);
+            // if wrong kind, Git WILL send the object's body bytes (poison!).
+            Err(err) => return (Err(err), is_missing),
+        };
+        if size > MAX_BLOB_BYTES {
+            return (
+                Err(anyhow::anyhow!(
+                    "Object is {size} bytes; preview limit is {MAX_BLOB_BYTES} bytes"
+                )),
+                false,
+            );
+        }
+        match self.read_body(size) {
+            Ok(bytes) => (Ok(bytes), true),
+            Err(err) => (Err(err), false),
+        }
+    }
+
+    fn read_bounded(
+        &mut self,
+        oid: &str,
+        expected_kind: &str,
+        max_bytes: usize,
+    ) -> (Result<BoundedBlob>, bool) {
+        let (size, clean) = self.read_header(oid, expected_kind);
+        let size = match size {
+            Ok(size) => size,
+            Err(err) => return (Err(err), clean),
+        };
+        if size > max_bytes {
+            return (Ok(BoundedBlob::TooLarge(size)), true);
+        }
+        let (bytes, clean) = self.read_object(oid, expected_kind);
+        match bytes {
+            Ok(bytes) if bytes.len() <= max_bytes => (Ok(BoundedBlob::Bytes(bytes)), clean),
+            Ok(bytes) => (Ok(BoundedBlob::TooLarge(bytes.len())), clean),
+            Err(err) => (Err(err), clean),
+        }
+    }
+
+    fn read_diff_pair(
+        &mut self,
+        old: Option<&str>,
+        new: Option<&str>,
+        max_bytes: usize,
+    ) -> (Result<DiffPair>, bool) {
+        // Phase 1: pipeline `info` for all present sides in one write + flush.
+        let mut info_cmd = String::new();
+        if let Some(oid) = old {
+            info_cmd.push_str("info ");
+            info_cmd.push_str(oid);
+            info_cmd.push('\n');
+        }
+        if let Some(oid) = new {
+            info_cmd.push_str("info ");
+            info_cmd.push_str(oid);
+            info_cmd.push('\n');
+        }
+        info_cmd.push_str("flush\n");
+        if let Err(err) = self.write_batch(&info_cmd) {
+            return (Err(err), false);
+        }
+        let old_status = match old {
+            Some(oid) => match self.read_header_line(oid) {
+                Ok(status) => Some(status),
+                Err(err) => return (Err(err), false),
+            },
+            None => None,
+        };
+        let new_status = match new {
+            Some(oid) => match self.read_header_line(oid) {
+                Ok(status) => Some(status),
+                Err(err) => return (Err(err), false),
+            },
+            None => None,
+        };
+        // Both `info` lines have been consumed cleanly from stdout.
+        let old_bytes = match (old, old_status) {
+            (Some(oid), Some(status)) => match Self::validate_header_kind(oid, "blob", status) {
+                Ok(size) => size,
+                Err(err) => return (Err(err), true),
+            },
+            _ => 0,
+        };
+        let new_bytes = match (new, new_status) {
+            (Some(oid), Some(status)) => match Self::validate_header_kind(oid, "blob", status) {
+                Ok(size) => size,
+                Err(err) => return (Err(err), true),
+            },
+            _ => 0,
+        };
+        if old_bytes > max_bytes || new_bytes > max_bytes {
+            return (
+                Ok(DiffPair::TooLarge {
+                    old_bytes,
+                    new_bytes,
+                }),
+                true,
+            );
+        }
+        // Phase 2: pipeline `contents` for all present sides in one write + flush.
+        let (bodies, clean) = self.read_blob_pair(old, new, max_bytes);
+        match bodies {
+            Ok((old_body, new_body)) => (
+                Ok(DiffPair::Bodies {
+                    old: old_body,
+                    new: new_body,
+                }),
+                clean,
+            ),
+            Err(err) => (Err(err), clean),
+        }
+    }
+
+    fn read_blob_pair(
+        &mut self,
+        old: Option<&str>,
+        new: Option<&str>,
+        max_bytes: usize,
+    ) -> BlobPairResult {
+        let mut cmd = String::new();
+        if let Some(oid) = old {
+            cmd.push_str("contents ");
+            cmd.push_str(oid);
+            cmd.push('\n');
+        }
+        if let Some(oid) = new {
+            cmd.push_str("contents ");
+            cmd.push_str(oid);
+            cmd.push('\n');
+        }
+        cmd.push_str("flush\n");
+        if let Err(err) = self.write_batch(&cmd) {
+            return (Err(err), false);
+        }
+        let read_one = |wire: &mut BatchWire, oid: &str| -> Result<Vec<u8>> {
+            let status = wire.read_header_line(oid)?;
+            let size = Self::validate_header_kind(oid, "blob", status)?;
+            ensure!(
+                size <= max_bytes,
+                "Object is {size} bytes; preview limit is {max_bytes} bytes"
+            );
+            wire.read_body(size)
+        };
+        let old_body = match old {
+            Some(oid) => match read_one(self, oid) {
+                Ok(bytes) => bytes,
+                Err(err) => return (Err(err), false),
+            },
+            None => Vec::new(),
+        };
+        let new_body = match new {
+            Some(oid) => match read_one(self, oid) {
+                Ok(bytes) => bytes,
+                Err(err) => return (Err(err), false),
+            },
+            None => Vec::new(),
+        };
+        (Ok((old_body, new_body)), true)
+    }
+
+    fn read_blobs_independent(
+        &mut self,
+        sides: &[Option<(String, Option<usize>)>; 2],
+        max_bytes: usize,
+    ) -> ([Option<Result<BoundedBlob>>; 2], bool) {
+        let mut out: [Option<Result<BoundedBlob>>; 2] = [None, None];
+        let mut need_info: [bool; 2] = [false, false];
+        let mut info_cmd = String::new();
+        for (idx, side) in sides.iter().enumerate() {
+            if let Some((oid, None)) = side {
+                need_info[idx] = true;
+                info_cmd.push_str("info ");
+                info_cmd.push_str(oid);
+                info_cmd.push('\n');
+            }
+        }
+        let mut fetch_oid: [Option<&str>; 2] = [None, None];
+        if need_info[0] || need_info[1] {
+            info_cmd.push_str("flush\n");
+            if let Err(err) = self.write_batch(&info_cmd) {
+                let message = format!("{err:#}");
+                for idx in 0..2 {
+                    if sides[idx].is_some() {
+                        out[idx] = Some(Err(anyhow::anyhow!("{message}")));
+                    }
+                }
+                return (out, false);
+            }
+            for idx in 0..2 {
+                if !need_info[idx] {
+                    continue;
+                }
+                let Some((oid, _)) = sides[idx].as_ref() else {
+                    continue;
+                };
+                match self.read_header_line(oid) {
+                    Ok(status) => match Self::validate_header_kind(oid, "blob", status) {
+                        Ok(size) if size > max_bytes => {
+                            out[idx] = Some(Ok(BoundedBlob::TooLarge(size)));
+                        }
+                        Ok(_) => {
+                            fetch_oid[idx] = Some(oid.as_str());
+                        }
+                        Err(err) => {
+                            out[idx] = Some(Err(err));
+                        }
+                    },
+                    Err(err) => {
+                        out[idx] = Some(Err(err));
+                        return (out, false);
+                    }
+                }
+            }
+        }
+        for idx in 0..2 {
+            if let Some((oid, Some(size))) = sides[idx].as_ref() {
+                if *size > max_bytes {
+                    out[idx] = Some(Ok(BoundedBlob::TooLarge(*size)));
+                } else {
+                    fetch_oid[idx] = Some(oid.as_str());
+                }
+            }
+        }
+        if fetch_oid[0].is_none() && fetch_oid[1].is_none() {
+            return (out, true);
+        }
+        let mut contents_cmd = String::new();
+        for oid in fetch_oid.into_iter().flatten() {
+            contents_cmd.push_str("contents ");
+            contents_cmd.push_str(oid);
+            contents_cmd.push('\n');
+        }
+        contents_cmd.push_str("flush\n");
+        if let Err(err) = self.write_batch(&contents_cmd) {
+            let message = format!("{err:#}");
+            for idx in 0..2 {
+                if fetch_oid[idx].is_some() {
+                    out[idx] = Some(Err(anyhow::anyhow!("{message}")));
+                }
+            }
+            return (out, false);
+        }
+        let mut clean = true;
+        for (idx, maybe_oid) in fetch_oid.into_iter().enumerate() {
+            let Some(oid) = maybe_oid else {
+                continue;
+            };
+            match self.read_header_line(oid) {
+                Ok(HeaderStatus::Missing) => {
+                    out[idx] = Some(Err(anyhow::anyhow!(
+                        "Object {oid} is not available locally (automatic fetching is disabled)"
+                    )));
+                }
+                Ok(status) => match Self::validate_header_kind(oid, "blob", status) {
+                    Ok(size) if size <= max_bytes => match self.read_body(size) {
+                        Ok(bytes) => out[idx] = Some(Ok(BoundedBlob::Bytes(bytes))),
+                        Err(err) => {
+                            out[idx] = Some(Err(err));
+                            return (out, false);
+                        }
+                    },
+                    Ok(size) => {
+                        out[idx] = Some(Ok(BoundedBlob::TooLarge(size)));
+                        clean = false;
+                        // Unread body bytes remain on stdout; caller retries any remaining side.
+                        break;
+                    }
+                    Err(err) => {
+                        out[idx] = Some(Err(err));
+                        clean = false;
+                        break;
+                    }
+                },
+                Err(err) => {
+                    out[idx] = Some(Err(err));
+                    return (out, false);
+                }
+            }
+        }
+        (out, clean)
     }
 }
 
@@ -5013,6 +6000,142 @@ mod tests {
             repo.index_blob_oid(Path::new("nonexistent.txt")).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn batch_pool_supports_two_concurrent_readers_and_bounds_idle_count() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+        git(dir.path(), &["add", "a.txt", "b.txt"]);
+        git(dir.path(), &["commit", "-q", "-m", "initial"]);
+        let repo = GitRepository::open(dir.path()).unwrap();
+        let oid_a = repo.index_blob_oid(Path::new("a.txt")).unwrap().unwrap();
+        let oid_b = repo.index_blob_oid(Path::new("b.txt")).unwrap().unwrap();
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let repo_a = repo.clone();
+        let repo_b = repo.clone();
+        let b1 = Arc::clone(&barrier);
+        let b2 = Arc::clone(&barrier);
+        let h1 = thread::spawn(move || {
+            let mut lease = repo_a.batch.checkout(repo_a.target(), None).unwrap();
+            b1.wait();
+            let (bytes, clean) = lease.reader().read_object_checked(&oid_a, "blob", None);
+            assert!(clean);
+            lease.mark_clean();
+            assert_eq!(bytes.unwrap(), b"alpha\n");
+        });
+        let h2 = thread::spawn(move || {
+            let mut lease = repo_b.batch.checkout(repo_b.target(), None).unwrap();
+            b2.wait();
+            let (bytes, clean) = lease.reader().read_object_checked(&oid_b, "blob", None);
+            assert!(clean);
+            lease.mark_clean();
+            assert_eq!(bytes.unwrap(), b"beta\n");
+        });
+        h1.join().unwrap();
+        h2.join().unwrap();
+        assert_eq!(repo.batch.idle_count(), BATCH_POOL_LIMIT);
+    }
+
+    #[test]
+    fn blob_bounded_and_independent_pair_keep_pool_warm_and_isolate_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("small.txt"), "hello world\n").unwrap();
+        std::fs::write(dir.path().join("big.txt"), vec![b'x'; 2048]).unwrap();
+        git(dir.path(), &["add", "small.txt", "big.txt"]);
+        git(dir.path(), &["commit", "-q", "-m", "initial"]);
+        let repo = GitRepository::open(dir.path()).unwrap();
+        let small = repo
+            .index_blob_oid(Path::new("small.txt"))
+            .unwrap()
+            .unwrap();
+        let big = repo.index_blob_oid(Path::new("big.txt")).unwrap().unwrap();
+        let commit_oid = repo.history(1).unwrap()[0].oid.clone();
+        let missing = "0".repeat(40);
+
+        // Size refusal stays protocol-clean and returns reader to the pool.
+        assert_eq!(
+            repo.blob_bounded(&big, 1024, None).unwrap(),
+            BoundedBlob::TooLarge(2048)
+        );
+        assert_eq!(repo.batch.idle_count(), 1);
+        assert_eq!(
+            repo.blob_bounded(&small, 1024, None).unwrap(),
+            BoundedBlob::Bytes(b"hello world\n".to_vec())
+        );
+        assert_eq!(repo.batch.idle_count(), 1);
+
+        // Missing or wrong-type one side never blocks the valid other side.
+        let [left, right] =
+            repo.blobs_bounded_independent([Some((&missing, None)), Some((&small, None))], 1024);
+        assert!(left.unwrap().is_err());
+        assert_eq!(
+            right.unwrap().unwrap(),
+            BoundedBlob::Bytes(b"hello world\n".to_vec())
+        );
+
+        let [left, right] = repo
+            .blobs_bounded_independent([Some((&commit_oid, None)), Some((&small, Some(12)))], 1024);
+        assert!(left.unwrap().is_err());
+        assert_eq!(
+            right.unwrap().unwrap(),
+            BoundedBlob::Bytes(b"hello world\n".to_vec())
+        );
+
+        let [left, right] = repo
+            .blobs_bounded_independent([Some((&big, Some(2048))), Some((&small, Some(12)))], 1024);
+        assert_eq!(left.unwrap().unwrap(), BoundedBlob::TooLarge(2048));
+        assert_eq!(
+            right.unwrap().unwrap(),
+            BoundedBlob::Bytes(b"hello world\n".to_vec())
+        );
+        assert_eq!(repo.batch.idle_count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_reply_wakes_promptly_on_history_cancellation() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "read -r _line; sleep 10"]);
+        let reader = BatchReader::spawn_command(command, Duration::from_secs(10)).unwrap();
+        let cancel = HistoryCancellation::default();
+        let trigger = cancel.clone();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(60));
+            trigger.cancel();
+        });
+        let started = Instant::now();
+        let (result, clean) = reader.request_header_checked(&"a".repeat(40), "blob", Some(&cancel));
+        let elapsed = started.elapsed();
+        canceller.join().unwrap();
+        assert!(!clean);
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<CoreError>(),
+            Some(CoreError::ReadCancelled)
+        ));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cancellation waited too long: {elapsed:?}"
+        );
+        drop(reader);
+    }
+
+    #[test]
+    fn has_commit_graph_tracks_objects_info_files() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("README.md"), "initial\n").unwrap();
+        git(dir.path(), &["add", "README.md"]);
+        git(dir.path(), &["commit", "-q", "-m", "initial"]);
+        let repo = GitRepository::open(dir.path()).unwrap();
+        assert!(!repo.has_commit_graph());
+        git(dir.path(), &["commit-graph", "write", "--reachable"]);
+        assert!(repo.has_commit_graph());
     }
 }
 

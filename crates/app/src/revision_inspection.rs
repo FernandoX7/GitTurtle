@@ -329,7 +329,18 @@ impl GitTurtle {
         let return_focus = crate::native_accessibility::pointer_menu_return(window, cx)
             .unwrap_or_else(|| window.focused(cx));
         crate::native_accessibility::close_tab_menus(window, cx);
-        let form = cx.new(|cx| QuickForm::new(owner, repo, revision, return_focus, window, cx));
+        let quick_open_cache = Arc::clone(&self.quick_open_cache);
+        let form = cx.new(|cx| {
+            QuickForm::new(
+                owner,
+                repo,
+                revision,
+                quick_open_cache,
+                return_focus,
+                window,
+                cx,
+            )
+        });
         #[cfg(test)]
         OPENED_QUICK_FORM.with(|opened| *opened.borrow_mut() = Some(form.downgrade()));
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
@@ -1647,6 +1658,11 @@ pub(crate) struct QuickForm {
     selected: usize,
     scroll: UniformListScrollHandle,
     worker: Arc<Worker>,
+    cache: Arc<std::sync::Mutex<worker::TrackedPathCache>>,
+    /// Maps the last resolved revision expression to its pinned commit OID so
+    /// typing in the query field hits the cached `TrackedPathIndex` with zero
+    /// `rev-parse` or `ls-tree` spawns.
+    resolved_revision: Option<(String, String)>,
     task: Option<Task<()>>,
     generation: u64,
     busy: bool,
@@ -1696,6 +1712,7 @@ impl QuickForm {
         owner: WeakEntity<GitTurtle>,
         repo: GitRepository,
         revision: String,
+        cache: Arc<std::sync::Mutex<worker::TrackedPathCache>>,
         return_focus: Option<FocusHandle>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1716,6 +1733,8 @@ impl QuickForm {
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             worker: Arc::new(Worker::new()),
+            cache,
+            resolved_revision: None,
             task: None,
             generation: 0,
             busy: false,
@@ -1780,16 +1799,24 @@ impl QuickForm {
             {
                 return;
             }
-            let Ok(response) = this.update_in(cx, |this, _, cx| {
-                this.worker.submit(Job::TrackedPaths {
+            let Ok((response, requested_rev)) = this.update_in(cx, |this, _, cx| {
+                let raw_rev = this.revision.read(cx).value().to_string();
+                let (scope, requested_rev) = if this.worktree {
+                    (PathScope::Worktree, None)
+                } else if let Some((expr, oid)) = &this.resolved_revision
+                    && expr == &raw_rev
+                {
+                    (PathScope::Revision(oid.clone()), Some(raw_rev))
+                } else {
+                    (PathScope::Revision(raw_rev.clone()), Some(raw_rev))
+                };
+                let response = this.worker.submit(Job::TrackedPaths {
                     repo: this.repo.clone(),
-                    scope: if this.worktree {
-                        PathScope::Worktree
-                    } else {
-                        PathScope::Revision(this.revision.read(cx).value().to_string())
-                    },
+                    scope,
                     query: this.query.read(cx).value().to_string(),
-                })
+                    cache: Some(Arc::clone(&this.cache)),
+                });
+                (response, requested_rev)
             }) else {
                 return;
             };
@@ -1802,7 +1829,13 @@ impl QuickForm {
                 this.selected = 0;
                 this.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 match result {
-                    Ok(Ok(Output::TrackedPaths(page))) => this.page = Some(page),
+                    Ok(Ok(Output::TrackedPaths(page))) => {
+                        if let (Some(expr), PathScope::Revision(oid)) = (requested_rev, &page.scope)
+                        {
+                            this.resolved_revision = Some((expr, oid.clone()));
+                        }
+                        this.page = Some(page);
+                    }
                     Ok(Err(e)) => {
                         this.page = None;
                         this.error = Some(format!("{e:#}"));

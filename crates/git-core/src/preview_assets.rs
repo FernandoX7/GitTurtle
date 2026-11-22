@@ -157,12 +157,10 @@ impl GitRepository {
         match scope {
             PreviewAssetScope::Revision(oid) => {
                 validate_oid(oid)?;
-                let mut kind = asset_command(self.target());
-                kind.args(["cat-file", "-t", oid]);
-                ensure!(
-                    trim_line(&read(kind, cancellation, 1024)?) == b"commit",
-                    "Local image revision must be a full commit OID"
-                );
+                if let Err(err) = self.object_header(oid, "commit", Some(cancellation)) {
+                    check(cancellation)?;
+                    return Err(err.context("Local image revision must be a full commit OID"));
+                }
                 command.args(["ls-tree", "-z", "--full-tree", oid, "--"]);
             }
             PreviewAssetScope::Index | PreviewAssetScope::Worktree => {
@@ -222,23 +220,14 @@ impl GitRepository {
         limit: usize,
         cancellation: &HistoryCancellation,
     ) -> Result<Vec<u8>> {
-        let mut size = asset_command(self.target());
-        size.args(["cat-file", "-s", oid]);
-        let size: usize = std::str::from_utf8(trim_line(&read(size, cancellation, 1024)?))?
-            .parse()
-            .context("Invalid local-image object size")?;
-        ensure!(
-            size <= limit,
-            "Local image exceeds its remaining encoded-byte budget ({limit} bytes)"
-        );
-        let mut command = asset_command(self.target());
-        command.args(["cat-file", "blob", oid]);
-        let bytes = read(command, cancellation, limit)?;
-        ensure!(
-            bytes.len() == size,
-            "Local-image object length is inconsistent"
-        );
-        Ok(bytes)
+        let result = self.blob_bounded(oid, limit, Some(cancellation));
+        check(cancellation)?;
+        match result? {
+            BoundedBlob::Bytes(bytes) => Ok(bytes),
+            BoundedBlob::TooLarge(_) => {
+                bail!("Local image exceeds its remaining encoded-byte budget ({limit} bytes)")
+            }
+        }
     }
 }
 

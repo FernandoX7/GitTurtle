@@ -185,3 +185,49 @@ fn quick_open_retains_filename_bytes_and_never_follows_symlinks() {
         ("120000".into(), b"/etc/passwd".to_vec())
     );
 }
+
+#[test]
+fn tracked_path_index_and_index_fingerprint_match_and_invalidate() {
+    let (_temp, repo) = fixture();
+    let path = repo.path();
+    let c = HistoryCancellation::default();
+    fs::create_dir_all(path.join("src/nested")).unwrap();
+    fs::write(path.join("src/nested/Résumé.rs"), "fn main() {}\n").unwrap();
+    fs::write(path.join("src/App.rs"), "pub struct App;\n").unwrap();
+    git(path, &["add", "."]);
+    git(path, &["commit", "-m", "add files"]);
+
+    let fp1 = repo.index_fingerprint().unwrap().expect("index exists");
+    let fp1_again = repo.index_fingerprint().unwrap().expect("index exists");
+    assert_eq!(fp1, fp1_again);
+
+    let index = repo.load_tracked_paths(&PathScope::Worktree, &c).unwrap();
+    assert_eq!(index.len(), 3);
+    assert!(!index.is_empty());
+    assert!(index.memory_bytes() > 0);
+    assert!(!index.truncated());
+
+    for query in ["", "APP", "résumé", "RÉSUMÉ", "missing"] {
+        let expected = repo
+            .search_tracked_paths(&PathScope::Worktree, query, &c)
+            .unwrap();
+        let actual = index.search(query, &c).unwrap();
+        assert_eq!(actual.entries, expected.entries, "query={query:?}");
+        assert_eq!(actual.truncated, expected.truncated, "query={query:?}");
+        assert_eq!(actual.scope, expected.scope, "query={query:?}");
+    }
+
+    // Modifying `.git/index` via `git add` changes the fingerprint immediately.
+    fs::write(path.join("src/App.rs"), "pub struct App2;\n").unwrap();
+    git(path, &["add", "src/App.rs"]);
+    let fp2 = repo.index_fingerprint().unwrap().expect("index exists");
+    assert_ne!(fp1, fp2);
+
+    // Revision-scoped load pins the resolved commit OID.
+    let head_oid = git(path, &["rev-parse", "HEAD"]);
+    let rev_index = repo
+        .load_tracked_paths(&PathScope::Revision("HEAD".into()), &c)
+        .unwrap();
+    assert_eq!(rev_index.scope(), &PathScope::Revision(head_oid));
+    assert_eq!(rev_index.len(), 3);
+}

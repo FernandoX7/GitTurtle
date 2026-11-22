@@ -7586,7 +7586,10 @@ async fn a_keyboard_menu_tells_sub_from_sub_slash(cx: &mut TestAppContext) {
         "sub in Staged, row {sub}, above sub/ in Unstaged, row {slash}"
     );
     let (row, item) = open_row_menu(&app, cx, "sub/", Opening::Keyboard);
-    assert_eq!(offered(cx, "Delete untracked file…"), Some(true));
+    assert_eq!(
+        offered(cx, "Delete untracked folder…, remove outside this app"),
+        Some(false)
+    );
     delete_outside(&app, cx, "delta.txt");
     let selector: &'static str = format!(
         "working-row-{}",
@@ -7595,8 +7598,8 @@ async fn a_keyboard_menu_tells_sub_from_sub_slash(cx: &mut TestAppContext) {
     .leak();
     let moved = cx.debug_bounds(selector).expect(selector);
     assert_eq!(
-        offered(cx, "Delete untracked file…"),
-        Some(true),
+        offered(cx, "Delete untracked folder…, remove outside this app"),
+        Some(false),
         "sub/'s menu, not sub's"
     );
     assert_eq!(

@@ -159,12 +159,11 @@ impl GitRepository {
             "Attribution is available for regular text files; symbolic links and submodules are not followed"
         );
         let blob = std::str::from_utf8(fields[2])?;
-        ensure!(
-            self.blob_size(blob)? <= MAX_DIFF_BYTES,
-            "Attribution exceeds the 2 MiB text limit"
-        );
+        let bytes = match self.blob_bounded(blob, MAX_DIFF_BYTES, Some(cancellation))? {
+            BoundedBlob::Bytes(bytes) => bytes,
+            BoundedBlob::TooLarge(_) => bail!("Attribution exceeds the 2 MiB text limit"),
+        };
         check_cancel(cancellation)?;
-        let bytes = self.blob(blob)?;
         let source = bounded_text(&bytes)?.to_owned();
         Ok(Some(source))
     }

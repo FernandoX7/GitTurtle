@@ -254,12 +254,20 @@ impl Render for IgnoreForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pending = self.pending(cx);
+        let is_folder = self.path.as_os_str().as_encoded_bytes().ends_with(b"/");
         let parent = self
             .path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty());
         div().flex().flex_col().gap_3()
-            .child(static_text("ignore-selected-path", format!("Selected untracked file: {}", self.path.display())).text_size(crate::appearance::ui_text(12.)))
+            .child(static_text(
+                "ignore-selected-path",
+                format!(
+                    "Selected untracked {}: {}",
+                    if is_folder { "folder" } else { "file" },
+                    self.path.display()
+                ),
+            ).text_size(crate::appearance::ui_text(12.)))
             .child(static_text("ignore-destination-label", "Save rule in").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
             .child(div().flex().gap_2().children([(false, "Shared .gitignore"), (true, "Local excludes")].map(|(local, label)| button(label, label, "", self.local == local).toggled(self.local == local).disabled(pending).on_click(cx.listener(move |this, _, _, cx| { this.local = local; this.error = None; cx.notify(); })))))
             .child(static_text("ignore-destination-help", if self.local { "For this repository's local setup. Stored in Git's info/exclude, including linked worktrees." } else { "For patterns the project should share. Changes to .gitignore remain unstaged for review." }).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))

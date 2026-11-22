@@ -21,6 +21,7 @@ pub struct IgnorePlan {
     pub tracked_paths: usize,
     root: PathBuf,
     selected_path: PathBuf,
+    ignore_containing: bool,
     snapshot: IgnoreSnapshot,
 }
 
@@ -71,17 +72,29 @@ impl GitRepository {
                 .any(|entry| entry.path == selected_path && entry.untracked),
             "This file is no longer untracked. Refresh Changes; ignore rules never untrack files."
         );
-        let path = if directory {
-            selected_path
-                .parent()
-                .filter(|path| !path.as_os_str().is_empty())
-                .context("This file is at the repository root; choose the file rule.")?
-                .to_owned()
+        let selected_bytes = selected_path.as_os_str().as_encoded_bytes();
+        let selected_is_dir = selected_bytes.ends_with(b"/");
+        let trimmed_selected = if selected_is_dir {
+            path_from_bytes(selected_bytes.strip_suffix(b"/").unwrap_or(selected_bytes))
         } else {
             selected_path.to_owned()
         };
+        let path = if directory {
+            trimmed_selected
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .context(if selected_is_dir {
+                    "This folder is at the repository root; choose the folder rule."
+                } else {
+                    "This file is at the repository root; choose the file rule."
+                })?
+                .to_owned()
+        } else {
+            trimmed_selected
+        };
+        let rule_is_directory = directory || selected_is_dir;
         validate_path(&path)?;
-        let rule = literal_ignore_rule(&path, directory)?;
+        let rule = literal_ignore_rule(&path, rule_is_directory)?;
         let destination_path = match destination {
             IgnoreDestination::Shared => self.path.join(".gitignore"),
             IgnoreDestination::Local => self.git_directories()?.1.join("info/exclude"),
@@ -94,13 +107,14 @@ impl GitRepository {
         let tracked_paths = tracked_paths_at(self.target(), &path)?;
         Ok(IgnorePlan {
             path,
-            directory,
+            directory: rule_is_directory,
             destination,
             destination_path,
             rule,
             tracked_paths,
             root: self.path.clone(),
             selected_path: selected_path.to_owned(),
+            ignore_containing: directory,
             snapshot,
         })
     }
@@ -108,8 +122,11 @@ impl GitRepository {
     pub(super) fn execute_ignore(&self, plan: &IgnorePlan) -> Result<WriteOutcome> {
         ensure!(
             plan.root == self.path
-                && self.ignore_plan(&plan.selected_path, plan.directory, plan.destination)?
-                    == *plan,
+                && self.ignore_plan(
+                    &plan.selected_path,
+                    plan.ignore_containing,
+                    plan.destination
+                )? == *plan,
             "The file, ignore destination, or tracked paths changed; review the ignore rule again."
         );
         let existing = plan.snapshot.bytes.as_deref().unwrap_or_default();
