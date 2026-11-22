@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-component"
-version = "0.6.0"
+version = "0.10.0"
 build = "build.rs"
 publish = true
 autolib = false
@@ -39,11 +39,40 @@ resolver = "2"
 ignored = ["gpui_macros"]
 
 [features]
-decimal = ["dep:rust_decimal"]
+decimal = ["gpui-base/decimal"]
+gpui-fast = [
+    "dep:gpui-fast",
+    "gpui-base/gpui-fast",
+    "gpui-kit-assets/gpui-fast",
+]
 inspector = [
     "gpui_macros/inspector",
     "gpui/inspector",
     "gpui-base/inspector",
+    "gpui-fast?/inspector",
+]
+speech = [
+    "dep:cpal",
+    "dep:block2",
+    "dep:objc2-speech",
+    "dep:objc2-avf-audio",
+    "dep:objc2-av-foundation",
+    "objc2-foundation/NSBundle",
+    "objc2-foundation/NSDictionary",
+    "objc2-foundation/NSError",
+    "objc2-foundation/NSLocale",
+    "windows/Foundation_Collections",
+    "windows/Globalization",
+    "windows/Media_SpeechRecognition",
+]
+syntect = [
+    "dep:syntect",
+    "dep:two-face",
+]
+test-support = [
+    "gpui/test-support",
+    "gpui-base/test-support",
+    "gpui-fast?/test-support",
 ]
 tree-sitter = [
     "dep:tree-sitter",
@@ -234,24 +263,12 @@ path = "src/lib.rs"
 doctest = false
 
 [[test]]
-name = "base_compat"
-path = "tests/base_compat.rs"
+name = "integration"
+path = "tests/integration/main.rs"
 
 [[test]]
-name = "legacy_button_compat"
-path = "tests/legacy_button_compat.rs"
-
-[[test]]
-name = "legacy_controls_compat"
-path = "tests/legacy_controls_compat.rs"
-
-[[test]]
-name = "table_dump_range"
-path = "tests/table_dump_range.rs"
-
-[[test]]
-name = "theme_compat"
-path = "tests/theme_compat.rs"
+name = "table_bench"
+path = "tests/table_bench.rs"
 
 [dependencies.anyhow]
 version = "1"
@@ -263,20 +280,26 @@ version = "0.4.38"
 version = "2.1.0"
 
 [dependencies.gpui]
-version = "0.3.1"
+version = "=0.3.12"
 package = "gpui-pre"
 
 [dependencies.gpui-base]
-version = "0.6.0"
+version = "0.10.0"
 
 [dependencies.gpui-component-macros]
-version = "0.6.0"
+version = "0.10.0"
+
+[dependencies.gpui-fast]
+version = "0.1.16"
+features = ["windows-manifest-provided-by-host"]
+optional = true
+package = "gpui-fast"
 
 [dependencies.gpui-kit-assets]
-version = "0.6.0"
+version = "0.10.0"
 
 [dependencies.gpui_macros]
-version = "0.3.1"
+version = "=0.3.12"
 package = "gpui-pre-macros"
 
 [dependencies.instant]
@@ -298,7 +321,7 @@ version = "1.0.0"
 features = ["serde"]
 
 [dependencies.notify]
-version = "7.0.0"
+version = "8.2.0"
 
 [dependencies.num-traits]
 version = "0.2"
@@ -307,6 +330,9 @@ version = "0.2"
 version = "1.19.0"
 
 [dependencies.paste]
+version = "1"
+
+[dependencies.regex]
 version = "1"
 
 [dependencies.ropey]
@@ -319,10 +345,6 @@ features = [
 
 [dependencies.rust-i18n]
 version = "4.2.0"
-
-[dependencies.rust_decimal]
-version = "1.37.0"
-optional = true
 
 [dependencies.schemars]
 version = "1"
@@ -337,32 +359,70 @@ version = "1"
 [dependencies.serde_repr]
 version = "0.1"
 
+[dependencies.similar]
+version = "2.7"
+features = ["unicode"]
+
 [dependencies.smallvec]
 version = "1"
 
 [dependencies.sum-tree]
-version = "0.3.1"
+version = "=0.3.12"
 package = "gpui-pre-sum-tree"
+
+[dependencies.syntect]
+version = "5.3.0"
+features = [
+    "parsing",
+    "default-syntaxes",
+    "regex-fancy",
+]
+optional = true
+default-features = false
 
 [dependencies.tracing]
 version = "0.1.41"
+
+[dependencies.two-face]
+version = "0.4.5"
+features = ["syntect-fancy"]
+optional = true
+default-features = false
+
+[dependencies.unicode-segmentation]
+version = "1"
+
+[dependencies.unicode-width]
+version = "0.2"
 
 [dependencies.uuid]
 version = "1.10"
 
 [dev-dependencies.gpui]
-version = "0.3.1"
+version = "=0.3.12"
 features = ["test-support"]
 package = "gpui-pre"
 
+[dev-dependencies.gpui-fast]
+version = "0.1.16"
+features = [
+    "windows-manifest-provided-by-host",
+    "test-support",
+]
+package = "gpui-fast"
+
 [dev-dependencies.indoc]
 version = "2"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies.cpal]
+version = "0.15.3"
+optional = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.smol]
 version = "2"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter]
-version = "0.26"
+version = "0.26.13"
 optional = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter-astro-next]
@@ -501,6 +561,10 @@ optional = true
 version = "1.1.2"
 optional = true
 
+[target.'cfg(target_os = "macos")'.dependencies.block2]
+version = "0.6"
+optional = true
+
 [target.'cfg(target_os = "macos")'.dependencies.core-text]
 version = "=21.0.0"
 
@@ -519,6 +583,27 @@ features = [
     "NSImage",
 ]
 
+[target.'cfg(target_os = "macos")'.dependencies.objc2-av-foundation]
+version = "0.3"
+features = [
+    "std",
+    "AVCaptureDevice",
+    "AVMediaFormat",
+]
+optional = true
+default-features = false
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-avf-audio]
+version = "0.3"
+features = [
+    "std",
+    "AVAudioBuffer",
+    "AVAudioFormat",
+    "AVAudioTypes",
+]
+optional = true
+default-features = false
+
 [target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
 version = "0.3"
 features = [
@@ -526,6 +611,22 @@ features = [
     "NSString",
     "NSGeometry",
 ]
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-speech]
+version = "0.3"
+features = [
+    "std",
+    "block2",
+    "objc2-avf-audio",
+    "SFSpeechRecognitionMetadata",
+    "SFSpeechRecognitionRequest",
+    "SFSpeechRecognitionResult",
+    "SFSpeechRecognitionTask",
+    "SFSpeechRecognizer",
+    "SFTranscription",
+]
+optional = true
+default-features = false
 
 [target.'cfg(target_os = "macos")'.dependencies.raw-window-handle]
 version = "0.6.2"
@@ -563,6 +664,7 @@ manual_is_multiple_of = "allow"
 map_entry = "allow"
 module_inception = "allow"
 non_canonical_partial_ord_impl = "allow"
+redundant_clone = "deny"
 reversed_empty_ranges = "allow"
 single_range_in_vec_init = "allow"
 todo = "deny"

@@ -2,15 +2,18 @@ pub use crate::component_traits::{Collapsible, Disableable, Selectable};
 pub use crate::sizing::{Sizable, Size, StyleSized};
 use gpui::{
     AnyElement, App, Bounds, BoxShadow, ContentMask, Corners, Edges, Element, ElementId,
-    FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, ParentElement,
-    Pixels, StyleRefinement, Styled, Window, div, hsla, point, px, rems,
+    FontWeight, GlobalElementId, Hsla, InspectorElementId, InteractiveElement as _, IntoElement,
+    LayoutId, ParentElement, Pixels, StyleRefinement, Styled, Window, div, hsla, point,
+    prelude::FluentBuilder as _, px, rems,
 };
 pub use gpui_base::{FocusableExt, RoleOverride, StyledExt, box_shadow, h_flex, v_flex};
 
 use crate::ActiveTheme as _;
 
-const FOCUS_RING_WIDTH: Pixels = px(3.);
-const FOCUS_RING_OPACITY: f32 = 0.5;
+pub(crate) const FOCUS_RING_WIDTH: Pixels = px(3.);
+pub(crate) const FOCUS_RING_OPACITY: f32 = 0.5;
+/// Gap between a borderless element's edge and a focus line drawn off it, in rem.
+const FOCUS_LINE_GAP: f32 = 0.125;
 
 /// The ring a focused control draws outside its edge.
 ///
@@ -401,7 +404,9 @@ pub trait ThemeStyled: Styled + Sized {
     ///
     /// The ring is dropped when [`crate::Theme::focus_ring`] is off, leaving
     /// the tinted border — an application whose layout clips its containers can
-    /// turn it off rather than finding room for the ring in each of them.
+    /// turn it off rather than finding room for the ring in each of them. An
+    /// element without a border draws a 1px line on its edge instead, so
+    /// borderless controls still show focus.
     ///
     /// Calling this turns the ring on; gate it with `when` for the conditions
     /// that decide whether the control shows one at all — its focus state,
@@ -433,12 +438,170 @@ pub trait ThemeStyled: Styled + Sized {
     }
 }
 
+impl<T: Styled + Sized> ThemeStyled for T {
+    /// Draw the focus ring the framework's own controls use.
+    ///
+    /// Calling this turns the ring on; gate it with `when` for the conditions
+    /// that decide whether the control shows one at all — its focus state,
+    /// [`crate::FocusableExt::focus_ring`], appearance, and so on.
+    ///
+    /// The ring sits outside the element's border, so an ancestor that clips
+    /// its content will cut it off — leave it a few pixels of room, or don't
+    /// clip.
+    fn focus_ring_style(self, window: &Window, cx: &App) -> Self
+    where
+        Self: ParentElement,
+    {
+        focus_style(self, FocusLine::Edge, window, cx)
+    }
+
+    fn popover_style(self, cx: &App) -> Self {
+        let theme = cx.theme();
+        // No border: the edge is the ring inside `popover_shadow`, which is how
+        // shadcn draws it and the only way the shadow can show through it.
+        self.bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .shadow(popover_shadow(popover_ring(cx), 1.))
+            .rounded(theme.radius)
+    }
+}
+
+fn border_widths(style: &StyleRefinement, rem_size: Pixels) -> Edges<Pixels> {
+    let width = |value: Option<gpui::AbsoluteLength>| {
+        value.map(|v| v.to_pixels(rem_size)).unwrap_or_default()
+    };
+    let widths = &style.border_widths;
+    Edges {
+        top: width(widths.top),
+        bottom: width(widths.bottom),
+        left: width(widths.left),
+        right: width(widths.right),
+    }
+}
+
+fn corner_radii(style: &StyleRefinement, rem_size: Pixels) -> Corners<Pixels> {
+    let radius = |value: Option<gpui::AbsoluteLength>| {
+        value.map(|v| v.to_pixels(rem_size)).unwrap_or_default()
+    };
+    let radii = &style.corner_radii;
+    Corners {
+        top_left: radius(radii.top_left),
+        top_right: radius(radii.top_right),
+        bottom_left: radius(radii.bottom_left),
+        bottom_right: radius(radii.bottom_right),
+    }
+}
+
+fn corner_radii_refinement(radius: Corners<Pixels>) -> StyleRefinement {
+    let mut style = StyleRefinement::default();
+    style.corner_radii.top_left = Some(radius.top_left.into());
+    style.corner_radii.top_right = Some(radius.top_right.into());
+    style.corner_radii.bottom_left = Some(radius.bottom_left.into());
+    style.corner_radii.bottom_right = Some(radius.bottom_right.into());
+    style
+}
+
+/// Where a borderless element draws its 1px focus line when
+/// [`crate::Theme::focus_ring`] is off.
+#[derive(Clone, Copy)]
+pub(crate) enum FocusLine {
+    /// On the element's edge, in the `ring` colour. For elements whose
+    /// content sits clear of the edge and that have no fill of their own.
+    Edge,
+    /// Inset from the edge, in the given colour. For filled elements, where
+    /// the `ring` colour can land close to the fill; pass a colour that
+    /// contrasts with it, such as the element's foreground.
+    Inside(Hsla),
+    /// Just outside the edge, in the `ring` colour. For elements with no
+    /// padding, where a line on the edge would touch their text.
+    Outside,
+}
+
+/// Style a focused element as [`ThemeStyled::focus_ring_style`] does, with
+/// `line` choosing where a borderless element draws its focus line.
+pub(crate) fn focus_style<T: Styled + ParentElement>(
+    mut element: T,
+    line: FocusLine,
+    window: &Window,
+    cx: &App,
+) -> T {
+    let theme = cx.theme();
+    if theme.focus_ring {
+        return focus_ring(
+            element.border_color(theme.ring),
+            window,
+            theme.ring.alpha(FOCUS_RING_OPACITY),
+        );
+    }
+
+    // The ring is painted outside the border, so a clipping ancestor cuts it
+    // off. An application whose layout clips heavily turns it off in the theme
+    // and keeps the tinted border, which takes no space.
+    let rem_size = window.rem_size();
+    if border_widths(element.style(), rem_size).any(|width| *width > Pixels::ZERO) {
+        return element.border_color(theme.ring);
+    }
+
+    let gap = rem_size * FOCUS_LINE_GAP;
+    let (color, inset) = match line {
+        FocusLine::Edge => (theme.ring, Pixels::ZERO),
+        FocusLine::Inside(color) => (color, gap),
+        FocusLine::Outside => (theme.ring, -gap),
+    };
+    // Shrinking or growing the box by `inset` keeps the line concentric with
+    // the element's own corners.
+    let radius =
+        corner_radii(element.style(), rem_size).map(|value| (*value - inset).max(Pixels::ZERO));
+    element.child(
+        div()
+            .when(cfg!(test), |this| {
+                this.debug_selector(|| "focus-ring".into())
+            })
+            .flex_none()
+            .absolute()
+            .top(inset)
+            .left(inset)
+            .right(inset)
+            .bottom(inset)
+            .border_1()
+            .border_color(color)
+            .refine_style(&corner_radii_refinement(radius)),
+    )
+}
+
+/// Paint only the outside band, preserving translucent control backgrounds.
+pub(crate) fn focus_ring<T: Styled + ParentElement>(
+    mut element: T,
+    window: &Window,
+    color: Hsla,
+) -> T {
+    let rem_size = window.rem_size();
+    let border_widths = border_widths(element.style(), rem_size);
+    let radius = corner_radii(element.style(), rem_size).map(|value| *value + FOCUS_RING_WIDTH);
+    let ring_style = corner_radii_refinement(radius);
+    let inset = FOCUS_RING_WIDTH;
+
+    element.child(
+        div()
+            .when(cfg!(test), |this| {
+                this.debug_selector(|| "focus-ring".into())
+            })
+            .flex_none()
+            .absolute()
+            .top(-(inset + border_widths.top))
+            .left(-(inset + border_widths.left))
+            .right(-(inset + border_widths.right))
+            .bottom(-(inset + border_widths.bottom))
+            .border(FOCUS_RING_WIDTH)
+            .border_color(color)
+            .refine_style(&ring_style),
+    )
+}
+
 /// Tint `element`'s border with the focus colour and draw `ring` outside it.
 ///
-/// [`ThemeStyled::focus_ring_style`] draws the default ring through this, and
-/// Button, Switch, Input and Checkbox draw [`crate::Theme::button_focus_ring`],
-/// so all are the same absolutely positioned child, which takes no layout
-/// space.
+/// Button, Switch, Input and Checkbox draw [`crate::Theme::button_focus_ring`]
+/// through this, as an absolutely positioned child that takes no layout space.
 pub(crate) fn apply_focus_ring<E: Styled + ParentElement>(
     mut element: E,
     ring: FocusRing,
@@ -454,60 +617,15 @@ pub(crate) fn apply_focus_ring<E: Styled + ParentElement>(
 
     let rem_size = window.rem_size();
     let inset = ring.gap + ring.width;
-    let style = element.style();
-    let border_widths = Edges::<Pixels> {
-        top: style
-            .border_widths
-            .top
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-        bottom: style
-            .border_widths
-            .bottom
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-        left: style
-            .border_widths
-            .left
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-        right: style
-            .border_widths
-            .right
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-    };
-    let radius = Corners::<Pixels> {
-        top_left: style
-            .corner_radii
-            .top_left
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-        top_right: style
-            .corner_radii
-            .top_right
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-        bottom_left: style
-            .corner_radii
-            .bottom_left
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-        bottom_right: style
-            .corner_radii
-            .bottom_right
-            .map(|v| v.to_pixels(rem_size))
-            .unwrap_or_default(),
-    }
-    .map(|value| *value + inset);
-    let mut ring_style = StyleRefinement::default();
-    ring_style.corner_radii.top_left = Some(radius.top_left.into());
-    ring_style.corner_radii.top_right = Some(radius.top_right.into());
-    ring_style.corner_radii.bottom_left = Some(radius.bottom_left.into());
-    ring_style.corner_radii.bottom_right = Some(radius.bottom_right.into());
+    let border_widths = border_widths(element.style(), rem_size);
+    let radius = corner_radii(element.style(), rem_size).map(|value| *value + inset);
+    let ring_style = corner_radii_refinement(radius);
 
     element.border_color(cx.theme().ring).child(
         div()
+            .when(cfg!(test), |this| {
+                this.debug_selector(|| "focus-ring".into())
+            })
             .flex_none()
             .absolute()
             .top(-(inset + border_widths.top))
@@ -520,31 +638,19 @@ pub(crate) fn apply_focus_ring<E: Styled + ParentElement>(
     )
 }
 
-impl<T: Styled + Sized> ThemeStyled for T {
-    /// Draw the focus ring the framework's own controls use.
-    ///
-    /// Calling this turns the ring on; gate it with `when` for the conditions
-    /// that decide whether the control shows one at all — its focus state,
-    /// [`crate::FocusableExt::focus_ring`], appearance, and so on.
-    ///
-    /// The ring sits outside the element's border, so an ancestor that clips
-    /// its content will cut it off — leave it a few pixels of room, or don't
-    /// clip.
-    fn focus_ring_style(self, window: &Window, cx: &App) -> Self
-    where
-        Self: ParentElement,
-    {
-        apply_focus_ring(self, FocusRing::default(), window, cx)
-    }
-
-    fn popover_style(self, cx: &App) -> Self {
-        let theme = cx.theme();
-        // No border: the edge is the ring inside `popover_shadow`, which is how
-        // shadcn draws it and the only way the shadow can show through it.
-        self.bg(theme.popover)
-            .text_color(theme.popover_foreground)
-            .shadow(popover_shadow(popover_ring(cx), 1.))
-            .rounded(theme.radius)
+/// Style a focused element with `ring` when [`crate::Theme::focus_ring`] is
+/// on, and otherwise fall back to [`focus_style`] with `line`.
+pub(crate) fn apply_focus_style<E: Styled + ParentElement>(
+    element: E,
+    ring: FocusRing,
+    line: FocusLine,
+    window: &Window,
+    cx: &App,
+) -> E {
+    if cx.theme().focus_ring {
+        apply_focus_ring(element, ring, window, cx)
+    } else {
+        focus_style(element, line, window, cx)
     }
 }
 
@@ -567,10 +673,34 @@ mod tests {
         let openers = [
             (fill(40., 200.), Opener::Above(px(5.))),
             (fill(40., 200.), Opener::Below(px(5.))),
-            (fill(40., 200.), Opener::At { y: px(35.), gap: px(5.) }),
-            (fill(40., 200.), Opener::At { y: px(205.), gap: px(5.) }),
-            (fill(40., 200.), Opener::Row { top: px(36.), bottom: px(37.) }),
-            (fill(40., 200.), Opener::Row { top: px(201.), bottom: px(202.) }),
+            (
+                fill(40., 200.),
+                Opener::At {
+                    y: px(35.),
+                    gap: px(5.),
+                },
+            ),
+            (
+                fill(40., 200.),
+                Opener::At {
+                    y: px(205.),
+                    gap: px(5.),
+                },
+            ),
+            (
+                fill(40., 200.),
+                Opener::Row {
+                    top: px(36.),
+                    bottom: px(37.),
+                },
+            ),
+            (
+                fill(40., 200.),
+                Opener::Row {
+                    top: px(201.),
+                    bottom: px(202.),
+                },
+            ),
         ];
         for viewport in [size(px(12_000.), px(800.)), size(px(600.), px(12_000.))] {
             for (fill, opener) in openers {

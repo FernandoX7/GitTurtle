@@ -1607,7 +1607,7 @@ impl GitTurtle {
                     cx.notify();
                 }),
             )
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                 let delta = event.delta.pixel_delta(px(24.));
                 let pan = this.image_comparison.pan;
                 this.pan_image([pan[0] + f32::from(delta.x), pan[1] + f32::from(delta.y)]);

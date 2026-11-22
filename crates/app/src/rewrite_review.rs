@@ -4727,11 +4727,12 @@ mod tests {
                     "{at}: the box's scrollbar cues the failure's rest"
                 );
                 for _ in 0..4 {
-                    cx.simulate_event(gpui::ScrollWheelEvent {
+                    cx.simulate_event(gpui::ScrollEvent {
                         position: files.center(),
                         delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-300.))),
                         modifiers: Modifiers::default(),
                         touch_phase: gpui::TouchPhase::Moved,
+                        source: Default::default(),
                     });
                     draw(cx);
                 }
@@ -5974,11 +5975,12 @@ mod tests {
         // first brings it into the body's view, as a person's does: over
         // the box's place while the body hides it, it reaches no scroller.
         let wheel = |at: gpui::Point<Pixels>, cx: &mut gpui::VisualTestContext| {
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position: at,
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-300.))),
                 modifiers: Modifiers::default(),
                 touch_phase: gpui::TouchPhase::Moved,
+                source: Default::default(),
             });
             draw(cx);
         };

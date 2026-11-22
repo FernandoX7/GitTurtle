@@ -186,11 +186,12 @@ async fn body_scroll_release_benchmark(cx: &mut TestAppContext) {
             } else if !down && before >= px(-0.5) {
                 down = true;
             }
-            let event = PlatformInput::ScrollWheel(ScrollWheelEvent {
+            let event = PlatformInput::Scroll(ScrollEvent {
                 position,
                 delta: ScrollDelta::Lines(point(0., if down { -3. } else { 3. })),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             // The update's effects draw the window the scroll dirtied, once, before it
             // returns (the test app's `flush_effects`).

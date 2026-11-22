@@ -1,7 +1,7 @@
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, FocusHandle, Global, GlobalElementId,
-    InteractiveElement, Interactivity, IntoElement, LayoutId, ParentElement, Pixels,
-    StatefulInteractiveElement, StyleRefinement, Styled, WeakFocusHandle, Window,
+    InteractiveElement, Interactivity, LayoutId, ParentElement, Pixels, StatefulInteractiveElement,
+    StyleRefinement, Styled, WeakFocusHandle, Window,
 };
 use std::collections::HashMap;
 
@@ -90,16 +90,25 @@ impl FocusTrapManager {
 
     /// Find which focus trap contains the currently focused element
     fn find_active_trap(window: &Window, cx: &App) -> Option<FocusHandle> {
-        for (_id, container_handle) in Self::global(cx).traps.iter() {
+        let mut active: Option<FocusHandle> = None;
+        for container_handle in Self::global(cx).traps.values() {
             let Some(container) = container_handle.upgrade() else {
                 continue;
             };
 
-            if container.contains_focused(window, cx) {
-                return Some(container.clone());
+            if container.contains_focused(window, cx)
+                && active
+                    .as_ref()
+                    .is_none_or(|current| current.contains(&container, window))
+            {
+                // A child scope must confine navigation even if its ancestor
+                // was registered first (or visited first by the HashMap).
+                // Use the rendered focus tree so closing and reopening a
+                // retained scope cannot leave registration order in control.
+                active = Some(container);
             }
         }
-        None
+        active
     }
 
     /// Cleanup any traps with dropped handles
@@ -169,7 +178,8 @@ impl<E: InteractiveElement + ParentElement + Styled + Element> FocusTrapContaine
     }
 }
 
-impl<E: InteractiveElement + ParentElement + Styled + Element> IntoElement
+#[cfg(not(feature = "gpui-fast"))]
+impl<E: InteractiveElement + ParentElement + Styled + Element> gpui::IntoElement
     for FocusTrapContainer<E>
 {
     type Element = Self;
@@ -216,14 +226,14 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         None
     }
 
-    // GitTurtle patch: trapping keyboard focus must preserve the wrapped
-    // element's accessible role, metadata and synthetic subtree.
     fn a11y_role(&self) -> Option<gpui::Role> {
         self.base.a11y_role()
     }
 
     fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
         self.base.write_a11y_info(node);
+        // GitTurtle patch: modal dialogs announce modal state and capture
+        // visible plain-text DialogTitle fallback names.
         if matches!(node.role(), gpui::Role::Dialog | gpui::Role::AlertDialog) {
             node.set_modal();
             if node.label().is_none() && node.labelled_by().is_empty() {
@@ -249,7 +259,7 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         prepaint: &mut Self::PrepaintState,
         builder: &mut gpui::A11ySubtreeBuilder,
     ) {
-        Element::a11y_synthetic_children(&mut self.base, prepaint, builder);
+        self.base.a11y_synthetic_children(prepaint, builder);
         if let Some(title) = self.synthetic_title(builder.parent_node()) {
             let title_id = builder.synthetic_node_id("dialog-visible-title");
             if builder.push_child(title_id, title) {
@@ -367,4 +377,38 @@ pub fn focused_modal_titles(window: &Window, cx: &App) -> Vec<gpui::accesskit::N
         })
         .filter_map(|(id, _)| manager.modals.get(id).and_then(|(_, title)| title.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TestSupportExt as _;
+    use gpui::{Role, TestAppContext, accesskit, div};
+
+    #[gpui::test]
+    fn trap_exports_inner_semantics_through_the_outer_native_hooks(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            for (role, name) in [
+                (Role::Dialog, "Edit server"),
+                (Role::AlertDialog, "Delete server?"),
+            ] {
+                let trap = div()
+                    .id("inner-host")
+                    .test_support()
+                    .role(role)
+                    .aria_label(name)
+                    .aria_description("Server settings")
+                    .focus_trap("outer-trap", &cx.focus_handle());
+                // GPUI calls hooks on the outer Element. An observed inner
+                // div alone can claim these semantics while the real element
+                // silently drops them. Check the exact native boundary.
+                assert_eq!(Element::id(&trap), Some("outer-trap".into()));
+                assert_eq!(trap.a11y_role(), Some(role));
+                let mut node = accesskit::Node::new(role);
+                trap.write_a11y_info(&mut node);
+                assert_eq!(node.label(), Some(name));
+                assert_eq!(node.description(), Some("Server settings"));
+            }
+        });
+    }
 }

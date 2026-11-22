@@ -319,7 +319,7 @@ impl GitTurtle {
             _ => false,
         };
         if !stays && !still.moved {
-            gpui_kit::component::Root::hide_tooltip(window, cx);
+            gpui_kit::component::hide_tooltip(window, cx);
         }
         still.moved |= !stays;
     }
@@ -2564,7 +2564,7 @@ mod tests {
             heading_action_under_a_still_pointer(&app, cx, 4, "stage-all").await;
             // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]
             let press = |cx: &mut VisualTestContext| {
-                let key = gpui::Keystroke::parse(key).unwrap();
+                let key = gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap();
                 cx.simulate_event(gpui::KeyDownEvent {
                     keystroke: key.clone(),
                     is_held: false,
@@ -4144,7 +4144,7 @@ mod tests {
             Press::Space => Some("space"),
         };
         if let Some(key) = key {
-            let key = gpui::Keystroke::parse(key).unwrap();
+            let key = gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap();
             cx.simulate_event(gpui::KeyDownEvent {
                 keystroke: key.clone(),
                 is_held: false,
@@ -5214,11 +5214,12 @@ mod tests {
             .debug_bounds("reflog-explanation")
             .expect("the Reflog's explanation");
         cx.simulate_mouse_move(explanation.center(), None, Modifiers::default());
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: explanation.center(),
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
             modifiers: Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
+            source: Default::default(),
         });
         draw(cx);
         let review = ["review-reflog-recovery"];
@@ -6373,7 +6374,8 @@ mod tests {
         /// A whole press of `key`: GPUI's keyboard click waits for the key
         /// up.
         fn whole_press(cx: &mut VisualTestContext, key: &str) {
-            let keystroke = gpui::Keystroke::parse(key).expect("a keystroke");
+            let keystroke = gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                .expect("a keystroke");
             cx.simulate_event(gpui::KeyDownEvent {
                 keystroke: keystroke.clone(),
                 is_held: false,
@@ -8116,9 +8118,10 @@ mod tests {
                 Some(status.entries[index].path.to_string_lossy().into_owned())
             })
         };
+        let secondary = cx.read(Modifiers::secondary_key);
         click(cx, "delta.txt", Modifiers::default());
-        click(cx, "epsilon.txt", Modifiers::secondary_key());
-        click(cx, "zeta.txt", Modifiers::secondary_key());
+        click(cx, "epsilon.txt", secondary);
+        click(cx, "zeta.txt", secondary);
         assert_eq!(selection(cx), ["delta.txt", "epsilon.txt", "zeta.txt"]);
         assert_eq!(cursor(cx).as_deref(), Some("zeta.txt"));
         delete_outside(&app, cx, "zeta.txt");
@@ -9782,8 +9785,9 @@ mod tests {
             cx.simulate_click(row.center(), modifiers);
             preview_landed(&app, cx);
         };
+        let secondary = cx.read(Modifiers::secondary_key);
         for (gesture, modifiers) in [
-            ("Command-click", Modifiers::secondary_key()),
+            ("Command-click", secondary),
             ("Shift-click", Modifiers::shift()),
         ] {
             click(cx, "another.txt", Modifiers::default());
@@ -11944,7 +11948,11 @@ mod tests {
         // Each key is taken at once, before the selection's read can land.
         cx.update(|window, cx| {
             for key in ["down", "up", "shift-f10"] {
-                window.dispatch_keystroke(Keystroke::parse(key).expect("a keystroke"), cx);
+                window.dispatch_keystroke(
+                    Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                        .expect("a keystroke"),
+                    cx,
+                );
             }
         });
         next_frame(cx);

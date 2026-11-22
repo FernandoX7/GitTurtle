@@ -115,15 +115,9 @@ DPKG_PC_ROOTS = ("/usr/lib", "/usr/share")
 # directories hold.
 UBUNTU_LOCAL_DIRECTORIES = ("/usr/local/include", "/usr/local/lib")
 # pkg-config names a locked build script asks for that no build package ships.
-# aws-lc-sys asks for openssl, aws-lc, libcrypto and libcrypto-awslc and links a
-# system AWS-LC when one of them resolves to one; libssl-dev ships the first and
-# the third. pkgconf answers a name it has no file for from any .pc whose
-# Provides names it, so these two could resolve on one image and not on the
-# next, and Cargo would not rerun the build script. What each resolves to is
-# keyed, and one that resolves sends the key to the complete inventory: the
-# closure is then not all a build reads. A test holds this tuple equal to the
-# unsupplied names of the lock's probers.
-UBUNTU_UNSUPPLIED_PROBES = ("aws-lc", "libcrypto-awslc")
+# A test holds this tuple equal to the unsupplied names of the lock's probers.
+# Empty since gpui-kit 0.10.0 dropped aws-lc-sys.
+UBUNTU_UNSUPPLIED_PROBES = ()
 # Variables that send pkg-config to directories of the job's own choosing: the
 # pkg-config crate hands the tool the first set form of each (FLAG_TARGETED's
 # forms) under the plain name. The .pc files of the directories the first two

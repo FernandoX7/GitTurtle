@@ -51,8 +51,8 @@ complete recovered notice. Cargo metadata may download missing locked crates.
 
 ```sh
 python3 scripts/collect-third-party-licenses.py --target x86_64-unknown-linux-gnu /tmp/gitturtle-linux-licenses
-# Required before distributing a public binary. Linux targets are complete;
-# aarch64-apple-darwin still reports missing notices.
+# Required before distributing a public binary. Both Linux and macOS targets
+# pass --require-complete on GPUI Kit 0.10.0 / GPUI 0.3.12 (objc2).
 python3 scripts/collect-third-party-licenses.py --require-complete --target x86_64-unknown-linux-gnu /tmp/gitturtle-release-licenses
 ```
 
@@ -66,9 +66,10 @@ distribution requirements.
 The [Linux notice review](linux-notice-review.md) records exact package/source
 identity for the two Linux gaps, the upstream findings, and how each was
 resolved: the Rust `ufbx` wrapper's by its 0.11.5 release, `mac`'s by the
-owner's license review. The four macOS-only packages (`block`,
-`objc_exception`, `leak` and `leaky-cow`) are not decided and stay
-review-required.
+owner's license review. The four previously unresolved macOS-only packages
+(`block`, `objc_exception`, `leak`, and `leaky-cow`) left `gitturtle`'s
+packaged binary graph with the GPUI Kit 0.10.0 / GPUI 0.3.12 `objc2` upgrade,
+so macOS targets now pass `--require-complete` as well.
 
 Complete notices do not upload a CI package by themselves: its platform must
 also be listed in `HOSTED_UPLOAD_PLATFORMS` in `scripts/ci/packages.py`. Linux

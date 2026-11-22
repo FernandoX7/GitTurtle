@@ -209,11 +209,12 @@ async fn panel_frames_release_benchmark(cx: &mut TestAppContext) {
             } else if !down && before >= px(-0.5) {
                 down = true;
             }
-            let event = PlatformInput::ScrollWheel(ScrollWheelEvent {
+            let event = PlatformInput::Scroll(ScrollEvent {
                 position,
                 delta: ScrollDelta::Lines(point(0., if down { -3. } else { 3. })),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             let laid = line_layouts();
             // The update's effects draw the window the scroll dirtied before it returns (the

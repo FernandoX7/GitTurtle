@@ -3,6 +3,7 @@ use gpui::{
     RenderOnce, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _, px,
 };
+use gpui_base::{LogicalStyledExt as _, TestSupportExt as _};
 
 use crate::{ActiveTheme as _, AxisExt, Icon, Size, StyleSized, StyledExt as _, ThemeStyled as _};
 
@@ -106,8 +107,11 @@ impl RenderOnce for StepperTrigger {
 
         div()
             .id(("trigger", self.step))
+            .test_support()
             .when(self.layout.is_horizontal(), |this| this.v_flex().gap_1())
-            .when(self.layout.is_vertical(), |this| this.h_flex().gap_2())
+            .when(self.layout.is_vertical(), |this| {
+                this.h_flex().flex_row_dir(cx).gap_2()
+            })
             .items_start()
             .when(self.text_center, |this| this.items_center())
             .input_text_size(self.size.smaller())

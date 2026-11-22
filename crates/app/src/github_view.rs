@@ -661,9 +661,10 @@ pub(super) struct OpenRefusal {
     /// window, so a frame that changes none of that lays out no popup to choose it again and
     /// asks for no frame more ([`PlacedAnswer`]).
     placed: std::rc::Rc<std::cell::RefCell<Option<AnswerSide>>>,
-    /// Whether Pull requests was last laid out with a keyboard press's answer kept, so the
-    /// button offers no pointer tooltip from that answer's second frame
-    /// ([`GitTurtle::refusing_pull_requests`]).
+    /// Whether the last frame drawn already showed a keyboard press's answer at the button: a
+    /// pointer hover that starts on Frame 2+ of an answer stays suppressed even after the write
+    /// ends, without detaching the trigger's tooltip (which would drop `TooltipLifetime` and tear
+    /// down a pointer resting since Frame 1).
     answered: std::rc::Rc<std::cell::Cell<bool>>,
     /// Whether the kit's tooltip overlay built the button's pointer tooltip in the last frame
     /// drawn as the empty view it builds for a request the button made while a keyboard press's
@@ -675,6 +676,9 @@ pub(super) struct OpenRefusal {
     /// neighbour's hover that took the overlay since is never hidden for a request it no
     /// longer holds.
     built_empty: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Whether the empty build came from a hover that started after the answer's first frame, so
+    /// the button's prepaint hides the overlay even while the pointer rests on the button.
+    built_suppressed: std::rc::Rc<std::cell::Cell<bool>>,
     /// The key of a keyboard press of Pull requests the panel refused as it went down, until
     /// it comes up: its repeats answer nothing more and its key-up presses nothing, also once
     /// the write has ended ([`GitTurtle::pull_requests_key_down`]). This latch is the
@@ -997,11 +1001,10 @@ impl Element for PlacedAnswer {
             }
         };
         self.side.set(Some(side));
-        // Laid out where the kit's tooltip overlay lays its positioner out, after the window's
-        // content, at its foot: the positioner moves the popup by whole pixels from there, so
-        // the two stand on the same pixels. Laid out at the window's top, the answer stood a
-        // pixel below the pointer's tooltip where the popup's place fell on a half pixel.
-        let origin = point(px(0.), window.viewport_size().height);
+        // Laid out where the kit's tooltip overlay lays its positioner out, in an absolute inset-0
+        // layer at the window's origin: the positioner moves the popup by whole pixels from there,
+        // so the two stand on the same pixels.
+        let origin = Point::default();
         self.positioned = drawn.map(|(mut positioned, _)| {
             positioned.prepaint_at(origin, window, cx);
             positioned
@@ -1127,28 +1130,30 @@ impl GitTurtle {
         };
         let owner = cx.entity().downgrade();
         // Where it lies, for the answer a keyboard press gets beside it, which the answer reads
-        // as it is placed later in the same frame, and whether that answer was kept as it was
-        // last laid out, which a frame drawn next takes its pointer tooltip away for.
-        let (laid, answered, answering, app) = (
+        // as it is placed later in the same frame. Keep the trigger's tooltip attached while an
+        // answer stands so `TooltipLifetime` never tears down a pointer resting since Frame 1; a
+        // hover that begins on Frame 2+ captures `suppressed = true` and yields an empty view that
+        // prepaint hides even while the pointer rests on the button.
+        let (laid, answering, answered) = (
             self.github_refusal.button.clone(),
-            self.github_refusal.answered.clone(),
             self.github_refusal_kept().is_some(),
-            cx.entity_id(),
+            self.github_refusal.answered.clone(),
         );
-        let pointer_tooltip = !(answering && answered.get());
+        let suppressed = answering && answered.get();
         let built_empty = self.github_refusal.built_empty.clone();
+        let built_suppressed = self.github_refusal.built_suppressed.clone();
         built_empty.set(false);
-        let (resting, held) = (laid.clone(), built_empty.clone());
+        built_suppressed.set(false);
+        let (resting, held, hide_suppressed) =
+            (laid.clone(), built_empty.clone(), built_suppressed.clone());
         let open = gpui_kit::base::ElementExt::on_prepaint(open, move |bounds, window, cx| {
             laid.set(bounds);
-            let began = answered.replace(answering) != answering;
-            if answering && began {
-                cx.notify(app);
-            }
+            answered.set(answering);
             // The overlay built the button's request, made while an answer stood, as nothing in
-            // this frame, under a pointer that has left the button: hand the overlay back.
-            if held.get() && !pointer_rests(window, bounds) {
-                gpui_kit::component::Root::hide_tooltip(window, cx);
+            // this frame, either under a pointer that has left the button or from a hover that
+            // started after the answer's first frame: hand the overlay back.
+            if hide_suppressed.get() || (held.get() && !pointer_rests(window, bounds)) {
+                gpui_kit::component::hide_tooltip(window, cx);
             }
         });
         open.accessibility_disabled(refused)
@@ -1159,38 +1164,38 @@ impl GitTurtle {
             .capture_key_down(cx.listener(Self::pull_requests_key_down))
             .capture_key_up(cx.listener(Self::pull_requests_key_up))
             .on_action(cx.listener(Self::pull_requests_escape))
-            .when(pointer_tooltip, |open| {
-                let build = move |window: &mut Window, cx: &mut App| {
-                    let (drawn, kept, refusal) =
-                        owner.upgrade().map_or((false, false, None), |app| {
-                            let app = app.read(cx);
-                            (
-                                app.page == AppPage::Repository && app.repository.is_some(),
-                                app.github_refusal_kept().is_some(),
-                                app.github_open_refusal(),
-                            )
-                        });
-                    // The header draws the button only on the Repository page, where its
-                    // prepaint keeps `answering` and `resting` for this frame: elsewhere they
-                    // are the last Repository frame's, and a request still held, under a
-                    // pointer in the button's old place, drew the reason over Settings and the
-                    // idle sentence once the write ended. A page change hides the overlay too
-                    // (`GitTurtle::hide_tooltip_on_page_change`).
-                    if !drawn {
-                        return cx.new(|_| gpui::EmptyView).into();
-                    }
-                    // A pointer that met the button in the answer's first frame asked for this
-                    // tooltip: an empty view, drawn as nothing beside the answer, and once the
-                    // answer has gone, under a pointer that has left the button since.
-                    if kept || (answering && !pointer_rests(window, resting.get())) {
-                        built_empty.set(true);
-                        return cx.new(|_| gpui::EmptyView).into();
-                    }
-                    let text =
-                        refusal.map_or(SharedString::new_static(idle), open_refused_sentence);
-                    pull_requests_tooltip(text, cx)
-                };
-                open.tooltip_view_at(side, build)
+            .tooltip_view_at(side, move |window, cx| {
+                let (drawn, kept, refusal) = owner.upgrade().map_or((false, false, None), |app| {
+                    let app = app.read(cx);
+                    (
+                        app.page == AppPage::Repository && app.repository.is_some(),
+                        app.github_refusal_kept().is_some(),
+                        app.github_open_refusal(),
+                    )
+                });
+                // The header draws the button only on the Repository page, where its
+                // prepaint keeps `answering` and `resting` for this frame: elsewhere they
+                // are the last Repository frame's, and a request still held, under a
+                // pointer in the button's old place, drew the reason over Settings and the
+                // idle sentence once the write ended. A page change hides the overlay too
+                // (`GitTurtle::hide_tooltip_on_page_change`).
+                if !drawn {
+                    return cx.new(|_| gpui::EmptyView).into();
+                }
+                // A pointer that met the button after the answer's first frame stays suppressed
+                // even after the write ends; one that met it in the first frame draws nothing
+                // beside the answer, and once the answer has gone, nothing if it has left since.
+                if suppressed {
+                    built_empty.set(true);
+                    built_suppressed.set(true);
+                    return cx.new(|_| gpui::EmptyView).into();
+                }
+                if kept || (answering && !pointer_rests(window, resting.get())) {
+                    built_empty.set(true);
+                    return cx.new(|_| gpui::EmptyView).into();
+                }
+                let text = refusal.map_or(SharedString::new_static(idle), open_refused_sentence);
+                pull_requests_tooltip(text, cx)
             })
     }
 
@@ -1279,7 +1284,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         self.say_github_open_refused(reason, cx);
-        gpui_kit::component::Root::hide_tooltip(window, cx);
+        gpui_kit::component::hide_tooltip(window, cx);
         self.github_refusal.at_button = Some(KeptAnswer {
             reason,
             view: pull_requests_tooltip(open_refused_sentence(reason), cx),
@@ -9776,11 +9781,12 @@ mod tests {
         draw(cx);
         let wheel = |cx: &mut VisualTestContext, by: Pixels| {
             let body = cx.debug_bounds("github-panel").expect("the body");
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: body.center(),
                 delta: ScrollDelta::Pixels(point(px(0.), by)),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             draw(cx);
         };
@@ -10032,6 +10038,8 @@ mod tests {
             panel
         });
         settle_panel(&app, cx).await;
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
         draw(cx);
 
         // Refresh while the operation thread is held, as by a slow request,
@@ -14860,11 +14868,12 @@ mod tests {
                     "{at}: focus is where the walk put it"
                 );
                 let body = cx.debug_bounds("github-panel").expect("the body");
-                cx.simulate_event(ScrollWheelEvent {
+                cx.simulate_event(ScrollEvent {
                     position: body.origin + point(px(2.), px(2.)),
                     delta: ScrollDelta::Pixels(point(px(0.), px(5000.))),
                     modifiers: Modifiers::default(),
                     touch_phase: TouchPhase::Moved,
+                    source: Default::default(),
                 });
                 frames(cx);
                 assert_eq!(scroll.offset().y, px(0.), "{at}: the wheel reaches the top");
@@ -16734,11 +16743,12 @@ mod tests {
             // The wheel, over the body's top corner, clear of the conversation list, takes the
             // body to its top.
             let body = cx.debug_bounds("github-panel").expect("the body");
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: body.origin + point(px(2.), px(2.)),
                 delta: ScrollDelta::Pixels(point(px(0.), -scroll.offset().y + px(100.))),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             let wheeled = settle(cx);
             assert_eq!(
@@ -17533,11 +17543,12 @@ mod tests {
         // The wheel, over the body's top corner, clear of the conversation list, takes the body
         // back to its top, the control out of view.
         let body = cx.debug_bounds("github-panel").expect("the body");
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: body.origin + point(px(2.), px(2.)),
             delta: ScrollDelta::Pixels(point(px(0.), -shown + px(100.))),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: Default::default(),
         });
         for _ in 0..3 {
             crate::width_walk::frame(cx);
@@ -19907,6 +19918,8 @@ mod tests {
             let at = format!("{interface} pt in {width} × {height}");
             crate::focus_ring::sweep::interface_size(cx, interface);
             cx.simulate_resize(size(px(width), px(height)));
+            cx.executor()
+                .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
             let mut drawn = Vec::new();
             for section in [
                 Section::Overview,
@@ -20455,7 +20468,7 @@ mod tests {
 
     fn key_down(cx: &mut VisualTestContext, key: &str, is_held: bool) {
         cx.simulate_event(gpui::KeyDownEvent {
-            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
             is_held,
             prefer_character_input: false,
         });
@@ -20463,7 +20476,7 @@ mod tests {
 
     fn key_up(cx: &mut VisualTestContext, key: &str) {
         cx.simulate_event(gpui::KeyUpEvent {
-            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
         });
     }
 
@@ -20932,8 +20945,10 @@ mod tests {
                 let button = cx.debug_bounds("pull-requests").expect("the button");
                 cx.simulate_mouse_move(button.center(), None, Modifiers::default());
                 draw(cx);
-                cx.executor()
-                    .advance_clock(TOOLTIP_DELAY + Duration::from_millis(150));
+                cx.executor().advance_clock(TOOLTIP_DELAY);
+                cx.run_until_parked();
+                draw(cx);
+                cx.executor().advance_clock(Duration::from_millis(160));
                 cx.run_until_parked();
                 draw(cx);
                 let pointer = tooltip_popups(cx);
@@ -25388,7 +25403,8 @@ mod tests {
         cx.update(|window, cx| {
             window.dispatch_event(
                 gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
-                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                    keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                        .unwrap(),
                     is_held: held,
                     prefer_character_input: false,
                 }),
@@ -25402,7 +25418,8 @@ mod tests {
         cx.update(|window, cx| {
             window.dispatch_event(
                 gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
-                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                    keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                        .unwrap(),
                 }),
                 cx,
             );
@@ -27027,7 +27044,10 @@ mod tests {
             key_goes_down(cx, key, false);
         } else {
             cx.update(|window, cx| {
-                window.dispatch_keystroke(gpui::Keystroke::parse(key).unwrap(), cx);
+                window.dispatch_keystroke(
+                    gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
+                    cx,
+                );
             });
         }
     }
@@ -27247,7 +27267,9 @@ mod tests {
         const COMMAND_RETURN: &str = "cmd-enter";
         key_goes_down(cx, COMMAND_RETURN, false);
         // As the platform delivers it: its key-up, where it sends one.
-        if !key_up_withheld(&gpui::Keystroke::parse(COMMAND_RETURN).unwrap()) {
+        if !key_up_withheld(
+            &gpui::Keystroke::parse_with_os(COMMAND_RETURN, crate::shortcuts::host_os()).unwrap(),
+        ) {
             key_comes_up(cx, COMMAND_RETURN);
         }
         draw(cx);
@@ -28213,11 +28235,12 @@ mod tests {
         assert!(panel.read_with(cx, |panel, _| panel.pending), "sent");
         let wheel = |cx: &mut VisualTestContext, by: Pixels| {
             let body = cx.debug_bounds("github-panel").expect("the body");
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: body.center(),
                 delta: ScrollDelta::Pixels(point(px(0.), by)),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             draw(cx);
         };

@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    Anchor, App, Context, DismissEvent, ElementId, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
-    Subscription, Window, prelude::FluentBuilder,
+    Anchor, AnyElement, App, Context, DismissEvent, Element, ElementId, Entity, FocusHandle,
+    Focusable, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    RenderOnce, SharedString, StyleRefinement, Styled, Window, prelude::FluentBuilder,
 };
 
 use crate::{Selectable, button::Button, menu::PopupMenu, popover::Popover};
@@ -49,13 +49,10 @@ pub trait DropdownMenu: Styled + Selectable + InteractiveElement + IntoElement +
 /// siblings, its margins and flex-item properties, taken from the trigger.
 ///
 /// The popover lays the trigger out inside a box of its own, and that box is
-/// what the trigger's siblings lay out against. Upstream copied the trigger's
-/// whole style for the popover, which dropped it, and left it on the trigger,
-/// inside that box, where flex-item properties do nothing: a `flex_1` trigger
-/// kept its content width. (Margins reached the row anyway, because a block
-/// box counts its child's margins in its size.) The box now takes the
-/// placement and the trigger keeps the rest: its size, padding, colours and
-/// opacity would apply twice on both boxes, so the whole style does not move.
+/// what the trigger's siblings lay out against. Moving placement onto the
+/// trigger container lets a `flex_1` or margined trigger keep its placement
+/// among its siblings while keeping its own size, padding, colours and opacity
+/// on the trigger itself.
 fn take_placement(style: &mut StyleRefinement) -> StyleRefinement {
     let mut placement = StyleRefinement::default();
     placement.margin = std::mem::take(&mut style.margin);
@@ -137,9 +134,6 @@ where
 
 struct DropdownMenuState {
     menu: Option<Entity<PopupMenu>>,
-    /// GitTurtle patch: the open menu's dismiss subscription, kept with the
-    /// menu and dropped with it.
-    dismiss: Option<Subscription>,
     /// GitTurtle patch: the focus handle a trigger with none of its own
     /// tracks, so the dropdown can name the control that opened its menu:
     /// a Button refuses focus on a press, so what held focus as a pointer
@@ -152,11 +146,27 @@ impl<T> RenderOnce for DropdownMenuPopover<T>
 where
     T: DropdownMenu,
 {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        TriggerFocus::new(self.id.clone(), move |trigger_focus, window, cx| {
+            self.render_popover(trigger_focus, window, cx)
+                .into_any_element()
+        })
+    }
+}
+
+impl<T> DropdownMenuPopover<T>
+where
+    T: DropdownMenu,
+{
+    fn render_popover(
+        self,
+        trigger_focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Popover {
         let builder = self.builder.clone();
         let menu_state = window.use_keyed_state(self.id.clone(), cx, |_, cx| DropdownMenuState {
             menu: None,
-            dismiss: None,
             trigger_focus: cx.focus_handle(),
         });
         let owned = menu_state.read(cx).trigger_focus.clone();
@@ -185,234 +195,310 @@ where
                         let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
                             builder(menu, window, cx)
                         });
-                        // A trigger that takes no focus leaves what the
-                        // menu's builder set standing.
-                        if let Some(opener) = opener.clone() {
-                            menu.update(cx, |menu, _| {
+                        menu.update(cx, |menu, cx| {
+                            menu.set_trigger_focus(Some(trigger_focus.clone()), cx);
+                            // A trigger that takes no focus leaves what the
+                            // menu's builder set standing.
+                            if let Some(opener) = opener.clone() {
                                 menu.set_dialog_return_focus(Some(opener));
-                            });
-                        }
-                        menu.focus_handle(cx).focus(window, cx);
-
-                        // Listen for dismiss events from the PopupMenu to close the popover.
-                        //
-                        // GitTurtle patch: the callback holds both states
-                        // weakly, and the subscription lives with the menu
-                        // in the dropdown's state. Upstream detached it,
-                        // holding both strongly: GPUI keeps a detached
-                        // callback while the menu lives, and the state holds
-                        // the menu, so a dropdown taken away with its menu
-                        // open kept its state, its popover state and the menu,
-                        // with all its items held, for the app's life
-                        // (GITTURTLE-PATCH.md).
-                        let popover_state = cx.weak_entity();
-                        let dismiss = window.subscribe(&menu, cx, {
-                            let menu_state = menu_state.downgrade();
-                            move |_, _: &DismissEvent, window, cx| {
-                                if let Some(popover_state) = popover_state.upgrade() {
-                                    popover_state.update(cx, |state, cx| {
-                                        state.dismiss(window, cx);
-                                    });
-                                }
-                                if let Some(menu_state) = menu_state.upgrade() {
-                                    menu_state.update(cx, |state, _| {
-                                        state.menu = None;
-                                        state.dismiss = None;
-                                    });
-                                }
                             }
                         });
                         menu_state.update(cx, |state, _| {
                             state.menu = Some(menu.clone());
-                            state.dismiss = Some(dismiss);
                         });
+                        menu.focus_handle(cx).focus(window, cx);
 
-                        menu.clone()
+                        // Listen for dismiss events from the PopupMenu to close the popover.
+                        //
+                        // Hold Weak handles here, not strong clones: the listener
+                        // lives as long as `menu`, which `menu_state` owns, so a
+                        // strong capture would close the cycle
+                        // `menu_state -> menu -> listener -> menu_state` and leak
+                        // the `PopupMenu` and `DropdownMenuState` when the trigger
+                        // stops being rendered while the menu is open.
+                        let popover_state = cx.entity().downgrade();
+                        window
+                            .subscribe(&menu, cx, {
+                                let menu_state = menu_state.downgrade();
+                                move |_, _: &DismissEvent, window, cx| {
+                                    if let Some(popover_state) = popover_state.upgrade() {
+                                        popover_state.update(cx, |state, cx| {
+                                            state.dismiss(window, cx);
+                                        });
+                                    }
+                                    _ = menu_state.update(cx, |state, _| {
+                                        state.menu = None;
+                                    });
+                                }
+                            })
+                            .detach();
+
+                        menu
                     }
                 };
 
-                menu.clone()
+                menu
             })
+    }
+}
+
+type TriggerFocusBuild = Box<dyn FnOnce(FocusHandle, &mut Window, &mut App) -> AnyElement>;
+
+/// Registers a focus handle on the trigger's dispatch node without ever
+/// focusing it, so the menu opened from the trigger can resolve its shortcut
+/// hints against the trigger's key contexts on the frame it opens. GPUI looks
+/// a handle up in the previously rendered frame; the trigger was in it when
+/// the menu was not yet.
+struct TriggerFocus {
+    id: ElementId,
+    build: Option<TriggerFocusBuild>,
+}
+
+#[derive(Default)]
+struct TriggerFocusState {
+    focus_handle: Option<FocusHandle>,
+}
+
+struct TriggerFocusFrame {
+    focus_handle: FocusHandle,
+    child: AnyElement,
+}
+
+impl TriggerFocus {
+    fn new(
+        id: ElementId,
+        build: impl FnOnce(FocusHandle, &mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
+        Self {
+            id,
+            build: Some(Box::new(build)),
+        }
+    }
+}
+
+#[cfg(not(feature = "gpui-fast"))]
+impl IntoElement for TriggerFocus {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for TriggerFocus {
+    type RequestLayoutState = TriggerFocusFrame;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let focus_handle =
+            window.with_optional_element_state::<TriggerFocusState, _>(id, |state, _| {
+                let mut state = state.flatten().unwrap_or_default();
+                let focus_handle = state
+                    .focus_handle
+                    .get_or_insert_with(|| cx.focus_handle())
+                    .clone();
+                (focus_handle, Some(state))
+            });
+        let build = self.build.take().expect("TriggerFocus is laid out once");
+        let mut child = build(focus_handle.clone(), window, cx);
+        let layout_id = child.request_layout(window, cx);
+
+        (
+            layout_id,
+            TriggerFocusFrame {
+                focus_handle,
+                child,
+            },
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        frame: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.set_focus_handle(&frame.focus_handle, cx);
+        frame.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        frame: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        frame.child.paint(window, cx);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::menu::PopupMenuItem;
     use gpui::{
-        AnyWeakEntity, Context, ParentElement as _, Render, TestAppContext, VisualTestContext, div,
-        point, px,
+        KeyBinding, MouseButton, ParentElement as _, Render, TestAppContext, WeakEntity, actions,
+        div, point, px,
     };
-    use gpui_base::GlobalState;
     use std::cell::{Cell, RefCell};
 
-    /// A dropdown, drawn while `shown` holds. Its menu's item holds `token`,
-    /// as an item holds what it acts on, and counts in `chosen` the times it
-    /// ran.
-    struct Owner {
-        shown: bool,
-        token: Rc<()>,
-        chosen: Rc<Cell<usize>>,
+    actions!(dropdown_menu_test, [CopyText]);
+
+    const CONTEXT: &str = "dropdown_menu_test";
+
+    /// The story shape: the key binding lives in the key context of the
+    /// trigger's ancestor, the menu names no `action_context`, and other
+    /// content outside that context paints after the trigger.
+    struct TestRoot {
+        frames: Rc<Cell<usize>>,
     }
 
-    impl Render for Owner {
+    impl Render for TestRoot {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let (token, chosen) = (self.token.clone(), self.chosen.clone());
-            div().size_full().when(self.shown, |this| {
-                this.child(
-                    Button::new("trigger")
-                        .debug_selector(|| "trigger".into())
-                        .label("Open")
-                        .dropdown_menu(move |menu, _, _| {
-                            let (token, chosen) = (token.clone(), chosen.clone());
-                            menu.item(PopupMenuItem::new("Act").on_click(move |_, _, _| {
-                                let _held = &token;
-                                chosen.set(chosen.get() + 1);
-                            }))
-                        }),
+            self.frames.set(self.frames.get() + 1);
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .key_context(CONTEXT)
+                        .on_action(|_: &CopyText, _, _| {})
+                        .child(
+                            Button::new("trigger")
+                                .label("Edit")
+                                .w(px(100.))
+                                .h(px(30.))
+                                .dropdown_menu(|menu, _, _| menu.menu("Copy", Box::new(CopyText))),
+                        ),
                 )
-            })
+                .child(div().child("Status"))
         }
     }
 
-    const ACT: &str = "menu-item: Act · MenuItem";
-
-    fn draw(cx: &mut VisualTestContext) {
-        cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.run_until_parked();
+    /// Records the `PopupMenu` the dropdown builds, so a test can observe
+    /// its release through a weak handle.
+    struct MenuProbeRoot {
+        menu: Rc<RefCell<Option<WeakEntity<PopupMenu>>>>,
     }
 
-    /// The dropdown states and menus the window builds, held weakly.
-    #[derive(Clone, Default)]
-    struct Built(Rc<RefCell<Vec<(&'static str, AnyWeakEntity)>>>);
-
-    impl Built {
-        fn record<T: 'static>(&self, name: &'static str, cx: &mut App) -> gpui::Subscription {
-            let built = self.clone();
-            cx.observe_new(move |_: &mut T, _, cx: &mut Context<T>| {
-                built
-                    .0
-                    .borrow_mut()
-                    .push((name, AnyWeakEntity::from(cx.weak_entity())));
-            })
-        }
-
-        /// The names of those still alive.
-        fn alive(&self) -> Vec<&'static str> {
-            self.0
-                .borrow()
-                .iter()
-                .filter(|(_, view)| view.is_upgradable())
-                .map(|(name, _)| *name)
-                .collect()
+    impl Render for MenuProbeRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let slot = self.menu.clone();
+            div().size_full().child(
+                Button::new("trigger")
+                    .label("Edit")
+                    .w(px(100.))
+                    .h(px(30.))
+                    .dropdown_menu(move |menu, _, cx| {
+                        *slot.borrow_mut() = Some(cx.weak_entity());
+                        menu.menu("Copy", Box::new(CopyText))
+                    }),
+            )
         }
     }
 
-    /// Opens the dropdown with a click on its trigger.
-    fn open(cx: &mut VisualTestContext) {
-        let trigger = cx.debug_bounds("trigger").expect("the trigger");
-        cx.simulate_click(trigger.center(), Default::default());
-        draw(cx);
-        assert!(cx.debug_bounds(ACT).is_some(), "the click opened it");
-    }
-
-    /// A dropdown taken away while its menu is open lets its state, its
-    /// popover state and its menu go, with what the menu's items hold, and
-    /// leaves no deferred popup registered. Upstream's dismiss callback held
-    /// the dropdown's state and popover state strongly and was detached, so
-    /// GPUI kept it while the menu lived, and the state holds the menu:
-    /// taken away open, as a view built again without it takes it, the
-    /// dropdown kept all three until its menu was next dismissed, which no
-    /// input could do once the dropdown was gone. The popover state goes
-    /// only with gpui-base's popover patch, whose own dismiss subscription
-    /// held it too. Escape, a click outside, an item chosen and a second
-    /// click on the trigger each still close the menu and let it go, and
-    /// the next click builds it again.
+    /// Opening the menu and closing the window without dismissing it must
+    /// release the `PopupMenu`: the dismiss subscription lives as long as the
+    /// menu, which `DropdownMenuState` owns, so strong captures in it formed
+    /// a cycle that no element-state collection could break. The state still
+    /// holds the menu while it is open, so the menu's release also proves the
+    /// `DropdownMenuState` was released.
+    ///
+    /// The popover must go too: it holds the deferred-popover registration
+    /// while open, and a leaked one keeps every later right-click menu
+    /// stepping aside as if a popup were still showing.
     #[gpui::test]
-    fn a_dropdown_taken_away_open_releases_its_menu(cx: &mut TestAppContext) {
-        cx.update(crate::init);
-        let built = Built::default();
-        let _recording = cx.update(|cx| {
-            [
-                built.record::<DropdownMenuState>("dropdown state", cx),
-                built.record::<gpui_base::PopoverState>("popover state", cx),
-                built.record::<PopupMenu>("menu", cx),
-            ]
-        });
-        let (owner, cx) = cx.add_window_view(|_, _| Owner {
-            shown: true,
-            token: Rc::new(()),
-            chosen: Rc::default(),
-        });
-        draw(cx);
-        let token = owner.read_with(cx, |owner, _| Rc::downgrade(&owner.token));
-        let trigger = cx.debug_bounds("trigger").expect("the trigger").center();
+    fn open_without_dismiss_releases_the_menu(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::init(cx));
+        let menu = Rc::new(RefCell::new(None::<WeakEntity<PopupMenu>>));
 
-        type Close = fn(&mut VisualTestContext, gpui::Point<gpui::Pixels>);
-        let ways: [(&str, Close); 4] = [
-            ("Escape", |cx, _| cx.simulate_keystrokes("escape")),
-            ("a click outside", |cx, _| {
-                cx.simulate_click(point(px(300.), px(300.)), Default::default())
-            }),
-            ("an item chosen", |cx, _| {
-                cx.simulate_keystrokes("down enter")
-            }),
-            ("the trigger", |cx, trigger| {
-                cx.simulate_click(trigger, Default::default())
-            }),
-        ];
-        for (way, close) in ways {
-            open(cx);
-            assert_eq!(
-                built.alive(),
-                ["dropdown state", "popover state", "menu"],
-                "{way}: one menu"
+        {
+            let (_, cx) = cx.add_window_view(|_, _| MenuProbeRoot { menu: menu.clone() });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+
+            // Click the trigger; the menu opens and is left open.
+            cx.simulate_mouse_down(
+                point(px(10.), px(10.)),
+                MouseButton::Left,
+                Default::default(),
             );
-            close(cx, trigger);
-            draw(cx);
-            assert!(cx.debug_bounds(ACT).is_none(), "{way} closed it");
+            cx.run_until_parked();
             assert!(
-                !cx.update(|_, cx| GlobalState::is_in_deferred_context(cx)),
-                "{way} closed its popover"
+                menu.borrow()
+                    .as_ref()
+                    .and_then(|menu| menu.upgrade())
+                    .is_some(),
+                "the menu must be open before the window closes"
             );
-            assert_eq!(
-                built.alive(),
-                ["dropdown state", "popover state"],
-                "{way} let the menu go"
-            );
-            assert_eq!(
-                token.strong_count(),
-                1,
-                "{way}: only the owner holds the token"
-            );
+
+            // Close the window without dismissing the menu.
+            cx.update(|window, _| window.remove_window());
+            cx.run_until_parked();
         }
-        assert_eq!(owner.read_with(cx, |owner, _| owner.chosen.get()), 1);
-        assert_eq!(
-            built.0.borrow().len(),
-            2 + ways.len(),
-            "each open built its menu"
+
+        assert!(
+            menu.borrow()
+                .as_ref()
+                .and_then(|menu| menu.upgrade())
+                .is_none(),
+            "the PopupMenu must be released with the window"
+        );
+        cx.update(|cx| {
+            assert!(
+                !gpui_base::GlobalState::is_in_deferred_context(cx),
+                "the popover's deferred registration must be released with the window"
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn shortcut_hint_is_painted_on_the_frame_the_menu_opens(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::init(cx);
+            cx.bind_keys([KeyBinding::new("ctrl-c", CopyText, Some(CONTEXT))]);
+        });
+        let frames = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let frames = frames.clone();
+            move |_, _| TestRoot { frames }
+        });
+        // The popup host captures its trigger bounds on the first frame.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let frames_before_open = frames.get();
+
+        cx.simulate_mouse_down(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            Default::default(),
         );
 
-        open(cx);
-        owner.update(cx, |owner, cx| {
-            owner.shown = false;
-            cx.notify();
-        });
-        draw(cx);
-        draw(cx);
-        assert!(cx.debug_bounds("trigger").is_none(), "the dropdown went");
-        assert!(cx.debug_bounds(ACT).is_none(), "with its menu");
-        assert!(
-            built.alive().is_empty(),
-            "alive after their dropdown went: {:?}",
-            built.alive()
+        assert_eq!(
+            frames.get(),
+            frames_before_open + 1,
+            "the press must be followed by exactly one frame for this to test the first one"
         );
         assert!(
-            !cx.update(|_, cx| GlobalState::is_in_deferred_context(cx)),
-            "the dropdown left its popover's deferred popup registered"
+            cx.debug_bounds("kbd:ctrl-c").is_some(),
+            "the shortcut hint must be painted on the same frame as its item"
         );
-        assert_eq!(token.strong_count(), 1, "only the owner holds the token");
     }
 }

@@ -1017,7 +1017,11 @@ impl FieldSnapshot {
             } else {
                 (start, end)
             };
-            input.set_selected_range(anchor..caret, cx);
+            input.set_selected_range_with_direction(
+                anchor.min(caret)..anchor.max(caret),
+                anchor > caret,
+                cx,
+            );
         });
     }
 }
@@ -6864,7 +6868,8 @@ pub(crate) mod tests {
         };
         let key_down = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
             cx.simulate_event(gpui::KeyDownEvent {
-                keystroke: gpui::Keystroke::parse(key).unwrap(),
+                keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                    .unwrap(),
                 is_held,
                 prefer_character_input: false,
             });
@@ -6872,7 +6877,8 @@ pub(crate) mod tests {
         };
         let key_up = |cx: &mut VisualTestContext, key: &str| {
             cx.simulate_event(gpui::KeyUpEvent {
-                keystroke: gpui::Keystroke::parse(key).unwrap(),
+                keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                    .unwrap(),
             });
             draw(cx);
         };
@@ -7131,7 +7137,8 @@ pub(crate) mod tests {
         };
         let key_down = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
             cx.simulate_event(gpui::KeyDownEvent {
-                keystroke: gpui::Keystroke::parse(key).unwrap(),
+                keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                    .unwrap(),
                 is_held,
                 prefer_character_input: false,
             });
@@ -7139,7 +7146,8 @@ pub(crate) mod tests {
         };
         let key_up = |cx: &mut VisualTestContext, key: &str| {
             cx.simulate_event(gpui::KeyUpEvent {
-                keystroke: gpui::Keystroke::parse(key).unwrap(),
+                keystroke: gpui::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                    .unwrap(),
             });
             draw(cx);
         };
@@ -7228,7 +7236,8 @@ pub(crate) mod tests {
         // A key event as the window gets it, with no frame or task between
         // it and the next, as a release and its press come together.
         let key = |cx: &mut VisualTestContext, name: &str, down: Option<bool>| {
-            let keystroke = gpui::Keystroke::parse(name).unwrap();
+            let keystroke =
+                gpui::Keystroke::parse_with_os(name, crate::shortcuts::host_os()).unwrap();
             let input = match down {
                 Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                     keystroke,
@@ -7323,7 +7332,8 @@ pub(crate) mod tests {
         // A key event as the window gets it, with no frame or task between
         // it and the next, as a release and its press come together.
         let key = |cx: &mut VisualTestContext, name: &str, down: Option<bool>| {
-            let keystroke = gpui::Keystroke::parse(name).unwrap();
+            let keystroke =
+                gpui::Keystroke::parse_with_os(name, crate::shortcuts::host_os()).unwrap();
             let input = match down {
                 Some(is_held) => gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                     keystroke,
@@ -7426,7 +7436,8 @@ pub(crate) mod tests {
         );
         let generation = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.generation);
         let key = |cx: &mut VisualTestContext, name: &str, down: bool| {
-            let keystroke = gpui::Keystroke::parse(name).unwrap();
+            let keystroke =
+                gpui::Keystroke::parse_with_os(name, crate::shortcuts::host_os()).unwrap();
             let input = if down {
                 gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                     keystroke,
@@ -8748,7 +8759,8 @@ pub(crate) mod tests {
         cx.update(|window, cx| search.focus(window, cx));
         crate::views::tests::draw(cx);
         let press = |cx: &mut VisualTestContext, keys: &str| {
-            let keystroke = gpui_kit::Keystroke::parse(keys).unwrap();
+            let keystroke =
+                gpui_kit::Keystroke::parse_with_os(keys, crate::shortcuts::host_os()).unwrap();
             cx.simulate_event(gpui_kit::KeyDownEvent {
                 keystroke: keystroke.clone(),
                 is_held: false,
@@ -14584,11 +14596,12 @@ pub(crate) mod tests {
                         (scroll.bounds().center(), -scroll.offset().y / 2.)
                     });
                     window.dispatch_event(
-                        gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        gpui::PlatformInput::Scroll(gpui::ScrollEvent {
                             position,
                             delta: gpui::ScrollDelta::Pixels(point(px(0.), delta)),
                             modifiers: Modifiers::default(),
                             touch_phase: gpui::TouchPhase::Moved,
+                            source: Default::default(),
                         }),
                         cx,
                     );

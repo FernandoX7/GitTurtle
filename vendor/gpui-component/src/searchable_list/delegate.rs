@@ -9,11 +9,19 @@ pub trait SearchableListItem: Clone {
     type Value: Clone + PartialEq;
 
     /// Short display label shown in the dropdown row and in the trigger by default.
+    ///
+    /// This is also what assistive technology reads as the committed value, so
+    /// it has to stand on its own as text even when [`Self::display_title`]
+    /// draws something richer.
     fn title(&self) -> SharedString;
 
     /// Override the trigger display element (e.g. "Country (US)" instead of just "United States").
     ///
     /// Returns `None` to fall back to `title()`.
+    ///
+    /// This is presentation only. An element is not text, so the accessible
+    /// value keeps reporting [`Self::title`]; if the two would read
+    /// differently, put the meaning a listener needs in `title()`.
     fn display_title(&self) -> Option<AnyElement> {
         None
     }
@@ -24,6 +32,17 @@ pub trait SearchableListItem: Clone {
     /// The default renders `title()`.
     fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
         self.title()
+    }
+
+    /// Render this item's row content with the text matching `query`
+    /// highlighted. Used instead of [`Self::render`] when the component
+    /// enables `highlight_matches`.
+    ///
+    /// The default renders `title()` with every case-insensitive occurrence
+    /// of `query` highlighted. Override it together with `render` to keep a
+    /// custom row when highlighting is enabled.
+    fn render_highlighted(&self, query: &str, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        crate::label::highlight_matches(self.title(), query, cx)
     }
 
     /// The value that identifies this item.

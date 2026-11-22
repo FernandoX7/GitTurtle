@@ -1,15 +1,17 @@
 use std::rc::Rc;
 
 use gpui::{
-    A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId, FocusHandle,
-    GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId,
-    ParentElement, Pixels, Refineable as _, RenderOnce, Role, SharedString, Stateful,
+    AnyElement, App, ClickEvent, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
+    IntoElement, ParentElement, Refineable as _, RenderOnce, Role, SharedString, Stateful,
     StatefulInteractiveElement, StyleRefinement, Styled, Toggled, Window, div,
     prelude::FluentBuilder as _,
 };
 use smallvec::SmallVec;
 
-use crate::{RoleOverride, StateStyle, StyledExt as _, disabled_focus::track_control_focus};
+use crate::{
+    RoleOverride, StateStyle, StyledExt as _, TestSupportExt as _,
+    a11y_disabled::A11yDisabledExt as _,
+};
 
 type ChangeHandler = Rc<dyn Fn(CheckboxState, &ClickEvent, &mut Window, &mut App)>;
 
@@ -139,6 +141,9 @@ impl Checkbox {
     }
 
     /// Sets the label exposed to accessibility clients.
+    ///
+    /// A checkbox without text children has no accessible name, so set this
+    /// whenever it is drawn without visible text.
     pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
         self.accessibility_label = Some(label.into());
         self
@@ -378,13 +383,12 @@ impl RenderOnce for Checkbox {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus_handle = self.focus_handle(window, cx);
         let disabled = self.disabled;
-        let reported_disabled = disabled || self.accessibility_disabled;
         let next_state = self.state.activated();
         let style = self.resolved_style();
         let on_change = self.on_change;
 
-        let content = self
-            .base
+        self.base
+            .test_support()
             .when_some(self.role.resolve(|| Role::CheckBox), |this, role| {
                 this.role(role)
             })
@@ -392,17 +396,13 @@ impl RenderOnce for Checkbox {
             .when_some(self.accessibility_label, |this, label| {
                 this.aria_label(label)
             })
-            // GitTurtle patch: while focused, a disabled control keeps its
-            // handle as a target that is not a tab stop, so Tab and Shift+Tab
-            // still leave it (`disabled_focus`).
-            .map(|this| {
-                track_control_focus(
-                    this,
-                    focus_handle,
-                    disabled,
-                    self.tab_index,
-                    self.tab_stop,
-                    window,
+            // Keep the current focus in the dispatch tree when activation
+            // disables this control, so Tab can still leave in either direction.
+            .when(!disabled || focus_handle.is_focused(window), |this| {
+                this.track_focus(
+                    &focus_handle
+                        .tab_index(self.tab_index)
+                        .tab_stop(self.tab_stop && !disabled),
                 )
             })
             .when_some(
@@ -414,90 +414,8 @@ impl RenderOnce for Checkbox {
                 },
             )
             .children(self.children)
-            .refine_style(&style);
-        AccessibleCheckbox {
-            content,
-            disabled: reported_disabled,
-        }
-    }
-}
-
-// GitTurtle patch: GPUI's Div lacks an aria-disabled setter, so a disabled
-// checkbox was announced as available as an enabled one. Preserve the
-// existing element and caller-provided synthetic subtree, adding only the
-// disabled property when the toolkit writes this rendered checkbox's node:
-// for a disabled checkbox, or one `accessibility_disabled` reports disabled
-// alone, as the Button's own wrapper does (`button::AccessibleButton`).
-struct AccessibleCheckbox {
-    content: Stateful<Div>,
-    disabled: bool,
-}
-
-impl IntoElement for AccessibleCheckbox {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
-impl Element for AccessibleCheckbox {
-    type RequestLayoutState = <Stateful<Div> as Element>::RequestLayoutState;
-    type PrepaintState = <Stateful<Div> as Element>::PrepaintState;
-    fn id(&self) -> Option<ElementId> {
-        Element::id(&self.content)
-    }
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        self.content.source_location()
-    }
-    fn request_layout(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        self.content.request_layout(id, inspector, window, cx)
-    }
-    fn prepaint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        self.content
-            .prepaint(id, inspector, bounds, layout, window, cx)
-    }
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.content
-            .paint(id, inspector, bounds, layout, prepaint, window, cx);
-    }
-    fn a11y_role(&self) -> Option<Role> {
-        self.content.a11y_role()
-    }
-    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
-        self.content.write_a11y_info(node);
-        if self.disabled {
-            node.set_disabled();
-        }
-    }
-    fn a11y_synthetic_children(
-        &mut self,
-        prepaint: &mut Self::PrepaintState,
-        builder: &mut A11ySubtreeBuilder,
-    ) {
-        Element::a11y_synthetic_children(&mut self.content, prepaint, builder);
+            .refine_style(&style)
+            .a11y_disabled(disabled || self.accessibility_disabled)
     }
 }
 

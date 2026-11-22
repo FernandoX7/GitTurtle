@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{ops::Range, rc::Rc};
 
 use gpui::{
     App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, StyleRefinement, Styled,
@@ -6,7 +6,10 @@ use gpui::{
 };
 use rust_i18n::t;
 
-use gpui_base::{Pagination as BasePagination, PaginationItem as PageItem, PaginationState};
+use gpui_base::{
+    LayoutDirection, LogicalStyledExt as _, Pagination as BasePagination,
+    PaginationItem as PageItem, PaginationState,
+};
 
 use crate::{
     Disableable, Icon, Sizable, Size, StyledExt,
@@ -15,6 +18,24 @@ use crate::{
     icon::IconName,
     menu::{DropdownMenu as _, PopupMenuItem},
 };
+
+/// The most pages an ellipsis menu lists.
+///
+/// The menu renders every item on each frame it is open, so listing every
+/// hidden page of a large set makes each hover repaint thousands of rows.
+const MAX_ELLIPSIS_MENU_PAGES: usize = 100;
+
+/// The pages an ellipsis menu lists: the hidden pages closest to the current
+/// page, at most [`MAX_ELLIPSIS_MENU_PAGES`] of them.
+fn ellipsis_menu_pages(hidden: Range<usize>, current_page: usize) -> Range<usize> {
+    if hidden.len() <= MAX_ELLIPSIS_MENU_PAGES {
+        hidden
+    } else if hidden.start > current_page {
+        hidden.start..hidden.start + MAX_ELLIPSIS_MENU_PAGES
+    } else {
+        hidden.end - MAX_ELLIPSIS_MENU_PAGES..hidden.end
+    }
+}
 
 /// Pagination with page navigation, next and previous links.
 #[derive(IntoElement)]
@@ -96,11 +117,17 @@ impl Pagination {
         self
     }
 
-    fn render_nav_button(&self, state: &PaginationState, is_prev: bool) -> Button {
-        let (id, label, icon) = if is_prev {
-            ("prev", t!("Pagination.previous"), IconName::ChevronLeft)
+    fn render_nav_button(&self, state: &PaginationState, is_prev: bool, rtl: bool) -> Button {
+        // Previous points back toward the start edge: the right in RTL.
+        let (id, label) = if is_prev {
+            ("prev", t!("Pagination.previous"))
         } else {
-            ("next", t!("Pagination.next"), IconName::ChevronRight)
+            ("next", t!("Pagination.next"))
+        };
+        let icon = if is_prev != rtl {
+            IconName::ChevronLeft
+        } else {
+            IconName::ChevronRight
         };
 
         let target_page = if is_prev {
@@ -122,7 +149,7 @@ impl Pagination {
                         .w_full()
                         .gap_2()
                         .flex_nowrap()
-                        .when(is_prev, |this| this.flex_row_reverse())
+                        .when(is_prev != rtl, |this| this.flex_row_reverse())
                         .child(SharedString::from(label))
                         .child(Icon::new(icon)),
                 )
@@ -160,7 +187,8 @@ impl Styled for Pagination {
 }
 
 impl RenderOnce for Pagination {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let rtl = LayoutDirection::global(cx).is_rtl();
         let mut state = PaginationState::new(self.current_page, self.total_pages)
             .visible_pages(self.visible_pages)
             .disabled(self.disabled);
@@ -175,12 +203,13 @@ impl RenderOnce for Pagination {
 
         BasePagination::new(self.id.clone(), state.clone())
             .h_flex()
+            .flex_row_dir(cx)
             .px_2()
             .py_2()
             .gap_1()
             .items_center()
             .refine_style(&self.style)
-            .child(self.render_nav_button(&state, true))
+            .child(self.render_nav_button(&state, true, rtl))
             .children({
                 page_numbers.into_iter().map(|item| match item {
                     PageItem::Page(page) => {
@@ -218,7 +247,7 @@ impl RenderOnce for Pagination {
                     .dropdown_menu({
                         let state = item_state.clone();
                         move |mut menu, _, _| {
-                            for page in range.clone() {
+                            for page in ellipsis_menu_pages(range.clone(), current_page) {
                                 menu = menu.item(
                                     PopupMenuItem::new(format!("{}", page))
                                         .checked(page == current_page)
@@ -237,6 +266,24 @@ impl RenderOnce for Pagination {
                     .into_any_element(),
                 })
             })
-            .child(self.render_nav_button(&state, false))
+            .child(self.render_nav_button(&state, false, rtl))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ellipsis_menu_pages() {
+        // Short gaps list every hidden page.
+        assert_eq!(ellipsis_menu_pages(2..8, 1), 2..8);
+        assert_eq!(ellipsis_menu_pages(2..8, 9), 2..8);
+
+        // Long gaps keep the pages next to the current page.
+        assert_eq!(ellipsis_menu_pages(4..10_000, 1), 4..104);
+        assert_eq!(ellipsis_menu_pages(2..9_997, 10_000), 9_897..9_997);
+        assert_eq!(ellipsis_menu_pages(5_003..10_000, 5_000), 5_003..5_103);
+        assert_eq!(ellipsis_menu_pages(2..4_998, 5_000), 4_898..4_998);
     }
 }

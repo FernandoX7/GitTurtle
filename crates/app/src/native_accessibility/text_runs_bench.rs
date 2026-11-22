@@ -120,14 +120,9 @@ macro_rules! on_field {
 
 fn field(fixture: &Fixture, cx: &mut VisualTestContext) -> Field {
     let text = fixture.text.clone();
-    let presentation = InputAccessibility {
-        role: Some(fixture.role),
-        label: Some(fixture.name.into()),
-        placeholder: None,
-        author_id: None,
-        expose_value: true,
-        description: None,
-    };
+    let presentation = InputAccessibility::new(Some(fixture.role))
+        .with_label(Some(fixture.name.into()))
+        .with_value_exposed(true);
     cx.update(|window, cx| {
         let field = match fixture.name {
             name if name.starts_with("input") => {
@@ -138,8 +133,8 @@ fn field(fixture: &Fixture, cx: &mut VisualTestContext) -> Field {
             }
             _ => Field::Editor(cx.new(|cx| EditorState::new(window, cx).default_value(text))),
         };
-        on_field!(&field, state => state.update(cx, |state, cx| {
-            state.set_accessibility_presentation(presentation, cx)
+        on_field!(&field, state => state.update(cx, |state, _| {
+            state.set_accessibility(presentation)
         }));
         field
     })

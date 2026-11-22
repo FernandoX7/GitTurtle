@@ -9,9 +9,11 @@ use crate::{
 };
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,
-    Window, div, percentage, prelude::FluentBuilder,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement,
+    Styled, Window, div, percentage, prelude::FluentBuilder,
 };
+use gpui_base::LogicalStyledExt as _;
+use gpui_base::TestSupportExt as _;
 use std::rc::Rc;
 
 /// Menu for the [`super::Sidebar`]
@@ -93,6 +95,9 @@ impl Styled for SidebarMenu {
 pub struct SidebarMenuItem {
     icon: Option<Icon>,
     label: SharedString,
+    accessibility_label: Option<SharedString>,
+    label_style: StyleRefinement,
+    style: StyleRefinement,
     handler: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
     active: bool,
     default_open: bool,
@@ -111,6 +116,9 @@ impl SidebarMenuItem {
         Self {
             icon: None,
             label: label.into(),
+            accessibility_label: None,
+            label_style: StyleRefinement::default(),
+            style: StyleRefinement::default(),
             handler: Rc::new(|_, _, _| {}),
             active: false,
             collapsed: false,
@@ -127,6 +135,20 @@ impl SidebarMenuItem {
     /// Set the icon for the menu item
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    /// Set the style for the label
+    pub fn label_style(mut self, style: StyleRefinement) -> Self {
+        self.label_style = style;
+        self
+    }
+
+    /// Set the accessibility label of the item row.
+    ///
+    /// Defaults to the visible label text.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -210,6 +232,12 @@ impl SidebarMenuItem {
         (self.collapsed && self.icon.is_some()).then(|| self.label.clone())
     }
 
+    /// Accessible name for the submenu caret: the toggle is icon-only,
+    /// so assistive tech needs the item it acts on.
+    fn caret_accessibility_label(&self) -> SharedString {
+        format!("Toggle {} submenu", self.label).into()
+    }
+
     /// Set the context menu for the menu item.
     pub fn context_menu(
         mut self,
@@ -245,6 +273,8 @@ impl SidebarItem for SidebarMenuItem {
         let default_open = self.default_open;
         let collapsed_tooltip = self.collapsed_tooltip();
         let id = id.into();
+        let label_text = self.label.clone();
+        let accessibility_label = self.accessibility_label.clone();
         let is_submenu = self.is_submenu();
         let open_state = if is_submenu {
             Some(window.use_keyed_state(id.clone(), cx, |_, _| default_open))
@@ -259,20 +289,27 @@ impl SidebarItem for SidebarMenuItem {
         let is_open = open_state
             .as_ref()
             .map_or(false, |s| !is_collapsed && *s.read(cx));
+        let rtl = gpui_base::LayoutDirection::global(cx).is_rtl();
 
         div()
             .id(id.clone())
+            .test_support()
             .w_full()
             .child(
                 h_flex()
+                    .flex_row_dir(cx)
                     .size_full()
                     .id("item")
+                    .role(Role::TreeItem)
+                    .aria_label(accessibility_label.unwrap_or_else(|| label_text.clone()))
+                    .aria_selected(is_active)
                     .overflow_x_hidden()
                     .flex_shrink_0()
                     .p_2()
                     .gap_x_2()
                     .rounded(cx.theme().radius)
                     .text_sm()
+                    .refine_style(&self.style)
                     .when(is_hoverable, |this| {
                         this.hover(|this| {
                             this.bg(cx.theme().sidebar_accent.opacity(0.8))
@@ -295,14 +332,17 @@ impl SidebarItem for SidebarMenuItem {
                         this.h_7()
                             .child(
                                 h_flex()
+                                    .flex_row_dir(cx)
                                     .flex_1()
                                     .gap_x_2()
                                     .justify_between()
                                     .overflow_x_hidden()
                                     .child(
                                         h_flex()
+                                            .flex_row_dir(cx)
                                             .flex_1()
                                             .overflow_x_hidden()
+                                            .refine_style(&self.label_style)
                                             .child(self.label.clone()),
                                     )
                                     .when_some(self.suffix.clone(), |this, suffix| {
@@ -314,12 +354,26 @@ impl SidebarItem for SidebarMenuItem {
                                     Button::new("caret")
                                         .xsmall()
                                         .ghost()
+                                        .accessibility_label(self.caret_accessibility_label())
                                         .icon(
-                                            Icon::new(IconName::ChevronRight)
-                                                .size_4()
-                                                .when(is_open, |this| {
-                                                    this.rotate(percentage(90. / 360.))
-                                                }),
+                                            // Points toward the end edge while
+                                            // closed and turns down when open.
+                                            Icon::new(if rtl {
+                                                IconName::ChevronLeft
+                                            } else {
+                                                IconName::ChevronRight
+                                            })
+                                            .size_4()
+                                            .when(
+                                                is_open,
+                                                |this| {
+                                                    // A quarter turn toward down: clockwise
+                                                    // from right, counter-clockwise from left.
+                                                    this.rotate(percentage(
+                                                        if rtl { 270. } else { 90. } / 360.,
+                                                    ))
+                                                },
+                                            ),
                                         )
                                         .on_click({
                                             move |_, _, cx| {
@@ -384,11 +438,11 @@ impl SidebarItem for SidebarMenuItem {
                 this.child(
                     v_flex()
                         .id("submenu")
-                        .border_l_1()
+                        .border_s(gpui::px(1.), cx)
                         .border_color(cx.theme().sidebar_border)
                         .gap_1()
-                        .ml_3p5()
-                        .pl_2p5()
+                        .ms(gpui::rems(0.875), cx)
+                        .ps(gpui::rems(0.625), cx)
                         .py_0p5()
                         .children(self.children.into_iter().enumerate().map(|(ix, item)| {
                             let id = format!("{}-{}", id, ix);
@@ -396,6 +450,12 @@ impl SidebarItem for SidebarMenuItem {
                         })),
                 )
             })
+    }
+}
+
+impl Styled for SidebarMenuItem {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
     }
 }
 
@@ -419,5 +479,13 @@ mod tests {
 
         assert!(expanded.collapsed_tooltip().is_none());
         assert!(iconless.collapsed_tooltip().is_none());
+    }
+
+    #[test]
+    fn submenu_caret_is_named_after_the_item() {
+        let item =
+            SidebarMenuItem::new("Projects").children(vec![SidebarMenuItem::new("Overview")]);
+
+        assert_eq!(item.caret_accessibility_label(), "Toggle Projects submenu");
     }
 }

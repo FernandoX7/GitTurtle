@@ -2073,11 +2073,12 @@ pub(crate) mod tests {
         // auto-scroll's synthesized steps do. The list measures the rows it
         // reaches each frame.
         for _ in 0..40 {
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: viewport.center(),
                 delta: ScrollDelta::Pixels(point(px(0.), px(-300.))),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             draw(cx);
         }
@@ -2235,11 +2236,14 @@ pub(crate) mod tests {
         // Tests draw dirty windows when an update's effects flush, so each
         // change and its Copy share one update, as a key press after Down
         // shares the interval before the next frame.
-        let chord = Keystroke::parse(if cfg!(target_os = "macos") {
-            "cmd-c"
-        } else {
-            "ctrl-c"
-        })
+        let chord = Keystroke::parse_with_os(
+            if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            },
+            crate::shortcuts::host_os(),
+        )
         .unwrap();
         let sentinel = || ClipboardItem::new_string("nothing copied".into());
         let clipboard = |cx: &mut VisualTestContext| {

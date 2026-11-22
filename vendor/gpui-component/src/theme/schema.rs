@@ -21,6 +21,7 @@ fn try_parse_theme_token(value: &str) -> anyhow::Result<ThemeToken> {
 /// Represents a theme configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ThemeSet {
     /// The name of the theme set.
     pub name: SharedString,
@@ -35,6 +36,7 @@ pub struct ThemeSet {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ThemeConfig {
     /// Whether this theme is the default theme.
     pub is_default: bool,
@@ -53,6 +55,10 @@ pub struct ThemeConfig {
     /// - macOS: `Menlo`
     /// - Windows: `Consolas`
     /// - Linux: `DejaVu Sans Mono`
+    ///
+    /// The default falls back to an installed monospace font, then to
+    /// `.SystemUIFont`, when the machine lacks it. A family named here is used
+    /// as-is, so name one that is installed or embedded with `add_fonts`.
     #[serde(rename = "mono_font.family")]
     pub mono_font_family: Option<SharedString>,
     /// The monospace font size, default is 13.
@@ -65,6 +71,9 @@ pub struct ThemeConfig {
     /// The border radius for large elements like Dialogs and Notifications, default is 8.
     #[serde(rename = "radius.lg")]
     pub radius_lg: Option<usize>,
+    /// The corner radius of client-decorated windows, default is 0.
+    #[serde(rename = "window.radius")]
+    pub window_radius: Option<usize>,
     /// Set shadows in the theme, for example the Input and Button, default is true.
     #[serde(rename = "shadow")]
     pub shadow: Option<bool>,
@@ -79,6 +88,7 @@ pub struct ThemeConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticThemeConfig {
     pub colors: SemanticColorConfig,
     pub radius: SemanticRadiusConfig,
@@ -93,12 +103,14 @@ pub struct SemanticThemeConfig {
 /// semantic tokens does not change the legacy public struct shape.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticThemeConfigFile {
     pub tokens: SemanticThemeConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticColorConfig {
     pub background: Option<SharedString>,
     pub foreground: Option<SharedString>,
@@ -121,6 +133,7 @@ pub struct SemanticColorConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticRadiusConfig {
     pub none: Option<f32>,
     pub sm: Option<f32>,
@@ -132,6 +145,7 @@ pub struct SemanticRadiusConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticSpacingConfig {
     pub xxs: Option<f32>,
     pub xs: Option<f32>,
@@ -144,6 +158,7 @@ pub struct SemanticSpacingConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticTextStyleConfig {
     pub size: Option<f32>,
     pub line_height: Option<f32>,
@@ -152,6 +167,7 @@ pub struct SemanticTextStyleConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticTypographyConfig {
     pub sans: Option<SharedString>,
     pub mono: Option<SharedString>,
@@ -165,6 +181,7 @@ pub struct SemanticTypographyConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SemanticShadowConfig {
     pub sm: Option<Vec<BoxShadow>>,
     pub md: Option<Vec<BoxShadow>>,
@@ -246,6 +263,7 @@ fn apply_text_style(config: &SemanticTextStyleConfig, token: &mut gpui_base::Tex
 }
 
 #[derive(Debug, Default, Clone, JsonSchema, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ThemeConfigColors {
     /// Used for accents such as hover background on MenuItem, ListItem, etc.
     #[serde(rename = "accent.background")]
@@ -374,11 +392,14 @@ pub struct ThemeConfigColors {
     #[serde(rename = "chart.5")]
     pub chart_5: Option<SharedString>,
     /// Bullish color for candlestick charts (upward price movement).
-    #[serde(rename = "chart_bullish")]
+    #[serde(rename = "chart.bullish")]
     pub chart_bullish: Option<SharedString>,
     /// Bearish color for candlestick charts (downward price movement).
-    #[serde(rename = "chart_bearish")]
+    #[serde(rename = "chart.bearish")]
     pub chart_bearish: Option<SharedString>,
+    /// Chart grid line color.
+    #[serde(rename = "chart.grid")]
+    pub chart_grid: Option<SharedString>,
     /// Danger background color.
     #[serde(rename = "danger.background")]
     pub danger: Option<SharedString>,
@@ -448,6 +469,9 @@ pub struct ThemeConfigColors {
     /// Hover background color for ListItem.
     #[serde(rename = "list.hover.background")]
     pub list_hover: Option<SharedString>,
+    /// Text color for the part of a list row that matches the search query.
+    #[serde(rename = "list.highlight.foreground")]
+    pub list_highlight_foreground: Option<SharedString>,
     /// Muted backgrounds such as Skeleton and Switch.
     #[serde(rename = "muted.background")]
     pub muted: Option<SharedString>,
@@ -610,9 +634,6 @@ pub struct ThemeConfigColors {
     /// StatusBar border color.
     #[serde(rename = "status_bar.border")]
     pub status_bar_border: Option<SharedString>,
-    /// Background color for Tiles.
-    #[serde(rename = "tiles.background")]
-    pub tiles: Option<SharedString>,
     /// Warning background color.
     #[serde(rename = "warning.background")]
     pub warning: Option<SharedString>,
@@ -921,6 +942,7 @@ impl ThemeColor {
         apply_color!(chart_5, fallback = self.blue.darken(0.4));
         apply_color!(chart_bullish, fallback = self.green);
         apply_color!(chart_bearish, fallback = self.red);
+        apply_color!(chart_grid, fallback = self.border.opacity(0.6));
         apply_background_color!(danger, fallback = self.red);
         apply_background_color!(danger_active, fallback = self.danger.darken(active_darken));
         apply_color!(danger_foreground, fallback = self.primary_foreground);
@@ -966,6 +988,7 @@ impl ThemeColor {
         apply_background_color!(list_even, fallback = tokens.list);
         apply_background_color!(list_head, fallback = tokens.list);
         apply_background_color!(list_hover, fallback = self.accent.opacity(0.6));
+        apply_color!(list_highlight_foreground, fallback = self.blue);
         apply_background_color!(popover, fallback = tokens.background);
         apply_color!(popover_foreground, fallback = self.foreground);
         apply_background_color!(progress_bar, fallback = tokens.primary);
@@ -1012,7 +1035,6 @@ impl ThemeColor {
         apply_color!(title_bar_border, fallback = self.border);
         apply_background_color!(status_bar, fallback = tokens.title_bar);
         apply_color!(status_bar_border, fallback = self.title_bar_border);
-        apply_background_color!(tiles, fallback = tokens.background);
         apply_background_color!(overlay);
         apply_color!(window_border, fallback = self.border);
 
@@ -1069,7 +1091,7 @@ impl Theme {
                 appearance: config.mode,
                 style: style.clone(),
             });
-            self.highlight_theme = highlight_theme.clone();
+            self.highlight_theme = highlight_theme;
         }
 
         let default_colors = if config.mode.is_dark() {
@@ -1096,6 +1118,9 @@ impl Theme {
         if let Some(radius_lg) = config.radius_lg {
             self.radius_lg = px(radius_lg as f32);
         }
+        if let Some(window_radius) = config.window_radius {
+            self.window_radius = px(window_radius as f32);
+        }
         if let Some(shadow) = config.shadow {
             self.shadow = shadow;
         }
@@ -1109,7 +1134,7 @@ impl Theme {
 mod tests {
     use gpui::{linear_color_stop, linear_gradient, px};
 
-    use crate::{Theme, ThemeConfig, ThemeMode, ThemeSet, try_parse_color};
+    use crate::{Colorize as _, Theme, ThemeConfig, ThemeMode, ThemeSet, try_parse_color};
 
     #[test]
     fn test_semantic_theme_config_parses_and_roundtrips() {
@@ -1185,6 +1210,77 @@ mod tests {
         assert_eq!(theme.primary, try_parse_color("#7c3aed").unwrap());
         assert_eq!(theme.radius, px(7.));
         assert_eq!(theme.semantic_tokens().spacing, Default::default());
+    }
+
+    #[test]
+    fn test_apply_config_reads_the_window_radius() {
+        let config = serde_json::from_value::<ThemeConfig>(serde_json::json!({
+            "name": "Rounded",
+            "mode": "dark",
+            "window.radius": 10
+        }))
+        .unwrap();
+        let mut theme = Theme::default();
+        assert_eq!(theme.window_radius, px(0.));
+        theme.apply_config(&std::rc::Rc::new(config));
+        assert_eq!(theme.window_radius, px(10.));
+    }
+
+    #[test]
+    fn test_apply_config_reads_the_chart_colors() {
+        let config = serde_json::from_value::<ThemeConfig>(serde_json::json!({
+            "name": "Palette",
+            "mode": "light",
+            "colors": {
+                "chart.1": "#111111",
+                "chart.2": "not a color",
+                "chart.3": "#333333",
+                "chart.bullish": "#00ff00",
+                "chart.bearish": "#ff0000",
+                "chart.grid": "#eeeeee"
+            }
+        }))
+        .unwrap();
+
+        let mut theme = Theme::default();
+        theme.apply_config(&std::rc::Rc::new(config));
+
+        // The keys match the fields; an unparsable or missing one falls back
+        // to the ramp of the base blue.
+        assert_eq!(theme.chart_1, try_parse_color("#111111").unwrap());
+        assert_eq!(theme.chart_2, theme.blue.lighten(0.2));
+        assert_eq!(theme.chart_3, try_parse_color("#333333").unwrap());
+        assert_eq!(theme.chart_4, theme.blue.darken(0.2));
+        assert_eq!(theme.chart_5, theme.blue.darken(0.4));
+        assert_eq!(theme.tokens.chart_3.color, theme.chart_3);
+        assert_eq!(theme.chart_bullish, try_parse_color("#00ff00").unwrap());
+        assert_eq!(theme.chart_bearish, try_parse_color("#ff0000").unwrap());
+        assert_eq!(theme.chart_grid, try_parse_color("#eeeeee").unwrap());
+
+        theme.apply_config(&std::rc::Rc::new(ThemeConfig::default()));
+        assert_eq!(theme.chart_grid, theme.border.opacity(0.6));
+    }
+
+    #[test]
+    fn test_apply_config_reads_the_list_highlight_foreground_color() {
+        let config = serde_json::from_value::<ThemeConfig>(serde_json::json!({
+            "name": "Highlight",
+            "mode": "light",
+            "colors": {
+                "list.highlight.foreground": "#ff8800"
+            }
+        }))
+        .unwrap();
+
+        let mut theme = Theme::default();
+        theme.apply_config(&std::rc::Rc::new(config));
+        assert_eq!(
+            theme.list_highlight_foreground,
+            try_parse_color("#ff8800").unwrap()
+        );
+
+        theme.apply_config(&std::rc::Rc::new(ThemeConfig::default()));
+        assert_eq!(theme.list_highlight_foreground, theme.blue);
     }
 
     #[test]

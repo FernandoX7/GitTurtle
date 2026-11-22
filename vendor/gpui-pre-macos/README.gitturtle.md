@@ -1,33 +1,17 @@
-# GitTurtle macOS frame-demand and accessibility patches
+# GitTurtle macOS accessibility responder patch
 
-This is the Apache-2.0 `gpui-pre-macos` 0.3.4 package, kept at the matching GPUI Kit dependency version. The original license is in [LICENSE-APACHE](LICENSE-APACHE). No editor code or framework migration is included.
+This is the Apache-2.0 `gpui-pre-macos` 0.3.12 package, kept at the matching GPUI Kit 0.10.0 dependency version. The original license is in [LICENSE-APACHE](LICENSE-APACHE). No editor code or framework migration is included.
 
-Origin: [crates.io gpui-pre-macos 0.3.4](https://crates.io/crates/gpui-pre-macos/0.3.4), upstream Zed snapshot `69164008341295ad481bb11c0334a712ca8c23e3`, package checksum `15263eafcbe4e81aec7eb24a47d4c6c88f5e29ba2ba8ad86c430ab8e472883dc`. `Cargo.toml` is the published normalized manifest; dependencies keep their original requirements and the workspace lock pins their versions. Cargo caches, the package's independent lock, and release artifacts are excluded.
+Origin: [crates.io gpui-pre-macos 0.3.12](https://crates.io/crates/gpui-pre-macos/0.3.12), upstream Zed snapshot `d2a4fb6ded7c470be25d1541281da3882495b65b`, package checksum `2de7d3f4ad51ac387e822495db363fcc1188d349793365731d054444c4cb06ee`. `Cargo.toml` is the published normalized manifest; dependencies keep their original requirements and the workspace lock pins their versions. Cargo caches, the package's independent lock, and release artifacts are excluded. Apart from this note, `src/window.rs` is the only file that differs from the published archive.
 
-## Local change
+## Upstreamed in 0.3.12 (retired local patch)
 
-The macOS backend relies on CVDisplayLink callbacks for presentation and does not implement GPUI's frame-demand waker. Native testing found that input could update the rendered/accessibility state while the visible frame and next-frame focus waited for a resize. `refresh()` alone only marks the window dirty. This patch adds an explicit, bounded wake path while preserving the existing display-link path:
-
-- `WindowFrameSource::request_frame` merges one event into the existing per-window dispatch source, independently of display registration.
-- `MacWindow::frame_waker` coalesces demand into one one-shot 16,667 µs timer. Animations can demand further frames, but cannot spin an unpaced main-queue loop. An idle window schedules no timer.
-- The timer holds a weak window reference. It checks close state and the existing source, never recreates a source after teardown, and uses the source's existing cancel-before-view-release lifecycle.
-
-The frame fix is 55 added source lines across `src/window.rs` and `src/display_link.rs`. Two lines at the crate root allow the existing deprecated Cocoa API usage; this avoids warning floods from the local dependency without suppressing other warning categories or changing APIs. A bounded standalone dispatch probe and its explicit example target are also included. Source data/configuration operations and Linux behavior are unchanged. Separate compilation with no default features passed; native visual, focus, close/reopen, and idle-resource verification must be recorded against the integrated executable in the milestone evidence. The wake mechanism does not by itself establish display latency or CPU measurements.
-
-## Dispatch lifecycle probe
-
-Run from the GitTurtle workspace after enabling the local dependency patch:
-
-```sh
-cargo test --locked -p gpui-pre-macos --example frame_demand_probe
-```
-
-The probe opens no window and never registers a display link. It pumps the main run loop to verify that 1,000 demanded frames coalesce to one callback, an idle source does not produce further callbacks, and dropping a source cancels its queued callback. Both the separate-copy run and the command above against the GitTurtle workspace lock passed all three assertions. This isolates dispatch/lifecycle behavior; it does not establish visible rendering or native focus correctness.
+Upstream `gpui-pre-macos` 0.3.12 migrated from deprecated `cocoa`/`objc`/`block` bindings to `objc2` and implemented `MacWindow::frame_waker` via `CAMetalDisplayLink` (`metal_frames.wake()`) on macOS 14+. The previous local frame-demand wake patch and standalone `frame_demand_probe` example are therefore retired.
 
 ## Accessibility responder alignment
 
-`MacWindow` creates its rendering `native_view` as a child of `NSWindow.contentView` and makes that child the first responder. The upstream `a11y_init` used AccessKit's `SubclassingAdapter::for_window`, which subclasses the parent content view. As a result, the accessibility tree and `accessibilityFocusedUIElement` override were attached to a different view than the keyboard responder. Native release validation observed window-level accessible focus while keyboard input still reached controls.
+`MacWindow` creates its rendering `native_view` as a child of `NSWindow.contentView` and makes that child the first responder. Upstream `a11y_init` in `0.3.12` still uses AccessKit's `SubclassingAdapter::for_window`, which subclasses the parent content view. As a result, the accessibility tree and `accessibilityFocusedUIElement` override attach to a different view than the keyboard responder.
 
-The focused patch in `src/window.rs::a11y_init` uses the same pinned AccessKit 0.26.3 `SubclassingAdapter::new` API with the live rendering view pointer. The adapter retains that view. It also seeds the adapter's host-focus state using the current `NSWindow.isKeyWindow`, because the initial activation may precede callback installation. Subsequent activation continues through the original window-key handler. Any returned event batch is raised after releasing the window-state lock. No focus action, settings mutation, dependency update, Git operation or Linux behavior is added.
+The focused patch in `src/window.rs::a11y_init` uses the pinned `accesskit_macos` `SubclassingAdapter::new` API with the live rendering view pointer (`lock.native_view.as_ptr() as *mut c_void`). The adapter retains that view. It also seeds the adapter's host-focus state using `lock.native_window().isKeyWindow()`, because initial activation may precede callback installation. Subsequent activation continues through the original window-key handler. Any returned event batch is raised after releasing the window-state lock. No focus action, settings mutation, dependency update, Git operation, or Linux behavior is added.
 
-Compilation checks constructor/type compatibility. Actual native descendant-focus and VoiceOver results must be recorded against the updated binary; the source correction and prior regression observation alone do not establish a passing native workflow.
+Compilation and automated tests run on hosted macOS CI; native VoiceOver and descendant-focus behavior must be recorded against the integrated macOS binary when re-verifying native QA.

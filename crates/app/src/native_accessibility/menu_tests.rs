@@ -63,7 +63,7 @@ fn draw(cx: &mut VisualTestContext) {
 /// none of them.
 fn key_up(cx: &mut VisualTestContext, key: &str) {
     cx.simulate_event(KeyUpEvent {
-        keystroke: Keystroke::parse(key).unwrap(),
+        keystroke: Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap(),
     });
     draw(cx);
 }
@@ -231,7 +231,9 @@ fn a_held_key_that_opened_a_buttons_menu_runs_nothing(cx: &mut TestAppContext) {
         );
         for _ in 0..3 {
             cx.simulate_event(KeyDownEvent {
-                keystroke: Keystroke::parse(key).unwrap().with_simulated_ime(),
+                keystroke: Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                    .unwrap()
+                    .with_simulated_ime(),
                 is_held: true,
                 prefer_character_input: false,
             });
@@ -294,7 +296,9 @@ fn a_held_key_that_chose_from_a_buttons_menu_reopens_nothing(cx: &mut TestAppCon
         );
         for _ in 0..3 {
             cx.simulate_event(KeyDownEvent {
-                keystroke: Keystroke::parse(key).unwrap().with_simulated_ime(),
+                keystroke: Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                    .unwrap()
+                    .with_simulated_ime(),
                 is_held: true,
                 prefer_character_input: false,
             });
@@ -846,7 +850,7 @@ fn kit_menus_stay_above_the_bottom_inset_an_application_sets(cx: &mut TestAppCon
 struct PointerDialogProbe(FocusHandle);
 
 impl Render for PointerDialogProbe {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .child(
@@ -875,7 +879,6 @@ impl Render for PointerDialogProbe {
                         }))
                     }),
             )
-            .children(Root::render_dialog_layer(window, cx))
     }
 }
 

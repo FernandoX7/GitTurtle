@@ -1,9 +1,9 @@
 // From:
 // https://github.com/zed-industries/zed/blob/56daba28d40301ee4c05546fadb691d070b7b2b6/crates/gpui/examples/window_shadow.rs
 use gpui::{
-    AnyElement, App, CursorStyle, Decorations, Edges, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement, Pixels, Point, RenderOnce, ResizeEdge, Size, Styled as _, Tiling,
-    Window, div, point, prelude::FluentBuilder as _, px,
+    AnyElement, App, Corners, CursorStyle, Decorations, Edges, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement, Pixels, Point, RenderOnce, ResizeEdge, Size,
+    Styled as _, Tiling, Window, div, point, prelude::FluentBuilder as _, px,
 };
 
 use crate::ActiveTheme;
@@ -15,11 +15,32 @@ pub(crate) const SHADOW_SIZE: Pixels = px(20.0);
 const BORDER_SIZE: Pixels = px(1.0);
 /// Half-width of the resize hit band on each side of the visible frame (inner border).
 const RESIZE_HIT_SIZE: Pixels = px(4.0);
+
+/// The window's current corner radii: the theme's `window.radius`
+/// ([`crate::Theme::window_radius`]) for every corner of a client-decorated
+/// window that isn't next to a tiled edge, zero otherwise.
 ///
-/// GPUI currently clips overflowing children to a rectangular content mask. A non-zero
-/// radius here would round the frame itself but leave child backgrounds visible in the
-/// corners, so keep the generic window wrapper square until rounded content masks exist.
-pub(crate) const BORDER_RADIUS: Pixels = px(0.0);
+/// GPUI clips overflowing children to a rectangular content mask, so a non-zero
+/// radius only rounds the frame itself. Elements with a background that touch a
+/// window corner (the root surface, [`crate::TitleBar`], an application's bottom
+/// bar) must round that corner too, for example
+/// `div().rounded_bl(radii.bottom_left)`. The default stays square.
+pub fn window_corner_radii(window: &Window, cx: &App) -> Corners<Pixels> {
+    corner_radii(cx.theme().window_radius, window.window_decorations())
+}
+
+fn corner_radii(radius: Pixels, decorations: Decorations) -> Corners<Pixels> {
+    let Decorations::Client { tiling } = decorations else {
+        return Corners::default();
+    };
+    let corner = |rounded: bool| if rounded { radius } else { px(0.0) };
+    Corners {
+        top_left: corner(!tiling.top && !tiling.left),
+        top_right: corner(!tiling.top && !tiling.right),
+        bottom_left: corner(!tiling.bottom && !tiling.left),
+        bottom_right: corner(!tiling.bottom && !tiling.right),
+    }
+}
 
 /// Create a new window border.
 pub fn window_border() -> WindowBorder {
@@ -121,6 +142,20 @@ pub(crate) fn window_content_insets(window: &Window) -> Edges<Pixels> {
     }
 }
 
+/// Per-side inset from the window bounds to the part of the window that is
+/// fully visible: not under the system bars, a display cutout or the on-screen
+/// keyboard ([`Window::fully_visible_bounds`]). Zero on desktop.
+pub(crate) fn window_safe_insets(window: &Window) -> Edges<Pixels> {
+    let viewport = window.viewport_size();
+    let visible = window.fully_visible_bounds();
+    Edges {
+        top: visible.top(),
+        right: viewport.width - visible.right(),
+        bottom: viewport.height - visible.bottom(),
+        left: visible.left(),
+    }
+}
+
 impl ParentElement for WindowBorder {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(elements);
@@ -130,155 +165,152 @@ impl ParentElement for WindowBorder {
 impl RenderOnce for WindowBorder {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let decorations = window.window_decorations();
+        let children = self.children;
+        if !uses_client_border(decorations) {
+            // Keep the same `window-backdrop` id as the client-decorated frame below. The
+            // decorations can change at runtime (an app switching to server-side decorations,
+            // or a compositor granting a different mode), and without the shared id every
+            // element id path in the window would change, dropping all keyed element state.
+            return div()
+                .id("window-backdrop")
+                .size_full()
+                .children(children)
+                .into_any_element();
+        }
+        let Decorations::Client { tiling } = decorations else {
+            unreachable!("client border requires client decorations");
+        };
+
         // Keep the platform client inset stable. When the window is tiled on all sides we stop drawing
         // shadow padding, but `set_client_inset` must still use the full shadow size. Clearing it
         // makes the first resize after restore double-count the shadow in `compute_outer_size`, and
         // the window jumps larger.
         let platform_inset = self.shadow_size;
-        let visual_shadow = match decorations {
-            Decorations::Client { tiling }
-                if tiling.top && tiling.bottom && tiling.left && tiling.right =>
-            {
-                px(0.0)
-            }
-            _ => self.shadow_size,
+        let visual_shadow = if tiling.top && tiling.bottom && tiling.left && tiling.right {
+            px(0.0)
+        } else {
+            self.shadow_size
         };
         let resize_hit_size = self.resize_hit_size;
-        if matches!(decorations, Decorations::Client { .. }) {
-            window.set_client_inset(platform_inset);
-        }
+        window.set_client_inset(platform_inset);
+        let radii = window_corner_radii(window, cx);
+        // Lets the compositor treat the rounded corners as transparent.
+        window.set_client_corner_radii(radii);
         let window_size = window.window_bounds().get_bounds().size;
         let is_window_active = window.is_window_active();
-        let border_color = if cx.theme().is_dark() {
-            Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.2,
-                a: 1.0,
-            }
-        } else {
-            Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.8,
-                a: 1.0,
-            }
-        };
+        let border_color = cx.theme().window_border;
 
         div()
             .id("window-backdrop")
             .bg(gpui::transparent_black())
-            .map(|div| match decorations {
-                Decorations::Server => div,
-                Decorations::Client { tiling, .. } => div
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .bg(gpui::transparent_black())
-                    .when(!(tiling.top || tiling.right), |div| {
-                        div.rounded_tr(BORDER_RADIUS)
-                    })
-                    .when(!(tiling.top || tiling.left), |div| {
-                        div.rounded_tl(BORDER_RADIUS)
-                    })
-                    .when(!tiling.top, |div| div.pt(visual_shadow))
-                    .when(!tiling.bottom, |div| div.pb(visual_shadow))
-                    .when(!tiling.left, |div| div.pl(visual_shadow))
-                    .when(!tiling.right, |div| div.pr(visual_shadow))
-                    .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                        let Decorations::Client { tiling } = window.window_decorations() else {
-                            return;
-                        };
-                        if tiling.top && tiling.bottom && tiling.left && tiling.right {
-                            return;
-                        }
-                        let size = window.window_bounds().get_bounds().size;
-                        let pos = window.mouse_position();
-                        let insets = client_frame_insets(platform_inset, &tiling);
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded_tl(radii.top_left)
+            .rounded_tr(radii.top_right)
+            .rounded_bl(radii.bottom_left)
+            .rounded_br(radii.bottom_right)
+            .when(!tiling.top, |div| div.pt(visual_shadow))
+            .when(!tiling.bottom, |div| div.pb(visual_shadow))
+            .when(!tiling.left, |div| div.pl(visual_shadow))
+            .when(!tiling.right, |div| div.pr(visual_shadow))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                let Decorations::Client { tiling } = window.window_decorations() else {
+                    return;
+                };
+                if !window.is_resizable() {
+                    return;
+                }
+                if tiling.top && tiling.bottom && tiling.left && tiling.right {
+                    return;
+                }
+                let size = window.window_bounds().get_bounds().size;
+                let pos = window.mouse_position();
+                let insets = client_frame_insets(platform_inset, &tiling);
 
-                        match resize_edge(pos, size, insets, &tiling, resize_hit_size) {
-                            Some(edge) => window.start_window_resize(edge),
-                            None => {}
-                        };
-                    }),
+                match resize_edge(pos, size, insets, &tiling, resize_hit_size) {
+                    Some(edge) => {
+                        gpui_base::TextSelection::end(window, cx);
+                        cx.stop_active_drag(window);
+                        cx.stop_propagation();
+                        window.start_window_resize(edge);
+                    }
+                    None => {}
+                };
             })
             .size_full()
             .child(
                 div()
                     .cursor(CursorStyle::default())
-                    .map(|div| match decorations {
-                        Decorations::Server => div.size_full(),
-                        Decorations::Client { tiling } => div
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .when(!(tiling.top || tiling.right), |div| {
-                                div.rounded_tr(BORDER_RADIUS)
-                            })
-                            .when(!(tiling.top || tiling.left), |div| {
-                                div.rounded_tl(BORDER_RADIUS)
-                            })
-                            .border_color(border_color)
-                            .when(!tiling.top, |div| div.border_t(BORDER_SIZE))
-                            .when(!tiling.bottom, |div| div.border_b(BORDER_SIZE))
-                            .when(!tiling.left, |div| div.border_l(BORDER_SIZE))
-                            .when(!tiling.right, |div| div.border_r(BORDER_SIZE))
-                            .when(!tiling.is_tiled(), |div| {
-                                let opacity = if is_window_active { 1.0 } else { 0.7 };
-                                div.shadow(vec![
-                                    // Keep the effective outer reach below SHADOW_SIZE. GPUI
-                                    // does not grow the paint bounds for blur, so a larger blur
-                                    // or offset would be visibly cut off by the window surface.
-                                    gpui::BoxShadow {
-                                        color: Hsla {
-                                            h: 0.,
-                                            s: 0.,
-                                            l: 0.,
-                                            a: 0.18 * opacity,
-                                        },
-                                        // GNOME-style ambient shadow: horizontally centered
-                                        // with only a slight downward bias.
-                                        blur_radius: px(10.),
-                                        spread_radius: px(-1.),
-                                        offset: point(px(0.0), px(2.0)),
-                                        inset: false,
-                                    },
-                                    // The contact layer adds definition without increasing the
-                                    // space between the content and the outer window bounds.
-                                    gpui::BoxShadow {
-                                        color: Hsla {
-                                            h: 0.,
-                                            s: 0.,
-                                            l: 0.,
-                                            a: 0.18 * opacity,
-                                        },
-                                        blur_radius: px(3.),
-                                        spread_radius: px(0.),
-                                        offset: point(px(0.0), px(1.0)),
-                                        inset: false,
-                                    },
-                                ])
-                            }),
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .rounded_tl(radii.top_left)
+                    .rounded_tr(radii.top_right)
+                    .rounded_bl(radii.bottom_left)
+                    .rounded_br(radii.bottom_right)
+                    .border_color(border_color)
+                    .when(!tiling.top, |div| div.border_t(BORDER_SIZE))
+                    .when(!tiling.bottom, |div| div.border_b(BORDER_SIZE))
+                    .when(!tiling.left, |div| div.border_l(BORDER_SIZE))
+                    .when(!tiling.right, |div| div.border_r(BORDER_SIZE))
+                    .when(!tiling.is_tiled(), |div| {
+                        let opacity = if is_window_active { 1.0 } else { 0.7 };
+                        div.shadow(vec![
+                            // Keep the effective outer reach below SHADOW_SIZE. GPUI
+                            // does not grow the paint bounds for blur, so a larger blur
+                            // or offset would be visibly cut off by the window surface.
+                            gpui::BoxShadow {
+                                color: Hsla {
+                                    h: 0.,
+                                    s: 0.,
+                                    l: 0.,
+                                    a: 0.18 * opacity,
+                                },
+                                // GNOME-style ambient shadow: horizontally centered
+                                // with only a slight downward bias.
+                                blur_radius: px(10.),
+                                spread_radius: px(-1.),
+                                offset: point(px(0.0), px(2.0)),
+                                inset: false,
+                            },
+                            // The contact layer adds definition without increasing the
+                            // space between the content and the outer window bounds.
+                            gpui::BoxShadow {
+                                color: Hsla {
+                                    h: 0.,
+                                    s: 0.,
+                                    l: 0.,
+                                    a: 0.18 * opacity,
+                                },
+                                blur_radius: px(3.),
+                                spread_radius: px(0.),
+                                offset: point(px(0.0), px(1.0)),
+                                inset: false,
+                            },
+                        ])
                     })
                     .on_mouse_move(|_e, _, cx| {
                         cx.stop_propagation();
                     })
                     .bg(gpui::transparent_black())
-                    .children(self.children),
+                    .children(children),
             )
-            .when(matches!(decorations, Decorations::Client { .. }), |this| {
-                let Decorations::Client { tiling, .. } = decorations else {
-                    return this;
-                };
-                this.child(div().absolute().size_full().children(resize_hit_zones(
+            .when(window.is_resizable(), |parent| {
+                parent.child(div().absolute().size_full().children(resize_hit_zones(
                     window_size,
                     platform_inset,
                     resize_hit_size,
                     &tiling,
                 )))
             })
+            .into_any_element()
     }
+}
+
+fn uses_client_border(decorations: Decorations) -> bool {
+    matches!(decorations, Decorations::Client { .. })
 }
 
 fn cursor_style_for_resize_edge(edge: ResizeEdge) -> CursorStyle {
@@ -287,6 +319,53 @@ fn cursor_style_for_resize_edge(edge: ResizeEdge) -> CursorStyle {
         ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
         ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
         ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn corners_round_only_next_to_untiled_edges() {
+        use super::corner_radii;
+        use gpui::{Corners, Decorations, Tiling, px};
+
+        let radius = px(10.0);
+        assert_eq!(
+            corner_radii(
+                radius,
+                Decorations::Client {
+                    tiling: Tiling::default()
+                }
+            ),
+            Corners::all(radius)
+        );
+        let top_tiled = Tiling {
+            top: true,
+            ..Tiling::default()
+        };
+        assert_eq!(
+            corner_radii(radius, Decorations::Client { tiling: top_tiled }),
+            Corners {
+                top_left: px(0.0),
+                top_right: px(0.0),
+                bottom_left: radius,
+                bottom_right: radius,
+            }
+        );
+        assert_eq!(
+            corner_radii(radius, Decorations::Server),
+            Corners::default()
+        );
+    }
+
+    use super::*;
+
+    #[test]
+    fn only_client_decorated_windows_use_the_client_border() {
+        assert!(!uses_client_border(Decorations::Server));
+        assert!(uses_client_border(Decorations::Client {
+            tiling: Tiling::default(),
+        }));
     }
 }
 

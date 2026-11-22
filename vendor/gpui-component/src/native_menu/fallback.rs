@@ -1,7 +1,7 @@
 //! Fallback popup menu for platforms without an OS-native popup (e.g. Linux).
 //!
 //! It renders gpui-component's drawn [`PopupMenu`] through an overlay held by
-//! [`Root`]. Unlike a real native menu it is clipped to the window, but it keeps
+//! [`crate::Root`]. Unlike a real native menu it is clipped to the window, but it keeps
 //! the [`super::NativeMenu`] API working on every platform.
 //!
 //! GitTurtle patch: its actions go to the focus the window held as it
@@ -19,17 +19,17 @@
 //! right-click menu near the window's foot ended over a status bar, and kept
 //! above the bar by sliding up, it covered the line clicked.
 
+use crate::root::WindowState;
 use gpui::{
     App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
     Point, Render, Subscription, Window, deferred, div,
 };
 
 use crate::menu::{PopupMenu, PopupMenuItem};
-use crate::root::Root;
 
 use super::NativeMenuItem;
 
-/// Overlay held by [`Root`] that renders the active fallback popup menu, if any.
+/// Overlay held by [`crate::Root`] that renders the active fallback popup menu, if any.
 pub(crate) struct FallbackMenuOverlay {
     active: Option<ActiveMenu>,
 }
@@ -250,7 +250,7 @@ impl Render for FallbackMenuOverlay {
     }
 }
 
-/// Show the fallback popup menu through [`Root`]'s overlay.
+/// Show the fallback popup menu through [`crate::Root`]'s overlay.
 #[allow(dead_code)] // Only called where the native menu falls back (e.g. Linux).
 pub(super) fn show(
     items: Vec<NativeMenuItem>,
@@ -265,7 +265,7 @@ pub(super) fn show(
     // release that follows, so Cut, Copy and Paste act on the field
     // clicked, whatever held focus before, as on macOS.
     let action_context = window.focused(cx);
-    let Some(overlay) = Root::native_menu_overlay(window, cx) else {
+    let Some(overlay) = WindowState::native_menu_overlay(window, cx) else {
         return;
     };
     overlay.update(cx, |overlay, cx| {

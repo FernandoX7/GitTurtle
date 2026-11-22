@@ -29,7 +29,7 @@ enum Route {
 /// colour, as wide as its caret.
 pub(crate) fn painted_carets(window: &Window, cx: &App) -> usize {
     let caret = Background::from(gpui_kit::component::Theme::global(cx).caret);
-    let width = if cfg!(target_os = "macos") { 1.5 } else { 2. } * window.scale_factor();
+    let width = 1. * window.scale_factor();
     window
         .painted_quads()
         .into_iter()

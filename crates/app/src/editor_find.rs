@@ -699,7 +699,7 @@ fn show(
         // caret past the field's end.
         bar.query.update(cx, |query, cx| {
             query.focus(window, cx);
-            query.set_selected_range(query.value().len()..0, cx);
+            query.set_selected_range_with_direction(0..query.value().len(), true, cx);
             query.set_scroll_offset(gpui_kit::point(px(0.), px(0.)), cx);
         });
         cx.notify();
@@ -1366,7 +1366,7 @@ impl Widths {
                 previous: button("Previous"),
                 next: button("Next"),
                 toggle: button("Aa"),
-                case: crate::views::line_widths(&[("Match case", rem)], window),
+                case: crate::views::line_widths(&[("Match case", rem * 0.875)], window),
                 count: crate::views::line_widths(&[(COUNT_ROOM, small)], window),
             }
         });
@@ -1383,10 +1383,10 @@ impl Widths {
             previous: button(labels.previous),
             next: button(labels.next),
             // The kit's checkbox: a 1 rem box and 0.5 rem before its label
-            // at 1 rem, the box and the gap each on its whole device pixel
-            // as layout draws them; rounded up together, they were a
-            // device pixel wider than drawn at scale 1.25 (25 for 24 at
-            // 13 pt).
+            // at 0.875 rem (`input_text_size(Size::Medium)`), the box and the
+            // gap each on its whole device pixel as layout draws them; rounded
+            // up together, they were a device pixel wider than drawn at scale
+            // 1.25 (25 for 24 at 13 pt).
             case: window.pixel_snap(rem) + window.pixel_snap(rem * 0.5) + text(labels.case),
             toggle: button(labels.toggle),
             count: text(labels.count.max(count)),
@@ -2332,7 +2332,7 @@ mod bar_tests {
                         (
                             rem,
                             text(FIELD_FLOOR, rem * 0.875) + px(18.),
-                            rem * 1.5 + text("Match case", rem),
+                            rem * 1.5 + text("Match case", rem * 0.875),
                         )
                     });
                     // Inside the bar's pane inset either side, and above its
@@ -2684,7 +2684,7 @@ mod bar_tests {
             cx.read(|cx| gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).caret));
         cx.update(|window, _| {
             let scale = window.scale_factor();
-            let width = if cfg!(target_os = "macos") { 1.5 } else { 2. } * scale;
+            let width = 1. * scale;
             window
                 .painted_quads()
                 .into_iter()

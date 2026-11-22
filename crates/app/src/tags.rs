@@ -2488,11 +2488,12 @@ pub(crate) mod tests {
     ) {
         cx.simulate_mouse_move(position, None, Modifiers::default());
         draw(cx);
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position,
             delta,
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: Default::default(),
         });
         draw(cx);
     }
@@ -2853,10 +2854,12 @@ pub(crate) mod tests {
         /// A window that shows nothing but its dialogs.
         struct Blank;
         impl Render for Blank {
-            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .size_full()
-                    .children(Root::render_dialog_layer(window, cx))
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().size_full()
             }
         }
         cx.update(|cx| {
@@ -5586,12 +5589,13 @@ pub(crate) mod tests {
         let wheel = |by: f32, cx: &mut VisualTestContext| {
             first_frame_fades(cx, region, move |window, cx| {
                 window.dispatch_event(
-                    PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    PlatformInput::Scroll(ScrollEvent {
                         // Over the bottom fade.
                         position: point(region.center().x, region.bottom() - px(2.)),
                         delta: ScrollDelta::Pixels(point(px(0.), px(by))),
                         modifiers: Modifiers::default(),
                         touch_phase: TouchPhase::Moved,
+                        source: Default::default(),
                     }),
                     cx,
                 );

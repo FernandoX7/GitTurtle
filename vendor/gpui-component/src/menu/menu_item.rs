@@ -1,11 +1,12 @@
 use crate::{ActiveTheme, Disableable, StyledExt, h_flex};
 use gpui::{
-    A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId,
+    A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Element, ElementId,
     GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    MouseDownEvent, ParentElement, Pixels, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, accesskit::Toggled, div,
     prelude::FluentBuilder as _,
 };
+use gpui_base::{LogicalStyledExt as _, TestSupportExt as _};
 use smallvec::SmallVec;
 
 /// GitTurtle patch: what a menu entry is. Upstream rendered every entry as a
@@ -24,7 +25,6 @@ pub(crate) enum Entry {
 #[derive(IntoElement)]
 pub(crate) struct MenuItemElement {
     id: ElementId,
-    group_name: SharedString,
     aria_label: Option<SharedString>,
     style: StyleRefinement,
     disabled: bool,
@@ -35,8 +35,6 @@ pub(crate) struct MenuItemElement {
     /// GitTurtle patch: the menu's rows moved under a pointer that has not
     /// moved since, so no item draws the pointer's hover.
     still: bool,
-    /// GitTurtle patch: `Some(checked)` for a checkable item, announced as a
-    /// check menu item with its state; `None` for a plain item.
     checked: Option<bool>,
     /// GitTurtle patch: an item unless the menu says otherwise.
     entry: Entry,
@@ -49,12 +47,11 @@ pub(crate) struct MenuItemElement {
 }
 
 impl MenuItemElement {
-    /// Create a new MenuItem with the given ID and group name.
-    pub(crate) fn new(id: impl Into<ElementId>, group_name: impl Into<SharedString>) -> Self {
+    /// Create a new MenuItem with the given ID.
+    pub(crate) fn new(id: impl Into<ElementId>) -> Self {
         let id: ElementId = id.into();
         Self {
-            id: id.clone(),
-            group_name: group_name.into(),
+            id,
             aria_label: None,
             style: StyleRefinement::default(),
             disabled: false,
@@ -90,7 +87,9 @@ impl MenuItemElement {
         self
     }
 
-    /// Make the item a check menu item in the given state, or a plain one.
+    /// Set whether the menu item is checked, for assistive technology, or
+    /// `None` for an item that is not an option. The check mark itself is
+    /// drawn by the menu.
     pub(crate) fn checked(mut self, checked: Option<bool>) -> Self {
         self.checked = checked;
         self
@@ -174,9 +173,9 @@ impl RenderOnce for MenuItemElement {
         };
         let toggled = self.checked.filter(|_| item).map(|checked| {
             if checked {
-                gpui::accesskit::Toggled::True
+                Toggled::True
             } else {
-                gpui::accesskit::Toggled::False
+                Toggled::False
             }
         });
         // Only an item can be disabled; a label or separator acts on nothing
@@ -206,13 +205,15 @@ impl RenderOnce for MenuItemElement {
             marker.style().corner_radii = self.style.corner_radii.clone();
             marker
         });
+        let still = self.still;
         let content = h_flex()
+            .flex_row_dir(cx)
             .id(self.id)
+            .test_support()
             .role(role)
             .when_some(toggled, |this, toggled| this.aria_toggled(toggled))
             .when_some(self.aria_label, |this, label| this.aria_label(label))
             .when(item, |this| this.aria_selected(self.selected))
-            .group(&self.group_name)
             .gap_x_1()
             .py_1()
             .px_2()
@@ -226,20 +227,15 @@ impl RenderOnce for MenuItemElement {
                 this.on_hover(move |hovered, window, cx| (on_hover)(hovered, window, cx))
             })
             .when(interactive, |this| {
-                this.when(!cursor, |this| {
-                    // GitTurtle patch: under a still pointer the hover draws
-                    // nothing, but stays registered: GPUI refreshes an
-                    // element's own group hover only on a pointer move, and
-                    // only through the listener this registers, so the row
-                    // the pointer had lit would light again once it moved.
-                    let still = self.still;
-                    let (fill, text) = (cx.theme().tokens.accent, cx.theme().accent_foreground);
-                    this.group_hover(self.group_name, move |this| {
-                        if still {
-                            this
-                        } else {
-                            this.bg(fill).text_color(text)
-                        }
+                this.when(!cursor && !still, |this| {
+                    // Not `group_hover` on the item's own group: GPUI styles an
+                    // element before registering its group, and that fallback keeps
+                    // the pointer's item lit after a key moves the highlight away.
+                    // GitTurtle patch: under a still pointer (`still`), hover draws
+                    // nothing until the pointer moves.
+                    this.hover(|this| {
+                        this.bg(cx.theme().tokens.accent)
+                            .text_color(cx.theme().accent_foreground)
                     })
                 })
                 .when(self.selected && !cursor, |this| {
@@ -274,12 +270,12 @@ impl RenderOnce for MenuItemElement {
 /// item drew dim but was announced as available. As gpui-base's Button does,
 /// this keeps the rendered item and adds only the disabled flag when the
 /// toolkit writes its node; AT-SPI reads it as neither enabled nor sensitive.
-struct AccessibleMenuItem {
-    content: Stateful<Div>,
+struct AccessibleMenuItem<E> {
+    content: E,
     disabled: bool,
 }
 
-impl AccessibleMenuItem {
+impl<E: Element + InteractiveElement> AccessibleMenuItem<E> {
     /// GPUI's test platform never activates accessibility, so a test cannot
     /// read a menu's AccessKit nodes. A debug build names the node this item
     /// writes in a debug selector, `menu-item: <label> · <role>[ <toggled>][
@@ -308,16 +304,16 @@ impl AccessibleMenuItem {
     }
 }
 
-impl IntoElement for AccessibleMenuItem {
+impl<E: Element> IntoElement for AccessibleMenuItem<E> {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
 
-impl Element for AccessibleMenuItem {
-    type RequestLayoutState = <Stateful<Div> as Element>::RequestLayoutState;
-    type PrepaintState = <Stateful<Div> as Element>::PrepaintState;
+impl<E: Element> Element for AccessibleMenuItem<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
     fn id(&self) -> Option<ElementId> {
         Element::id(&self.content)
     }
@@ -382,7 +378,7 @@ mod tests {
 
     #[gpui::test]
     fn aria_label_sets_accessible_name(_cx: &mut gpui::TestAppContext) {
-        let item = MenuItemElement::new("open", "menu").aria_label("Open");
+        let item = MenuItemElement::new("open").aria_label("Open");
 
         assert_eq!(item.aria_label, Some("Open".into()));
     }

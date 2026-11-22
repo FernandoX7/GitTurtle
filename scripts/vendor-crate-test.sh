@@ -302,4 +302,15 @@ while read -r name version source; do
   fi
 done <"$scratch/added.packages"
 
-cargo test --locked --lib -- ${1+"$@"}
+# Enable the crate's `test-support` feature when declared (gpui-base,
+# gpui-component, and gpui-pre-linux gate their `#[gpui::test]` harnesses on it).
+if awk '
+  /^\[features\][[:space:]]*$/ { in_features = 1; next }
+  /^\[/ { in_features = 0 }
+  in_features && /^test-support[[:space:]]*=/ { found = 1 }
+  END { exit(found ? 0 : 1) }
+' "$copy/Cargo.toml"; then
+  cargo test --locked --lib --features test-support -- ${1+"$@"}
+else
+  cargo test --locked --lib -- ${1+"$@"}
+fi

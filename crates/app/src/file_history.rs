@@ -4776,9 +4776,7 @@ pub(crate) mod tests {
         footer: bool,
         at: &str,
     ) {
-        use gpui_kit::{
-            Modifiers, PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
-        };
+        use gpui_kit::{Modifiers, PlatformInput, ScrollDelta, ScrollEvent, TouchPhase, point, px};
         let (scroll, panel) = app.read_with(cx, |app, _| {
             let reveals = &app.file_history.reveals;
             let region = if footer {
@@ -4806,11 +4804,12 @@ pub(crate) mod tests {
         );
         cx.update(|window, cx| {
             window.dispatch_event(
-                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                PlatformInput::Scroll(ScrollEvent {
                     position: list.center(),
                     delta: ScrollDelta::Lines(point(0., -3.)),
                     modifiers: Modifiers::default(),
                     touch_phase: TouchPhase::Moved,
+                    source: Default::default(),
                 }),
                 cx,
             );
@@ -7490,7 +7489,7 @@ pub(crate) mod tests {
             draw, history_script, history_window_from, hold_quiet_reads_for_test,
         };
         use gpui_kit::{
-            Modifiers, PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px, size,
+            Modifiers, PlatformInput, ScrollDelta, ScrollEvent, TouchPhase, point, px, size,
         };
         // Each seed starts from empty caches, so what it counts is its own.
         forget_text();
@@ -7535,11 +7534,12 @@ pub(crate) mod tests {
                 let before = (scroll.offset().y, counts());
                 cx.update(|window, cx| {
                     window.dispatch_event(
-                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        PlatformInput::Scroll(ScrollEvent {
                             position: shown.center(),
                             delta: ScrollDelta::Lines(point(0., -3.)),
                             modifiers: Modifiers::default(),
                             touch_phase: TouchPhase::Moved,
+                            source: Default::default(),
                         }),
                         cx,
                     );

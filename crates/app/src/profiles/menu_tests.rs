@@ -654,7 +654,7 @@ fn wheeled_into_view(
         // takes a step while it can move.
         let over = gpui::point(view.left() + gpui::px(12.), view.center().y);
         cx.simulate_mouse_move(over, None, gpui::Modifiers::default());
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: over,
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), step)),
             ..Default::default()

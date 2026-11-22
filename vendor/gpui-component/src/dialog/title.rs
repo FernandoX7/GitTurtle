@@ -41,6 +41,10 @@ impl RenderOnce for DialogTitle {
         self.base
             .text_base()
             .font_semibold()
+            // GitTurtle patch: single-line dialog titles use a 1x line height
+            // so tight 461 x 490 at 18 pt dialog height budgets (Stashes,
+            // Worktrees, Keyboard Shortcuts, Theme Editor, GitHub) preserve
+            // their content room without clipping or forcing scrollbars.
             .line_height(relative(1.))
             .refine_style(&self.style)
             .children(self.children)

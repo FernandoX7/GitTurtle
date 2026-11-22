@@ -2681,23 +2681,23 @@ impl Palette {
     pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
         let more_contrast = more_contrast(cx);
         let (palette, roles, highlights) = self.fitted(more_contrast);
-        Theme::change(
-            if is_light {
-                ThemeMode::Light
+        let mode = if is_light {
+            ThemeMode::Light
+        } else {
+            ThemeMode::Dark
+        };
+        {
+            let theme = Theme::global_mut(cx);
+            theme.mode = mode;
+            let config = if mode.is_dark() {
+                theme.dark_theme.clone()
             } else {
-                ThemeMode::Dark
-            },
-            None,
-            cx,
-        );
-        palette.configure(
-            is_light,
-            more_contrast,
-            self,
-            roles,
-            highlights,
-            Theme::global_mut(cx),
-        );
+                theme.light_theme.clone()
+            };
+            theme.apply_config(&config);
+            palette.configure(is_light, more_contrast, self, roles, highlights, theme);
+            theme.tokens = (&theme.colors).into();
+        }
         CONTROL_BUTTON.set(Some(ControlButton {
             idle: palette.control_button(cx),
             still: palette.still_control_button(cx),
@@ -2838,6 +2838,8 @@ impl Palette {
         theme.colors.list_active = rgb(palette.selected).into();
         theme.colors.list_active_border = rgb(palette.accent).into();
         theme.colors.list_even = rgb(palette.subtle).into();
+        theme.colors.list_highlight_foreground = rgb(palette.accent).into();
+        theme.colors.chart_grid = rgb(palette.border).into();
         theme.colors.popover = rgb(palette.raised()).into();
         theme.popover_edge = Some(rgb(palette.raised_edge()).into());
         let dialog_edge = rgb(palette.dialog_edge()).into();
@@ -2977,13 +2979,11 @@ impl Palette {
     #[cfg(test)]
     pub(crate) fn configured_theme(self, is_light: bool) -> Theme {
         use gpui_kit::component::highlighter::HighlightTheme;
-        let mut theme = Theme {
-            highlight_theme: if is_light {
-                HighlightTheme::default_light()
-            } else {
-                HighlightTheme::default_dark()
-            },
-            ..Theme::default()
+        let mut theme = Theme::default();
+        theme.highlight_theme = if is_light {
+            HighlightTheme::default_light()
+        } else {
+            HighlightTheme::default_dark()
         };
         let roles = self.syntax_roles(None);
         self.configure(
@@ -2994,6 +2994,7 @@ impl Palette {
             EditorHighlights::fit(self, roles, None),
             &mut theme,
         );
+        theme.tokens = (&theme.colors).into();
         theme
     }
 
@@ -3040,55 +3041,55 @@ impl SyntaxRoles {
             removed,
             text,
         ] = self.colors().map(Some);
-        SyntaxColors {
-            keyword: restyle(kit.keyword, keyword),
-            preproc: restyle(kit.preproc, keyword),
-            string: restyle(kit.string, string),
-            string_escape: restyle(kit.string_escape, string),
-            string_regex: restyle(kit.string_regex, string),
-            string_special: restyle(kit.string_special, string),
-            string_special_symbol: restyle(kit.string_special_symbol, string),
-            text_literal: restyle(kit.text_literal, string),
-            text_code_span: restyle(kit.text_code_span, string),
-            number: restyle(kit.number, constant),
-            boolean: restyle(kit.boolean, constant),
-            constant: restyle(kit.constant, constant),
-            type_: restyle(kit.type_, type_),
-            constructor: restyle(kit.constructor, type_),
-            diff_context: restyle(kit.diff_context, text),
-            diff_header: restyle(kit.diff_header, text),
-            diff_hunk: restyle(kit.diff_hunk, function),
-            diff_minus: restyle(kit.diff_minus, removed),
-            diff_plus: restyle(kit.diff_plus, string),
-            enum_: restyle(kit.enum_, type_),
-            variant: restyle(kit.variant, type_),
-            function: restyle(kit.function, function),
-            tag: restyle(kit.tag, markup),
-            tag_doctype: restyle(kit.tag_doctype, markup),
-            attribute: restyle(kit.attribute, markup),
-            property: restyle(kit.property, markup),
-            link_text: restyle(kit.link_text, markup),
-            link_uri: restyle(kit.link_uri, markup),
-            label: restyle(kit.label, markup),
-            title: restyle(kit.title, markup),
-            comment: restyle(kit.comment, comment),
-            comment_doc: restyle(kit.comment_doc, comment),
-            hint: restyle(kit.hint, comment),
-            predictive: restyle(kit.predictive, comment),
-            variable: restyle(kit.variable, text),
-            variable_special: restyle(kit.variable_special, text),
-            embedded: restyle(kit.embedded, text),
-            operator: restyle(kit.operator, text),
-            punctuation: restyle(kit.punctuation, text),
-            punctuation_bracket: restyle(kit.punctuation_bracket, text),
-            punctuation_delimiter: restyle(kit.punctuation_delimiter, text),
-            punctuation_list_marker: restyle(kit.punctuation_list_marker, text),
-            punctuation_special: restyle(kit.punctuation_special, text),
-            primary: restyle(kit.primary, text),
-            // Emphasis keeps its italic or weight in the color around it.
-            emphasis: restyle(kit.emphasis, None),
-            emphasis_strong: restyle(kit.emphasis_strong, None),
-        }
+        let mut colors = kit.clone();
+        colors.keyword = restyle(kit.keyword, keyword);
+        colors.preproc = restyle(kit.preproc, keyword);
+        colors.string = restyle(kit.string, string);
+        colors.string_escape = restyle(kit.string_escape, string);
+        colors.string_regex = restyle(kit.string_regex, string);
+        colors.string_special = restyle(kit.string_special, string);
+        colors.string_special_symbol = restyle(kit.string_special_symbol, string);
+        colors.text_literal = restyle(kit.text_literal, string);
+        colors.text_code_span = restyle(kit.text_code_span, string);
+        colors.number = restyle(kit.number, constant);
+        colors.boolean = restyle(kit.boolean, constant);
+        colors.constant = restyle(kit.constant, constant);
+        colors.type_ = restyle(kit.type_, type_);
+        colors.constructor = restyle(kit.constructor, type_);
+        colors.diff_context = restyle(kit.diff_context, text);
+        colors.diff_header = restyle(kit.diff_header, text);
+        colors.diff_hunk = restyle(kit.diff_hunk, function);
+        colors.diff_minus = restyle(kit.diff_minus, removed);
+        colors.diff_plus = restyle(kit.diff_plus, string);
+        colors.enum_ = restyle(kit.enum_, type_);
+        colors.variant = restyle(kit.variant, type_);
+        colors.function = restyle(kit.function, function);
+        colors.tag = restyle(kit.tag, markup);
+        colors.tag_doctype = restyle(kit.tag_doctype, markup);
+        colors.attribute = restyle(kit.attribute, markup);
+        colors.property = restyle(kit.property, markup);
+        colors.link_text = restyle(kit.link_text, markup);
+        colors.link_uri = restyle(kit.link_uri, markup);
+        colors.label = restyle(kit.label, markup);
+        colors.title = restyle(kit.title, markup);
+        colors.comment = restyle(kit.comment, comment);
+        colors.comment_doc = restyle(kit.comment_doc, comment);
+        colors.hint = restyle(kit.hint, comment);
+        colors.predictive = restyle(kit.predictive, comment);
+        colors.variable = restyle(kit.variable, text);
+        colors.variable_special = restyle(kit.variable_special, text);
+        colors.embedded = restyle(kit.embedded, text);
+        colors.operator = restyle(kit.operator, text);
+        colors.punctuation = restyle(kit.punctuation, text);
+        colors.punctuation_bracket = restyle(kit.punctuation_bracket, text);
+        colors.punctuation_delimiter = restyle(kit.punctuation_delimiter, text);
+        colors.punctuation_list_marker = restyle(kit.punctuation_list_marker, text);
+        colors.punctuation_special = restyle(kit.punctuation_special, text);
+        colors.primary = restyle(kit.primary, text);
+        // Emphasis keeps its italic or weight in the color around it.
+        colors.emphasis = restyle(kit.emphasis, None);
+        colors.emphasis_strong = restyle(kit.emphasis_strong, None);
+        colors
     }
 
     /// The colors a word tint carries: every role but `removed`, which only a diff file's
@@ -4714,13 +4715,11 @@ mod tests {
     impl gpui::Render for DialogProbe {
         fn render(
             &mut self,
-            window: &mut gpui::Window,
-            cx: &mut gpui::Context<Self>,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
-            use gpui_kit::{ParentElement as _, Styled as _};
-            gpui::div()
-                .size_full()
-                .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
+            use gpui_kit::Styled as _;
+            gpui::div().size_full()
         }
     }
 
@@ -4744,6 +4743,8 @@ mod tests {
             })
         });
         crate::tags::tests::draw(cx);
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
         crate::tags::tests::draw(cx);
         cx
     }
@@ -4956,7 +4957,8 @@ mod tests {
 
     fn key_down(cx: &mut gpui::VisualTestContext, key: &str, is_held: bool) {
         cx.simulate_event(gpui_kit::KeyDownEvent {
-            keystroke: gpui_kit::Keystroke::parse(key).unwrap(),
+            keystroke: gpui_kit::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                .unwrap(),
             is_held,
             prefer_character_input: false,
         });
@@ -4965,7 +4967,8 @@ mod tests {
 
     fn key_up(cx: &mut gpui::VisualTestContext, key: &str) {
         cx.simulate_event(gpui_kit::KeyUpEvent {
-            keystroke: gpui_kit::Keystroke::parse(key).unwrap(),
+            keystroke: gpui_kit::Keystroke::parse_with_os(key, crate::shortcuts::host_os())
+                .unwrap(),
         });
         crate::tags::tests::draw(cx);
     }

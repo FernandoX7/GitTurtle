@@ -6,18 +6,18 @@ does not replace the notices described here.
 
 ## Toolkit and libraries
 
-The locked GPUI Kit 0.6.0 stack and GPUI 0.3.4 backend use Apache-2.0, and its
+The locked GPUI Kit 0.10.0 stack and GPUI 0.3.12 backend use Apache-2.0, and its
 AccessKit adapters MIT or Apache-2.0. Local patches preserve upstream licenses and document modifications:
 
 | Vendored package | License | Modification record |
 | --- | --- | --- |
 | `accesskit_atspi_common` 0.19.1 | [MIT](vendor/accesskit_atspi_common/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_atspi_common/LICENSE-APACHE), with [Chromium notices](vendor/accesskit_atspi_common/LICENSE.chromium) | [Patch](vendor/accesskit_atspi_common/GITTURTLE-PATCH.md) |
 | `accesskit_unix` 0.22.1 | [MIT](vendor/accesskit_unix/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_unix/LICENSE-APACHE) | [Patch](vendor/accesskit_unix/GITTURTLE-PATCH.md) |
-| `gpui-base` 0.6.0 | [Apache-2.0](vendor/gpui-base/LICENSE-APACHE) | [Patch](vendor/gpui-base/GITTURTLE-PATCH.md) |
-| `gpui-component` 0.6.0 | [Apache-2.0](vendor/gpui-component/LICENSE-APACHE) | [Patch](vendor/gpui-component/GITTURTLE-PATCH.md) |
-| `gpui-pre-linux` 0.3.4 | [Apache-2.0](vendor/gpui-pre-linux/LICENSE-APACHE) | [Patch](vendor/gpui-pre-linux/GITTURTLE-PATCH.md) |
-| `gpui-pre-macos` 0.3.4 | [Apache-2.0](vendor/gpui-pre-macos/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macos/README.gitturtle.md) |
-| `gpui-pre-macros` 0.3.4 | [Apache-2.0](vendor/gpui-pre-macros/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macros/GITTURTLE-PATCH.md) (test-only) |
+| `gpui-base` 0.10.0 | [Apache-2.0](vendor/gpui-base/LICENSE-APACHE) | [Patch](vendor/gpui-base/GITTURTLE-PATCH.md) |
+| `gpui-component` 0.10.0 | [Apache-2.0](vendor/gpui-component/LICENSE-APACHE) | [Patch](vendor/gpui-component/GITTURTLE-PATCH.md) |
+| `gpui-pre-linux` 0.3.12 | [Apache-2.0](vendor/gpui-pre-linux/LICENSE-APACHE) | [Patch](vendor/gpui-pre-linux/GITTURTLE-PATCH.md) |
+| `gpui-pre-macos` 0.3.12 | [Apache-2.0](vendor/gpui-pre-macos/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macos/README.gitturtle.md) |
+| `gpui-pre-macros` 0.3.12 | [Apache-2.0](vendor/gpui-pre-macros/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macros/GITTURTLE-PATCH.md) (test-only) |
 | `mermaid-rs-renderer` 0.3.1 | [MIT](vendor/mermaid-rs-renderer/LICENSE) | [Patch](vendor/mermaid-rs-renderer/GITTURTLE-PATCH.md) |
 
 Other direct and transitive dependencies are pinned in `Cargo.lock`. A package's
@@ -67,11 +67,12 @@ decode both formats with ImageIO.
   Linux targets the confined image helper calls it directly.
 
 Some published crates omit their license files. [Supplemental notices](docs/licenses/README.md)
-preserve inspected upstream texts with immutable source URLs and hashes. Four
-macOS-only wrappers/libraries still require attribution review: `block`,
-`objc_exception`, `leak` and `leaky-cow`. Their Cargo manifests
-declare licenses; a declaration alone does not establish that every required
-notice has been collected. The [native ufbx notice](docs/licenses/assets/ufbx-native-LICENSE)
+preserve inspected upstream texts with immutable source URLs and hashes. With
+the upgrade to GPUI Kit 0.10.0 / GPUI 0.3.12 (`objc2`), the previously
+unresolved legacy macOS crates (`block`, `objc_exception`, `leak`, and
+`leaky-cow`) are no longer in the packaged binary dependency graph, and
+`scripts/collect-third-party-licenses.py --require-complete` passes for Linux
+(`x86_64`, `aarch64`) and macOS (`x86_64`, `aarch64`). The [native ufbx notice](docs/licenses/assets/ufbx-native-LICENSE)
 is retained separately. The target-specific `REVIEW_REQUIRED.md` lists only the
 affected packages actually selected for that package.
 The [Linux notice review](docs/licenses/linux-notice-review.md) ties `mac` 0.1.1

@@ -118,7 +118,7 @@ impl Styled for Bubble {
 }
 
 impl RenderOnce for Bubble {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let variant = self.variant;
         let mut content = self.content;
         content.variant = variant;
@@ -135,9 +135,12 @@ impl RenderOnce for Bubble {
             .when(variant == BubbleVariant::Ghost, |this| {
                 this.w_full().max_w_full()
             })
-            .when_some(self.alignment, |this, alignment| match alignment {
-                MessageAlignment::Start => this.self_start().mr_auto(),
-                MessageAlignment::End => this.self_end().ml_auto(),
+            .when_some(self.alignment, |this, alignment| {
+                if alignment.is_right(cx) {
+                    this.self_end().ml_auto()
+                } else {
+                    this.self_start().mr_auto()
+                }
             })
             .refine_style(&self.style)
             .child(content)
@@ -194,7 +197,11 @@ impl RenderOnce for BubbleContent {
         div()
             .min_w_0()
             .max_w_full()
-            .overflow_hidden()
+            // A ghost bubble has no surface to clip against; clipping would
+            // only cut the shadows and overhanging controls of rich content.
+            .when(self.variant != BubbleVariant::Ghost, |this| {
+                this.overflow_hidden()
+            })
             .rounded(cx.theme().radius_2xl())
             .border_1()
             .border_color(cx.theme().transparent)
@@ -202,9 +209,12 @@ impl RenderOnce for BubbleContent {
             .py_2()
             .text_sm()
             .line_height(relative(1.625))
-            .when_some(self.alignment, |this, alignment| match alignment {
-                MessageAlignment::Start => this.self_start(),
-                MessageAlignment::End => this.self_end(),
+            .when_some(self.alignment, |this, alignment| {
+                if alignment.is_right(cx) {
+                    this.self_end()
+                } else {
+                    this.self_start()
+                }
             })
             .map(|this| match self.variant {
                 BubbleVariant::Filled => this
@@ -405,11 +415,12 @@ impl RenderOnce for BubbleReactions {
             .when(self.side == BubbleReactionSide::Bottom, |this| {
                 this.bottom(-rems(1.25))
             })
-            .when(self.alignment == MessageAlignment::Start, |this| {
-                this.left_3()
-            })
-            .when(self.alignment == MessageAlignment::End, |this| {
-                this.right_3()
+            .map(|this| {
+                if self.alignment.is_right(cx) {
+                    this.right_3()
+                } else {
+                    this.left_3()
+                }
             })
             .refine_style(&self.style)
             .children(children)

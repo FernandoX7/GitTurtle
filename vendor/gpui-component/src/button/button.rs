@@ -1,12 +1,14 @@
-use std::{cell::Cell, rc::Rc};
+use gpui_base::LogicalStyledExt as _;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
-use crate::styled::apply_focus_ring;
 use crate::{
     ActiveTheme, Colorize as _, Disableable, Icon, Placement, RoleOverride, Selectable, Sizable,
     Size, StyleSized, StyledExt,
     button::ButtonIcon,
     h_flex,
     select::Caret,
+    spinner::Spinner,
+    styled::{FocusLine, apply_focus_style},
     tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
@@ -15,6 +17,10 @@ use gpui::{
     Pixels, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement,
     Styled, Window, div, prelude::FluentBuilder as _, relative, transparent_white,
 };
+
+/// Ink of the focus line a filled button draws inside its fill: its own
+/// foreground, which the theme already keeps legible against that fill.
+const FOCUS_LINE_OPACITY: f32 = 0.6;
 
 #[derive(Default, Clone, Copy)]
 pub enum ButtonRounded {
@@ -108,7 +114,12 @@ impl ButtonCustomVariant {
         }
     }
 
-    /// Set background color, default is transparent.
+    /// Set the base color, default is transparent.
+    ///
+    /// At rest the button fills with this color at 20% opacity, the tint the
+    /// danger, warning, success and info buttons use by default. An outline
+    /// button also draws its border in it. The [`hover`](Self::hover) and
+    /// [`active`](Self::active) colors are painted as given.
     pub fn color(mut self, color: Hsla) -> Self {
         self.color = color;
         self
@@ -207,6 +218,10 @@ pub struct Button {
     disabled: bool,
     accessibility_disabled: bool,
     pub(crate) selected: bool,
+    /// Held by the popover, menu or dropdown this button triggers, for as long
+    /// as it is open. Kept apart from `selected` because the two states mean
+    /// different things, even though they paint the same today.
+    open: bool,
     toggled: Option<bool>,
     role: RoleOverride,
     variant: ButtonVariant,
@@ -218,27 +233,31 @@ pub struct Button {
     hover_group: Option<SharedString>,
     hover_group_held: bool,
     size: Size,
+    content_style: StyleRefinement,
+    icon_size: Option<Size>,
     compact: bool,
     tooltip: Option<(
         SharedString,
         Option<(Rc<Box<dyn gpui::Action>>, Option<SharedString>)>,
     )>,
-    tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
+    tooltip_placement: Option<Placement>,
     /// GitTurtle patch: where the side of the button [`Self::tooltip_builder`]'s tooltip
     /// prefers is read as the tooltip is placed ([`Self::tooltip_view_at`]).
-    tooltip_placement: Option<Rc<Cell<Option<Placement>>>>,
+    tooltip_placement_following: Option<Rc<Cell<Option<Placement>>>>,
     /// GitTurtle patch: whether a press leaves the tooltip shown.
     tooltip_through_press: bool,
+    tooltip_show_delay: Option<Duration>,
+    tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     on_hover: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
     loading: bool,
     loading_icon: Option<Icon>,
     focus_ring_enabled: bool,
+    focus_handle: Option<FocusHandle>,
+    hover_style: Option<StyleRefinement>,
 
     tab_index: isize,
     tab_stop: bool,
-    provided_focus_handle: Option<FocusHandle>,
-    hover_style: Option<StyleRefinement>,
 }
 
 impl From<Button> for AnyElement {
@@ -261,6 +280,7 @@ impl Button {
             disabled: false,
             accessibility_disabled: false,
             selected: false,
+            open: false,
             toggled: None,
             role: RoleOverride::default(),
             variant: ButtonVariant::default(),
@@ -273,12 +293,18 @@ impl Button {
             },
             border_edges: Edges::all(true),
             size: Size::Medium,
+            content_style: StyleRefinement::default(),
+            icon_size: None,
             tooltip: None,
-            tooltip_builder: None,
             tooltip_placement: None,
+            tooltip_placement_following: None,
             tooltip_through_press: false,
+            tooltip_show_delay: None,
+            tooltip_builder: None,
             on_click: None,
             focus_ring_enabled: true,
+            focus_handle: None,
+            hover_style: None,
             on_hover: None,
             loading: false,
             compact: false,
@@ -289,21 +315,47 @@ impl Button {
             hover_group_held: false,
             tab_index: 0,
             tab_stop: true,
-            provided_focus_handle: None,
-            hover_style: None,
         }
     }
 
-    pub(super) fn variant(&self) -> ButtonVariant {
+    /// Uses a behavior primitive supplied by a compound Base control.
+    pub(crate) fn with_base(mut self, base: gpui_base::Button) -> Self {
+        self.base = base;
+        self
+    }
+
+    pub(crate) fn variant(&self) -> ButtonVariant {
         self.variant
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_compact(&self) -> bool {
+        self.compact
+    }
+
+    /// Presentation supplied by a styled compound control. Standalone buttons
+    /// retain their normal size-derived content style.
+    pub(crate) fn content_style(mut self, style: StyleRefinement, icon_size: Size) -> Self {
+        self.content_style = style;
+        self.icon_size = Some(icon_size);
+        self
     }
 
     pub(super) fn button_size(&self) -> Size {
         self.size
     }
 
-    pub(super) fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         self.disabled
+    }
+
+    pub(crate) fn is_outline(&self) -> bool {
+        self.outline
+    }
+
+    /// Whether the button shows only its icon.
+    pub(crate) fn is_icon_only(&self) -> bool {
+        self.icon.is_some() && self.label.is_none() && self.children.is_empty()
     }
 
     pub fn role(mut self, role: impl Into<RoleOverride>) -> Self {
@@ -388,6 +440,23 @@ impl Button {
         self
     }
 
+    /// Prefer a side for the tooltip, falling back when it does not fit.
+    ///
+    /// Applies to [`Self::tooltip`] and [`Self::tooltip_with_action`].
+    /// Omitting placement keeps automatic positioning.
+    pub fn tooltip_placement(mut self, placement: Placement) -> Self {
+        self.tooltip_placement = Some(placement);
+        self
+    }
+
+    /// Overrides how long the pointer must rest before the tooltip shows.
+    ///
+    /// Defaults to [`gpui_base::TooltipDefaults::show_delay`].
+    pub fn tooltip_show_delay(mut self, delay: Duration) -> Self {
+        self.tooltip_show_delay = Some(delay);
+        self
+    }
+
     /// Set the tooltip of the button as a view built each time the tooltip
     /// renders, so it follows state that changes while it is shown; it
     /// replaces a [`Self::tooltip`] text.
@@ -400,7 +469,7 @@ impl Button {
         build: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static,
     ) -> Self {
         self.tooltip_builder = Some(Rc::new(build));
-        self.tooltip_placement = None;
+        self.tooltip_placement_following = None;
         self
     }
 
@@ -423,7 +492,7 @@ impl Button {
         build: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static,
     ) -> Self {
         let mut button = self.tooltip_view(build);
-        button.tooltip_placement = Some(placement);
+        button.tooltip_placement_following = Some(placement);
         button
     }
 
@@ -491,6 +560,16 @@ impl Button {
         self
     }
 
+    /// Use a caller-owned focus handle instead of the one the button keeps for
+    /// itself, so the application can focus the button and restore focus to it.
+    ///
+    /// The handle drives the focus ring, Enter and Space activation and the
+    /// accessibility focus state alike.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle.clone());
+        self
+    }
+
     /// Set the tab index of the button, it will be used to focus the button by tab key.
     ///
     /// Default is 0.
@@ -507,16 +586,10 @@ impl Button {
         self
     }
 
-    /// Uses a caller-owned focus handle instead of creating keyed state.
-    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
-        self.provided_focus_handle = Some(focus_handle.clone());
-        self
-    }
-
     /// GitTurtle patch: the caller-owned focus handle this Button tracks, if
     /// it was given one ([`Self::track_focus`]).
     pub(crate) fn provided_focus_handle(&self) -> Option<&FocusHandle> {
-        self.provided_focus_handle.as_ref()
+        self.focus_handle.as_ref()
     }
 
     /// GitTurtle patch: whether Tab stops on this Button.
@@ -531,7 +604,11 @@ impl Button {
     /// refines over the disabled style, so a disabled Button would light up
     /// under the pointer as though it were available.
     pub fn hover(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
-        self.hover_style = Some(f(StyleRefinement::default()));
+        use gpui::Refineable as _;
+        let style = f(StyleRefinement::default());
+        self.hover_style
+            .get_or_insert_with(StyleRefinement::default)
+            .refine(&style);
         self
     }
 
@@ -561,6 +638,13 @@ impl Button {
     pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
         self.accessibility_disabled = disabled;
         self
+    }
+
+    /// Whether the button paints its selected styling, which is what both a
+    /// caller-set selection and an open popup look like today.
+    #[inline]
+    fn shows_selected_style(&self) -> bool {
+        self.selected || self.open
     }
 
     /// Whether the button responds to the pointer at all.
@@ -605,12 +689,25 @@ impl Selectable for Button {
     fn is_selected(&self) -> bool {
         self.selected
     }
+
+    fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+
+    fn is_open(&self) -> bool {
+        self.open
+    }
 }
 
 impl Sizable for Button {
     fn with_size(mut self, size: impl Into<Size>) -> Self {
         self.size = size.into();
         self
+    }
+
+    fn prepare_for_toolbar(self) -> Self {
+        self.ghost().compact()
     }
 }
 
@@ -637,6 +734,10 @@ impl InteractiveElement for Button {
     fn interactivity(&mut self) -> &mut Interactivity {
         self.base.interactivity()
     }
+
+    fn hover(self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        Button::hover(self, f)
+    }
 }
 
 // GitTurtle patch: the states GPUI keeps on this trait, such as `aria_expanded`,
@@ -660,34 +761,38 @@ impl Button {
         let interactive = self.interactive();
         let hoverable = self.hoverable();
         let disabled = self.disabled;
+        let selected = self.shows_selected_style();
         let loading = self.loading;
+        let tooltip_placement = self.tooltip_placement;
+        let tooltip_placement_following = self.tooltip_placement_following;
+        let tooltip_through_press = self.tooltip_through_press;
+        let tooltip_show_delay = self.tooltip_show_delay;
         let hover_group = self.hover_group;
         let hover_group_held = self.hover_group_held;
+        let caller_hover_style = self.hover_style;
+        let (border_corners, border_edges) =
+            super::logical_corners_edges(self.border_corners, self.border_edges, cx);
         let mut base = self.base;
-        // The caller's hover goes on before the variant's and stays registered
-        // while disabled, as it did when set on the element directly, but a
-        // disabled Button refines nothing: it keeps its disabled look.
-        if let Some(hover_style) = self.hover_style {
-            base = base.hover(|_| {
-                if disabled {
-                    StyleRefinement::default()
-                } else {
-                    hover_style
-                }
-            });
-        }
         let children = self.children;
         let instance_style = base.style().clone();
         let normal_style = style.normal(self.outline, cx);
         let selected_style = style.selected(self.outline, cx);
         let disabled_style = style.disabled(self.outline, cx);
-        let icon_size = match self.size {
+        let icon_size = self.icon_size.unwrap_or_else(|| match self.size {
             Size::Size(v) => Size::Size(v * 0.75),
             _ => self.size,
-        };
+        });
         let has_content = self.icon.is_some() || self.label.is_some() || !children.is_empty();
+        // Only borderless variants use this; the others tint their border.
+        let focus_line = if style.no_padding() {
+            FocusLine::Outside
+        } else if style.is_ghost() {
+            FocusLine::Edge
+        } else {
+            FocusLine::Inside(normal_style.fg.opacity(FOCUS_LINE_OPACITY))
+        };
 
-        let focus_handle = self.provided_focus_handle.clone().unwrap_or_else(|| {
+        let focus_handle = self.focus_handle.clone().unwrap_or_else(|| {
             window
                 .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
                 .read(cx)
@@ -727,7 +832,7 @@ impl Button {
         let resting_edge = cx
             .theme()
             .resting_edge
-            .filter(|_| !disabled && !own_border && style.keeps_a_resting_fill(self.selected));
+            .filter(|_| !disabled && !own_border && style.keeps_a_resting_fill(selected));
         let edge_layer = disabled_edge.or(resting_edge);
         // The layer follows the Button's corners, its caller's where it
         // rounds them itself.
@@ -741,19 +846,19 @@ impl Button {
         let edge_corners = Corners {
             top_left: edge_corner(
                 instance_style.corner_radii.top_left,
-                self.border_corners.top_left,
+                border_corners.top_left,
             ),
             top_right: edge_corner(
                 instance_style.corner_radii.top_right,
-                self.border_corners.top_right,
+                border_corners.top_right,
             ),
             bottom_left: edge_corner(
                 instance_style.corner_radii.bottom_left,
-                self.border_corners.bottom_left,
+                border_corners.bottom_left,
             ),
             bottom_right: edge_corner(
                 instance_style.corner_radii.bottom_right,
-                self.border_corners.bottom_right,
+                border_corners.bottom_right,
             ),
         };
 
@@ -801,25 +906,19 @@ impl Button {
                     }
                 }
             })
-            .when(self.border_corners.top_left, |this| {
-                this.rounded_tl(rounding)
-            })
-            .when(self.border_corners.top_right, |this| {
-                this.rounded_tr(rounding)
-            })
-            .when(self.border_corners.bottom_left, |this| {
-                this.rounded_bl(rounding)
-            })
-            .when(self.border_corners.bottom_right, |this| {
+            .when(border_corners.top_left, |this| this.rounded_tl(rounding))
+            .when(border_corners.top_right, |this| this.rounded_tr(rounding))
+            .when(border_corners.bottom_left, |this| this.rounded_bl(rounding))
+            .when(border_corners.bottom_right, |this| {
                 this.rounded_br(rounding)
             })
             .when(self.variant.is_default() || self.outline, |this| {
-                this.when(self.border_edges.left, |this| this.border_l_1())
-                    .when(self.border_edges.right, |this| this.border_r_1())
-                    .when(self.border_edges.top, |this| this.border_t_1())
-                    .when(self.border_edges.bottom, |this| this.border_b_1())
+                this.when(border_edges.left, |this| this.border_l_1())
+                    .when(border_edges.right, |this| this.border_r_1())
+                    .when(border_edges.top, |this| this.border_t_1())
+                    .when(border_edges.bottom, |this| this.border_b_1())
             })
-            .when(!self.disabled && !self.selected, |this| {
+            .when(!self.disabled && !selected, |this| {
                 this.border_color(normal_style.border)
                     .bg(normal_style.bg)
                     .text_color(normal_style.fg)
@@ -827,13 +926,7 @@ impl Button {
                     // A loading button keeps its normal colors, but must not react
                     // to the pointer, it is not waiting for another click.
                     .when(interactive, |this| {
-                        this.hover(|this| {
-                            let hover_style = style.hovered(self.outline, cx);
-                            this.bg(hover_style.bg)
-                                .border_color(hover_style.border)
-                                .text_color(hover_style.fg)
-                        })
-                        .active(|this| {
+                        this.active(|this| {
                             let active_style = style.active(self.outline, cx);
                             this.bg(active_style.bg)
                                 .border_color(active_style.border)
@@ -846,6 +939,29 @@ impl Button {
                         })
                     })
             })
+            .hover(|this| {
+                // Always register the hover style: GPUI only refreshes the cached
+                // hover state while one is present. If a selected button skipped it,
+                // the stale state would keep hover colors after unselecting.
+                // GitTurtle patch: apply the caller's hover before the variant's
+                // while enabled, and refine nothing while disabled so a disabled
+                // Button keeps its disabled look.
+                let this = if let Some(hover_style) = caller_hover_style
+                    && !disabled
+                {
+                    this.refine_style(&hover_style)
+                } else {
+                    this
+                };
+                if !interactive || selected {
+                    return this;
+                }
+                let hover_style = style.hovered(self.outline, cx);
+                this.bg(hover_style.bg)
+                    .border_color(hover_style.border)
+                    .text_color(hover_style.fg)
+            })
+            .line_height(relative(1.25))
             .refine_style(&instance_style);
 
         // The explicit name wins: it exists precisely for the cases where the
@@ -854,7 +970,19 @@ impl Button {
             .accessibility_label
             .clone()
             .or_else(|| self.label.clone());
+        // Like an HTML `title`, the tooltip describes the button.
+        let description = self.tooltip.as_ref().map(|(tooltip, _)| tooltip.clone());
+        // A loading button with no icon shows the spinner where an icon would sit.
+        let icon = self.icon.or_else(|| {
+            self.loading.then(|| {
+                ButtonIcon::from(
+                    Spinner::new()
+                        .when_some(self.loading_icon.clone(), |this, icon| this.icon(icon)),
+                )
+            })
+        });
         let content = h_flex()
+            .flex_row_dir(cx)
             .id("label")
             .size_full()
             .min_w_0()
@@ -863,16 +991,17 @@ impl Button {
             .items_center()
             .justify_center()
             .button_text_size(self.size)
-            .when_some(instance_style.text.font_size, |this, font_size| {
-                this.text_size(font_size)
-            })
             .map(|this| match self.size {
                 Size::XSmall => this.gap_1(),
                 Size::Small => this.gap_1(),
                 _ => this.gap_2(),
             })
+            .refine_style(&self.content_style)
+            .when_some(instance_style.text.font_size, |this, font_size| {
+                this.text_size(font_size)
+            })
             .when_some(instance_style.gap.width, |this, gap| this.gap_x(gap))
-            .when_some(self.icon, |this, icon| {
+            .when_some(icon, |this, icon| {
                 this.child(
                     icon.loading_icon(self.loading_icon)
                         .loading(self.loading)
@@ -885,7 +1014,6 @@ impl Button {
                         .min_w_0()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .line_height(relative(1.))
                         .child(label),
                 )
             })
@@ -901,7 +1029,7 @@ impl Button {
                 Role::Button
             }
         }))
-        .selected(self.selected)
+        .selected(selected)
         .disabled(disabled)
         .accessibility_disabled(self.accessibility_disabled)
         // Base layers semantic states over the builder chain, so the caller's
@@ -927,6 +1055,9 @@ impl Button {
         .when_some(accessibility_label, |this, label| {
             this.accessibility_label(label)
         })
+        .when_some(description, |this, description| {
+            this.aria_description(description)
+        })
         .when_some(self.toggled, |this, toggled| {
             this.aria_toggled(if toggled {
                 gpui::accesskit::Toggled::True
@@ -937,25 +1068,6 @@ impl Button {
         .track_focus(&focus_handle)
         .tab_index(self.tab_index)
         .tab_stop(self.tab_stop)
-        // GitTurtle patch: gpui-base tracks the handle only while enabled, so a
-        // Button disabled while focused left the frame with focus still on it,
-        // and GPUI then dispatched keys from the window root, above `Root`'s
-        // Tab bindings. While focused, a disabled Button keeps its handle as a
-        // target Tab never stops at, so Tab and Shift+Tab move on from its
-        // place. The `InteractiveElement` method reaches the element directly;
-        // gpui-base's disabled path leaves it alone and adds no activation.
-        // `tab_stop(false)` also writes the handle's window-wide record, which
-        // gpui-base's enabled path rewrites on every render, so a Button that
-        // is enabled again is a tab stop again.
-        .when(disabled && is_focused, |this| {
-            InteractiveElement::track_focus(
-                this,
-                &focus_handle
-                    .clone()
-                    .tab_index(self.tab_index)
-                    .tab_stop(false),
-            )
-        })
         .child(content)
         .when_some(edge_layer, |this, edge| {
             this.child(
@@ -980,14 +1092,17 @@ impl Button {
         // background changes nothing.
         .when(loading && !disabled, |this| this.opacity(0.8))
         .when(!disabled, |this| {
-            this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            this.on_any_mouse_down(move |event, window, cx| {
+                // A press with any mouse button must not focus the button.
+                window.prevent_default();
+                if event.button != MouseButton::Left {
+                    return;
+                }
+
                 if loading {
                     cx.stop_propagation();
                     return;
                 }
-
-                // Avoid focus on mouse down.
-                window.prevent_default();
 
                 // Pressing a button must not start the window-level text selection.
                 crate::global_state::GlobalState::suppress_text_selection(cx);
@@ -1003,37 +1118,47 @@ impl Button {
                 on_click(event, window, cx);
             })
         })
+        .when(loading, |this| {
+            this.on_click(|_, _, cx| cx.stop_propagation())
+        })
         .when_some(self.on_hover.filter(|_| hoverable), |this, on_hover| {
             this.on_hover(move |hovered, window, cx| {
                 on_hover(hovered, window, cx);
             })
         })
         .map(|this| {
-            let hide_on_press = !self.tooltip_through_press;
+            let hide_on_press = !tooltip_through_press;
             if let Some(builder) = self.tooltip_builder {
-                this.managed_tooltip_with_placement(
-                    None,
-                    self.tooltip_placement,
+                this.managed_tooltip_with_options(
+                    tooltip_placement,
+                    tooltip_placement_following,
+                    tooltip_show_delay,
                     hide_on_press,
                     move |window, cx| builder(window, cx),
                 )
             } else if let Some((tooltip, action)) = self.tooltip {
-                this.managed_tooltip_with_placement(None, None, hide_on_press, move |window, cx| {
-                    Tooltip::new(tooltip.clone())
-                        .when_some(action.clone(), |this, (action, context)| {
-                            this.action(
-                                action.boxed_clone().as_ref(),
-                                context.as_ref().map(|c| c.as_ref()),
-                            )
-                        })
-                        .build(window, cx)
-                })
+                this.managed_tooltip_with_options(
+                    tooltip_placement,
+                    None,
+                    tooltip_show_delay,
+                    hide_on_press,
+                    move |window, cx| {
+                        Tooltip::new(tooltip.clone())
+                            .when_some(action.clone(), |this, (action, context)| {
+                                this.action(
+                                    action.boxed_clone().as_ref(),
+                                    context.as_ref().map(|c| c.as_ref()),
+                                )
+                            })
+                            .build(window, cx)
+                    },
+                )
             } else {
                 this
             }
         })
         .when(is_focused && self.focus_ring_enabled, |this| {
-            apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
+            apply_focus_style(this, cx.theme().button_focus_ring, focus_line, window, cx)
         })
     }
 }
@@ -1326,14 +1451,15 @@ impl ButtonVariant {
             Self::Ghost => cx
                 .theme()
                 .ghost_hover
+                .map(Background::from)
                 .unwrap_or_else(|| {
+                    let accent: Background = cx.theme().tokens.accent.into();
                     if cx.theme().mode.is_dark() {
-                        cx.theme().secondary.lighten(0.1).opacity(0.8)
+                        accent.opacity(0.5)
                     } else {
-                        cx.theme().secondary.darken(0.1).opacity(0.8)
+                        accent
                     }
-                })
-                .into(),
+                }),
             Self::Link => cx.theme().transparent.into(),
             Self::Text => cx.theme().transparent.into(),
         };
@@ -1342,6 +1468,7 @@ impl ButtonVariant {
         let fg = match self {
             Self::Link => cx.theme().link_hover,
             Self::Text => cx.theme().foreground,
+            Self::Ghost => cx.theme().accent_foreground,
             _ => self.text_color(outline, cx),
         };
 
@@ -1383,14 +1510,8 @@ impl ButtonVariant {
             Self::Ghost => cx
                 .theme()
                 .ghost_active
-                .unwrap_or_else(|| {
-                    if cx.theme().mode.is_dark() {
-                        cx.theme().secondary.lighten(0.2).opacity(0.8)
-                    } else {
-                        cx.theme().secondary.darken(0.2).opacity(0.8)
-                    }
-                })
-                .into(),
+                .map(Background::from)
+                .unwrap_or_else(|| cx.theme().tokens.button_active.into()),
             Self::Danger => {
                 if outline {
                     self.outline_background(ButtonStyleState::Active, cx)
@@ -1455,9 +1576,11 @@ impl ButtonVariant {
             Self::Default => cx.theme().tokens.button_active.into(),
             Self::Primary => cx.theme().tokens.button_primary_active.into(),
             Self::Secondary => cx.theme().tokens.button_secondary_active.into(),
-            // Every other variant selects with its active surface; the ghost
-            // token sits too close to its hover to read as pressed.
-            Self::Ghost => self.active(outline, cx).bg,
+            Self::Ghost => cx
+                .theme()
+                .ghost_active
+                .map(Background::from)
+                .unwrap_or_else(|| cx.theme().tokens.secondary_active.into()),
             Self::Danger => cx.theme().tokens.button_danger_active.into(),
             Self::Warning => cx.theme().tokens.button_warning_active.into(),
             Self::Success => cx.theme().tokens.button_success_active.into(),
@@ -1707,6 +1830,136 @@ mod tests {
         assert_eq!(keyboard_clicks.get(), 2);
     }
 
+    /// Issue #1959: a right or middle press focused the button and left its focus
+    /// ring showing. The press must still reach the parent, where a context menu
+    /// listens.
+    #[gpui::test]
+    fn non_left_press_does_not_focus_button(cx: &mut gpui::TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        use gpui::{Context, Modifiers, MouseDownEvent, MouseUpEvent, Render, point};
+
+        struct Harness {
+            focus_handle: FocusHandle,
+            parent_presses: Rc<Cell<usize>>,
+        }
+
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let parent_presses = self.parent_presses.clone();
+                div()
+                    .size(px(100.))
+                    .on_mouse_down(MouseButton::Right, move |_, _, _| {
+                        parent_presses.set(parent_presses.get() + 1)
+                    })
+                    .on_mouse_down(MouseButton::Middle, {
+                        let parent_presses = self.parent_presses.clone();
+                        move |_, _, _| parent_presses.set(parent_presses.get() + 1)
+                    })
+                    .child(
+                        Button::new("non-left")
+                            .size_full()
+                            .track_focus(&self.focus_handle),
+                    )
+            }
+        }
+
+        cx.update(crate::init);
+        let parent_presses = Rc::new(Cell::new(0));
+        let (view, cx) = cx.add_window_view({
+            let parent_presses = parent_presses.clone();
+            move |_, cx| Harness {
+                focus_handle: cx.focus_handle(),
+                parent_presses,
+            }
+        });
+        let focus_handle = cx.update(|_, cx| view.read(cx).focus_handle.clone());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let position = point(px(10.), px(10.));
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            cx.simulate_event(MouseDownEvent {
+                button,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                button,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            });
+            cx.update(|window, _| {
+                assert!(
+                    !focus_handle.is_focused(window),
+                    "a {button:?} press must not focus the button"
+                )
+            });
+        }
+        assert_eq!(parent_presses.get(), 2);
+    }
+
+    /// A button keeps the application's focus handle, so focus the application
+    /// gives it shows on the button and activates it from the keyboard.
+    #[cfg(feature = "test-support")]
+    #[gpui::test]
+    fn caller_owned_focus_handle_drives_focus_and_keyboard_activation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::{cell::Cell, rc::Rc};
+
+        use gpui::{Context, KeyDownEvent, KeyUpEvent, Keystroke, Render};
+
+        struct Harness {
+            focus_handle: FocusHandle,
+            clicks: Rc<Cell<usize>>,
+        }
+
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                div().size(px(100.)).child(
+                    Button::new("details")
+                        .label("Details")
+                        .track_focus(&self.focus_handle)
+                        .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+                )
+            }
+        }
+
+        cx.update(crate::init);
+        let clicks = Rc::new(Cell::new(0));
+        let (view, cx) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_, cx| Harness {
+                focus_handle: cx.focus_handle(),
+                clicks,
+            }
+        });
+        let focus_handle = cx.update(|_, cx| view.read(cx).focus_handle.clone());
+        cx.update(|window, cx| {
+            focus_handle.focus(window, cx);
+            window.draw(cx).clear(cx);
+        });
+
+        let button = cx.update(|window, _| {
+            gpui_base::test_support::find(window, &[], &ElementId::from("details"))
+                .expect("button is painted")
+        });
+        assert_eq!(button.focused(), Some(true));
+
+        let keystroke = Keystroke::parse("enter").unwrap();
+        cx.simulate_event(KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke });
+        assert_eq!(clicks.get(), 1);
+    }
+
     #[gpui::test]
     fn loading_button_keeps_existing_pointer_blocking(cx: &mut gpui::TestAppContext) {
         use std::{cell::Cell, rc::Rc};
@@ -1792,132 +2045,52 @@ mod tests {
         cx.update(|window, cx| assert!(window.focused(cx).is_some()));
     }
 
-    /// GitTurtle patch: a page holding one Button centred in the window, its
-    /// tooltip view placed from the cell given, where one is given.
-    struct TooltipPage(Option<Rc<Cell<Option<Placement>>>>);
-    impl gpui::Render for TooltipPage {
-        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
-            let tip = |window: &mut Window, cx: &mut App| {
-                crate::tooltip::Tooltip::element(|_, _| {
-                    div().debug_selector(|| "tip".into()).child("Says where")
-                })
-                .build(window, cx)
-            };
-            let trigger = Button::new("trigger")
-                .label("Trigger")
-                .debug_selector(|| "trigger".into());
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(match self.0.clone() {
-                    Some(placement) => trigger.tooltip_view_at(placement, tip),
-                    None => trigger.tooltip_view(tip),
-                })
+    #[gpui::test]
+    fn base_activation_is_preserved_and_blocked_while_loading(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Render, point};
+        use std::{cell::Cell, rc::Rc};
+
+        struct Harness {
+            clicks: Rc<Cell<usize>>,
+            loading: bool,
         }
-    }
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                div().tab_group().child(
+                    Button::new("close")
+                        .with_base(
+                            gpui_base::Button::new("close")
+                                .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+                        )
+                        .loading(self.loading)
+                        .size(px(100.)),
+                )
+            }
+        }
 
-    /// GitTurtle patch: draws `cx`'s window once, with what it waits for
-    /// before and after.
-    fn settle(cx: &mut gpui::VisualTestContext) {
-        cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.run_until_parked();
-    }
-
-    /// GitTurtle patch: a [`TooltipPage`] in a 400 × 300 window whose
-    /// pointer has rested on its Button past the 500 ms show delay, and the
-    /// Button's bounds.
-    fn shown_tooltip(
-        cx: &mut gpui::TestAppContext,
-        placement: Option<Rc<Cell<Option<Placement>>>>,
-    ) -> (&mut gpui::VisualTestContext, gpui::Bounds<Pixels>) {
-        use gpui::{AppContext as _, Modifiers, size};
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let page = cx.new(|_| TooltipPage(placement));
-            crate::Root::new(page, window, cx).bordered(false)
+        cx.update(crate::init);
+        let clicks = Rc::new(Cell::new(0));
+        let (view, cx) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_, _| Harness {
+                clicks,
+                loading: false,
+            }
         });
-        cx.simulate_resize(size(px(400.), px(300.)));
-        settle(cx);
-        let trigger = cx.debug_bounds("trigger").expect("the trigger");
-        cx.simulate_mouse_move(trigger.center(), None, Modifiers::default());
-        settle(cx);
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(600));
-        settle(cx);
-        (cx, trigger)
-    }
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(point(px(10.), px(10.)), Default::default());
+        assert_eq!(clicks.get(), 1);
 
-    /// GitTurtle patch: a Button's tooltip view set with a placement shows on
-    /// that side of the button where it fits there, and one set without a
-    /// placement, or with the side above, shows above it: the pointer resting
-    /// on a Button in the middle of a 400 × 300 window past the 500 ms show
-    /// delay, the tooltip's content lies wholly below the button for
-    /// `Placement::Bottom` and wholly above it otherwise. The Button once
-    /// passed no placement to its managed tooltip, so every tooltip view
-    /// preferred the side above.
-    #[gpui::test]
-    fn a_tooltip_view_at_a_placement_shows_on_that_side(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::init);
-        for (placement, below) in [
-            (Some(Placement::Bottom), true),
-            (Some(Placement::Top), false),
-            (None, false),
-        ] {
-            let held = placement.map(|placement| Rc::new(Cell::new(Some(placement))));
-            let (cx, trigger) = shown_tooltip(cx, held);
-            let tip = cx
-                .debug_bounds("tip")
-                .unwrap_or_else(|| panic!("{placement:?}: the tooltip shows"));
-            if below {
-                assert!(
-                    tip.top() >= trigger.bottom(),
-                    "{placement:?}: {tip:?} lies below {trigger:?}"
-                );
-            } else {
-                assert!(
-                    tip.bottom() <= trigger.top(),
-                    "{placement:?}: {tip:?} lies above {trigger:?}"
-                );
-            }
-        }
-    }
-
-    /// GitTurtle patch: a shown Button tooltip takes the side its caller sets
-    /// in the next frame drawn, with no hover change, no notification and no
-    /// new request: shown below the button, the cell set to the side above,
-    /// the next frame draws it wholly above; set to none, above, the
-    /// positioner's default; set back below, below. The side was read as the
-    /// hover began, so a tooltip kept it for as long as it stayed shown.
-    #[gpui::test]
-    fn a_shown_tooltip_takes_a_side_changed_in_the_next_frame(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::init);
-        let side = Rc::new(Cell::new(Some(Placement::Bottom)));
-        let (cx, trigger) = shown_tooltip(cx, Some(side.clone()));
-        for (placement, below) in [
-            (Some(Placement::Bottom), true),
-            (Some(Placement::Top), false),
-            (None, false),
-            (Some(Placement::Bottom), true),
-        ] {
-            side.set(placement);
-            cx.update(|window, cx| window.draw(cx).clear(cx));
-            let tip = cx
-                .debug_bounds("tip")
-                .unwrap_or_else(|| panic!("{placement:?}: the tooltip stays shown"));
-            if below {
-                assert!(
-                    tip.top() >= trigger.bottom(),
-                    "{placement:?}: {tip:?} lies below {trigger:?} in the next frame"
-                );
-            } else {
-                assert!(
-                    tip.bottom() <= trigger.top(),
-                    "{placement:?}: {tip:?} lies above {trigger:?} in the next frame"
-                );
-            }
-        }
+        view.update(cx, |view, cx| {
+            view.loading = true;
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(point(px(10.), px(10.)), Default::default());
+        cx.update(|window, cx| window.focus_next(cx));
+        cx.simulate_keystrokes("enter space");
+        assert_eq!(clicks.get(), 1);
     }
 
     #[gpui::test]
@@ -1928,6 +2101,7 @@ mod tests {
             .outline()
             .large()
             .tooltip("Click to save")
+            .tooltip_show_delay(Duration::from_millis(100))
             .compact()
             .loading(false)
             .disabled(false)
@@ -1943,15 +2117,35 @@ mod tests {
         assert!(button.outline);
         assert_eq!(button.size, Size::Large);
         assert!(button.tooltip.is_some());
+        assert_eq!(button.tooltip_show_delay, Some(Duration::from_millis(100)));
         assert!(button.compact);
         assert!(!button.loading);
         assert!(!button.disabled);
         assert!(!button.selected);
         assert_eq!(button.toggled, None);
+        assert!(button.focus_handle.is_none());
         assert_eq!(button.tab_index, 1);
         assert!(button.tab_stop);
         assert!(!button.dropdown_caret);
         assert!(matches!(button.rounded, ButtonRounded::Medium));
+    }
+
+    /// A button paints an open popup the way it paints a selection, but the
+    /// two states are stored apart, so a caller can read back which one it set
+    /// and a later design can tell them apart visually.
+    #[test]
+    fn an_open_trigger_is_stored_apart_from_a_selected_one() {
+        let open = Button::new("trigger").open(true);
+        assert!(open.is_open());
+        assert!(!open.is_selected());
+        assert!(open.shows_selected_style());
+
+        let selected = Button::new("trigger").selected(true);
+        assert!(selected.is_selected());
+        assert!(!selected.is_open());
+        assert!(selected.shows_selected_style());
+
+        assert!(!Button::new("trigger").shows_selected_style());
     }
 
     #[test]
@@ -2251,6 +2445,134 @@ mod tests {
                 cx.theme().tokens.button_danger.background.opacity(0.15)
             );
         });
+    }
+
+    /// GitTurtle patch: a page holding one Button centred in the window, its
+    /// tooltip view placed from the cell given, where one is given.
+    struct TooltipPage(Option<Rc<Cell<Option<Placement>>>>);
+    impl gpui::Render for TooltipPage {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let tip = |window: &mut Window, cx: &mut App| {
+                crate::tooltip::Tooltip::element(|_, _| {
+                    div().debug_selector(|| "tip".into()).child("Says where")
+                })
+                .build(window, cx)
+            };
+            let trigger = Button::new("trigger")
+                .label("Trigger")
+                .debug_selector(|| "trigger".into());
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(match self.0.clone() {
+                    Some(placement) => trigger.tooltip_view_at(placement, tip),
+                    None => trigger.tooltip_view(tip),
+                })
+        }
+    }
+
+    /// GitTurtle patch: draws `cx`'s window once, with what it waits for
+    /// before and after.
+    fn settle(cx: &mut gpui::VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// GitTurtle patch: a [`TooltipPage`] in a 400 × 300 window whose
+    /// pointer has rested on its Button past the 500 ms show delay, and the
+    /// Button's bounds.
+    fn shown_tooltip(
+        cx: &mut gpui::TestAppContext,
+        placement: Option<Rc<Cell<Option<Placement>>>>,
+    ) -> (&mut gpui::VisualTestContext, gpui::Bounds<Pixels>) {
+        use gpui::{AppContext as _, Modifiers, size};
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let page = cx.new(|_| TooltipPage(placement));
+            crate::Root::new(page, window, cx)
+        });
+        cx.simulate_resize(size(px(400.), px(300.)));
+        settle(cx);
+        let trigger = cx.debug_bounds("trigger").expect("the trigger");
+        cx.simulate_mouse_move(trigger.center(), None, Modifiers::default());
+        settle(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        settle(cx);
+        (cx, trigger)
+    }
+
+    /// GitTurtle patch: a Button's tooltip view set with a placement shows on
+    /// that side of the button where it fits there, and one set without a
+    /// placement, or with the side above, shows above it: the pointer resting
+    /// on a Button in the middle of a 400 × 300 window past the 500 ms show
+    /// delay, the tooltip's content lies wholly below the button for
+    /// `Placement::Bottom` and wholly above it otherwise. The Button once
+    /// passed no placement to its managed tooltip, so every tooltip view
+    /// preferred the side above.
+    #[gpui::test]
+    fn a_tooltip_view_at_a_placement_shows_on_that_side(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        for (placement, below) in [
+            (Some(Placement::Bottom), true),
+            (Some(Placement::Top), false),
+            (None, false),
+        ] {
+            let held = placement.map(|placement| Rc::new(Cell::new(Some(placement))));
+            let (cx, trigger) = shown_tooltip(cx, held);
+            let tip = cx
+                .debug_bounds("tip")
+                .unwrap_or_else(|| panic!("{placement:?}: the tooltip shows"));
+            if below {
+                assert!(
+                    tip.top() >= trigger.bottom(),
+                    "{placement:?}: {tip:?} lies below {trigger:?}"
+                );
+            } else {
+                assert!(
+                    tip.bottom() <= trigger.top(),
+                    "{placement:?}: {tip:?} lies above {trigger:?}"
+                );
+            }
+        }
+    }
+
+    /// GitTurtle patch: a shown Button tooltip takes the side its caller sets
+    /// in the next frame drawn, with no hover change, no notification and no
+    /// new request: shown below the button, the cell set to the side above,
+    /// the next frame draws it wholly above; set to none, above, the
+    /// positioner's default; set back below, below. The side was read as the
+    /// hover began, so a tooltip kept it for as long as it stayed shown.
+    #[gpui::test]
+    fn a_shown_tooltip_takes_a_side_changed_in_the_next_frame(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let side = Rc::new(Cell::new(Some(Placement::Bottom)));
+        let (cx, trigger) = shown_tooltip(cx, Some(side.clone()));
+        for (placement, below) in [
+            (Some(Placement::Bottom), true),
+            (Some(Placement::Top), false),
+            (None, false),
+            (Some(Placement::Bottom), true),
+        ] {
+            side.set(placement);
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let tip = cx
+                .debug_bounds("tip")
+                .unwrap_or_else(|| panic!("{placement:?}: the tooltip stays shown"));
+            if below {
+                assert!(
+                    tip.top() >= trigger.bottom(),
+                    "{placement:?}: {tip:?} lies below {trigger:?} in the next frame"
+                );
+            } else {
+                assert!(
+                    tip.bottom() <= trigger.top(),
+                    "{placement:?}: {tip:?} lies above {trigger:?} in the next frame"
+                );
+            }
+        }
     }
 
     /// GitTurtle patch: a bordered secondary Button, such as an application's

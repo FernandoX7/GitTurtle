@@ -40,8 +40,8 @@ TOOL_NAMES = ("cc", "c++", "ar", "ld", "as", "make", "pkg-config", "clang", "cma
 # Tool answers for the tests that start no process.
 UBUNTU_TOOLS ={**{name: {"run": f"/usr/bin/{name}", "path": f"/usr/bin/{name}-13", "matches": [f"/usr/bin/{name}"],
                           "version": f"{name} 13.0\n"} for name in TOOL_NAMES}, "cmake3": None}
-# pkg-config's answers on an image where neither unsupplied name resolves.
-UBUNTU_PROBES = {"aws-lc": None, "libcrypto-awslc": None}
+# pkg-config's answers when no locked crate asks for an unsupplied name.
+UBUNTU_PROBES = {}
 # The top level of the two directories no dpkg package owns, with nothing in them.
 UBUNTU_LOCAL = {"/usr/local/include": [], "/usr/local/lib": []}
 
@@ -66,23 +66,12 @@ UNSUPPLIED = "no build package ships it"
 # those of the traced container's dpkg file lists. A row is one locked version:
 # an update gets a new row only once its build script has been read again.
 UBUNTU_PROBERS = {
-    # builder/system_detect.rs: the four names, in this order, to adopt a system
-    # AWS-LC, which it takes only from headers that define OPENSSL_IS_AWSLC;
-    # libssl-dev's do not. It then compiles its own sources with cc, or with
-    # cmake3 or cmake when asked, and loads libclang only with its bindgen feature.
-    # It is the only locked crate that can run cmake, and builder/main.rs chooses
-    # its builder by variables, features and target, never by whether cmake is
-    # there. The action installs no CMake: the image's own is the keyed tool.
-    "aws-lc-sys 0.45.0": ({"openssl": "libssl-dev", "aws-lc": UNSUPPLIED, "libcrypto": "libssl-dev",
-                           "libcrypto-awslc": UNSUPPLIED}, ("pkg-config", "build-essential", "clang"), ("cmake",)),
     # system-deps for the dav1d of its manifest, 1.3.0 or later. Its other path,
     # a clone built with meson and ninja, needs a SYSTEM_DEPS_ variable, which
     # the install step refuses.
     "dav1d-sys 0.8.3": ({"dav1d": "libdav1d-dev"}, ("pkg-config",)),
     # freetype2 at 24.3.18 or later; without it, it compiles its bundled copy with c++.
     "freetype-sys 0.20.1": ({"freetype2": ("libfontconfig-dev", "libfreetype-dev")}, ("pkg-config", "build-essential")),
-    "gpui-pre 0.3.4": "bindgen is its build dependency on macOS only, and its build script acts on Windows only",
-    "gpui-pre-media 0.3.4": "its build script runs bindgen on macOS only; elsewhere its main is empty",
     "khronos-egl 6.0.0": "it asks for egl only with its static feature and without no-pkg-config; wgpu-hal turns on "
                          "dynamic here, and static together with no-pkg-config on emscripten",
     "system-deps 7.0.8": "a library for build scripts: it probes what its user's manifest names, here dav1d-sys's",
@@ -100,8 +89,9 @@ UBUNTU_PROBERS = {
 }
 
 
-# The locked versions whose sources the flags identity's read set was taken from.
-FLAG_CRATES = {"cc": "1.4.5", "cmake": "0.1.58", "pkg-config": "0.3.34"}
+# The locked versions whose sources the flags identity's read set was taken from
+# (cmake left Cargo.lock with aws-lc-sys; its variables stay keyed defensively).
+FLAG_CRATES = {"cc": "1.4.5", "pkg-config": "0.3.34"}
 # The names each of them looks up as <VAR>_<target>, <VAR>_<target with
 # underscores>, HOST_<VAR> or TARGET_<VAR>, and <VAR>, with the line of src/lib.rs
 # that asks for each.
@@ -2666,12 +2656,11 @@ class UbuntuNativeIdentity(unittest.TestCase):
         pc_path = f"{self.runner.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig"
         self.assertEqual(lines[end + 1:], [*expected, "Keyed tool cmake3: absent", f"Keyed pkg-config pc_path: {pc_path}",
                                            f"Keyed pkg-config files in {self.runner.pc}: none",
-                                           "Keyed pkg-config probe aws-lc: absent", "Keyed pkg-config probe libcrypto-awslc: absent",
                                            *(f"Keyed top level of {directory}: empty" for directory in self.runner.local),
                                            f"Ubuntu native digest: {native}"])
         # The digest is the mode, then exactly the values the lines show.
         hashed = {"packages": keyed, "tools": tools, "pc_path": pc_path, "pc_files": {str(self.runner.pc): []},
-                  "probes": {"aws-lc": None, "libcrypto-awslc": None},
+                  "probes": UBUNTU_PROBES,
                   "local": {str(directory): [] for directory in self.runner.local}}
         self.assertEqual(native, cache.digest(b"closure\n" + json.dumps(hashed, sort_keys=True).encode()))
         self.assertEqual(self.runner.native()[0], native)
@@ -2795,9 +2784,9 @@ class UbuntuNativeIdentity(unittest.TestCase):
             f"Keyed pkg-config files in {absent}, which PKG_CONFIG_PATH names: none",
             f"Keyed pkg-config files in {second}, which PKG_CONFIG_PATH_{triple} names: dav1d.pc unreadable ENOENT",
             f"Keyed pkg-config files in {first}, which TARGET_PKG_CONFIG_LIBDIR names: openssl.pc {digest}"])
-        # Beside the built-in path's own lines, which stay as they were, and before the probes.
+        # Beside the built-in path's own lines, which stay as they were, and before the local dirs.
         self.assertEqual(lines[lines.index(named[0]) - 1], f"Keyed pkg-config files in {self.runner.pc}: none")
-        self.assertEqual(lines[lines.index(named[-1]) + 1], "Keyed pkg-config probe aws-lc: absent")
+        self.assertEqual(lines[lines.index(named[-1]) + 1], f"Keyed top level of {self.runner.local[0]}: empty")
         self.assertIn(f"Keyed pkg-config pc_path: {self.runner.pc}:/usr/lib/pkgconfig:/usr/share/pkgconfig", lines)
         # The digest holds the listing: the mode, then the values of a clean key and the variables' directories.
         hashed = json.loads(json.dumps({"packages": cache.ubuntu_packages(UBUNTU_SNAPSHOT, (), ["x"])[1], "pc_added": expected,
@@ -2934,6 +2923,7 @@ class UbuntuNativeIdentity(unittest.TestCase):
             (opt / "added.pc").write_text("Name: added\n")
             self.assertNotEqual(self.runner.native()[0], baseline)
 
+    @patch.object(cache, "UBUNTU_UNSUPPLIED_PROBES", ("aws-lc", "libcrypto-awslc"))
     def test_each_unsupplied_name_is_asked_of_the_selected_pkg_config_and_its_answer_is_keyed(self):
         closure, lines = self.runner.native()
         selected = str(self.runner.bin / "pkg-config")
@@ -3139,6 +3129,7 @@ class FlagsIdentity(unittest.TestCase):
 
     def test_read_set_is_that_of_the_locked_cc_cmake_and_pkg_config(self):
         lock = (ROOT / "Cargo.lock").read_text()
+        self.assertEqual(locked_versions(lock, ("cmake",)), {"cmake": []})
         self.assertEqual(locked_versions(lock, FLAG_CRATES), {name: [version] for name, version in FLAG_CRATES.items()}, (
             "Cargo.lock moved cc, cmake or pkg-config, or locks a second version of one. The flags identity keys the "
             "environment variables these three read, taken from the sources of the versions in FLAG_CRATES, because "
@@ -3221,14 +3212,14 @@ class UbuntuKeyPreconditions(unittest.TestCase):
                     self.assertIn(owner, closure, module)
         # In both directions: a name the table marks is keyed, and the key asks for no name the table does not mark.
         self.assertEqual(sorted(unsupplied), sorted(cache.UBUNTU_UNSUPPLIED_PROBES))
-        # aws-lc-sys is the one locked crate that can run cmake, and its row says so:
-        # the name is keyed as a build package or as a required tool, never by neither.
-        self.assertEqual((ran, UBUNTU_PROBERS["aws-lc-sys 0.45.0"][2]), ({"cmake"}, ("cmake",)))
+        # No locked crate currently invokes cmake (aws-lc-sys left with gpui-kit 0.10.0);
+        # cmake remains keyed as a required image tool defensively.
+        self.assertEqual(ran, set())
         self.assertTrue("cmake" in build or "cmake" in cache.UBUNTU_TOOLS)
         # A row is one locked version: an update has none until its build script is read again,
         # and neither has a second version locked beside the first.
         name, version = next(prober for prober, asked in UBUNTU_PROBERS.items()
-                             if not isinstance(asked, str) and UNSUPPLIED in asked[0].values()).split(" ")
+                             if not isinstance(asked, str)).split(" ")
         stanza = f'name = "{name}"\nversion = "{version}"\n'
         self.assertEqual(lock.count(stanza), 1)
         updated = lock_probers(lock.replace(stanza, f'name = "{name}"\nversion = "{version}1"\n'))

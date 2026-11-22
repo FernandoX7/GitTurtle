@@ -1174,7 +1174,7 @@ impl RebaseForm {
         // the list rested, so it scrolled the body instead. The reach is the
         // last frame's, so a resize before the next prepaint judges one turn
         // against the old reach, and that prepaint clamps what it leaves.
-        .on_scroll_wheel({
+        .on_scroll({
             let (scroll, rest) = (self.scroll.clone(), self.rest.clone());
             move |_, _, cx| {
                 let state = scroll.0.borrow();
@@ -1799,14 +1799,18 @@ mod tests {
         // In a short window the menu, capped, holds the item below its
         // fold: the wheel brings it into view.
         let first = rendered(cx, "menu-item: Find or create a branch… · MenuItem");
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: first.center(),
             delta: ScrollDelta::Pixels(point(px(0.), px(-2000.))),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: Default::default(),
         });
         draw(cx);
         press(cx, "menu-item: Edit local commits… · MenuItem");
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        draw(cx);
         let form = app.read_with(cx, |app, _| {
             app.interactive_rebase.draft.clone().expect("the form")
         });
@@ -2673,11 +2677,12 @@ mod tests {
             .center();
         let step = px(60.);
         let turn = |dy: Pixels| {
-            gpui::PlatformInput::ScrollWheel(ScrollWheelEvent {
+            gpui::PlatformInput::Scroll(ScrollEvent {
                 position,
                 delta: ScrollDelta::Pixels(point(px(0.), dy)),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             })
         };
         cx.update(|window, cx| {
@@ -2712,11 +2717,12 @@ mod tests {
             shown.size.height > px(1.),
             "the body, {viewport:?}, shows {selector}"
         );
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: shown.center(),
             delta,
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: Default::default(),
         });
         draw(cx);
     }

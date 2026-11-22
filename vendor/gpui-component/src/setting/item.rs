@@ -2,6 +2,7 @@ use gpui::{
     AnyElement, App, Axis, Div, InteractiveElement as _, IntoElement, ParentElement, SharedString,
     Stateful, Styled, Window, div, prelude::FluentBuilder as _,
 };
+use gpui_base::LogicalStyledExt as _;
 use std::{any::TypeId, ops::Deref, rc::Rc};
 
 use crate::{
@@ -206,6 +207,7 @@ impl SettingItem {
     }
 
     fn render_field(
+        title: SharedString,
         field: Rc<dyn AnySettingField>,
         options: RenderOptions,
         window: &mut Window,
@@ -216,27 +218,29 @@ impl SettingItem {
         let type_id = field.deref().type_id();
         let renderer: Box<dyn SettingFieldRender> = match type_id {
             t if t == std::any::TypeId::of::<bool>() => {
-                Box::new(BoolField::new(field_type.is_switch()))
+                Box::new(BoolField::new(field_type.is_switch(), title))
             }
             t if t == TypeId::of::<f64>() && field_type.is_number_input() => {
-                Box::new(NumberField::new(field_type.number_input_options()))
+                Box::new(NumberField::new(field_type.number_input_options(), title))
             }
             t if t == TypeId::of::<SharedString>() && field_type.is_input() => {
-                Box::new(StringField::<SharedString>::new())
+                Box::new(StringField::<SharedString>::new(title))
             }
             t if t == TypeId::of::<String>() && field_type.is_input() => {
-                Box::new(StringField::<String>::new())
+                Box::new(StringField::<String>::new(title))
             }
             t if t == TypeId::of::<SharedString>() && field_type.is_dropdown() => {
                 Box::new(DropdownField::<SharedString>::new(
                     field_type.dropdown_options(),
                     field_type.dropdown_scrollable(),
+                    title,
                 ))
             }
             t if t == TypeId::of::<String>() && field_type.is_dropdown() => {
                 Box::new(DropdownField::<String>::new(
                     field_type.dropdown_options(),
                     field_type.dropdown_scrollable(),
+                    title,
                 ))
             }
             _ if field_type.is_element() => Box::new(ElementField::new(field_type.element())),
@@ -275,7 +279,10 @@ impl SettingItem {
                         .when(disabled, |this| this.opacity(0.5))
                         .map(|this| {
                             if layout.is_horizontal() {
-                                this.h_flex().justify_between().items_center()
+                                this.h_flex()
+                                    .flex_row_dir(cx)
+                                    .justify_between()
+                                    .items_center()
                             } else {
                                 this.v_flex()
                             }
@@ -290,7 +297,7 @@ impl SettingItem {
                                         this.w_full()
                                     }
                                 })
-                                .child(Label::new(title).text_sm())
+                                .child(Label::new(title.clone()).text_sm())
                                 .when_some(description, |this, description| {
                                     this.child(
                                         div()
@@ -302,6 +309,7 @@ impl SettingItem {
                                 }),
                         )
                         .child(div().id("field").child(Self::render_field(
+                            title,
                             field,
                             options.with_layout(layout).with_disabled(disabled),
                             window,

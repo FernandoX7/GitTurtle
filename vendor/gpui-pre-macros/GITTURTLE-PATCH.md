@@ -1,6 +1,6 @@
-# GitTurtle patch to gpui-pre-macros 0.3.4
+# GitTurtle patch to gpui-pre-macros 0.3.12
 
-This directory contains the exact crates.io `gpui-pre-macros` 0.3.4 source under Apache-2.0, the version the matching GPUI Kit 0.6.0 stack locks. `LICENSE-APACHE` is byte-for-byte preserved. The registry archive checksum is `e29384b3145f0143a17187b35339779398fe4c1d4534320d6a05594248a49965`; the package metadata names Zed's `crates/gpui_macros` at `69164008341295ad481bb11c0334a712ca8c23e3` (`https://github.com/zed-industries/zed`). `Cargo.toml` is the published normalized manifest and dependency requirements are unchanged; the workspace lockfile pins their versions. The registry-only `.cargo-ok` and the package lockfile are omitted. Apart from this note, `src/test.rs` is the only file that differs from the archive.
+This directory contains the exact crates.io `gpui-pre-macros` 0.3.12 source under Apache-2.0, the version the matching GPUI Kit 0.10.0 stack locks. `LICENSE-APACHE` is byte-for-byte preserved. The registry archive checksum is `1c7f67904eced61ed42ae3320a9b4b388aed893f8547fffe9161ec425ad162eb`; the package metadata names Zed's `crates/gpui_macros` at `d2a4fb6ded7c470be25d1541281da3882495b65b` (`https://github.com/zed-industries/zed`). `Cargo.toml` is the published normalized manifest and dependency requirements are unchanged; the workspace lockfile pins their versions. The registry-only `.cargo-ok` and the package lockfile are omitted. Apart from this note, `src/test.rs` is the only file that differs from the archive.
 
 ## Change: the test teardown quits the test context
 

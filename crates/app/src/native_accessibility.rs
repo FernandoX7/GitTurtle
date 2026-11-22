@@ -2342,7 +2342,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                     div()
                         .w(viewport.width)
                         .h(viewport.height)
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .on_scroll(|_, _, cx| cx.stop_propagation())
                         // The row's menu is open already, and it holds the
                         // keys: Shift-F10 or the Menu key in it opens no
                         // keyboard's menu beside it. Drawn inside the row,
@@ -4274,7 +4274,14 @@ pub(super) fn sync_preferences(cx: &mut App) -> bool {
         .unwrap_or_default();
     let (motion, contrast) = resolve(choices, display_preferences(cx));
     if let Some(reduce) = motion {
-        cx.set_reduce_motion(reduce);
+        gpui_kit::base::set_reduce_motion_preference(
+            if reduce {
+                gpui_kit::base::ReduceMotionPreference::Reduce
+            } else {
+                gpui_kit::base::ReduceMotionPreference::Allow
+            },
+            cx,
+        );
     }
     contrast.is_some_and(|on| appearance::set_more_contrast(on, cx))
 }

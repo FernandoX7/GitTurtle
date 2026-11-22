@@ -1,146 +1,209 @@
-use gpui::{Context, Pixels, Task, px};
+use gpui::{App, Context, Pixels, Subscription, Task, px};
 use instant::Duration;
+use web_time::Instant;
 
 static INTERVAL: Duration = Duration::from_millis(500);
 
-// On Windows, Linux, we should use integer to avoid blurry cursor.
-#[cfg(not(target_os = "macos"))]
-pub(super) const CURSOR_WIDTH: Pixels = px(2.);
-#[cfg(target_os = "macos")]
-pub(super) const CURSOR_WIDTH: Pixels = px(1.5);
+pub(super) const CURSOR_WIDTH: Pixels = px(1.);
 
-/// To manage the Input cursor blinking.
+/// Application-wide caret visibility policy.
 ///
-/// It will start blinking with a interval of 500ms.
-/// Every loop will notify the view to update the `visible`, and Input will observe this update to touch repaint.
-///
-/// The input painter will check if this in visible state, then it will draw the cursor.
+/// The default blinks every 500 ms without an idle timeout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorBlink {
+    interval: Duration,
+    idle_timeout: Option<Duration>,
+}
+
+impl CursorBlink {
+    /// Keep the focused caret visible without a timer.
+    pub const fn steady() -> Self {
+        Self {
+            interval: Duration::ZERO,
+            idle_timeout: None,
+        }
+    }
+
+    /// Alternate visible and hidden phases of `interval` each; zero means steady.
+    pub const fn blinking(interval: Duration) -> Self {
+        Self {
+            interval,
+            idle_timeout: None,
+        }
+    }
+
+    /// Stop blinking, with the caret visible, once `timeout` has passed since
+    /// the last focus, edit or cursor movement.
+    pub const fn with_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = Some(timeout);
+        self
+    }
+
+    /// The duration of each visible or hidden phase, or `None` when steady.
+    pub fn interval(&self) -> Option<Duration> {
+        (!self.interval.is_zero()).then_some(self.interval)
+    }
+
+    /// The time since the last activity after which blinking stops.
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        self.interval().and(self.idle_timeout)
+    }
+
+    /// Whether the focused caret stays visible without blinking.
+    pub fn is_steady(&self) -> bool {
+        self.interval.is_zero()
+    }
+
+    /// Collapse every steady spelling to one value, so a change between them
+    /// is not mistaken for a policy change.
+    fn normalized(self) -> Self {
+        if self.is_steady() {
+            Self::steady()
+        } else {
+            self
+        }
+    }
+}
+
+impl Default for CursorBlink {
+    fn default() -> Self {
+        Self::blinking(INTERVAL)
+    }
+}
+
+fn cursor_blink(cx: &App) -> CursorBlink {
+    cx.try_global::<crate::Theme>()
+        .map(|theme| theme.cursor_blink)
+        .unwrap_or_default()
+        .normalized()
+}
+
 pub(crate) struct BlinkCursor {
     visible: bool,
     paused: bool,
     epoch: usize,
-
+    last_activity: Option<Instant>,
+    policy: CursorBlink,
     _task: Task<()>,
+    _policy_subscription: Subscription,
 }
 
 impl BlinkCursor {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         Self {
             // GitTurtle patch: shown, so the frame that first focuses an
-            // input draws its caret (see `start`).
+            // input draws its caret.
             visible: true,
             paused: false,
             epoch: 0,
+            last_activity: None,
+            policy: cursor_blink(cx),
             _task: Task::ready(()),
+            _policy_subscription: cx.observe_global::<crate::Theme>(|this, cx| {
+                let policy = cursor_blink(cx);
+                if policy == this.policy {
+                    return;
+                }
+                this.policy = policy;
+                if this.last_activity.is_some() {
+                    this.epoch = this.epoch.wrapping_add(1);
+                    this.set_visible(true, cx);
+                    this.schedule(cx);
+                }
+            }),
         }
     }
 
-    /// Start the blinking
-    ///
-    /// GitTurtle patch: the caret shows at once and first blinks off one
-    /// interval later. Upstream toggled it, so focus, given back as a frame
-    /// is drawn and reported after it, drew a second frame that only showed
-    /// or hid the caret, and a programmatic focus, which starts the cursor
-    /// and then reports the focus that starts it again, hid it at once.
     pub(crate) fn start(&mut self, cx: &mut Context<Self>) {
-        if !self.visible {
-            self.visible = true;
-            cx.notify();
-        }
-        // A pause blinks again as it ends, as upstream's start left it to.
+        // GitTurtle patch: a pause blinks again as it ends, without restarting
+        // the pause timer; ensure visible immediately.
+        self.set_visible(true, cx);
         if self.paused {
             return;
         }
-        let epoch = self.next_epoch();
-        self.schedule(epoch, cx);
+        self.epoch = self.epoch.wrapping_add(1);
+        self.last_activity = Some(cx.background_executor().now());
+        self.schedule(cx);
     }
 
     pub(crate) fn stop(&mut self, cx: &mut Context<Self>) {
-        self.epoch = 0;
-        // GitTurtle patch: shown for the next focus, which draws it in its
-        // first frame; an unfocused input draws no caret. A stop also ends
-        // a pause, whose own end now finds a later epoch and blinks nothing,
-        // so the next start blinks rather than wait for it.
-        self.visible = true;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.last_activity = None;
         self.paused = false;
+        self._task = Task::ready(());
+        // GitTurtle patch: shown for the next focus, which draws it in its
+        // first frame; an unfocused input draws no caret.
+        self.visible = true;
         cx.notify();
     }
 
-    fn next_epoch(&mut self) -> usize {
-        self.epoch += 1;
-        self.epoch
-    }
-
-    fn blink(&mut self, epoch: usize, cx: &mut Context<Self>) {
-        if self.paused || epoch != self.epoch {
-            self.visible = true;
+    pub(crate) fn pause(&mut self, cx: &mut Context<Self>) {
+        if self.last_activity.is_none() {
             return;
         }
 
-        self.visible = !self.visible;
-        cx.notify();
-
-        // Schedule the next blink
-        let epoch = self.next_epoch();
-        self.schedule(epoch, cx);
-    }
-
-    /// Blinks one interval from now, unless another epoch has begun.
-    fn schedule(&mut self, epoch: usize, cx: &mut Context<Self>) {
-        self._task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(INTERVAL).await;
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |this, cx| this.blink(epoch, cx));
-            }
-        });
+        self.epoch = self.epoch.wrapping_add(1);
+        self.last_activity = Some(cx.background_executor().now());
+        self.paused = true;
+        self.set_visible(true, cx);
+        self.schedule(cx);
     }
 
     pub(crate) fn visible(&self) -> bool {
-        // Keep showing the cursor if paused
-        self.paused || self.visible
+        self.visible
     }
 
-    /// Whether the cursor blinks: started, and not stopped since. A new
-    /// cursor and a stopped one are at epoch 0, which every start, pause and
-    /// blink leaves.
-    fn started(&self) -> bool {
-        self.epoch != 0
-    }
-
-    /// Pause the blinking, and delay 500ms to resume the blinking.
-    ///
-    /// GitTurtle patch: the pause lasts one interval, as upstream's note
-    /// says, so a caret that a key, an edit or a move has just shown is held
-    /// a whole visible phase of the blink from the last of them before it
-    /// blinks off, as a start holds it on focus and as GTK and AppKit hold
-    /// an insertion point that has just moved. Upstream's pause lasted
-    /// 300 ms, and its end blinks the caret off, so a caret typed or moved
-    /// hid again before it had stood shown for one phase.
-    pub(crate) fn pause(&mut self, cx: &mut Context<Self>) {
-        // GitTurtle patch: a cursor that is not blinking, a new one or one
-        // stopped on blur, pauses nothing and schedules nothing, so text set
-        // in an unfocused field never starts it blinking. With the caret left
-        // shown for the next focus, the shown caret's pause of an edit
-        // (`replace_text_in_range`) once started an unfocused field blinking
-        // for good, redrawing the window twice a second while idle.
-        if !self.started() {
-            return;
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible != visible {
+            self.visible = visible;
+            cx.notify();
         }
-        self.paused = true;
-        self.visible = true;
-        cx.notify();
+    }
 
-        // delay 500ms to start the blinking
-        let epoch = self.next_epoch();
+    fn blink_delay(&self, cx: &App) -> Option<Duration> {
+        let last_activity = self.last_activity?;
+        let interval = self.policy.interval()?;
+
+        // GitTurtle patch: hold a paused caret for a full blink interval
+        // rather than upstream's 300 ms, so each key/edit/move keeps it shown
+        // for one full visible phase before blinking off.
+        let elapsed = cx.background_executor().now() - last_activity;
+        let delay = if self.paused && elapsed < interval {
+            interval - elapsed
+        } else {
+            interval
+        };
+
+        match self.policy.idle_timeout() {
+            Some(timeout) if elapsed >= timeout => None,
+            Some(timeout) => Some(delay.min(timeout - elapsed)),
+            None => Some(delay),
+        }
+    }
+
+    fn schedule(&mut self, cx: &mut Context<Self>) {
+        self._task = Task::ready(());
+        let Some(delay) = self.blink_delay(cx) else {
+            self.paused = false;
+            self.set_visible(true, cx);
+            return;
+        };
+
+        let epoch = self.epoch;
+        let timer = cx.background_executor().timer(delay);
         self._task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(INTERVAL).await;
+            timer.await;
+            _ = this.update(cx, |this, cx| {
+                if epoch != this.epoch {
+                    return;
+                }
 
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |this, cx| {
+                if this.blink_delay(cx).is_some() {
                     this.paused = false;
-                    this.blink(epoch, cx);
-                });
-            }
+                    this.set_visible(!this.visible, cx);
+                }
+                this.schedule(cx);
+            });
         });
     }
 }
@@ -148,17 +211,428 @@ impl BlinkCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::{AppContext as _, Entity, TestAppContext};
     use std::{cell::Cell, rc::Rc};
 
-    /// GitTurtle patch: a start shows the caret at once, notifying only if
-    /// it was hidden, and blinks it off one interval later; a second start,
-    /// as a programmatic focus and the focus it reports make, keeps it shown
-    /// and notifies nothing; a stop leaves it shown for the next focus; and
-    /// a start during a pause leaves the pause to resume the blinking.
+    fn set_cursor_blink(policy: CursorBlink, cx: &mut App) {
+        crate::Theme::global_mut(cx).cursor_blink = policy;
+    }
+
+    #[test]
+    fn test_cursor_blink_builder() {
+        let policy = CursorBlink::blinking(INTERVAL).with_idle_timeout(Duration::from_secs(5));
+        assert_eq!(policy.interval(), Some(INTERVAL));
+        assert_eq!(policy.idle_timeout(), Some(Duration::from_secs(5)));
+        assert!(!policy.is_steady());
+        assert_eq!(CursorBlink::default(), CursorBlink::blinking(INTERVAL));
+
+        let steady = CursorBlink::blinking(Duration::ZERO).with_idle_timeout(INTERVAL);
+        assert!(steady.is_steady());
+        assert_eq!(steady.interval(), None);
+        assert_eq!(steady.idle_timeout(), None);
+        assert_eq!(steady.normalized(), CursorBlink::steady());
+    }
+
+    fn advance(cx: &mut TestAppContext, duration: Duration) {
+        cx.run_until_parked();
+        cx.executor().advance_clock(duration);
+        cx.run_until_parked();
+    }
+
+    fn assert_idle(cursor: &Entity<BlinkCursor>, visible: bool, cx: &mut TestAppContext) {
+        cx.run_until_parked();
+        let notifications = Rc::new(Cell::new(0usize));
+        let count = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(cursor, move |_, _| count.set(count.get() + 1)));
+
+        advance(cx, Duration::from_secs(3));
+
+        assert_eq!(cursor.read_with(cx, |cursor, _| cursor.visible()), visible);
+        assert!(cursor.read_with(cx, |cursor, _| cursor._task.is_ready()));
+        assert_eq!(notifications.get(), 0);
+    }
+
+    #[gpui::test]
+    fn repeated_pauses_keep_cursor_visible_until_idle(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        // Only a focused input blinks, and only a blinking cursor pauses.
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+        for _ in 0..5 {
+            cursor.update(cx, |cursor, cx| cursor.pause(cx));
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(200));
+            cx.run_until_parked();
+            assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        }
+        cx.executor().advance_clock(Duration::from_millis(300));
+        cx.run_until_parked();
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        cx.executor().advance_clock(INTERVAL);
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn starting_a_blinking_cursor_keeps_it_visible(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+
+        // Clicking into an input starts the cursor from `focus` and again from
+        // the focus observer; the second start must not hide the new cursor.
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        // The restart drops the first cycle's timer, so the cursor stays
+        // visible for a full interval before it blinks off.
+        cx.executor()
+            .advance_clock(INTERVAL - Duration::from_millis(1));
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn pausing_a_cursor_that_is_not_blinking_does_not_start_it(cx: &mut TestAppContext) {
+        // Never focused, so `start` was never called: the epoch is still zero.
+        let cursor = cx.new(BlinkCursor::new);
+
+        // What a programmatic `set_value` on an unfocused input does.
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(INTERVAL);
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        let notifies = Rc::new(Cell::new(0usize));
+        let counter = notifies.clone();
+        let _observer =
+            cx.update(|cx| cx.observe(&cursor, move |_, _| counter.set(counter.get() + 1)));
+        cx.run_until_parked();
+
+        cx.executor().advance_clock(INTERVAL * 6);
+        cx.run_until_parked();
+
+        assert_eq!(
+            notifies.get(),
+            0,
+            "a cursor that was never started is blinking, and every blink repaints the view"
+        );
+    }
+
+    #[gpui::test]
+    fn blurring_a_paused_cursor_leaves_the_next_focus_blinking(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+
+        // Typing pauses the blink, then the input is blurred before the pause
+        // elapses: tabbing away right after a keystroke does exactly this.
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        cx.run_until_parked();
+        cursor.update(cx, |cursor, cx| cursor.stop(cx));
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        // Focusing again shows the cursor and blinks it, rather than leaving a
+        // stale pause to swallow the start.
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        cx.executor().advance_clock(INTERVAL);
+        cx.run_until_parked();
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn stopping_a_paused_cursor_ends_the_blink_loop(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        cx.run_until_parked();
+        cursor.update(cx, |cursor, cx| cursor.stop(cx));
+        cx.run_until_parked();
+
+        let notifications = Rc::new(Cell::new(0usize));
+        let count = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&cursor, move |_, _| count.set(count.get() + 1)));
+        cx.run_until_parked();
+
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        assert_eq!(notifications.get(), 0, "a stopped cursor kept blinking");
+
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn stopping_a_blinking_cursor_ends_the_blink_loop(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+        cursor.update(cx, |cursor, cx| cursor.stop(cx));
+        cx.run_until_parked();
+
+        let notifications = Rc::new(Cell::new(0usize));
+        let count = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&cursor, move |_, _| count.set(count.get() + 1)));
+        cx.run_until_parked();
+
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        assert_eq!(notifications.get(), 0, "a stopped cursor kept blinking");
+    }
+
+    #[gpui::test]
+    fn idle_timeout_stops_between_blinks_and_activity_restarts_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            set_cursor_blink(
+                CursorBlink::blinking(INTERVAL).with_idle_timeout(Duration::from_millis(750)),
+                cx,
+            )
+        });
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+
+        advance(cx, INTERVAL);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(249));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(1));
+        assert_idle(&cursor, true, cx);
+
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        advance(cx, INTERVAL);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(250));
+        assert_idle(&cursor, true, cx);
+
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, INTERVAL);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn idle_timeout_includes_the_typing_pause(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            set_cursor_blink(
+                CursorBlink::blinking(INTERVAL).with_idle_timeout(Duration::from_millis(200)),
+                cx,
+            )
+        });
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, Duration::from_millis(100));
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        advance(cx, Duration::from_millis(199));
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor._task.is_ready()));
+        advance(cx, Duration::from_millis(1));
+        assert_idle(&cursor, true, cx);
+    }
+
+    #[gpui::test]
+    fn steady_and_zero_durations_never_schedule_blinks(cx: &mut TestAppContext) {
+        for policy in [
+            CursorBlink::steady(),
+            CursorBlink::blinking(Duration::ZERO),
+            CursorBlink::blinking(INTERVAL).with_idle_timeout(Duration::ZERO),
+        ] {
+            cx.update(|cx| set_cursor_blink(policy, cx));
+            let cursor = cx.new(BlinkCursor::new);
+            cursor.update(cx, |cursor, cx| cursor.start(cx));
+            assert_idle(&cursor, true, cx);
+            cursor.update(cx, |cursor, cx| cursor.pause(cx));
+            assert_idle(&cursor, true, cx);
+        }
+    }
+
+    #[gpui::test]
+    fn policy_changes_resume_idle_cursors_without_resetting_activity(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, INTERVAL);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        cx.update(|cx| set_cursor_blink(CursorBlink::steady(), cx));
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_secs(1));
+
+        cx.update(|cx| {
+            set_cursor_blink(
+                CursorBlink::blinking(Duration::from_millis(100))
+                    .with_idle_timeout(Duration::from_secs(1)),
+                cx,
+            )
+        });
+        assert!(cursor.read_with(cx, |cursor, _| cursor._task.is_ready()));
+
+        cx.update(|cx| {
+            set_cursor_blink(
+                CursorBlink::blinking(Duration::from_millis(100))
+                    .with_idle_timeout(Duration::from_secs(2)),
+                cx,
+            )
+        });
+        advance(cx, Duration::from_millis(100));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(400));
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        assert!(cursor.read_with(cx, |cursor, _| cursor._task.is_ready()));
+
+        cx.update(|cx| set_cursor_blink(CursorBlink::blinking(Duration::from_millis(100)), cx));
+        advance(cx, Duration::from_millis(100));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn changing_the_interval_restarts_the_visible_phase_and_cancels_old_blinks(
+        cx: &mut TestAppContext,
+    ) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, Duration::from_millis(250));
+
+        cx.update(|cx| set_cursor_blink(CursorBlink::blinking(Duration::from_secs(1)), cx));
+        advance(cx, Duration::from_millis(250));
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(749));
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(1));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        cx.update(|cx| set_cursor_blink(CursorBlink::steady(), cx));
+        assert_idle(&cursor, true, cx);
+    }
+
+    #[gpui::test]
+    fn unchanged_policy_preserves_the_phase_and_idle_deadline(cx: &mut TestAppContext) {
+        let policy = CursorBlink::blinking(INTERVAL).with_idle_timeout(Duration::from_millis(750));
+        cx.update(|cx| set_cursor_blink(policy, cx));
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, INTERVAL);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        cx.update(|cx| set_cursor_blink(policy, cx));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(249));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(1));
+        assert_idle(&cursor, true, cx);
+    }
+
+    #[gpui::test]
+    fn unrelated_theme_changes_preserve_the_blink_phase_and_idle_deadline(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            set_cursor_blink(
+                CursorBlink::blinking(INTERVAL).with_idle_timeout(Duration::from_millis(750)),
+                cx,
+            );
+        });
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, INTERVAL);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        cx.update(|cx| crate::Theme::global_mut(cx).appearance = crate::ThemeAppearance::Dark);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(249));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(1));
+        assert_idle(&cursor, true, cx);
+    }
+
+    #[gpui::test]
+    fn policy_changes_preserve_the_remaining_typing_pause(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        advance(cx, Duration::from_millis(100));
+
+        cx.update(|cx| {
+            set_cursor_blink(
+                CursorBlink::blinking(Duration::from_millis(200))
+                    .with_idle_timeout(Duration::from_millis(400)),
+                cx,
+            )
+        });
+        advance(cx, Duration::from_millis(99));
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(1));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+        advance(cx, Duration::from_millis(200));
+        assert_idle(&cursor, true, cx);
+    }
+
+    #[gpui::test]
+    fn steady_policy_cancels_the_typing_pause(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        advance(cx, Duration::from_millis(100));
+        cx.update(|cx| set_cursor_blink(CursorBlink::steady(), cx));
+        assert_idle(&cursor, true, cx);
+    }
+
+    #[gpui::test]
+    fn unfocused_cursors_ignore_policy_changes(cx: &mut TestAppContext) {
+        let never_focused = cx.new(BlinkCursor::new);
+        let blurred = cx.new(BlinkCursor::new);
+        blurred.update(cx, |cursor, cx| cursor.start(cx));
+        blurred.update(cx, |cursor, cx| cursor.pause(cx));
+        blurred.update(cx, |cursor, cx| cursor.stop(cx));
+
+        for policy in [CursorBlink::steady(), CursorBlink::default()] {
+            cx.update(|cx| set_cursor_blink(policy, cx));
+            assert_idle(&never_focused, true, cx);
+            assert_idle(&blurred, true, cx);
+        }
+
+        blurred.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, INTERVAL);
+        assert!(!blurred.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn shortening_the_timeout_stops_a_hidden_cursor_immediately(cx: &mut TestAppContext) {
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        advance(cx, INTERVAL);
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        cx.update(|cx| {
+            set_cursor_blink(
+                CursorBlink::blinking(INTERVAL).with_idle_timeout(Duration::from_millis(400)),
+                cx,
+            )
+        });
+        assert_idle(&cursor, true, cx);
+    }
+
+    #[gpui::test]
+    fn initialization_preserves_an_application_policy(cx: &mut TestAppContext) {
+        cx.update(|cx| set_cursor_blink(CursorBlink::steady(), cx));
+        cx.update(crate::init);
+        let cursor = cx.new(BlinkCursor::new);
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        assert_idle(&cursor, true, cx);
+    }
+
     #[gpui::test]
     fn a_start_shows_the_caret_at_once_and_blinks_an_interval_later(cx: &mut TestAppContext) {
-        let cursor = cx.new(|_| BlinkCursor::new());
+        let cursor = cx.new(BlinkCursor::new);
         let notified = Rc::new(Cell::new(0));
         let counted = notified.clone();
         cx.update(|cx| {
@@ -199,8 +673,6 @@ mod tests {
         cx.run_until_parked();
         assert!(visible(cx), "the next start shows it");
         assert_eq!(notified.get(), before, "without a notify of its own");
-        // Typing pauses the blink; a start meanwhile leaves the pause to end
-        // it, after which the caret blinks again.
         cursor.update(cx, |cursor, cx| cursor.pause(cx));
         cursor.update(cx, |cursor, cx| cursor.start(cx));
         wait(cx, INTERVAL - Duration::from_millis(1));
@@ -209,8 +681,6 @@ mod tests {
         assert!(!visible(cx), "blinks off as the pause ends");
         wait(cx, INTERVAL);
         assert!(visible(cx), "and blinks on");
-        // An edit pauses the blink just before a blur stops it, as a warm
-        // tab's switch sets a focused field's text: the next start blinks.
         cursor.update(cx, |cursor, cx| {
             cursor.pause(cx);
             cursor.stop(cx);
@@ -222,43 +692,9 @@ mod tests {
         assert!(visible(cx), "and on again");
     }
 
-    /// GitTurtle patch: a cursor that is not blinking, a new one or one
-    /// stopped on blur, pauses nothing: text set in an unfocused field, which
-    /// pauses a shown caret, notifies nothing and schedules no blink.
-    #[gpui::test]
-    fn a_cursor_not_blinking_pauses_nothing(cx: &mut TestAppContext) {
-        let fresh = cx.new(|_| BlinkCursor::new());
-        let stopped = cx.new(|_| BlinkCursor::new());
-        stopped.update(cx, |cursor, cx| {
-            cursor.start(cx);
-            cursor.stop(cx);
-        });
-        cx.run_until_parked();
-        for (cursor, which) in [(fresh, "a new cursor"), (stopped, "a stopped cursor")] {
-            let notified = Rc::new(Cell::new(0));
-            let counted = notified.clone();
-            cx.update(|cx| {
-                cx.observe(&cursor, move |_, _| counted.set(counted.get() + 1))
-                    .detach()
-            });
-            cursor.update(cx, |cursor, cx| cursor.pause(cx));
-            cx.executor().advance_clock(Duration::from_secs(5));
-            cx.run_until_parked();
-            assert_eq!(notified.get(), 0, "{which} notifies nothing for 5 s");
-            assert!(
-                cursor.read_with(cx, |cursor, _| cursor.visible()),
-                "{which} keeps its caret shown for the next focus"
-            );
-        }
-    }
-
-    /// GitTurtle patch: a pause, which every key, edit and caret move makes,
-    /// shows a caret hidden in its blink at once and holds it shown one whole
-    /// interval from the last pause, a full visible phase, before it blinks
-    /// off; upstream's pause ended 300 ms after it, with the caret hidden.
     #[gpui::test]
     fn a_pause_holds_the_caret_a_whole_interval(cx: &mut TestAppContext) {
-        let cursor = cx.new(|_| BlinkCursor::new());
+        let cursor = cx.new(BlinkCursor::new);
         let visible = |cx: &mut TestAppContext| cursor.read_with(cx, |cursor, _| cursor.visible());
         let wait = |cx: &mut TestAppContext, time: Duration| {
             cx.executor().advance_clock(time);
@@ -276,8 +712,6 @@ mod tests {
         assert!(!visible(cx), "then blinks it off");
         wait(cx, INTERVAL);
         assert!(visible(cx), "and on again an interval later");
-        // A pause during a pause, as each key of a word makes, holds the
-        // caret an interval from itself.
         pause(cx);
         wait(cx, INTERVAL / 2);
         pause(cx);

@@ -111,11 +111,12 @@ fn fractional_font_changes_preserve_measured_rows_and_pending_hidden_viewports(
             text::rescale_editor(&editor, 1.25, cx);
         });
         window.dispatch_event(
-            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+            gpui::PlatformInput::Scroll(gpui::ScrollEvent {
                 position: editor.read(cx).input_bounds().center(),
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-23.))),
                 modifiers: Modifiers::default(),
                 touch_phase: gpui::TouchPhase::Moved,
+                source: Default::default(),
             }),
             cx,
         );
@@ -219,11 +220,12 @@ fn a_new_wheel_gesture_supersedes_pending_linked_scroll(cx: &mut TestAppContext)
         });
         // Deliver real wheel input before the pending setter gets a paint.
         window.dispatch_event(
-            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+            gpui::PlatformInput::Scroll(gpui::ScrollEvent {
                 position,
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-23.))),
                 modifiers: Modifiers::default(),
                 touch_phase: gpui::TouchPhase::Moved,
+                source: Default::default(),
             }),
             cx,
         );

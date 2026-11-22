@@ -6928,7 +6928,7 @@ impl GitTurtle {
                     // once chose the file too, so a conflicted one's
                     // draft took focus from the list being selected in.
                     let modifiers = event.modifiers();
-                    let (toggle, range) = (modifiers.secondary(), modifiers.shift);
+                    let (toggle, range) = (modifiers.secondary(cx), modifiers.shift);
                     // One the list refuses chooses and selects nothing,
                     // its busy look saying why at once
                     // (`refuse_working_press`).

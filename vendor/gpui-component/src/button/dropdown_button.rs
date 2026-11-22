@@ -1,8 +1,10 @@
 use gpui::Corners;
 use gpui::{
     Anchor, App, Context, Edges, ElementId, InteractiveElement as _, IntoElement, ParentElement,
-    RenderOnce, StyleRefinement, Styled, Window, div, prelude::FluentBuilder,
+    RenderOnce, SharedString, StyleRefinement, Styled, Window, div, prelude::FluentBuilder,
 };
+use gpui_base::LogicalStyledExt as _;
+use rust_i18n::t;
 
 use crate::{
     Disableable, Selectable, Sizable, Size, StyledExt as _,
@@ -30,6 +32,7 @@ pub struct DropdownButton {
         Option<Box<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static>>,
     selected: bool,
     disabled: bool,
+    menu_accessibility_label: Option<SharedString>,
     // The button props, applied to both halves. Unset means the inner
     // [`Button`] keeps whatever it was given.
     outline: bool,
@@ -48,6 +51,7 @@ impl DropdownButton {
             menu: None,
             selected: false,
             disabled: false,
+            menu_accessibility_label: None,
             outline: false,
             variant: None,
             size: None,
@@ -95,6 +99,16 @@ impl DropdownButton {
     ) -> Self {
         self.menu = Some(Box::new(menu));
         self.anchor = anchor.into();
+        self
+    }
+
+    /// Set the name a screen reader announces for the menu trigger. Defaults
+    /// to the localized "More options".
+    ///
+    /// The trigger shows only a caret, so it has no visible label to read.
+    /// The inner [`Button`] names the action half.
+    pub fn menu_accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.menu_accessibility_label = Some(label.into());
         self
     }
 
@@ -166,6 +180,7 @@ impl RenderOnce for DropdownButton {
             .id(self.id)
             .when(is_ghost, |this| this.group(HALVES_GROUP))
             .h_flex()
+            .flex_row_dir(cx)
             .refine_style(&self.style)
             .when_some(self.button, |this, button| {
                 let disabled = self.disabled || button.is_disabled();
@@ -193,6 +208,10 @@ impl RenderOnce for DropdownButton {
                 this.child(
                     Button::new("popup")
                         .dropdown_caret(true)
+                        .accessibility_label(
+                            self.menu_accessibility_label
+                                .unwrap_or_else(|| t!("DropdownButton.more_options").into()),
+                        )
                         .border_corners(Corners {
                             top_left: false,
                             top_right: true,

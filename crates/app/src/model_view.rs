@@ -1321,7 +1321,7 @@ fn model_canvas<T: 'static>(
         }))
         .on_mouse_up(MouseButton::Left,cx.listener(move |_,_,window,cx|{up.end_drag();window.refresh();cx.notify();}))
         .on_mouse_up_out(MouseButton::Left,cx.listener(move |_,_,window,cx|{outside.end_drag();window.refresh();cx.notify();}))
-        .on_scroll_wheel(cx.listener(move |_,event:&ScrollWheelEvent,window,cx|{
+        .on_scroll(cx.listener(move |_,event:&ScrollEvent,window,cx|{
             let y=f32::from(event.delta.pixel_delta(px(24.)).y) as f64;
             wheel.change(wheel_partner.as_deref(),Action::Zoom((y*0.008).clamp(-0.7,0.7).exp()));window.refresh();cx.stop_propagation();cx.notify();
         }))

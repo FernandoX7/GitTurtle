@@ -1009,7 +1009,7 @@ fn enter_and_space_leave_focused_kit_controls_that_turn_disabled_inert(cx: &mut 
         // A keyboard click runs on the key-up that follows a key-down on the
         // same focused element, so each key sends both, as a real press does.
         let activate = |cx: &mut VisualTestContext, key: &str| {
-            let keystroke = Keystroke::parse(key).unwrap();
+            let keystroke = Keystroke::parse_with_os(key, crate::shortcuts::host_os()).unwrap();
             cx.simulate_event(KeyDownEvent {
                 keystroke: keystroke.clone(),
                 is_held: false,

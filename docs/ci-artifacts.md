@@ -48,8 +48,11 @@ Only exit 0 with a matching target/lock inventory and no missing notices lets a
 job take the complete-notice path. Linux has no documented C0 gap since the
 [license review](licenses/linux-notice-review.md) of November 15, 2026, so its
 jobs, x86-64 and AArch64, take that path and any missing notice there fails them.
-The documented C0 gaps are on macOS: `block-0.1.6`, `objc_exception-0.1.2`,
-`leak-0.1.2` and `leaky-cow-0.1.1`.
+With GPUI Kit 0.10.0 / GPUI 0.3.12 (`objc2`), the previously unresolved legacy
+macOS crates (`block`, `objc_exception`, `leak`, and `leaky-cow`) left the
+packaged macOS binary graph, so macOS also passes `--require-complete` while
+remaining excluded from `HOSTED_UPLOAD_PLATFORMS` until macOS distribution and
+signing are decided.
 
 Complete notices alone do not upload a package: its platform must also be
 listed in `HOSTED_UPLOAD_PLATFORMS` in `scripts/ci/packages.py`. The project

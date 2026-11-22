@@ -3325,7 +3325,8 @@ pub(crate) mod tests {
 
     /// A full key press: GPUI's Enter and Space click needs the key up.
     fn press(cx: &mut VisualTestContext, key: &str) {
-        let keystroke = Keystroke::parse(key).expect("a keystroke");
+        let keystroke =
+            Keystroke::parse_with_os(key, crate::shortcuts::host_os()).expect("a keystroke");
         cx.simulate_event(KeyDownEvent {
             keystroke: keystroke.clone(),
             is_held: false,
@@ -3374,7 +3375,8 @@ pub(crate) mod tests {
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         }
-        let keystroke = Keystroke::parse(key).expect("a keystroke");
+        let keystroke =
+            Keystroke::parse_with_os(key, crate::shortcuts::host_os()).expect("a keystroke");
         let observed = cx.update(|window, cx| {
             window.dispatch_event(
                 PlatformInput::KeyDown(KeyDownEvent {
@@ -5173,8 +5175,8 @@ pub(crate) mod tests {
             assert_eq!(forward, stops, "{at}: Tab meets every stop, in order");
             assert_eq!(
                 forward.len(),
-                2,
-                "{at}: the swatches are one stop and the hex field the other"
+                3,
+                "{at}: the mode tabs, the swatches, and the hex field are the popover's three stops"
             );
             assert_eq!(
                 backward,
@@ -5304,13 +5306,24 @@ pub(crate) mod tests {
         assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
 
         press(cx, "tab");
+        let tabs = focused_stop(cx);
+        assert!(in_popover(cx, &trigger), "first Tab enters the mode tabs");
+        assert_ne!(tabs, hex, "the mode tabs come before the hex field");
+        press(cx, "tab");
         let stop = focused_stop(cx);
-        assert!(in_popover(cx, &trigger), "Tab enters the swatches");
+        assert!(in_popover(cx, &trigger), "second Tab enters the swatches");
+        assert_ne!(stop, tabs, "the swatches follow the mode tabs");
         assert_ne!(stop, hex, "the swatches come before the hex field");
         press(cx, "tab");
         assert_eq!(focused_stop(cx), hex, "the hex field is the next stop");
         press(cx, "tab");
-        assert_eq!(focused_stop(cx), stop, "and the swatches the one after");
+        assert_eq!(focused_stop(cx), tabs, "Tab wraps back to the mode tabs");
+        press(cx, "tab");
+        assert_eq!(
+            focused_stop(cx),
+            stop,
+            "and the swatches are the stop after"
+        );
 
         // To the palette's first swatch, past its edges.
         for key in ["up", "left"] {
@@ -5404,12 +5417,14 @@ pub(crate) mod tests {
             press(cx, "enter");
             assert!(cx.read(|cx| picker.read(cx).is_open()), "Enter opens it");
             press(cx, "tab");
+            press(cx, "tab");
             press(cx, "right");
             let chosen = cx.read(|cx| picker.read(cx).preview());
             let before = cx.read(|cx| picker.read(cx).value());
             assert_ne!(chosen, before, "{key}: the arrow reached another colour");
 
-            let keystroke = Keystroke::parse(key).expect("a keystroke");
+            let keystroke =
+                Keystroke::parse_with_os(key, crate::shortcuts::host_os()).expect("a keystroke");
             for is_held in [false, true, true] {
                 cx.simulate_event(KeyDownEvent {
                     keystroke: keystroke.clone(),
@@ -5464,8 +5479,12 @@ pub(crate) mod tests {
             settle(cx);
             press(cx, "enter");
             press(cx, "tab");
-            let keystroke = Keystroke::parse(if key == "space" { "space" } else { "enter" })
-                .expect("a keystroke");
+            press(cx, "tab");
+            let keystroke = Keystroke::parse_with_os(
+                if key == "space" { "space" } else { "enter" },
+                crate::shortcuts::host_os(),
+            )
+            .expect("a keystroke");
             let down = KeyDownEvent {
                 keystroke: keystroke.clone(),
                 is_held: false,
@@ -5545,6 +5564,7 @@ pub(crate) mod tests {
             } else if close == "the trigger pressed again" {
                 click(cx, selector);
             } else if close == "tab, right, enter" {
+                press(cx, "tab");
                 press(cx, "tab");
                 press(cx, "right");
                 assert!(in_popover(cx, &trigger), "{close}: a swatch holds focus");
@@ -5646,7 +5666,9 @@ pub(crate) mod tests {
         observe: impl FnOnce(&mut VisualTestContext) -> R,
     ) -> R {
         let form = form(cx, app);
-        let key = |key: &str| Keystroke::parse(key).expect("a keystroke");
+        let key = |key: &str| {
+            Keystroke::parse_with_os(key, crate::shortcuts::host_os()).expect("a keystroke")
+        };
         let down = |key: Keystroke| KeyDownEvent {
             keystroke: key,
             is_held: false,
@@ -6139,6 +6161,7 @@ pub(crate) mod tests {
 
         press(cx, "tab");
         press(cx, "tab");
+        press(cx, "tab");
         assert_eq!(focused_stop(cx), hex, "the hex field holds focus");
         // Its text reaches assistive technology as text runs, which the
         // gpui-base input patch writes and tests.
@@ -6201,6 +6224,7 @@ pub(crate) mod tests {
         };
         for route in ["the hex field", "a swatch"] {
             press(cx, "enter");
+            press(cx, "tab");
             press(cx, "tab");
             if route == "the hex field" {
                 press(cx, "tab");
@@ -6296,10 +6320,15 @@ pub(crate) mod tests {
         enter(cx, None);
         settle(cx);
         open_inside(cx, "the release");
+        // In gpui-base 0.10.0, PopoverContent leaves Enter on the popover container
+        // as a no-op so it neither toggles the trigger nor submits the dialog beneath;
+        // Escape closes the popover cleanly onto its trigger.
         press(cx, "enter");
+        open_inside(cx, "a fresh Enter on the popover surface");
+        press(cx, "escape");
         assert!(
             !cx.read(|cx| picker.read(cx).is_open()),
-            "a new press inside the popover closes it"
+            "Escape inside the popover closes it"
         );
         assert_eq!(
             focused_stop(cx),
@@ -6331,6 +6360,7 @@ pub(crate) mod tests {
             settle(cx);
             press(cx, "enter");
             press(cx, "tab");
+            press(cx, "tab");
             for key in ["up", "left"] {
                 for _ in 0..12 {
                     press(cx, key);
@@ -6350,6 +6380,7 @@ pub(crate) mod tests {
             cx.update(|window, cx| trigger.focus(window, cx));
             settle(cx);
             press(cx, "enter");
+            press(cx, "tab");
             press(cx, "tab");
             press(cx, "tab");
             assert_eq!(focused_stop(cx), hex, "{name}: Tab reaches the field");
@@ -6435,6 +6466,7 @@ pub(crate) mod tests {
             cx.update(|window, cx| trigger.focus(window, cx));
             settle(cx);
             press(cx, "enter");
+            press(cx, "tab");
             press(cx, "tab");
             assert!(in_popover(cx, &trigger), "{at}: Tab enters the swatches");
             let ring = assert_swatch_ringed(cx, &format!("{at}: the swatch Tab reaches"));
@@ -7361,7 +7393,6 @@ pub(crate) mod tests {
         let (app, cx) = open_app(cx);
         assert!(!cx.update(|_, cx| cx.reduce_motion()), "default motion");
         cx.simulate_resize(size(px(1440.), px(900.)));
-        let started = std::time::Instant::now();
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
         // The alert's place in the frame a test build draws of the dirty
         // window as the update that opens the editor ends, which the test
@@ -7374,11 +7405,7 @@ pub(crate) mod tests {
         let opening = cx
             .debug_bounds("theme-editor-save")
             .expect("the update that opens the editor draws its alert");
-        // Read within 150 ms of the opening, that frame came before the
-        // alert could reach its rest: 85% of its way at 150 ms along the
-        // kit's curve. A loaded host's may come later.
-        let quick = started.elapsed() < std::time::Duration::from_millis(150);
-        std::thread::sleep(
+        cx.executor().advance_clock(
             *gpui_kit::component::dialog::ANIMATION_DURATION + std::time::Duration::from_millis(50),
         );
         // The frame that finds the slide-in over draws it at rest, and the
@@ -7396,15 +7423,9 @@ pub(crate) mod tests {
         let rested = bounds(cx, "theme-editor-save".into());
         let travel = rested.top() - opening.top();
         assert!(
-            travel >= px(0.) && travel <= px(900. / 10.),
+            travel > px(0.) && travel <= px(900. / 10.),
             "the alert slides down into place from at most a tenth of the window above: from {opening:?} to {rested:?}"
         );
-        if quick {
-            assert!(
-                travel > px(0.),
-                "drawn within 150 ms of opening, the alert had yet to slide: from {opening:?} to {rested:?}"
-            );
-        }
     }
 
     /// No readability warning is reachable wholly below the part of the side
@@ -9609,11 +9630,12 @@ pub(crate) mod tests {
             let list = bounds(cx, "custom-themes-rows".into());
             cx.update(|window, cx| {
                 window.dispatch_event(
-                    PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                    PlatformInput::Scroll(gpui::ScrollEvent {
                         position: list.center(),
                         delta: gpui::ScrollDelta::Pixels(gpui::point(Pixels::ZERO, step)),
                         modifiers: Modifiers::default(),
                         touch_phase: gpui::TouchPhase::Moved,
+                        source: Default::default(),
                     }),
                     cx,
                 );
@@ -9790,11 +9812,12 @@ pub(crate) mod tests {
         fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>, step: Pixels) {
             cx.update(|window, cx| {
                 window.dispatch_event(
-                    PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                    PlatformInput::Scroll(gpui::ScrollEvent {
                         position,
                         delta: gpui::ScrollDelta::Pixels(gpui::point(Pixels::ZERO, step)),
                         modifiers: Modifiers::default(),
                         touch_phase: gpui::TouchPhase::Moved,
+                        source: Default::default(),
                     }),
                     cx,
                 );

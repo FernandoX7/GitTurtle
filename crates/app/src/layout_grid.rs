@@ -852,6 +852,9 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
         operations.await.unwrap().unwrap();
         preferences.await.unwrap().unwrap();
         views::tests::settle(&app, cx).await;
+        cx.executor()
+            .advance_clock(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        frame(cx);
         Some(body)
     } else {
         None

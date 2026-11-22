@@ -9,7 +9,10 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{RoleOverride, Selectable, StateStyle, StyledExt as _};
+use crate::{
+    RoleOverride, Selectable, StateStyle, StyledExt as _, TestSupportExt as _,
+    a11y_disabled::A11yDisabledExt as _,
+};
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -20,12 +23,16 @@ type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 #[derive(IntoElement)]
 pub struct Button {
     id: ElementId,
-    base: Stateful<Div>,
+    base: crate::ObservedElement<Stateful<Div>>,
     style: StyleRefinement,
     semantic_styles: ButtonStyles,
     selected: bool,
     disabled: bool,
     accessibility_disabled: bool,
+    hover_style: Option<StyleRefinement>,
+    active_style: Option<StyleRefinement>,
+    group_hover_style: Option<(SharedString, StyleRefinement)>,
+    group_active_style: Option<(SharedString, StyleRefinement)>,
     children: SmallVec<[AnyElement; 2]>,
     on_click: Option<ClickHandler>,
     accessibility_label: Option<SharedString>,
@@ -47,13 +54,17 @@ impl Button {
             // it is the dialog's `Confirm` again, unless the caller binds the
             // key in its own context. Built from the static name, never
             // parsed ([`button_context`]).
-            base: div().id(id.clone()).key_context(button_context()),
+            base: div().id(id.clone()).test_support().key_context(button_context()),
             id,
             style: StyleRefinement::default(),
             semantic_styles: ButtonStyles::default(),
             selected: false,
             disabled: false,
             accessibility_disabled: false,
+            hover_style: None,
+            active_style: None,
+            group_hover_style: None,
+            group_active_style: None,
             children: SmallVec::new(),
             on_click: None,
             accessibility_label: None,
@@ -66,9 +77,21 @@ impl Button {
     }
 
     /// Sets whether the button ignores pointer and keyboard activation.
+    ///
+    /// Disabled buttons are skipped during Tab traversal. If this button already
+    /// owns focus when it becomes disabled, it retains the focus binding until
+    /// focus moves away, so keyboard traversal can continue in either direction.
+    ///
+    /// While disabled, the `hover`, `active`, `group_hover` and `group_active`
+    /// styles are not applied; use [`ButtonStyles::disabled`] for its look.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
+    }
+
+    /// Whether the button is disabled.
+    pub fn is_disabled(&self) -> bool {
+        self.disabled
     }
 
     /// GitTurtle patch: reports the button disabled to assistive technology
@@ -230,9 +253,37 @@ impl InteractiveElement for Button {
     fn interactivity(&mut self) -> &mut Interactivity {
         self.base.interactivity()
     }
+
+    fn hover(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        self.hover_style = Some(f(StyleRefinement::default()));
+        self
+    }
+
+    fn group_hover(
+        mut self,
+        group_name: impl Into<SharedString>,
+        f: impl FnOnce(StyleRefinement) -> StyleRefinement,
+    ) -> Self {
+        self.group_hover_style = Some((group_name.into(), f(StyleRefinement::default())));
+        self
+    }
 }
 
-impl StatefulInteractiveElement for Button {}
+impl StatefulInteractiveElement for Button {
+    fn active(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        self.active_style = Some(f(StyleRefinement::default()));
+        self
+    }
+
+    fn group_active(
+        mut self,
+        group_name: impl Into<SharedString>,
+        f: impl FnOnce(StyleRefinement) -> StyleRefinement,
+    ) -> Self {
+        self.group_active_style = Some((group_name.into(), f(StyleRefinement::default())));
+        self
+    }
+}
 
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -250,8 +301,15 @@ impl RenderOnce for Button {
         let enter = (!disabled && self.focusable)
             .then(|| on_click.clone())
             .flatten();
+        let pointer_style = move |style: StyleRefinement| {
+            if disabled {
+                StyleRefinement::default()
+            } else {
+                style
+            }
+        };
 
-        let content = self
+        let inner = self
             .base
             // Centering is part of Button's control geometry. Without a flex
             // formatting context an ordinary child starts at the root's
@@ -268,18 +326,27 @@ impl RenderOnce for Button {
             // it, so a product that wants looser text still can.
             .line_height(relative(1.))
             .when_some(self.role.resolve(|| Role::Button), |this, role| {
+                // GitTurtle patch: a Tab role reports its selected state
+                // without adding pressed/toggle metadata; ordinary Button
+                // selection remains presentation-only.
                 this.role(role)
+                    .when(role == Role::Tab, |this| this.aria_selected(selected))
             })
             .when_some(self.accessibility_label, |this, label| {
                 this.aria_label(label)
             })
-            .when(!disabled && self.focusable, |this| {
-                this.track_focus(
-                    &focus_handle
-                        .tab_index(self.tab_index)
-                        .tab_stop(self.tab_stop),
-                )
-            })
+            // Keep the current focus in the dispatch tree when activation
+            // disables this button, so Tab can still leave it in either direction.
+            .when(
+                self.focusable && (!disabled || focus_handle.is_focused(window)),
+                |this| {
+                    this.track_focus(
+                        &focus_handle
+                            .tab_index(self.tab_index)
+                            .tab_stop(self.tab_stop && !disabled),
+                    )
+                },
+            )
             .when(disabled, |this| {
                 this.on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
@@ -324,44 +391,54 @@ impl RenderOnce for Button {
                     cx.stop_propagation();
                 })
             })
+            .when_some(self.hover_style, |this, style| {
+                this.hover(|_| pointer_style(style))
+            })
+            .when_some(self.active_style, |this, style| {
+                this.active(|_| pointer_style(style))
+            })
+            .when_some(self.group_hover_style, |this, (group, style)| {
+                this.group_hover(group, |_| pointer_style(style))
+            })
+            .when_some(self.group_active_style, |this, (group, style)| {
+                this.group_active(group, |_| pointer_style(style))
+            })
             .children(self.children)
-            .refine_style(&style);
-        AccessibleButton {
-            content,
-            disabled: disabled || self.accessibility_disabled,
-            selected,
-            bounds,
-        }
+            .refine_style(&style)
+            .a11y_disabled(disabled || self.accessibility_disabled);
+        ButtonBounds { inner, bounds }
     }
 }
-// GitTurtle patch: GPUI's Div lacks an aria-disabled setter. Preserve the
-// existing element and caller-provided synthetic subtree, adding only the
-// disabled property when the toolkit writes this rendered button's node: for
-// a disabled button, or one `accessibility_disabled` reports disabled alone.
-// A Tab role also reports its existing selected state; ordinary Button
-// presentation selection remains separate from toggle accessibility.
-struct AccessibleButton {
-    content: Stateful<Div>,
-    disabled: bool,
-    selected: bool,
-    /// Where the Button was laid out, for the keyboard click Enter makes.
+
+/// GitTurtle patch: records the Button's laid-out bounds during prepaint so
+/// its dialog Enter key-down activation carries them in `KeyboardClickEvent`,
+/// while transparently forwarding all element and accessibility hooks.
+struct ButtonBounds<E> {
+    inner: E,
     bounds: Rc<Cell<Bounds<Pixels>>>,
 }
-impl IntoElement for AccessibleButton {
+
+#[cfg(not(feature = "gpui-fast"))]
+impl<E: Element> IntoElement for ButtonBounds<E> {
     type Element = Self;
+
     fn into_element(self) -> Self {
         self
     }
 }
-impl Element for AccessibleButton {
-    type RequestLayoutState = <Stateful<Div> as Element>::RequestLayoutState;
-    type PrepaintState = <Stateful<Div> as Element>::PrepaintState;
+
+impl<E: Element> Element for ButtonBounds<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
     fn id(&self) -> Option<ElementId> {
-        Element::id(&self.content)
+        self.inner.id()
     }
+
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        self.content.source_location()
+        self.inner.source_location()
     }
+
     fn request_layout(
         &mut self,
         id: Option<&GlobalElementId>,
@@ -369,8 +446,9 @@ impl Element for AccessibleButton {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        self.content.request_layout(id, inspector, window, cx)
+        self.inner.request_layout(id, inspector, window, cx)
     }
+
     fn prepaint(
         &mut self,
         id: Option<&GlobalElementId>,
@@ -381,9 +459,10 @@ impl Element for AccessibleButton {
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.bounds.set(bounds);
-        self.content
+        self.inner
             .prepaint(id, inspector, bounds, layout, window, cx)
     }
+
     fn paint(
         &mut self,
         id: Option<&GlobalElementId>,
@@ -394,27 +473,24 @@ impl Element for AccessibleButton {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.content
-            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+        self.inner
+            .paint(id, inspector, bounds, layout, prepaint, window, cx)
     }
+
     fn a11y_role(&self) -> Option<Role> {
-        self.content.a11y_role()
+        self.inner.a11y_role()
     }
+
     fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
-        self.content.write_a11y_info(node);
-        if self.disabled {
-            node.set_disabled();
-        }
-        if node.role() == Role::Tab {
-            node.set_selected(self.selected);
-        }
+        self.inner.write_a11y_info(node);
     }
+
     fn a11y_synthetic_children(
         &mut self,
         prepaint: &mut Self::PrepaintState,
         builder: &mut A11ySubtreeBuilder,
     ) {
-        Element::a11y_synthetic_children(&mut self.content, prepaint, builder);
+        self.inner.a11y_synthetic_children(prepaint, builder);
     }
 }
 
@@ -429,8 +505,8 @@ mod tests {
     };
 
     use gpui::{
-        ClickEvent, Context, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render,
-        TestAppContext, VisualTestContext, accesskit, canvas, point, px,
+        AppContext as _, ClickEvent, Context, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers,
+        Render, TestAppContext, VisualTestContext, accesskit, canvas, point, px,
     };
 
     struct ButtonHarness {
@@ -515,7 +591,8 @@ mod tests {
         });
 
         for key in ["enter", "space"] {
-            let keystroke = Keystroke::parse(key).unwrap();
+            let keystroke =
+                cx.update(|_, cx| Keystroke::parse_with_os(key, cx.platform_info().os).unwrap());
             cx.simulate_event(KeyDownEvent {
                 keystroke: keystroke.clone(),
                 is_held: false,
@@ -571,6 +648,113 @@ mod tests {
 
         assert_eq!(button_clicks.get(), 0);
         assert_eq!(parent_clicks.get(), 0);
+    }
+
+    struct DisableDuringFocus {
+        handles: [FocusHandle; 3],
+        disabled: bool,
+        activations: usize,
+    }
+
+    impl Render for DisableDuringFocus {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .tab_group()
+                .child(
+                    Button::new("before")
+                        .track_focus(&self.handles[0])
+                        .child("Before"),
+                )
+                .child(
+                    Button::new("disable-self")
+                        .track_focus(&self.handles[1])
+                        .disabled(self.disabled)
+                        .child("Disable self")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.disabled = true;
+                            this.activations += 1;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("after")
+                        .track_focus(&self.handles[2])
+                        .child("After"),
+                )
+        }
+    }
+
+    fn press_transition_key(cx: &mut VisualTestContext, key: &str) {
+        let keystroke =
+            cx.update(|_, cx| Keystroke::parse_with_os(key, cx.platform_info().os).unwrap());
+        cx.simulate_event(KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    #[gpui::test]
+    fn disabling_focused_button_preserves_bidirectional_traversal(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        for (key, expected, back, opposite) in
+            [("tab", 2, "shift-tab", 0), ("shift-tab", 0, "tab", 2)]
+        {
+            let handles = cx.update(|cx| std::array::from_fn(|_| cx.focus_handle()));
+            let controls = cx.new(|_| DisableDuringFocus {
+                handles: handles.clone(),
+                disabled: false,
+                activations: 0,
+            });
+            let (_, cx) =
+                cx.add_window_view(|window, cx| crate::Root::new(controls.clone(), window, cx));
+            cx.update(|window, cx| {
+                window.activate_window();
+                window.draw(cx).clear(cx);
+                handles[0].focus(window, cx);
+                window.draw(cx).clear(cx);
+            });
+            press_transition_key(cx, "tab");
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert_eq!(window.focused(cx).as_ref(), Some(&handles[1]));
+            });
+            press_transition_key(cx, "space");
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert!(controls.read(cx).disabled);
+                assert_eq!(controls.read(cx).activations, 1);
+            });
+            press_transition_key(cx, "enter");
+            press_transition_key(cx, "space");
+            cx.update(|_, cx| {
+                assert_eq!(controls.read(cx).activations, 1, "disabled stays inert");
+            });
+            press_transition_key(cx, key);
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert_eq!(window.focused(cx).as_ref(), Some(&handles[expected]));
+            });
+            press_transition_key(cx, back);
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert_eq!(window.focused(cx).as_ref(), Some(&handles[opposite]));
+            });
+            controls.update(cx, |this, cx| {
+                this.disabled = false;
+                cx.notify();
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            press_transition_key(cx, key);
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert_eq!(window.focused(cx).as_ref(), Some(&handles[1]));
+            });
+        }
     }
 
     #[gpui::test]
@@ -656,6 +840,79 @@ mod tests {
         assert_eq!(semantic_only.resolved_style().opacity, Some(0.5));
     }
 
+    #[gpui::test]
+    fn disabled_button_ignores_hover_and_active_styles(cx: &mut TestAppContext) {
+        struct PointerProbe {
+            disabled: bool,
+            text_color: Rc<Cell<Option<gpui::Hsla>>>,
+        }
+
+        impl Render for PointerProbe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let text_color = self.text_color.clone();
+                Button::new("pointer-probe")
+                    .size(px(40.))
+                    .text_color(gpui::red())
+                    .hover(|style| style.text_color(gpui::green()))
+                    .active(|style| style.text_color(gpui::blue()))
+                    .disabled(self.disabled)
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |_, _, window, _| text_color.set(Some(window.text_style().color)),
+                        )
+                        .size_full(),
+                    )
+            }
+        }
+
+        let text_color = Rc::new(Cell::new(None));
+        let (view, cx) = cx.add_window_view({
+            let text_color = text_color.clone();
+            move |_, _| PointerProbe {
+                disabled: true,
+                text_color,
+            }
+        });
+        let redraw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        let position = point(px(10.), px(10.));
+        redraw(cx);
+
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        redraw(cx);
+        assert_eq!(
+            text_color.get(),
+            Some(gpui::red()),
+            "disabled ignores hover"
+        );
+
+        cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        redraw(cx);
+        assert_eq!(
+            text_color.get(),
+            Some(gpui::red()),
+            "disabled ignores active"
+        );
+        cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+
+        view.update(cx, |this, cx| {
+            this.disabled = false;
+            cx.notify();
+        });
+        redraw(cx);
+        assert_eq!(text_color.get(), Some(gpui::green()), "enabled shows hover");
+
+        cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        redraw(cx);
+        assert_eq!(text_color.get(), Some(gpui::blue()), "enabled shows active");
+    }
+
+    #[test]
+    fn is_disabled_reports_the_disabled_state() {
+        assert!(!Button::new("enabled").is_disabled());
+        assert!(Button::new("disabled").disabled(true).is_disabled());
+    }
+
     #[test]
     fn selected_disabled_and_instance_styles_follow_the_shared_priority() {
         let selected_color = gpui::hsla(0.6, 0.7, 0.5, 1.0);
@@ -737,13 +994,11 @@ mod tests {
         let (enabled, disabled) = result.lock().unwrap().take().unwrap();
         assert_eq!(enabled.role(), Role::Button);
         assert_eq!(enabled.label(), Some("Save"));
-        assert!(!enabled.is_disabled());
         assert!(enabled.supports_action(accesskit::Action::Click));
 
         assert_eq!(disabled.role(), Role::Button);
         assert!(!disabled.supports_action(accesskit::Action::Click));
-
+        assert!(!enabled.is_disabled());
         assert!(disabled.is_disabled());
-        assert_eq!(disabled.label(), Some("Save"));
     }
 }

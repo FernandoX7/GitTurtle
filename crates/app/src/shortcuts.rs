@@ -469,24 +469,37 @@ pub(super) fn resolve_key(key: &str, macos: bool) -> String {
     key.replace("primary", if macos { "cmd" } else { "ctrl" })
 }
 
+pub(crate) const fn host_os() -> gpui::OperatingSystem {
+    if cfg!(target_os = "macos") {
+        gpui::OperatingSystem::Mac
+    } else {
+        gpui::OperatingSystem::Linux
+    }
+}
+
 pub(super) fn bind_keys(cx: &mut App) {
     // The first registry entry for an action is its advertised shortcut.
     // Register in reverse so aliases (Open Tab) do not replace Open's label.
-    cx.bind_keys(SHORTCUTS.iter().rev().map(|spec| {
-        KeyBinding::load(
-            &resolve_key(spec.key, cfg!(target_os = "macos")),
-            (spec.action)(),
-            spec.context.map(|context| {
-                gpui::KeyBindingContextPredicate::parse(context)
-                    .expect("static shortcut context must be valid")
-                    .into()
-            }),
-            false,
-            None,
-            &gpui::DummyKeyboardMapper,
-        )
-        .expect("static shortcut must be valid")
-    }));
+    let bindings: Vec<_> = SHORTCUTS
+        .iter()
+        .rev()
+        .map(|spec| {
+            KeyBinding::load(
+                &resolve_key(spec.key, cfg!(target_os = "macos")),
+                (spec.action)(),
+                spec.context.map(|context| {
+                    gpui::KeyBindingContextPredicate::parse(context)
+                        .expect("static shortcut context must be valid")
+                        .into()
+                }),
+                false,
+                None,
+                cx,
+            )
+            .expect("static shortcut must be valid")
+        })
+        .collect();
+    cx.bind_keys(bindings);
 }
 
 /// `field`, a multi-line prose field, in a wrapper from which Tab and
@@ -550,7 +563,7 @@ pub(super) fn shifted(key: &str) -> String {
 pub(super) fn key_label(key: &str) -> String {
     // Use the same platform renderer as native GPUI popup-menu accelerators.
     Kbd::format(
-        &Keystroke::parse(&resolve_key(key, cfg!(target_os = "macos")))
+        &Keystroke::parse_with_os(&resolve_key(key, cfg!(target_os = "macos")), host_os())
             .expect("static shortcut must be valid"),
     )
 }
@@ -2281,10 +2294,19 @@ mod tests {
     #[test]
     fn bindings_are_unique_valid_on_both_platforms_and_keep_input_scope() {
         for macos in [true, false] {
+            let os = if macos {
+                gpui::OperatingSystem::Mac
+            } else {
+                gpui::OperatingSystem::Linux
+            };
             let mut seen = std::collections::HashSet::new();
             for spec in SHORTCUTS {
                 let key = resolve_key(spec.key, macos);
-                assert!(Keystroke::parse(&key).is_ok(), "{}: {key}", spec.label);
+                assert!(
+                    Keystroke::parse_with_os(&key, os).is_ok(),
+                    "{}: {key}",
+                    spec.label
+                );
                 assert!(
                     seen.insert((key, spec.context)),
                     "duplicate: {}",
@@ -2381,9 +2403,13 @@ mod tests {
             .unwrap();
         // Both the XKB and Cocoa adapters emit '?' with Shift consumed, even
         // when a US keyboard physically presses Shift+/. Letters retain Shift.
-        for macos in [false, true] {
-            let binding =
-                KeyBinding::new(&resolve_key(help.key, macos), ShortcutHelp, help.context);
+        for (macos, expected_key, expected_unnormalized) in [
+            (false, "ctrl-?", "ctrl-shift-/"),
+            (true, "cmd-?", "cmd-shift-/"),
+        ] {
+            assert_eq!(resolve_key(help.key, macos), expected_key);
+            assert_eq!(resolve_key("primary-shift-/", macos), expected_unnormalized);
+            let binding = KeyBinding::new(expected_key, ShortcutHelp, help.context);
             let event = Keystroke {
                 modifiers: Modifiers {
                     control: !macos,
@@ -2399,11 +2425,7 @@ mod tests {
                 binding.match_keystrokes(std::slice::from_ref(&event)),
                 Some(false)
             );
-            let unnormalized = KeyBinding::new(
-                &resolve_key("primary-shift-/", macos),
-                ShortcutHelp,
-                help.context,
-            );
+            let unnormalized = KeyBinding::new(expected_unnormalized, ShortcutHelp, help.context);
             assert_eq!(unnormalized.match_keystrokes(&[event]), None);
         }
     }

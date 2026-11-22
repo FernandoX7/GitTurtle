@@ -8,7 +8,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{StateStyle, StyledExt as _, disabled_focus::track_control_focus};
+use crate::{StateStyle, StyledExt as _, TestSupportExt as _, a11y_disabled::A11yDisabledExt as _};
 
 type ChangeHandler = Rc<dyn Fn(bool, &ClickEvent, &mut Window, &mut App)>;
 
@@ -259,14 +259,6 @@ impl Switch {
         }
     }
 
-    /// GitTurtle patch: uses a caller-owned focus handle instead of creating
-    /// keyed state, as [`crate::Button::track_focus`] does, so a wrapper can
-    /// draw its own focus indication.
-    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
-        self.provided_focus_handle = Some(focus_handle.clone());
-        self
-    }
-
     /// Sets the application-controlled checked value.
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
@@ -307,6 +299,9 @@ impl Switch {
     }
 
     /// Sets the name exposed to accessibility clients.
+    ///
+    /// A switch without text children has no accessible name, so set this
+    /// whenever it is drawn without visible text.
     pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
         self.accessibility_label = Some(label.into());
         self
@@ -321,6 +316,12 @@ impl Switch {
     /// Sets whether the switch participates in keyboard focus traversal.
     pub fn tab_stop(mut self, tab_stop: bool) -> Self {
         self.tab_stop = tab_stop;
+        self
+    }
+
+    /// Uses a caller-owned focus handle instead of creating keyed state.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.provided_focus_handle = Some(focus_handle.clone());
         self
     }
 
@@ -362,6 +363,7 @@ impl RenderOnce for Switch {
         let style = self.resolved_style();
 
         self.base
+            .test_support()
             .role(Role::Switch)
             .aria_toggled(if checked {
                 Toggled::True
@@ -371,17 +373,13 @@ impl RenderOnce for Switch {
             .when_some(self.accessibility_label, |this, label| {
                 this.aria_label(label)
             })
-            // GitTurtle patch: while focused, a disabled control keeps its
-            // handle as a target that is not a tab stop, so Tab and Shift+Tab
-            // still leave it (`disabled_focus`).
-            .map(|this| {
-                track_control_focus(
-                    this,
-                    focus_handle,
-                    disabled,
-                    self.tab_index,
-                    self.tab_stop,
-                    window,
+            // Keep the current focus in the dispatch tree when activation
+            // disables this control, so Tab can still leave in either direction.
+            .when(!disabled || focus_handle.is_focused(window), |this| {
+                this.track_focus(
+                    &focus_handle
+                        .tab_index(self.tab_index)
+                        .tab_stop(self.tab_stop && !disabled),
                 )
             })
             .when(disabled, |this| {
@@ -399,6 +397,7 @@ impl RenderOnce for Switch {
             )
             .children(self.children)
             .refine_style(&style)
+            .a11y_disabled(disabled)
     }
 }
 
@@ -585,7 +584,8 @@ mod tests {
     }
 
     fn activate_key(cx: &mut VisualTestContext, key: &str) {
-        let keystroke = Keystroke::parse(key).unwrap();
+        let keystroke =
+            cx.update(|_, cx| Keystroke::parse_with_os(key, cx.platform_info().os).unwrap());
         cx.simulate_event(KeyDownEvent {
             keystroke: keystroke.clone(),
             is_held: false,
@@ -739,8 +739,7 @@ mod tests {
         assert_eq!(disabled.role(), Role::Switch);
         assert_eq!(disabled.toggled(), Some(Toggled::False));
         assert!(!disabled.supports_action(accesskit::Action::Click));
-        // GPUI currently has no aria-disabled setter. Keep the limitation
-        // explicit instead of claiming an AccessKit disabled state.
-        assert!(!disabled.is_disabled());
+        assert!(!enabled.is_disabled());
+        assert!(disabled.is_disabled());
     }
 }

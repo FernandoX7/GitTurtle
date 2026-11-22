@@ -8,18 +8,24 @@ use crate::{Side, Size, kbd::Kbd};
 use gpui::{
     Action, Anchor, AnyElement, App, AppContext, Bounds, Context, DismissEvent, Edges, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
-    ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
+    ParentElement, Pixels, Rems, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred, div,
+    prelude::FluentBuilder, px, rems,
 };
 use gpui::{
     ClickEvent, Half, KeyBindingContextPredicate, KeyDownEvent, KeybindingKeystroke, Keystroke,
-    MouseDownEvent, MouseMoveEvent, NoAction, OwnedMenuItem, Point, ScrollWheelEvent, Subscription,
+    MouseDownEvent, MouseMoveEvent, NoAction, OwnedMenuItem, Point, ScrollEvent, Subscription,
 };
+use gpui_base::{LayoutDirection, LogicalStyledExt as _, TestSupportExt as _};
 
 use std::rc::Rc;
 use std::sync::LazyLock;
 
 const CONTEXT: &str = "PopupMenu";
+
+/// How many frames a newly opened scrollable menu waits for its items to be
+/// measured before it gives up scrolling to the checked item.
+const SCROLL_TO_CHECKED_FRAMES: u8 = 4;
 
 /// GitTurtle patch: a row's text, kept on one line. Upstream let a row's
 /// text wrap wherever the menu was narrower than it, which an item's fixed
@@ -110,33 +116,51 @@ struct KeptCursor {
 /// binding did. Each is bound to [`NoAction`] where it confirms, so no
 /// binding takes its key-down, which reaches [`PopupMenu::confirm_key`]
 /// with its repeat flag instead.
-const CONFIRM_KEYS: [(&str, &str, bool); 3] = [
+const CONFIRM_KEYS_MAC: [(&str, &str, bool); 3] = [
     ("enter", CONTEXT, false),
     ("space", "Popover > PopupMenu", false),
-    ("secondary-enter", "List > PopupMenu", true),
+    ("cmd-enter", "List > PopupMenu", true),
+];
+const CONFIRM_KEYS_OTHER: [(&str, &str, bool); 3] = [
+    ("enter", CONTEXT, false),
+    ("space", "Popover > PopupMenu", false),
+    ("ctrl-enter", "List > PopupMenu", true),
 ];
 
-/// GitTurtle patch: [`CONFIRM_KEYS`] parsed once, each key and context as
-/// [`KeyBinding::new`] parses them, for [`PopupMenu::confirm_key`] to match
-/// every key-down in a menu against as their bindings match it. Parsed on
-/// each key-down, the three bindings were built again for every key typed
-/// in a menu.
-static CONFIRM_KEYSTROKES: LazyLock<[(KeybindingKeystroke, KeyBindingContextPredicate, bool); 3]> =
-    LazyLock::new(|| {
-        CONFIRM_KEYS.map(|(keys, context, secondary)| {
-            (
-                KeybindingKeystroke::from_keystroke(
-                    Keystroke::parse(keys).expect("a menu's confirm key"),
-                ),
-                KeyBindingContextPredicate::parse(context).expect("a confirm key's context"),
-                secondary,
-            )
-        })
-    });
+fn parse_confirm_keystrokes(
+    keys: [(&'static str, &'static str, bool); 3],
+) -> [(KeybindingKeystroke, KeyBindingContextPredicate, bool); 3] {
+    keys.map(|(keys, context, secondary)| {
+        (
+            KeybindingKeystroke::from_keystroke(
+                Keystroke::parse(keys).expect("a menu's confirm key"),
+            ),
+            KeyBindingContextPredicate::parse(context).expect("a confirm key's context"),
+            secondary,
+        )
+    })
+}
+
+/// GitTurtle patch: confirm keys parsed once per platform family, each key and
+/// context as [`KeyBinding::new`] parses them, for [`PopupMenu::confirm_key`]
+/// to match every key-down in a menu against as their bindings match it.
+/// Parsed on each key-down, the three bindings were built again for every key
+/// typed in a menu.
+static CONFIRM_KEYSTROKES_MAC: LazyLock<
+    [(KeybindingKeystroke, KeyBindingContextPredicate, bool); 3],
+> = LazyLock::new(|| parse_confirm_keystrokes(CONFIRM_KEYS_MAC));
+static CONFIRM_KEYSTROKES_OTHER: LazyLock<
+    [(KeybindingKeystroke, KeyBindingContextPredicate, bool); 3],
+> = LazyLock::new(|| parse_confirm_keystrokes(CONFIRM_KEYS_OTHER));
 
 pub fn init(cx: &mut App) {
+    let confirm_keys = if cx.platform_info().is_mac() {
+        CONFIRM_KEYS_MAC
+    } else {
+        CONFIRM_KEYS_OTHER
+    };
     cx.bind_keys(
-        CONFIRM_KEYS.map(|(keys, context, _)| KeyBinding::new(keys, NoAction, Some(context))),
+        confirm_keys.map(|(keys, context, _)| KeyBinding::new(keys, NoAction, Some(context))),
     );
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
@@ -199,8 +223,6 @@ pub enum PopupMenuItem {
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     },
     /// A submenu item that opens another popup menu.
-    ///
-    /// NOTE: This is only supported when the parent menu is not `scrollable`.
     Submenu {
         icon: Option<Icon>,
         label: SharedString,
@@ -532,6 +554,7 @@ impl PopupMenuItem {
         }
     }
 
+    #[inline]
     fn is_checked(&self) -> bool {
         match self {
             PopupMenuItem::Item { checked, .. } => *checked,
@@ -611,6 +634,11 @@ pub struct PopupMenu {
     /// change where actions are dispatched: they still bubble from the menu's
     /// own focus path (through the trigger element's ancestors).
     pub(crate) previous_focus_handle: Option<FocusHandle>,
+    /// A focus handle on the trigger's dispatch path, so shortcut hints can
+    /// resolve against the key contexts the menu's actions bubble through on
+    /// the very frame the menu opens. GPUI looks a handle up in the previously
+    /// rendered frame, and the trigger was in it when the menu was not yet.
+    pub(crate) trigger_focus_handle: Option<FocusHandle>,
     /// GitTurtle patch: the control that opened this menu, where neither
     /// handle above names it: a dropdown's trigger, or the place an
     /// application's right-click menu returns focus to. A dialog one of the
@@ -677,6 +705,9 @@ pub struct PopupMenu {
     /// GitTurtle patch: where a scrollable menu's items met its cap when it
     /// was last laid out, or `None` before its first layout.
     fold: Option<Fold>,
+    /// Frames left to scroll the checked item into view on open. Zero once
+    /// done, so the user's scrolling is not overridden afterwards.
+    scroll_to_checked_frames: u8,
     external_link_icon: bool,
     scroll_handle: ScrollHandle,
     // This will update on render
@@ -693,6 +724,11 @@ pub struct PopupMenu {
     /// in `render_item` with `priority + 1`. Keeping a single deferred layer
     /// per level matters because GPUI caps nested deferred depth (see
     /// `prepaint_deferred_draws`).
+    ///
+    /// Deferring is also what lets a submenu open from a `scrollable` menu:
+    /// GPUI paints a deferred draw at the window level with no inherited
+    /// content mask, so the items container's `overflow_y_scroll` clip never
+    /// reaches it, while the scroll offset is still baked into its anchor.
     priority: usize,
 
     _subscriptions: Vec<Subscription>,
@@ -704,6 +740,7 @@ impl PopupMenu {
             focus_handle: cx.focus_handle(),
             action_context: None,
             previous_focus_handle: None,
+            trigger_focus_handle: None,
             dialog_return_focus: None,
             parent_menu: None,
             menu_items: Vec::new(),
@@ -725,6 +762,7 @@ impl PopupMenu {
             bounds: Bounds::default(),
             scrollable: false,
             fold: None,
+            scroll_to_checked_frames: SCROLL_TO_CHECKED_FRAMES,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
             size: Size::default(),
@@ -747,6 +785,8 @@ impl PopupMenu {
     /// When the menu is dismissed or before an action is triggered, the focus will be returned to this handle.
     ///
     /// Then the action will be dispatched to this handle.
+    /// Submenus without their own action context use the nearest parent's
+    /// explicit context for actions and shortcut hints.
     pub fn action_context(mut self, handle: FocusHandle) -> Self {
         self.action_context = Some(handle);
         self
@@ -786,6 +826,24 @@ impl PopupMenu {
         }
     }
 
+    /// Set the focus handle on the trigger's dispatch path that shortcut hints
+    /// resolve against, without changing focus or where actions are dispatched.
+    pub(crate) fn set_trigger_focus(
+        &mut self,
+        handle: Option<FocusHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        self.trigger_focus_handle = handle.clone();
+
+        for item in &self.menu_items {
+            if let PopupMenuItem::Submenu { menu, .. } = item {
+                menu.update(cx, |menu, cx| {
+                    menu.set_trigger_focus(handle.clone(), cx);
+                });
+            }
+        }
+    }
+
     /// GitTurtle patch: the control that opened this menu, which a dialog one
     /// of its items opens gives focus back to as it closes. Where it is
     /// unset, that is the focus the menu restores as it closes, or none.
@@ -793,27 +851,27 @@ impl PopupMenu {
         self.dialog_return_focus = handle;
     }
 
-    /// Set min width of the popup menu, default is 120px
+    /// Set min width of the popup menu, default is 8rem
     pub fn min_w(mut self, width: impl Into<Pixels>) -> Self {
         self.min_width = Some(width.into());
         self
     }
 
-    /// Set max width of the popup menu, default is 500px
+    /// Set max width of the popup menu, default is 31.25rem (500px at the
+    /// default 16px rem)
     pub fn max_w(mut self, width: impl Into<Pixels>) -> Self {
         self.max_width = Some(width.into());
         self
     }
 
-    /// Set max height of the popup menu, default is half of the window height
+    /// Set max height of the popup menu, default is half of the window height,
+    /// at most 28.125rem (450px at the default 16px rem)
     pub fn max_h(mut self, height: impl Into<Pixels>) -> Self {
         self.max_height = Some(height.into());
         self
     }
 
     /// Set the menu to be scrollable to show vertical scrollbar.
-    ///
-    /// NOTE: If this is true, the sub-menus will cannot be support.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
         self
@@ -1120,7 +1178,6 @@ impl PopupMenu {
     /// })
     /// .detach();
     /// ```
-    ///
     /// GitTurtle patch: the keyboard's cursor stays on the item it was on,
     /// found again by its name ([`PopupMenuItem::name`]) and its order among
     /// the items of that name wherever the builder now places it, as an item
@@ -1448,7 +1505,13 @@ impl PopupMenu {
     /// Undo of the commit HEAD had moved to, and one on a project group's
     /// "Archive" the other group of that name, so a press across a rebuild
     /// runs nothing and the person clicks again.
-    fn on_click(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_click(
+        &mut self,
+        ix: usize,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.stop_propagation();
         window.prevent_default();
         if self.pressed.take() != Some(ix) {
@@ -1456,7 +1519,7 @@ impl PopupMenu {
         }
         self.selected_index = Some(ix);
         self.kept_cursor = None;
-        self.confirm(&Confirm { secondary: false }, window, cx);
+        self.activate(event, window, cx);
     }
 
     /// GitTurtle patch: a key that confirms the menu ([`CONFIRM_KEYS`])
@@ -1479,7 +1542,12 @@ impl PopupMenu {
     /// the menu, runs nothing (`GITTURTLE-PATCH.md`).
     fn confirm_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
         let mut contexts = None;
-        let confirm = CONFIRM_KEYSTROKES
+        let keystrokes = if cx.platform_info().is_mac() {
+            &*CONFIRM_KEYSTROKES_MAC
+        } else {
+            &*CONFIRM_KEYSTROKES_OTHER
+        };
+        let confirm = keystrokes
             .iter()
             .find_map(|(keystroke, predicate, secondary)| {
                 let bound = event.keystroke.should_match(keystroke)
@@ -1503,22 +1571,22 @@ impl PopupMenu {
     }
 
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate(&ClickEvent::default(), window, cx);
+    }
+
+    fn activate(&mut self, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         match self.selected_index {
             Some(index) => {
-                // GitTurtle patch: only an entry that can act acts. The
-                // pointer's hover selects any row, a disabled item or a
-                // label among them, and Enter then ran a disabled item's
-                // handler.
-                let item = self
-                    .menu_items
-                    .get(index)
-                    .filter(|item| item.is_clickable());
+                let item = self.menu_items.get(index);
+                if !item.is_some_and(PopupMenuItem::is_clickable) {
+                    return;
+                }
                 match item {
                     Some(PopupMenuItem::Item {
                         handler, action, ..
                     }) => {
                         if let Some(handler) = handler {
-                            handler(&ClickEvent::default(), window, cx);
+                            handler(event, window, cx);
                         } else if let Some(action) = action.as_ref() {
                             self.dispatch_confirm_action(action, window, cx);
                         }
@@ -1530,12 +1598,17 @@ impl PopupMenu {
                         handler, action, ..
                     }) => {
                         if let Some(handler) = handler {
-                            handler(&ClickEvent::default(), window, cx);
+                            handler(event, window, cx);
                         } else if let Some(action) = action.as_ref() {
                             self.dispatch_confirm_action(action, window, cx);
                         }
                         self.return_dialogs_to_opener(window, cx);
                         self.dismiss(&Cancel, window, cx)
+                    }
+                    Some(PopupMenuItem::Submenu {
+                        disabled: false, ..
+                    }) => {
+                        self._select_submenu(window, cx);
                     }
                     _ => {}
                 }
@@ -1570,7 +1643,7 @@ impl PopupMenu {
             return;
         };
         window.defer(cx, move |window, cx| {
-            crate::Root::try_update(window, cx, |root, _, _| {
+            crate::root::WindowState::try_update(window, cx, |root, _, _| {
                 root.return_dialogs_to(&menus, &opener);
             });
         });
@@ -1591,11 +1664,18 @@ impl PopupMenu {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(context) = self.action_context.as_ref() {
+        if let Some(context) = self.resolved_action_context(cx) {
             context.focus(window, cx);
         }
 
         window.dispatch_action(action.boxed_clone(), cx);
+    }
+
+    fn resolved_action_context(&self, cx: &App) -> Option<FocusHandle> {
+        self.action_context.clone().or_else(|| {
+            let parent = self.parent_menu.as_ref()?.upgrade()?;
+            parent.read(cx).resolved_action_context(cx)
+        })
     }
 
     /// Select `ix` for the keyboard, this method's only caller (Up, Down,
@@ -1652,6 +1732,47 @@ impl PopupMenu {
             (Some(ix), _) => Some((ix, true)),
             (None, Some(kept)) => Some((kept.index, false)),
             (None, None) => None,
+        }
+    }
+
+    /// Scroll a scrollable menu once, as it opens, so its checked item is the
+    /// first one in view, the way a native picker opens on its current value.
+    ///
+    /// `ScrollHandle::scroll_to_top_of_item` is not used: it measures the item
+    /// against the container bounds recorded on the previous frame, which a
+    /// just-opened `anchored` menu does not have at its final position yet, so
+    /// it would land off by the distance the menu moved. The offset here is
+    /// the distance between the first item and the checked one, measured in
+    /// the same frame, so it does not depend on where the container is. Items
+    /// are measured on the first prepaint, so until then this asks for another
+    /// frame, up to `SCROLL_TO_CHECKED_FRAMES` times.
+    fn scroll_to_checked_item(&mut self, cx: &mut Context<Self>) {
+        if !self.scrollable || self.scroll_to_checked_frames == 0 {
+            return;
+        }
+
+        // Only a trailing separator is not rendered, so an item's index is
+        // also its index among the scroll container's children.
+        let checked_ix = self.menu_items.iter().position(|item| item.is_checked());
+        let Some(ix) = checked_ix.filter(|ix| *ix > 0) else {
+            self.scroll_to_checked_frames = 0;
+            return;
+        };
+
+        match (
+            self.scroll_handle.bounds_for_item(0),
+            self.scroll_handle.bounds_for_item(ix),
+        ) {
+            (Some(first), Some(checked)) => {
+                self.scroll_to_checked_frames = 0;
+                let mut offset = self.scroll_handle.offset();
+                offset.y = first.top() - checked.top();
+                self.scroll_handle.set_offset(offset);
+            }
+            _ => {
+                self.scroll_to_checked_frames -= 1;
+                cx.notify();
+            }
         }
     }
 
@@ -1746,9 +1867,12 @@ impl PopupMenu {
         if let Some(active_submenu) = self.active_submenu() {
             // Focus the submenu, so that can be handle the action.
             active_submenu.update(cx, |view, cx| {
-                // GitTurtle patch: the submenu's first item that can act.
-                if let Some(ix) = view.first_clickable_index() {
+                let first_clickable_ix = view.clickable_menu_items().next().map(|(ix, _)| ix);
+                if let Some(ix) = first_clickable_ix {
                     view.set_selected_index(ix, cx);
+                } else {
+                    view.selected_index = None;
+                    cx.notify();
                 }
                 view.focus_handle.focus(window, cx);
             });
@@ -1879,20 +2003,29 @@ impl PopupMenu {
         &self,
         action: Option<Box<dyn Action>>,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<Kbd> {
         let action = action?;
 
-        match self
-            .action_context
-            .as_ref()
-            .or(self.previous_focus_handle.as_ref())
-            .and_then(|handle| Kbd::binding_for_action_in(action.as_ref(), handle, window))
-        {
-            Some(kbd) => Some(kbd),
-            // Fallback to App level key binding
-            None => Kbd::binding_for_action(action.as_ref(), None, window),
-        }
+        // Each handle names a dispatch path GPUI can resolve in the previously
+        // rendered frame: the explicit action target, the trigger the menu
+        // opened from (already rendered when the menu first draws), the focus
+        // the menu interrupted, then the menu's own path once it has been
+        // rendered. A binding registered without a key context applies on
+        // every path, so it is the last resort rather than the window's
+        // leftover context stack, which only holds the path of whatever
+        // element happened to paint last.
+        let action_context = self.resolved_action_context(cx);
+        [
+            action_context.as_ref(),
+            self.trigger_focus_handle.as_ref(),
+            self.previous_focus_handle.as_ref(),
+            Some(&self.focus_handle),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|handle| Kbd::binding_for_action_in(action.as_ref(), handle, window))
+        .or_else(|| Kbd::global_binding_for_action(action.as_ref(), window))
         .map(|this| {
             this.p_0()
                 .flex_nowrap()
@@ -1913,7 +2046,7 @@ impl PopupMenu {
         }
 
         let icon = if let Some(icon) = icon {
-            icon.clone()
+            icon
         } else if checked {
             Icon::new(IconName::Check)
         } else {
@@ -1923,9 +2056,9 @@ impl PopupMenu {
         Some(icon.xsmall())
     }
 
-    /// GitTurtle patch: the widest the menu draws, its own maximum (500 px by
-    /// default) but never wider than its window less the room every popup
-    /// host keeps its fill from the window's sides
+    /// GitTurtle patch: the widest the menu draws, its own maximum (31.25rem /
+    /// 500 px at default rem) but never wider than its window less the room
+    /// every popup host keeps its fill from the window's sides
     /// ([`crate::popup_fill_margin`]), so that its drawn edge too stays 8 px
     /// in. Upstream capped a menu only at its maximum, so in a window
     /// narrower than that a menu with a long row, such as a long Git
@@ -1933,15 +2066,18 @@ impl PopupMenu {
     /// and its rows end with an ellipsis ([`menu_row_text`]).
     fn max_width(&self, window: &Window) -> Pixels {
         let room = window.viewport_size().width - crate::popup_fill_margin() * 2.;
-        self.max_width.unwrap_or(px(500.)).min(room)
+        self.max_width
+            .unwrap_or_else(|| rems(31.25).to_pixels(window.rem_size()))
+            .min(room)
     }
 
     /// The height of an item's row at the menu's size.
-    fn item_height(&self) -> Pixels {
-        match self.size {
-            Size::Small => px(20.),
-            _ => px(26.),
-        }
+    fn item_height(&self, window: &Window) -> Pixels {
+        let height = match self.size {
+            Size::Small => rems(1.25),
+            _ => rems(1.625),
+        };
+        height.to_pixels(window.rem_size())
     }
 
     /// The entries the items column draws: every entry but a closing
@@ -1971,7 +2107,7 @@ impl PopupMenu {
             window.pixel_snap(rem * 0.125),
         );
         let margin = gap;
-        let item = self.item_height();
+        let item = self.item_height(window);
         let mut next = padding;
         let rows = self.drawn_items().map(|entry| {
             let (margin, height) = if entry.is_separator() {
@@ -2014,7 +2150,7 @@ impl PopupMenu {
     /// hover, which GPUI refreshes only on a pointer move.
     fn rows_scrolled(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2139,13 +2275,38 @@ impl PopupMenu {
     }
 
     /// Calculate the anchor corner and left offset for child submenu
-    fn update_submenu_menu_anchor(&mut self, window: &Window) {
+    fn update_submenu_menu_anchor(&mut self, window: &Window, cx: &App) {
         let bounds = self.bounds;
-        let max_width = self.max_width(window);
-        let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
-            (Anchor::TopRight, -px(16.))
+        // The submenu's width is the one it was last drawn at, or this
+        // menu's own until it has been drawn.
+        let submenu_width = self
+            .selected_index
+            .and_then(|ix| match self.menu_items.get(ix) {
+                Some(PopupMenuItem::Submenu { menu, .. }) => Some(menu.read(cx).bounds.size.width),
+                _ => None,
+            })
+            .filter(|width| *width > Pixels::ZERO)
+            .unwrap_or(bounds.size.width);
+        let rem_size = window.rem_size();
+        // A submenu opens on the end side: right in LTR, left in RTL, and
+        // flips only when it would run past the window on that side AND the
+        // opposite side either fits it or has strictly more room (GitTurtle
+        // patch: avoids flipping onto a 8 px left margin over the parent menu).
+        let viewport_width = window.viewport_size().width;
+        let room_left = bounds.left();
+        let room_right = viewport_width - bounds.right();
+        let open_left = if LayoutDirection::global(cx).is_rtl() {
+            room_left >= submenu_width || room_left >= room_right
         } else {
-            (Anchor::TopLeft, bounds.size.width - px(8.))
+            room_right < submenu_width && (room_left >= submenu_width || room_left > room_right)
+        };
+        let (anchor, left) = if open_left {
+            (Anchor::TopRight, -rems(1.).to_pixels(rem_size))
+        } else {
+            (
+                Anchor::TopLeft,
+                bounds.size.width - rems(0.5).to_pixels(rem_size),
+            )
         };
 
         let is_bottom_pos = bounds.origin.y + bounds.size.height > window.bounds().size.height;
@@ -2174,18 +2335,17 @@ impl PopupMenu {
 
         let selected = self.selected_index == Some(ix);
         const EDGE_PADDING: Pixels = px(4.);
-        const INNER_PADDING: Pixels = px(8.);
+        const INNER_PADDING: Rems = rems(0.5);
 
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
-        let group_name = format!("{}:item-{}", cx.entity().entity_id(), ix);
 
-        let item_height = self.item_height();
+        let item_height = self.item_height(window);
         let radius = match self.size {
             Size::Small => options.radius.half(),
             _ => options.radius,
         };
 
-        let this = MenuItemElement::new(ix, &group_name)
+        let this = MenuItemElement::new(ix)
             .relative()
             // GitTurtle patch: a row keeps its height in a menu capped
             // shorter than its rows, which scrolls them instead ([`Fold`]).
@@ -2220,6 +2380,15 @@ impl PopupMenu {
                 if *hovered {
                     this.hovered_index = Some(ix);
                     if !still {
+                        // Pointing elsewhere closes the open submenu; take back
+                        // the focus the keyboard may have moved into it.
+                        if this.selected_index != Some(ix)
+                            && this.active_submenu().is_some_and(|submenu| {
+                                submenu.focus_handle(cx).contains_focused(window, cx)
+                            })
+                        {
+                            this.focus_handle.focus(window, cx);
+                        }
                         this.selected_index = Some(ix);
                         this.keyboard_selection = false;
                         // The pointer's selection ends a rebuild's
@@ -2232,7 +2401,13 @@ impl PopupMenu {
                     if this.hovered_index == Some(ix) {
                         this.hovered_index = None;
                     }
-                    if !still && !is_submenu && this.selected_index == Some(ix) {
+                    if !still
+                        && !is_submenu
+                        && this.selected_index == Some(ix)
+                        // A key press ends hover under a still pointer; keep the
+                        // highlight so the next arrow key moves on from this item.
+                        && !window.last_input_was_keyboard()
+                    {
                         // TODO: Better handle the submenu unselection when hover out
                         this.selected_index = None;
                         // The pointer took the selection, a keyboard's
@@ -2273,6 +2448,7 @@ impl PopupMenu {
                 let style_text = label.clone();
                 this.entry(Entry::Label).cursor_default().child(
                     h_flex()
+                        .flex_row_dir(cx)
                         .flex_1()
                         .min_w_0()
                         .cursor_default()
@@ -2310,13 +2486,14 @@ impl PopupMenu {
                 .when(!disabled, |this| {
                     let builds = self.builds;
                     this.on_press(cx.listener(move |this, _, _, _| this.pressed_on(ix, builds)))
-                        .on_click(
-                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
-                        )
+                        .on_click(cx.listener(move |this, event, window, cx| {
+                            this.on_click(ix, event, window, cx)
+                        }))
                 })
                 .disabled(*disabled)
                 .child(
                     h_flex()
+                        .flex_row_dir(cx)
                         .flex_1()
                         .min_h(item_height)
                         .items_center()
@@ -2329,7 +2506,7 @@ impl PopupMenu {
                             cx,
                         ))
                         .child((render)(window, cx))
-                        .children(right_check_icon.map(|icon| icon.ml_3())),
+                        .children(right_check_icon.map(|icon| icon.ms(rems(0.75), cx))),
                 ),
             PopupMenuItem::Item {
                 icon,
@@ -2351,9 +2528,9 @@ impl PopupMenu {
                 this.when(!disabled, |this| {
                     let builds = self.builds;
                     this.on_press(cx.listener(move |this, _, _, _| this.pressed_on(ix, builds)))
-                        .on_click(
-                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
-                        )
+                        .on_click(cx.listener(move |this, event, window, cx| {
+                            this.on_click(ix, event, window, cx)
+                        }))
                 })
                 .disabled(*disabled)
                 .h(item_height)
@@ -2367,6 +2544,7 @@ impl PopupMenu {
                 ))
                 .child(
                     h_flex()
+                        .flex_row_dir(cx)
                         .w_full()
                         .min_w_0()
                         .gap_3()
@@ -2379,6 +2557,7 @@ impl PopupMenu {
                         .when(show_link_icon, |this| {
                             this.child(
                                 h_flex()
+                                    .flex_row_dir(cx)
                                     .w_full()
                                     .min_w_0()
                                     .justify_between()
@@ -2401,11 +2580,19 @@ impl PopupMenu {
                 disabled,
                 ..
             } => this
+                .when(!disabled, |this| {
+                    let builds = self.builds;
+                    this.on_press(cx.listener(move |this, _, _, _| this.pressed_on(ix, builds)))
+                        .on_click(cx.listener(move |this, event, window, cx| {
+                            this.on_click(ix, event, window, cx)
+                        }))
+                })
                 .selected(selected)
                 .disabled(*disabled)
                 .items_start()
                 .child(
                     h_flex()
+                        .flex_row_dir(cx)
                         .min_h(item_height)
                         .size_full()
                         .min_w_0()
@@ -2420,6 +2607,7 @@ impl PopupMenu {
                         ))
                         .child(
                             h_flex()
+                                .flex_row_dir(cx)
                                 .flex_1()
                                 .min_w_0()
                                 .gap_2()
@@ -2427,9 +2615,13 @@ impl PopupMenu {
                                 .justify_between()
                                 .child(menu_row_text(label.clone()))
                                 .child(
-                                    Icon::new(IconName::ChevronRight)
-                                        .xsmall()
-                                        .text_color(cx.theme().muted_foreground),
+                                    Icon::new(if LayoutDirection::global(cx).is_rtl() {
+                                        IconName::ChevronLeft
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground),
                                 ),
                         ),
                 )
@@ -2452,6 +2644,7 @@ impl PopupMenu {
                                 .child(InsideWindow(
                                     div()
                                         .id("submenu")
+                                        .test_support()
                                         .occlude()
                                         .when(is_bottom_pos, |this| this.bottom_0())
                                         .when(!is_bottom_pos, |this| this.top_neg_1())
@@ -2486,7 +2679,7 @@ struct RenderOptions {
 
 impl Render for PopupMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.update_submenu_menu_anchor(window);
+        self.update_submenu_menu_anchor(window, cx);
 
         // Submenus attached via the public `item()` + `PopupMenuItem::submenu()`
         // path (from contexts that only have the menu value, e.g. a table
@@ -2506,13 +2699,15 @@ impl Render for PopupMenu {
             }
         }
 
-        let view = cx.entity().clone();
+        self.scroll_to_checked_item(cx);
+
+        let view = cx.entity();
         let rows_view = view.clone();
         let items_count = self.menu_items.len();
 
         let max_height = self.max_height.unwrap_or_else(|| {
             let window_half_height = window.window_bounds().get_bounds().size.height * 0.5;
-            window_half_height.min(px(450.))
+            window_half_height.min(rems(28.125).to_pixels(window.rem_size()))
         });
         // GitTurtle patch: where a scrollable menu's rows meet its cap, as
         // its last layout measured it, or estimated before the first.
@@ -2540,6 +2735,7 @@ impl Render for PopupMenu {
 
         v_flex()
             .id("popup-menu")
+            .test_support()
             .role(Role::Menu)
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
@@ -2575,7 +2771,7 @@ impl Render for PopupMenu {
                         this.max_h(column.unwrap_or(max_height))
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
-                            .on_scroll_wheel(cx.listener(Self::rows_scrolled))
+                            .on_scroll(cx.listener(Self::rows_scrolled))
                     })
                     // GitTurtle patch: while the rows overflow, they keep a
                     // gutter at their right where the scrollbar's track
@@ -2605,7 +2801,17 @@ impl Render for PopupMenu {
             .on_prepaint(move |bounds, window, cx| {
                 view.update(cx, |menu, cx| {
                     menu.surface_laid_out(bounds, window, cx);
+                    let width_changed = menu.bounds.size.width != bounds.size.width;
                     menu.bounds = bounds;
+                    if width_changed {
+                        if let Some(parent) = menu
+                            .parent_menu
+                            .as_ref()
+                            .and_then(|parent| parent.upgrade())
+                        {
+                            parent.update(cx, |_, cx| cx.notify());
+                        }
+                    }
                     if menu.scrollable {
                         let measured = menu.measured_fold(rows, max_height, window);
                         menu.fold = Some(measured);
@@ -2613,10 +2819,9 @@ impl Render for PopupMenu {
                             cx.defer_in(window, |_, _, cx| cx.notify());
                         }
                     }
-                })
+                });
             })
             .when(column.is_some(), |this| {
-                // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
                 // GitTurtle patch: the scrollbar of a menu whose rows
                 // overflow stays visible, as a scrolling list's does, rather
                 // than showing only while it scrolls; a menu whose rows fit
@@ -4661,8 +4866,11 @@ mod tests {
     /// can tell from new ones, so the rule the tests below pin does not hold
     /// there.
     fn repeat(cx: &mut VisualTestContext, keys: &str) {
+        let os = cx.read(|cx| cx.platform_info().os);
         cx.simulate_event(KeyDownEvent {
-            keystroke: gpui::Keystroke::parse(keys).unwrap().with_simulated_ime(),
+            keystroke: gpui::Keystroke::parse_with_os(keys, os)
+                .unwrap()
+                .with_simulated_ime(),
             is_held: true,
             prefer_character_input: false,
         });
@@ -4675,8 +4883,11 @@ mod tests {
     /// right after its release.
     fn x11_down(cx: &mut VisualTestContext, keys: &str, then_draw: bool) {
         // Dispatched with no idle pass after it, as `simulate_event` runs.
+        let os = cx.read(|cx| cx.platform_info().os);
         let down = gpui::PlatformInput::KeyDown(KeyDownEvent {
-            keystroke: gpui::Keystroke::parse(keys).unwrap().with_simulated_ime(),
+            keystroke: gpui::Keystroke::parse_with_os(keys, os)
+                .unwrap()
+                .with_simulated_ime(),
             is_held: false,
             prefer_character_input: false,
         });
@@ -4690,8 +4901,9 @@ mod tests {
     /// the event loop's next idle pass ends the Enter press the base kit
     /// records (`gpui_base::note_key_up`).
     fn key_up(cx: &mut VisualTestContext, keys: &str, then_draw: bool) {
+        let os = cx.read(|cx| cx.platform_info().os);
         let up = gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
-            keystroke: gpui::Keystroke::parse(keys).unwrap(),
+            keystroke: gpui::Keystroke::parse_with_os(keys, os).unwrap(),
         });
         cx.update(|window, cx| window.dispatch_event(up, cx));
         if then_draw {
@@ -4871,7 +5083,15 @@ mod tests {
             // As the base crate's popover and this crate's list bind them.
             cx.bind_keys([
                 KeyBinding::new("space", Confirm { secondary: false }, Some("Popover")),
-                KeyBinding::new("secondary-enter", Confirm { secondary: true }, Some("List")),
+                KeyBinding::new(
+                    if cx.platform_info().is_mac() {
+                        "cmd-enter"
+                    } else {
+                        "ctrl-enter"
+                    },
+                    Confirm { secondary: true },
+                    Some("List"),
+                ),
             ]);
         });
         for (context, keys, confirms) in [
@@ -4901,6 +5121,52 @@ mod tests {
             let expected: &[&str] = if confirms { &["One"] } else { &[] };
             assert_eq!(*ran.borrow(), expected, "{at}: a fresh press");
         }
+    }
+
+    #[gpui::test]
+    fn custom_menu_item_preserves_mouse_event(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, MouseUpEvent};
+        use std::cell::RefCell;
+
+        cx.update(crate::init);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let events = events.clone();
+            move |_, cx| {
+                PopupMenu::new(cx).item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "custom-menu-content".into())
+                            .w(px(100.))
+                            .h(px(20.))
+                            .child("Custom")
+                    })
+                    .on_click(move |event, _, _| events.borrow_mut().push(event.clone())),
+                )
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let position = cx.debug_bounds("custom-menu-content").unwrap().center();
+        let modifiers = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        cx.simulate_mouse_down(position, MouseButton::Left, modifiers);
+        cx.simulate_event(MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers,
+            click_count: 2,
+        });
+        cx.run_until_parked();
+        let events = events.borrow();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].mouse_position(), Some(position));
+        assert_eq!(events[0].modifiers(), modifiers);
+        let ClickEvent::Mouse(event) = &events[0] else {
+            panic!("expected the original mouse click");
+        };
+        assert_eq!(event.up.click_count, 2);
     }
 
     #[gpui::test]

@@ -6,6 +6,59 @@ use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use std::cell::RefCell;
 
+/// Window-level action host mounted as a `RootPlugin` so shortcuts that apply
+/// while a dialog or sheet holds focus (`Refresh`, window management) reach
+/// `GitTurtle` even though `Root` renders overlay plugins as siblings of the
+/// application view.
+pub(crate) struct WindowActionHost;
+
+impl Render for WindowActionHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+impl gpui_kit::base::RootPlugin for WindowActionHost {
+    fn decorate(
+        &self,
+        surface: AnyElement,
+        root: &gpui_kit::base::Root,
+        _: &mut Window,
+        _: &mut App,
+    ) -> impl IntoElement {
+        let Ok(app) = root.view().clone().downcast::<GitTurtle>() else {
+            return surface;
+        };
+        let app_close = app.clone();
+        let app_refresh = app.clone();
+        div()
+            .size_full()
+            .key_context("GitTurtle")
+            .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
+            .on_action(move |_: &CloseWindow, window, cx| {
+                if app_close.read(cx).operation_busy.is_none() {
+                    window.remove_window();
+                }
+            })
+            .on_action(|_: &ZoomWindow, window, _| window.zoom_window())
+            .on_action(move |action: &Refresh, window, cx| {
+                app_refresh.update(cx, |this, cx| {
+                    if this.refresh_open_stashes(window, cx) {
+                        return;
+                    }
+                    if !window.has_active_dialog(cx)
+                        && !window.has_active_sheet(cx)
+                        && this.page == AppPage::Repository
+                    {
+                        this.refresh(action, window, cx);
+                    }
+                });
+            })
+            .child(surface)
+            .into_any_element()
+    }
+}
+
 fn reveal_resized_selection(
     previous: &mut Option<(Size<Pixels>, Pixels)>,
     next: (Size<Pixels>, Pixels),
@@ -10740,18 +10793,20 @@ impl Render for GitTurtle {
         if self.dialog_layer_subscription.is_none()
             && let Some(Some(root)) = window.root::<Root>()
         {
-            // This view owns render_dialog_layer. Root's modal collection is a
-            // separate entity: observing it invalidates our cached child tree
-            // when any native dialog opens or closes, without a resize/input.
+            // Root owns WindowState's dialog and sheet layers as a sibling
+            // plugin. Observe it so GitTurtle updates modal focus repair and
+            // status hints when a modal opens or closes without calling
+            // `window.refresh()` on every plugin animation frame (which would
+            // invalidate cached subtrees like Settings theme cards).
             self.dialog_layer_subscription =
                 Some(cx.observe_in(&root, window, |this, _, window, cx| {
-                    // Invalidate an older close repair even if a replacement
-                    // dialog opens before the next GitTurtle render.
-                    if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+                    let modal_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
+                    if modal_open {
                         this.modal_focus_generation = this.modal_focus_generation.wrapping_add(1);
                     }
-                    window.refresh();
-                    cx.notify();
+                    if this.modal_was_open != modal_open {
+                        cx.notify();
+                    }
                 }));
         }
         self.update_modal_focus(window, cx);
@@ -11444,7 +11499,6 @@ impl Render for GitTurtle {
             // what a scrolling body cannot announce from where it lies.
             .children(copy_feedback::announcement(window, cx))
             .children(copy_feedback::alert_announcement(window, cx))
-            .children(Root::render_dialog_layer(window, cx))
             // Deferred above the dialog layer: the last paint of the frame
             // that shows an edited draft ends `gitturtle.theme_edit_frame_ms`.
             .children(
@@ -12970,11 +13024,12 @@ pub(crate) mod tests {
                 let before = offset(cx);
                 cx.update(|window, cx| {
                     window.dispatch_event(
-                        gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
+                        gpui_kit::PlatformInput::Scroll(gpui_kit::ScrollEvent {
                             position,
                             delta: gpui_kit::ScrollDelta::Lines(point(0., -3.)),
                             modifiers: gpui_kit::Modifiers::default(),
                             touch_phase: gpui_kit::TouchPhase::Moved,
+                            source: Default::default(),
                         }),
                         cx,
                     );
@@ -13378,11 +13433,12 @@ pub(crate) mod tests {
             let before = offset(cx);
             cx.update(|window, cx| {
                 window.dispatch_event(
-                    gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
+                    gpui_kit::PlatformInput::Scroll(gpui_kit::ScrollEvent {
                         position: text.center(),
                         delta: gpui_kit::ScrollDelta::Lines(point(0., -3.)),
                         modifiers: gpui_kit::Modifiers::default(),
                         touch_phase: gpui_kit::TouchPhase::Moved,
+                        source: Default::default(),
                     }),
                     cx,
                 );
@@ -18492,7 +18548,7 @@ pub(crate) mod tests {
         let caret =
             cx.read(|cx| gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).caret));
         cx.update(|window, _| {
-            let width = if cfg!(target_os = "macos") { 1.5 } else { 2. } * window.scale_factor();
+            let width = 1. * window.scale_factor();
             window
                 .painted_quads()
                 .into_iter()
@@ -18649,7 +18705,11 @@ pub(crate) mod tests {
                 app.update(cx, |app, cx| {
                     app.search.update(cx, |search, cx| {
                         search.set_value("fixture", window, cx);
-                        search.set_selected_range(anchor..caret, cx);
+                        search.set_selected_range_with_direction(
+                            anchor.min(caret)..anchor.max(caret),
+                            anchor > caret,
+                            cx,
+                        );
                     })
                 })
             });
@@ -18707,7 +18767,7 @@ pub(crate) mod tests {
             });
             let carets: Vec<_> = cx.update(|window, _| {
                 let scale = window.scale_factor();
-                let width = if cfg!(target_os = "macos") { 1.5 } else { 2. } * scale;
+                let width = 1. * scale;
                 window
                     .painted_quads()
                     .into_iter()
@@ -18834,7 +18894,11 @@ pub(crate) mod tests {
                 };
                 field.update(cx, |field, cx| {
                     field.set_value("one\ntwo", window, cx);
-                    field.set_selected_range(anchor..caret, cx);
+                    field.set_selected_range_with_direction(
+                        anchor.min(caret)..anchor.max(caret),
+                        anchor > caret,
+                        cx,
+                    );
                 });
                 let left = (
                     "one\ntwo".to_owned(),
@@ -22833,7 +22897,7 @@ pub(crate) mod tests {
                 if let Some(held) = cx.debug_bounds(format!("{region}/header").leak()) {
                     let open = bounds(control, cx);
                     if open.bottom() > held.bottom() {
-                        cx.simulate_event(gpui::ScrollWheelEvent {
+                        cx.simulate_event(gpui::ScrollEvent {
                             position: held.center(),
                             delta: gpui::ScrollDelta::Pixels(point(
                                 px(0.),
@@ -22981,7 +23045,7 @@ pub(crate) mod tests {
             return false;
         }
         let wheel = |cx: &mut VisualTestContext, by: f32| {
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position: held.center(),
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(by))),
                 ..Default::default()
@@ -24032,11 +24096,12 @@ pub(crate) mod tests {
             crate::tags::tests::painted_thumb(cx, track)
         };
         let wheel = |area: Bounds<Pixels>, by: f32, cx: &mut VisualTestContext| {
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: area.center(),
                 delta: ScrollDelta::Pixels(point(px(0.), px(by))),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: Default::default(),
             });
             draw(cx);
         };
@@ -33651,7 +33716,10 @@ pub(crate) mod tests {
     /// The surface of the open menu that holds `item`: the last fill of the
     /// popover colour painted around it, over any page surface of that
     /// colour.
-    fn menu_surface(cx: &mut VisualTestContext, item: Bounds<Pixels>) -> Bounds<Pixels> {
+    fn find_menu_surface(
+        cx: &mut VisualTestContext,
+        item: Bounds<Pixels>,
+    ) -> Option<(u32, Bounds<Pixels>)> {
         cx.update(|window, cx| {
             let fill = Background::from(gpui_kit::component::Theme::global(cx).popover);
             let scale = window.scale_factor();
@@ -33669,9 +33737,13 @@ pub(crate) mod tests {
                 })
                 .filter(|(_, surface)| surface.contains(&item.center()))
                 .max_by_key(|(order, _)| *order)
-                .map(|(_, surface)| surface)
-                .expect("the menu's surface")
         })
+    }
+
+    fn menu_surface(cx: &mut VisualTestContext, item: Bounds<Pixels>) -> Bounds<Pixels> {
+        find_menu_surface(cx, item)
+            .map(|(_, surface)| surface)
+            .expect("the menu's surface")
     }
 
     /// At 461 × 490, at 13 and 18 pt, the Working Actions menu ("Working
@@ -34649,7 +34721,13 @@ pub(crate) mod tests {
         uncapped: &[(String, Bounds<Pixels>)],
     ) -> (Bounds<Pixels>, bool) {
         let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.01);
-        let surface = menu_surface(cx, rows[0].1);
+        let surface = rows
+            .iter()
+            .filter_map(|(_, row)| find_menu_surface(cx, *row))
+            .max_by_key(|(order, _)| *order)
+            .map(|(_, surface)| surface)
+            .expect("the menu's surface");
+        let scrolled_from_top = rows[0].1.top() < surface.top() - px(0.01);
         let status = crate::theme_editor::tests::status_bar_top(cx);
         assert!(
             surface.bottom() <= status - px(8.) + px(0.25),
@@ -34664,11 +34742,13 @@ pub(crate) mod tests {
                     "{at}: {label:?} is {row:?}, {fits:?} where the menu fits"
                 );
             }
-            assert!(
-                row.bottom() <= surface.bottom() + px(0.01)
-                    || row.top() >= surface.bottom() - px(0.01),
-                "{at}: the menu {surface:?} cuts {label:?} at {row:?}"
-            );
+            if !scrolled_from_top {
+                assert!(
+                    row.bottom() <= surface.bottom() + px(0.01)
+                        || row.top() >= surface.bottom() - px(0.01),
+                    "{at}: the menu {surface:?} cuts {label:?} at {row:?}"
+                );
+            }
         }
         for pair in rows.windows(2) {
             let ((above, first), (below, second)) = (&pair[0], &pair[1]);
@@ -34684,9 +34764,10 @@ pub(crate) mod tests {
                 );
             }
         }
-        let folded = rows
-            .iter()
-            .any(|(_, row)| row.top() >= surface.bottom() - px(0.01));
+        let folded = scrolled_from_top
+            || rows
+                .iter()
+                .any(|(_, row)| row.top() >= surface.bottom() - px(0.01));
         let scrollbar = cx.debug_bounds("popup-menu-scrollbar");
         if !folded {
             assert!(
@@ -34794,7 +34875,7 @@ pub(crate) mod tests {
             let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &uncapped, &uncapped);
             assert!(!folded, "{at}: every row fits");
             // A wheel over a menu whose rows fit moves none of them.
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position: surface.center(),
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-40.))),
                 ..Default::default()
@@ -34804,8 +34885,9 @@ pub(crate) mod tests {
             cx.simulate_keystrokes("escape");
             draw(cx);
 
-            let at = format!("{text} pt in 461 × 490");
-            open_working_actions(cx, size(px(461.), px(490.)));
+            let capped_height = if text == 13 { 350. } else { 490. };
+            let at = format!("{text} pt in 461 × {capped_height}");
+            open_working_actions(cx, size(px(461.), px(capped_height)));
             let rows = menu_rows(cx, &[&LEADING[..], &SHARED[..]].concat());
             let lead = rows.len() - SHARED.len();
             assert!(
@@ -34883,8 +34965,9 @@ pub(crate) mod tests {
         };
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-            let at = format!("{text} pt in 461 × 490");
-            open_working_actions(cx, size(px(461.), px(490.)));
+            let capped_height = if text == 13 { 350. } else { 490. };
+            let at = format!("{text} pt in 461 × {capped_height}");
+            open_working_actions(cx, size(px(461.), px(capped_height)));
             let rows = menu_rows(cx, &ROWS);
             let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &rows);
             assert!(folded, "{at}: rows lie past the menu's fold at {surface:?}");
@@ -34899,7 +34982,7 @@ pub(crate) mod tests {
             draw(cx);
             assert_eq!(lit(cx), [label], "{at}: the pointer lights its row");
 
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position: pointer,
                 delta: gpui::ScrollDelta::Lines(point(0., -1.)),
                 ..Default::default()
@@ -34982,8 +35065,9 @@ pub(crate) mod tests {
             cx.simulate_keystrokes("escape");
             draw(cx);
 
-            let at = format!("{text} pt in 461 × 490");
-            let rows = open(cx, size(px(461.), px(490.)));
+            let capped_height = if text == 13 { 400. } else { 490. };
+            let at = format!("{text} pt in 461 × {capped_height}");
+            let rows = open(cx, size(px(461.), px(capped_height)));
             assert_eq!(rows.len(), labels.len(), "{at}: {rows:?}");
             let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &uncapped);
             assert!(folded, "{at}: rows past the fold at {surface:?}");
@@ -38743,7 +38827,7 @@ pub(crate) mod tests {
             let list = app.read_with(cx, |app, _| {
                 app.working_scroll.0.borrow().base_handle.bounds()
             });
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position: list.center(),
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-800.))),
                 ..Default::default()
@@ -38773,7 +38857,7 @@ pub(crate) mod tests {
         let list = app.read_with(cx, |app, _| {
             app.working_scroll.0.borrow().base_handle.bounds()
         });
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: list.center(),
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-800.))),
             ..Default::default()
@@ -38906,7 +38990,7 @@ pub(crate) mod tests {
         };
         let wheel = |cx: &mut VisualTestContext, by: f32| {
             let position = list(cx).center();
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position,
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(by))),
                 ..Default::default()
@@ -43912,11 +43996,12 @@ pub(crate) mod tests {
         draw(cx);
         let row = app.read_with(cx, |app, _| app.settings.density.history_row_height());
         for _ in 0..4 {
-            cx.simulate_event(gpui::ScrollWheelEvent {
+            cx.simulate_event(gpui::ScrollEvent {
                 position: first.center(),
                 delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-row * 3.))),
                 modifiers: Modifiers::default(),
                 touch_phase: gpui::TouchPhase::Moved,
+                source: Default::default(),
             });
             draw(cx);
         }

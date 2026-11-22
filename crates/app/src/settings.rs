@@ -1265,6 +1265,7 @@ impl GitTurtle {
             }
         }
         self.custom_themes = themes;
+        self.notify_settings_page(cx);
     }
 
     /// Linux: keep the Omarchy card's miniature, body and focus handle in step
@@ -2278,7 +2279,7 @@ impl GitTurtle {
                     // when this one runs (bubble order, innermost first), so
                     // the offset it left, less the step, is where the list
                     // stood.
-                    .on_scroll_wheel(move |event, window, cx| {
+                    .on_scroll(move |event, window, cx| {
                         let state = scroll.0.borrow();
                         let Some(size) = state.last_item_size else {
                             return;
@@ -10166,6 +10167,7 @@ mod display_row_tests {
                         offset.x,
                         offset.y - (row.top() - view.top() - px(8.)),
                     ));
+                    cx.update(|_, cx| app.update(cx, |app, cx| app.notify_settings_page(cx)));
                     settle(cx);
                     let row = drawn(cx, format!("{key}-row"));
                     let group = drawn(cx, format!("{key}-segments"));
@@ -10411,6 +10413,7 @@ mod display_row_tests {
         for key in ["tab", "shift-tab"] {
             let foot = page.scroll().max_offset().y;
             page.scroll().set_offset(point(px(0.), -foot));
+            cx.update(|_, cx| app.update(cx, |app, cx| app.notify_settings_page(cx)));
             settle(cx);
             // Beside the page's columns, where no control lies.
             let view = page.scroll().bounds();
@@ -10505,6 +10508,7 @@ mod display_row_tests {
     /// the page so that `row` starts 8 px below its view (`below`) or ends
     /// 8 px above it, for a Tab onto the segment.
     fn ready_tab_onto(
+        app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
         page: &ScrollHandle,
         row: &str,
@@ -10525,6 +10529,7 @@ mod display_row_tests {
         };
         let offset = page.offset();
         page.set_offset(point(offset.x, offset.y + shift));
+        cx.update(|_, cx| app.update(cx, |app, cx| app.notify_settings_page(cx)));
         settle(cx);
         let at = drawn(cx, row.to_owned());
         assert!(
@@ -10574,7 +10579,7 @@ mod display_row_tests {
                 for (row, segments) in &rows {
                     for (focus, segment) in segments {
                         let at = format!("{segment} at {text} pt in {width} × {height}");
-                        ready_tab_onto(cx, page.scroll(), row, focus, true);
+                        ready_tab_onto(&app, cx, page.scroll(), row, focus, true);
                         page.take_painted();
                         cx.simulate_keystrokes("tab");
                         draw(cx);
@@ -10668,7 +10673,7 @@ mod display_row_tests {
                             "{segment} at {width} px from {}",
                             if below { "below" } else { "above" }
                         );
-                        ready_tab_onto(cx, page.scroll(), row, focus, below);
+                        ready_tab_onto(&app, cx, page.scroll(), row, focus, below);
                         page.take_painted();
                         cx.simulate_keystrokes("tab");
                         draw(cx);
