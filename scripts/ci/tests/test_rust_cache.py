@@ -3318,14 +3318,15 @@ class UbuntuKeyPreconditions(unittest.TestCase):
 
     def test_exact_cache_hit_skips_bound_payload_and_save(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "repo"
-            temp = Path(tmp) / "temp"
+            base = Path(tmp).resolve()
+            root = base / "repo"
+            temp = base / "temp"
             root.mkdir()
             temp.mkdir()
             (root / "Cargo.lock").write_text('version = 4\n', encoding="utf-8")
             (temp / "gitturtle-cache-start").write_text("0.0", encoding="utf-8")
-            gh_env = Path(tmp) / "gh_env"
-            gh_out = Path(tmp) / "gh_out"
+            gh_env = base / "gh_env"
+            gh_out = base / "gh_out"
             gh_env.write_text("", encoding="utf-8")
             gh_out.write_text("", encoding="utf-8")
             env = {

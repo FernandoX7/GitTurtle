@@ -2076,19 +2076,18 @@ mod about_tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         let (_app, cx) = window(cx, &repo);
-        #[cfg(target_os = "macos")]
         cx.update(|_, cx| {
-            let menus = cx.get_menus().expect("macOS menu bar installed");
+            let menus = cx.get_menus().expect("menu bar installed");
             let app_menu = menus
                 .iter()
-                .find(|menu| menu.name == "GitTurtle")
+                .find(|menu| menu.name.as_ref() == "GitTurtle")
                 .expect("GitTurtle application menu");
             assert!(
                 matches!(
                     app_menu.items.first(),
                     Some(gpui::OwnedMenuItem::Action { name, .. }) if name == "About GitTurtle"
                 ),
-                "About GitTurtle must lead the macOS application menu"
+                "About GitTurtle must lead the application menu"
             );
         });
         cx.dispatch_action(ShowAbout);
