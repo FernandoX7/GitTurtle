@@ -53,6 +53,8 @@ jobs:
         run: python3 scripts/check-docs-sync.py
       - name: Check architectural invariants
         run: python3 -B scripts/dev/check_invariants.py
+      - name: Audit vendored crate metadata
+        run: python3 -B scripts/dev/vendor_patch_audit.py
       - name: Test routing and gate policy
         run: python3 -B -m unittest scripts/ci/tests/test_changes.py
       - name: Validate Actions workflow with actionlint 1.7.12

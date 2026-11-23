@@ -50,16 +50,16 @@
 sudo apt-get install -y --no-install-recommends \
   git openssh-client ca-certificates python3 desktop-file-utils xdg-utils \
   libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 \
-  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core libdav1d7 \
+  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core \
   libvulkan1 mesa-vulkan-drivers libegl1 libgl1 libgl1-mesa-dri \
   xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk</code></pre>
-<p>Ubuntu provides <code>libdav1d7</code> through its Universe repository. This shared AV1 decoder is required to launch GitTurtle.</p>
+<p>Install <code>libdav1d7</code> from Ubuntu’s Universe repository only if you want AV1 image previews. GitTurtle loads <code>libdav1d.so.7</code> dynamically inside its confined preview helper and launches without it.</p>
 <h2 id="tools">Install build dependencies</h2>
 <pre><code>sudo apt-get install -y --no-install-recommends \
   build-essential clang cmake pkg-config curl \
   libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-  libssl-dev libzstd-dev libvulkan-dev libdav1d-dev python3-pil</code></pre>
-<p>Install <a href="https://rustup.rs/">Rust through rustup</a> if needed. The checkout selects Rust 1.100.0. Leave <code>SYSTEM_DEPS_*</code> environment variables unset so the build links Ubuntu’s decoder.</p>
+  libssl-dev libzstd-dev libvulkan-dev python3-pil</code></pre>
+<p>Install <a href="https://rustup.rs/">Rust through rustup</a> if needed. The checkout selects Rust 1.100.0.</p>
 <h2 id="build">Clone, package and install</h2>
 <pre><code>git clone https://github.com/FernandoX7/GitTurtle.git
 cd GitTurtle

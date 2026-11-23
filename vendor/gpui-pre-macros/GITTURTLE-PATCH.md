@@ -14,4 +14,6 @@ The teardown allows parking on the background executor inside `update`, where th
 
 Consumer regression: `cargo test --locked -p gitturtle views::tests::each_seed_releases_the_app_it_built` builds the app in two seeds and checks that the first seed's `App` is gone when the second starts; it fails with the published teardown. Run alone on one test thread at `ITERATIONS=3`, the `theme_editor::` module (60 tests) peaked at 2812 MiB resident and 521 threads with the published teardown and at 299 MiB and 5 threads with this one (2026-10-28, Asahi Linux development host, debug test build). `views::tests::a_seed_quits_while_its_saves_answer_from_their_thread` holds the preferences thread until the shutdown has polled the app's quit observers, so their replies land while it waits; it fails on its first seed when the teardown forbids parking.
 
-Remove this patch, the `[patch.crates-io]` entry, the workspace exclusion and the `vendor/AGENTS.md` row when the upstream macro quits the test context in its teardown, or `into_mut` no longer relies on `on_quit`, and those regressions pass against it.
+## Removal
+
+Upstream target: `https://github.com/zed-industries/zed` (`crates/gpui_macros`, PR-ready single-file test teardown fix in `src/test.rs`). Remove this patch, the `[patch.crates-io]` entry, the workspace exclusion, the `THIRD_PARTY_NOTICES.md` row and the `vendor/AGENTS.md` row when the upstream macro quits the test context in its teardown, or `into_mut` no longer relies on `on_quit`, and those regressions pass against it.

@@ -47,22 +47,22 @@
       <h2 id="tools">Install the build tools</h2>
 <p>On Omarchy, the desktop already supplies the graphics, font and windowing libraries. Add the tools used by GitTurtle’s build and packager.</p>
 <pre><code>sudo pacman -S --needed rustup python-pillow cmake</code></pre>
-<p>On another Arch installation, also install the following packages, the Vulkan driver for your GPU and a FileChooser portal backend for your desktop. For example, GNOME uses <code>xdg-desktop-portal-gnome</code>.</p>
+<p>On another Arch installation, also install the following packages, the Vulkan driver for your GPU and a FileChooser portal backend for your desktop. For example, GNOME uses <code>xdg-desktop-portal-gnome</code>. Add <code>dav1d</code> if you want AV1 image previews.</p>
 <pre><code>sudo pacman -S --needed git base-devel clang pkgconf desktop-file-utils \
   fontconfig wayland libxkbcommon-x11 libx11 libxcb openssl zstd \
-  vulkan-icd-loader dav1d xdg-desktop-portal</code></pre>
+  vulkan-icd-loader xdg-desktop-portal</code></pre>
 <h2 id="clone">Clone and build</h2>
 <pre><code>git clone https://github.com/FernandoX7/GitTurtle.git
 cd GitTurtle
 rustup show active-toolchain
 ./scripts/package-linux.sh</code></pre>
-<p>The checkout selects Rust 1.100.0. The packager builds the optimized app for the architecture of this machine. Keep <code>dav1d</code> installed after the build because the executable links to its shared library.</p>
+<p>The checkout selects Rust 1.100.0. The packager builds the optimized app for the architecture of this machine. AV1 image decoding loads <code>libdav1d.so.7</code> dynamically inside a confined helper when <code>dav1d</code> is installed, so it is not required to launch GitTurtle.</p>
 <h2 id="install">Install and launch</h2>
 <pre><code>python3 dist/gitturtle-linux-$(uname -m)/install.py
 "$HOME/.local/bin/gitturtle" --build-info</code></pre>
-<p>Run the installer as your regular user. It checks the bundle and installs the app, icons and launcher. Open <strong>GitTurtle</strong> in the applications menu, then open a local repository. You can also pass its path to <code>~/.local/bin/gitturtle</code>.</p>
+<p>Run the installer as your regular user. It checks the bundle and installs the app, icons and launcher. Open <strong>GitTurtle</strong> in the applications menu, then open a local repository. Passing a repository path to <code>~/.local/bin/gitturtle</code> while GitTurtle is running opens or focuses it in a tab.</p>
 <h2 id="desktop">On your Omarchy desktop</h2>
-<p>The first launch follows the desktop’s theme and monospace font. Tile or float the native Wayland window in Hyprland. Press <kbd>Ctrl</kbd> + <kbd>Q</kbd> to quit. <a href="/docs/omarchy-and-themes/">Explore Omarchy integration</a> or check <a href="/releases/#coverage">tested platforms</a>.</p>
+<p>The first launch follows your Omarchy theme and monospace font across Omarchy 3.x and 4.x layouts. Tile down to narrow Hyprland splits (460×480 minimum) or float the native Wayland window. Press <kbd>Ctrl</kbd> + <kbd>Q</kbd> to quit. <a href="/docs/omarchy-and-themes/">Explore Omarchy integration</a> or check <a href="/releases/#coverage">tested platforms</a>.</p>
 <p>For a missing library or file picker, see <a href="/support/#linux">Linux troubleshooting</a>. Other systems have their own <a href="/install/">installation guides</a>.</p>
     </article>
     <aside class="guide-aside"><nav aria-label="Installation"><h2>Installation</h2>

@@ -941,7 +941,7 @@ fn channel_slider(
     Slider::new(state)
         .flex_1()
         .bg(cx.theme().transparent)
-        .aria_label(channel.name())
+        .accessibility_label(channel.name())
         .accessible_value(channel_value(state, channel, color, cx))
 }
 

@@ -85,24 +85,15 @@ use at the time; they do not imply that CodeQL is currently enabled.
 
 ## Current source-preview preparation
 
-The [draft preview notes](preview-release-notes.md) cover the implemented
-refresh recovery, new-commit affordances, split-pane synchronization, build
-diagnostics, recoverable Linux upgrades, and the published static marketing
-site. They remain draft binary-release copy; no public binary is announced. The current
-[refresh validation](benchmarks/2026-09-14-refresh-reliability.md) and
-[native investigation](benchmarks/2026-09-14-native-preview.md) supplement the
-historical launch record below; their exact build and environment boundaries
-remain authoritative. The owner's machine was reinstalled with the validated
-`417b5e8` native build, preserving settings and a recoverable previous
-installation. Its executable hash remained unchanged. Use the native record's
-executable identity and package hashes rather than inferring them from a source
-commit or an earlier diagnostic prototype. The initial launch changes landed on `main` through merge `483782d` and subsequent CI runs are recorded in [docs/ci.md](ci.md).
+The November 2026 release-readiness work landed on `main` across PRs #241–#249 and the final release-readiness pass: write-safe close/quit guards, safe `objc2` PDFKit bindings, architectural invariant & vendor patch audits, free-tier CI scheduling & SLSA/SBOM release assembly, runtime performance and large-repo scalability, pure headless domain crates (`gitturtle-theme`, `gitturtle-diff-model`, `gitturtle-github`, `gitturtle-prefs`) with `proptest`/`cargo-fuzz` targets, everyday Git & GitHub collaboration workflows, macOS native desktop craft, Omarchy & Linux desktop craft (dynamic `libdav1d.so.7` loading, seccomp 3D helpers, GPU recovery, `.deb`/Flatpak packaging recipes), automated website visual QA, and opt-in Linux headless / macOS QA helpers. No public binary release, tag, or AUR publication has been executed; those remain explicitly held for owner approval.
+
+Historical September 14, 2026 baseline note: the [draft preview notes](preview-release-notes.md), [refresh validation](benchmarks/2026-09-14-refresh-reliability.md), and [native investigation](benchmarks/2026-09-14-native-preview.md) record the initial source-preview verification (`417b5e8` / merge `483782d`); subsequent CI runs are recorded in [docs/ci.md](ci.md).
 
 The [website](../website/README.md) lives separately in `website/public/` and
 requires no native build or package-manager installation. It presents real app
 screenshots and source-build guidance, with no binary Download button. Its
-README records screenshot provenance, completed browser checks, remaining
-checks, and the Cloudflare Pages deployment.
+README records screenshot provenance, automated static/visual QA checks,
+completed browser checks, remaining checks, and the Cloudflare Pages deployment.
 
 Website publication was separately approved and completed:
 
@@ -125,7 +116,7 @@ instructions. Website publication does not clear or authorize a binary release.
 
 ## Before a public binary release
 
-- [ ] Resolve the target's `licenses/REVIEW_REQUIRED.md` entries and pass
+- [x] Resolve the target's `licenses/REVIEW_REQUIRED.md` entries and pass
   `scripts/collect-third-party-licenses.py --require-complete --target TARGET OUTPUT`.
   Local packages retain available notices and report unresolved attribution;
   they do not establish completed license clearance. See the

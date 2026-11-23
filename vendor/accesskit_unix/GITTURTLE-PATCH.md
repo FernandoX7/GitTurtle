@@ -103,7 +103,7 @@ its check goes to `docs/validation.md`.
 ## Removal
 
 Remove this directory, its `[patch.crates-io]` entry, its workspace
-exclusion and its `vendor/AGENTS.md` row when GitTurtle's GPUI Linux backend
+exclusion, its `THIRD_PARTY_NOTICES.md` row and its `vendor/AGENTS.md` row when GitTurtle's GPUI Linux backend
 depends on `accesskit_unix` 0.24.1 or later, which carries #819. That
 release requires `accesskit_atspi_common` 0.21 or later, so check the
 vendored `accesskit_atspi_common` changes against it in the same upgrade.

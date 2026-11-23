@@ -19,6 +19,10 @@ if [ -f scripts/dev/check_invariants.py ]; then
   python3 scripts/dev/check_invariants.py
 fi
 
+if [ -f scripts/dev/vendor_patch_audit.py ]; then
+  python3 scripts/dev/vendor_patch_audit.py
+fi
+
 if command -v actionlint >/dev/null 2>&1 || command -v zizmor >/dev/null 2>&1; then
   base_ref="origin/main"
   if ! git rev-parse --verify -q "$base_ref" >/dev/null 2>&1; then

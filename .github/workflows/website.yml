@@ -31,6 +31,8 @@ jobs:
           python3 website/build_guides.py --check
           python3 website/test_check.py
           python3 website/check.py
+          python3 website/visual_qa.py
+          python3 -B -m unittest website/test_visual_qa.py
       - name: Check JavaScript syntax
         run: |
           node --check website/public/site.js

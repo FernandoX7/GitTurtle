@@ -953,8 +953,8 @@ impl Render for CentredMenuProbe {
 /// the frame before, so the menu stayed where the button had been until
 /// some other change drew a frame: a Compare width step draws one frame,
 /// and the frame it once asked for after it hid this. The host now reads
-/// the corner its button's prepaint records in the same frame (a gpui-base
-/// patch, `Positioner::corner_following`).
+/// the corner its button's prepaint records in the same frame (upstream
+/// `Positioner::tracked_corner_position`).
 #[gpui::test]
 fn an_open_kit_dropdown_follows_its_button_when_the_window_changes_width(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);

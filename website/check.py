@@ -12,11 +12,55 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 ROOT = Path(__file__).resolve().parent
 ORIGIN = "https://gitturtle.com"
 REPOSITORY = "https://github.com/FernandoX7/GitTurtle"
 GITHUB_DOMAINS = ("github.com", "githubusercontent.com", "github.io", "github.dev", "githubassets.com", "git.io")
+RELEASE_PATH_RE = re.compile(
+    r"^/FernandoX7/GitTurtle/releases"
+    r"(?:/latest"
+    r"|/tag/v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"|/download/v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?/[A-Za-z0-9][A-Za-z0-9._-]*)?$",
+    re.ASCII,
+)
+IDEOGRAPHIC_DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
+
+
+def _normalized_host(ref):
+    """Extract a browser-equivalent lowercased ASCII/NFKC hostname to prevent parser-mismatch bypasses."""
+    normalized = unicodedata.normalize("NFKC", ref).translate(IDEOGRAPHIC_DOTS).replace("\\", "/")
+    url = urlsplit(normalized)
+    host = (url.hostname or "").lower().rstrip(".")
+    if not host and url.scheme in ("http", "https") and url.path:
+        # Browsers treat slashless `http:github.com/x` on an HTTPS page as `http://github.com/x`.
+        candidate = url.path.lstrip("/").split("/", 1)[0]
+        if "@" in candidate:
+            candidate = candidate.rsplit("@", 1)[1]
+        if ":" in candidate:
+            candidate = candidate.split(":", 1)[0]
+        host = candidate.lower().rstrip(".")
+    return host
+
+
+def allowed_github_url(ref):
+    """Allow only the canonical repository URL or canonical GitHub Release URLs for this project."""
+    if ref == REPOSITORY:
+        return True
+    if not ref or not ref.isascii() or "?" in ref or "#" in ref or "\\" in ref or any(ch.isspace() or ord(ch) < 32 for ch in ref):
+        return False
+    url = urlsplit(ref)
+    if url.scheme != "https" or url.netloc != "github.com":
+        return False
+    if url.query or url.fragment:
+        return False
+    path = url.path
+    if path != unquote(path) or ".." in path or "//" in path:
+        return False
+    if ref != f"https://github.com{path}":
+        return False
+    return bool(RELEASE_PATH_RE.fullmatch(path))
 NONPUBLIC_SUFFIXES = {
     ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
     ".map", ".log", ".bak", ".backup", ".swp", ".swo", ".tmp",
@@ -191,9 +235,9 @@ def check_pages(public, documents, write_sitemap):
                 seen[key][value] = label
         edges[source] = set()
         for ref in doc.links:
-            host = (urlsplit(ref).hostname or "").lower().rstrip(".")
-            if any(host == domain or host.endswith("." + domain) for domain in GITHUB_DOMAINS) and ref != REPOSITORY:
-                errors.append(f"{label}: GitHub link must point to the project repository: {ref}")
+            host = _normalized_host(ref)
+            if any(host == domain or host.endswith("." + domain) for domain in GITHUB_DOMAINS) and not allowed_github_url(ref):
+                errors.append(f"{label}: GitHub link must point to the project repository or its canonical releases: {ref}")
             target = local_target(public, source, ref)
             if target in searchable:
                 edges[source].add(target)

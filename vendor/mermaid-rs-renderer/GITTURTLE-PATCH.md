@@ -3,6 +3,7 @@
 Vendored from the published MIT-licensed `mermaid-rs-renderer` 0.3.1 crate.
 Upstream: https://github.com/1jehuang/mermaid-rs-renderer
 Registry source revision: `2f993bd79a55235eb59a34d807852276ba25bea7`.
+Registry archive SHA-256: `6cb5b469222ce6b9896edf0a969cf68464f5a028ef394fd6643f00bd943df117`.
 
 `src/text_metrics.rs` disables `cache_paths`, preventing the renderer from
 reading or writing its `~/.cache/mmdr/font-cache`. The now-unused hashing import
@@ -36,3 +37,7 @@ through its existing resource-free decoder. See `docs/file-previews.md` in the
 GitTurtle repository for the deliberately finite supported subset and limits.
 
 The upstream MIT license is retained in `LICENSE`.
+
+## Removal
+
+Upstream target: `https://github.com/1jehuang/mermaid-rs-renderer` (PR-ready candidates: an optional `disk-cache` Cargo feature gating `~/.cache/mmdr/font-cache` in `src/text_metrics.rs`, the `Link`/`Click` node-ID edge disambiguation in `src/parser.rs`, and atomic `tempfile::TempDir` isolation in `src/config.rs` and `tests/cli_suite.rs`). Drop this entire vendored directory, its `[patch.crates-io]` entry, workspace exclusion, `THIRD_PARTY_NOTICES.md` row, and `vendor/AGENTS.md` row once a published release covers all three fixes and `cargo test --locked -p gitturtle-preview mermaid` passes against crates.io directly.

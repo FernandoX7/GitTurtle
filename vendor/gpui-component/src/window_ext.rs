@@ -139,12 +139,6 @@ pub trait WindowExt: Sized {
     fn focused_input(&mut self, cx: &mut App) -> Option<AnyInputState>;
     /// Returns true if there is a focused Input entity.
     fn has_focused_input(&mut self, cx: &mut App) -> bool;
-
-    /// Hides this window's tooltip, shown or still waiting out its delay.
-    ///
-    /// GitTurtle patch: cancels a hovered tooltip when its trigger leaves
-    /// without firing a hover-leave event.
-    fn hide_tooltip(&self, cx: &mut App);
 }
 
 impl WindowExt for Window {
@@ -284,10 +278,5 @@ impl WindowExt for Window {
             }
         });
         None
-    }
-
-    #[inline]
-    fn hide_tooltip(&self, cx: &mut App) {
-        crate::root::hide_tooltip(self, cx);
     }
 }

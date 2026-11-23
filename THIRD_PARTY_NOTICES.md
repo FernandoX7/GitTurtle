@@ -12,11 +12,12 @@ AccessKit adapters MIT or Apache-2.0. Local patches preserve upstream licenses a
 | Vendored package | License | Modification record |
 | --- | --- | --- |
 | `accesskit_atspi_common` 0.19.1 | [MIT](vendor/accesskit_atspi_common/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_atspi_common/LICENSE-APACHE), with [Chromium notices](vendor/accesskit_atspi_common/LICENSE.chromium) | [Patch](vendor/accesskit_atspi_common/GITTURTLE-PATCH.md) |
+| `accesskit_macos` 0.26.3 | [MIT](vendor/accesskit_macos/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_macos/LICENSE-APACHE), with [Chromium notices](vendor/accesskit_macos/LICENSE.chromium) | [Patch](vendor/accesskit_macos/GITTURTLE-PATCH.md) |
 | `accesskit_unix` 0.22.1 | [MIT](vendor/accesskit_unix/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_unix/LICENSE-APACHE) | [Patch](vendor/accesskit_unix/GITTURTLE-PATCH.md) |
 | `gpui-base` 0.10.0 | [Apache-2.0](vendor/gpui-base/LICENSE-APACHE) | [Patch](vendor/gpui-base/GITTURTLE-PATCH.md) |
 | `gpui-component` 0.10.0 | [Apache-2.0](vendor/gpui-component/LICENSE-APACHE) | [Patch](vendor/gpui-component/GITTURTLE-PATCH.md) |
 | `gpui-pre-linux` 0.3.12 | [Apache-2.0](vendor/gpui-pre-linux/LICENSE-APACHE) | [Patch](vendor/gpui-pre-linux/GITTURTLE-PATCH.md) |
-| `gpui-pre-macos` 0.3.12 | [Apache-2.0](vendor/gpui-pre-macos/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macos/README.gitturtle.md) |
+| `gpui-pre-macos` 0.3.12 | [Apache-2.0](vendor/gpui-pre-macos/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macos/GITTURTLE-PATCH.md) |
 | `gpui-pre-macros` 0.3.12 | [Apache-2.0](vendor/gpui-pre-macros/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macros/GITTURTLE-PATCH.md) (test-only) |
 | `gpui-pre-wgpu` 0.3.12 | [Apache-2.0](vendor/gpui-pre-wgpu/LICENSE-APACHE) | [Patch](vendor/gpui-pre-wgpu/GITTURTLE-PATCH.md) |
 | `mermaid-rs-renderer` 0.3.1 | [MIT](vendor/mermaid-rs-renderer/LICENSE) | [Patch](vendor/mermaid-rs-renderer/GITTURTLE-PATCH.md) |

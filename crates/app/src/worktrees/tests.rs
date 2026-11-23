@@ -141,11 +141,17 @@ fn manager(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Entity<Worktr
 
 async fn settle(manager: &Entity<WorktreeManager>, cx: &mut VisualTestContext) {
     // A targeted refresh first lists registrations, then inspects its captured
-    // row. Drain both stages without depending on real-time polling.
+    // row. Drain `manager.reader` directly while holding `TestClock` instead of
+    // parking `TestScheduler` across real-time Git subprocess I/O.
     for _ in 0..4 {
         cx.executor().run_until_parked();
-        let task = manager.update(cx, |manager, _| manager.task.take());
-        let Some(task) = task else { break };
+        if !manager.read_with(cx, |manager, _| manager.pending) {
+            break;
+        }
+        manager.read_with(cx, |manager, _| manager.reader.drain());
+    }
+    cx.executor().run_until_parked();
+    if let Some(task) = manager.update(cx, |manager, _| manager.task.take()) {
         task.await;
     }
     cx.executor().run_until_parked();

@@ -244,7 +244,8 @@ class Session:
                  extra_env: dict[str, str] | None = None, settle: float = 5.0, backend: str = "xtest",
                  lock_check=None, home_files: dict[str, bytes] | None = None,
                  window_minimum: tuple[int, int] | None = None,
-                 app_config_files: dict[str, bytes] | None = None) -> None:
+                 app_config_files: dict[str, bytes] | None = None,
+                 backend_label: str = "XWayland (WAYLAND_DISPLAY unset)") -> None:
         # Every refusal happens before the run directory is created or the binary is run.
         self.binary = runenv.absolute(binary, "binary")
         self.fixture, warnings = runenv.check_fixture(fixture, for_commit)
@@ -282,7 +283,7 @@ class Session:
                 fixture_before=fixture_state(self.fixture), store_sha256=identity.sha256_bytes(preferences),
                 home_files={path: identity.sha256_bytes(data) for path, data in sorted(home_files.items())},
                 app_config_files={name: identity.sha256_bytes(data) for name, data in sorted(app_config_files.items())},
-                size=[width, height], display=display, scale=scale, backend="XWayland (WAYLAND_DISPLAY unset)",
+                size=[width, height], display=display, scale=scale, backend=backend_label,
                 input=backend, for_commit=for_commit, warnings=warnings, argv=sys.argv, started_utc=utc(),
                 env={key: self.env[key] for key in (*runenv.LAYOUT, "DISPLAY", "GPUI_X11_SCALE_FACTOR")},
                 env_extra=sorted(extra_env or ()),

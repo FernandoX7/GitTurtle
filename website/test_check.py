@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from check import ORIGIN, REPOSITORY, check_site
+from check import ORIGIN, REPOSITORY, allowed_github_url, check_site
 
 
 class PageChecks(unittest.TestCase):
@@ -91,6 +91,74 @@ class PageChecks(unittest.TestCase):
         (assets / "unused.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         errors = check_site(self.root)
         self.assertTrue(any("orphaned public asset" in issue and "unused.png" in issue for issue in errors))
+
+    def test_canonical_github_release_urls_allowed_and_smuggling_rejected(self):
+        allowed = (
+            REPOSITORY,
+            f"{REPOSITORY}/releases",
+            f"{REPOSITORY}/releases/latest",
+            f"{REPOSITORY}/releases/tag/v0.1.0",
+            f"{REPOSITORY}/releases/tag/v0.1.0-rc.1",
+            f"{REPOSITORY}/releases/download/v0.1.0/GitTurtle-0.1.0-abc123def456-linux-x86_64-release.tar.gz",
+            f"{REPOSITORY}/releases/download/v0.1.0-beta.2/SHA256SUMS",
+        )
+        for url in allowed:
+            with self.subTest(allowed=url):
+                self.assertTrue(allowed_github_url(url))
+
+        rejected = (
+            f"{REPOSITORY}/issues",
+            f"{REPOSITORY}/blob/main/README.md",
+            f"{REPOSITORY}/releases/",
+            f"{REPOSITORY}/releases/tag/latest",
+            f"{REPOSITORY}/releases/tag/v0.1.0-rc..1",
+            f"{REPOSITORY}/releases/download/v0.1.0/sub/file.tar.gz",
+            f"{REPOSITORY}/releases/download/v0.1.0/..%2Fsecret",
+            f"{REPOSITORY}/releases/download/v0.1.0/file..tar.gz",
+            f"{REPOSITORY}/releases/download/v0.1.0/.hidden",
+            f"{REPOSITORY}/releases/download/v0.1.0/file.tar.gz?download=1",
+            f"{REPOSITORY}/releases?",
+            f"{REPOSITORY}/releases#top",
+            f"http://github.com/FernandoX7/GitTurtle/releases",
+            f"https://github.com:443/FernandoX7/GitTurtle/releases",
+            f"https://user@github.com/FernandoX7/GitTurtle/releases",
+            f"https://github.com./FernandoX7/GitTurtle/releases",
+            f"https://raw.githubusercontent.com/FernandoX7/GitTurtle/main/README.md",
+            f"https://github.com/OtherOwner/GitTurtle/releases/latest",
+            f"https://github.com/FernandoX7/GitTurtle/releases\\latest",
+            f"https://github.com/FernandoX7/GitTurtle//releases",
+            f"https://github.com/FernandoX7/GitTurtle/releases/%6catest",
+            "https://github.com/FernandoX7/GitTurtle/releases/tag/v\uff10.\uff11.\uff10",
+            "https://github.com/FernandoX7/GitTurtle/releases/tag/v\u0660.\u0661.\u0660",
+            "https://github.com\\OtherOwner/Evil",
+            "http:github.com/OtherOwner/Evil",
+            "https://github\u3002com/OtherOwner/Evil",
+            "https://\uff47ithub.com/OtherOwner/Evil",
+        )
+        for url in rejected:
+            with self.subTest(rejected=url):
+                self.assertFalse(allowed_github_url(url))
+
+        # Integration through check_site: canonical release links pass; arbitrary and parser-bypass GitHub links fail.
+        self.install.write_text(
+            self.install.read_text()
+            + f'<a href="{REPOSITORY}/releases/tag/v0.1.0">Release</a>'
+            + f'<a href="{REPOSITORY}/releases/download/v0.1.0/SHA256SUMS">Checksums</a>'
+        )
+        self.assertEqual(check_site(self.root), [])
+        for bad_href in (
+            f"{REPOSITORY}/releases/tag/v0.1.0?ref=1",
+            "https://github.com\\OtherOwner/Evil",
+            "http:github.com/OtherOwner/Evil",
+            "https://github\u3002com/OtherOwner/Evil",
+            "https://\uff47ithub.com/OtherOwner/Evil",
+        ):
+            with self.subTest(bad_href=bad_href):
+                original = self.install.read_text()
+                self.install.write_text(original + f'<a href="{bad_href}">Bad</a>')
+                errors = check_site(self.root)
+                self.install.write_text(original)
+                self.assertTrue(any("GitHub link" in issue for issue in errors), errors)
 
 
 if __name__ == "__main__":
