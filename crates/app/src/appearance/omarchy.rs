@@ -358,6 +358,15 @@ fn install_with_mode(root: Option<PathBuf>, uses_default_root: bool, cx: &mut Ap
 /// Everything queued meanwhile joins that reread.
 async fn reread(mut requests: mpsc::UnboundedReceiver<Request>, cx: &mut AsyncApp) {
     while let Some(request) = requests.next().await {
+        if let Request::Lost(epoch) | Request::Reattach(epoch) = request {
+            let stale = cx.update(|cx| {
+                cx.try_global::<Follower>()
+                    .is_some_and(|follower| follower.epoch != epoch)
+            });
+            if stale {
+                continue;
+            }
+        }
         let mut lost = Vec::new();
         let mut reattach = Vec::new();
         match request {
@@ -1623,6 +1632,7 @@ mod tests {
         std::fs::rename(&root, parent.join("current.old")).unwrap();
         std::fs::rename(&parent, fixture.path().join("omarchy.old")).unwrap();
         delivered(cx, &root);
+        delivered(cx, &parent);
         cx.run_until_parked();
         cx.executor().advance_clock(QUIET_PERIOD);
         cx.run_until_parked();
