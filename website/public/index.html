@@ -102,7 +102,7 @@
             <span class="expand-shot">Full size</span>
           </a>
           <figcaption class="tour-caption">
-            <div><h3>Follow a branch through time.</h3><p>Select a commit to see the files it changed. Open a file when you want the diff.</p></div>
+            <div><h3>Follow a branch through time.</h3><p>Inspect branches, tags and stashes, toggle deep history filters when you need them, and open a file’s diff only when you ask.</p></div>
             <a href="/docs/history-and-diffs/">Explore history <span aria-hidden="true">→</span></a>
           </figcaption>
         </figure>
@@ -115,7 +115,7 @@
             <span class="expand-shot">Full size</span>
           </a>
           <figcaption class="tour-caption">
-            <div><h3>See both sides of a change.</h3><p>Switch between a unified and split diff. Follow the highlights to the words that changed.</p></div>
+            <div><h3>See both sides of a change.</h3><p>Switch between unified and split diffs with intra-line highlights, configurable diff algorithms and syntax coloring across 28 languages.</p></div>
             <a href="/docs/history-and-diffs/#compare">Read the diff guide <span aria-hidden="true">→</span></a>
           </figcaption>
         </figure>
@@ -123,20 +123,20 @@
           <a class="screenshot-link" data-screenshot="Stage" href="/assets/changes.png">
             <picture>
               <source media="(max-width: 710px)" type="image/webp" srcset="/assets/tour-stage.webp">
-              <img class="app-shot" src="/assets/changes.png" width="2960" height="1946" loading="lazy" alt="The Changes view with per-line checkboxes, Stage hunk controls, separate staged and unstaged files, and a commit draft.">
+              <img class="app-shot" src="/assets/changes.png" width="2960" height="1946" loading="lazy" alt="The Changes view with per-line checkboxes, Stage hunk and Discard hunk controls, separate staged and unstaged files, and a commit draft.">
             </picture>
             <span class="expand-shot">Full size</span>
           </a>
           <figcaption class="tour-caption">
-            <div><h3>Stage just the lines you mean to commit.</h3><p>Choose whole files, hunks, or individual lines. Each worktree keeps its own commit draft.</p></div>
+            <div><h3>Stage just the lines you mean to commit.</h3><p>Stage or discard whole files, individual hunks or single lines, with explicit pull and merge strategies and saved drafts per worktree.</p></div>
             <a href="/docs/staging/">Build a commit <span aria-hidden="true">→</span></a>
           </figcaption>
         </figure>
       </div>
       <div class="feature-links">
-        <a href="/docs/worktrees-and-recovery/"><strong>Worktrees &amp; workspaces <span aria-hidden="true">→</span></strong><span>Keep a separate tab and commit draft for each worktree.</span></a>
-        <a href="/docs/previews-and-keyboard/"><strong>Rich file previews <span aria-hidden="true">→</span></strong><span>Compare images, PDFs, Markdown, and 3D models.</span></a>
-        <a href="/docs/github/"><strong>Pull request review <span aria-hidden="true">→</span></strong><span>Inspect files, comment on lines, and save review drafts.</span></a>
+        <a href="/docs/worktrees-and-recovery/"><strong>Worktrees, rebase &amp; bisect <span aria-hidden="true">→</span></strong><span>Manage linked worktrees, stashes, interactive rebase, conflicts and bisect.</span></a>
+        <a href="/docs/previews-and-keyboard/"><strong>Rich file previews <span aria-hidden="true">→</span></strong><span>Compare images, PDFs, Markdown, tables, formatted configs and 3D models.</span></a>
+        <a href="/docs/github/"><strong>Pull request review <span aria-hidden="true">→</span></strong><span>Inspect files, resolve threads, collect review drafts and merge PRs explicitly.</span></a>
       </div>
     </section>
 
@@ -151,7 +151,7 @@
         <article><h3>Changed files ready</h3><p class="measurement">21 <span>ms</span></p><p>Median from selecting a commit to its file list, on an Apple M4 Max.</p></article>
         <article><h3>Text diff ready</h3><p class="measurement">5 <span>ms</span></p><p>Median from opening a history file to its text diff on the same M4 Max.</p></article>
       </div>
-      <p class="measurement-note">Recorded in release builds. File-list and diff timings use a 653-commit test repository and exclude input delivery and display presentation.</p>
+      <p class="measurement-note">Recorded in release builds. File-list and diff timings use a 653-commit test repository and exclude input delivery and display presentation; <a href="/performance/#core-and-monorepo">core Git and monorepo records</a> cover the latest backend pipelines.</p>
     </section>
 
     <section class="omarchy-section" id="omarchy" aria-labelledby="omarchy-title">
@@ -159,7 +159,7 @@
         <div class="desktop-copy">
           <p class="section-label">First-class Omarchy support</p>
           <h2 id="omarchy-title">Your desktop.<br>Your colors.</h2>
-          <p>Change your Omarchy theme and GitTurtle follows in the open window. It picks up your monospace font, works tiled or floating on Wayland, and opens your repository in your preferred editor or terminal.</p>
+          <p>Change your Omarchy 3.x or 4.x theme and GitTurtle follows in the open window. It picks up your monospace font, supports Wayland single-instance handoff and middle-click selection, works tiled or floating, and opens your preferred editor or terminal.</p>
           <a class="text-link" href="/docs/omarchy-and-themes/">Explore Omarchy support <span aria-hidden="true">→</span></a>
           <p class="theme-note" id="themes">On any desktop, choose from <a href="/docs/omarchy-and-themes/">20 built-in themes</a> or make your own.</p>
         </div>

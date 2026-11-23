@@ -1,84 +1,102 @@
 {
-  "status": "All product pictures come from the repository README\u2019s native captures in docs/screenshots/readme/. They show a disposable demo repository in a clean release build of 025eaf40bf3b1f565b4488bd4434e2e3b1c6c141 on Omarchy 4.5. Five sources are single window grabs. One is a sheet composed from native frames. Five site PNGs are byte-for-byte copies. The desktop sheet and three responsive tour WebPs are full-frame downscales. Each derivative records its source hash and method.",
-  "recorded_on": "2026-11-16",
+  "status": "Product pictures come from the repository README\u2019s native captures in docs/screenshots/readme/. Seven full-size 2960\u00d71946 PNGs are byte-for-byte copies of native Wayland captures from a clean release build of 0cd375246c4688ae7e76058c2f137f6eb117be30 on Omarchy 4.5, showing a disposable demo repository (and the offline GitHub review fixture). The three responsive tour WebPs and social sharing card are derivatives of those captures. The whole-monitor Omarchy desktop sheet retains its verified November 16 capture from 025eaf40bf3b1f565b4488bd4434e2e3b1c6c141. Each derivative records its source hash and method.",
+  "recorded_on": "2026-11-23",
   "assets": [
     {
       "site_path": "public/assets/history.png",
       "source": "docs/screenshots/readme/history.png",
-      "identity": "025eaf40bf3b1f565b4488bd4434e2e3b1c6c141, clean release, aarch64-unknown-linux-gnu, rustc 1.99.0; M2 Pro MacBook Pro, Omarchy 4.5.0-3, Hyprland 0.56.2 on native Wayland at scale 2; Omarchy theme following a stock Tokyo Night; History, project list on, ccb54bc selected with its seven changed files; window grab, 2960x1946",
-      "sha256": "aff11743a10f630adad584ce07868e284e3e9a092240fdd642c3b5fe7b97884e",
-      "bytes": 515200,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "identity": "0cd375246c4688ae7e76058c2f137f6eb117be30, clean release, aarch64-unknown-linux-gnu, rustc 1.100.0; M2 Pro MacBook Pro, Omarchy 4.5.0-3, Hyprland 0.56.2 on native Wayland (headless 2960x1998@60 output at scale 2); Omarchy theme following stock Tokyo Night; History, project list on, sidebar tags and stashes, f121aaf selected with its seven changed files; window grab, 2960x1946",
+      "sha256": "c8a5e5e597f9d5f4586c2a35d393cb6ba740f157109ac032aaf64e029c1917b5",
+      "bytes": 513474,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/tour-history.webp",
       "source": "docs/screenshots/readme/history.png",
-      "source_sha256": "aff11743a10f630adad584ce07868e284e3e9a092240fdd642c3b5fe7b97884e",
-      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
-      "identity": "025eaf40bf3b1f565b4488bd4434e2e3b1c6c141, clean release, aarch64-unknown-linux-gnu, rustc 1.99.0; M2 Pro MacBook Pro, Omarchy 4.5.0-3, Hyprland 0.56.2 on native Wayland at scale 2; Omarchy theme following a stock Tokyo Night; History, project list on, ccb54bc selected with its seven changed files; window grab, 2960x1946",
-      "sha256": "f77780c0f97f7e0f8b9a94243d1622296017553b1492e61e62d8a5297675cf0f",
-      "bytes": 185746,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "source_sha256": "c8a5e5e597f9d5f4586c2a35d393cb6ba740f157109ac032aaf64e029c1917b5",
+      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 and encode lossless WebP with ImageMagick 7.1.2-34 / libwebp 1.6.0. Command: magick <source> -filter Lanczos -resize 1200x -depth 8 -define webp:lossless=true -define webp:method=6 <site_path>.",
+      "identity": "Same build, machine, desktop and theme as history.png; History, project list on, f121aaf selected with its seven changed files; responsive tour preview, 1200x789",
+      "sha256": "a2f3c613baea35dc9cd56ea7c3da6f75d3a58a68cd77b15cecb9f14070fe59e4",
+      "bytes": 186784,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/history-filters.png",
+      "source": "docs/screenshots/readme/history-filters.png",
+      "identity": "Same build, machine, desktop and theme as history.png; History with the collapsible Search Filters bar expanded (-S/-G, author, path, date range, regex, first-parent, no merges); window grab, 2960x1946",
+      "sha256": "573eb8817d6b163cbc9e89c71912234d899c7f027a90f37b54d9475a6f6e8722",
+      "bytes": 512291,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/compare.png",
       "source": "docs/screenshots/readme/compare.png",
-      "identity": "Same build, machine, desktop and theme as history.png; Compare, split view of src/App.tsx in ccb54bc; window grab, 2960x1946",
-      "sha256": "b88c9eabf3a7ebe561c92688a978fc5404e0d15b80079a228a3ebf868bbe7877",
-      "bytes": 483122,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "identity": "Same build, machine, desktop and theme as history.png; Compare, split view of src/App.tsx in f121aaf; window grab, 2960x1946",
+      "sha256": "ec66a189ddeba637b75c89512ff18f36b37c3c81d29b420186ce19bbd7e3bac5",
+      "bytes": 493171,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/tour-compare.webp",
       "source": "docs/screenshots/readme/compare.png",
-      "source_sha256": "b88c9eabf3a7ebe561c92688a978fc5404e0d15b80079a228a3ebf868bbe7877",
-      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
-      "identity": "Same build, machine, desktop and theme as history.png; Compare, split view of src/App.tsx in ccb54bc; window grab, 2960x1946",
-      "sha256": "d6a3dc90314a3df9f4ecbd942e32974b06b6f5861cbbb1b073b688fddfe45092",
-      "bytes": 225920,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "source_sha256": "ec66a189ddeba637b75c89512ff18f36b37c3c81d29b420186ce19bbd7e3bac5",
+      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 and encode lossless WebP with ImageMagick 7.1.2-34 / libwebp 1.6.0. Command: magick <source> -filter Lanczos -resize 1200x -depth 8 -define webp:lossless=true -define webp:method=6 <site_path>.",
+      "identity": "Same build, machine, desktop and theme as history.png; Compare, split view of src/App.tsx in f121aaf; responsive tour preview, 1200x789",
+      "sha256": "8bce2dc503928be3acc3f266e27540dde9e85405c88f7604c2b59cad7454d5b1",
+      "bytes": 240096,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/changes.png",
       "source": "docs/screenshots/readme/changes.png",
-      "identity": "Same build, machine, desktop and theme as history.png; Changes, the unstaged diff of src/App.tsx with two hunks, two files staged, a message typed; window grab, 2960x1946",
-      "sha256": "34e7a9e72bad3e98bef3f2c6cc9685374958b2058640e66c71505a683bc8bf0b",
-      "bytes": 362466,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "identity": "Same build, machine, desktop and theme as history.png; Changes, unstaged diff of src/App.tsx with two hunks, Stage hunk and Discard hunk controls, two files staged, and a commit draft; window grab, 2960x1946",
+      "sha256": "60628c7ccd9f21104d1fabac500551e73c844b95801625e609e14928bae4905b",
+      "bytes": 375888,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/tour-stage.webp",
       "source": "docs/screenshots/readme/changes.png",
-      "source_sha256": "34e7a9e72bad3e98bef3f2c6cc9685374958b2058640e66c71505a683bc8bf0b",
-      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 with ImageMagick 7.1.2-35, then encode those pixels with libwebp 1.6.0. Commands: magick <source> -filter Lanczos -resize 1200x -depth 8 PNG24:scaled.png ; cwebp -quiet -lossless -m 6 scaled.png -o <site_path>.",
-      "identity": "Same build, machine, desktop and theme as history.png; Changes, the unstaged diff of src/App.tsx with two hunks, two files staged, a message typed; window grab, 2960x1946",
-      "sha256": "3604da6d6bbed6d6ee30b4d60de2f966e8144c697276bc0b63a87d04e5896e95",
-      "bytes": 131982,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "source_sha256": "60628c7ccd9f21104d1fabac500551e73c844b95801625e609e14928bae4905b",
+      "method": "Resize the complete 2960 \u00d7 1946 opaque sRGB capture to 1200 \u00d7 789 and encode lossless WebP with ImageMagick 7.1.2-34 / libwebp 1.6.0. Command: magick <source> -filter Lanczos -resize 1200x -depth 8 -define webp:lossless=true -define webp:method=6 <site_path>.",
+      "identity": "Same build, machine, desktop and theme as history.png; Changes, unstaged diff of src/App.tsx with two hunks, Stage hunk and Discard hunk controls, two files staged, and a commit draft; responsive tour preview, 1200x789",
+      "sha256": "a7aa4099ebd25033c188b425fe6a5afc70222cab22ced665af5adb0303b060b8",
+      "bytes": 137520,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/image-compare.png",
       "source": "docs/screenshots/readme/image-compare.png",
-      "identity": "Same build, machine, desktop and theme as history.png; Compare of a PNG, Side by side at Fit; window grab, 2960x1946",
-      "sha256": "11eecd5ba31fe3c7aba7f91b735551a05c7841d2c1324236a5438979ebc5bf62",
-      "bytes": 279580,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "identity": "Same build, machine, desktop and theme as history.png; Compare of public/panels/overview.png, Side by side at Fit; window grab, 2960x1946",
+      "sha256": "cbc82a85090e1b7fea66474ea30347f32968933f46fbb83f979c86e8f42f2710",
+      "bytes": 275684,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/theme-editor.png",
       "source": "docs/screenshots/readme/theme-editor.png",
-      "identity": "Same build, machine, desktop and theme as history.png; the theme editor, an unsaved theme based on Midnight with its accent changed; window grab, 2960x1946",
-      "sha256": "bd5d124bcb8d88bf8a835cd8547491099d67900fef1f8fef0f1f1e3f06e41ba4",
-      "bytes": 363980,
-      "binary_sha256_prefix": "4bbb41f4",
-      "evidence": "docs/validation/2026-11.md#november-16-the-readmes-screenshots-are-retaken-on-omarchy-45"
+      "identity": "Same build, machine, desktop and theme as history.png; the custom theme editor showing role swatches, live preview card, and readability check; window grab, 2960x1946",
+      "sha256": "dc1a83f026ba07b9f662163fb2195b5637046ce81b7fb21e557c3d2e8d3b9f93",
+      "bytes": 354301,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
+    },
+    {
+      "site_path": "public/assets/github-review.png",
+      "source": "docs/screenshots/readme/github-review.png",
+      "identity": "Same build, machine, desktop and theme as history.png; native GitHub pull request review panel using the offline review fixture (PR #42, Files tab showing src/review/session.rs inline diff and Comment on selection); window grab, 2960x1946",
+      "sha256": "86c68fbe6a5291438ca0672fbc68b4a55348905cae1ca341613b12b41988a548",
+      "bytes": 388579,
+      "binary_sha256_prefix": "a297bdcc",
+      "evidence": "docs/validation/2026-11.md#november-23-the-readmes-and-websites-screenshots-are-refreshed-on-omarchy-45"
     },
     {
       "site_path": "public/assets/omarchy-desktop.png",
@@ -86,7 +104,7 @@
       "source_sha256": "e8e0c43ff4a5afc22d85582548ad3bbc49224aafd2d3e7160004cd5f632b4969",
       "source_bytes": 2405054,
       "method": "The whole picture scaled down from 3456x3383 to 1728x1692, never cropped, retouched or recolored, with its alpha channel kept and no ancillary chunk written: ImageMagick 7.1.2-34, magick <source> -filter Lanczos -resize 1728x -define png:include-chunk=none <site_path>",
-      "identity": "Same build, machine and desktop as history.png; a sheet composed from whole-monitor frames of the app tiled beside a terminal, each theme set with the desktop's omarchy-theme-set: Tokyo Night unscaled, Catppuccin Latte and Gruvbox at half size, on a transparent background; not a single grab; source 3456x3383, site copy 1728x1692",
+      "identity": "025eaf40bf3b1f565b4488bd4434e2e3b1c6c141, clean release, aarch64-unknown-linux-gnu, rustc 1.99.0; a sheet composed from whole-monitor frames of the app tiled beside a terminal, each theme set with the desktop's omarchy-theme-set: Tokyo Night unscaled, Catppuccin Latte and Gruvbox at half size, on a transparent background; not a single grab; source 3456x3383, site copy 1728x1692",
       "sha256": "41f721cb538e8c069712462f98040216d3a65f28c806715b5bd3cb10763a0f8f",
       "bytes": 1177156,
       "binary_sha256_prefix": "4bbb41f4",
@@ -111,10 +129,10 @@
       "source": "website/share-card.html",
       "source_sha256": "7c6fff207ce8588dea542e9905d5092374088b4eb1f067b12b7bb61d6880840f",
       "source_bytes": 2528,
-      "method": "Rendered website/share-card.html at 1200 \u00d7 630 CSS pixels and device scale 1 in Chromium 157 after the bundled Manrope font and both local images loaded.",
-      "identity": "Sharing artwork using the project app icon and the complete native History capture. The source assets and font have individual entries above.",
-      "sha256": "cd8e0958362781d06cbbae80b81a37c7874cb0f229196c54d02db16d6cacd476",
-      "bytes": 295959
+      "method": "Rendered website/share-card.html at 1200 \u00d7 630 CSS pixels and device scale 1 in headless Chromium 153.0.8010.36 after the bundled Manrope font and refreshed History capture loaded, then stripped ancillary chunks via magick -define png:include-chunk=none.",
+      "identity": "Sharing artwork using the project app icon and the complete native History capture from 0cd375246c4688ae7e76058c2f137f6eb117be30. The source assets and font have individual entries above.",
+      "sha256": "23794cb09a1395a6b650c12d63607a0adc14197f3e465037a83affbaab782c12",
+      "bytes": 328598
     }
   ]
 }

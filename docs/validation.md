@@ -71,7 +71,7 @@ The [CI workflow](../.github/workflows/quality.yml) runs locked workspace tests 
 
 Dated native, benchmark, and CI verification entries are rotated monthly so this matrix stays concise:
 
-- [November 2026](validation/2026-11.md) — Omarchy 4.5 x86-64 & AArch64 package checks, live GitHub sign-in & PR creation, README captures, Linux confined PDF/AVIF/JPEG 2000 helpers, More contrast & Orca checks
+- [November 2026](validation/2026-11.md) — Clean `0cd37524` README/website screenshot refresh & Linux PR-panel fix, Omarchy 4.5 x86-64 & AArch64 package checks, live GitHub sign-in & PR creation, Linux confined PDF/AVIF/JPEG 2000 helpers, More contrast & Orca checks
 - [October 2026](validation/2026-10.md) — Omarchy/Asahi native checks, responsive half-tile layouts, focus rings, menus, Working Changes & partial staging, theme editor
 - [September 2026](validation/2026-09.md) — Initial macOS/Linux milestones, everyday Git workflows, review & recovery, themes, and launch preparation
 
