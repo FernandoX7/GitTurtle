@@ -3128,6 +3128,22 @@ impl Panel {
                         Action::Reply { target, body } => target.retained_bytes() + body.len(),
                         Action::SetThreadResolved { target, .. } => target.retained_bytes(),
                         Action::Review(r) => review(r),
+                        Action::MergePull {
+                            pull,
+                            commit_title,
+                            commit_message,
+                            ..
+                        } => {
+                            pull.head.sha.len()
+                                + commit_title.as_ref().map_or(0, String::len)
+                                + commit_message.as_ref().map_or(0, String::len)
+                        }
+                        Action::SetPullState { .. } => 0,
+                        Action::SetPullDraft { node_id, .. } => node_id.len(),
+                        Action::UpdateLabels { labels, .. } => labels.iter().map(String::len).sum(),
+                        Action::RequestReviewers { reviewers, .. } => {
+                            reviewers.iter().map(String::len).sum()
+                        }
                     }
             })
             + self.rows.iter().map(pull).sum::<usize>()

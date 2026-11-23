@@ -148,14 +148,50 @@ impl GitTurtle {
                 if this.path.as_ref() != Some(&path) || this.page != AppPage::Repository { cx.notify(); return; }
                 match result {
                     Ok(plan) => {
-                        let title = if rebase { format!("Rebase {} onto {}", plan.branch, plan.target_label) } else { format!("Merge {} into {}", plan.target_label, plan.branch) };
-                        let explanation = format!("{} has {}; {} has {}.\n\n{}\n\n{} between these branch tips.{}",
-                            plan.branch, crate::counted(plan.ahead, "unique commit", "unique commits"), plan.target_label, plan.behind,
-                            if rebase { "Replay this branch's commits on the target. Replayed commits receive new IDs; use this for local work that others do not depend on. A clean working tree is required." }
-                            else { "Bring the target's commits into this branch. Git fast-forwards when possible or creates a merge commit. Conflicts pause the merge for resolution." },
+                        let title = if rebase {
+                            format!("Rebase {} onto {}", plan.branch, plan.target_label)
+                        } else {
+                            format!("Merge {} into {}", plan.target_label, plan.branch)
+                        };
+                        let explanation = format!(
+                            "{} has {}; {} has {}.\n\n{}\n\n{} between these branch tips.{}",
+                            plan.branch,
+                            crate::counted(plan.ahead, "unique commit", "unique commits"),
+                            plan.target_label,
+                            plan.behind,
+                            if rebase {
+                                "Replay this branch's commits on the target. Replayed commits receive new IDs; use this for local work that others do not depend on. A clean working tree is required."
+                            } else {
+                                "Bring the target's commits into this branch. Choose fast-forward, merge commit, fast-forward only, or squash into staged changes. Conflicts pause the merge for resolution."
+                            },
                             crate::counted(plan.affected_paths.len(), "path differs", "paths differ"),
-                            if plan.affected_paths.is_empty() { String::new() } else { format!("\n{}{}", plan.affected_paths.iter().take(8).map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n"), if plan.affected_paths.len() > 8 { "\n…" } else { "" }) });
-                        this.confirm_git_write(title, explanation, if rebase { "Rebase branch" } else { "Merge branches" }, WriteCommand::Integration(if rebase { IntegrationCommand::Rebase { plan } } else { IntegrationCommand::Merge { plan } }), window, cx);
+                            if plan.affected_paths.is_empty() {
+                                String::new()
+                            } else {
+                                format!(
+                                    "\n{}{}",
+                                    plan.affected_paths
+                                        .iter()
+                                        .take(8)
+                                        .map(|p| p.to_string_lossy())
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                    if plan.affected_paths.len() > 8 { "\n…" } else { "" }
+                                )
+                            }
+                        );
+                        if rebase {
+                            this.confirm_git_write(
+                                title,
+                                explanation,
+                                "Rebase branch",
+                                WriteCommand::Integration(IntegrationCommand::Rebase { plan }),
+                                window,
+                                cx,
+                            );
+                        } else {
+                            this.open_merge_options_dialog(title, explanation, plan, window, cx);
+                        }
                     }
                     Err(error) => this.operation_error = Some(crate::views::OperationFailure::of(&error)),
                 }
@@ -163,6 +199,253 @@ impl GitTurtle {
             });
         }));
         cx.notify();
+    }
+
+    fn open_merge_options_dialog(
+        &mut self,
+        title: String,
+        explanation: String,
+        plan: gitturtle_core::IntegrationPlan,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = self.path.clone();
+        let view = cx.entity().downgrade();
+        let mode = std::rc::Rc::new(std::cell::Cell::new(gitturtle_core::MergeMode::DefaultFf));
+        let message_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Optional merge commit message"));
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let path = path.clone();
+            let view = view.clone();
+            let mode = std::rc::Rc::clone(&mode);
+            let submit_mode = std::rc::Rc::clone(&mode);
+            let plan = plan.clone();
+            let message_input = message_input.clone();
+            let submit_message = message_input.clone();
+            let selected = mode.get();
+            let supports_message = matches!(
+                selected,
+                gitturtle_core::MergeMode::DefaultFf | gitturtle_core::MergeMode::NoFf
+            );
+            dialog
+                .kind(DialogKind::Alert)
+                .title(title.clone())
+                .width(appearance::dialog_width(px(540.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            native_accessibility::static_text(
+                                div()
+                                    .id("operation-consequences")
+                                    .debug_selector(|| "operation-consequences".to_string()),
+                                explanation.clone(),
+                            )
+                            .max_h(px(220.))
+                            .overflow_y_scroll()
+                            .text_size(crate::appearance::ui_text(13.))
+                            .child(explanation.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(crate::appearance::ui_text(11.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(p.muted))
+                                        .child("Merge strategy"),
+                                )
+                                .children(gitturtle_core::MergeMode::ALL.into_iter().map(
+                                    |choice| {
+                                        let active = selected == choice;
+                                        let mode = std::rc::Rc::clone(&mode);
+                                        button(
+                                            ("merge-mode", choice as usize),
+                                            choice.label(),
+                                            if active { "check" } else { "" },
+                                            active,
+                                        )
+                                        .toggled(active)
+                                        .accessibility_label(format!(
+                                            "Merge strategy: {}",
+                                            choice.label()
+                                        ))
+                                        .debug_selector(move || {
+                                            format!("merge-mode-{}", choice as usize)
+                                        })
+                                        .w_full()
+                                        .on_click(
+                                            move |_, window, _| {
+                                                mode.set(choice);
+                                                window.refresh();
+                                            },
+                                        )
+                                    },
+                                )),
+                        )
+                        .when(supports_message, |col| {
+                            col.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(crate::appearance::ui_text(11.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(p.muted))
+                                            .child("Merge message (optional)"),
+                                    )
+                                    .child(
+                                        Input::new(&message_input)
+                                            .aria_label("Optional merge commit message"),
+                                    ),
+                            )
+                        }),
+                )
+                .footer(crate::tags::dialog_footer("Merge branches", Some("Cancel")))
+                .on_ok(move |_, window, cx| {
+                    let chosen = submit_mode.get();
+                    let raw_message = submit_message.read(cx).value().trim().to_owned();
+                    let custom_message = if raw_message.is_empty()
+                        || !matches!(
+                            chosen,
+                            gitturtle_core::MergeMode::DefaultFf | gitturtle_core::MergeMode::NoFf
+                        ) {
+                        None
+                    } else {
+                        Some(raw_message)
+                    };
+                    let command = WriteCommand::Integration(IntegrationCommand::MergeWithOptions {
+                        plan: Box::new(plan.clone()),
+                        mode: chosen,
+                        message: custom_message,
+                    });
+                    let _ = view.update(cx, |this, cx| {
+                        if this.path == path {
+                            let origin = workspace::confirmations::reviewed(&path, &command);
+                            this.write_from(command, "Merge branches", origin, window, cx);
+                        }
+                    });
+                    true
+                })
+        });
+    }
+
+    pub(super) fn open_start_bisect_dialog(
+        &mut self,
+        default_bad: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || self.shown_tab_unavailable() {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let bad_default = default_bad.unwrap_or_else(|| "HEAD".into());
+        let bad_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("HEAD or commit SHA")
+                .default_value(bad_default)
+        });
+        let good_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Known good commit SHA, tag, or branch")
+        });
+        good_input.focus_handle(cx).focus(window, cx);
+        let error_slot: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let labels = crate::appearance::labels(cx);
+            let bad_input = bad_input.clone();
+            let good_input = good_input.clone();
+            let submit_bad = bad_input.clone();
+            let submit_good = good_input.clone();
+            let error_slot = std::rc::Rc::clone(&error_slot);
+            let submit_error = std::rc::Rc::clone(&error_slot);
+            let owner = owner.clone();
+            let path = path.clone();
+            let current_error = error_slot.borrow().clone();
+            dialog
+                .title("Start git bisect")
+                .width(appearance::dialog_width(px(500.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_size(crate::appearance::ui_text(12.))
+                                .text_color(rgb(p.muted))
+                                .child("Binary-search commit history to find the revision that introduced a regression. Requires a clean working tree."),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("Bad revision (contains bug)")
+                                .child(Input::new(&bad_input).aria_label("Bad revision")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("Good revision (before bug)")
+                                .child(Input::new(&good_input).aria_label("Good revision")),
+                        )
+                        .when_some(current_error, |col, err| {
+                            col.child(
+                                div()
+                                    .id("bisect-start-error")
+                                    .role(Role::Alert)
+                                    .aria_label(err.clone())
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(labels.warning))
+                                    .child(err),
+                            )
+                        }),
+                )
+                .footer(crate::tags::dialog_footer("Start bisect", Some("Cancel")))
+                .on_ok(move |_, window, cx| {
+                    let bad = submit_bad.read(cx).value().trim().to_owned();
+                    let good = submit_good.read(cx).value().trim().to_owned();
+                    if bad.is_empty() || good.is_empty() {
+                        *submit_error.borrow_mut() =
+                            Some("Enter both a bad revision and a known good revision.".into());
+                        window.refresh();
+                        return false;
+                    }
+                    let path = path.clone();
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.path.as_ref() != Some(&path) || this.operation_busy.is_some() {
+                            return;
+                        }
+                        this.write(
+                            WriteCommand::Bisect(
+                                gitturtle_core::BisectCommand::Start { bad, good }.into(),
+                            ),
+                            "Starting git bisect…",
+                            window,
+                            cx,
+                        );
+                    });
+                    true
+                })
+        });
     }
 
     fn confirm_continue(
@@ -266,6 +549,199 @@ impl GitTurtle {
         // (`header_status`).
         let operation = (self.integration_state.as_ref()).filter(|_| !self.shown_tab_unavailable());
         let Some(operation) = operation else {
+            if let Some(bisect) = self
+                .bisect_state
+                .as_ref()
+                .filter(|_| !self.shown_tab_unavailable())
+            {
+                let good_state = bisect.clone();
+                let bad_state = bisect.clone();
+                let skip_state = bisect.clone();
+                let reset_state = bisect.clone();
+                let found_culprit = bisect.culprit_oid.is_some();
+                let clean_ref = gitturtle_core::strip_bidi_controls(&bisect.original_ref);
+                let heading = if let Some(culprit) = &bisect.culprit_oid {
+                    format!("Bisect found first bad commit · {}", short_oid(culprit))
+                } else {
+                    format!(
+                        "Bisect in progress · {} (started from {clean_ref})",
+                        bisect.current_short
+                    )
+                };
+                let detail = match (bisect.remaining_commits, bisect.estimated_steps) {
+                    (Some(rem), Some(steps)) => format!(
+                        "{} remaining · ~{} left",
+                        crate::counted(rem, "revision", "revisions"),
+                        crate::counted(steps, "step", "steps")
+                    ),
+                    _ => format!(
+                        "{} good · {} skipped",
+                        bisect.good_oids.len(),
+                        bisect.skipped_oids.len()
+                    ),
+                };
+                let banner_label = format!("Git bisect: {heading}. {detail}");
+                return div()
+                    .id("bisect-banner")
+                    .role(Role::Region)
+                    .aria_label(banner_label)
+                    .debug_selector(|| "bisect-banner".into())
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .bg(rgb(p.subtle))
+                    .border_b_1()
+                    .border_color(rgb(p.border))
+                    .child(icon("search", 16., p.accent))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(180.))
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(crate::appearance::ui_text(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(heading),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(p.muted))
+                                    .child(detail),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .when(!found_culprit, |row| {
+                                row.child(
+                                    refusing(
+                                        button("bisect-good", "Good", "", false)
+                                            .accessibility_label(
+                                                "Mark current bisect commit as good",
+                                            )
+                                            .debug_selector(|| "bisect-good".into()),
+                                        || "bisect-good".into(),
+                                        busy,
+                                        looks_busy,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.write(
+                                                WriteCommand::Bisect(
+                                                    gitturtle_core::BisectCommand::Good {
+                                                        expected: good_state.clone(),
+                                                    }
+                                                    .into(),
+                                                ),
+                                                "Marking bisect commit good…",
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    refusing(
+                                        button("bisect-bad", "Bad", "", false)
+                                            .accessibility_label(
+                                                "Mark current bisect commit as bad",
+                                            )
+                                            .debug_selector(|| "bisect-bad".into()),
+                                        || "bisect-bad".into(),
+                                        busy,
+                                        looks_busy,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.write(
+                                                WriteCommand::Bisect(
+                                                    gitturtle_core::BisectCommand::Bad {
+                                                        expected: bad_state.clone(),
+                                                    }
+                                                    .into(),
+                                                ),
+                                                "Marking bisect commit bad…",
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    refusing(
+                                        button("bisect-skip", "Skip", "", false)
+                                            .accessibility_label("Skip current bisect commit")
+                                            .debug_selector(|| "bisect-skip".into()),
+                                        || "bisect-skip".into(),
+                                        busy,
+                                        looks_busy,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.write(
+                                                WriteCommand::Bisect(
+                                                    gitturtle_core::BisectCommand::Skip {
+                                                        expected: skip_state.clone(),
+                                                    }
+                                                    .into(),
+                                                ),
+                                                "Skipping bisect commit…",
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                )
+                            })
+                            .child(
+                                refusing(
+                                    button("bisect-reset", "Reset…", "", found_culprit)
+                                        .accessibility_label(
+                                            "Reset git bisect and return to original branch",
+                                        )
+                                        .debug_selector(|| "bisect-reset".into()),
+                                    || "bisect-reset".into(),
+                                    busy,
+                                    looks_busy,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        let clean_ref = gitturtle_core::strip_bidi_controls(
+                                            &reset_state.original_ref,
+                                        );
+                                        this.confirm_git_write(
+                                        "Reset git bisect".into(),
+                                        format!(
+                                            "End the bisect session and return HEAD to {clean_ref}."
+                                        ),
+                                        "Reset bisect",
+                                        WriteCommand::Bisect(
+                                            gitturtle_core::BisectCommand::Reset {
+                                                expected: reset_state.clone(),
+                                            }
+                                            .into(),
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                    },
+                                )),
+                            ),
+                    )
+                    .into_any_element();
+            }
             let diverged =
                 (self.header_status()).filter(|status| status.ahead > 0 && status.behind > 0);
             return div().children(diverged.map(|status| {
@@ -296,11 +772,21 @@ impl GitTurtle {
         };
         let kind = operation.kind.label();
         let title = format!("{kind} in progress · {}", operation.branch);
-        let detail = format!(
-            "{} · {}",
-            operation.target_label,
-            crate::counted(unresolved, "unresolved file", "unresolved files")
-        );
+        let detail = if operation.paused_for_edit && unresolved == 0 {
+            let short = operation
+                .commit
+                .as_deref()
+                .or(operation.head.as_deref())
+                .map(short_oid)
+                .unwrap_or_else(|| operation.target_label.clone());
+            format!("Paused to edit commit {short} · Amend or stage changes, then Continue")
+        } else {
+            format!(
+                "{} · {}",
+                operation.target_label,
+                crate::counted(unresolved, "unresolved file", "unresolved files")
+            )
+        };
         let fit = BannerFit::new(width, kind, &title, &detail, continuation, window);
         // Labelled, or as its icon named by its label, with the label as its
         // tooltip (DESIGN.md, "One responsive order").

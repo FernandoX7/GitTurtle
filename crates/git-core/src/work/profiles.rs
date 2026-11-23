@@ -82,7 +82,7 @@ impl GitRepository {
     /// and worktree overrides retain Git's normal last-value precedence.
     pub(super) fn profile_config(&self) -> Result<GitProfile> {
         let mut command = normal_command(self.target());
-        command.env("GIT_OPTIONAL_LOCKS", "0").args(["config", "--null", "--get-regexp", "^(user\\.(name|email|signingkey)|commit\\.gpgsign|tag\\.(gpgsign|forcesignannotated)|gpg\\.format|extensions\\.worktreeconfig)$"]);
+        command.env("GIT_OPTIONAL_LOCKS", "0").args(["config", "--null", "--get-regexp", "^(user\\.(name|email|signingkey)|commit\\.(gpgsign|template)|tag\\.(gpgsign|forcesignannotated)|gpg\\.format|extensions\\.worktreeconfig)$"]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
         if !(output.status.success() || output.status.code() == Some(1)) {
             return Err(git_failure(
@@ -110,6 +110,10 @@ impl GitRepository {
                 "user.signingkey" => profile.signing_key = Some(value),
                 "gpg.format" => profile.signing_format = Some(value),
                 "commit.gpgsign" => profile.signing = config_bool(Some(&value)),
+                "commit.template" => {
+                    let trimmed = value.trim();
+                    profile.commit_template = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+                }
                 "tag.gpgsign" => profile.tag_signing = config_bool(Some(&value)),
                 "tag.forcesignannotated" => {
                     profile.annotated_tag_signing = config_bool(Some(&value))

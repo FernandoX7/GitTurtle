@@ -79,6 +79,86 @@ pub(crate) fn decode_pdf_page_text(
     })
 }
 
+pub(crate) fn search_pdf_text(
+    bytes: &[u8],
+    query: &str,
+    check: impl Fn() -> Result<()>,
+) -> Result<PdfSearchReply> {
+    check()?;
+    let needle_lower = query.trim().to_lowercase();
+    autoreleasepool(|_| {
+        let data = NSData::with_bytes(bytes);
+        // SAFETY: Same public `PDFDocument` `alloc`/`initWithData:` contract as
+        // `decode_pdf_page_text`: consumes in-memory `NSData` only, no external
+        // resource or script API, and releases within this autorelease pool.
+        let document: Retained<AnyObject> = unsafe {
+            let cls = &*(&raw const PDF_DOCUMENT_CLASS).cast::<AnyClass>();
+            let allocated: Allocated<AnyObject> = msg_send![cls, alloc];
+            let initialized: Option<Retained<AnyObject>> =
+                msg_send![allocated, initWithData: &*data];
+            initialized.context("Cannot search PDF text; corrupt or unsupported document")?
+        };
+        check()?;
+        // SAFETY: `PDFDocument.isLocked` returns Objective-C `BOOL`.
+        let locked: bool = unsafe { msg_send![&*document, isLocked] };
+        ensure!(
+            !locked,
+            "PDF is password protected; text search is unavailable"
+        );
+        // SAFETY: `PDFDocument.pageCount` returns `NSUInteger`.
+        let page_count: usize = unsafe { msg_send![&*document, pageCount] };
+        ensure!(page_count > 0, "PDF contains no pages");
+        ensure!(
+            page_count <= MAX_PDF_PAGES,
+            "PDF page count exceeds the 100,000-page navigation bound"
+        );
+        let limit = page_count.min(MAX_PDF_SEARCH_PAGES);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut matches = Vec::new();
+        let mut pages_scanned = 0usize;
+        let mut truncated = page_count > MAX_PDF_SEARCH_PAGES;
+        for page_index in 0..limit {
+            check()?;
+            if std::time::Instant::now() >= deadline {
+                truncated = true;
+                break;
+            }
+            pages_scanned += 1;
+            let found = autoreleasepool(|_| -> Result<Option<PdfSearchMatch>> {
+                // SAFETY: `page_index < limit <= page_count`.
+                let page: Option<Retained<AnyObject>> =
+                    unsafe { msg_send![&*document, pageAtIndex: page_index] };
+                let Some(page) = page else {
+                    return Ok(None);
+                };
+                // SAFETY: `PDFPage.string` returns optional `NSString *`.
+                let string: Option<Retained<NSString>> = unsafe { msg_send![&*page, string] };
+                let Some(string) = string else {
+                    return Ok(None);
+                };
+                let extracted = bounded_text(&string, &check)?;
+                let Some(text) = extracted.text else {
+                    return Ok(None);
+                };
+                Ok(crate::search_page_text(page_index, &text, &needle_lower))
+            })?;
+            if let Some(found) = found {
+                if matches.len() >= MAX_PDF_SEARCH_MATCHES {
+                    truncated = true;
+                    break;
+                }
+                matches.push(found);
+            }
+        }
+        Ok(PdfSearchReply {
+            page_count,
+            pages_scanned,
+            truncated,
+            matches,
+        })
+    })
+}
+
 fn bounded_text(string: &NSString, check: &impl Fn() -> Result<()>) -> Result<PdfPageText> {
     let length = string.len_utf16();
     let copied = length.min(MAX_PDF_PAGE_TEXT_BYTES);
@@ -233,5 +313,24 @@ mod tests {
             assert!(original.starts_with(&text));
             assert!(!text.contains(char::REPLACEMENT_CHARACTER));
         }
+    }
+
+    #[test]
+    fn search_pdf_text_finds_multi_page_matches_and_respects_cancellation() {
+        let source = pdf(&[
+            "Captured first page",
+            "Distinct needle page",
+            "Another Needle mention",
+        ]);
+        let reply = crate::search_pdf_text(&source, "needle", || Ok(())).unwrap();
+        assert_eq!(reply.page_count, 3);
+        assert_eq!(reply.pages_scanned, 3);
+        assert!(!reply.truncated);
+        assert_eq!(reply.matches.len(), 2);
+        assert_eq!(reply.matches[0].page, 1);
+        assert_eq!(reply.matches[1].page, 2);
+
+        let cancelled = crate::search_pdf_text(&source, "needle", || anyhow::bail!("cancelled"));
+        assert!(cancelled.unwrap_err().to_string().contains("cancelled"));
     }
 }

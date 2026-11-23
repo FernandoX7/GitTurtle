@@ -246,9 +246,66 @@ impl CodeFont {
     }
 }
 
+/// Optional explicit code font family selected by the user in Settings on any
+/// platform. Empty means fall back to the desktop monospace font (Linux, when
+/// enabled) or the platform default monospace family.
+#[derive(Default)]
+struct CustomCodeFont(Option<gpui_kit::SharedString>);
+impl gpui_kit::Global for CustomCodeFont {}
+
+/// Sets or clears the user's explicit code font family on macOS and Linux.
+/// Probes the platform text system before applying so an uninstalled or
+/// cross-OS font saved in `preferences.json` falls back cleanly instead of
+/// panicking GPUI on first layout.
+pub(super) fn set_custom_code_font(family: &str, cx: &mut gpui_kit::App) {
+    let trimmed = family.trim();
+    let next = if trimmed.is_empty() {
+        None
+    } else {
+        let installed = cx.text_system().all_font_names();
+        // Headless test text systems report no installed font list; allow setting
+        // in tests while probing real desktop font registries before applying.
+        if !installed.is_empty() && !installed.iter().any(|name| name == trimmed) {
+            None
+        } else {
+            Some(gpui_kit::SharedString::from(trimmed.to_owned()))
+        }
+    };
+    let slot = cx.default_global::<CustomCodeFont>();
+    if slot.0 == next {
+        return;
+    }
+    slot.0 = next;
+    #[cfg(target_os = "linux")]
+    {
+        if sync_code_font(cx) {
+            cx.refresh_windows();
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use gpui_kit::component::Theme;
+        let resolved = cx
+            .try_global::<CustomCodeFont>()
+            .and_then(|custom| custom.0.clone())
+            .unwrap_or_else(|| crate::mono().into());
+        if Theme::global(cx).mono_font_family != resolved {
+            Theme::global_mut(cx).mono_font_family = resolved;
+            Theme::sync_base(cx);
+            cx.refresh_windows();
+        }
+    }
+}
+
 /// The family code text is drawn in. Other platforms keep the toolkit's.
 #[cfg(target_os = "linux")]
 fn code_font_family(cx: &gpui_kit::App) -> gpui_kit::SharedString {
+    if let Some(family) = cx
+        .try_global::<CustomCodeFont>()
+        .and_then(|custom| custom.0.as_ref())
+    {
+        return family.clone();
+    }
     match cx.try_global::<CodeFont>() {
         Some(CodeFont {
             state: SystemCodeFont::Loaded(family),
@@ -3001,5 +3058,33 @@ mod tests {
         cx.update(|_, cx| cx.set_reduce_motion(true));
         reactivate(cx);
         assert!(!cx.read(|cx| cx.reduce_motion()), "the desktop's answer");
+    }
+
+    #[gpui_kit::test]
+    async fn set_custom_code_font_handles_empty_and_resets_cleanly(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_fixture, _app, cx) = crate::views::tests::history_window(cx).await;
+        let baseline = cx.read(|cx| {
+            gpui_kit::component::Theme::global(cx)
+                .mono_font_family
+                .clone()
+        });
+        cx.update(|_, cx| set_custom_code_font("  ", cx));
+        assert_eq!(
+            cx.read(|cx| gpui_kit::component::Theme::global(cx)
+                .mono_font_family
+                .clone()),
+            baseline
+        );
+        cx.update(|_, cx| set_custom_code_font("Nonexistent Font 9999", cx));
+        // Clearing always restores the default cleanly.
+        cx.update(|_, cx| set_custom_code_font("", cx));
+        assert_eq!(
+            cx.read(|cx| gpui_kit::component::Theme::global(cx)
+                .mono_font_family
+                .clone()),
+            baseline
+        );
     }
 }

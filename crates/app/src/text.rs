@@ -1,12 +1,41 @@
 use crate::appearance::palette;
 use gpui_kit::{
     App, AppContext, Entity, FontWeight, HighlightStyle, Window,
-    component::input::{EditorState, RopeExt, TextDecoration},
+    component::input::{EditorState, RopeExt, TabSize, TextDecoration},
     rgb,
 };
-use std::ops::Range;
 #[cfg(test)]
 use std::sync::Arc;
+use std::{
+    ops::Range,
+    sync::atomic::{AtomicU8, Ordering},
+};
+
+static CURRENT_TAB_WIDTH: AtomicU8 = AtomicU8::new(4);
+
+pub fn set_tab_width(width: u8) {
+    CURRENT_TAB_WIDTH.store(
+        crate::preferences::normalize_tab_width(width),
+        Ordering::Release,
+    );
+}
+
+pub fn current_tab_width() -> usize {
+    usize::from(CURRENT_TAB_WIDTH.load(Ordering::Acquire))
+}
+
+pub fn apply_tab_width(editor: &Entity<EditorState>, width: u8, cx: &mut App) {
+    let tab_size = usize::from(crate::preferences::normalize_tab_width(width));
+    editor.update(cx, |state, cx| {
+        state.set_tab_size(
+            TabSize {
+                tab_size,
+                hard_tabs: false,
+            },
+            cx,
+        );
+    });
+}
 
 pub use gitturtle_diff_model::patch::{Kind, PatchPresentation};
 #[cfg(test)]
@@ -41,12 +70,17 @@ pub fn wrapped_editor(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<EditorState> {
+    let tab_size = TabSize {
+        tab_size: current_tab_width(),
+        hard_tabs: false,
+    };
     let editor = cx.new(|cx| {
         EditorState::new(window, cx)
             .language(language.to_owned())
             .line_number(true)
             .folding(false)
             .soft_wrap(true)
+            .tab_size(tab_size)
             .default_value(value.to_owned())
     });
     crate::editor_find::reserve_highlight_layer(&editor, cx);
@@ -71,12 +105,17 @@ pub fn editor_with_decorations(
     } else {
         language
     };
+    let tab_size = TabSize {
+        tab_size: current_tab_width(),
+        hard_tabs: false,
+    };
     let editor = cx.new(|cx| {
         EditorState::new(window, cx)
             .language(language.to_owned())
             .line_number(diff.is_none())
             .folding(diff.is_none())
             .soft_wrap(false)
+            .tab_size(tab_size)
             .default_value(value.to_owned())
     });
     crate::editor_find::reserve_highlight_layer(&editor, cx);
@@ -547,6 +586,8 @@ pub fn decorated_patch_content() -> crate::worker::Content {
     crate::worker::Content::Text {
         diagrams: None,
         markdown: None,
+        table: None,
+        structured: None,
         patch,
         old,
         new,

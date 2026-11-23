@@ -68,6 +68,13 @@ pub struct Revision {
     #[serde(default)]
     pub label: String,
 }
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullLabel {
+    pub name: String,
+    #[serde(default)]
+    pub color: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PullRequest {
     pub number: u64,
@@ -81,8 +88,22 @@ pub struct PullRequest {
     pub base: Revision,
     #[serde(default)]
     pub user: User,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub html_url: Option<String>,
+    #[serde(default)]
+    pub labels: Vec<PullLabel>,
+    #[serde(default)]
+    pub requested_reviewers: Vec<User>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub merged_at: Option<String>,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     pub login: String,
 }
@@ -96,6 +117,10 @@ impl PullRequest {
             self.title.len() <= MAX_TEXT && self.body.as_ref().is_none_or(|b| b.len() <= MAX_TEXT),
             "Pull request text exceeds the preview limit"
         );
+        ensure!(
+            self.labels.len() <= 100 && self.requested_reviewers.len() <= 100,
+            "Pull request metadata exceeds the label or reviewer limit"
+        );
         Ok(())
     }
     pub fn capture(&self, repository: Repository) -> CapturedPull {
@@ -104,6 +129,186 @@ impl PullRequest {
             number: self.number,
             head: self.head.clone(),
             base: self.base.clone(),
+        }
+    }
+    /// Canonical `https://github.com/<owner>/<repo>/pull/<number>` web URL.
+    pub fn web_url(&self, repository: &Repository) -> String {
+        format!(
+            "https://github.com/{}/{}/pull/{}",
+            repository.owner, repository.name, self.number
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PullStateFilter {
+    #[default]
+    Open,
+    Closed,
+    All,
+}
+
+impl PullStateFilter {
+    pub const ALL: [Self; 3] = [Self::Open, Self::Closed, Self::All];
+
+    pub const fn api(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::All => "all",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::Closed => "Closed",
+            Self::All => "All",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PullSort {
+    #[default]
+    Updated,
+    Created,
+}
+
+impl PullSort {
+    pub const ALL: [Self; 2] = [Self::Updated, Self::Created];
+
+    pub const fn api(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Created => "created",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Updated => "Updated",
+            Self::Created => "Created",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PullListQuery {
+    pub state: PullStateFilter,
+    pub sort: PullSort,
+    pub search: String,
+    pub author: String,
+    pub review_requested: String,
+    pub draft_only: bool,
+}
+
+impl PullListQuery {
+    pub fn matches(&self, pull: &PullRequest) -> bool {
+        if self.draft_only && !pull.draft {
+            return false;
+        }
+        let author = self.author.trim();
+        if !author.is_empty() && !pull.user.login.eq_ignore_ascii_case(author) {
+            return false;
+        }
+        let reviewer = self.review_requested.trim();
+        if !reviewer.is_empty()
+            && !pull
+                .requested_reviewers
+                .iter()
+                .any(|u| u.login.eq_ignore_ascii_case(reviewer))
+        {
+            return false;
+        }
+        let needle = self.search.trim().to_lowercase();
+        if !needle.is_empty() {
+            let number_str = format!("#{}", pull.number);
+            let hit = pull.title.to_lowercase().contains(&needle)
+                || pull.user.login.to_lowercase().contains(&needle)
+                || pull.head.branch.to_lowercase().contains(&needle)
+                || number_str.contains(&needle)
+                || pull
+                    .labels
+                    .iter()
+                    .any(|label| label.name.to_lowercase().contains(&needle));
+            if !hit {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckConclusion {
+    Success,
+    Failure,
+    Pending,
+    Neutral,
+    Skipped,
+}
+
+impl CheckConclusion {
+    pub fn from_api(status: &str, conclusion: Option<&str>) -> Self {
+        match conclusion.map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("success") => Self::Success,
+            Some("failure" | "timed_out" | "cancelled" | "action_required" | "error") => {
+                Self::Failure
+            }
+            Some("skipped") => Self::Skipped,
+            Some("neutral" | "stale") => Self::Neutral,
+            _ => match status.to_ascii_lowercase().as_str() {
+                "success" => Self::Success,
+                "failure" | "error" => Self::Failure,
+                _ => Self::Pending,
+            },
+        }
+    }
+
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Self::Success => "✓",
+            Self::Failure => "✕",
+            Self::Pending => "●",
+            Self::Neutral | Self::Skipped => "–",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckRunSummary {
+    pub name: String,
+    pub status: String,
+    pub conclusion: CheckConclusion,
+    pub details_url: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMethod {
+    #[default]
+    Squash,
+    Merge,
+    Rebase,
+}
+
+impl MergeMethod {
+    pub const ALL: [Self; 3] = [Self::Squash, Self::Merge, Self::Rebase];
+
+    pub const fn api(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+            Self::Rebase => "rebase",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Squash => "Squash and merge",
+            Self::Merge => "Create merge commit",
+            Self::Rebase => "Rebase and merge",
         }
     }
 }
@@ -129,6 +334,7 @@ pub struct Page<T> {
 pub struct PullStatus {
     pub reviews: Vec<String>,
     pub checks: Vec<String>,
+    pub check_runs: Vec<CheckRunSummary>,
     pub incomplete: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -210,6 +416,29 @@ pub enum Action {
         target: conversations::CapturedThread,
         resolved: bool,
     },
+    MergePull {
+        pull: CapturedPull,
+        method: MergeMethod,
+        commit_title: Option<String>,
+        commit_message: Option<String>,
+    },
+    SetPullState {
+        pull: CapturedPull,
+        open: bool,
+    },
+    SetPullDraft {
+        pull: CapturedPull,
+        node_id: String,
+        draft: bool,
+    },
+    UpdateLabels {
+        pull: CapturedPull,
+        labels: Vec<String>,
+    },
+    RequestReviewers {
+        pull: CapturedPull,
+        reviewers: Vec<String>,
+    },
 }
 impl Action {
     pub fn destination(&self) -> String {
@@ -223,7 +452,13 @@ impl Action {
                 p.expected_base.as_deref().unwrap_or("unreviewed"),
                 if p.draft { "draft" } else { "ready" }
             ),
-            Self::Comment { pull, .. } | Self::Review(ReviewDraft { pull, .. }) => format!(
+            Self::Comment { pull, .. }
+            | Self::Review(ReviewDraft { pull, .. })
+            | Self::MergePull { pull, .. }
+            | Self::SetPullState { pull, .. }
+            | Self::SetPullDraft { pull, .. }
+            | Self::UpdateLabels { pull, .. }
+            | Self::RequestReviewers { pull, .. } => format!(
                 "github.com/{} #{} · head {} · base {}",
                 pull.repository.label(),
                 pull.number,
@@ -488,14 +723,35 @@ impl<T: Transport> Client<T> {
         page: u32,
         control: &OperationControl,
     ) -> Result<Page<PullRequest>> {
+        self.list_with_query(
+            repository,
+            page,
+            &PullListQuery {
+                state: PullStateFilter::Open,
+                sort: PullSort::Created,
+                ..PullListQuery::default()
+            },
+            control,
+        )
+    }
+
+    pub fn list_with_query(
+        &mut self,
+        repository: &Repository,
+        page: u32,
+        query: &PullListQuery,
+        control: &OperationControl,
+    ) -> Result<Page<PullRequest>> {
         ensure!(
             (1..=1000).contains(&page),
             "PR page must be between 1 and 1000"
         );
         let response = self.get(
             format!(
-                "{}/pulls?state=open&sort=created&direction=desc&per_page={PAGE_SIZE}&page={page}",
-                repository.endpoint()
+                "{}/pulls?state={}&sort={}&direction=desc&per_page={PAGE_SIZE}&page={page}",
+                repository.endpoint(),
+                query.state.api(),
+                query.sort.api()
             ),
             control,
         )?;
@@ -572,6 +828,37 @@ impl<T: Transport> Client<T> {
                     .is_none_or(|v| v.len() <= 100),
             "GitHub returned too many status entries"
         );
+        let mut check_runs = Vec::new();
+        for v in check_values["check_runs"].as_array().into_iter().flatten() {
+            let name = v["name"].as_str().unwrap_or("Check").to_owned();
+            let status_str = v["status"].as_str().unwrap_or("queued");
+            let conclusion_str = v["conclusion"].as_str();
+            let details_url = v["details_url"]
+                .as_str()
+                .filter(|url| valid_https_url(url))
+                .or_else(|| v["html_url"].as_str().filter(|url| valid_https_url(url)))
+                .map(str::to_owned);
+            check_runs.push(CheckRunSummary {
+                name,
+                status: conclusion_str.unwrap_or(status_str).to_owned(),
+                conclusion: CheckConclusion::from_api(status_str, conclusion_str),
+                details_url,
+            });
+        }
+        for v in status_values["statuses"].as_array().into_iter().flatten() {
+            let name = v["context"].as_str().unwrap_or("Status").to_owned();
+            let state_str = v["state"].as_str().unwrap_or("pending");
+            let details_url = v["target_url"]
+                .as_str()
+                .filter(|url| valid_https_url(url))
+                .map(str::to_owned);
+            check_runs.push(CheckRunSummary {
+                name,
+                status: state_str.to_owned(),
+                conclusion: CheckConclusion::from_api(state_str, None),
+                details_url,
+            });
+        }
         Ok(PullStatus {
             reviews: review_values
                 .iter()
@@ -591,34 +878,11 @@ impl<T: Transport> Client<T> {
                     )
                 })
                 .collect(),
-            checks: check_values["check_runs"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|v| {
-                    format!(
-                        "{}: {}",
-                        v["name"].as_str().unwrap_or("Check"),
-                        v["conclusion"]
-                            .as_str()
-                            .or_else(|| v["status"].as_str())
-                            .unwrap_or("Unknown")
-                    )
-                })
-                .chain(
-                    status_values["statuses"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .map(|v| {
-                            format!(
-                                "{}: {}",
-                                v["context"].as_str().unwrap_or("Status"),
-                                v["state"].as_str().unwrap_or("Unknown")
-                            )
-                        }),
-                )
+            checks: check_runs
+                .iter()
+                .map(|run| format!("{}: {}", run.name, run.status))
                 .collect(),
+            check_runs,
             incomplete: reviews.next_page() || checks.next_page() || statuses.next_page(),
         })
     }
@@ -690,9 +954,23 @@ impl<T: Transport> Client<T> {
                     .set_thread_resolved(target, *resolved, control)
                     .map(Sent::plain);
             }
+            Action::SetPullDraft {
+                pull,
+                node_id,
+                draft,
+            } => {
+                let current = self.revalidate(pull, control)?;
+                ensure!(
+                    current.node_id.as_deref() == Some(node_id.as_str()),
+                    "Pull request identity changed before updating draft state. Refresh explicitly."
+                );
+                return self
+                    .set_pull_draft(pull, node_id, *draft, control)
+                    .map(Sent::plain);
+            }
             _ => {}
         }
-        let (endpoint, body) = match &action {
+        let (method, endpoint, body) = match &action {
             Action::Create(p) => {
                 ensure!(
                     p.expected_head.is_some() && p.expected_base.is_some(),
@@ -714,6 +992,7 @@ impl<T: Transport> Client<T> {
                     "Choose the published head and destination base branch"
                 );
                 (
+                    "POST",
                     format!("{}/pulls", p.repository.endpoint()),
                     json!({ "title": p.title, "body": p.body, "head": p.head, "base": p.base, "draft": p.draft }),
                 )
@@ -722,6 +1001,7 @@ impl<T: Transport> Client<T> {
                 validate_text(body, true)?;
                 self.revalidate(pull, control)?;
                 (
+                    "POST",
                     format!(
                         "{}/issues/{}/comments",
                         pull.repository.endpoint(),
@@ -760,6 +1040,7 @@ impl<T: Transport> Client<T> {
                 }
                 self.revalidate(&draft.pull, control)?;
                 (
+                    "POST",
                     format!(
                         "{}/pulls/{}/reviews",
                         draft.pull.repository.endpoint(),
@@ -768,13 +1049,133 @@ impl<T: Transport> Client<T> {
                     json!({ "commit_id": draft.pull.head.sha, "body": draft.body, "event": draft.event.api(), "comments": draft.comments }),
                 )
             }
-            Action::Reply { .. } | Action::SetThreadResolved { .. } => unreachable!(),
+            Action::MergePull {
+                pull,
+                method,
+                commit_title,
+                commit_message,
+            } => {
+                if let Some(title) = commit_title {
+                    validate_text(title, false)?;
+                }
+                if let Some(msg) = commit_message {
+                    validate_text(msg, false)?;
+                }
+                self.revalidate(pull, control)?;
+                let mut payload = json!({
+                    "sha": pull.head.sha,
+                    "merge_method": method.api(),
+                });
+                if let Some(title) = commit_title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    payload["commit_title"] = json!(title);
+                }
+                if let Some(msg) = commit_message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    payload["commit_message"] = json!(msg);
+                }
+                (
+                    "PUT",
+                    format!("{}/pulls/{}/merge", pull.repository.endpoint(), pull.number),
+                    payload,
+                )
+            }
+            Action::SetPullState { pull, open } => {
+                let current = self.revalidate_identity(pull, control)?;
+                if *open {
+                    ensure!(
+                        current.merged_at.is_none(),
+                        "Merged pull requests cannot be reopened."
+                    );
+                    ensure!(
+                        current.state == "closed",
+                        "This pull request is already open."
+                    );
+                } else {
+                    ensure!(
+                        current.state == "open",
+                        "This pull request is no longer open."
+                    );
+                }
+                (
+                    "PATCH",
+                    format!("{}/pulls/{}", pull.repository.endpoint(), pull.number),
+                    json!({ "state": if *open { "open" } else { "closed" } }),
+                )
+            }
+            Action::UpdateLabels { pull, labels } => {
+                ensure!(labels.len() <= 20, "Specify at most 20 labels at once");
+                for label in labels {
+                    let trimmed = label.trim();
+                    ensure!(
+                        !trimmed.is_empty()
+                            && trimmed.len() <= 50
+                            && !trimmed.chars().any(char::is_control),
+                        "Label names must be 1 to 50 visible bytes"
+                    );
+                }
+                self.revalidate(pull, control)?;
+                (
+                    "PUT",
+                    format!(
+                        "{}/issues/{}/labels",
+                        pull.repository.endpoint(),
+                        pull.number
+                    ),
+                    json!({ "labels": labels }),
+                )
+            }
+            Action::RequestReviewers { pull, reviewers } => {
+                ensure!(
+                    !reviewers.is_empty() && reviewers.len() <= 15,
+                    "Specify between 1 and 15 reviewer logins"
+                );
+                for login in reviewers {
+                    ensure!(
+                        !login.is_empty()
+                            && login.len() <= 39
+                            && login
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+                        "Invalid GitHub reviewer login '{login}'"
+                    );
+                }
+                self.revalidate(pull, control)?;
+                (
+                    "POST",
+                    format!(
+                        "{}/pulls/{}/requested_reviewers",
+                        pull.repository.endpoint(),
+                        pull.number
+                    ),
+                    json!({ "reviewers": reviewers }),
+                )
+            }
+            Action::Reply { .. }
+            | Action::SetThreadResolved { .. }
+            | Action::SetPullDraft { .. } => unreachable!(),
         };
         ensure!(
             !control.is_cancelled(),
             "GitHub action cancelled before submission"
         );
-        let response = self.0.request(Request { method: "POST", endpoint, body: Some(body) }, control).map_err(|error| anyhow!("{error}. The GitHub outcome may be uncertain. Check the destination before resubmitting; no automatic retry was made."))?;
+        let response = self
+            .0
+            .request(
+                Request {
+                    method,
+                    endpoint,
+                    body: Some(body),
+                },
+                control,
+            )
+            .map_err(|error| anyhow!("{error}. The GitHub outcome may be uncertain. Check the destination before resubmitting; no automatic retry was made."))?;
         // Only a creation is refused this way; every other write keeps the one sentence.
         if matches!(action, Action::Create(_)) && response.pull_exists() {
             return Err(PullExists.into());
@@ -805,6 +1206,32 @@ impl<T: Transport> Client<T> {
                 created: Some(Created::read(pull, number, new)),
             });
         }
+        if matches!(action, Action::MergePull { .. }) {
+            let value: Value = response.json().map_err(|_| {
+                anyhow!(
+                    "GitHub accepted the merge request but its response could not be read. Refresh explicitly before retrying."
+                )
+            })?;
+            ensure!(
+                value["merged"].as_bool() == Some(true),
+                "GitHub did not confirm that the pull request was merged. Refresh explicitly before retrying."
+            );
+            return Ok(Sent::plain(format!(
+                "GitHub merged pull request at {}",
+                action.destination()
+            )));
+        }
+        if matches!(
+            action,
+            Action::SetPullState { .. }
+                | Action::UpdateLabels { .. }
+                | Action::RequestReviewers { .. }
+        ) {
+            return Ok(Sent::plain(format!(
+                "GitHub accepted action at {}",
+                action.destination()
+            )));
+        }
         let value: Value = response.json().map_err(|_| anyhow!("GitHub accepted the action but its response could not be read. Check the destination before resubmitting; no automatic retry was made."))?;
         let id = value["number"].as_u64().or_else(|| value["id"].as_u64()).ok_or_else(|| anyhow!("GitHub accepted the action but returned no identity. Check the destination before resubmitting."))?;
         Ok(Sent::plain(format!(
@@ -812,18 +1239,45 @@ impl<T: Transport> Client<T> {
             action.destination()
         )))
     }
-    fn revalidate(&mut self, captured: &CapturedPull, control: &OperationControl) -> Result<()> {
+    fn revalidate_identity(
+        &mut self,
+        captured: &CapturedPull,
+        control: &OperationControl,
+    ) -> Result<PullRequest> {
         let current = self.pull(&captured.repository, captured.number, control)?;
         ensure!(
             current.head == captured.head && current.base == captured.base,
             "This pull request head or base moved. Your draft is retained. Refresh and review the new comparison before submitting; outdated diff positions are not remapped automatically"
         );
+        Ok(current)
+    }
+    fn revalidate(
+        &mut self,
+        captured: &CapturedPull,
+        control: &OperationControl,
+    ) -> Result<PullRequest> {
+        let current = self.revalidate_identity(captured, control)?;
         ensure!(
             current.state == "open",
             "This pull request is no longer open. Your draft is retained"
         );
-        Ok(())
+        Ok(current)
     }
+}
+
+fn valid_https_url(url: &str) -> bool {
+    if url.len() > 2048 || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    !host.is_empty() && !host.starts_with('.') && !host.ends_with('.')
 }
 #[derive(Clone, Debug)]
 pub struct Template {
@@ -1553,5 +2007,251 @@ mod tests {
         let error =
             read_templates(&repo, listing, &cancellation).expect_err("the cancel stops the read");
         assert!(gitturtle_core::is_read_cancelled(&error), "{error:#}");
+    }
+
+    #[test]
+    fn pr_v2_query_filtering_structured_checks_and_explicit_mutations_work() {
+        let head_sha = "1111111111111111111111111111111111111111";
+        let base_sha = "2222222222222222222222222222222222222222";
+        let pr_json = json!({
+            "number": 42,
+            "title": "Improve keyboard focus",
+            "body": "## Summary\nClean focus ring",
+            "state": "open",
+            "draft": true,
+            "node_id": "PR_kwDOFixture42",
+            "head": { "sha": head_sha, "ref": "feat/focus", "label": "octocat:feat/focus" },
+            "base": { "sha": base_sha, "ref": "main", "label": "octocat:main" },
+            "user": { "login": "ada" },
+            "labels": [{ "name": "accessibility", "color": "0e8a16" }],
+            "requested_reviewers": [{ "login": "bob" }],
+            "updated_at": "2026-11-22T00:00:00Z"
+        });
+        let pr: PullRequest = serde_json::from_value(pr_json.clone()).unwrap();
+        let repo = Repository {
+            owner: "octocat".into(),
+            name: "gitturtle".into(),
+        };
+        assert_eq!(
+            pr.web_url(&repo),
+            "https://github.com/octocat/gitturtle/pull/42"
+        );
+        let query = PullListQuery {
+            state: PullStateFilter::All,
+            sort: PullSort::Updated,
+            search: "accessibility".into(),
+            author: "ada".into(),
+            review_requested: "bob".into(),
+            draft_only: true,
+        };
+        assert!(query.matches(&pr));
+        assert!(
+            !PullListQuery {
+                author: "charlie".into(),
+                ..query
+            }
+            .matches(&pr)
+        );
+
+        let captured = pr.capture(repo);
+        let ok = |v: Value| {
+            Ok(Response {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: serde_json::to_vec(&v).unwrap(),
+            })
+        };
+        let mut client = Client(Mock {
+            responses: VecDeque::from([
+                // status() -> reviews, check-runs, statuses
+                ok(json!([])),
+                ok(json!({
+                    "check_runs": [{
+                        "name": "Clippy",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "details_url": "https://github.com/octocat/gitturtle/actions/runs/1"
+                    }, {
+                        "name": "EvilLink",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "details_url": "javascript:alert(1)"
+                    }]
+                })),
+                ok(json!({ "statuses": [] })),
+                // MergePull -> revalidate + PUT merge
+                ok(pr_json.clone()),
+                ok(json!({ "merged": true })),
+                // SetPullState -> revalidate + PATCH
+                ok(pr_json.clone()),
+                ok(json!({ "state": "closed" })),
+                // UpdateLabels -> revalidate + PUT labels
+                ok(pr_json.clone()),
+                ok(json!([{ "name": "bug" }])),
+                // RequestReviewers -> revalidate + POST reviewers
+                ok(pr_json.clone()),
+                ok(json!({ "number": 42 })),
+                // SetPullDraft -> revalidate + GraphQL mutation
+                ok(pr_json),
+                ok(
+                    json!({ "data": { "markPullRequestReadyForReview": { "pullRequest": { "id": "PR_kwDOFixture42", "isDraft": false } } } }),
+                ),
+            ]),
+            ..Default::default()
+        });
+        let control = OperationControl::default();
+        let status = client.status(&captured, &control).unwrap();
+        assert_eq!(status.check_runs.len(), 2);
+        assert_eq!(status.check_runs[0].conclusion, CheckConclusion::Success);
+        assert!(status.check_runs[0].details_url.is_some());
+        assert_eq!(status.check_runs[1].conclusion, CheckConclusion::Failure);
+        assert!(
+            status.check_runs[1].details_url.is_none(),
+            "non-https details_url must be dropped"
+        );
+
+        client
+            .execute(
+                Action::MergePull {
+                    pull: captured.clone(),
+                    method: MergeMethod::Squash,
+                    commit_title: Some("feat: improve focus".into()),
+                    commit_message: None,
+                },
+                &control,
+            )
+            .unwrap();
+        assert_eq!(client.0.requests[4].method, "PUT");
+        assert_eq!(client.0.requests[4].body.as_ref().unwrap()["sha"], head_sha);
+
+        client
+            .execute(
+                Action::SetPullState {
+                    pull: captured.clone(),
+                    open: false,
+                },
+                &control,
+            )
+            .unwrap();
+        assert_eq!(client.0.requests[6].method, "PATCH");
+
+        client
+            .execute(
+                Action::UpdateLabels {
+                    pull: captured.clone(),
+                    labels: vec!["bug".into()],
+                },
+                &control,
+            )
+            .unwrap();
+        assert_eq!(client.0.requests[8].method, "PUT");
+
+        client
+            .execute(
+                Action::RequestReviewers {
+                    pull: captured.clone(),
+                    reviewers: vec!["bob".into()],
+                },
+                &control,
+            )
+            .unwrap();
+        assert_eq!(client.0.requests[10].method, "POST");
+
+        client
+            .execute(
+                Action::SetPullDraft {
+                    pull: captured.clone(),
+                    node_id: "PR_kwDOFixture42".into(),
+                    draft: false,
+                },
+                &control,
+            )
+            .unwrap();
+
+        // Additional security & state-machine checks:
+        // 1. Reopening a closed unmerged PR succeeds.
+        // 2. Reopening a merged PR is refused.
+        // 3. SetPullDraft refuses a mismatched node_id.
+        // 4. Userinfo-spoofed check URLs are rejected while falling back to html_url.
+        let closed_pr = json!({
+            "number": 42,
+            "node_id": "PR_kwDOFixture42",
+            "title": "Improve keyboard focus",
+            "state": "closed",
+            "draft": false,
+            "user": { "login": "ada" },
+            "head": { "label": "octocat:feat/focus", "ref": "feat/focus", "sha": head_sha },
+            "base": { "label": "octocat:main", "ref": "main", "sha": base_sha }
+        });
+        let merged_pr = json!({
+            "number": 42,
+            "node_id": "PR_kwDOFixture42",
+            "title": "Improve keyboard focus",
+            "state": "closed",
+            "draft": false,
+            "merged_at": "2026-11-22T00:00:00Z",
+            "user": { "login": "ada" },
+            "head": { "label": "octocat:feat/focus", "ref": "feat/focus", "sha": head_sha },
+            "base": { "label": "octocat:main", "ref": "main", "sha": base_sha }
+        });
+        let open_pr = json!({
+            "number": 42,
+            "node_id": "PR_kwDOFixture42",
+            "title": "Improve keyboard focus",
+            "state": "open",
+            "draft": false,
+            "user": { "login": "ada" },
+            "head": { "label": "octocat:feat/focus", "ref": "feat/focus", "sha": head_sha },
+            "base": { "label": "octocat:main", "ref": "main", "sha": base_sha }
+        });
+        let mut client2 = Client(Mock {
+            responses: VecDeque::from([
+                // Reopen closed PR
+                ok(closed_pr),
+                ok(json!({ "state": "open" })),
+                // Refuse reopen merged PR
+                ok(merged_pr),
+                // Refuse SetPullDraft with wrong node_id
+                ok(open_pr),
+            ]),
+            ..Default::default()
+        });
+        client2
+            .execute(
+                Action::SetPullState {
+                    pull: captured.clone(),
+                    open: true,
+                },
+                &control,
+            )
+            .unwrap();
+        assert!(
+            client2
+                .execute(
+                    Action::SetPullState {
+                        pull: captured.clone(),
+                        open: true,
+                    },
+                    &control,
+                )
+                .is_err()
+        );
+        assert!(
+            client2
+                .execute(
+                    Action::SetPullDraft {
+                        pull: captured,
+                        node_id: "PR_WRONG_ID".into(),
+                        draft: true,
+                    },
+                    &control,
+                )
+                .is_err()
+        );
+        assert!(!valid_https_url("https://github.com@evil.test/run/1"));
+        assert!(!valid_https_url("https://github.com/run/1\nfoo"));
+        assert!(valid_https_url(
+            "https://github.com/octocat/gitturtle/actions/runs/1"
+        ));
     }
 }

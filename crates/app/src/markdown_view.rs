@@ -297,12 +297,66 @@ pub fn is_markdown(path: &std::path::Path) -> bool {
         })
 }
 
+#[cfg(test)]
 pub fn prepare(
     old: &str,
     new: &str,
     file: &FileChange,
     lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
     stored_pointers: [bool; 2],
+    check: impl Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<Option<Comparison>> {
+    prepare_with_theme(
+        old,
+        new,
+        file,
+        lfs_failed,
+        stored_pointers,
+        gitturtle_preview::mermaid::MermaidTheme::Light,
+        check,
+    )
+}
+
+/// Prepares a bounded single-side rendered Markdown comparison from inline text
+/// (such as a GitHub pull request description). Never fetches remote images.
+pub fn prepare_inline(
+    source: &str,
+    mermaid_theme: gitturtle_preview::mermaid::MermaidTheme,
+    check: impl Fn() -> anyhow::Result<()>,
+) -> Option<Arc<Comparison>> {
+    if source.trim().is_empty() || source.len() > gitturtle_preview::MAX_INPUT_BYTES {
+        return None;
+    }
+    let synthetic = FileChange {
+        old_path: None,
+        new_path: Some(PathBuf::from("pull-request.md")),
+        status: gitturtle_core::ChangeStatus::Added,
+        old_oid: None,
+        new_oid: None,
+        old_mode: String::new(),
+        new_mode: "100644".into(),
+    };
+    prepare_with_theme(
+        "",
+        source,
+        &synthetic,
+        [None, None],
+        [false, false],
+        mermaid_theme,
+        check,
+    )
+    .ok()
+    .flatten()
+    .map(Arc::new)
+}
+
+pub fn prepare_with_theme(
+    old: &str,
+    new: &str,
+    file: &FileChange,
+    lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    stored_pointers: [bool; 2],
+    mermaid_theme: gitturtle_preview::mermaid::MermaidTheme,
     check: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Comparison>> {
     if ![file.old_path.as_deref(), file.new_path.as_deref()]
@@ -339,7 +393,7 @@ pub fn prepare(
         if pointer {
             Ok(Document::lfs_pointer(name, source, failure))
         } else {
-            prepare_document(source, name, present, &check)
+            prepare_document_with_theme(source, name, present, mermaid_theme, &check)
         }
     };
     Ok(Some(Comparison {
@@ -360,10 +414,27 @@ pub fn prepare(
     }))
 }
 
+#[cfg(test)]
 fn prepare_document(
     source: &str,
     name: &std::path::Path,
     present: bool,
+    check: &impl Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<Document> {
+    prepare_document_with_theme(
+        source,
+        name,
+        present,
+        gitturtle_preview::mermaid::MermaidTheme::Light,
+        check,
+    )
+}
+
+fn prepare_document_with_theme(
+    source: &str,
+    name: &std::path::Path,
+    present: bool,
+    mermaid_theme: gitturtle_preview::mermaid::MermaidTheme,
     check: &impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Document> {
     check()?;
@@ -407,6 +478,7 @@ fn prepare_document(
     let mut builder = Builder {
         blocks: Vec::new(),
         diagrams: 0,
+        mermaid_theme,
         check,
         source,
         references,
@@ -625,6 +697,7 @@ thread_local! {
 struct Builder<'a, F> {
     blocks: Vec<Block>,
     diagrams: usize,
+    mermaid_theme: gitturtle_preview::mermaid::MermaidTheme,
     check: &'a F,
     source: &'a str,
     references: HashMap<String, String>,
@@ -687,10 +760,11 @@ impl<F: Fn() -> anyhow::Result<()>> Builder<'_, F> {
                 // last slot, says no limit.
                 if language.eq_ignore_ascii_case("mermaid") && !code.value.trim().is_empty() {
                     if self.diagrams < gitturtle_preview::mermaid::MAX_DIAGRAMS {
-                        if let Some(document) = gitturtle_preview::mermaid::preview(
+                        if let Some(document) = gitturtle_preview::mermaid::preview_with_theme(
                             &code.value,
                             std::path::Path::new("diagram.mmd"),
                             1200,
+                            self.mermaid_theme,
                             self.check,
                         )? {
                             // A render error still takes a slot, which is
@@ -1032,6 +1106,11 @@ impl View {
         let destination = destination.to_owned();
         let path = document.name.clone();
         let control = cancellation.clone();
+        let mermaid_theme = if gpui_kit::component::Theme::global(cx).mode.is_dark() {
+            gitturtle_preview::mermaid::MermaidTheme::Dark
+        } else {
+            gitturtle_preview::mermaid::MermaidTheme::Light
+        };
         static LINKS: std::sync::OnceLock<SerialExecutor> = std::sync::OnceLock::new();
         let response=LINKS.get_or_init(||SerialExecutor::new("gitturtle-markdown-links")).submit_read(move|| {
             let mut assets=repo.capture_preview_assets(&scope,&path,&[destination],None,MAX_SOURCE,MAX_SOURCE,&control)?;
@@ -1042,7 +1121,7 @@ impl View {
             let check=||{anyhow::ensure!(!control.is_cancelled(),"Local document request cancelled");Ok(())};
             check()?;
             let markdown=if is_markdown(&asset.path) {
-                let mut comparison=Comparison {old:Arc::new(Document::notice(&asset.path,false,"No file on this side")),new:Arc::new(prepare_document(source,&asset.path,true,&check)?)};
+                let mut comparison=Comparison {old:Arc::new(Document::notice(&asset.path,false,"No file on this side")),new:Arc::new(prepare_document_with_theme(source,&asset.path,true,mermaid_theme,&check)?)};
                 let file=FileChange {old_oid:None,new_oid:asset.blob_oid.clone(),old_path:None,new_path:Some(asset.path.clone()),old_mode:"000000".into(),new_mode:asset.mode.clone(),status:gitturtle_core::ChangeStatus::Added};
                 capture_assets(&mut comparison,&repo,&file,&Origins {old:None,new:Some(scope)},&control)?;
                 Some(Arc::new(comparison))
@@ -1679,160 +1758,231 @@ impl Render for View {
                 cx.notify();
             }))
             .flex()
-            .children((0..2).filter(|side| !self.quick || *side == 1).map(|side| {
-                let document = if side == 0 {
-                    &self.comparison.old
-                } else {
-                    &self.comparison.new
-                };
-                let label = if side == 0 {
-                    "Before"
-                } else if self.quick {
-                    "Source"
-                } else {
-                    "After"
-                };
-                let kind = document.kind();
-                let mut header = div()
+            .flex_col()
+            .child({
+                let sides: Vec<usize> = (0..2).filter(|side| !self.quick || *side == 1).collect();
+                // Hoist both side headers into one shared flex row so Before and
+                // After share one continuous bottom divider even when one side
+                // wraps an extra status chip or longer format label.
+                div()
+                    .w_full()
                     .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .p_2()
                     .border_b_1()
                     .border_color(rgb(colors.border))
-                    .child(crate::native_accessibility::text(
-                        SharedString::from(format!("markdown-heading-{side}")),
-                        format!("{label} · {kind}"),
-                    ))
-                    .child(button(("markdown-read",side),"Read","",false)
-                        .accessibility_label(format!("Read {label} {kind}. Arrow keys move blocks; Page Up and Page Down move six blocks; Home and End move to the document boundaries."))
-                        .on_click(cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);cx.notify();})));
-                for (name, last) in [("Top", false), ("End", true)] {
-                    header = header.child(
-                        button(
-                            ("markdown-edge", side * 2 + usize::from(last)),
-                            name,
-                            "",
-                            false,
-                        )
-                        .accessibility_label(format!("{label}: {name}"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let index = if last {
-                                if side == 0 {
-                                    this.comparison.old.blocks.len()
-                                } else {
-                                    this.comparison.new.blocks.len()
-                                }
-                                .saturating_sub(1)
-                            } else {
-                                0
-                            };
-                            this.jump(side, index);
-                            cx.notify();
-                        })),
-                    );
-                }
-                if !self.quick && self.linkable() {
-                    header = header.child(div().debug_selector(move || format!("markdown-link-scroll-{side}")).child(
-                        button(
-                            ("markdown-link-scroll", side),
-                            if self.linked {
-                                "Linked blocks"
-                            } else {
-                                "Independent scroll"
-                            },
-                            "",
-                            self.linked,
-                        )
-                        .toggled(self.linked)
-                        .accessibility_label(format!("{label}: Link Markdown block scrolling"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.linked = !this.linked;
-                            if this.linked {
-                                this.jump(side, this.lists[side].logical_scroll_top().item_ix);
-                            }
-                            cx.notify();
-                        })),
-                    ));
-                }
-                // In Split, the keys move only the active side, so its list
-                // area under its header takes the keyboard ring on its own
-                // edge, over the blocks, so none moves, or the whole side where
-                // its header leaves the blocks no room; Quick Open's one side
-                // is the whole view's.
-                let ring = (!self.quick && side == self.active_side)
-                    .then(|| self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent))))
-                    .flatten();
-                let room = self.blocks_room.get()[side];
-                let (blocks_ring, side_ring) = if room { (ring, None) } else { (None, ring) };
-                let blocks_room = self.blocks_room.clone();
-                let view = cx.entity().downgrade();
-                let owner = cx.entity().downgrade();
-                let list = gpui_kit::list(self.lists[side].clone(), move |index, _, cx| {
-                    owner
-                        .update(cx, |this, cx| this.block(side, index, cx))
-                        .unwrap_or_else(|_| div().into_any_element())
-                })
-                .size_full();
-                if let Some(notice) = &self.notice {
-                    header = header.child(
-                        div()
-                            .id(("markdown-notice", side))
-                            .role(Role::Status)
-                            .aria_label(notice.clone())
-                            .polite()
-                            .text_size(appearance::ui_text(11.))
-                            .child(notice.clone()),
-                    );
-                }
-                if !document.present {
-                    header = header.child("Absent");
-                }
-                div()
-                    // The blocks have room where the layout gives them some
-                    // height; a change draws the ring again where it now lies.
-                    .on_children_prepainted(move |children, window, _| {
-                        let Some(blocks) = children.get(1) else {
-                            return;
-                        };
-                        let mut rooms = blocks_room.get();
-                        let has_room = blocks.size.height >= px(2.);
-                        if rooms[side] != has_room {
-                            rooms[side] = has_room;
-                            blocks_room.set(rooms);
-                            let view = view.clone();
-                            window.on_next_frame(move |_, cx| {
-                                view.update(cx, |_, cx| cx.notify()).ok();
-                            });
-                        }
-                    })
-                    .id(("markdown-side", side))
-                    .role(Role::Document)
-                    .aria_label(format!(
-                        "{label} {kind}: {}{}",
-                        document.name.display(),
-                        if document.present {
-                            ""
+                    .children(sides.into_iter().map(|side| {
+                        let document = if side == 0 {
+                            &self.comparison.old
                         } else {
-                            ". File absent"
+                            &self.comparison.new
+                        };
+                        let label = if side == 0 {
+                            "Before"
+                        } else if self.quick {
+                            "Source"
+                        } else {
+                            "After"
+                        };
+                        let kind = document.kind();
+                        let mut header = div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .p_2()
+                            .child(crate::native_accessibility::text(
+                                SharedString::from(format!("markdown-heading-{side}")),
+                                format!("{label} · {kind}"),
+                            ))
+                            .child(button(("markdown-read", side), "Read", "", false)
+                                .accessibility_label(format!("Read {label} {kind}. Arrow keys move blocks; Page Up and Page Down move six blocks; Home and End move to the document boundaries."))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.active_side = side;
+                                    this.focus.focus(window, cx);
+                                    cx.notify();
+                                })));
+                        for (name, last) in [("Top", false), ("End", true)] {
+                            header = header.child(
+                                button(
+                                    ("markdown-edge", side * 2 + usize::from(last)),
+                                    name,
+                                    "",
+                                    false,
+                                )
+                                .accessibility_label(format!("{label}: {name}"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let index = if last {
+                                        if side == 0 {
+                                            this.comparison.old.blocks.len()
+                                        } else {
+                                            this.comparison.new.blocks.len()
+                                        }
+                                        .saturating_sub(1)
+                                    } else {
+                                        0
+                                    };
+                                    this.jump(side, index);
+                                    cx.notify();
+                                })),
+                            );
                         }
-                    ))
+                        if !self.quick && self.linkable() {
+                            header = header.child(
+                                div()
+                                    .debug_selector(move || format!("markdown-link-scroll-{side}"))
+                                    .child(
+                                        button(
+                                            ("markdown-link-scroll", side),
+                                            if self.linked {
+                                                "Linked blocks"
+                                            } else {
+                                                "Independent scroll"
+                                            },
+                                            "",
+                                            self.linked,
+                                        )
+                                        .toggled(self.linked)
+                                        .accessibility_label(format!(
+                                            "{label}: Link Markdown block scrolling"
+                                        ))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.linked = !this.linked;
+                                            if this.linked {
+                                                this.jump(
+                                                    side,
+                                                    this.lists[side].logical_scroll_top().item_ix,
+                                                );
+                                            }
+                                            cx.notify();
+                                        })),
+                                    ),
+                            );
+                        }
+                        if let Some(notice) = &self.notice {
+                            header = header.child(
+                                div()
+                                    .id(("markdown-notice", side))
+                                    .role(Role::Status)
+                                    .aria_label(notice.clone())
+                                    .polite()
+                                    .text_size(appearance::ui_text(11.))
+                                    .child(notice.clone()),
+                            );
+                        }
+                        if !document.present {
+                            header = header.child("Absent");
+                        }
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .border_r_1()
+                            .border_color(rgb(colors.border))
+                            .child(header)
+                    }))
+            })
+            .child(
+                div()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
+                    .min_h_0()
+                    .w_full()
                     .flex()
-                    .flex_col()
-                    .border_r_1()
-                    .border_color(rgb(colors.border))
-                    .relative()
-                    .child(header)
-                    .child(div().debug_selector(move || format!("markdown-side-{side}-blocks")).flex_1().min_h_0().relative().on_mouse_down(MouseButton::Left,cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);cx.notify();})).child(list).children(blocks_ring))
-                    .children(side_ring)
-            }))
-            // Quick Open's one side: its keyboard ring on the view's own
-            // edge, over the side, so nothing moves.
-            .children(self.quick.then(|| self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent)))).flatten())
+                    .children((0..2).filter(|side| !self.quick || *side == 1).map(|side| {
+                        let document = if side == 0 {
+                            &self.comparison.old
+                        } else {
+                            &self.comparison.new
+                        };
+                        let label = if side == 0 {
+                            "Before"
+                        } else if self.quick {
+                            "Source"
+                        } else {
+                            "After"
+                        };
+                        let kind = document.kind();
+                        let ring = (!self.quick && side == self.active_side)
+                            .then(|| {
+                                self.ring
+                                    .as_ref()
+                                    .and_then(|ring| ring.edge(&self.focus, rgb(colors.accent)))
+                            })
+                            .flatten();
+                        let room = self.blocks_room.get()[side];
+                        let blocks_ring = room.then_some(ring).flatten();
+                        let blocks_room = self.blocks_room.clone();
+                        let view = cx.entity().downgrade();
+                        let owner = cx.entity().downgrade();
+                        let list = gpui_kit::list(self.lists[side].clone(), move |index, _, cx| {
+                            owner
+                                .update(cx, |this, cx| this.block(side, index, cx))
+                                .unwrap_or_else(|_| div().into_any_element())
+                        })
+                        .size_full();
+                        div()
+                            .on_children_prepainted(move |children, window, _| {
+                                let Some(blocks) = children.first() else {
+                                    return;
+                                };
+                                let mut rooms = blocks_room.get();
+                                let has_room = blocks.size.height >= px(2.);
+                                if rooms[side] != has_room {
+                                    rooms[side] = has_room;
+                                    blocks_room.set(rooms);
+                                    let view = view.clone();
+                                    window.on_next_frame(move |_, cx| {
+                                        view.update(cx, |_, cx| cx.notify()).ok();
+                                    });
+                                }
+                            })
+                            .id(("markdown-side", side))
+                            .role(Role::Document)
+                            .aria_label(format!(
+                                "{label} {kind}: {}{}",
+                                document.name.display(),
+                                if document.present {
+                                    ""
+                                } else {
+                                    ". File absent"
+                                }
+                            ))
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .border_r_1()
+                            .border_color(rgb(colors.border))
+                            .relative()
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("markdown-side-{side}-blocks"))
+                                    .flex_1()
+                                    .min_h_0()
+                                    .relative()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.active_side = side;
+                                            this.focus.focus(window, cx);
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(list)
+                                    .children(blocks_ring),
+                            )
+                    })),
+            )
+            // Quick Open's one side, or a split view whose headers leave the
+            // active side's blocks no room: its keyboard ring on the view's own
+            // edge, over the whole comparison, so nothing moves.
+            .children(
+                (self.quick || !self.blocks_room.get()[self.active_side])
+                    .then(|| {
+                        self.ring
+                            .as_ref()
+                            .and_then(|ring| ring.edge(&self.focus, rgb(colors.accent)))
+                    })
+                    .flatten(),
+            )
     }
 }
 

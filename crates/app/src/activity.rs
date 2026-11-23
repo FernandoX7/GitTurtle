@@ -148,7 +148,30 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
                 "All remotes".into()
             }
         }
-        WriteCommand::Pull { remote, branch } => format!("{remote}/{branch}"),
+        WriteCommand::Pull { remote, branch }
+        | WriteCommand::PullWithStrategy { remote, branch, .. } => format!("{remote}/{branch}"),
+        WriteCommand::ApplyPatch { plan, .. } => plan.stat_summary.clone(),
+        WriteCommand::Bisect(command) => match command.as_ref() {
+            gitturtle_core::BisectCommand::Start { bad, good } => {
+                format!("Start ({bad} / {good})")
+            }
+            gitturtle_core::BisectCommand::Good { .. } => "Mark good".into(),
+            gitturtle_core::BisectCommand::Bad { .. } => "Mark bad".into(),
+            gitturtle_core::BisectCommand::Skip { .. } => "Skip commit".into(),
+            gitturtle_core::BisectCommand::Reset { .. } => "Reset bisect".into(),
+        },
+        WriteCommand::Submodule(command) => match command.as_ref() {
+            gitturtle_core::SubmoduleCommand::Init { path }
+            | gitturtle_core::SubmoduleCommand::Update { path, .. } => path
+                .as_ref()
+                .map_or_else(|| "All submodules".into(), |p| p.display().to_string()),
+        },
+        WriteCommand::CheckoutPullRequest {
+            remote,
+            number,
+            local_branch,
+            ..
+        } => format!("{remote} PR #{number} → {local_branch}"),
         WriteCommand::Push {
             remote,
             local_branch,
@@ -194,6 +217,9 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
             IntegrationCommand::Merge { plan } | IntegrationCommand::Rebase { plan } => {
                 format!("{} · {}", plan.branch, plan.target_label)
             }
+            IntegrationCommand::MergeWithOptions { plan, .. } => {
+                format!("{} · {}", plan.branch, plan.target_label)
+            }
         },
         WriteCommand::Recovery(command) => match command.as_ref() {
             RecoveryCommand::Amend { plan, .. }
@@ -209,6 +235,10 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
                 )
             }
             RecoveryCommand::DropStash { stash } => stash.oid.clone(),
+            RecoveryCommand::PopStash { plan } => plan.stash.oid.clone(),
+            RecoveryCommand::BranchFromStash { plan, branch } => {
+                format!("{branch} from {}", plan.stash.oid)
+            }
             _ => fallback.into(),
         },
         // Commit messages, identity fields, URLs, credentials and manual result

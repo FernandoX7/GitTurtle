@@ -719,6 +719,636 @@ impl GitRepository {
         let bytes = inspection_read(command, cancellation, MAX_COPY_PATCH_BYTES)?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
+
+    /// Format a bounded commit range (`base..head`) as plain-text patches.
+    /// Passive read only; disables external diff drivers, textconv, and notes.
+    pub fn format_patch_range(
+        &self,
+        base_oid: &str,
+        head_oid: &str,
+        cancellation: &HistoryCancellation,
+    ) -> Result<String> {
+        const MAX_RANGE_PATCH_BYTES: usize = 8 * 1024 * 1024;
+        validate_oid(base_oid)?;
+        validate_oid(head_oid)?;
+        cancellation.check()?;
+        let mut command = git_command(self.target());
+        command.args([
+            "format-patch",
+            "--stdout",
+            "--no-stat",
+            "--no-signature",
+            "--no-notes",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            &format!("{base_oid}..{head_oid}"),
+        ]);
+        let bytes = inspection_read(command, cancellation, MAX_RANGE_PATCH_BYTES)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Passively inspect and locally verify a commit's OpenPGP / SSH / X.509
+    /// signature strictly against the local keyring or global/system SSH
+    /// `allowedSignersFile`.
+    ///
+    /// Security invariants:
+    /// - Returns `Ok(None)` immediately with zero subprocesses for unsigned commits.
+    /// - Never runs `git verify-commit` against repository-local `.git/config`
+    ///   (untrusted repos cannot override `gpg.program` or `allowedSignersFile`).
+    /// - Disables OpenPGP network key retrieval (`--auto-key-locate clear,local`,
+    ///   `--no-auto-key-import`, `--keyserver-options no-auto-key-retrieve`).
+    /// - Strips Unicode bidi override controls from untrusted signer metadata.
+    pub fn commit_signature(
+        &self,
+        oid: &str,
+        cancellation: &HistoryCancellation,
+    ) -> Result<Option<CommitSignature>> {
+        validate_oid(oid)?;
+        cancellation.check()?;
+        let raw = self.read_object(oid, "commit")?;
+        let (payload, signature) = match extract_commit_signature(&raw) {
+            ExtractedSignature::None => return Ok(None),
+            ExtractedSignature::Oversized => {
+                return Ok(Some(CommitSignature {
+                    format: SignatureFormat::OpenPgp,
+                    trust: SignatureTrust::Unverified,
+                    signer: None,
+                    key_id: None,
+                    detail: "Commit signature exceeds the 64 KiB offline verification limit."
+                        .into(),
+                }));
+            }
+            ExtractedSignature::Multiple => {
+                return Ok(Some(CommitSignature {
+                    format: SignatureFormat::OpenPgp,
+                    trust: SignatureTrust::Unverified,
+                    signer: None,
+                    key_id: None,
+                    detail:
+                        "Commit contains multiple signature headers; offline verification skipped."
+                            .into(),
+                }));
+            }
+            ExtractedSignature::InvalidUtf8 => {
+                return Ok(Some(CommitSignature {
+                    format: SignatureFormat::OpenPgp,
+                    trust: SignatureTrust::Unverified,
+                    signer: None,
+                    key_id: None,
+                    detail: "Commit signature header is not valid UTF-8.".into(),
+                }));
+            }
+            ExtractedSignature::Present { payload, signature } => (payload, signature),
+        };
+        cancellation.check()?;
+        let has_header = |marker: &str| signature.lines().any(|line| line.starts_with(marker));
+        let format = if has_header("-----BEGIN PGP SIGNATURE-----") {
+            SignatureFormat::OpenPgp
+        } else if has_header("-----BEGIN SSH SIGNATURE-----") {
+            SignatureFormat::Ssh
+        } else if has_header("-----BEGIN SIGNED MESSAGE-----")
+            || has_header("-----BEGIN PKCS7-----")
+        {
+            SignatureFormat::X509
+        } else {
+            return Ok(Some(CommitSignature {
+                format: SignatureFormat::OpenPgp,
+                trust: SignatureTrust::Unverified,
+                signer: None,
+                key_id: None,
+                detail: "Unrecognized commit signature header.".into(),
+            }));
+        };
+        let verified = match format {
+            SignatureFormat::OpenPgp => verify_openpgp_local(&payload, &signature, cancellation),
+            SignatureFormat::Ssh => verify_ssh_local(&payload, &signature, cancellation),
+            SignatureFormat::X509 => Ok(CommitSignature {
+                format: SignatureFormat::X509,
+                trust: SignatureTrust::Unverified,
+                signer: None,
+                key_id: None,
+                detail: "Signed with X.509 (offline local verification not enabled).".into(),
+            }),
+        }?;
+        Ok(Some(CommitSignature {
+            format: verified.format,
+            trust: verified.trust,
+            signer: verified
+                .signer
+                .map(|s| strip_bidi_controls(&s).into_owned()),
+            key_id: verified
+                .key_id
+                .map(|s| strip_bidi_controls(&s).into_owned()),
+            detail: strip_bidi_controls(&verified.detail).into_owned(),
+        }))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignatureFormat {
+    OpenPgp,
+    Ssh,
+    X509,
+}
+
+impl SignatureFormat {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OpenPgp => "GPG",
+            Self::Ssh => "SSH",
+            Self::X509 => "X.509",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignatureTrust {
+    Good,
+    GoodUntrusted,
+    ExpiredSignature,
+    ExpiredKey,
+    RevokedKey,
+    Bad,
+    MissingKey,
+    Unverified,
+}
+
+impl SignatureTrust {
+    pub const fn badge_label(self) -> &'static str {
+        match self {
+            Self::Good => "Verified",
+            Self::GoodUntrusted => "Signed (untrusted key)",
+            Self::ExpiredSignature => "Expired signature",
+            Self::ExpiredKey => "Expired key",
+            Self::RevokedKey => "Revoked key",
+            Self::Bad => "Invalid signature",
+            Self::MissingKey => "Signed (key not in local keyring)",
+            Self::Unverified => "Signed (unverified)",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitSignature {
+    pub format: SignatureFormat,
+    pub trust: SignatureTrust,
+    pub signer: Option<String>,
+    pub key_id: Option<String>,
+    pub detail: String,
+}
+
+enum ExtractedSignature {
+    None,
+    Oversized,
+    Multiple,
+    InvalidUtf8,
+    Present { payload: Vec<u8>, signature: String },
+}
+
+/// Split raw commit object bytes into `(signed_payload, signature_text)` by
+/// removing the `gpgsig` or `gpgsig-sha256` multiline header block.
+fn extract_commit_signature(raw: &[u8]) -> ExtractedSignature {
+    const MAX_SIG_BYTES: usize = 64 * 1024;
+    let header_end = raw
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .map(|i| i + 1)
+        .unwrap_or(raw.len());
+    let headers = &raw[..header_end];
+    let body = &raw[header_end..];
+
+    let mut payload = Vec::with_capacity(raw.len());
+    let mut sig_lines: Vec<u8> = Vec::new();
+    let mut in_sig = false;
+    let mut found = false;
+
+    for line in headers.split_inclusive(|b| *b == b'\n') {
+        if in_sig {
+            if let Some(rest) = line.strip_prefix(b" ") {
+                if sig_lines.len().saturating_add(rest.len()) > MAX_SIG_BYTES {
+                    return ExtractedSignature::Oversized;
+                }
+                sig_lines.extend_from_slice(rest);
+                continue;
+            }
+            in_sig = false;
+        }
+        if line.starts_with(b"gpgsig ") || line.starts_with(b"gpgsig-sha256 ") {
+            if found {
+                return ExtractedSignature::Multiple;
+            }
+            if let Some(space) = line.iter().position(|b| *b == b' ') {
+                found = true;
+                in_sig = true;
+                let first = &line[space + 1..];
+                if first.len() > MAX_SIG_BYTES {
+                    return ExtractedSignature::Oversized;
+                }
+                sig_lines.extend_from_slice(first);
+                continue;
+            }
+        }
+        payload.extend_from_slice(line);
+    }
+    if !found || sig_lines.is_empty() {
+        return ExtractedSignature::None;
+    }
+    payload.extend_from_slice(body);
+    match String::from_utf8(sig_lines) {
+        Ok(signature) => ExtractedSignature::Present { payload, signature },
+        Err(_) => ExtractedSignature::InvalidUtf8,
+    }
+}
+
+fn resolve_gpg_binary() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        for candidate in [
+            "/opt/homebrew/bin/gpg",
+            "/usr/local/bin/gpg",
+            "/usr/local/MacGPG2/bin/gpg",
+        ] {
+            let p = Path::new(candidate);
+            if p.is_file() {
+                return p.to_path_buf();
+            }
+        }
+    }
+    PathBuf::from("gpg")
+}
+
+fn verify_openpgp_local(
+    payload: &[u8],
+    signature: &str,
+    cancellation: &HistoryCancellation,
+) -> Result<CommitSignature> {
+    cancellation.check()?;
+    let temp = create_private_sig_dir()?;
+    let sig_path = temp.path().join("commit.sig");
+    std::fs::write(&sig_path, signature.as_bytes())?;
+    let mut cmd = Command::new(resolve_gpg_binary());
+    cmd.args([
+        "--batch",
+        "--no-tty",
+        "--no-auto-check-trustdb",
+        "--status-fd=1",
+        "--auto-key-locate",
+        "clear,local",
+        "--no-auto-key-import",
+        "--keyserver-options",
+        "no-auto-key-retrieve",
+        "--verify",
+    ])
+    .arg(&sig_path)
+    .arg("-")
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let Ok(output) = work::bounded_write_output_cancellable(
+        cmd,
+        Some(payload.to_vec()),
+        Duration::from_secs(5),
+        cancellation,
+    ) else {
+        cancellation.check()?;
+        return Ok(CommitSignature {
+            format: SignatureFormat::OpenPgp,
+            trust: SignatureTrust::Unverified,
+            signer: None,
+            key_id: None,
+            detail: "Signed with GPG (local `gpg` tool unavailable or timed out).".into(),
+        });
+    };
+    let status_text = String::from_utf8_lossy(&output.stdout);
+    let mut trust = SignatureTrust::Unverified;
+    let mut signer: Option<String> = None;
+    let mut key_id: Option<String> = None;
+    let mut has_good_sig = false;
+    let mut has_valid_sig = false;
+    let mut has_trusted_key = false;
+
+    for line in status_text.lines() {
+        let Some(rest) = line.strip_prefix("[GNUPG:] ") else {
+            continue;
+        };
+        let mut parts = rest.splitn(3, ' ');
+        let tag = parts.next().unwrap_or("");
+        let arg1 = parts.next().unwrap_or("");
+        let arg2 = parts.next().unwrap_or("");
+        match tag {
+            "GOODSIG" => {
+                has_good_sig = true;
+                if !arg1.is_empty() {
+                    key_id = Some(arg1.to_owned());
+                }
+                if !arg2.trim().is_empty() {
+                    signer = Some(arg2.trim().to_owned());
+                }
+            }
+            "VALIDSIG" => {
+                let fields: Vec<&str> = rest.split_whitespace().collect();
+                // GnuPG DETAILS: VALIDSIG <fpr> <date> <ts> <exp> <ver> <rsv> <pk> <hash> <sig-class> [primary-fpr]
+                // Detached document signatures have sig-class 00 (binary) or 01 (canonical text).
+                if fields
+                    .get(9)
+                    .is_some_and(|sig_class| matches!(*sig_class, "00" | "01"))
+                {
+                    has_valid_sig = true;
+                }
+                if !arg1.is_empty() {
+                    key_id = Some(arg1.to_owned());
+                }
+            }
+            "TRUST_ULTIMATE" | "TRUST_FULLY" => {
+                has_trusted_key = true;
+            }
+            "EXPSIG" => {
+                trust = SignatureTrust::ExpiredSignature;
+                if !arg1.is_empty() {
+                    key_id = Some(arg1.to_owned());
+                }
+                if !arg2.trim().is_empty() {
+                    signer = Some(arg2.trim().to_owned());
+                }
+            }
+            "EXPKEYSIG" => {
+                trust = SignatureTrust::ExpiredKey;
+                if !arg1.is_empty() {
+                    key_id = Some(arg1.to_owned());
+                }
+                if !arg2.trim().is_empty() {
+                    signer = Some(arg2.trim().to_owned());
+                }
+            }
+            "REVKEYSIG" => {
+                trust = SignatureTrust::RevokedKey;
+                if !arg1.is_empty() {
+                    key_id = Some(arg1.to_owned());
+                }
+                if !arg2.trim().is_empty() {
+                    signer = Some(arg2.trim().to_owned());
+                }
+            }
+            "BADSIG" => {
+                trust = SignatureTrust::Bad;
+                if !arg1.is_empty() {
+                    key_id = Some(arg1.to_owned());
+                }
+            }
+            "NO_PUBKEY" => {
+                trust = SignatureTrust::MissingKey;
+                if !arg1.is_empty() {
+                    key_id = Some(arg1.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    if output.status.success()
+        && has_good_sig
+        && has_valid_sig
+        && matches!(trust, SignatureTrust::Unverified)
+    {
+        trust = if has_trusted_key {
+            SignatureTrust::Good
+        } else {
+            SignatureTrust::GoodUntrusted
+        };
+    }
+    let detail = match trust {
+        SignatureTrust::Good => "Good GPG signature verified against your local keyring.".into(),
+        SignatureTrust::GoodUntrusted => {
+            "Good GPG signature, but the key is not marked trusted in your local keyring.".into()
+        }
+        SignatureTrust::MissingKey => {
+            "Commit is GPG-signed, but the public key is not in your local keyring (offline check)."
+                .into()
+        }
+        SignatureTrust::Bad => "GPG signature failed verification.".into(),
+        SignatureTrust::ExpiredSignature => "GPG signature has expired.".into(),
+        SignatureTrust::ExpiredKey => "Signing GPG key has expired.".into(),
+        SignatureTrust::RevokedKey => "Signing GPG key has been revoked.".into(),
+        SignatureTrust::Unverified => {
+            "Commit is GPG-signed; local verification did not complete.".into()
+        }
+    };
+    Ok(CommitSignature {
+        format: SignatureFormat::OpenPgp,
+        trust,
+        signer,
+        key_id,
+        detail,
+    })
+}
+
+fn verify_ssh_local(
+    payload: &[u8],
+    signature: &str,
+    cancellation: &HistoryCancellation,
+) -> Result<CommitSignature> {
+    cancellation.check()?;
+    let temp = create_private_sig_dir()?;
+    // Read `gpg.ssh.allowedSignersFile` strictly from global/system Git config,
+    // never repository-local `.git/config`.
+    let allowed_path = read_global_ssh_allowed_signers(temp.path(), cancellation)?;
+    let Some(allowed_path) = allowed_path else {
+        return Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: SignatureTrust::Unverified,
+            signer: None,
+            key_id: None,
+            detail: "Signed with SSH (no global gpg.ssh.allowedSignersFile configured).".into(),
+        });
+    };
+    // Follow symlinks for the user's own global allowedSignersFile (supporting
+    // dotfile managers), while still requiring a regular file (refusing FIFOs/dirs).
+    let Ok(meta) = std::fs::metadata(&allowed_path) else {
+        return Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: SignatureTrust::MissingKey,
+            signer: None,
+            key_id: None,
+            detail: "Signed with SSH (configured allowedSignersFile was not found).".into(),
+        });
+    };
+    if !meta.file_type().is_file() {
+        return Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: SignatureTrust::Unverified,
+            signer: None,
+            key_id: None,
+            detail: "Signed with SSH (allowedSignersFile must be a regular file).".into(),
+        });
+    }
+    let sig_path = temp.path().join("commit.sig");
+    std::fs::write(&sig_path, signature.as_bytes())?;
+
+    let mut find = Command::new("ssh-keygen");
+    find.args(["-Y", "find-principals", "-f"])
+        .arg(&allowed_path)
+        .arg("-s")
+        .arg(&sig_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let Ok(find_out) =
+        work::bounded_write_output_cancellable(find, None, Duration::from_secs(5), cancellation)
+    else {
+        cancellation.check()?;
+        return Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: SignatureTrust::Unverified,
+            signer: None,
+            key_id: None,
+            detail: "Signed with SSH (local `ssh-keygen` unavailable or timed out).".into(),
+        });
+    };
+    let principal = if find_out.status.success() {
+        String::from_utf8_lossy(&find_out.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(principal) = principal else {
+        let stderr_lower = String::from_utf8_lossy(&find_out.stderr).to_ascii_lowercase();
+        let is_missing_key = stderr_lower.contains("no principal matched")
+            || stderr_lower.contains("none of the keys");
+        return Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: if is_missing_key {
+                SignatureTrust::MissingKey
+            } else {
+                SignatureTrust::Unverified
+            },
+            signer: None,
+            key_id: None,
+            detail: if is_missing_key {
+                "Signed with SSH (signing key is not listed in your global allowedSignersFile)."
+                    .into()
+            } else {
+                "Signed with SSH (could not parse signature or match principal locally).".into()
+            },
+        });
+    };
+    let mut verify = Command::new("ssh-keygen");
+    verify
+        .args(["-Y", "verify", "-f"])
+        .arg(&allowed_path)
+        .args(["-I", &principal, "-n", "git", "-s"])
+        .arg(&sig_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let Ok(verify_out) = work::bounded_write_output_cancellable(
+        verify,
+        Some(payload.to_vec()),
+        Duration::from_secs(5),
+        cancellation,
+    ) else {
+        cancellation.check()?;
+        return Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: SignatureTrust::Unverified,
+            signer: Some(principal),
+            key_id: None,
+            detail: "Signed with SSH (`ssh-keygen -Y verify` did not complete).".into(),
+        });
+    };
+    if verify_out.status.success() {
+        Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: SignatureTrust::Good,
+            signer: Some(principal),
+            key_id: None,
+            detail: "Good SSH signature verified against your global allowedSignersFile.".into(),
+        })
+    } else {
+        Ok(CommitSignature {
+            format: SignatureFormat::Ssh,
+            trust: SignatureTrust::Bad,
+            signer: Some(principal),
+            key_id: None,
+            detail: "SSH signature failed verification.".into(),
+        })
+    }
+}
+
+fn read_global_ssh_allowed_signers(
+    workdir: &Path,
+    cancellation: &HistoryCancellation,
+) -> Result<Option<PathBuf>> {
+    for scope in ["--global", "--system"] {
+        cancellation.check()?;
+        let mut cmd = work::passive_user_config_command(workdir);
+        cmd.args(["config", scope, "--get", "gpg.ssh.allowedSignersFile"]);
+        if let Ok(out) =
+            work::bounded_write_output_cancellable(cmd, None, Duration::from_secs(3), cancellation)
+            && out.status.success()
+        {
+            let raw = text(trim_line(&out.stdout));
+            if raw.is_empty() {
+                continue;
+            }
+            if let Some(rest) = raw.strip_prefix("~/") {
+                let Some(home) = std::env::var_os("HOME") else {
+                    return Ok(None);
+                };
+                return Ok(Some(PathBuf::from(home).join(rest)));
+            }
+            return Ok(Some(PathBuf::from(raw)));
+        }
+    }
+    Ok(None)
+}
+
+struct PrivateSigDir(PathBuf);
+
+impl PrivateSigDir {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for PrivateSigDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn create_private_sig_dir() -> Result<PrivateSigDir> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let pid = std::process::id();
+    let base = std::env::temp_dir();
+    for attempt in 0u64..64 {
+        let mut h1 = RandomState::new().build_hasher();
+        h1.write_u64(attempt);
+        let r1 = h1.finish();
+        let mut h2 = RandomState::new().build_hasher();
+        h2.write_u32(pid);
+        let r2 = h2.finish();
+        let candidate = base.join(format!("gitturtle-sig-{pid}-{r1:016x}{r2:016x}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.mode(0o700);
+            if builder.create(&candidate).is_ok() {
+                return Ok(PrivateSigDir(candidate));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if std::fs::create_dir(&candidate).is_ok() {
+                return Ok(PrivateSigDir(candidate));
+            }
+        }
+    }
+    bail!("Unable to create a private temporary directory for local signature verification")
 }
 
 fn split_three_fields(meta: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {

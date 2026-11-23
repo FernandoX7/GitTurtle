@@ -41,6 +41,7 @@ pub(super) enum ShortcutId {
     Refresh,
     JumpToHead,
     JumpToRevision,
+    CommitStaged,
     FindInComparison,
     Search,
     Sidebar,
@@ -246,6 +247,14 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         "primary-f",
         Search,
         LIST
+    ),
+    shortcut!(
+        CommitStaged,
+        "Commit Staged Changes",
+        "Repository",
+        "primary-enter",
+        CommitStaged,
+        APP
     ),
     shortcut!(
         NewTab,

@@ -89,6 +89,24 @@ pub struct Worktree {
     pub prunable: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DiffAlgorithm {
+    #[default]
+    Patience,
+    Myers,
+    Histogram,
+}
+
+impl DiffAlgorithm {
+    pub(crate) fn to_similar(self) -> Algorithm {
+        match self {
+            Self::Patience => Algorithm::Patience,
+            Self::Myers => Algorithm::Myers,
+            Self::Histogram => Algorithm::Histogram,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeStatus {
     Added,
@@ -2051,6 +2069,14 @@ impl GitRepository {
     }
 
     pub fn text_preview_with_sources(&self, file: &FileChange) -> Result<TextPreviewWithSources> {
+        self.text_preview_with_algorithm(file, DiffAlgorithm::Patience)
+    }
+
+    pub fn text_preview_with_algorithm(
+        &self,
+        file: &FileChange,
+        algorithm: DiffAlgorithm,
+    ) -> Result<TextPreviewWithSources> {
         let only_submodule_sides = file.is_submodule()
             && (file.old_oid.is_none() || file.old_mode == "160000")
             && (file.new_oid.is_none() || file.new_mode == "160000");
@@ -2180,7 +2206,7 @@ impl GitRepository {
             .map(|p| patch_label("b", p))
             .unwrap_or_else(|| "/dev/null".into());
         let diff = TextDiff::configure()
-            .algorithm(Algorithm::Patience)
+            .algorithm(algorithm.to_similar())
             .timeout(Duration::from_millis(250))
             .diff_lines(old_text, new_text);
         let mut patch = diff

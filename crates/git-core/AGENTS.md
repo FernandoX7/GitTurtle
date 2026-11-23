@@ -26,6 +26,7 @@ These instructions supplement the root agreements for `crates/git-core`. The [se
 | Explicit one-object LFS download and resolved text | `src/work/lfs_download.rs` | `tests/lfs_download.rs` |
 | Tags and literal ignore rules | `src/work/tags.rs`, `src/work/ignore.rs` | `tests/tags_ignore.rs` |
 | Single-file, multi-file, and partial discard; restore file to revision | `src/work/discard.rs`, `src/work.rs` | `tests/discard.rs`, `tests/partial_staging.rs` |
+| Guided bisect, submodules, pull/merge/stash options, patch apply, PR checkout | `src/work/bisect.rs`, `src/work/submodules.rs`, `src/work.rs`, `src/inspection.rs` | `tests/power_workflows.rs` |
 | Operation cancellation, askpass, signing and redacted diagnostics | `src/work/authentication.rs`, `src/work/diagnostics.rs`, `src/work.rs` | `tests/authentication.rs`, `tests/signing.rs`, `tests/workflow.rs`, module unit tests |
 
 Process deadlines and byte-input regressions also live in `src/lib.rs` and `src/work.rs` unit tests.

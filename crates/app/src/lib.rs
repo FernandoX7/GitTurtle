@@ -103,6 +103,7 @@ mod scroll_tests;
 mod settings;
 mod shortcuts;
 mod split_diff;
+mod structured_view;
 mod system_preview;
 #[cfg(test)]
 mod tab_order_tests;
@@ -194,7 +195,8 @@ gpui_kit::actions!(
         SelectAllWorking,
         CompareRevisions,
         JumpToHead,
-        JumpToRevision
+        JumpToRevision,
+        CommitStaged
     ]
 );
 
@@ -304,6 +306,7 @@ enum NavRow {
     Branch(usize, usize),
     Tag(usize),
     Stash(usize),
+    Submodule(usize),
     Worktree(usize),
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -331,9 +334,11 @@ enum TextMode {
     After,
     Diagrams,
     Markdown,
+    Table,
+    Formatted,
 }
 impl TextMode {
-    const COUNT: usize = 6;
+    const COUNT: usize = 8;
     fn index(self) -> usize {
         match self {
             Self::Unified => 0,
@@ -342,6 +347,8 @@ impl TextMode {
             Self::After => 3,
             Self::Diagrams => 4,
             Self::Markdown => 5,
+            Self::Table => 6,
+            Self::Formatted => 7,
         }
     }
 }
@@ -387,6 +394,7 @@ pub(crate) struct RepositoryWorkspace {
     pub(crate) tags: Vec<gitturtle_core::Tag>,
     pub(crate) tags_truncated: bool,
     pub(crate) stashes: Vec<gitturtle_core::StashEntry>,
+    pub(crate) submodules: Vec<gitturtle_core::SubmoduleSummary>,
     pub(crate) worktrees: Vec<Worktree>,
     pub(crate) selected_compare_commit: Option<String>,
     pub(crate) nav_rows: Vec<NavRow>,
@@ -416,6 +424,7 @@ pub(crate) struct RepositoryWorkspace {
     pub(crate) work_status: Option<Arc<gitturtle_core::RepositoryStatus>>,
     pub(crate) working_identity: Option<worker::GitDirectories>,
     pub(crate) integration_state: Option<gitturtle_core::OperationState>,
+    pub(crate) bisect_state: Option<gitturtle_core::BisectState>,
     pub(crate) profile: Option<gitturtle_core::GitProfile>,
     pub(crate) remotes: Vec<gitturtle_core::Remote>,
     pub(crate) working_rows: Vec<workspace::WorkingRow>,
@@ -441,6 +450,7 @@ impl RepositoryWorkspace {
             tags: Vec::new(),
             tags_truncated: false,
             stashes: Vec::new(),
+            submodules: Vec::new(),
             worktrees: Vec::new(),
             selected_compare_commit: None,
             nav_rows: Vec::new(),
@@ -470,6 +480,7 @@ impl RepositoryWorkspace {
             work_status: None,
             working_identity: None,
             integration_state: None,
+            bisect_state: None,
             profile: None,
             remotes: Vec::new(),
             working_rows: Vec::new(),
@@ -652,6 +663,7 @@ struct GitTurtle {
     /// (`GitTurtle::working_status_not_read`).
     working_read_failure: Option<SharedString>,
     operation_repository: Option<PathBuf>,
+    pending_push_after_commit: Option<(PathBuf, String, String, String)>,
     operation_outcomes: operations::RepositoryOutcomes,
     /// Refusals and failures reported in the window's error: a refusal while
     /// paused (`GitTurtle::refuse_while_paused`), Ignore… refused before its
@@ -790,9 +802,16 @@ struct GitTurtle {
     conflict_drafts: HashMap<(PathBuf, PathBuf), conflicts::Draft>,
     before_editor: Option<Entity<EditorState>>,
     after_editor: Option<Entity<EditorState>>,
+    formatted_editor: Option<Entity<EditorState>>,
+    tabular_scroll: ScrollHandle,
     images: [Option<Arc<RenderImage>>; 2],
     text_mode: TextMode,
     review: text_review::State,
+    signature_executor: SerialExecutor,
+    signature_task: Option<Task<()>>,
+    signature_generation: u64,
+    signature_cancel: gitturtle_core::HistoryCancellation,
+    commit_signature: Option<(String, gitturtle_core::CommitSignature)>,
     zoom: f32,
     image_comparison: image_compare::State,
     image_scroll: ScrollHandle,
@@ -1007,6 +1026,7 @@ impl GitTurtle {
             unread_look: workspace::BusyLook::default(),
             working_read_failure: None,
             operation_repository: None,
+            pending_push_after_commit: None,
             operation_outcomes: operations::RepositoryOutcomes::default(),
             error_refusals: 0,
             preview_showing: system_preview::Showing::next(),
@@ -1079,9 +1099,16 @@ impl GitTurtle {
             conflict_drafts: HashMap::new(),
             before_editor: None,
             after_editor: None,
+            formatted_editor: None,
+            tabular_scroll: ScrollHandle::new(),
             images: [None, None],
             text_mode: TextMode::Unified,
             review: text_review::State::default(),
+            signature_executor: SerialExecutor::new("gitturtle-signatures"),
+            signature_task: None,
+            signature_generation: 0,
+            signature_cancel: gitturtle_core::HistoryCancellation::default(),
+            commit_signature: None,
             zoom: 0.,
             image_comparison: image_compare::State::default(),
             image_scroll: ScrollHandle::new(),
@@ -1130,6 +1157,12 @@ impl GitTurtle {
             interaction_started: None,
             inspector_message: commit_message::State::default(),
         };
+        text::set_tab_width(this.settings.tab_width);
+        desktop_text::set_custom_code_font(&this.settings.code_font, cx);
+        this.worker
+            .set_dark_mermaid(gpui_kit::component::Theme::global(cx).mode.is_dark());
+        this.worker
+            .set_diff_algorithm(core_diff_algorithm(this.settings.diff_algorithm));
         this.rebuild_project_rows();
         this.load_profiles(window, cx);
         this.install_draft_quit_observer(cx);
@@ -1543,6 +1576,8 @@ impl GitTurtle {
     /// own read lands, and Fetch, Pull, Push, Commit and Stage refuse as
     /// they do with nothing read yet.
     fn forget_repository_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_commit_signature();
+        self.pending_push_after_commit = None;
         self.inspector_message
             .replace(commit_message::State::default(), cx);
         self.file_filter
@@ -1556,6 +1591,7 @@ impl GitTurtle {
         self.working_read_failure = None;
         self.working_paths.reset();
         self.integration_state = None;
+        self.bisect_state = None;
         self.profile = None;
         self.remotes.clear();
         self.working_rows.clear();
@@ -1571,6 +1607,7 @@ impl GitTurtle {
         self.tags.clear();
         self.tags_truncated = false;
         self.stashes.clear();
+        self.submodules.clear();
         self.selected_compare_commit = None;
         self.worktrees.clear();
         self.nav_rows.clear();
@@ -1673,6 +1710,7 @@ impl GitTurtle {
         self.conflict_subscription = None;
         self.before_editor = None;
         self.after_editor = None;
+        self.formatted_editor = None;
         self.images = [None, None];
     }
 
@@ -1741,6 +1779,7 @@ impl GitTurtle {
                 self.tags = snapshot.tags;
                 self.tags_truncated = snapshot.tags_truncated;
                 self.stashes = snapshot.stashes;
+                self.submodules = snapshot.submodules;
                 self.selected_compare_commit = None;
                 self.seed_navigation_folders();
                 self.worktrees = snapshot.worktrees;
@@ -1783,6 +1822,13 @@ impl GitTurtle {
                     .or_else(|| self.visible.first().copied());
                 if self.repository_tabs.restoring.is_some() {
                     self.finish_tab_snapshot(window, cx);
+                    if let Some(oid) = self
+                        .selected_commit
+                        .and_then(|i| self.commits.get(i))
+                        .map(|c| c.oid.clone())
+                    {
+                        self.refresh_commit_signature(oid, window, cx);
+                    }
                     // History's search asked for meanwhile opens now where
                     // the restore stays in History, and as it lands where it
                     // goes on to Compare (`land_restore_focus`).
@@ -1859,13 +1905,19 @@ impl GitTurtle {
                 );
                 match content.as_ref() {
                     Content::Text {
-                        diagrams, markdown, ..
+                        diagrams,
+                        markdown,
+                        table,
+                        structured,
+                        ..
                     } => {
                         if let (Some(view), Some(markdown)) = (&self.markdown_view, markdown) {
                             view.update(cx, |view, cx| view.replace(markdown.clone(), cx));
                         }
                         if (self.text_mode == TextMode::Diagrams && diagrams.is_none())
                             || (self.text_mode == TextMode::Markdown && markdown.is_none())
+                            || (self.text_mode == TextMode::Table && table.is_none())
+                            || (self.text_mode == TextMode::Formatted && structured.is_none())
                         {
                             self.text_mode = if self.is_quick_source() {
                                 TextMode::After
@@ -1971,6 +2023,7 @@ impl GitTurtle {
             patch,
             old,
             new,
+            structured,
             presentation,
             split,
             split_partial,
@@ -1982,9 +2035,8 @@ impl GitTurtle {
         };
         let language = self
             .selected_file
-            .and_then(|i| self.files[i].path().extension())
-            .and_then(|s| s.to_str())
-            .map(language_for)
+            .and_then(|i| self.files.get(i))
+            .map(|file| language_for_path(file.path()))
             .unwrap_or("text");
         if self.text_mode == TextMode::Markdown {
             if self.markdown_view.is_none()
@@ -2002,7 +2054,26 @@ impl GitTurtle {
             }
             return;
         }
-        if self.text_mode == TextMode::Diagrams {
+        if matches!(self.text_mode, TextMode::Diagrams | TextMode::Table) {
+            return;
+        }
+        if self.text_mode == TextMode::Formatted {
+            if self.formatted_editor.is_none()
+                && let Some(structured) = structured
+                && let Ok(formatted) = structured.display_text()
+            {
+                let (editor, _) = text::editor_with_decorations(
+                    formatted,
+                    structured.format.language(),
+                    None,
+                    window,
+                    cx,
+                );
+                if self.settings.diff_word_wrap {
+                    editor.update(cx, |state, cx| state.set_soft_wrap(true, window, cx));
+                }
+                self.formatted_editor = Some(editor);
+            }
             return;
         }
         if self.text_mode == TextMode::Split {
@@ -2026,7 +2097,11 @@ impl GitTurtle {
             return;
         }
         let (slot, value, language, diff) = match self.text_mode {
-            TextMode::Split | TextMode::Diagrams | TextMode::Markdown => unreachable!(),
+            TextMode::Split
+            | TextMode::Diagrams
+            | TextMode::Markdown
+            | TextMode::Table
+            | TextMode::Formatted => unreachable!(),
             TextMode::Unified => (&mut self.patch_editor, patch, "diff", true),
             TextMode::Before => (&mut self.before_editor, old, language, false),
             TextMode::After => (&mut self.after_editor, new, language, false),
@@ -2039,6 +2114,9 @@ impl GitTurtle {
                 window,
                 cx,
             );
+            if !diff && self.settings.diff_word_wrap {
+                editor.update(cx, |state, cx| state.set_soft_wrap(true, window, cx));
+            }
             *slot = Some(editor);
             if diff {
                 self.patch_decoration = decoration;
@@ -2059,6 +2137,9 @@ impl GitTurtle {
             } else {
                 diff_view::new(editor.clone(), presentation, window, cx)
             };
+            if self.settings.diff_word_wrap {
+                view.update(cx, |view, cx| view.set_soft_wrap(true, window, cx));
+            }
             self.bind_text_partial(&view, window, cx);
             self.patch_view = Some(view);
         }
@@ -2188,6 +2269,38 @@ impl GitTurtle {
                         }
                     }
                 }
+                if !self.submodules.is_empty() {
+                    let matching_submodules: Vec<usize> = self
+                        .submodules
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, submodule)| {
+                            query.is_empty()
+                                || submodule.name.to_lowercase().contains(&query)
+                                || submodule
+                                    .path
+                                    .to_string_lossy()
+                                    .to_lowercase()
+                                    .contains(&query)
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    if query.is_empty() || !matching_submodules.is_empty() {
+                        let expanded = !query.is_empty()
+                            || self.expanded_folders.contains("section:submodules");
+                        self.nav_rows.push(NavRow::SectionToggle {
+                            key: "section:submodules",
+                            label: "SUBMODULES",
+                            count: matching_submodules.len(),
+                            truncated: false,
+                            expanded,
+                        });
+                        if expanded {
+                            self.nav_rows
+                                .extend(matching_submodules.into_iter().map(NavRow::Submodule));
+                        }
+                    }
+                }
             }
         } else {
             let matching: Vec<_> = self
@@ -2260,6 +2373,13 @@ impl GitTurtle {
             NavRow::Stash(stash) => {
                 ElementId::Name(format!("nav-stash:{}", self.stashes[*stash].oid).into())
             }
+            NavRow::Submodule(submodule) => ElementId::Name(
+                format!(
+                    "nav-submodule:{}",
+                    self.submodules[*submodule].path.to_string_lossy()
+                )
+                .into(),
+            ),
             NavRow::Worktree(tree) => {
                 ElementId::Path(Arc::from(self.worktrees[*tree].path.as_path()))
             }
@@ -2446,17 +2566,545 @@ impl GitTurtle {
         self.selected_file = None;
         self.clear_preview();
         if let Some(repo) = &self.repository {
+            let oid = self.commits[index].oid.clone();
             self.request(
                 Job::Changes {
                     repo: repo.clone(),
-                    oid: self.commits[index].oid.clone(),
+                    oid: oid.clone(),
                     parent: 0,
                 },
                 "Reading changed files…",
                 window,
                 cx,
             );
+            self.refresh_commit_signature(oid, window, cx);
+        } else {
+            self.clear_commit_signature();
         }
+    }
+
+    pub(crate) fn clear_commit_signature(&mut self) {
+        self.signature_generation = self.signature_generation.wrapping_add(1);
+        self.signature_cancel.cancel();
+        self.signature_cancel = gitturtle_core::HistoryCancellation::default();
+        self.signature_task = None;
+        self.commit_signature = None;
+    }
+
+    pub(crate) fn refresh_commit_signature(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repository.clone() else {
+            self.clear_commit_signature();
+            return;
+        };
+        if self
+            .commit_signature
+            .as_ref()
+            .is_some_and(|(cached, _)| cached == &oid)
+        {
+            return;
+        }
+        self.signature_generation = self.signature_generation.wrapping_add(1);
+        let generation = self.signature_generation;
+        self.signature_cancel.cancel();
+        let cancel = gitturtle_core::HistoryCancellation::default();
+        self.signature_cancel = cancel.clone();
+        self.commit_signature = None;
+        let query_oid = oid.clone();
+        let response = self
+            .signature_executor
+            .submit_read(move || repo.commit_signature(&query_oid, &cancel));
+        self.signature_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = response.await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                if this.signature_generation != generation {
+                    return;
+                }
+                let still_selected = this
+                    .selected_commit
+                    .and_then(|i| this.commits.get(i))
+                    .is_some_and(|commit| commit.oid == oid);
+                if !still_selected {
+                    return;
+                }
+                if let Ok(Ok(Some(signature))) = result {
+                    this.commit_signature = Some((oid, signature));
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(crate) fn set_diff_word_wrap(
+        &mut self,
+        wrap: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.diff_word_wrap == wrap {
+            return;
+        }
+        self.settings.diff_word_wrap = wrap;
+        if let Some(view) = &self.patch_view {
+            view.update(cx, |view, cx| view.set_soft_wrap(wrap, window, cx));
+        }
+        for editor in [
+            &self.before_editor,
+            &self.after_editor,
+            &self.formatted_editor,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            editor.update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
+        }
+        self.save_preferences(window, cx);
+        self.notify_settings_page(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_code_font_pref(
+        &mut self,
+        family: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let trimmed = family.trim().to_owned();
+        if self.settings.code_font == trimmed {
+            return;
+        }
+        self.settings.code_font = trimmed;
+        desktop_text::set_custom_code_font(&self.settings.code_font, cx);
+        self.save_preferences(window, cx);
+        self.notify_settings_page(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn save_custom_command(
+        &mut self,
+        command: preferences::CustomCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        command.validate()?;
+        if let Some(slot) = self
+            .settings
+            .custom_commands
+            .iter_mut()
+            .find(|existing| existing.id == command.id)
+        {
+            *slot = command;
+        } else {
+            anyhow::ensure!(
+                self.settings.custom_commands.len() < preferences::MAX_CUSTOM_COMMANDS,
+                "At most {} custom commands are supported.",
+                preferences::MAX_CUSTOM_COMMANDS
+            );
+            self.settings.custom_commands.push(command);
+        }
+        self.save_preferences(window, cx);
+        self.notify_settings_page(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn remove_custom_command(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.settings.custom_commands.len();
+        self.settings.custom_commands.retain(|cmd| cmd.id != id);
+        if self.settings.custom_commands.len() != before {
+            self.save_preferences(window, cx);
+            self.notify_settings_page(cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn matching_custom_commands(
+        &self,
+        scope: preferences::CustomCommandScope,
+    ) -> Vec<preferences::CustomCommand> {
+        let repo_path = self.path.as_deref();
+        self.settings
+            .custom_commands
+            .iter()
+            .filter(|cmd| {
+                cmd.scopes.contains(&scope)
+                    && cmd
+                        .repository_path
+                        .as_deref()
+                        .is_none_or(|only| repo_path == Some(only))
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn open_run_custom_command_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || self.shown_tab_unavailable() {
+            return;
+        }
+        let Some(repo_path) = self.path.clone() else {
+            return;
+        };
+        let branch = self
+            .work_status
+            .as_ref()
+            .and_then(|s| s.branch.clone())
+            .or_else(|| {
+                self.branches
+                    .iter()
+                    .find(|b| b.current)
+                    .map(|b| b.name.clone())
+            });
+        let commit = self
+            .selected_commit
+            .and_then(|i| self.commits.get(i))
+            .map(|c| c.oid.clone());
+        let file = if self.mode == WorkspaceMode::Working {
+            self.working_selected
+                .and_then(|(ix, _)| self.work_status.as_ref()?.entries.get(ix))
+                .map(|e| e.path.to_string_lossy().into_owned())
+        } else {
+            self.selected_file
+                .and_then(|ix| self.files.get(ix))
+                .map(|f| f.path().to_string_lossy().into_owned())
+        };
+        let commands: Vec<_> = self
+            .settings
+            .custom_commands
+            .iter()
+            .filter(|cmd| {
+                cmd.repository_path
+                    .as_deref()
+                    .is_none_or(|only| only == repo_path.as_path())
+            })
+            .cloned()
+            .collect();
+        let owner = cx.entity().downgrade();
+        let commands = Arc::new(commands);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let owner = owner.clone();
+            let commands = Arc::clone(&commands);
+            let branch = branch.clone();
+            let commit = commit.clone();
+            let file = file.clone();
+            let body = if commands.is_empty() {
+                div()
+                    .text_size(crate::appearance::ui_text(12.))
+                    .text_color(rgb(p.muted))
+                    .child("No custom commands configured. Add one in Settings → Custom commands.")
+                    .into_any_element()
+            } else {
+                div()
+                    .id("run-custom-commands-list")
+                    .max_h(px(320.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(commands.iter().enumerate().map(|(ix, cmd)| {
+                        let cmd_run = cmd.clone();
+                        let owner = owner.clone();
+                        let branch = branch.clone();
+                        let commit = commit.clone();
+                        let file = file.clone();
+                        let summary = if cmd.args.is_empty() {
+                            cmd.program.clone()
+                        } else {
+                            format!("{} {}", cmd.program, cmd.args.join(" "))
+                        };
+                        let label = format!("{} — {summary}", cmd.name);
+                        let accessible = format!("Run custom command {}: {summary}", cmd.name);
+                        button(("custom-command-pick", ix), label, "", false)
+                            .w_full()
+                            .accessibility_label(accessible)
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let cmd = cmd_run.clone();
+                                let branch = branch.clone();
+                                let commit = commit.clone();
+                                let file = file.clone();
+                                let _ = owner.update(cx, |this, cx| {
+                                    this.run_custom_command(cmd, branch, commit, file, window, cx);
+                                });
+                            })
+                    }))
+                    .into_any_element()
+            };
+            dialog
+                .title("Run custom command")
+                .width(appearance::dialog_width(px(520.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(body)
+                .footer(crate::tags::dialog_dismiss_footer("Close"))
+        });
+    }
+
+    pub(crate) fn run_custom_command(
+        &mut self,
+        command: preferences::CustomCommand,
+        branch: Option<String>,
+        commit: Option<String>,
+        file: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || self.shown_tab_unavailable() {
+            return;
+        }
+        let Some(repo_root) = self.path.clone() else {
+            return;
+        };
+        if let Err(err) = command.validate() {
+            self.operation_error = Some(views::OperationFailure::of(&err));
+            cx.notify();
+            return;
+        }
+        let repo_str = repo_root.to_string_lossy().into_owned();
+        let mut expanded = Vec::with_capacity(command.args.len());
+        for arg in &command.args {
+            match preferences::CustomCommand::expand_arg(
+                arg,
+                &repo_str,
+                branch.as_deref(),
+                commit.as_deref(),
+                file.as_deref(),
+            ) {
+                Ok(value) => expanded.push(value),
+                Err(err) => {
+                    self.operation_error = Some(views::OperationFailure::of(&err));
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        let program = command.program.trim().to_owned();
+        let name = command.name.trim().to_owned();
+        if command.confirm {
+            let clean_arg = |value: &str| -> String {
+                let stripped = gitturtle_core::strip_bidi_controls(value);
+                let safe: String = stripped
+                    .chars()
+                    .map(|ch| if ch.is_control() { ' ' } else { ch })
+                    .collect();
+                if safe.contains(char::is_whitespace) || safe.is_empty() {
+                    format!("{safe:?}")
+                } else {
+                    safe
+                }
+            };
+            let preview = if expanded.is_empty() {
+                clean_arg(&program)
+            } else {
+                let joined = expanded
+                    .iter()
+                    .map(|a| clean_arg(a))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{} {joined}", clean_arg(&program))
+            };
+            let owner = cx.entity().downgrade();
+            let path = repo_root;
+            window.open_alert_dialog(cx, move |dialog, window, _| {
+                let owner = owner.clone();
+                let path = path.clone();
+                let program = program.clone();
+                let expanded = expanded.clone();
+                let name = name.clone();
+                let explanation = format!(
+                    "Run “{name}” directly without a shell in {}:\n\n{preview}",
+                    path.display()
+                );
+                dialog
+                    .kind(DialogKind::Alert)
+                    .title(format!("Run “{name}”"))
+                    .width(appearance::dialog_width(px(520.), window))
+                    .max_h(appearance::dialog_max_height(window))
+                    .child(
+                        native_accessibility::static_text(
+                            div().id("custom-command-preview"),
+                            explanation.clone(),
+                        )
+                        .max_h(px(260.))
+                        .overflow_y_scroll()
+                        .text_size(crate::appearance::ui_text(12.))
+                        .child(explanation),
+                    )
+                    .footer(crate::tags::dialog_footer("Run command", Some("Cancel")))
+                    .on_ok(move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            if this.path.as_ref() == Some(&path) {
+                                this.execute_custom_command(
+                                    path.clone(),
+                                    name.clone(),
+                                    program.clone(),
+                                    expanded.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                        true
+                    })
+            });
+        } else {
+            self.execute_custom_command(repo_root, name, program, expanded, window, cx);
+        }
+    }
+
+    fn execute_custom_command(
+        &mut self,
+        repo_root: PathBuf,
+        name: String,
+        program: String,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() {
+            return;
+        }
+        self.operation_busy = Some("Running custom command…");
+        self.operation_repository = Some(repo_root.clone());
+        self.operation_error = None;
+        self.operation_notice = None;
+        let control = self.begin_operation_control(window, cx);
+        let run_root = repo_root.clone();
+        let run_program = program;
+        let response = self.operations.submit_read(move || {
+            run_bounded_custom_command(
+                &run_program,
+                &args,
+                &run_root,
+                &control,
+                std::time::Duration::from_secs(60),
+                64 * 1024,
+            )
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.operation_busy == Some("Running custom command…") {
+                    this.operation_busy = None;
+                }
+                this.operation_repository = None;
+                this.finish_operation_control(window, cx);
+                if this.path.as_ref() != Some(&repo_root) {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(Ok((true, _, detail))) => {
+                        let first_line = detail
+                            .lines()
+                            .map(str::trim)
+                            .find(|l| !l.is_empty())
+                            .map(|l| l.chars().take(120).collect::<String>());
+                        this.operation_notice = Some(match first_line {
+                            Some(line) => format!("“{name}” finished · {line}"),
+                            None => format!("“{name}” finished"),
+                        });
+                        this.refresh_worktree(window, cx);
+                    }
+                    Ok(Ok((false, code, detail))) => {
+                        let code_label = code
+                            .map(|c| format!("exit code {c}"))
+                            .unwrap_or_else(|| "terminated by signal".into());
+                        let message = if detail.is_empty() {
+                            format!("Custom command “{name}” failed ({code_label}).")
+                        } else {
+                            format!("Custom command “{name}” failed ({code_label}):\n{detail}")
+                        };
+                        this.operation_error =
+                            Some(views::OperationFailure::of(&anyhow::anyhow!(message)));
+                    }
+                    Ok(Err(err)) => {
+                        this.operation_error = Some(views::OperationFailure::of(&err));
+                    }
+                    Err(_) => {
+                        this.operation_error =
+                            Some("Custom command was interrupted before completing.".into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn set_tab_width_pref(
+        &mut self,
+        width: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let width = preferences::normalize_tab_width(width);
+        if self.settings.tab_width == width {
+            return;
+        }
+        self.settings.tab_width = width;
+        text::set_tab_width(width);
+        for editor in [
+            &self.patch_editor,
+            &self.before_editor,
+            &self.after_editor,
+            &self.formatted_editor,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            text::apply_tab_width(editor, width, cx);
+        }
+        if let Some(split) = &self.split_view {
+            split.update(cx, |view, cx| view.apply_tab_width(width, cx));
+        }
+        if let Some(conflict) = &self.conflict_view {
+            conflict.update(cx, |view, cx| view.apply_tab_width(width, cx));
+        }
+        self.file_history.apply_tab_width(width, cx);
+        self.revision_inspection.apply_tab_width(width, cx);
+        self.save_preferences(window, cx);
+        self.notify_settings_page(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_diff_algorithm_pref(
+        &mut self,
+        algorithm: preferences::DiffAlgorithmPref,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.diff_algorithm == algorithm {
+            return;
+        }
+        self.settings.diff_algorithm = algorithm;
+        self.worker
+            .set_diff_algorithm(core_diff_algorithm(algorithm));
+        if self.mode == WorkspaceMode::Compare
+            && let Some(index) = self.selected_file
+        {
+            self.load_file(index, window, cx);
+        } else if self.mode == WorkspaceMode::Working
+            && let Some((index, area)) = self.working_selected
+        {
+            self.select_working(index, area, window, cx);
+        }
+        self.save_preferences(window, cx);
+        self.notify_settings_page(cx);
+        cx.notify();
     }
     fn select_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.show_file(index, true, window, cx);
@@ -2866,6 +3514,123 @@ fn app_icon(dimension: f32) -> Img {
 
 /// The app icon's image: the embedded asset, by its static path, which GPUI
 /// takes as it is. Given the path as a `&str`, GPUI parsed it as a URL and
+/// Executes a user-configured custom command directly (never via a shell) with
+/// scrubbed Git targeting environment variables, bounded per-stream stdout/stderr
+/// readers, an explicit wall-clock deadline, and `OperationControl` cancellation.
+fn run_bounded_custom_command(
+    program: &str,
+    args: &[String],
+    cwd: &std::path::Path,
+    control: &gitturtle_core::OperationControl,
+    timeout: std::time::Duration,
+    max_stream_bytes: usize,
+) -> anyhow::Result<(bool, Option<i32>, String)> {
+    use std::io::Read;
+    if control.is_cancelled() {
+        anyhow::bail!("Custom command cancelled before starting.");
+    }
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_SUPER_PREFIX",
+        "GIT_PREFIX",
+    ] {
+        cmd.env_remove(var);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| anyhow::anyhow!("Failed to launch custom command “{program}”: {err}"))?;
+    let drain = |mut reader: Box<dyn Read + Send>, cap: usize| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let keep = n.min(cap.saturating_sub(out.len()));
+                if keep > 0 {
+                    out.extend_from_slice(&buf[..keep]);
+                }
+            }
+            out
+        })
+    };
+    let stdout_thread = child
+        .stdout
+        .take()
+        .map(|pipe| drain(Box::new(pipe), max_stream_bytes));
+    let stderr_thread = child
+        .stderr
+        .take()
+        .map(|pipe| drain(Box::new(pipe), max_stream_bytes));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if control.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(t) = stdout_thread {
+                let _ = t.join();
+            }
+            if let Some(t) = stderr_thread {
+                let _ = t.join();
+            }
+            anyhow::bail!("Custom command cancelled.");
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(t) = stdout_thread {
+                let _ = t.join();
+            }
+            if let Some(t) = stderr_thread {
+                let _ = t.join();
+            }
+            anyhow::bail!(
+                "Custom command “{program}” exceeded its {} second time limit and was stopped.",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let stdout_bytes = stdout_thread
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+    let stderr_bytes = stderr_thread
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+    let sanitize = |raw: &[u8]| -> String {
+        let lossy = String::from_utf8_lossy(raw);
+        let stripped = gitturtle_core::strip_bidi_controls(&lossy);
+        stripped
+            .trim()
+            .chars()
+            .filter(|ch| !ch.is_control() || matches!(*ch, '\n' | '\t'))
+            .take(4096)
+            .collect()
+    };
+    let stderr_text = sanitize(&stderr_bytes);
+    let detail = if !stderr_text.is_empty() {
+        stderr_text
+    } else {
+        sanitize(&stdout_bytes)
+    };
+    Ok((status.success(), status.code(), detail))
+}
+
 /// copied it into a new string on every frame that drew the icon.
 fn app_icon_source() -> ImageSource {
     ImageSource::Resource(gpui::Resource::Embedded(SharedString::new_static(
@@ -3356,6 +4121,30 @@ fn full_date(timestamp: i64) -> String {
         })
         .unwrap_or_default()
 }
+pub(crate) fn core_diff_algorithm(
+    pref: preferences::DiffAlgorithmPref,
+) -> gitturtle_core::DiffAlgorithm {
+    match pref {
+        preferences::DiffAlgorithmPref::Patience => gitturtle_core::DiffAlgorithm::Patience,
+        preferences::DiffAlgorithmPref::Myers => gitturtle_core::DiffAlgorithm::Myers,
+        preferences::DiffAlgorithmPref::Histogram => gitturtle_core::DiffAlgorithm::Histogram,
+    }
+}
+
+pub(crate) fn language_for_path(path: &std::path::Path) -> &'static str {
+    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+        match name.to_ascii_lowercase().as_str() {
+            "makefile" | "gnumakefile" | "bsdmakefile" => return "make",
+            "gemfile" | "rakefile" | "podfile" | "fastfile" | "vagrantfile" => return "ruby",
+            _ => {}
+        }
+    }
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(language_for)
+        .unwrap_or("text")
+}
+
 fn language_for(extension: &str) -> &'static str {
     match extension.to_ascii_lowercase().as_str() {
         "rs" => "rust",
@@ -3363,14 +4152,29 @@ fn language_for(extension: &str) -> &'static str {
         "tsx" => "tsx",
         "js" | "jsx" | "mjs" | "cjs" => "javascript",
         "json" | "jsonc" => "json",
-        "css" => "css",
+        "css" | "scss" => "css",
         "md" | "markdown" | "mdx" => "markdown",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
         "html" | "htm" => "html",
-        "py" | "pyw" => "python",
+        "py" | "pyw" | "pyi" => "python",
         "go" => "go",
         "sh" | "bash" | "zsh" => "bash",
+        "c" => "c",
+        "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" | "ipp" | "tpp" => "cpp",
+        "java" => "java",
+        "rb" | "gemspec" | "rake" => "ruby",
+        "php" | "phtml" => "php",
+        "kt" | "kts" => "kotlin",
+        "scala" | "sc" | "sbt" => "scala",
+        "sql" => "sql",
+        "lua" => "lua",
+        "zig" | "zon" => "zig",
+        "ex" | "exs" => "elixir",
+        "mk" | "mak" => "make",
+        "svelte" => "svelte",
+        "astro" => "astro",
+        "diff" | "patch" => "diff",
         _ => "text",
     }
 }

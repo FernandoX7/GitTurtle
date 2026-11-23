@@ -48,12 +48,86 @@ pub const MAX_CUSTOM_THEMES: usize = 32;
 const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
 
-/// Lane set for a palette; `Palette::readability_issues` judges the same colors.
-pub fn palette_colors(palette: Palette) -> [u32; 6] {
-    lane_colors(palette.is_light())
+/// Minimum OKLab chroma for `palette.accent` to seed harmonized graph lanes.
+const LANE_MIN_CHROMA: f64 = 0.055;
+/// OKLCH hue offsets (degrees) around `palette.accent` for the six graph lanes.
+const LANE_HUE_OFFSETS_DEG: [f64; 6] = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0];
+
+/// Derive one lane in OKLab at `(hue, chroma)` while keeping its relative
+/// luminance within the baseline dark/light lane luminance floor (independent
+/// of custom surface edits so `Palette::readability_issues` still detects
+/// broken surfaces on custom palettes).
+fn fit_oklch_lane(hue: f64, chroma: f64, light: bool) -> u32 {
+    let target_l = if light { 0.48 } else { 0.78 };
+    let color_at = |l: f64| {
+        highlights::from_linear(highlights::linear_in_gamut([
+            l,
+            chroma * hue.cos(),
+            chroma * hue.sin(),
+        ]))
+    };
+    if light {
+        let max_lum = LIGHT_COLORS
+            .iter()
+            .map(|&lane| custom::luminance(lane))
+            .fold(0.0_f64, f64::max);
+        let initial = color_at(target_l);
+        if custom::luminance(initial) <= max_lum {
+            return initial;
+        }
+        let mut lo = 0.20_f64;
+        let mut hi = target_l;
+        for _ in 0..16 {
+            let mid = 0.5 * (lo + hi);
+            if custom::luminance(color_at(mid)) <= max_lum {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        color_at(lo)
+    } else {
+        let min_lum = DARK_COLORS
+            .iter()
+            .map(|&lane| custom::luminance(lane))
+            .fold(1.0_f64, f64::min);
+        let initial = color_at(target_l);
+        if custom::luminance(initial) >= min_lum {
+            return initial;
+        }
+        let mut lo = target_l;
+        let mut hi = 0.96_f64;
+        for _ in 0..16 {
+            let mid = 0.5 * (lo + hi);
+            if custom::luminance(color_at(mid)) >= min_lum {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        color_at(hi)
+    }
 }
 
-/// The lane set of a light or a dark palette.
+/// Lane set for a palette; `Palette::readability_issues` judges the same colors.
+///
+/// Derives the six commit-graph lanes around the active palette's chromatic
+/// `accent` in OKLCH (with gamut-safe chroma and baseline dark/light luminance
+/// floor clamping so every valid built-in and Omarchy surface keeps `>= 3.0:1`
+/// contrast), falling back to the baseline lanes on monochrome palettes.
+pub fn palette_colors(palette: Palette) -> [u32; 6] {
+    let light = palette.is_light();
+    let [_, a, b] = oklab(palette.accent);
+    let chroma = a.hypot(b);
+    if chroma < LANE_MIN_CHROMA {
+        return lane_colors(light);
+    }
+    let base_hue = b.atan2(a);
+    let lane_chroma = chroma.clamp(0.11, 0.145);
+    LANE_HUE_OFFSETS_DEG.map(|deg| fit_oklch_lane(base_hue + deg.to_radians(), lane_chroma, light))
+}
+
+/// The baseline lane set of a light or a dark palette.
 pub fn lane_colors(light: bool) -> [u32; 6] {
     if light { LIGHT_COLORS } else { DARK_COLORS }
 }
@@ -292,4 +366,112 @@ pub(crate) fn assert_pure_editor_highlights_read(
         )
     );
     current_like_others
+}
+
+#[cfg(test)]
+mod lane_and_monochrome_tests {
+    use super::*;
+
+    #[test]
+    fn harmonized_graph_lanes_follow_active_palette_accent_and_clear_contrast() {
+        let midnight = palette_colors(ThemeChoice::Midnight.palette());
+        let ember = palette_colors(ThemeChoice::Ember.palette());
+        assert_ne!(
+            midnight, ember,
+            "chromatic themes with distinct accents should derive distinct harmonized lanes"
+        );
+        for choice in ThemeChoice::ALL {
+            let palette = choice.palette();
+            let lanes = palette_colors(palette);
+            for (i, &color) in lanes.iter().enumerate() {
+                for surface in [
+                    palette.canvas,
+                    palette.panel,
+                    palette.selected,
+                    palette.hover,
+                ] {
+                    assert!(
+                        custom::contrast(color, surface) >= 3.0,
+                        "{choice:?} lane {i} #{color:06x} on #{surface:06x}"
+                    );
+                }
+                for (j, &other) in lanes.iter().enumerate().skip(i + 1) {
+                    let dist = oklab_distance(oklab(color), oklab(other));
+                    assert!(
+                        dist >= HIGHLIGHT_DISTANCE,
+                        "{choice:?} lanes {i} (#{color:06x}) and {j} (#{other:06x}) too close: {dist:.4}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn monochrome_omarchy_themes_preserve_high_accent_and_hover_contrast() {
+        let cases = [
+            (
+                "vantablack",
+                omarchy::Colors {
+                    mode: omarchy::Mode::Dark,
+                    background: 0x000000,
+                    foreground: 0xffffff,
+                    accent: 0x8d8d8d,
+                    red: 0x8d8d8d,
+                    green: 0x8d8d8d,
+                    yellow: 0x8d8d8d,
+                    blue: 0x8d8d8d,
+                    magenta: 0x8d8d8d,
+                    selection: Some(0x1a1a1a),
+                    muted: Some(0x666666),
+                    dark_background: Some(0x0a0a0a),
+                    lighter_background: Some(0x121212),
+                    dark_foreground: None,
+                    orange: None,
+                },
+            ),
+            (
+                "white",
+                omarchy::Colors {
+                    mode: omarchy::Mode::Light,
+                    background: 0xffffff,
+                    foreground: 0x111111,
+                    accent: 0x6e6e6e,
+                    red: 0x6e6e6e,
+                    green: 0x6e6e6e,
+                    yellow: 0x6e6e6e,
+                    blue: 0x6e6e6e,
+                    magenta: 0x6e6e6e,
+                    selection: Some(0xc0c0c0),
+                    muted: Some(0x707070),
+                    dark_background: Some(0xf0f0f0),
+                    lighter_background: Some(0xf8f8f8),
+                    dark_foreground: None,
+                    orange: None,
+                },
+            ),
+        ];
+        for (name, colors) in cases {
+            let mapped = omarchy::map(&colors);
+            let p = mapped.palette;
+            assert_eq!(p.readability_issues(), Vec::new(), "{name}");
+            for surface in [p.canvas, p.panel, p.subtle, p.hover, p.selected] {
+                assert!(
+                    custom::contrast(p.accent, surface) >= 4.5,
+                    "{name} monochrome accent #{:06x} on #{surface:06x} = {:.2}",
+                    p.accent,
+                    custom::contrast(p.accent, surface)
+                );
+                assert!(
+                    custom::contrast(p.accent_hover, surface) >= 3.0,
+                    "{name} monochrome accent_hover #{:06x} on #{surface:06x}",
+                    p.accent_hover
+                );
+                assert!(
+                    custom::contrast(p.accent_active, surface) >= 3.0,
+                    "{name} monochrome accent_active #{:06x} on #{surface:06x}",
+                    p.accent_active
+                );
+            }
+        }
+    }
 }

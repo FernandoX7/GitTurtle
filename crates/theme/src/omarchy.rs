@@ -563,8 +563,13 @@ fn fit_on_tiles(colors: &Colors, tiles: &[u32]) -> Palette {
 
     // The accent, whose hovered selected row (`row_hover(true)`) blends it into `selected`,
     // and on the removed diff `tiles` where an earlier run left it under its rule there.
+    // On monochrome / low-chroma themes (vantablack, white, solitude), neutral grey primary
+    // buttons and selected markers need a stronger surface contrast floor (4.5:1) so primary
+    // affordances stay unmistakably distinct from neutral secondary and selected surfaces.
     let fit_accent = |palette: Palette, accent: u32| {
-        let accepts = |candidate: u32, margin: f64| {
+        let monochrome = oklch(accent).0 < DIFF_MIN_CHROMA;
+        let surface_floor = if monochrome { 4.5 } else { ACCENT_CONTRAST };
+        let accepts_floor = |candidate: u32, floor: f64, margin: f64| {
             let row = Palette {
                 accent: candidate,
                 ..palette
@@ -582,24 +587,38 @@ fn fit_on_tiles(colors: &Colors, tiles: &[u32]) -> Palette {
                             palette.selected,
                             row,
                         ],
-                        ACCENT_CONTRAST,
+                        floor,
                     ),
                     (tiles, ACCENT_CONTRAST),
                 ],
                 margin,
             )
         };
-        if accepts(accent, 0.) {
+        if accepts_floor(accent, surface_floor, 0.) {
             return accent;
         }
         let tuned = toward(accent, judge.foreground_extreme(), |candidate| {
-            accepts(candidate, CONTRAST_MARGIN)
+            accepts_floor(candidate, surface_floor, CONTRAST_MARGIN)
         });
-        if accepts(tuned, CONTRAST_MARGIN) {
-            tuned
+        if accepts_floor(tuned, surface_floor, CONTRAST_MARGIN) {
+            return tuned;
+        }
+        if monochrome {
+            let at_floor = toward(accent, judge.foreground_extreme(), |candidate| {
+                accepts_floor(candidate, surface_floor, 0.)
+            });
+            if accepts_floor(at_floor, surface_floor, 0.) {
+                return at_floor;
+            }
+        }
+        let standard = toward(accent, judge.foreground_extreme(), |candidate| {
+            accepts_floor(candidate, ACCENT_CONTRAST, CONTRAST_MARGIN)
+        });
+        if accepts_floor(standard, ACCENT_CONTRAST, CONTRAST_MARGIN) {
+            standard
         } else {
             toward(accent, judge.foreground_extreme(), |candidate| {
-                accepts(candidate, 0.)
+                accepts_floor(candidate, ACCENT_CONTRAST, 0.)
             })
         }
     };
@@ -693,11 +712,11 @@ fn fit_on_tiles(colors: &Colors, tiles: &[u32]) -> Palette {
     {
         palette = unordered;
     }
-    (palette.accent_hover, palette.accent_active) =
-        accent_states(palette.accent, palette.accent_foreground);
     let (subtle, hover, selected) = (palette.subtle, palette.hover, palette.selected);
     let row = palette.row_hover(true);
     let surfaces = [canvas, panel, subtle, hover, selected, row];
+    (palette.accent_hover, palette.accent_active) =
+        accent_states(palette.accent, palette.accent_foreground, &surfaces);
 
     // Status colors: icons on every surface, and a label in `canvas` on their fills.
     let on_canvas = [canvas];
@@ -857,8 +876,9 @@ fn accent_label(judge: Judge, accent: u32, canvas: u32) -> (u32, u32) {
 }
 
 /// Hover and pressed shades of the accent: hover a step away from the label, pressed a step
-/// toward it when the label still reads there, and otherwise further away than hover.
-fn accent_states(accent: u32, label: u32) -> (u32, u32) {
+/// toward it when the label still reads there and the shade keeps its surface contrast, and
+/// otherwise further away than hover.
+fn accent_states(accent: u32, label: u32, surfaces: &[u32]) -> (u32, u32) {
     let (h, s, l) = to_hsl(accent);
     let away = if luminance(label) < luminance(accent) {
         1.
@@ -866,11 +886,22 @@ fn accent_states(accent: u32, label: u32) -> (u32, u32) {
         -1.
     };
     let shade = |amount: f64| from_hsl(h, s, (l + away * amount).clamp(0., 1.));
-    let hover = shade(0.06);
+    let clears_surfaces = |candidate: u32| {
+        surfaces
+            .iter()
+            .all(|&surface| contrast(candidate, surface) >= ACCENT_CONTRAST)
+    };
+    let hover = [0.06, 0.04, 0.08]
+        .into_iter()
+        .map(shade)
+        .find(|&candidate| contrast(label, candidate) >= 4.5 && clears_surfaces(candidate))
+        .unwrap_or_else(|| shade(0.06));
     let active = [-0.06, -0.03]
         .into_iter()
         .map(shade)
-        .find(|&candidate| contrast(label, candidate) >= 4.5 + CONTRAST_MARGIN)
+        .find(|&candidate| {
+            contrast(label, candidate) >= 4.5 + CONTRAST_MARGIN && clears_surfaces(candidate)
+        })
         .unwrap_or_else(|| shade(0.12));
     (hover, active)
 }

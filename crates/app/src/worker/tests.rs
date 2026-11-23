@@ -186,6 +186,8 @@ fn text_cache_budget_includes_prepared_patch_metadata() {
     let content = Arc::new(Content::Text {
         diagrams: None,
         markdown: None,
+        table: None,
+        structured: None,
         patch,
         old,
         new,
@@ -672,8 +674,8 @@ fn metadata_lane_runs_without_waiting_behind_blocked_preview_decode() {
     let (preview_entered_tx, preview_entered_rx) = mpsc::channel();
     let (release_preview_tx, release_preview_rx) = mpsc::channel();
     let worker = Worker::with_lanes(
-        move |job, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
-        move |_, _, cancellation| {
+        move |job, _, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
+        move |_, _, _, cancellation| {
             cancellation.unobserved(|| {
                 let _ = preview_entered_tx.send(());
                 let _ = release_preview_rx.recv_timeout(Duration::from_secs(3));
@@ -713,8 +715,8 @@ fn preview_takeover_survives_intervening_metadata_job() {
     let decode_calls = Arc::new(AtomicU64::new(0));
     let decode_calls_worker = Arc::clone(&decode_calls);
     let worker = Worker::with_lanes(
-        move |job, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
-        move |_, _, cancellation| {
+        move |job, _, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
+        move |_, _, _, cancellation| {
             decode_calls_worker.fetch_add(1, Ordering::AcqRel);
             cancellation.unobserved(|| {
                 let _ = entered_tx.send(());
@@ -747,13 +749,13 @@ fn preview_takeover_survives_intervening_metadata_job() {
 fn lane_panics_are_isolated_between_metadata_and_preview() {
     let (_dir, repo) = temp_repo_with_commits(1);
     let worker = Worker::with_lanes(
-        |job, _, _| {
+        |job, _, _, _| {
             if job_name(job) == "boom" {
                 panic!("simulated metadata panic");
             }
             Ok(notice("meta-ok"))
         },
-        |job, cache, _| {
+        |job, _, cache, _| {
             if let Job::Preview { file, .. } = job
                 && file.new_path.as_deref() == Some(Path::new("boom.png"))
             {
@@ -931,8 +933,8 @@ fn chronological_history_page_emits_node_only_rows_and_clears_after_commit_graph
 fn hold_lane_pauses_only_targeted_lane() {
     let (_dir, repo) = temp_repo_with_commits(1);
     let worker = Worker::with_lanes(
-        |job, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
-        |_, _, _| Ok(notice("preview-done")),
+        |job, _, _, _| Ok(notice(&format!("meta:{}", job_name(job)))),
+        |_, _, _, _| Ok(notice("preview-done")),
     );
     let hold_preview = worker.hold_lane(Lane::Preview);
     let meta = worker.submit(open_job("unblocked-meta"));

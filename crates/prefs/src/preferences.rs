@@ -44,6 +44,291 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// defaults.
 static FIRST_LAUNCH: OnceLock<AppSettings> = OnceLock::new();
 
+/// Supported diff display tab widths.
+pub const ALLOWED_TAB_WIDTHS: [u8; 3] = [2, 4, 8];
+pub const DEFAULT_TAB_WIDTH: u8 = 4;
+/// Maximum stored explicit custom user commands.
+pub const MAX_CUSTOM_COMMANDS: usize = 32;
+pub const MAX_CUSTOM_COMMAND_ARGS: usize = 32;
+pub const MAX_CUSTOM_COMMAND_ARG_BYTES: usize = 1024;
+pub const MAX_CODE_FONT_BYTES: usize = 256;
+
+/// Diff algorithm preference for patch generation and text review.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffAlgorithmPref {
+    Myers,
+    Histogram,
+    /// Patience is the default and catch-all for unknown stored values.
+    #[default]
+    #[serde(other)]
+    Patience,
+}
+
+impl DiffAlgorithmPref {
+    pub const ALL: [Self; 3] = [Self::Patience, Self::Myers, Self::Histogram];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Patience => "Patience",
+            Self::Myers => "Myers",
+            Self::Histogram => "Histogram",
+        }
+    }
+}
+
+/// Where an explicit custom user command may be invoked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomCommandScope {
+    Repository,
+    Commit,
+    Branch,
+    File,
+}
+
+impl CustomCommandScope {
+    pub const ALL: [Self; 4] = [Self::Repository, Self::Commit, Self::Branch, Self::File];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Repository => "Repository",
+            Self::Commit => "Commit",
+            Self::Branch => "Branch",
+            Self::File => "File",
+        }
+    }
+}
+
+/// An explicit user-defined command invoked directly as `(program, args)` —
+/// never through a shell interpreter and never automatically on passive events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomCommand {
+    pub id: String,
+    pub name: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub scopes: Vec<CustomCommandScope>,
+    /// When set, the command appears only in that canonical repository root.
+    pub repository_path: Option<PathBuf>,
+    pub confirm: bool,
+}
+
+impl Default for CustomCommand {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            program: String::new(),
+            args: Vec::new(),
+            scopes: vec![CustomCommandScope::Repository],
+            repository_path: None,
+            confirm: true,
+        }
+    }
+}
+
+impl CustomCommand {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.id.is_empty()
+                && self.id.len() <= 64
+                && self
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
+            "Custom command id must use 1 to 64 ASCII letters, digits, '-' or '_'"
+        );
+        let name = self.name.trim();
+        ensure!(
+            !name.is_empty() && name.len() <= 64 && !name.chars().any(char::is_control),
+            "Custom command name must be 1 to 64 visible bytes without control characters"
+        );
+        let program = self.program.trim();
+        ensure!(
+            !program.is_empty()
+                && program.len() <= MAX_CUSTOM_COMMAND_ARG_BYTES
+                && !program.chars().any(char::is_control),
+            "Custom command program must be a non-empty executable name or absolute path of at most 1,024 bytes"
+        );
+        // Reject repository-relative executable paths (such as `./script.sh` or
+        // `bin/tool`) so opening an untrusted repository cannot hijack a global
+        // custom command via `current_dir`. Allow either an absolute path
+        // without `..` components or a bare executable name resolved on PATH.
+        if program.starts_with('/') {
+            let valid_abs = std::path::Path::new(program)
+                .components()
+                .all(|c| !matches!(c, std::path::Component::ParentDir));
+            ensure!(
+                valid_abs && !program.contains('\\'),
+                "Custom command absolute path cannot contain parent-directory traversal"
+            );
+        } else {
+            ensure!(
+                !program.contains(['/', '\\'])
+                    && !program.starts_with('.')
+                    && !program.starts_with('-'),
+                "Custom command program must be an absolute path or bare executable name (no relative paths)"
+            );
+        }
+        ensure!(
+            self.args.len() <= MAX_CUSTOM_COMMAND_ARGS,
+            "Custom command supports at most {MAX_CUSTOM_COMMAND_ARGS} arguments"
+        );
+        for arg in &self.args {
+            ensure!(
+                arg.len() <= MAX_CUSTOM_COMMAND_ARG_BYTES && !arg.contains(['\0', '\n', '\r']),
+                "Custom command arguments must be at most 1,024 bytes without NUL or newline characters"
+            );
+        }
+        ensure!(
+            !self.scopes.is_empty(),
+            "Custom command must apply to at least one scope"
+        );
+        if let Some(path) = &self.repository_path {
+            let text = path.to_string_lossy();
+            ensure!(
+                !text.is_empty() && text.len() <= 4096 && !text.contains(['\0', '\n', '\r']),
+                "Custom command repository path is invalid"
+            );
+        }
+        Ok(())
+    }
+
+    /// Expand supported placeholders (`{repo}`, `{branch}`, `{commit}`, `{path}`
+    /// and `$REPO`, `$BRANCH`, `$SHA`, `$FILE`) inside one fixed argv item in a
+    /// single pass. Substitution happens strictly per argument — never through
+    /// a shell — and refuses control characters, path traversal, or untrusted
+    /// values that would inject leading CLI options.
+    pub fn expand_arg(
+        template: &str,
+        repo: &str,
+        branch: Option<&str>,
+        commit: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<String> {
+        const MAX_EXPANDED_ARG_BYTES: usize = 4096;
+        let check_clean = |label: &str, value: &str| -> Result<()> {
+            ensure!(
+                !value.chars().any(char::is_control),
+                "Custom command {label} value contains control characters"
+            );
+            Ok(())
+        };
+        let mut out = String::with_capacity(template.len());
+        let bytes = template.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let rest = &template[i..];
+            let at_start = out.is_empty() && i == 0;
+            let matched = if rest.starts_with("{repo}") {
+                Some((6, "repository path", Some(repo), false))
+            } else if rest.starts_with("{branch}") {
+                Some((8, "branch", branch, true))
+            } else if rest.starts_with("{commit}") {
+                Some((8, "commit", commit, true))
+            } else if rest.starts_with("{path}") {
+                Some((6, "file path", path, true))
+            } else if rest.starts_with("$REPO")
+                && !matches!(
+                    bytes.get(i + 5),
+                    Some(b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+                )
+            {
+                Some((5, "repository path", Some(repo), false))
+            } else if rest.starts_with("$BRANCH")
+                && !matches!(
+                    bytes.get(i + 7),
+                    Some(b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+                )
+            {
+                Some((7, "branch", branch, true))
+            } else if rest.starts_with("$SHA")
+                && !matches!(
+                    bytes.get(i + 4),
+                    Some(b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+                )
+            {
+                Some((4, "commit", commit, true))
+            } else if rest.starts_with("$FILE")
+                && !matches!(
+                    bytes.get(i + 5),
+                    Some(b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+                )
+            {
+                Some((5, "file path", path, true))
+            } else {
+                None
+            };
+
+            if let Some((len, label, maybe_val, untrusted)) = matched {
+                let value = match (label, maybe_val) {
+                    (_, Some(v)) => v,
+                    ("branch", None) => anyhow::bail!("This command requires an active branch"),
+                    ("commit", None) => anyhow::bail!("This command requires a selected commit"),
+                    ("file path", None) => anyhow::bail!("This command requires a selected file"),
+                    (_, None) => anyhow::bail!("Missing value for {label}"),
+                };
+                check_clean(label, value)?;
+                if label == "commit" {
+                    ensure!(
+                        matches!(value.len(), 40 | 64)
+                            && value.bytes().all(|b| b.is_ascii_hexdigit()),
+                        "Selected commit identifier is not a valid hex object ID"
+                    );
+                } else if label == "file path" {
+                    let p = std::path::Path::new(value);
+                    ensure!(
+                        !value.is_empty()
+                            && !p.is_absolute()
+                            && p.components().all(|c| !matches!(
+                                c,
+                                std::path::Component::ParentDir
+                                    | std::path::Component::RootDir
+                                    | std::path::Component::Prefix(_)
+                            )),
+                        "Selected file path must be repository-relative"
+                    );
+                }
+                if untrusted && at_start && value.starts_with('-') {
+                    anyhow::bail!(
+                        "Refusing to expand {label} starting with '-' at the beginning of an argument"
+                    );
+                }
+                ensure!(
+                    out.len().saturating_add(value.len()) <= MAX_EXPANDED_ARG_BYTES,
+                    "Expanded custom command argument exceeds 4,096 bytes"
+                );
+                out.push_str(value);
+                i += len;
+            } else if let Some(ch) = rest.chars().next() {
+                ensure!(
+                    out.len().saturating_add(ch.len_utf8()) <= MAX_EXPANDED_ARG_BYTES,
+                    "Expanded custom command argument exceeds 4,096 bytes"
+                );
+                out.push(ch);
+                i += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        ensure!(
+            !out.contains('\0'),
+            "Expanded custom command argument contains a NUL byte"
+        );
+        Ok(out)
+    }
+}
+
+pub fn normalize_tab_width(width: u8) -> u8 {
+    match width {
+        0..=2 => 2,
+        3..=5 => 4,
+        _ => 8,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -63,6 +348,17 @@ pub struct AppSettings {
     /// Linux: draw code in the desktop's fontconfig `monospace` family when
     /// it loads and is monospace; the bundled DejaVu Sans Mono otherwise.
     pub system_code_font: bool,
+    /// Explicit user-selected monospace font family on macOS and Linux.
+    /// Empty means use `system_code_font` (Linux) or the platform default.
+    pub code_font: String,
+    /// Soft-wrap long lines in Unified and single-side diff/source viewers.
+    pub diff_word_wrap: bool,
+    /// Visual tab stop width (2, 4, or 8 spaces) in code and diff editors.
+    pub tab_width: u8,
+    /// Diff algorithm used for patch generation and text comparison.
+    pub diff_algorithm: DiffAlgorithmPref,
+    /// Explicit user-defined commands (global or per-repository).
+    pub custom_commands: Vec<CustomCommand>,
     /// Settings' Reduce motion: follow the desktop's (or macOS's) reduced
     /// motion, or turn it on or off whatever the desktop asks
     /// (`native_accessibility::sync_preferences`).
@@ -93,6 +389,11 @@ impl Default for AppSettings {
             interface_text_size: DEFAULT_INTERFACE_TEXT_SIZE,
             code_text_size: DEFAULT_CODE_TEXT_SIZE,
             system_code_font: false,
+            code_font: String::new(),
+            diff_word_wrap: false,
+            tab_width: DEFAULT_TAB_WIDTH,
+            diff_algorithm: DiffAlgorithmPref::Patience,
+            custom_commands: Vec::new(),
             reduce_motion: DisplayChoice::Follow,
             increase_contrast: DisplayChoice::Follow,
             reopen_last: true,
@@ -219,6 +520,19 @@ impl AppSettings {
         self.code_text_size = self
             .code_text_size
             .clamp(*CODE_TEXT_RANGE.start(), *CODE_TEXT_RANGE.end());
+        self.tab_width = normalize_tab_width(self.tab_width);
+        let trimmed_font = self.code_font.trim();
+        if trimmed_font.len() != self.code_font.len() {
+            self.code_font = trimmed_font.to_owned();
+        }
+        if self.code_font.len() > MAX_CODE_FONT_BYTES
+            || self.code_font.chars().any(char::is_control)
+        {
+            self.code_font.clear();
+        }
+        self.custom_commands.truncate(MAX_CUSTOM_COMMANDS);
+        self.custom_commands
+            .retain(|command| command.validate().is_ok());
     }
 
     /// Validate an explicit settings edit before persistence. This is only the
@@ -229,6 +543,28 @@ impl AppSettings {
                 && CODE_TEXT_RANGE.contains(&self.code_text_size),
             "Choose interface text from 11 to 18 points and code text from 10 to 24 points"
         );
+        ensure!(
+            ALLOWED_TAB_WIDTHS.contains(&self.tab_width),
+            "Tab width must be 2, 4, or 8 spaces"
+        );
+        ensure!(
+            self.code_font.len() <= MAX_CODE_FONT_BYTES
+                && !self.code_font.chars().any(char::is_control),
+            "Code font family must be at most 256 bytes without control characters"
+        );
+        ensure!(
+            self.custom_commands.len() <= MAX_CUSTOM_COMMANDS,
+            "At most {MAX_CUSTOM_COMMANDS} custom commands can be saved"
+        );
+        let mut seen_ids = HashSet::with_capacity(self.custom_commands.len());
+        for command in &self.custom_commands {
+            command.validate()?;
+            ensure!(
+                seen_ids.insert(command.id.as_str()),
+                "Duplicate custom command id '{}'",
+                command.id
+            );
+        }
         ensure!(
             self.external_editor.len() <= 4096
                 && !self.external_editor.contains(['\0', '\n', '\r']),
@@ -3511,5 +3847,101 @@ mod tests {
         let mut bad_length = custom;
         bad_length.external_terminal = "a".repeat(4097);
         assert!(bad_length.validate().is_err());
+    }
+
+    #[test]
+    fn diff_options_code_font_and_custom_commands_roundtrip_and_validate() {
+        let legacy: AppSettings = serde_json::from_str(r#"{"graph_spacing":20}"#).unwrap();
+        assert!(!legacy.diff_word_wrap);
+        assert_eq!(legacy.tab_width, 4);
+        assert_eq!(legacy.diff_algorithm, DiffAlgorithmPref::Patience);
+        assert!(legacy.code_font.is_empty());
+        assert!(legacy.custom_commands.is_empty());
+        legacy.validate().unwrap();
+
+        let mut settings = legacy;
+        settings.diff_word_wrap = true;
+        settings.tab_width = 8;
+        settings.diff_algorithm = DiffAlgorithmPref::Histogram;
+        settings.code_font = "JetBrains Mono".into();
+        settings.custom_commands.push(CustomCommand {
+            id: "open-ci".into(),
+            name: "Run tests".into(),
+            program: "cargo".into(),
+            args: vec![
+                "test".into(),
+                "--manifest-path".into(),
+                "{repo}/Cargo.toml".into(),
+            ],
+            scopes: vec![CustomCommandScope::Repository, CustomCommandScope::Commit],
+            repository_path: None,
+            confirm: true,
+        });
+        settings.validate().unwrap();
+
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let decoded: AppSettings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, settings);
+
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            CustomCommand::expand_arg(
+                "{repo}/$SHA/$BRANCH/$FILE",
+                "/tmp/r",
+                Some("main"),
+                Some(oid),
+                Some("src/lib.rs")
+            )
+            .unwrap(),
+            format!("/tmp/r/{oid}/main/src/lib.rs")
+        );
+        assert!(CustomCommand::expand_arg("$SHA", "/tmp/r", None, None, None).is_err());
+        // Single-pass expansion never re-expands placeholder text inside values
+        // and respects $VAR identifier boundaries.
+        assert_eq!(
+            CustomCommand::expand_arg(
+                "{repo}:$SHA_SHORT",
+                "/tmp/$BRANCH/{commit}",
+                None,
+                None,
+                None
+            )
+            .unwrap(),
+            "/tmp/$BRANCH/{commit}:$SHA_SHORT"
+        );
+        // Untrusted leading '-' values at argument position 0 are rejected.
+        assert!(
+            CustomCommand::expand_arg("{branch}", "/tmp/r", Some("--upload-pack=evil"), None, None)
+                .is_err()
+        );
+        assert!(
+            CustomCommand::expand_arg("{path}", "/tmp/r", None, None, Some("../escape")).is_err()
+        );
+        assert!(
+            CustomCommand::expand_arg("{commit}", "/tmp/r", None, Some("not-a-sha"), None).is_err()
+        );
+
+        let mut bad_tab = settings.clone();
+        bad_tab.tab_width = 3;
+        assert!(bad_tab.validate().is_err());
+        bad_tab.normalize();
+        assert_eq!(bad_tab.tab_width, 4);
+
+        let mut bad_cmd = settings.clone();
+        bad_cmd.custom_commands[0].program = "sh\ncurl".into();
+        assert!(bad_cmd.validate().is_err());
+        bad_cmd.custom_commands[0].program = "./local-script.sh".into();
+        assert!(bad_cmd.validate().is_err());
+        bad_cmd.custom_commands[0].program = "bin/tool".into();
+        assert!(bad_cmd.validate().is_err());
+        bad_cmd.custom_commands[0].program = "/usr/bin/../bin/tool".into();
+        assert!(bad_cmd.validate().is_err());
+        bad_cmd.custom_commands[0].program = "/usr/bin/env".into();
+        assert!(bad_cmd.validate().is_ok());
+
+        let mut dup = settings;
+        let clone_cmd = dup.custom_commands[0].clone();
+        dup.custom_commands.push(clone_cmd);
+        assert!(dup.validate().is_err());
     }
 }

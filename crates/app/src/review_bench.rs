@@ -227,6 +227,8 @@ fn prepared_review_and_cached_paths_release_benchmark() {
     let original = Arc::new(Content::Text {
         diagrams: None,
         markdown: None,
+        table: None,
+        structured: None,
         patch: patch.clone(),
         old: old.clone(),
         new: new.clone(),

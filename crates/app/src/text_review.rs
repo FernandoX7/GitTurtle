@@ -97,6 +97,8 @@ pub fn prepare(
     let Content::Text {
         diagrams,
         markdown,
+        table,
+        structured,
         patch,
         old,
         new,
@@ -119,6 +121,8 @@ pub fn prepare(
     Ok(Arc::new(Content::Text {
         diagrams: diagrams.clone(),
         markdown: markdown.clone(),
+        table: table.clone(),
+        structured: structured.clone(),
         patch: reviewed.patch,
         old: old.clone(),
         new: new.clone(),
@@ -1032,6 +1036,8 @@ mod tests {
         let original = Arc::new(Content::Text {
             diagrams: None,
             markdown: None,
+            table: None,
+            structured: None,
             patch,
             old,
             new,
@@ -1088,6 +1094,8 @@ mod tests {
         Arc::new(Content::Text {
             diagrams: None,
             markdown: None,
+            table: None,
+            structured: None,
             old: old.into(),
             new: new.into(),
             patch: patch.into(),

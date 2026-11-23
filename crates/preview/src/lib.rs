@@ -62,10 +62,16 @@ mod pdf_hayro;
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub mod pdf_helper;
+pub mod structured;
 mod svg_limits;
+pub mod tabular;
 
 pub const PDF_PREVIEW_EDGE: u32 = 1000;
 pub const MAX_PDF_PAGE_TEXT_BYTES: usize = 256 * 1024;
+pub const MAX_PDF_SEARCH_QUERY_BYTES: usize = 256;
+pub const MAX_PDF_SEARCH_PAGES: usize = 256;
+pub const MAX_PDF_SEARCH_MATCHES: usize = 128;
+pub const MAX_PDF_SEARCH_SNIPPET_BYTES: usize = 240;
 const MAX_PDF_PAGES: usize = 100_000;
 
 /// Extracted page text, separate from raster pixels and never used as a Git patch.
@@ -74,6 +80,26 @@ const MAX_PDF_PAGES: usize = 100_000;
 pub struct PdfPageText {
     pub text: Option<String>,
     pub truncated: bool,
+}
+
+/// One PDF page matching a case-insensitive text search query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdfSearchMatch {
+    /// Zero-based page index.
+    pub page: usize,
+    /// Number of non-overlapping matches on this page.
+    pub match_count: usize,
+    /// Bounded single-line UTF-8 context snippet around the first match.
+    pub snippet: String,
+}
+
+/// Bounded multi-page PDF text search result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdfSearchReply {
+    pub page_count: usize,
+    pub pages_scanned: usize,
+    pub truncated: bool,
+    pub matches: Vec<PdfSearchMatch>,
 }
 
 #[derive(Debug)]
@@ -125,6 +151,137 @@ pub fn decode_pdf_page_text(
     #[cfg(not(target_os = "macos"))]
     {
         bail!("PDF text extraction is not available on this platform")
+    }
+}
+
+/// Bounded multi-page PDF text search on macOS via native PDFKit.
+/// On Linux, search stays confined inside `pdf_helper::serve` (`GTPS`/`GTPR`).
+pub fn search_pdf_text(
+    bytes: &[u8],
+    query: &str,
+    check: impl Fn() -> Result<()>,
+) -> Result<PdfSearchReply> {
+    check_pdf_search_input(bytes, query)?;
+    check()?;
+    #[cfg(target_os = "macos")]
+    {
+        native::search_pdf_text(bytes, query, check)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = query;
+        bail!("In-process PDF text search is not available on this platform")
+    }
+}
+
+pub(crate) fn check_pdf_search_input(bytes: &[u8], query: &str) -> Result<()> {
+    check_pdf_input(bytes, 0)?;
+    let trimmed = query.trim();
+    ensure!(!trimmed.is_empty(), "Enter text to search in the PDF");
+    ensure!(
+        trimmed.len() <= MAX_PDF_SEARCH_QUERY_BYTES,
+        "PDF search query exceeds the 256-byte limit"
+    );
+    ensure!(
+        !trimmed.contains('\0'),
+        "PDF search query contains unsupported control bytes"
+    );
+    Ok(())
+}
+
+/// Case-insensitive single-page match counter and bounded snippet extractor.
+pub(crate) fn search_page_text(
+    page: usize,
+    text: &str,
+    needle_lower: &str,
+) -> Option<PdfSearchMatch> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let lowered = text.to_lowercase();
+    let mut match_count = 0usize;
+    let mut first_byte = None;
+    let mut cursor = 0usize;
+    while cursor <= lowered.len() {
+        let Some(pos) = lowered[cursor..].find(needle_lower) else {
+            break;
+        };
+        let abs = cursor + pos;
+        if first_byte.is_none() {
+            first_byte = Some(abs);
+        }
+        match_count += 1;
+        cursor = abs + needle_lower.len();
+    }
+    let first = first_byte?;
+    let snippet = build_search_snippet(&lowered, text, first, needle_lower.len());
+    Some(PdfSearchMatch {
+        page,
+        match_count,
+        snippet,
+    })
+}
+
+fn build_search_snippet(
+    lowered: &str,
+    original: &str,
+    match_byte: usize,
+    match_len: usize,
+) -> String {
+    // Use `original` when byte offsets align (the common ASCII/BMP case),
+    // otherwise slice `lowered` safely on char boundaries.
+    let source = if lowered.len() == original.len()
+        && original.is_char_boundary(match_byte)
+        && original.is_char_boundary((match_byte + match_len).min(original.len()))
+    {
+        original
+    } else {
+        lowered
+    };
+    let mut start = match_byte.saturating_sub(64);
+    while start > 0 && !source.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (match_byte + match_len + 96).min(source.len());
+    while end < source.len() && !source.is_char_boundary(end) {
+        end += 1;
+    }
+    let raw = &source[start..end];
+    let mut snippet = String::with_capacity(raw.len().min(MAX_PDF_SEARCH_SNIPPET_BYTES));
+    if start > 0 {
+        snippet.push('…');
+    }
+    let mut prev_space = false;
+    for ch in raw.chars() {
+        if matches!(
+            ch,
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
+        ) {
+            continue;
+        }
+        let mapped = if ch.is_whitespace() || ch.is_control() {
+            ' '
+        } else {
+            ch
+        };
+        if mapped == ' ' {
+            if prev_space {
+                continue;
+            }
+            prev_space = true;
+        } else {
+            prev_space = false;
+        }
+        if snippet.len() + mapped.len_utf8() + 4 > MAX_PDF_SEARCH_SNIPPET_BYTES {
+            break;
+        }
+        snippet.push(mapped);
+    }
+    let trimmed = snippet.trim().to_owned();
+    if end < source.len() && trimmed.len() + 3 <= MAX_PDF_SEARCH_SNIPPET_BYTES {
+        format!("{trimmed}…")
+    } else {
+        trimmed
     }
 }
 

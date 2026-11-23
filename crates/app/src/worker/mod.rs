@@ -50,7 +50,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
 #[cfg(test)]
@@ -67,9 +67,43 @@ const GRAPH_EDGE_LIMIT: usize = 200_000;
 
 struct Request {
     job: Job,
+    options: PreviewRuntimeSnapshot,
     generation: u64,
     reply: oneshot::Sender<Result<Output>>,
     cancellation: gitturtle_core::HistoryCancellation,
+}
+
+#[derive(Default)]
+struct PreviewRuntimeOptions {
+    dark_mermaid: AtomicBool,
+    diff_algorithm: AtomicU8,
+}
+
+impl PreviewRuntimeOptions {
+    fn snapshot(&self) -> PreviewRuntimeSnapshot {
+        let diff_algorithm = match self.diff_algorithm.load(Ordering::Acquire) {
+            1 => gitturtle_core::DiffAlgorithm::Myers,
+            2 => gitturtle_core::DiffAlgorithm::Histogram,
+            _ => gitturtle_core::DiffAlgorithm::Patience,
+        };
+        PreviewRuntimeSnapshot {
+            dark_mermaid: self.dark_mermaid.load(Ordering::Acquire),
+            diff_algorithm,
+        }
+    }
+
+    fn set_dark_mermaid(&self, dark: bool) {
+        self.dark_mermaid.store(dark, Ordering::Release);
+    }
+
+    fn set_diff_algorithm(&self, algorithm: gitturtle_core::DiffAlgorithm) {
+        let encoded = match algorithm {
+            gitturtle_core::DiffAlgorithm::Patience => 0,
+            gitturtle_core::DiffAlgorithm::Myers => 1,
+            gitturtle_core::DiffAlgorithm::Histogram => 2,
+        };
+        self.diff_algorithm.store(encoded, Ordering::Release);
+    }
 }
 
 #[derive(Default)]
@@ -365,6 +399,7 @@ type PreviewSpawner = Box<dyn FnOnce() -> std::io::Result<()> + Send>;
 pub struct Worker {
     queue: Arc<(Mutex<Queues>, Condvar)>,
     latest: Arc<AtomicU64>,
+    runtime: Arc<PreviewRuntimeOptions>,
     preview_spawner: Mutex<Option<PreviewSpawner>>,
     /// Test-only: every job submitted to this worker's queue, so a test can
     /// assert that a path submits none.
@@ -399,11 +434,33 @@ impl Worker {
         Self::with_lanes(execute_metadata, execute_preview)
     }
 
+    pub(crate) fn set_dark_mermaid(&self, dark: bool) {
+        self.runtime.set_dark_mermaid(dark);
+    }
+
+    pub(crate) fn set_diff_algorithm(&self, algorithm: gitturtle_core::DiffAlgorithm) {
+        self.runtime.set_diff_algorithm(algorithm);
+    }
+
+    pub(crate) fn preview_options(&self) -> PreviewRuntimeSnapshot {
+        self.runtime.snapshot()
+    }
+
     fn with_lanes(
-        mut metadata_executor: impl FnMut(Job, &Cancellation, &mut RepositorySession) -> Result<Output>
+        mut metadata_executor: impl FnMut(
+            Job,
+            PreviewRuntimeSnapshot,
+            &Cancellation,
+            &mut RepositorySession,
+        ) -> Result<Output>
         + Send
         + 'static,
-        mut preview_executor: impl FnMut(Job, &mut PreviewCache, &Cancellation) -> Result<Output>
+        mut preview_executor: impl FnMut(
+            Job,
+            PreviewRuntimeSnapshot,
+            &mut PreviewCache,
+            &Cancellation,
+        ) -> Result<Output>
         + Send
         + 'static,
     ) -> Self {
@@ -481,7 +538,7 @@ impl Worker {
                     };
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         cancellation.check()?;
-                        metadata_executor(request.job, &cancellation, &mut session)
+                        metadata_executor(request.job, request.options, &cancellation, &mut session)
                     }));
                     let result = match result {
                         Ok(result) => result,
@@ -542,7 +599,7 @@ impl Worker {
                             if request.reply.is_canceled() {
                                 continue;
                             }
-                            let preparation = match PreviewKey::of(&request.job) {
+                            let preparation = match PreviewKey::of_with(&request.job, request.options) {
                                 Some(key) => {
                                     let preparation = Arc::new(Preparation::default());
                                     state.preview.active = Some(Active::Preview {
@@ -576,7 +633,7 @@ impl Worker {
                         };
                         let result = catch_unwind(AssertUnwindSafe(|| {
                             cancellation.check()?;
-                            preview_executor(request.job, &mut cache, &cancellation)
+                            preview_executor(request.job, request.options, &mut cache, &cancellation)
                         }));
                         let result = match result {
                             Ok(result) => result,
@@ -616,6 +673,7 @@ impl Worker {
         Self {
             queue,
             latest,
+            runtime: Arc::new(PreviewRuntimeOptions::default()),
             preview_spawner: Mutex::new(Some(preview_spawner)),
             #[cfg(test)]
             submissions: AtomicU64::new(0),
@@ -680,7 +738,7 @@ impl Worker {
                         {
                             continue;
                         }
-                        let preparation = match PreviewKey::of(&request.job) {
+                        let preparation = match PreviewKey::of_with(&request.job, request.options) {
                             Some(key) => {
                                 let preparation = Arc::new(Preparation::default());
                                 state.metadata.active = Some(Active::Preview {
@@ -750,6 +808,7 @@ impl Worker {
         Self {
             queue,
             latest,
+            runtime: Arc::new(PreviewRuntimeOptions::default()),
             preview_spawner: Mutex::new(None),
             submissions: AtomicU64::new(0),
             working_previews: AtomicU64::new(0),
@@ -948,13 +1007,14 @@ impl Worker {
             } else {
                 &mut state.preview
             };
+            let options = self.runtime.snapshot();
             if let Some(Active::Preview {
                 key,
                 preparation,
                 adopted,
                 ..
             }) = &mut preview_lane.active
-                && PreviewKey::of(&job).is_some_and(|wanted| wanted == **key)
+                && PreviewKey::of_with(&job, options).is_some_and(|wanted| wanted == **key)
                 && preparation.take_over()
             {
                 *adopted = Some(reply);
@@ -969,6 +1029,7 @@ impl Worker {
             state.clear_pending_all();
             state.lane_mut(target_lane).pending = Some(Request {
                 job,
+                options,
                 generation,
                 reply,
                 cancellation: gitturtle_core::HistoryCancellation::default(),

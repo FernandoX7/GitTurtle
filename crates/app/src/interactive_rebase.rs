@@ -333,9 +333,10 @@ impl Element for Marked {
 }
 
 /// The actions the form offers for the selected commit, in its order.
-const ACTIONS: [RebaseAction; 5] = [
+const ACTIONS: [RebaseAction; 6] = [
     RebaseAction::Pick,
     RebaseAction::Reword,
+    RebaseAction::Edit,
     RebaseAction::Squash,
     RebaseAction::Fixup,
     RebaseAction::Drop,
@@ -379,8 +380,9 @@ use crate::native_accessibility::text as label;
 /// What the sequence's keys do, in the " · "-separated phrases [`keyboard_help`] draws.
 fn keyboard_help_text() -> String {
     format!(
-        "↑/↓ select · {} / {} reorder · P/R/S/F/D choose an action. Squash combines messages; \
-         Fixup keeps the preceding message. Drop removes the commit's changes.",
+        "↑/↓ select · {} / {} reorder · P/R/E/S/F/D choose an action. Edit pauses to amend or \
+         split; Squash combines messages; Fixup keeps the preceding message. Drop removes the \
+         commit's changes.",
         shortcuts::key_label("alt-up"),
         shortcuts::key_label("alt-down")
     )
@@ -1306,7 +1308,7 @@ impl RebaseForm {
                         if matches!(key, "up" | "down" | "home" | "end") && !this.steps.is_empty() {
                             this.selected = match key { "up" => this.selected.saturating_sub(1), "down" => (this.selected + 1).min(this.steps.len() - 1), "home" => 0, _ => this.steps.len() - 1 };
                             this.scroll.scroll_to_item(this.selected, ScrollStrategy::Center); cx.stop_propagation(); cx.notify();
-                        } else if let Some(action) = match key { "p" => Some(RebaseAction::Pick), "r" => Some(RebaseAction::Reword), "s" => Some(RebaseAction::Squash), "f" => Some(RebaseAction::Fixup), "d" => Some(RebaseAction::Drop), _ => None } { this.choose(action, cx); cx.stop_propagation(); }
+                        } else if let Some(action) = match key { "p" => Some(RebaseAction::Pick), "r" => Some(RebaseAction::Reword), "e" => Some(RebaseAction::Edit), "s" => Some(RebaseAction::Squash), "f" => Some(RebaseAction::Fixup), "d" => Some(RebaseAction::Drop), _ => None } { this.choose(action, cx); cx.stop_propagation(); }
                     })).child(list)))))
                 .child(keyboard_help().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
                 .when_some(acknowledge, |element, acknowledge| element
@@ -1570,7 +1572,7 @@ mod tests {
             "↑/↓".to_owned(),
             shortcuts::key_label("alt-up"),
             shortcuts::key_label("alt-down"),
-            "P/R/S/F/D".to_owned(),
+            "P/R/E/S/F/D".to_owned(),
         ];
         let runs: Vec<SharedString> = crate::phrase_runs(&keyboard_help_text())
             .into_iter()
@@ -1695,11 +1697,12 @@ mod tests {
 
     /// The body's Tab stops in their order, by the selector each is drawn
     /// under.
-    const STOPS: [&str; 12] = [
+    const STOPS: [&str; 13] = [
         "rebase-base-field",
         "load-rebase-commits",
         "rebase-action-pick",
         "rebase-action-reword",
+        "rebase-action-edit",
         "rebase-action-squash",
         "rebase-action-fixup",
         "rebase-action-drop",
@@ -1713,11 +1716,12 @@ mod tests {
     /// The stops Tab reaches in the loaded form of [`published_repository`]
     /// before its acknowledgment: Move up waits for a later commit to be
     /// selected and Review rebase… for the acknowledgment.
-    const LOADED_STOPS: [&str; 10] = [
+    const LOADED_STOPS: [&str; 11] = [
         "rebase-base-field",
         "load-rebase-commits",
         "rebase-action-pick",
         "rebase-action-reword",
+        "rebase-action-edit",
         "rebase-action-squash",
         "rebase-action-fixup",
         "rebase-action-drop",

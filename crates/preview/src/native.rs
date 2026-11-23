@@ -13,7 +13,7 @@ use objc2_core_graphics::{
 use std::ptr::NonNull;
 
 mod pdf_text;
-pub(super) use pdf_text::decode_pdf_page_text;
+pub(super) use pdf_text::{decode_pdf_page_text, search_pdf_text};
 
 fn rect(width: u32, height: u32) -> CGRect {
     CGRect {

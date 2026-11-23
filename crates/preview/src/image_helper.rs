@@ -841,7 +841,7 @@ pub(crate) mod tests {
         assert!(encode_image_request(ConfinedFormat::Jp2, 100, &large).is_err());
         let header = encode_image_request(ConfinedFormat::Jp2, 1600, RGB_JP2).unwrap();
         assert_eq!(&header[..4], b"GTIq");
-        assert_eq!(u32_at(&header, 4), 2);
+        assert_eq!(u32_at(&header, 4), PROTOCOL_VERSION);
         assert_eq!(header[8], 2);
         assert_eq!(u32_at(&header, 9), 1600);
         assert_eq!(u32_at(&header, 13) as usize, RGB_JP2.len());

@@ -23141,10 +23141,14 @@ fn open_working_actions(cx: &mut VisualTestContext, window: Size<Pixels>) {
 /// at 13 pt, and at 18 pt cut its last row with no scrollbar.
 #[gpui::test]
 async fn a_capped_working_actions_menu_keeps_its_rows_and_scrolls(cx: &mut TestAppContext) {
-    const SHARED: [&str; 5] = [
+    const SHARED: [&str; 9] = [
         "Ignore selected untracked file…",
         "Save changes to stash…",
         "Browse stashes…",
+        "Commit & Push",
+        "Insert Signed-off-by",
+        "Apply commit.template",
+        "Recent commit messages…",
         "Amend last commit…",
         "Undo last local commit…",
     ];
@@ -23216,11 +23220,11 @@ async fn a_capped_working_actions_menu_keeps_its_rows_and_scrolls(cx: &mut TestA
         );
         cx.simulate_keystrokes("up");
         draw(cx);
-        let last = menu_rows(cx, &[SHARED[4]])[0].1;
+        let last_label = SHARED[SHARED.len() - 1];
+        let last = menu_rows(cx, &[last_label])[0].1;
         assert!(
             last.top() >= surface.top() - px(0.01) && last.bottom() <= surface.bottom() + px(0.01),
-            "{at}: Up brings {:?} at {last:?} whole into the menu {surface:?}",
-            SHARED[4]
+            "{at}: Up brings {last_label:?} at {last:?} whole into the menu {surface:?}",
         );
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -23236,7 +23240,7 @@ async fn a_capped_working_actions_menu_keeps_its_rows_and_scrolls(cx: &mut TestA
 /// that arrived under the pointer took the hover's, two rows at once.
 #[gpui::test]
 async fn a_wheel_over_a_capped_menu_lights_no_row_under_the_still_pointer(cx: &mut TestAppContext) {
-    const ROWS: [&str; 9] = [
+    const ROWS: [&str; 13] = [
         "Directories",
         "Stage 0 selected",
         "Unstage 0 selected",
@@ -23244,6 +23248,10 @@ async fn a_wheel_over_a_capped_menu_lights_no_row_under_the_still_pointer(cx: &m
         "Ignore selected untracked file…",
         "Save changes to stash…",
         "Browse stashes…",
+        "Commit & Push",
+        "Insert Signed-off-by",
+        "Apply commit.template",
+        "Recent commit messages…",
         "Amend last commit…",
         "Undo last local commit…",
     ];
@@ -25270,35 +25278,37 @@ async fn a_short_working_body_scrolls_and_reveals_each_composer_stop(cx: &mut Te
         );
         assert_whole(cx, &TITLE, gap, &format!("{at}, back on the title"));
     }
-    // The guard: at 13 pt in 1480 × 973 nothing scrolls and the
-    // inspector is laid out as before the body could scroll, the
-    // composer ending at the body's foot.
+    // The guard: at 13 pt in 1480 × 973 nothing scrolls; an empty unfocused
+    // Description stays compact so Working files keeps room, and focusing the
+    // Description expands it cleanly.
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     cx.simulate_resize(size(px(1480.), px(973.)));
     draw(cx);
     draw(cx);
-    let laid_out = |x: f32, y: f32, width: f32, height: f32| {
-        Some(Bounds::new(
-            point(px(x), px(y)),
-            size(px(width), px(height)),
-        ))
-    };
-    for (selector, before) in [
-        ("working-body", laid_out(1200., 300., 280., 647.)),
-        ("working-pane", laid_out(1201., 300., 279., 275.)),
-        ("commit-composer", laid_out(1200., 575., 280., 372.)),
-        ("commit-composer-fields", laid_out(1200., 606.5, 280., 295.)),
-        ("commit-title", laid_out(1209.5, 662., 261., 26.)),
-        ("commit-description", laid_out(1209.5, 719., 261., 153.5)),
-        ("commit-description-hint", laid_out(1209.5, 879., 261., 16.)),
-        ("commit-staged", laid_out(1209.5, 901.5, 261., 36.)),
-    ] {
-        assert_eq!(
-            cx.debug_bounds(selector),
-            before,
-            "13 pt in 1480 × 973: {selector}"
-        );
-    }
+    let compact_desc = cx
+        .debug_bounds("commit-description")
+        .expect("commit-description laid out");
+    let compact_working = cx
+        .debug_bounds("working-pane")
+        .expect("working-pane laid out");
+    assert!(
+        compact_desc.size.height < px(110.),
+        "empty unfocused commit-description stays compact: {compact_desc:?}"
+    );
+    assert!(
+        compact_working.size.height > px(275.),
+        "compact empty description returns space to working-pane: {compact_working:?}"
+    );
+    cx.simulate_click(compact_desc.center(), Modifiers::none());
+    draw(cx);
+    draw(cx);
+    let expanded_desc = cx
+        .debug_bounds("commit-description")
+        .expect("focused commit-description laid out");
+    assert!(
+        expanded_desc.size.height > compact_desc.size.height + px(20.),
+        "focusing commit-description expands it: compact={compact_desc:?}, expanded={expanded_desc:?}"
+    );
 }
 
 /// Reads the working state again as the watcher asks after a change

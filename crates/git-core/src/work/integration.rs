@@ -36,6 +36,9 @@ pub struct OperationState {
     pub staged_paths: Vec<PathBuf>,
     /// An external interactive sequence needs its configured message editor.
     pub requires_message_editor: bool,
+    /// Interactive rebase stopped deliberately at an `edit` step so the user
+    /// can inspect, amend, or split commits before continuing.
+    pub paused_for_edit: bool,
     state_token: String,
     index_token: String,
 }
@@ -56,7 +59,10 @@ impl OperationState {
             digest.update((value.len() as u64).to_le_bytes());
             digest.update(value.as_bytes());
         }
-        digest.update([u8::from(self.requires_message_editor)]);
+        digest.update([
+            u8::from(self.requires_message_editor),
+            u8::from(self.paused_for_edit),
+        ]);
         if include_index {
             digest.update(self.index_token.as_bytes());
         }
@@ -71,7 +77,30 @@ impl OperationState {
             && self.target_label == other.target_label
             && self.commit == other.commit
             && self.requires_message_editor == other.requires_message_editor
+            && self.paused_for_edit == other.paused_for_edit
             && self.state_token == other.state_token
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MergeMode {
+    #[default]
+    DefaultFf,
+    NoFf,
+    FfOnly,
+    Squash,
+}
+
+impl MergeMode {
+    pub const ALL: [Self; 4] = [Self::DefaultFf, Self::NoFf, Self::FfOnly, Self::Squash];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DefaultFf => "Fast-forward if possible (--ff)",
+            Self::NoFf => "Always create merge commit (--no-ff)",
+            Self::FfOnly => "Fast-forward only (--ff-only)",
+            Self::Squash => "Squash into staged changes (--squash)",
+        }
     }
 }
 
@@ -169,6 +198,11 @@ pub enum ConflictResolution {
 pub enum IntegrationCommand {
     Merge {
         plan: IntegrationPlan,
+    },
+    MergeWithOptions {
+        plan: Box<IntegrationPlan>,
+        mode: MergeMode,
+        message: Option<String>,
     },
     Rebase {
         plan: IntegrationPlan,
@@ -319,6 +353,16 @@ impl GitRepository {
                         .is_some_and(rebase_line_needs_editor)
                 })
                 || value("rebase-merge/message-squash").is_some());
+        let paused_for_edit = kind == OperationKind::Rebase
+            && !requires_message_editor
+            && !status.entries.iter().any(|entry| entry.conflicted)
+            && value("rebase-merge/done").is_some_and(|done| {
+                done.lines()
+                    .rfind(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+                    .is_some_and(|line| {
+                        matches!(line.split_whitespace().next(), Some("edit" | "e"))
+                    })
+            });
         let mut digest = Sha256::new();
         for (path, bytes) in files {
             digest.update(path.as_bytes());
@@ -340,9 +384,27 @@ impl GitRepository {
                 .flat_map(|entry| entry.paths())
                 .collect(),
             requires_message_editor,
+            paused_for_edit,
             state_token: crate::lower_hex(digest.finalize()),
             index_token: crate::lower_hex(Sha256::digest(index)),
         }))
+    }
+
+    /// Passively read `SQUASH_MSG` when present after `git merge --squash`.
+    pub fn squash_message(&self) -> Result<Option<String>> {
+        if self.bare {
+            return Ok(None);
+        }
+        let directory = if matches!(self.verify_at_path()?, FoundAtPath::Same) {
+            self.git_dir().to_owned()
+        } else {
+            self.git_directories()?.0
+        };
+        let Some(bytes) = operation_file(&directory, Path::new("SQUASH_MSG"))? else {
+            return Ok(None);
+        };
+        let content = String::from_utf8_lossy(&bytes).trim().to_owned();
+        Ok((!content.is_empty()).then_some(content))
     }
 
     pub fn integration_plan(&self, target: &str) -> Result<IntegrationPlan> {
@@ -578,50 +640,126 @@ impl GitRepository {
         // not launch a terminal editor, but normal hooks and signing still run.
         command.env("GIT_EDITOR", "true");
         match operation {
-            IntegrationCommand::Merge { plan } | IntegrationCommand::Rebase { plan } => {
+            IntegrationCommand::Merge { plan } => {
                 let status = self.validate_integration_plan(plan)?;
                 ensure!(
                     !status.entries.iter().any(|e| e.staged.is_some()),
                     "Commit or unstage staged changes before integrating branches"
                 );
-                if matches!(operation, IntegrationCommand::Rebase { .. }) {
+                let message = default_merge_message(plan);
+                command.args([
+                    "merge",
+                    "--no-edit",
+                    "--no-autostash",
+                    "--no-squash",
+                    "--ff",
+                    "--no-overwrite-ignore",
+                    "--message",
+                    &message,
+                    "--",
+                    &plan.target_oid,
+                ]);
+            }
+            IntegrationCommand::MergeWithOptions {
+                plan,
+                mode,
+                message,
+            } => {
+                let status = self.validate_integration_plan(plan)?;
+                ensure!(
+                    !status.entries.iter().any(|e| e.staged.is_some()),
+                    "Commit or unstage staged changes before integrating branches"
+                );
+                if let Some(custom) = message.as_deref() {
                     ensure!(
-                        !status.entries.iter().any(|e| !e.untracked),
-                        "Commit or stash working changes before rebasing; no automatic stash is created"
+                        custom.len() <= 64 * 1024 && !custom.contains('\0'),
+                        "Merge message must be at most 64 KiB and contain no NUL bytes"
                     );
-                    self.protect_untracked_rebase_paths(plan)?;
-                    command.args([
-                        "rebase",
-                        "--no-autostash",
-                        "--no-update-refs",
-                        "--no-autosquash",
-                        "--",
-                        &plan.target_oid,
-                    ]);
-                } else {
-                    let message = format!(
-                        "Merge {} '{}' into {}",
-                        if plan.target_ref.starts_with("refs/remotes/") {
-                            "remote-tracking branch"
-                        } else {
-                            "branch"
-                        },
-                        plan.target_label,
-                        plan.branch
-                    );
-                    command.args([
-                        "merge",
-                        "--no-edit",
-                        "--no-autostash",
-                        "--no-squash",
-                        "--ff",
-                        "--no-overwrite-ignore",
-                        "--message",
-                        &message,
-                        "--",
-                        &plan.target_oid,
-                    ]);
                 }
+                match mode {
+                    MergeMode::DefaultFf => {
+                        let msg = message
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| default_merge_message(plan));
+                        command.args([
+                            "merge",
+                            "--no-edit",
+                            "--no-autostash",
+                            "--no-squash",
+                            "--ff",
+                            "--no-overwrite-ignore",
+                            "--message",
+                            &msg,
+                            "--",
+                            &plan.target_oid,
+                        ]);
+                    }
+                    MergeMode::NoFf => {
+                        let msg = message
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| default_merge_message(plan));
+                        command.args([
+                            "merge",
+                            "--no-edit",
+                            "--no-autostash",
+                            "--no-squash",
+                            "--no-ff",
+                            "--no-overwrite-ignore",
+                            "--message",
+                            &msg,
+                            "--",
+                            &plan.target_oid,
+                        ]);
+                    }
+                    MergeMode::FfOnly => {
+                        command.args([
+                            "merge",
+                            "--no-edit",
+                            "--no-autostash",
+                            "--no-squash",
+                            "--ff-only",
+                            "--no-overwrite-ignore",
+                            "--",
+                            &plan.target_oid,
+                        ]);
+                    }
+                    MergeMode::Squash => {
+                        command.args([
+                            "merge",
+                            "--no-autostash",
+                            "--squash",
+                            "--no-overwrite-ignore",
+                            "--",
+                            &plan.target_oid,
+                        ]);
+                    }
+                }
+            }
+            IntegrationCommand::Rebase { plan } => {
+                let status = self.validate_integration_plan(plan)?;
+                ensure!(
+                    !status.entries.iter().any(|e| e.staged.is_some()),
+                    "Commit or unstage staged changes before integrating branches"
+                );
+                ensure!(
+                    !status.entries.iter().any(|e| !e.untracked),
+                    "Commit or stash working changes before rebasing; no automatic stash is created"
+                );
+                self.protect_untracked_rebase_paths(plan)?;
+                command.args([
+                    "rebase",
+                    "--no-autostash",
+                    "--no-update-refs",
+                    "--no-autosquash",
+                    "--",
+                    &plan.target_oid,
+                ]);
             }
             IntegrationCommand::Continue { expected }
             | IntegrationCommand::Abort { expected }
@@ -1202,4 +1340,17 @@ fn write_conflict_file(
     _bytes: &[u8],
 ) -> Result<()> {
     bail!("Safe manual resolution is currently supported on macOS and Linux")
+}
+
+fn default_merge_message(plan: &IntegrationPlan) -> String {
+    format!(
+        "Merge {} '{}' into {}",
+        if plan.target_ref.starts_with("refs/remotes/") {
+            "remote-tracking branch"
+        } else {
+            "branch"
+        },
+        plan.target_label,
+        plan.branch
+    )
 }

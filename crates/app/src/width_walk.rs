@@ -2596,6 +2596,76 @@ const DIALOG_SITES: &[(&str, &str, Walked)] = {
             "confirm_force_worktree_removal",
             Left("needs a linked worktree with changes; the fixture has none"),
         ),
+        (
+            "github_view.rs",
+            "checkout_pr_branch",
+            Left("needs an open pull request in GitHub panel"),
+        ),
+        (
+            "github_view.rs",
+            "open_merge_pr_dialog",
+            Left("needs an open non-draft pull request in GitHub panel"),
+        ),
+        (
+            "github_view.rs",
+            "open_pr_csv_dialog",
+            Left("needs an open pull request in GitHub panel"),
+        ),
+        (
+            "integration.rs",
+            "open_merge_options_dialog",
+            Left("needs a prepared branch merge integration plan"),
+        ),
+        (
+            "integration.rs",
+            "open_start_bisect_dialog",
+            Left("two-field bisect start dialog; explicit repository write"),
+        ),
+        (
+            "lib.rs",
+            "open_run_custom_command_dialog",
+            Left("custom command picker; user-configured commands"),
+        ),
+        (
+            "lib.rs",
+            "run_custom_command",
+            Left("confirmation alert for an explicit user-configured custom command"),
+        ),
+        (
+            "pdf_view.rs",
+            "search_document_dialog_with_focus",
+            Left("needs an open PDF preview document"),
+        ),
+        (
+            "recovery.rs",
+            "create_branch_from_stash_entry",
+            Left("needs an inspected stash selected in Stashes"),
+        ),
+        (
+            "revision_inspection.rs",
+            "export_range_as_patch_dialog",
+            Left("needs an active commit range comparison"),
+        ),
+        (
+            "revision_inspection.rs",
+            "apply_patch_dialog",
+            Left("explicit patch application dialog with preflight check"),
+        ),
+        (
+            "settings.rs",
+            "open_custom_command_editor_dialog",
+            Left("custom command configuration editor opened from Settings"),
+        ),
+        (
+            "workspace.rs",
+            "open_recent_commit_messages",
+            Left("picker listing recent local branch commit messages"),
+        ),
+        (
+            "workspace.rs",
+            "open_pull_options_dialog",
+            Left("needs a configured remote and remote branch target"),
+        ),
     ]
 };
 
