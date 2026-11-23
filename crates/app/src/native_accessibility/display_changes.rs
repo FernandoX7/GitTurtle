@@ -27,9 +27,12 @@ pub(super) fn subscribe(
     cx: &mut gpui::Context<crate::GitTurtle>,
 ) -> gpui::Task<()> {
     use block2::RcBlock;
-    use futures::StreamExt;
+    use futures::{FutureExt as _, StreamExt as _};
     use objc2::{rc::Retained, runtime::ProtocolObject};
-    use objc2_app_kit::{NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification};
+    use objc2_app_kit::{
+        NSSystemColorsDidChangeNotification, NSWorkspace,
+        NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
+    };
     use objc2_foundation::{
         NSNotification, NSNotificationCenter, NSObjectProtocol, NSOperationQueue,
     };
@@ -49,36 +52,81 @@ pub(super) fn subscribe(
 
     let (signal, mut changes) = channel();
     let workspace = NSWorkspace::sharedWorkspace();
-    let center = workspace.notificationCenter();
-    let callback = RcBlock::new(move |_: NonNull<NSNotification>| signal.send());
-    // Apple's notification is delivered through NSWorkspace's own center.
+    let workspace_center = workspace.notificationCenter();
+    let display_signal = signal;
+    let (accent_signal, mut accent_changes) = channel();
+    let callback = RcBlock::new(move |_: NonNull<NSNotification>| display_signal.send());
+    // Apple's accessibility display notification is delivered through NSWorkspace's center.
     // SAFETY: the notification's object is NSWorkspace, delivery uses the main
     // queue, and the block captures only a Send + Sync bounded-channel signal.
     let token = unsafe {
-        center.addObserverForName_object_queue_usingBlock(
+        workspace_center.addObserverForName_object_queue_usingBlock(
             Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
             Some(&workspace),
             Some(&NSOperationQueue::mainQueue()),
             &callback,
         )
     };
-    let observer = Observer { center, token };
+    let observer = Observer {
+        center: workspace_center,
+        token,
+    };
+
+    let default_center = NSNotificationCenter::defaultCenter();
+    let accent_callback = RcBlock::new(move |_: NonNull<NSNotification>| accent_signal.send());
+    // System accent changes are posted on NSNotificationCenter::defaultCenter() with nil object.
+    // SAFETY: delivery uses the main queue and the block captures only a bounded-channel signal.
+    let accent_token = unsafe {
+        default_center.addObserverForName_object_queue_usingBlock(
+            Some(NSSystemColorsDidChangeNotification),
+            None,
+            Some(&NSOperationQueue::mainQueue()),
+            &accent_callback,
+        )
+    };
+    let accent_observer = Observer {
+        center: default_center,
+        token: accent_token,
+    };
+
     cx.spawn_in(window, async move |view, cx| {
         let _observer = observer;
-        while changes.next().await.is_some() {
-            // Reading current values here coalesces rapid ON/OFF transitions.
-            // Never update GPUI synchronously inside a Cocoa notification.
-            // Resolved with the person's choices, a change of Increase
-            // Contrast applies the window's theme again, once.
-            if view
-                .update_in(cx, |view, window, cx| {
-                    super::sync_preferences(cx);
-                    view.show_display_preferences(None, window, cx);
-                    cx.notify();
-                })
-                .is_err()
-            {
-                break;
+        let _accent_observer = accent_observer;
+        loop {
+            futures::select! {
+                display_event = changes.next().fuse() => {
+                    if display_event.is_none() {
+                        break;
+                    }
+                    // Reading current values here coalesces rapid ON/OFF transitions.
+                    // Never update GPUI synchronously inside a Cocoa notification.
+                    if view
+                        .update_in(cx, |view, window, cx| {
+                            super::sync_preferences(cx);
+                            view.show_display_preferences(None, window, cx);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                accent_event = accent_changes.next().fuse() => {
+                    if accent_event.is_none() {
+                        break;
+                    }
+                    if view
+                        .update_in(cx, |view, window, cx| {
+                            crate::appearance::sync_macos_system_accent(cx);
+                            if view.settings.system_accent {
+                                view.apply_appearance(window, cx);
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             }
         }
     })

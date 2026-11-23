@@ -267,6 +267,10 @@ impl ProjectHub {
             .expect("Projects form inputs initialized")
     }
 
+    pub fn recent(&self) -> &[PathBuf] {
+        &self.recent
+    }
+
     pub fn set_recent(&mut self, recent: Vec<PathBuf>, cx: &mut Context<Self>) {
         self.recent = unique_recent(recent);
         self.filter_recent(cx);

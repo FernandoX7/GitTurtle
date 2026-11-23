@@ -9,7 +9,7 @@ members = [
     "crates/theme",
 ]
 default-members = ["crates/app"]
-exclude = ["fuzz", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common", "vendor/accesskit_unix"]
+exclude = ["fuzz", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common", "vendor/accesskit_macos", "vendor/accesskit_unix"]
 resolver = "3"
 
 [workspace.package]
@@ -51,12 +51,14 @@ strip = "debuginfo"
 
 # Keep the matching GPUI Kit 0.10.0 / GPUI 0.3.12 stack; supply AccessKit's
 # AT-SPI disabled state (#788) and off-screen/modal fixes under accesskit_unix
-# 0.22, AT-SPI cache signals libatspi accepts (#819, in accesskit_unix 0.24.1),
+# 0.22, macOS VoiceOver off-screen clipping parity under accesskit_macos 0.26,
+# AT-SPI cache signals libatspi accepts (#819, in accesskit_unix 0.24.1),
 # Wayland fractional-scale drawable sizing, macOS accessibility responder
 # alignment, a test-only #[gpui::test] teardown that releases each seed's app,
 # and renderer font-cache isolation for Mermaid.
 [patch.crates-io]
 accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
+accesskit_macos = { path = "vendor/accesskit_macos" }
 accesskit_unix = { path = "vendor/accesskit_unix" }
 gpui-base = { path = "vendor/gpui-base" }
 gpui-component = { path = "vendor/gpui-component" }

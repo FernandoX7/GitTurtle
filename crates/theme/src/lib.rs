@@ -127,6 +127,13 @@ pub fn palette_colors(palette: Palette) -> [u32; 6] {
     LANE_HUE_OFFSETS_DEG.map(|deg| fit_oklch_lane(base_hue + deg.to_radians(), lane_chroma, light))
 }
 
+/// Returns a copy of `palette` with its accent tokens fitted from `raw_accent`
+/// (e.g., macOS system accent) so every surface, button state, and removed-diff
+/// tile keeps GitTurtle's readability guarantees.
+pub fn with_fitted_accent(palette: Palette, raw_accent: u32) -> Palette {
+    omarchy::fit_system_accent(palette, raw_accent)
+}
+
 /// The baseline lane set of a light or a dark palette.
 pub fn lane_colors(light: bool) -> [u32; 6] {
     if light { LIGHT_COLORS } else { DARK_COLORS }
@@ -470,6 +477,36 @@ mod lane_and_monochrome_tests {
                     custom::contrast(p.accent_active, surface) >= 3.0,
                     "{name} monochrome accent_active #{:06x} on #{surface:06x}",
                     p.accent_active
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn system_accents_fit_every_builtin_theme_without_readability_issues() {
+        // Representative macOS system accents (Blue, Purple, Pink, Red, Orange, Yellow, Green, Graphite).
+        let accents = [
+            0x007aff_u32,
+            0xaf52de,
+            0xff2d55,
+            0xff3b30,
+            0xff9500,
+            0xffcc00,
+            0x34c759,
+            0x8e8e93,
+        ];
+        for choice in ThemeChoice::ALL {
+            let base = choice.palette();
+            for accent in accents {
+                let fitted = with_fitted_accent(base, accent);
+                assert_eq!(
+                    fitted.readability_issues(),
+                    Vec::new(),
+                    "{choice:?} with accent #{accent:06x}"
+                );
+                assert!(
+                    custom::contrast(fitted.accent_foreground, fitted.accent) >= 4.5,
+                    "{choice:?} accent_foreground contrast"
                 );
             }
         }

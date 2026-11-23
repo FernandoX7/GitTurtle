@@ -5,6 +5,7 @@ These dependencies are selected by the root [Cargo.toml](../Cargo.toml) `[patch.
 | Dependency | Patch note & local purpose |
 | --- | --- |
 | `accesskit_atspi_common` | [GITTURTLE-PATCH.md](accesskit_atspi_common/GITTURTLE-PATCH.md) — Linux AT-SPI disabled states, modal-hidden page removal/restore, clip visibility/hit-test filtering, and bounded selectable-item cache retention |
+| `accesskit_macos` | [GITTURTLE-PATCH.md](accesskit_macos/GITTURTLE-PATCH.md) — macOS VoiceOver `accessibilityFrame` and `hit_test` clipping parity against `clips_children()` ancestors |
 | `accesskit_unix` | [GITTURTLE-PATCH.md](accesskit_unix/GITTURTLE-PATCH.md) — Upstream #819 AT-SPI `AddAccessible` / `RemoveAccessible` cache signal signatures (remove once GPUI Linux upgrades to `accesskit_unix >= 0.24.1`) |
 | `gpui-base` | [GITTURTLE-PATCH.md](gpui-base/GITTURTLE-PATCH.md) — Accessibility (`DialogKind`, `TextRun` <=255-char splitting, disabled flags, `accepts_text_input`), dialog/input/Enter once-per-press semantics, popup/popover device-pixel clamping & bottom inset, blink-cursor stability, resizable fit, `ColorSwatch::track_focus`, `TextSelectionRegistration::with_scrollable`, and text decorations |
 | `gpui-component` | [GITTURTLE-PATCH.md](gpui-component/GITTURTLE-PATCH.md) — Resolved theme/focus-ring/disabled tokens, menu keyboard/pointer/accessibility behavior, popup/dialog clamping, top-left alignment & shadow masking, weak overlay callbacks, color picker roving focus, diff syntax roles, `mono_font` empty-list guard, and `Icon::own_color` |

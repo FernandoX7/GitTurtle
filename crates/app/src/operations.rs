@@ -177,6 +177,7 @@ impl RepositoryOutcomes {
     }
 }
 
+#[derive(Clone)]
 pub struct SerialExecutor {
     sender: mpsc::SyncSender<Operation>,
     /// The thread's name, which a test's failed wait reports.

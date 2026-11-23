@@ -407,10 +407,36 @@ def package(args, root):
             shutil.copyfile(icon_dir / name, resources / name)
             (resources / name).chmod(0o644)
         tools["icon_catalog"] = inspect_catalog(resources / "Assets.car")
-        info = dict(CFBundleName="GitTurtle", CFBundleDisplayName="GitTurtle", CFBundleExecutable="gitturtle",
-                    CFBundleIdentifier=identity.APP_ID, CFBundlePackageType="APPL", CFBundleShortVersionString=version,
-                    CFBundleVersion=version, NSPrincipalClass="NSApplication", NSHighResolutionCapable=True,
-                    NSSupportsAutomaticGraphicsSwitching=True, LSMinimumSystemVersion="11.0", **generated)
+        info = dict(
+            CFBundleName="GitTurtle",
+            CFBundleDisplayName="GitTurtle",
+            CFBundleExecutable="gitturtle",
+            CFBundleIdentifier=identity.APP_ID,
+            CFBundlePackageType="APPL",
+            CFBundleShortVersionString=version,
+            CFBundleVersion=version,
+            LSApplicationCategoryType="public.app-category.developer-tools",
+            CFBundleDocumentTypes=[
+                dict(
+                    CFBundleTypeName="Folder",
+                    CFBundleTypeRole="Viewer",
+                    LSHandlerRank="Alternate",
+                    LSItemContentTypes=["public.folder"],
+                ),
+            ],
+            CFBundleURLTypes=[
+                dict(
+                    CFBundleURLName=identity.APP_ID,
+                    CFBundleTypeRole="Viewer",
+                    CFBundleURLSchemes=["gitturtle"],
+                ),
+            ],
+            NSPrincipalClass="NSApplication",
+            NSHighResolutionCapable=True,
+            NSSupportsAutomaticGraphicsSwitching=True,
+            LSMinimumSystemVersion="11.0",
+            **generated,
+        )
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         verify_bundle(app, version)
         run(["plutil", "-lint", app / "Contents/Info.plist"])

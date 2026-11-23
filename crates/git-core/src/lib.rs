@@ -15,6 +15,7 @@ mod error;
 mod history;
 mod inspection;
 mod local_watch;
+mod platform_path;
 mod preview_assets;
 mod process_io;
 mod work;
@@ -24,6 +25,7 @@ pub use error::CoreError;
 pub use history::*;
 pub use inspection::*;
 pub use local_watch::*;
+pub use platform_path::*;
 pub use preview_assets::*;
 pub use work::*;
 
@@ -2454,6 +2456,7 @@ fn parse_changes(bytes: &[u8]) -> Result<Vec<FileChange>> {
 
 fn git_command(target: GitTarget<'_>) -> Command {
     let mut cmd = Command::new("git");
+    apply_platform_path(&mut cmd);
     target.confine(&mut cmd);
     isolate_process_group(&mut cmd);
     cmd.arg("--no-pager")

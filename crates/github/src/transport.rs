@@ -30,16 +30,44 @@ fn keychain_access() -> Result<std::sync::MutexGuard<'static, ()>> {
     ))
 }
 
-#[cfg(all(target_os = "macos", any(test, not(feature = "test-support"))))]
-fn decode_stored_credential(
-    result: security_framework::base::Result<Vec<u8>>,
+// macOS Security.framework OSStatus codes used across Data Protection and
+// legacy login Keychain operations. Defined cross-platform so the fallback and
+// migration state machine is tested on every CI host.
+#[cfg_attr(
+    all(not(test), any(not(target_os = "macos"), feature = "test-support")),
+    expect(dead_code)
+)]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+#[cfg_attr(
+    all(not(test), any(not(target_os = "macos"), feature = "test-support")),
+    expect(dead_code)
+)]
+const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+#[cfg_attr(
+    all(not(test), any(not(target_os = "macos"), feature = "test-support")),
+    expect(dead_code)
+)]
+const ERR_SEC_MISSING_ENTITLEMENT: i32 = -34018;
+
+#[cfg(target_os = "macos")]
+#[cfg_attr(all(not(test), feature = "test-support"), expect(dead_code))]
+fn keychain_error_code(error: &security_framework::base::Error) -> i32 {
+    error.code()
+}
+
+#[cfg_attr(
+    all(not(test), any(not(target_os = "macos"), feature = "test-support")),
+    expect(dead_code)
+)]
+fn decode_stored_credential_code(
+    result: std::result::Result<Vec<u8>, i32>,
 ) -> Result<Option<Credential>> {
     match result {
         Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).map_err(|_| {
             anyhow!("The GitHub Keychain entry is invalid. Connect the account again.")
         })?)),
-        Err(error) if error.code() == -25300 => Ok(None),
-        Err(error) if error.code() == -25308 => bail!(
+        Err(ERR_SEC_ITEM_NOT_FOUND) => Ok(None),
+        Err(ERR_SEC_INTERACTION_NOT_ALLOWED) => bail!(
             "GitHub Keychain access needs your permission. Choose Connect GitHub CLI account and complete any macOS authorization dialog, then retry your requested action. Stored account reads do not open a permission dialog."
         ),
         Err(_) => bail!(
@@ -47,6 +75,108 @@ fn decode_stored_credential(
         ),
     }
 }
+
+#[cfg(all(target_os = "macos", any(test, not(feature = "test-support"))))]
+fn decode_stored_credential(
+    result: security_framework::base::Result<Vec<u8>>,
+) -> Result<Option<Credential>> {
+    decode_stored_credential_code(result.map_err(|error| keychain_error_code(&error)))
+}
+
+/// Passive load across macOS Data Protection Keychain with graceful fallback to
+/// the legacy login Keychain when the build lacks `keychain-access-groups`
+/// (`errSecMissingEntitlement`, `-34018` in unsigned/ad-hoc builds) or when an
+/// existing pre-migration item still lives in the legacy login Keychain.
+/// Any other DP Keychain failure (for example locked `-25308`) fails closed.
+#[cfg_attr(
+    all(not(test), any(not(target_os = "macos"), feature = "test-support")),
+    expect(dead_code)
+)]
+fn dp_load_with<FDp, FLegacy>(read_dp: FDp, read_legacy: FLegacy) -> Result<Option<Credential>>
+where
+    FDp: FnOnce() -> std::result::Result<Vec<u8>, i32>,
+    FLegacy: FnOnce() -> Result<Option<Credential>>,
+{
+    match read_dp() {
+        Ok(bytes) => decode_stored_credential_code(Ok(bytes)),
+        Err(ERR_SEC_MISSING_ENTITLEMENT | ERR_SEC_ITEM_NOT_FOUND) => read_legacy(),
+        Err(code) => decode_stored_credential_code(Err(code)),
+    }
+}
+
+/// Explicit save preferring macOS Data Protection Keychain (`SecItemAdd` /
+/// `SecItemUpdate` with `kSecUseDataProtectionKeychain = true`, local-only).
+/// On signed builds with DP entitlement, verifies DP readback and best-effort
+/// removes any stale legacy login Keychain copy. On unsigned/ad-hoc builds
+/// returning `-34018`, falls back seamlessly to the legacy login Keychain path.
+#[cfg_attr(
+    all(not(test), any(not(target_os = "macos"), feature = "test-support")),
+    expect(dead_code)
+)]
+fn dp_save_with<FWriteDp, FVerifyDp, FCleanupLegacy, FSaveLegacy>(
+    write_dp: FWriteDp,
+    verify_dp: FVerifyDp,
+    cleanup_legacy: FCleanupLegacy,
+    save_legacy: FSaveLegacy,
+) -> Result<()>
+where
+    FWriteDp: FnOnce() -> std::result::Result<(), i32>,
+    FVerifyDp: FnOnce() -> Result<()>,
+    FCleanupLegacy: FnOnce(),
+    FSaveLegacy: FnOnce() -> Result<()>,
+{
+    match write_dp() {
+        Ok(()) => {
+            verify_dp()?;
+            cleanup_legacy();
+            Ok(())
+        }
+        Err(ERR_SEC_MISSING_ENTITLEMENT) => save_legacy(),
+        Err(_) => bail!(
+            "Keychain could not save GitHub authorization. No plaintext credential was stored."
+        ),
+    }
+}
+
+/// Explicit disconnect clearing both Data Protection Keychain (ignoring
+/// not-found and unsigned `-34018`) and legacy login Keychain (ignoring
+/// not-found).
+#[cfg_attr(
+    all(not(test), any(not(target_os = "macos"), feature = "test-support")),
+    expect(dead_code)
+)]
+fn dp_remove_with<FDeleteDp, FDeleteLegacy>(
+    delete_dp: FDeleteDp,
+    delete_legacy: FDeleteLegacy,
+) -> Result<()>
+where
+    FDeleteDp: FnOnce() -> std::result::Result<(), i32>,
+    FDeleteLegacy: FnOnce() -> std::result::Result<(), i32>,
+{
+    let dp_err = match delete_dp() {
+        Ok(()) | Err(ERR_SEC_ITEM_NOT_FOUND | ERR_SEC_MISSING_ENTITLEMENT) => None,
+        Err(code) => Some(code),
+    };
+    let legacy_err = match delete_legacy() {
+        Ok(()) | Err(ERR_SEC_ITEM_NOT_FOUND) => None,
+        Err(code) => Some(code),
+    };
+    if dp_err.is_some() || legacy_err.is_some() {
+        bail!("Keychain could not remove the GitHub authorization");
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
+fn data_protection_options() -> security_framework::passwords_options::PasswordOptions {
+    let mut options = security_framework::passwords_options::PasswordOptions::new_generic_password(
+        SERVICE, ACCOUNT,
+    );
+    options.use_protected_keychain();
+    options.set_access_synchronized(Some(false));
+    options
+}
+
 /// Caller holds KEYCHAIN_ACCESS until this read restores the interaction policy.
 #[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
 fn read_credential_without_interaction() -> Result<Option<Credential>> {
@@ -147,41 +277,90 @@ impl SecureStore {
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
         let _access = keychain_access()?;
-        read_credential_without_interaction()
+        dp_load_with(
+            || {
+                security_framework::passwords::generic_password(data_protection_options())
+                    .map_err(|error| keychain_error_code(&error))
+            },
+            read_credential_without_interaction,
+        )
     }
     fn save(&self, credential: &Credential, _control: &OperationControl) -> Result<()> {
         let _access = keychain_access()?;
-        security_framework::passwords::set_generic_password(
-            SERVICE,
-            ACCOUNT,
-            &serde_json::to_vec(credential)?,
+        let payload = serde_json::to_vec(credential)?;
+        dp_save_with(
+            || {
+                security_framework::passwords::set_generic_password_options(
+                    &payload,
+                    data_protection_options(),
+                )
+                .map_err(|error| keychain_error_code(&error))
+            },
+            || {
+                verify_saved_credential(
+                    credential,
+                    decode_stored_credential(security_framework::passwords::generic_password(
+                        data_protection_options(),
+                    )),
+                )
+                .context(
+                    "GitHub authorization was saved, but Keychain read verification failed. Connect the account again.",
+                )
+            },
+            || {
+                // Best-effort cleanup of any pre-migration login-keychain copy
+                // without triggering an unexpected legacy authorization dialog.
+                use security_framework::os::macos::keychain::SecKeychain;
+                let Ok(interaction_allowed) = SecKeychain::user_interaction_allowed() else {
+                    return;
+                };
+                let _interaction = if interaction_allowed {
+                    let Ok(guard) = SecKeychain::disable_user_interaction() else {
+                        return;
+                    };
+                    Some(guard)
+                } else {
+                    None
+                };
+                let _ = security_framework::passwords::delete_generic_password(SERVICE, ACCOUNT);
+            },
+            || {
+                security_framework::passwords::set_generic_password(SERVICE, ACCOUNT, &payload)
+                    .map_err(|_| {
+                        anyhow!(
+                            "Keychain could not save GitHub authorization. No plaintext credential was stored."
+                        )
+                    })?;
+                // Updating a legacy password preserves its ACL. Explicit connection
+                // therefore reads it with normal macOS authorization, then verifies the
+                // exact account/token using the same noninteractive policy as Refresh.
+                // GitTurtle does not edit ACLs or bypass the user's macOS approval.
+                verify_saved_credential(
+                    credential,
+                    decode_stored_credential(security_framework::passwords::get_generic_password(
+                        SERVICE, ACCOUNT,
+                    )),
+                )
+                .context("GitHub authorization was saved, but Keychain read access was not approved. Choose Connect GitHub CLI account and complete its macOS authorization dialog.")?;
+                verify_saved_credential(credential, read_credential_without_interaction())
+                    .context("GitHub authorization was saved, but Keychain still requires permission for stored reads. Connect again and approve ongoing access for this GitTurtle build in the macOS dialog.")
+            },
         )
-        .map_err(|_| {
-            anyhow!(
-                "Keychain could not save GitHub authorization. No plaintext credential was stored."
-            )
-        })?;
-        // Updating a legacy password preserves its ACL. Explicit connection
-        // therefore reads it with normal macOS authorization, then verifies the
-        // exact account/token using the same noninteractive policy as Refresh.
-        // GitTurtle does not edit ACLs or bypass the user's macOS approval.
-        verify_saved_credential(
-            credential,
-            decode_stored_credential(security_framework::passwords::get_generic_password(
-                SERVICE, ACCOUNT,
-            )),
-        )
-        .context("GitHub authorization was saved, but Keychain read access was not approved. Choose Connect GitHub CLI account and complete its macOS authorization dialog.")?;
-        verify_saved_credential(credential, read_credential_without_interaction())
-            .context("GitHub authorization was saved, but Keychain still requires permission for stored reads. Connect again and approve ongoing access for this GitTurtle build in the macOS dialog.")
     }
     fn remove(&self, _control: &OperationControl) -> Result<()> {
         let _access = keychain_access()?;
-        match security_framework::passwords::delete_generic_password(SERVICE, ACCOUNT) {
-            Ok(()) => Ok(()),
-            Err(error) if error.code() == -25300 => Ok(()),
-            Err(_) => bail!("Keychain could not remove the GitHub authorization"),
-        }
+        dp_remove_with(
+            || {
+                security_framework::passwords::delete_generic_password_options(
+                    data_protection_options(),
+                )
+                .map_err(|error| keychain_error_code(&error))
+            },
+            || {
+                security_framework::passwords::delete_generic_password(SERVICE, ACCOUNT)
+                    .map_err(|error| keychain_error_code(&error))
+            },
+        )
     }
 }
 /// The desktop keyring: a stored read never prompts and ends within 5 seconds; Connect and
@@ -345,6 +524,7 @@ const GH_CANDIDATES: &[&str] = &["/usr/local/bin/gh", "/usr/bin/gh"];
 fn gh_command() -> Result<Command> {
     let executable=GH_CANDIDATES.iter().map(std::path::Path::new).find(|path|path.is_file()).ok_or_else(||anyhow!("Install GitHub CLI from cli.github.com, sign in with its browser flow, then connect the account."))?;
     let mut command = Command::new(executable);
+    gitturtle_core::apply_platform_path(&mut command);
     command
         .current_dir(std::env::temp_dir())
         .env("GH_PROMPT_DISABLED", "1")
@@ -981,5 +1161,147 @@ mod tests {
         let private_path = private.path().to_owned();
         drop(private);
         assert!(!private_path.exists());
+    }
+
+    #[test]
+    fn dp_keychain_load_prefers_dp_falls_back_on_missing_entitlement_or_not_found_and_fails_closed()
+    {
+        let dp_cred = Credential {
+            login: "dp-user".into(),
+            token: "dp-secret".into(),
+        };
+        let legacy_cred = Credential {
+            login: "legacy-user".into(),
+            token: "legacy-secret".into(),
+        };
+        let dp_bytes = serde_json::to_vec(&dp_cred).unwrap();
+
+        // 1. DP hit does not touch legacy.
+        let mut legacy_called = false;
+        let loaded = dp_load_with(
+            || Ok(dp_bytes.clone()),
+            || {
+                legacy_called = true;
+                Ok(Some(legacy_cred.clone()))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(loaded.login, "dp-user");
+        assert!(!legacy_called);
+
+        // 2. Unsigned build (-34018) falls back cleanly to legacy.
+        let loaded = dp_load_with(
+            || Err(ERR_SEC_MISSING_ENTITLEMENT),
+            || Ok(Some(legacy_cred.clone())),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(loaded.login, "legacy-user");
+
+        // 3. Not found in DP (-25300) checks pre-migration legacy copy passively.
+        let loaded = dp_load_with(
+            || Err(ERR_SEC_ITEM_NOT_FOUND),
+            || Ok(Some(legacy_cred.clone())),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(loaded.login, "legacy-user");
+
+        // 4. Interaction-not-allowed (-25308) fails closed without reading legacy.
+        let mut legacy_called = false;
+        let err = dp_load_with(
+            || Err(ERR_SEC_INTERACTION_NOT_ALLOWED),
+            || {
+                legacy_called = true;
+                Ok(None)
+            },
+        )
+        .unwrap_err();
+        assert!(!legacy_called);
+        assert!(err.to_string().contains("permission"));
+    }
+
+    #[test]
+    fn dp_keychain_save_migrates_when_entitled_and_falls_back_when_unsigned() {
+        // Entitled save writes DP, verifies DP, cleans up legacy, skips legacy save.
+        let mut cleaned = false;
+        let mut legacy_saved = false;
+        dp_save_with(
+            || Ok(()),
+            || Ok(()),
+            || cleaned = true,
+            || {
+                legacy_saved = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(cleaned);
+        assert!(!legacy_saved);
+
+        // Unsigned (-34018) falls back to legacy save without running DP verify/cleanup.
+        let mut cleaned = false;
+        let mut legacy_saved = false;
+        dp_save_with(
+            || Err(ERR_SEC_MISSING_ENTITLEMENT),
+            || panic!("must not verify DP on -34018"),
+            || cleaned = true,
+            || {
+                legacy_saved = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!cleaned);
+        assert!(legacy_saved);
+
+        // Verification failure after DP write propagates error and skips legacy cleanup.
+        let mut cleaned = false;
+        let err = dp_save_with(
+            || Ok(()),
+            || bail!("verification failed"),
+            || cleaned = true,
+            || panic!("must not fall back to legacy after DP write succeeded"),
+        )
+        .unwrap_err();
+        assert!(!cleaned);
+        assert!(err.to_string().contains("verification failed"));
+
+        // Real DP write error fails closed without falling back.
+        let mut legacy_saved = false;
+        let err = dp_save_with(
+            || Err(-25293),
+            || Ok(()),
+            || {},
+            || {
+                legacy_saved = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(!legacy_saved);
+        assert!(err.to_string().contains("could not save"));
+    }
+
+    #[test]
+    fn dp_keychain_remove_clears_both_stores_and_tolerates_unsigned_or_absent() {
+        let mut dp_deleted = false;
+        let mut legacy_deleted = false;
+        dp_remove_with(
+            || {
+                dp_deleted = true;
+                Err(ERR_SEC_MISSING_ENTITLEMENT)
+            },
+            || {
+                legacy_deleted = true;
+                Err(ERR_SEC_ITEM_NOT_FOUND)
+            },
+        )
+        .unwrap();
+        assert!(dp_deleted && legacy_deleted);
+
+        assert!(dp_remove_with(|| Err(-1), || Ok(())).is_err());
+        assert!(dp_remove_with(|| Ok(()), || Err(-1)).is_err());
     }
 }

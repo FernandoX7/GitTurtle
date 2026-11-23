@@ -3290,6 +3290,8 @@ impl GitTurtle {
         let Some(path) = self.path.clone() else {
             return;
         };
+        #[cfg(not(test))]
+        cx.add_recent_document(&path);
         let recent = self.begin_recent_project_save(&path);
         self.queue_recent_project_save(path, recent, window, cx);
     }

@@ -2124,6 +2124,21 @@ pub(super) fn render_comparison<T: 'static>(
                 let mut state = target.state.lock().unwrap_or_else(|e|e.into_inner()); state.zoom=if action==0 {1.}else{(state.zoom * if action<0 {0.8}else{1.25}).clamp(0.25,4.)}; drop(state); window.refresh(); let _=view.update(cx,|_,cx|cx.notify());
             }
         };
+        body = body.on_pinch({
+            let (target, view) = (document.clone(), view.clone());
+            move |event: &PinchEvent, window, cx| {
+                if !event.delta.is_finite() || event.delta == 0. {
+                    return;
+                }
+                let factor = (1.0 + event.delta).clamp(0.5, 2.0);
+                let mut state = target.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.zoom = (state.zoom * factor).clamp(0.25, 4.0);
+                drop(state);
+                window.refresh();
+                cx.stop_propagation();
+                let _ = view.update(cx, |_, cx| cx.notify());
+            }
+        });
         let zoom_name = move |action: i32| format!("{label}: {}",match action {-1=>"Zoom out",1=>"Zoom in",_=>"Fit page width"});
         // The page's own control's name, and while the page is prepared why
         // it is unavailable as well, as its tooltip says ([`preparing`]).

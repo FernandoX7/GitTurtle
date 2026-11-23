@@ -22,6 +22,9 @@ pub(super) enum ShortcutId {
     MainMenu,
     Quit,
     Minimize,
+    NewWindow,
+    #[cfg(target_os = "macos")]
+    ToggleFullScreen,
     CloseWindow,
     CloseTab,
     NextTab,
@@ -257,11 +260,28 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         APP
     ),
     shortcut!(
+        NewWindow,
+        "New Window",
+        "Tabs and Windows",
+        "primary-n",
+        NewWindow,
+        None
+    ),
+    #[cfg(target_os = "macos")]
+    shortcut!(
+        ToggleFullScreen,
+        "Toggle Full Screen",
+        "Tabs and Windows",
+        "ctrl-cmd-f",
+        ToggleFullScreen,
+        APP
+    ),
+    shortcut!(
         NewTab,
         "Open Repository Tab",
         "Tabs and Windows",
         "primary-t",
-        OpenRepository,
+        NewTab,
         APP
     ),
     shortcut!(

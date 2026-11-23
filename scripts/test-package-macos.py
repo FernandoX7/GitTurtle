@@ -216,6 +216,25 @@ class PackageFixtures(unittest.TestCase):
         value = package.identity.read_json(self.bundle.with_name("GitTurtle.app.build-info.json"))
         self.assertEqual(value["distribution"], "complete-notices")
         self.assertEqual(value["signing"], "ad-hoc")
+        info = plistlib.loads((self.bundle / "Contents/Info.plist").read_bytes())
+        self.assertEqual(info["LSApplicationCategoryType"], "public.app-category.developer-tools")
+        self.assertEqual(
+            info["CFBundleDocumentTypes"],
+            [{
+                "CFBundleTypeName": "Folder",
+                "CFBundleTypeRole": "Viewer",
+                "LSHandlerRank": "Alternate",
+                "LSItemContentTypes": ["public.folder"],
+            }],
+        )
+        self.assertEqual(
+            info["CFBundleURLTypes"],
+            [{
+                "CFBundleURLName": package.identity.APP_ID,
+                "CFBundleTypeRole": "Viewer",
+                "CFBundleURLSchemes": ["gitturtle"],
+            }],
+        )
 
     def test_identity_refusals_preserve_existing_bundle(self):
         old = self.legacy_bundle()

@@ -17,8 +17,7 @@ The dialog renders owned context snapshots instead of borrowing its parent while
 
 ## Platform menus
 
-macOS keeps the native GitTurtle, File, Edit, View, Window and Help menus,
-including Cocoa editing selectors, modifier symbols and system window controls.
+macOS keeps the native GitTurtle, File (`New Window`, `New Tab`, `Open Repository…`, `Open Recent`, `Close Tab`, `Close Window`, handoffs), Edit (`Undo`/`Redo`/`Cut`/`Copy`/`Paste`/`Select All`, `Find` submenu), View (`Browse Stashes…`, `Enter/Exit Full Screen`), Window (`Minimize`, `Zoom`, `Bring All to Front`, plus AppKit's open window list), and Help menus, plus a Dock menu with recent repositories, `Open Repository…`, and `New Window`. Standard Cocoa editing selectors, modifier symbols, and system window controls remain active even when zero windows are open while resident in the Dock.
 Linux exposes a labeled hamburger **Menu** at the left of the repository-tab
 strip on every page, above the repository sidebar. **F10** opens or closes it.
 The menu groups repository opening, workspace navigation, the repository's

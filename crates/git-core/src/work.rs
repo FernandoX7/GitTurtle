@@ -3175,6 +3175,7 @@ fn normal_config_at(target: GitTarget<'_>, key: &str) -> Result<Option<String>> 
 
 pub(super) fn normal_command(target: GitTarget<'_>) -> Command {
     let mut command = Command::new("git");
+    crate::apply_platform_path(&mut command);
     target.confine(&mut command);
     command
         .args([
@@ -3224,6 +3225,7 @@ pub(super) fn normal_command(target: GitTarget<'_>) -> Command {
 /// or invoking helpers/filters/locks.
 pub(crate) fn passive_user_config_command(workdir: &Path) -> Command {
     let mut command = Command::new("git");
+    crate::apply_platform_path(&mut command);
     crate::isolate_process_group(&mut command);
     command
         .current_dir(workdir)

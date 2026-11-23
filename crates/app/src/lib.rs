@@ -196,7 +196,23 @@ gpui_kit::actions!(
         CompareRevisions,
         JumpToHead,
         JumpToRevision,
-        CommitStaged
+        CommitStaged,
+        NewTab,
+        NewWindow,
+        ToggleFullScreen,
+        BringAllToFront,
+        NoRecentRepositories,
+        ClearRecentRepositories,
+        OpenRecentRepository0,
+        OpenRecentRepository1,
+        OpenRecentRepository2,
+        OpenRecentRepository3,
+        OpenRecentRepository4,
+        OpenRecentRepository5,
+        OpenRecentRepository6,
+        OpenRecentRepository7,
+        OpenRecentRepository8,
+        OpenRecentRepository9
     ]
 );
 
@@ -521,6 +537,11 @@ struct GitTurtle {
     /// What the native menus were last built for
     /// (`GitTurtle::update_native_menus`).
     menu_state: Option<platform_polish::MenuState>,
+    /// Last applied window title and proxy-icon document path, cached so
+    /// AppKit / AccessKit metadata is updated only on actual changes.
+    window_title: Option<String>,
+    window_document_path: Option<Option<PathBuf>>,
+    _window_geometry_save: Option<Task<()>>,
     #[cfg(target_os = "linux")]
     primary_menu: Entity<PrimaryMenu>,
     dialog_layer_subscription: Option<Subscription>,
@@ -966,6 +987,9 @@ impl GitTurtle {
             ignore_actions: ignore::State::default(),
             discard_actions: discard::State::default(),
             menu_state: None,
+            window_title: None,
+            window_document_path: None,
+            _window_geometry_save: None,
             #[cfg(target_os = "linux")]
             primary_menu: {
                 let owner = cx.entity().downgrade();
@@ -1019,7 +1043,7 @@ impl GitTurtle {
             draft_save_error: None,
             draft_repository: None,
             settings,
-            preferences_writer: SerialExecutor::new("gitturtle-preferences"),
+            preferences_writer: shared_preferences_writer(cx),
             operations: SerialExecutor::new("gitturtle-operations"),
             operation_busy: None,
             busy_look: workspace::BusyLook::default(),
@@ -1174,6 +1198,10 @@ impl GitTurtle {
                 .read_with(cx, |app, _| app.operation_busy.is_none())
                 .unwrap_or(true)
         });
+        this.subscriptions
+            .push(cx.observe_window_bounds(window, |this, window, cx| {
+                this.schedule_window_geometry_save(window, cx);
+            }));
         #[cfg(target_os = "linux")]
         this.subscriptions
             .push(cx.observe_button_layout_changed(window, |_, window, cx| {
@@ -3530,6 +3558,7 @@ fn run_bounded_custom_command(
         anyhow::bail!("Custom command cancelled before starting.");
     }
     let mut cmd = std::process::Command::new(program);
+    gitturtle_core::apply_platform_path(&mut cmd);
     cmd.args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
@@ -4599,6 +4628,551 @@ fn primary_label() -> &'static str {
     }
 }
 
+/// Sanitizes untrusted repository or branch strings into a bounded single-line
+/// display string for window titles, menus, and Quick Look titles.
+pub(crate) fn sanitize_single_line_display(raw: &str, max_chars: usize) -> String {
+    let cleaned: String = gitturtle_core::strip_bidi_controls(raw)
+        .chars()
+        .filter(|ch| !ch.is_control() && !matches!(*ch, '\u{2028}' | '\u{2029}'))
+        .collect();
+    cleaned.trim().chars().take(max_chars).collect()
+}
+
+impl GitTurtle {
+    /// Updates the native window title (`<repo> — <branch>`, `GitTurtle — Projects`,
+    /// or `GitTurtle — Settings`) and proxy-icon document path (`NSWindow.representedFilename`
+    /// on macOS) only when either actually changes.
+    pub(crate) fn sync_window_chrome_metadata(&mut self, window: &mut Window) {
+        let (title, doc_path) = match self.page {
+            AppPage::Projects => ("GitTurtle — Projects".to_owned(), None),
+            AppPage::Settings => ("GitTurtle — Settings".to_owned(), None),
+            AppPage::Repository => {
+                if let Some(path) = self.path.clone() {
+                    let name = sanitize_single_line_display(&self.project_name(&path), 160);
+                    let name = if name.is_empty() {
+                        "GitTurtle".to_owned()
+                    } else {
+                        name
+                    };
+                    let branch = self
+                        .work_status
+                        .as_ref()
+                        .and_then(|status| status.branch.as_deref())
+                        .or_else(|| {
+                            self.branches
+                                .iter()
+                                .find(|b| b.current)
+                                .map(|b| b.name.as_str())
+                        })
+                        .map(|b| sanitize_single_line_display(b, 160))
+                        .filter(|b| !b.is_empty());
+                    let title = match branch {
+                        Some(branch) => format!("{name} — {branch}"),
+                        None => name,
+                    };
+                    (title, Some(path))
+                } else {
+                    ("GitTurtle".to_owned(), None)
+                }
+            }
+        };
+        if self.window_title.as_deref() != Some(title.as_str()) {
+            window.set_window_title(&title);
+            self.window_title = Some(title);
+        }
+        if self.window_document_path.as_ref() != Some(&doc_path) {
+            window.set_document_path(doc_path.as_deref());
+            self.window_document_path = Some(doc_path);
+        }
+    }
+
+    fn schedule_window_geometry_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            let _ = (window, cx);
+        }
+        #[cfg(not(test))]
+        {
+            let wb = window.window_bounds();
+            let (bounds, maximized, fullscreen) = match wb {
+                WindowBounds::Windowed(b) => (b, false, false),
+                WindowBounds::Maximized(b) => (b, true, false),
+                WindowBounds::Fullscreen(b) => (b, false, true),
+            };
+            let display_uuid = window
+                .display(cx)
+                .and_then(|display| display.uuid().ok())
+                .map(|uuid| uuid.to_string());
+            let geometry = preferences::WindowGeometry {
+                x: f32::from(bounds.origin.x),
+                y: f32::from(bounds.origin.y),
+                width: f32::from(bounds.size.width),
+                height: f32::from(bounds.size.height),
+                maximized,
+                fullscreen,
+                display_uuid,
+            };
+            let Some(geometry) = geometry.sanitized() else {
+                return;
+            };
+            let writer = self.preferences_writer.clone();
+            let timer = cx
+                .background_executor()
+                .timer(std::time::Duration::from_millis(400));
+            self._window_geometry_save = Some(cx.spawn(async move |_, _| {
+                timer.await;
+                let _ = writer
+                    .submit(move || Preferences::save_window_geometry(&geometry))
+                    .await;
+            }));
+        }
+    }
+
+    /// Passively opens local folder paths dropped onto the window or handed
+    /// through macOS Finder / Dock / `gitturtle://open` URLs. Files resolve to
+    /// their containing folder; non-existent paths are ignored; no Git writes
+    /// are ever triggered.
+    pub(crate) fn open_external_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() {
+            return;
+        }
+        for dir in resolve_external_open_dirs(paths) {
+            self.open_repository_tab(dir, window, cx);
+        }
+    }
+
+    pub(crate) fn open_recent_repository_index(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() {
+            return;
+        }
+        let Some(path) = self.hub.read(cx).recent().get(index).cloned() else {
+            return;
+        };
+        self.open_repository_tab(path, window, cx);
+    }
+
+    pub(crate) fn clear_recent_repositories(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.operation_busy.is_some() || any_window_operation_busy(cx) {
+            return;
+        }
+        let response = self
+            .preferences_writer
+            .submit(Preferences::clear_recent_repositories);
+        cx.spawn_in(window, async move |_, cx| {
+            if let Ok(Ok(updated)) = response.await {
+                let _ = cx.update(|_, cx| {
+                    broadcast_recent_repositories(updated.recent_repositories, cx);
+                });
+            }
+        })
+        .detach();
+    }
+}
+
+/// Validates and deduplicates external local paths (drops, Finder Open With,
+/// `gitturtle://open`) into at most `MAX_TABS` existing absolute directories.
+pub(crate) fn resolve_external_open_dirs(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for raw in paths {
+        if dirs.len() >= repository_tabs::MAX_TABS {
+            break;
+        }
+        if !raw.is_absolute() {
+            continue;
+        }
+        let candidate = if raw.is_dir() {
+            Some(raw.clone())
+        } else if raw.is_file() {
+            raw.parent().map(std::path::Path::to_path_buf)
+        } else {
+            None
+        };
+        if let Some(dir) = candidate.filter(|d| d.is_absolute() && d.is_dir())
+            && !dirs.contains(&dir)
+        {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// Process-wide serialized preference writer so multi-window edits to
+/// `preferences.json` and `repository_tabs.json` never race.
+struct SharedPreferencesWriter {
+    executor: SerialExecutor,
+    #[cfg(test)]
+    settings_dir_ptr: usize,
+}
+impl Global for SharedPreferencesWriter {}
+
+pub(crate) fn shared_preferences_writer(cx: &mut App) -> SerialExecutor {
+    #[cfg(test)]
+    let current_ptr = std::sync::Arc::as_ptr(&preferences::test_settings_directory()) as usize;
+    if let Some(existing) = cx.try_global::<SharedPreferencesWriter>() {
+        #[cfg(test)]
+        if existing.settings_dir_ptr == current_ptr {
+            return existing.executor.clone();
+        }
+        #[cfg(not(test))]
+        return existing.executor.clone();
+    }
+    let writer = SerialExecutor::new("gitturtle-preferences");
+    cx.set_global(SharedPreferencesWriter {
+        executor: writer.clone(),
+        #[cfg(test)]
+        settings_dir_ptr: current_ptr,
+    });
+    writer
+}
+
+#[derive(Default)]
+struct CachedRecentRepositories {
+    paths: Vec<PathBuf>,
+    labels: Vec<String>,
+}
+impl Global for CachedRecentRepositories {}
+
+pub(crate) fn update_cached_recent_repositories(
+    paths: Vec<PathBuf>,
+    labels: Vec<String>,
+    cx: &mut App,
+) {
+    cx.set_global(CachedRecentRepositories { paths, labels });
+}
+
+fn broadcast_recent_repositories(recent: Vec<PathBuf>, cx: &mut App) {
+    if recent.is_empty() {
+        update_cached_recent_repositories(Vec::new(), Vec::new(), cx);
+    }
+    let handles: Vec<WeakEntity<GitTurtle>> = cx
+        .try_global::<OpenAppWindows>()
+        .map(|state| state.0.iter().map(|(_, weak)| weak.clone()).collect())
+        .unwrap_or_default();
+    for weak in handles {
+        let _ = weak.update(cx, |this, cx| {
+            this.hub
+                .update(cx, |hub, cx| hub.set_recent(recent.clone(), cx));
+            cx.notify();
+        });
+    }
+    if cx.windows().is_empty() {
+        install_zero_window_menus(cx);
+    }
+}
+
+fn percent_decode_utf8(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = (bytes[i + 1] as char).to_digit(16)?;
+            let lo = (bytes[i + 2] as char).to_digit(16)?;
+            let byte = ((hi << 4) | lo) as u8;
+            if byte == 0 {
+                return None;
+            }
+            out.push(byte);
+            i += 3;
+        } else {
+            if bytes[i] == 0 {
+                return None;
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn is_clean_absolute_external_path(path: &std::path::Path) -> bool {
+    path.is_absolute()
+        && path
+            .components()
+            .all(|component| !matches!(component, std::path::Component::ParentDir))
+}
+
+/// Parses an external `file://` URL (Finder "Open With" / Dock folder drop) or
+/// `gitturtle://open?path=...` deep link into an absolute local path. Rejects
+/// non-local hosts, NUL bytes, relative paths, parent-directory traversal
+/// (`..`), unknown query parameters, and any non-open actions so external URLs
+/// can only passively open a local directory.
+pub(crate) fn parse_external_open_url(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > 8192 {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("file://") {
+        let path_part = if let Some(after_localhost) = rest.strip_prefix("localhost/") {
+            format!("/{after_localhost}")
+        } else if rest.starts_with('/') {
+            rest.to_owned()
+        } else {
+            // Reject remote host file:// URLs.
+            return None;
+        };
+        let without_query = path_part.split(['?', '#']).next().unwrap_or("");
+        let decoded = percent_decode_utf8(without_query)?;
+        let path = PathBuf::from(decoded);
+        return is_clean_absolute_external_path(&path).then_some(path);
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("gitturtle://") {
+        let rest = &trimmed["gitturtle://".len()..];
+        let (authority_and_path, query) = rest.split_once('?')?;
+        let action = authority_and_path.trim_matches('/').to_ascii_lowercase();
+        if action != "open" {
+            return None;
+        }
+        let query = query.split('#').next().unwrap_or("");
+        let mut found: Option<PathBuf> = None;
+        for pair in query.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let (key, value) = pair.split_once('=')?;
+            if key != "path" || found.is_some() {
+                return None;
+            }
+            let decoded = percent_decode_utf8(value)?;
+            let path = PathBuf::from(decoded);
+            if !is_clean_absolute_external_path(&path) {
+                return None;
+            }
+            found = Some(path);
+        }
+        return found;
+    }
+    None
+}
+
+fn resolve_window_options(
+    geometry: Option<&preferences::WindowGeometry>,
+    cascade_index: usize,
+    cx: &App,
+) -> WindowOptions {
+    let default_size = size(px(1480.), px(980.));
+    let (window_bounds, display_id) =
+        if let Some(saved) = geometry.and_then(preferences::WindowGeometry::sanitized) {
+            let matched_display = saved.display_uuid.as_deref().and_then(|wanted| {
+                cx.displays()
+                    .into_iter()
+                    .find(|d| d.uuid().ok().is_some_and(|u| u.to_string() == wanted))
+            });
+            let target_display = matched_display.or_else(|| cx.primary_display());
+            let visible = target_display
+                .as_ref()
+                .map(|d| d.visible_bounds())
+                .unwrap_or_else(|| Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.))));
+            let max_w = f32::from(visible.size.width).max(1000.);
+            let max_h = f32::from(visible.size.height).max(680.);
+            let width = saved.width.clamp(1000., max_w);
+            let height = saved.height.clamp(680., max_h);
+            let min_x = f32::from(visible.origin.x);
+            let min_y = f32::from(visible.origin.y);
+            let max_x = (min_x + f32::from(visible.size.width) - width).max(min_x);
+            let max_y = (min_y + f32::from(visible.size.height) - height).max(min_y);
+            let offset = (cascade_index as f32) * 26.;
+            let x = (saved.x + offset).clamp(min_x, max_x);
+            let y = (saved.y + offset).clamp(min_y, max_y);
+            let rect = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
+            let wb = if saved.fullscreen && cascade_index == 0 {
+                WindowBounds::Fullscreen(rect)
+            } else if saved.maximized && cascade_index == 0 {
+                WindowBounds::Maximized(rect)
+            } else {
+                WindowBounds::Windowed(rect)
+            };
+            (wb, target_display.map(|d| d.id()))
+        } else {
+            let mut rect = Bounds::centered(None, default_size, cx);
+            if cascade_index > 0 {
+                let offset = px((cascade_index as f32) * 26.);
+                rect.origin.x += offset;
+                rect.origin.y += offset;
+            }
+            (WindowBounds::Windowed(rect), None)
+        };
+
+    #[cfg(target_os = "macos")]
+    let titlebar = Some(TitlebarOptions {
+        title: Some("GitTurtle".into()),
+        appears_transparent: true,
+        traffic_light_position: Some(point(px(12.), px(12.))),
+    });
+    #[cfg(not(target_os = "macos"))]
+    let titlebar = Some(TitlebarOptions {
+        title: Some("GitTurtle".into()),
+        ..Default::default()
+    });
+
+    WindowOptions {
+        window_bounds: Some(window_bounds),
+        titlebar,
+        app_owns_titlebar_drag: cfg!(target_os = "macos"),
+        display_id,
+        window_min_size: Some(size(px(1000.), px(680.))),
+        tabbing_identifier: cfg!(target_os = "macos").then(|| "com.gitturtle.GitTurtle".into()),
+        app_id: Some("com.gitturtle.GitTurtle".into()),
+        ..Default::default()
+    }
+}
+
+type PostOpenHook = Box<dyn FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)>;
+
+struct WindowLaunch {
+    initial: Option<PathBuf>,
+    preferences: Preferences,
+    tab_session: repository_tabs::Session,
+    activity: activity::State,
+    recovery_drafts: recovery_drafts::State,
+    cascade_index: usize,
+    post_open: Option<PostOpenHook>,
+}
+
+fn open_app_window(launch: WindowLaunch, cx: &mut App) -> anyhow::Result<WindowHandle<Root>> {
+    let options = resolve_window_options(
+        launch.preferences.window_geometry.as_ref(),
+        launch.cascade_index,
+        cx,
+    );
+    let WindowLaunch {
+        initial,
+        preferences,
+        tab_session,
+        activity,
+        recovery_drafts,
+        post_open,
+        ..
+    } = launch;
+    let mut created: Option<Entity<GitTurtle>> = None;
+    let handle = cx.open_window(options, |window, cx| {
+        let view = cx.new(|cx| {
+            GitTurtle::new(
+                initial,
+                preferences,
+                tab_session,
+                activity,
+                recovery_drafts,
+                window,
+                cx,
+            )
+        });
+        created = Some(view.clone());
+        cx.new(|cx| Root::new(view, window, cx))
+    })?;
+    // Run any post-open hook AFTER `Root::new` has been installed as the
+    // window root, using `AnyWindowHandle::update` so `Root` is not mutably
+    // borrowed while dialogs (`About`, `Settings`, sheets, etc.) update `Root`.
+    if let (Some(view), Some(after)) = (created, post_open) {
+        let _ = gpui::AnyWindowHandle::from(handle).update(cx, |_, window, cx| {
+            view.update(cx, |this, cx| after(this, window, cx));
+        });
+    }
+    Ok(handle)
+}
+
+fn open_fresh_app_window(
+    initial: Option<PathBuf>,
+    restore_session: bool,
+    post_open: Option<PostOpenHook>,
+    cx: &mut App,
+) {
+    let preferences = Preferences::load_at_launch();
+    let tab_session = if restore_session {
+        repository_tabs::Session::load()
+    } else {
+        repository_tabs::Session::default()
+    };
+    let activity = activity::State::load();
+    let recovery_drafts = recovery_drafts::State::load();
+    let cascade_index = cx.windows().len();
+    let _ = open_app_window(
+        WindowLaunch {
+            initial,
+            preferences,
+            tab_session,
+            activity,
+            recovery_drafts,
+            cascade_index,
+            post_open,
+        },
+        cx,
+    );
+    cx.activate(true);
+}
+
+fn install_zero_window_menus(cx: &mut App) {
+    let labels = cx
+        .try_global::<CachedRecentRepositories>()
+        .map(|cached| cached.labels.clone())
+        .unwrap_or_default();
+    let any_busy = any_window_operation_busy(cx);
+    platform_polish::update_dock_menu(&labels, any_busy, cx);
+    platform_polish::menus(MenuState::default(), StashesItem::Refused, &labels, cx);
+}
+
+fn dispatch_or_open_window(
+    post_open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) + 'static,
+    cx: &mut App,
+) {
+    if let Some((handle, entity)) = frontmost_app_window(cx) {
+        let _ = handle.update(cx, |_, window, cx| {
+            window.activate_window();
+            if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                native_accessibility::dismiss_menus_for_overlay(window, cx);
+                entity.update(cx, |this, cx| post_open(this, window, cx));
+            }
+        });
+        cx.activate(true);
+    } else {
+        open_fresh_app_window(None, false, Some(Box::new(post_open)), cx);
+    }
+}
+
+fn frontmost_app_window(cx: &App) -> Option<(gpui::AnyWindowHandle, Entity<GitTurtle>)> {
+    let open = cx.windows();
+    let active = cx.active_window();
+    let state = cx.try_global::<OpenAppWindows>()?;
+    if let Some(active) = active
+        && let Some((handle, weak)) = state.0.iter().find(|(h, _)| *h == active)
+        && let Some(entity) = weak.upgrade()
+    {
+        return Some((*handle, entity));
+    }
+    state.0.iter().rev().find_map(|(handle, weak)| {
+        open.contains(handle)
+            .then(|| weak.upgrade().map(|entity| (*handle, entity)))
+            .flatten()
+    })
+}
+
+fn bring_all_windows_to_front(cx: &mut App) {
+    cx.activate(true);
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |_, window, _| {
+            window.activate_window();
+        });
+    }
+}
+
 pub fn run() {
     // Exactly `--gitturtle-pdf-helper <version> <parent pid>` runs the
     // confined PDF helper and never returns; anything else starts the app.
@@ -4638,13 +5212,26 @@ pub fn run() {
             })
             .flatten()
     });
-    gpui_kit::application().with_assets(Assets).run(move |cx| {
+    let (url_tx, mut url_rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+    let application = gpui_kit::application().with_assets(Assets);
+    application.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            open_fresh_app_window(None, true, None, cx);
+        } else {
+            bring_all_windows_to_front(cx);
+        }
+    });
+    application.on_open_urls(move |urls| {
+        let _ = url_tx.unbounded_send(urls);
+    });
+    application.run(move |cx| {
         desktop_text::register_bundled_fonts(cx);
         gpui_kit::init(cx);
-        // The person's Reduce motion and Increase contrast, before the first
-        // resolution, so the first frame already has them.
+        // The person's Reduce motion, Increase contrast, and macOS system accent,
+        // before the first resolution, so the first frame already has them.
         native_accessibility::set_display_choices(&preferences.settings, cx);
         native_accessibility::sync_preferences(cx);
+        appearance::sync_macos_system_accent(cx);
         let desktop_text = desktop_text::start(system_code_font, cx);
         #[cfg(target_os = "linux")]
         let omarchy = appearance::omarchy::start(
@@ -4667,14 +5254,138 @@ pub fn run() {
         cx.on_action(|_: &HideApplication, cx| cx.hide());
         cx.on_action(|_: &HideOtherApplications, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAllApplications, cx| cx.unhide_other_apps());
-        platform_polish::menus(MenuState::default(), StashesItem::Refused, cx);
+        cx.on_action(|_: &NewWindow, cx| {
+            open_fresh_app_window(None, false, None, cx);
+        });
+        cx.on_action(|_: &BringAllToFront, cx| bring_all_windows_to_front(cx));
+        // Zero-window macOS menu fallbacks: when a window is focused, its root
+        // handles these first; when 0 windows are open on macOS, they open a
+        // window and fulfill the command cleanly.
+        cx.on_action(|_: &NewTab, cx| {
+            dispatch_or_open_window(
+                |this, window, cx| this.choose_repository(&OpenRepository, window, cx),
+                cx,
+            );
+        });
+        cx.on_action(|_: &OpenRepository, cx| {
+            dispatch_or_open_window(
+                |this, window, cx| this.choose_repository(&OpenRepository, window, cx),
+                cx,
+            );
+        });
+        cx.on_action(|_: &ShowSettings, cx| {
+            dispatch_or_open_window(|this, window, cx| this.show_settings(window, cx), cx);
+        });
+        cx.on_action(|_: &ShowProjects, cx| {
+            dispatch_or_open_window(|this, window, cx| this.show_projects(window, cx), cx);
+        });
+        cx.on_action(|_: &ShowAbout, cx| {
+            dispatch_or_open_window(|this, window, cx| this.about(window, cx), cx);
+        });
+        cx.on_action(|_: &ShortcutHelp, cx| {
+            dispatch_or_open_window(|this, window, cx| this.shortcut_help(window, cx), cx);
+        });
+        cx.on_action(|_: &ClearRecentRepositories, cx| {
+            if any_window_operation_busy(cx) {
+                return;
+            }
+            let writer = shared_preferences_writer(cx);
+            let response = writer.submit(Preferences::clear_recent_repositories);
+            cx.spawn(async move |cx| {
+                if let Ok(Ok(updated)) = response.await {
+                    cx.update(|cx| {
+                        broadcast_recent_repositories(updated.recent_repositories, cx);
+                    });
+                }
+            })
+            .detach();
+        });
+        let register_recent = |index: usize, cx: &mut App| {
+            let open_index = move |cx: &mut App| {
+                let path = cx
+                    .try_global::<CachedRecentRepositories>()
+                    .and_then(|cached| cached.paths.get(index).cloned());
+                if let Some(path) = path {
+                    if let Some((handle, entity)) = frontmost_app_window(cx) {
+                        let _ = handle.update(cx, |_, window, cx| {
+                            window.activate_window();
+                            if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                                native_accessibility::dismiss_menus_for_overlay(window, cx);
+                                entity.update(cx, |this, cx| {
+                                    if this.operation_busy.is_none() {
+                                        this.open_repository_tab(path, window, cx);
+                                    }
+                                });
+                            }
+                        });
+                        cx.activate(true);
+                    } else {
+                        open_fresh_app_window(Some(path), false, None, cx);
+                    }
+                }
+            };
+            match index {
+                0 => {
+                    cx.on_action(move |_: &OpenRecentRepository0, cx| open_index(cx));
+                }
+                1 => {
+                    cx.on_action(move |_: &OpenRecentRepository1, cx| open_index(cx));
+                }
+                2 => {
+                    cx.on_action(move |_: &OpenRecentRepository2, cx| open_index(cx));
+                }
+                3 => {
+                    cx.on_action(move |_: &OpenRecentRepository3, cx| open_index(cx));
+                }
+                4 => {
+                    cx.on_action(move |_: &OpenRecentRepository4, cx| open_index(cx));
+                }
+                5 => {
+                    cx.on_action(move |_: &OpenRecentRepository5, cx| open_index(cx));
+                }
+                6 => {
+                    cx.on_action(move |_: &OpenRecentRepository6, cx| open_index(cx));
+                }
+                7 => {
+                    cx.on_action(move |_: &OpenRecentRepository7, cx| open_index(cx));
+                }
+                8 => {
+                    cx.on_action(move |_: &OpenRecentRepository8, cx| open_index(cx));
+                }
+                9 => {
+                    cx.on_action(move |_: &OpenRecentRepository9, cx| open_index(cx));
+                }
+                _ => {}
+            }
+        };
+        for index in 0..10 {
+            register_recent(index, cx);
+        }
+        let initial_recent_labels = platform_polish::recent_menu_labels(
+            &preferences.recent_repositories,
+            &preferences.project_names,
+        );
+        update_cached_recent_repositories(
+            preferences.recent_repositories.clone(),
+            initial_recent_labels.clone(),
+            cx,
+        );
+        platform_polish::update_dock_menu(&initial_recent_labels, false, cx);
+        platform_polish::menus(
+            MenuState::default(),
+            StashesItem::Refused,
+            &initial_recent_labels,
+            cx,
+        );
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
+                #[cfg(not(target_os = "macos"))]
                 cx.quit();
+                #[cfg(target_os = "macos")]
+                install_zero_window_menus(cx);
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1480.), px(980.)), cx);
         cx.activate(true);
         cx.spawn(async move |cx| {
             desktop_text::ready(desktop_text, cx).await;
@@ -4685,40 +5396,26 @@ pub fn run() {
             // The desktop's first answer, when it arrived during that wait and
             // changed More contrast, before any window could apply it: the
             // theme applies again, so the first frame has it.
-            cx.update(|cx| {
+            let opened = cx.update(|cx| {
                 if appearance::more_contrast(cx) != applied_contrast {
                     preferences
                         .settings
                         .effective_theme(cx, &preferences.custom_themes)
                         .apply(None, cx);
                 }
+                open_app_window(
+                    WindowLaunch {
+                        initial,
+                        preferences,
+                        tab_session,
+                        activity,
+                        recovery_drafts,
+                        cascade_index: 0,
+                        post_open: None,
+                    },
+                    cx,
+                )
             });
-            let opened = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("GitTurtle".into()),
-                        ..Default::default()
-                    }),
-                    window_min_size: Some(size(px(1000.), px(680.))),
-                    app_id: Some("com.gitturtle.GitTurtle".into()),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let view = cx.new(|cx| {
-                        GitTurtle::new(
-                            initial,
-                            preferences,
-                            tab_session,
-                            activity,
-                            recovery_drafts,
-                            window,
-                            cx,
-                        )
-                    });
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            );
             #[cfg(target_os = "linux")]
             if let Err(error) = opened {
                 eprintln!(
@@ -4728,6 +5425,47 @@ pub fn run() {
             }
             #[cfg(not(target_os = "linux"))]
             opened.expect("open GitTurtle window");
+
+            // Drain any Finder "Open With", Dock drop, or `gitturtle://open`
+            // URLs queued during cold launch or arriving while the app runs.
+            use futures::StreamExt as _;
+            while let Some(urls) = url_rx.next().await {
+                let parsed: Vec<PathBuf> = urls
+                    .iter()
+                    .take(repository_tabs::MAX_TABS * 4)
+                    .filter_map(|url| parse_external_open_url(url))
+                    .collect();
+                let dirs = resolve_external_open_dirs(&parsed);
+                if dirs.is_empty() {
+                    continue;
+                }
+                cx.update(|cx| {
+                    if let Some((handle, entity)) = frontmost_app_window(cx) {
+                        let _ = handle.update(cx, |_, window, cx| {
+                            window.activate_window();
+                            if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                                entity.update(cx, |this, cx| {
+                                    this.open_external_paths(&dirs, window, cx);
+                                });
+                            }
+                        });
+                        cx.activate(true);
+                    } else {
+                        open_fresh_app_window(
+                            None,
+                            false,
+                            Some(Box::new(
+                                move |this: &mut GitTurtle,
+                                      window: &mut Window,
+                                      cx: &mut Context<GitTurtle>| {
+                                    this.open_external_paths(&dirs, window, cx);
+                                },
+                            )),
+                            cx,
+                        );
+                    }
+                });
+            }
         })
         .detach();
     });
@@ -6675,5 +7413,222 @@ pub(crate) mod phrase_tests {
         assert!(app.read_with(&cx, |app, cx| {
             app.page == AppPage::Projects && app.hub.read(cx).inputs_allocated()
         }));
+    }
+
+    #[test]
+    fn parse_external_open_url_validates_file_and_gitturtle_open_links() {
+        assert_eq!(
+            parse_external_open_url("file:///tmp/my%20repo"),
+            Some(PathBuf::from("/tmp/my repo"))
+        );
+        assert_eq!(
+            parse_external_open_url("file://localhost/tmp/repo?ignored=1"),
+            Some(PathBuf::from("/tmp/repo"))
+        );
+        assert_eq!(
+            parse_external_open_url("gitturtle://open?path=%2Ftmp%2Frepo"),
+            Some(PathBuf::from("/tmp/repo"))
+        );
+        // Reject remote hosts, NUL bytes, relative paths, and non-open verbs.
+        assert_eq!(parse_external_open_url("file://evil.example/share"), None);
+        assert_eq!(parse_external_open_url("file:///tmp/bad%00path"), None);
+        assert_eq!(
+            parse_external_open_url("gitturtle://clone?url=https://example.invalid/repo.git"),
+            None
+        );
+        assert_eq!(
+            parse_external_open_url("gitturtle://open?path=relative/repo"),
+            None
+        );
+        assert_eq!(parse_external_open_url("file:///tmp/../etc/passwd"), None);
+        assert_eq!(
+            parse_external_open_url("gitturtle://open?path=%2Ftmp%2F..%2Fetc"),
+            None
+        );
+        assert_eq!(
+            parse_external_open_url("gitturtle://open?path=%2Ftmp%2Frepo&extra=1"),
+            None
+        );
+        assert_eq!(
+            sanitize_single_line_display("repo\u{202E}txt\u{2028}line2\n\x07", 64),
+            "repotxtline2"
+        );
+    }
+
+    #[gpui::test]
+    async fn window_title_document_path_external_drop_menus_and_system_accent(
+        cx: &mut TestAppContext,
+    ) {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let init_repo = |path: &std::path::Path| {
+            for args in [
+                &["init", "-q", "-b", "main"][..],
+                &["config", "user.name", "Tester"][..],
+                &["config", "user.email", "tester@example.invalid"][..],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .args(args)
+                        .current_dir(path)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            std::fs::write(path.join("file.txt"), "hello\n").unwrap();
+            for args in [
+                &["add", "file.txt"][..],
+                &["commit", "-q", "-m", "init"][..],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .args(args)
+                        .current_dir(path)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+        };
+        init_repo(dir1.path());
+        init_repo(dir2.path());
+
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let repo1 = dir1.path().canonicalize().unwrap();
+        let repo2 = dir2.path().canonicalize().unwrap();
+        let mut app = None;
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                GitTurtle::new(
+                    Some(repo1.clone()),
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            app = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let app = app.expect("GitTurtle entity initialized");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        for _ in 0..5 {
+            app.read_with(&cx, |app, _| app.worker.wait_idle());
+            cx.run_until_parked();
+        }
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Live window title & document path reflect repository and current branch.
+        let title = cx.window_title().expect("window title set");
+        assert!(
+            title.contains("main"),
+            "expected branch in window title, got {title:?}"
+        );
+        assert_eq!(cx.document_path().as_deref(), Some(repo1.as_path()));
+
+        // Native menu bar includes File -> New Window / Open Recent / Close Tab,
+        // Edit -> Find submenu, View -> Enter Full Screen, Window -> Bring All to Front.
+        cx.update(|_, cx| {
+            let menus = cx.get_menus().expect("menu bar installed");
+            let file = menus.iter().find(|m| m.name.as_ref() == "File").unwrap();
+            assert!(file.items.iter().any(|i| matches!(
+                i,
+                gpui::OwnedMenuItem::Action { name, .. } if name == "New Window"
+            )));
+            assert!(file.items.iter().any(|i| matches!(
+                i,
+                gpui::OwnedMenuItem::Action { name, .. } if name == "Close Tab"
+            )));
+            assert!(file.items.iter().any(|i| matches!(
+                i,
+                gpui::OwnedMenuItem::Submenu(sub) if sub.name.as_ref() == "Open Recent"
+            )));
+            let edit = menus.iter().find(|m| m.name.as_ref() == "Edit").unwrap();
+            assert!(edit.items.iter().any(|i| matches!(
+                i,
+                gpui::OwnedMenuItem::Submenu(sub) if sub.name.as_ref() == "Find"
+            )));
+            let view_menu = menus.iter().find(|m| m.name.as_ref() == "View").unwrap();
+            assert!(view_menu.items.iter().any(|i| matches!(
+                i,
+                gpui::OwnedMenuItem::Action { name, .. } if name == "Enter Full Screen"
+            )));
+            let win_menu = menus.iter().find(|m| m.name.as_ref() == "Window").unwrap();
+            assert!(win_menu.items.iter().any(|i| matches!(
+                i,
+                gpui::OwnedMenuItem::Action { name, .. } if name == "Bring All to Front"
+            )));
+        });
+
+        // External folder drop opens the second repository passively as a new tab.
+        app.update_in(&mut cx, |app, window, cx| {
+            app.open_external_paths(std::slice::from_ref(&repo2), window, cx);
+        });
+        for _ in 0..5 {
+            app.read_with(&cx, |app, _| app.worker.wait_idle());
+            cx.run_until_parked();
+        }
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            app.read_with(&cx, |app, _| app.repository_tabs.tabs.len()),
+            2
+        );
+        assert_eq!(cx.document_path().as_deref(), Some(repo2.as_path()));
+
+        // Projects and Settings pages clear document_path and update title cleanly.
+        app.update_in(&mut cx, |app, window, cx| app.show_projects(window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(cx.window_title().as_deref(), Some("GitTurtle — Projects"));
+        assert_eq!(cx.document_path(), None);
+
+        app.update_in(&mut cx, |app, window, cx| app.show_settings(window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(cx.window_title().as_deref(), Some("GitTurtle — Settings"));
+        assert_eq!(cx.document_path(), None);
+
+        // System accent fitting updates the active palette cleanly without readability issues.
+        let before_accent = cx.update(|_, cx| appearance::palette(cx).accent);
+        cx.update(|_, cx| appearance::set_macos_system_accent_for_test(Some(0xff2d55), cx));
+        app.update_in(&mut cx, |app, window, cx| {
+            app.settings.system_accent = true;
+            app.apply_appearance(window, cx);
+        });
+        let after_palette = cx.update(|_, cx| appearance::palette(cx));
+        assert_ne!(after_palette.accent, before_accent);
+        assert_eq!(after_palette.readability_issues(), Vec::new());
+    }
+
+    #[gpui::test]
+    async fn open_app_window_post_open_runs_after_root_is_installed(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let handle = cx
+            .update(|cx| {
+                open_app_window(
+                    WindowLaunch {
+                        initial: None,
+                        preferences: Preferences::default(),
+                        tab_session: repository_tabs::Session::default(),
+                        activity: activity::State::default(),
+                        recovery_drafts: recovery_drafts::State::default(),
+                        cascade_index: 0,
+                        post_open: Some(Box::new(|this, window, cx| {
+                            this.about(window, cx);
+                        })),
+                    },
+                    cx,
+                )
+            })
+            .expect("open_app_window with About post_open succeeds after Root::new");
+        let has_dialog = cx.update(|cx| {
+            gpui::AnyWindowHandle::from(handle)
+                .update(cx, |_, window, cx| window.has_active_dialog(cx))
+                .unwrap()
+        });
+        assert!(has_dialog, "About dialog opened cleanly after Root::new");
     }
 }

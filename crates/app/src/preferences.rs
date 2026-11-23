@@ -21,5 +21,6 @@ impl AppSettingsExt for AppSettings {
         );
         self.resolve_selection(self.theme.on_desktop(cx), system_is_light, custom_themes)
             .with_desktop(cx)
+            .with_system_accent(self.system_accent, cx)
     }
 }
