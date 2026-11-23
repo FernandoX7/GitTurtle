@@ -221,6 +221,7 @@ pub fn new_with_partial(
                 .line_number(false)
                 .folding(false)
                 .soft_wrap(false)
+                .suppress_primary_selection(cfg!(target_os = "linux"))
                 .default_value(presentation.sides[side].text.clone())
         })
     });
@@ -907,6 +908,10 @@ impl Render for SplitView {
         let sides = div().flex_1().min_h_0().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
             let presentation = Arc::clone(&self.presentation);
+            #[cfg(target_os = "linux")]
+            let primary_editor = editor.clone();
+            #[cfg(target_os = "linux")]
+            let primary_presentation = Arc::clone(&presentation);
             let overlays = std::mem::take(&mut block_controls[side]);
             div()
                 .flex_1()
@@ -926,6 +931,46 @@ impl Render for SplitView {
                             presentation.sides[side].source_selection(selection),
                         ));
                         cx.stop_propagation();
+                    }
+                })
+                .map(|pane| {
+                    #[cfg(target_os = "linux")]
+                    {
+                        let out_editor = primary_editor.clone();
+                        let out_presentation = Arc::clone(&primary_presentation);
+                        pane.on_mouse_up(gpui_kit::MouseButton::Left, move |_, window, cx| {
+                            if !primary_editor.read(cx).focus_handle(cx).is_focused(window) {
+                                return;
+                            }
+                            let selection = primary_editor.read(cx).selected_range();
+                            if !selection.is_empty() {
+                                let source =
+                                    primary_presentation.sides[side].source_selection(selection);
+                                if !source.is_empty() {
+                                    cx.write_to_primary(ClipboardItem::new_string(source));
+                                }
+                            }
+                        })
+                        .on_mouse_up_out(
+                            gpui_kit::MouseButton::Left,
+                            move |_, window, cx| {
+                                if !out_editor.read(cx).focus_handle(cx).is_focused(window) {
+                                    return;
+                                }
+                                let selection = out_editor.read(cx).selected_range();
+                                if !selection.is_empty() {
+                                    let source =
+                                        out_presentation.sides[side].source_selection(selection);
+                                    if !source.is_empty() {
+                                        cx.write_to_primary(ClipboardItem::new_string(source));
+                                    }
+                                }
+                            },
+                        )
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        pane
                     }
                 })
                 .child(

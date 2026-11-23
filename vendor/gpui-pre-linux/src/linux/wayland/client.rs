@@ -419,6 +419,108 @@ pub(crate) struct WaylandClientState {
     registrations: Vec<RegistrationToken>,
     pub common: Rc<RefCell<LinuxCommon>>,
     ime_enabled: Option<bool>,
+    ime_password: bool,
+}
+
+thread_local! {
+    static ACTIVE_WAYLAND_CLIENT: RefCell<Option<Weak<RefCell<WaylandClientState>>>> =
+        const { RefCell::new(None) };
+}
+
+fn ime_content_type(password: bool) -> (ContentHint, ContentPurpose) {
+    if password {
+        (ContentHint::SensitiveData, ContentPurpose::Password)
+    } else {
+        (ContentHint::None, ContentPurpose::Normal)
+    }
+}
+
+trait ImeContentTypeSink {
+    fn set_ime_content_type(&self, hint: ContentHint, purpose: ContentPurpose);
+    fn commit_ime_content_type(&self);
+}
+
+impl ImeContentTypeSink for zwp_text_input_v3::ZwpTextInputV3 {
+    fn set_ime_content_type(&self, hint: ContentHint, purpose: ContentPurpose) {
+        self.set_content_type(hint, purpose);
+    }
+
+    fn commit_ime_content_type(&self) {
+        self.commit();
+    }
+}
+
+fn apply_ime_password_change(
+    text_input: Option<&impl ImeContentTypeSink>,
+    ime_enabled: Option<bool>,
+    ime_password: &mut bool,
+    password: bool,
+) {
+    if *ime_password == password {
+        return;
+    }
+    *ime_password = password;
+    if ime_enabled == Some(true)
+        && let Some(text_input) = text_input
+    {
+        let (hint, purpose) = ime_content_type(password);
+        text_input.set_ime_content_type(hint, purpose);
+        text_input.commit_ime_content_type();
+    }
+}
+
+pub(crate) fn set_wayland_ime_password(password: bool) {
+    let client = ACTIVE_WAYLAND_CLIENT.with(|slot| slot.borrow().as_ref().and_then(Weak::upgrade));
+    let Some(client) = client else {
+        return;
+    };
+    let mut state = client.borrow_mut();
+    let ime_enabled = state.ime_enabled;
+    let text_input = state.text_input.clone();
+    apply_ime_password_change(
+        text_input.as_ref(),
+        ime_enabled,
+        &mut state.ime_password,
+        password,
+    );
+}
+
+pub(crate) fn activate_wayland_window_with_token(token: String) -> bool {
+    let Some(client) = ACTIVE_WAYLAND_CLIENT.with(|slot| slot.borrow().as_ref().and_then(Weak::upgrade)) else {
+        return false;
+    };
+    let state = client.borrow();
+    let Some(activation) = state.globals.activation.as_ref() else {
+        return false;
+    };
+    let Some(surface) = state
+        .keyboard_focused_window
+        .as_ref()
+        .or_else(|| state.windows.values().next())
+        .map(|window| window.surface())
+    else {
+        return false;
+    };
+    activation.activate(token, &surface);
+    true
+}
+
+pub(crate) fn active_wayland_window_identifier()
+-> Option<futures::future::BoxFuture<'static, Option<WindowIdentifier>>> {
+    let client = ACTIVE_WAYLAND_CLIENT.with(|slot| slot.borrow().as_ref().and_then(Weak::upgrade))?;
+    let state = client.borrow();
+    let surface = state
+        .keyboard_focused_window
+        .as_ref()
+        .or_else(|| state.windows.values().next())
+        .map(|window| window.surface());
+    Some(Box::pin(async move {
+        if let Some(surface) = surface {
+            ashpd::WindowIdentifier::from_wayland(&surface).await
+        } else {
+            None
+        }
+    }))
 }
 
 struct DragState<DataOffer = wl_data_offer::WlDataOffer, Window = WaylandWindowStatePtr> {
@@ -720,7 +822,8 @@ impl WaylandClientStatePtr {
         };
 
         text_input.enable();
-        text_input.set_content_type(ContentHint::None, ContentPurpose::Normal);
+        let (hint, purpose) = ime_content_type(state.ime_password);
+        text_input.set_content_type(hint, purpose);
         let mut cursor_rectangle = None;
         if let Some(window) = state.keyboard_focused_window.clone() {
             drop(state);
@@ -745,6 +848,11 @@ impl WaylandClientStatePtr {
             text_input.disable();
             text_input.commit();
         }
+    }
+
+    pub fn clear_ime_password(&self) {
+        let client = self.get_client();
+        client.borrow_mut().ime_password = false;
     }
 
     pub fn ime_enabled(&self) -> Option<bool> {
@@ -897,6 +1005,15 @@ impl Drop for WaylandConnection {
         }
 
         let mut state = self.0.borrow_mut();
+        ACTIVE_WAYLAND_CLIENT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot
+                .as_ref()
+                .is_some_and(|weak| Weak::ptr_eq(weak, &Rc::downgrade(&self.0)))
+            {
+                *slot = None;
+            }
+        });
         state.windows.clear();
 
         if let Some(wl_pointer) = &state.wl_pointer {
@@ -1142,10 +1259,14 @@ impl WaylandConnection {
             },
             registrations: Vec::new(),
             ime_enabled: None,
+            ime_password: false,
         }));
 
         // From here on, `Drop` removes whatever was registered if a later step fails.
         let client = Self(state);
+        ACTIVE_WAYLAND_CLIENT.with(|slot| {
+            *slot.borrow_mut() = Some(Rc::downgrade(&client.0));
+        });
         let pointer = WaylandClientStatePtr(Rc::downgrade(&client.0));
 
         client.register_source(
@@ -1166,6 +1287,18 @@ impl WaylandConnection {
 
                             client.common.borrow_mut().appearance = appearance;
 
+                            for window in client.windows.values_mut() {
+                                window.set_appearance(appearance);
+                            }
+                        }
+                        crate::linux::xdg_desktop_portal::mark_initial_appearance_applied(
+                            appearance,
+                        );
+                    }
+                    XDPEvent::AccentColor => {
+                        if let Some(client) = client.0.upgrade() {
+                            let mut client = client.borrow_mut();
+                            let appearance = client.common.borrow().appearance;
                             for window in client.windows.values_mut() {
                                 window.set_appearance(appearance);
                             }
@@ -3501,6 +3634,87 @@ mod tests {
         assert_eq!(
             text_input.cursor_rectangles.borrow().as_slice(),
             &[(10, 20, 1, 18)]
+        );
+    }
+
+    #[derive(Default)]
+    struct FakeImeContentTypeSink {
+        content_types: RefCell<Vec<(ContentHint, ContentPurpose)>>,
+        commit_count: Cell<usize>,
+    }
+
+    impl ImeContentTypeSink for FakeImeContentTypeSink {
+        fn set_ime_content_type(&self, hint: ContentHint, purpose: ContentPurpose) {
+            self.content_types.borrow_mut().push((hint, purpose));
+        }
+
+        fn commit_ime_content_type(&self) {
+            self.commit_count.set(self.commit_count.get() + 1);
+        }
+    }
+
+    #[test]
+    fn password_ime_toggles_sensitive_content_type_when_enabled() {
+        let sink = FakeImeContentTypeSink::default();
+        let mut ime_password = false;
+
+        // Before IME is enabled, state updates without redundant commits.
+        apply_ime_password_change(Some(&sink), Some(false), &mut ime_password, true);
+        assert!(ime_password);
+        assert_eq!(sink.commit_count.get(), 0);
+        assert_eq!(
+            ime_content_type(ime_password),
+            (ContentHint::SensitiveData, ContentPurpose::Password)
+        );
+
+        // Switching back to normal while IME is active immediately notifies the compositor.
+        apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, false);
+        assert!(!ime_password);
+        assert_eq!(sink.commit_count.get(), 1);
+        assert_eq!(
+            sink.content_types.borrow().as_slice(),
+            &[(ContentHint::None, ContentPurpose::Normal)]
+        );
+
+        // Redundant same-state update does not re-commit.
+        apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, false);
+        assert_eq!(sink.commit_count.get(), 1);
+
+        // Moving into a masked input sends SensitiveData + Password and commits once.
+        apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, true);
+        assert_eq!(sink.commit_count.get(), 2);
+        assert_eq!(
+            sink.content_types.borrow().as_slice(),
+            &[
+                (ContentHint::None, ContentPurpose::Normal),
+                (ContentHint::SensitiveData, ContentPurpose::Password),
+            ]
+        );
+
+        // Compositor Leave -> Enter or pointer-click composing reset (`disable_ime` then
+        // `enable_ime`) preserves `ime_password == true` so re-enabling still sends Password.
+        assert_eq!(
+            ime_content_type(ime_password),
+            (ContentHint::SensitiveData, ContentPurpose::Password)
+        );
+    }
+
+    #[test]
+    fn cjk_preedit_cursor_rect_tracks_fractional_logical_coordinates() {
+        let sink = FakeImeCursorRectangleSink::default();
+        let mut last = None;
+
+        // Under 1.5x fractional scaling GPUI reports logical pixel bounds; text-input-v3
+        // expects surface-local logical coordinates, updating cleanly as CJK preedit advances.
+        let step1 = Bounds::new(point(px(120.6), px(44.4)), size(px(16.5), px(22.2)));
+        let step2 = Bounds::new(point(px(137.1), px(44.4)), size(px(16.5), px(22.2)));
+        update_ime_cursor_rectangle(&sink, &mut last, step1);
+        set_ime_cursor_rectangle_after_done(&sink, &mut last, step2, true);
+
+        assert_eq!(sink.commit_count.get(), 2);
+        assert_eq!(
+            sink.cursor_rectangles.borrow().as_slice(),
+            &[(120, 44, 16, 22), (137, 44, 16, 22)]
         );
     }
 }

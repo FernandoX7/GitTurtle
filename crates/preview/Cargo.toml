@@ -29,18 +29,17 @@ zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 # x86-64 and AArch64. Embedded standard fonts and predefined CMaps keep the
 # helper from reading system files. `hayro-jpeg2000` stays at the version hayro
 # uses and adds only its `image` integration. `mp4parse` is MPL-2.0 and used
-# unmodified (its source ships in the notices). `dav1d` links the system
-# libdav1d through pkg-config, never a copy built from source. `dav1d-sys` is
-# pinned exactly because its C struct layouts are written by hand, so a version
-# change needs a layout review; it is direct only for reading `dav1d_version`.
-# `moxcms` is the version `image` and `hayro-jpeg2000` already use, direct only
-# for converting an AVIF's or JPEG 2000's RGB ICC profile in `image_helper.rs`; it adds no features.
+# unmodified (its source ships in the notices). `libdav1d.so.7` is loaded
+# dynamically at runtime via `dlopen` inside the helper before confinement
+# (`src/dav1d_dlopen.rs`), avoiding a hard `DT_NEEDED` startup dependency on the
+# main binary. `moxcms` is the version `image` and `hayro-jpeg2000` already use,
+# direct only for converting an AVIF's or JPEG 2000's RGB ICC profile in
+# `image_helper.rs`; it adds no features.
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 hayro = { version = "=0.9.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 hayro-jpeg2000 = { version = "=0.5.0", default-features = false, features = ["std", "simd", "image"] }
+libc = "0.2"
 mp4parse = "=0.17.0"
-dav1d = "=0.11.1"
-dav1d-sys = "=0.8.3"
 moxcms = { version = "=0.8.1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]

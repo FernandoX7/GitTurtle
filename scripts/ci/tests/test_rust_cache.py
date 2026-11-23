@@ -66,15 +66,10 @@ UNSUPPLIED = "no build package ships it"
 # those of the traced container's dpkg file lists. A row is one locked version:
 # an update gets a new row only once its build script has been read again.
 UBUNTU_PROBERS = {
-    # system-deps for the dav1d of its manifest, 1.3.0 or later. Its other path,
-    # a clone built with meson and ninja, needs a SYSTEM_DEPS_ variable, which
-    # the install step refuses.
-    "dav1d-sys 0.8.3": ({"dav1d": "libdav1d-dev"}, ("pkg-config",)),
     # freetype2 at 24.3.18 or later; without it, it compiles its bundled copy with c++.
     "freetype-sys 0.20.1": ({"freetype2": ("libfontconfig-dev", "libfreetype-dev")}, ("pkg-config", "build-essential")),
     "khronos-egl 6.0.0": "it asks for egl only with its static feature and without no-pkg-config; wgpu-hal turns on "
                          "dynamic here, and static together with no-pkg-config on emscripten",
-    "system-deps 7.0.8": "a library for build scripts: it probes what its user's manifest names, here dav1d-sys's",
     # One name for each of its client, cursor, egl and server features, and
     # nothing at all with its dlopen feature, which wgpu-hal turns on.
     "wayland-sys 0.31.11": ({"wayland-client": "libwayland-dev", "wayland-cursor": "libwayland-dev",

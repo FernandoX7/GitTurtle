@@ -67,7 +67,7 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
     let (sender, mut snapshots, latest) = portal::snapshots();
     let (refresh, requests) = futures::channel::mpsc::channel(0);
     let (ready, initial) = futures::channel::oneshot::channel();
-    let scales_text = gpui_kit::guess_compositor() == "Wayland";
+    let scales_text = cx.compositor_name() == "Wayland";
     let executor = cx.background_executor().clone();
     let (cancel, cancellation) = futures::future::AbortHandle::new_pair();
     let follow = user_fontconfig::config_home()
@@ -652,11 +652,14 @@ const MONOSPACE_SAMPLE: &str = "iWm0.| ";
 
 #[cfg(any(target_os = "linux", test))]
 fn is_monospace(advances: &[f32]) -> bool {
+    // Allow up to 0.5 px variance at 16 px so Nerd Font patched variants with
+    // slight hinting/subpixel rounding differences are accepted while
+    // proportional fonts (e.g. `i` vs `W` differing by >5 px) are rejected.
     advances.first().is_some_and(|first| {
         *first > 0.
             && advances
                 .iter()
-                .all(|advance| (advance - first).abs() < 0.01)
+                .all(|advance| (advance - first).abs() <= 0.5)
     })
 }
 
@@ -717,6 +720,12 @@ pub(super) struct Observed {
     pub high_contrast: Option<bool>,
     /// GNOME `enable-animations`; false turns animation off.
     pub enable_animations: Option<bool>,
+    /// Hyprland `animations:enabled` via IPC socket; consulted when the portal
+    /// `org.freedesktop.appearance reduced-motion` key is absent.
+    pub hyprland_animations: Option<bool>,
+    /// KDE `kcmfonts` `forceFontDPI / 96.0` fallback when GNOME's
+    /// `text-scaling-factor` is absent on Wayland.
+    pub kde_text_scale: Option<f64>,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -738,6 +747,7 @@ impl Observed {
                 .unwrap_or(gpui_kit::TextRenderingMode::Grayscale);
         let text_scale = if scales_text {
             self.text_scale
+                .or(self.kde_text_scale)
                 .map(crate::appearance::desktop_text_scale_value)
                 .unwrap_or(1.0)
         } else {
@@ -752,22 +762,144 @@ impl Observed {
     }
 
     /// Reduces motion when any source asks for it: the portal's appearance
-    /// `reduced-motion` 1, GNOME's a11y `reduced-motion` "reduce", or GNOME's
-    /// `enable-animations` turned off. Asks for more contrast when the
-    /// appearance `contrast` is 1 or GNOME's `high-contrast` is on. Any other
-    /// value, an unknown number or word included, is no preference, as the
-    /// settings portal specifies ("Unknown values should be treated as 0"),
-    /// and so is a key the desktop lacks. Linux has no transparency
-    /// preference.
+    /// `reduced-motion` 1, GNOME's a11y `reduced-motion` "reduce", GNOME's
+    /// `enable-animations` turned off, or Hyprland's `animations:enabled`
+    /// turned off when the portal `reduced-motion` key is absent. Asks for
+    /// more contrast when the appearance `contrast` is 1 or GNOME's
+    /// `high-contrast` is on. Any other value, an unknown number or word
+    /// included, is no preference, as the settings portal specifies ("Unknown
+    /// values should be treated as 0"), and so is a key the desktop lacks.
+    /// Linux has no transparency preference.
     pub(super) fn display(&self) -> crate::native_accessibility::DisplayPreferences {
         crate::native_accessibility::DisplayPreferences {
             reduce_motion: self.reduced_motion == Some(1)
                 || self.gnome_reduced_motion.as_deref() == Some("reduce")
-                || self.enable_animations == Some(false),
+                || self.enable_animations == Some(false)
+                || (self.reduced_motion.is_none() && self.hyprland_animations == Some(false)),
             increase_contrast: self.contrast == Some(1) || self.high_contrast == Some(true),
             reduce_transparency: false,
         }
     }
+}
+
+/// Parses Hyprland's `j/getoption animations:enabled` JSON payload.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn parse_hyprland_animations_json(bytes: &[u8]) -> Option<bool> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let enabled = value.get("int")?.as_i64()?;
+    Some(enabled != 0)
+}
+
+/// Parses KDE's `kcmfonts` INI file for `[General] forceFontDPI=<dpi>` and
+/// converts it to a scale factor relative to 96 DPI.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn parse_kcmfonts_scale(contents: &str) -> Option<f64> {
+    let mut in_general = false;
+    for raw in contents.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_general = section.trim() == "General";
+            continue;
+        }
+        if !in_general {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "forceFontDPI"
+        {
+            let dpi: f64 = value.trim().parse().ok()?;
+            if dpi.is_finite() && (48.0..=480.0).contains(&dpi) {
+                return Some(dpi / 96.0);
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Validates a Hyprland instance signature before joining it into a socket path.
+#[cfg(any(target_os = "linux", test))]
+fn valid_hyprland_signature(signature: &str) -> bool {
+    !signature.is_empty()
+        && signature.len() <= 128
+        && !signature.contains('/')
+        && !signature.contains('\\')
+        && !signature.contains('\0')
+        && signature != "."
+        && signature != ".."
+        && !signature.contains("..")
+}
+
+/// Queries a Hyprland IPC socket (`j/getoption animations:enabled`) with strict
+/// socket checks, 80 ms I/O timeouts, and a 4 KiB read cap.
+#[cfg(target_os = "linux")]
+fn query_hyprland_animations_at(socket_path: &std::path::Path) -> Option<bool> {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::fs::FileTypeExt as _;
+    use std::os::unix::net::UnixStream;
+
+    let meta = std::fs::symlink_metadata(socket_path).ok()?;
+    if !meta.file_type().is_socket() {
+        return None;
+    }
+    let mut stream = UnixStream::connect(socket_path).ok()?;
+    let timeout = std::time::Duration::from_millis(80);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    stream.write_all(b"j/getoption animations:enabled").ok()?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut buf = Vec::new();
+    let mut limited = stream.take(4097);
+    limited.read_to_end(&mut buf).ok()?;
+    if buf.len() > 4096 {
+        return None;
+    }
+    parse_hyprland_animations_json(&buf)
+}
+
+#[cfg(target_os = "linux")]
+fn probe_hyprland_animations() -> Option<bool> {
+    let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
+    if !valid_hyprland_signature(&sig) {
+        return None;
+    }
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())?;
+    let socket = runtime.join("hypr").join(sig).join(".socket.sock");
+    query_hyprland_animations_at(&socket)
+}
+
+#[cfg(target_os = "linux")]
+fn probe_kde_kcmfonts_scale() -> Option<f64> {
+    use rustix::fs::{Mode, OFlags, open};
+    use std::io::Read as _;
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".config"))
+        })?;
+    let path = config_dir.join("kcmfonts");
+    let fd = open(
+        &path,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let file = std::fs::File::from(fd);
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut buf = String::new();
+    file.take(64 * 1024).read_to_string(&mut buf).ok()?;
+    parse_kcmfonts_scale(&buf)
 }
 
 /// GNOME's `font-rendering` "automatic" delegates the choice to the toolkit;
@@ -987,11 +1119,138 @@ mod portal {
             }
             let found = match output {
                 Some(output) => {
-                    super::desktop_code_font(&self.text, &super::monospace_families(&output))
+                    let families = super::monospace_families(&output);
+                    let initial = super::desktop_code_font(&self.text, &families);
+                    if initial.is_err() && !families.is_empty() {
+                        let loaded = self.text.all_font_names();
+                        let none_loaded = families
+                            .iter()
+                            .all(|family| !loaded.iter().any(|name| name == family));
+                        if none_loaded {
+                            let commands = self.missing_face_commands(&families[0]);
+                            let text_system = Arc::clone(&self.text);
+                            Self::load_missing_faces_with(commands, text_system, executor, current)
+                                .await;
+                            if !current() {
+                                return None;
+                            }
+                            super::desktop_code_font(&self.text, &families)
+                        } else {
+                            initial
+                        }
+                    } else {
+                        initial
+                    }
                 }
                 None => Err("fontconfig did not answer.".into()),
             };
             Some((generation, found))
+        }
+
+        fn missing_face_commands(&self, family: &str) -> Vec<Command> {
+            let trimmed = family.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with('-')
+                || trimmed
+                    .chars()
+                    .any(|ch| ch.is_control() || matches!(ch, ':' | '\\' | ','))
+            {
+                return Vec::new();
+            }
+            [
+                trimmed.to_owned(),
+                format!("{trimmed}:bold"),
+                format!("{trimmed}:italic"),
+                format!("{trimmed}:bold:italic"),
+            ]
+            .into_iter()
+            .map(|pattern| {
+                let mut command = (self.program)();
+                command.args(["--format", "%{file}", "--", &pattern]);
+                command
+            })
+            .collect()
+        }
+
+        /// Dynamically loads newly installed font faces (for example after
+        /// `omarchy font set` updates `$XDG_CONFIG_HOME/fontconfig`) into the
+        /// live `TextSystem` without requiring an app relaunch.
+        ///
+        /// Bounded to at most 8 distinct regular files of at most 16 MiB each,
+        /// opened non-blocking and deduplicated by `(dev, ino)`.
+        async fn load_missing_faces_with(
+            commands: Vec<Command>,
+            text_system: Arc<gpui_kit::TextSystem>,
+            executor: &BackgroundExecutor,
+            current: impl Fn() -> bool,
+        ) {
+            use std::borrow::Cow;
+            use std::collections::HashSet;
+            use std::io::Read as _;
+            use std::os::unix::fs::MetadataExt as _;
+
+            const MAX_FONT_FILE_BYTES: u64 = 16 * 1024 * 1024;
+            const MAX_FONT_FACES: usize = 8;
+            const FILE_PATH_BYTES: usize = 4096;
+
+            let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
+            let mut faces: Vec<Cow<'static, [u8]>> = Vec::new();
+            for mut command in commands {
+                if !current() || faces.len() >= MAX_FONT_FACES {
+                    break;
+                }
+                let Some(path_str) = command_output(
+                    executor,
+                    &mut command,
+                    FAMILY_WAIT,
+                    FILE_PATH_BYTES,
+                    &current,
+                )
+                .await
+                else {
+                    continue;
+                };
+                let trimmed = path_str.trim();
+                if trimmed.is_empty() || trimmed.contains('\0') {
+                    continue;
+                }
+                let path = std::path::PathBuf::from(trimmed);
+                if !path.is_absolute() {
+                    continue;
+                }
+                let Ok(fd) = rustix::fs::open(
+                    &path,
+                    rustix::fs::OFlags::RDONLY
+                        | rustix::fs::OFlags::NONBLOCK
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                ) else {
+                    continue;
+                };
+                let file = std::fs::File::from(fd);
+                let Ok(meta) = file.metadata() else {
+                    continue;
+                };
+                if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_FONT_FILE_BYTES {
+                    continue;
+                }
+                if !seen_inodes.insert((meta.dev(), meta.ino())) {
+                    continue;
+                }
+                let mut bytes = Vec::new();
+                if file
+                    .take(MAX_FONT_FILE_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .is_ok()
+                    && !bytes.is_empty()
+                    && (bytes.len() as u64) <= MAX_FONT_FILE_BYTES
+                {
+                    faces.push(Cow::Owned(bytes));
+                }
+            }
+            if !faces.is_empty() && current() {
+                let _ = text_system.add_fonts(faces);
+            }
         }
     }
 
@@ -1050,6 +1309,8 @@ mod portal {
                 gnome_reduced_motion: gnome_reduced_motion.ok(),
                 high_contrast: high_contrast.ok(),
                 enable_animations: enable_animations.ok(),
+                hyprland_animations: None,
+                kde_text_scale: None,
             }
         })
         .await;
@@ -1105,6 +1366,8 @@ mod portal {
             gnome_reduced_motion,
             high_contrast,
             enable_animations,
+            hyprland_animations: _,
+            kde_text_scale: _,
         } = updates;
         take(
             seen,
@@ -1234,13 +1497,48 @@ mod portal {
         refresh: Receiver<()>,
         executor: BackgroundExecutor,
     ) {
-        observe_with(connect, scales_text, fontconfig, sender, refresh, executor).await
+        observe_with_probes(
+            connect,
+            super::probe_hyprland_animations,
+            super::probe_kde_kcmfonts_scale,
+            scales_text,
+            fontconfig,
+            sender,
+            refresh,
+            executor,
+        )
+        .await
     }
 
     /// [`observe`] with its portal connection supplied, so tests can run the
-    /// loop without a session bus.
+    /// loop without a session bus or host Hyprland/KDE probes.
+    #[cfg(test)]
     async fn observe_with<C: Future<Output = Option<Session>>>(
         connect: impl Fn() -> C,
+        scales_text: bool,
+        fontconfig: Fontconfig,
+        sender: Snapshots,
+        refresh: Receiver<()>,
+        executor: BackgroundExecutor,
+    ) {
+        observe_with_probes(
+            connect,
+            || None,
+            || None,
+            scales_text,
+            fontconfig,
+            sender,
+            refresh,
+            executor,
+        )
+        .await
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    async fn observe_with_probes<C: Future<Output = Option<Session>>>(
+        connect: impl Fn() -> C,
+        hyprland_probe: impl Fn() -> Option<bool>,
+        kde_scale_probe: impl Fn() -> Option<f64>,
         scales_text: bool,
         mut fontconfig: Fontconfig,
         mut sender: Snapshots,
@@ -1263,6 +1561,12 @@ mod portal {
                 Some(session) => session.observed.clone(),
                 None => known.clone().unwrap_or_default(),
             };
+            if observed.reduced_motion.is_none() {
+                observed.hyprland_animations = hyprland_probe();
+            }
+            if scales_text && observed.text_scale.is_none() {
+                observed.kde_text_scale = kde_scale_probe();
+            }
             if !keeps {
                 if super::rendering_from_gnome(
                     observed.font_rendering.as_deref(),
@@ -3085,6 +3389,156 @@ mod tests {
                 .mono_font_family
                 .clone()),
             baseline
+        );
+    }
+
+    #[test]
+    fn hyprland_animations_ipc_and_signature_validation() {
+        assert_eq!(
+            parse_hyprland_animations_json(
+                br#"{"option":"animations:enabled","int":0,"set":true}"#
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            parse_hyprland_animations_json(
+                br#"{"option":"animations:enabled","int":1,"set":true}"#
+            ),
+            Some(true)
+        );
+        assert_eq!(parse_hyprland_animations_json(b"not json"), None);
+
+        assert!(valid_hyprland_signature("abc123_456-def"));
+        assert!(!valid_hyprland_signature(""));
+        assert!(!valid_hyprland_signature("../escape"));
+        assert!(!valid_hyprland_signature("a/b"));
+        assert!(!valid_hyprland_signature("a\0b"));
+
+        let reduced = Observed {
+            hyprland_animations: Some(false),
+            ..Observed::default()
+        };
+        assert!(reduced.display().reduce_motion);
+
+        // Explicit portal no-preference (0) takes precedence over Hyprland fallback.
+        let portal_explicit = Observed {
+            reduced_motion: Some(0),
+            hyprland_animations: Some(false),
+            ..Observed::default()
+        };
+        assert!(!portal_explicit.display().reduce_motion);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hyprland_ipc_socket_round_trip() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join(".socket.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = Vec::new();
+            stream.read_to_end(&mut req).unwrap();
+            assert_eq!(req, b"j/getoption animations:enabled");
+            stream
+                .write_all(br#"{"option":"animations:enabled","int":0,"set":true}"#)
+                .unwrap();
+        });
+        assert_eq!(query_hyprland_animations_at(&sock), Some(false));
+        server.join().unwrap();
+
+        // Refuses non-socket files cleanly.
+        let reg = dir.path().join("regular");
+        std::fs::write(&reg, b"{}").unwrap();
+        assert_eq!(query_hyprland_animations_at(&reg), None);
+    }
+
+    #[test]
+    fn kcmfonts_dpi_parsing_and_wayland_fallback() {
+        let ini = "[General]\nforceFontDPI=120\n";
+        assert!((parse_kcmfonts_scale(ini).unwrap() - 1.25).abs() < 1e-6);
+        assert_eq!(parse_kcmfonts_scale("[General]\nforceFontDPI=0\n"), None);
+        assert_eq!(parse_kcmfonts_scale("[Other]\nforceFontDPI=144\n"), None);
+
+        let observed = Observed {
+            kde_text_scale: Some(1.25),
+            ..Observed::default()
+        };
+        assert!((observed.resolve(true).text_scale - 1.25).abs() < 1e-6);
+        assert!((observed.resolve(false).text_scale - 1.0).abs() < 1e-6);
+
+        let gnome_wins = Observed {
+            text_scale: Some(1.5),
+            kde_text_scale: Some(1.25),
+            ..Observed::default()
+        };
+        assert!((gnome_wins.resolve(true).text_scale - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn monospace_tolerance_accepts_nerd_font_rounding_and_rejects_proportional() {
+        assert!(is_monospace(&[9.6, 9.8, 9.6, 9.4, 9.6, 9.6, 9.7]));
+        assert!(!is_monospace(&[3.4, 12.1, 9.6, 9.6, 4.0, 4.0, 4.2]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    fn fontconfig_live_reloads_missing_monospace_font_faces(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_wgpu::CosmicTextSystem;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+
+        let dir = tempfile::tempdir().unwrap();
+        let font_file = dir.path().join("DejaVuSansMono.ttf");
+        std::fs::write(&font_file, CODE_FONT_FACES[0]).unwrap();
+        let script = dir.path().join("fake-fc-match.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ \"$2\" = \"%{{family}}\" ]; then\n  printf '%s' '{}'\nelse\n  printf '%s' '{}'\nfi\n",
+                BUNDLED_CODE_FAMILY,
+                font_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let text = gpui_kit::TextSystem::new(Arc::new(CosmicTextSystem::new_without_system_fonts(
+            "IBM Plex Sans",
+        )));
+        assert!(
+            desktop_code_font(&text, &[BUNDLED_CODE_FAMILY.to_owned()]).is_err(),
+            "starts without the code font loaded"
+        );
+        let script_path = script;
+        let mut fc = portal::Fontconfig::with_program(
+            Box::new(move || std::process::Command::new(&script_path)),
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(text),
+        );
+        let executor = cx.executor();
+        let result = Arc::new(std::sync::Mutex::new(None));
+        let slot = result.clone();
+        let lookup = executor.clone();
+        executor
+            .spawn(async move {
+                *slot.lock().unwrap() = Some(fc.code_font(&lookup).await);
+            })
+            .detach();
+        for _ in 0..200 {
+            pass_real_time(&executor);
+            if result.lock().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            result.lock().unwrap().take(),
+            Some(Some((1, Ok(BUNDLED_CODE_FAMILY.into()))))
         );
     }
 }

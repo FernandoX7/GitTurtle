@@ -76,9 +76,12 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 # Reads the desktop's font antialiasing and text scaling through the XDG
 # settings portal, and hands Open in default app's private copy to the OpenURI
 # portal; the version matches the toolkit's own portal client, which already
-# enables `open_uri`.
-ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "settings", "open_uri"] }
-rustix = { version = "1.1", features = ["stdio", "thread"] }
+# enables `open_uri` and `wayland`.
+ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "settings", "open_uri", "wayland"] }
+# Matches the locked vendored GPUI Linux platform crate for Wayland IME
+# password hints, parent window identifiers, and initial portal readiness.
+gpui_linux = { package = "gpui-pre-linux", version = "=0.3.12" }
+rustix = { version = "1.1", features = ["net", "stdio", "thread"] }
 
 [dev-dependencies]
 gitturtle = { path = ".", features = ["test-support"] }

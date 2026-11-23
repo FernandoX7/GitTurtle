@@ -9,7 +9,7 @@ members = [
     "crates/theme",
 ]
 default-members = ["crates/app"]
-exclude = ["fuzz", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common", "vendor/accesskit_macos", "vendor/accesskit_unix"]
+exclude = ["fuzz", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/gpui-pre-wgpu", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common", "vendor/accesskit_macos", "vendor/accesskit_unix"]
 resolver = "3"
 
 [workspace.package]
@@ -65,4 +65,5 @@ gpui-component = { path = "vendor/gpui-component" }
 gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
 gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 gpui-pre-macros = { path = "vendor/gpui-pre-macros" }
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 mermaid-rs-renderer = { path = "vendor/mermaid-rs-renderer" }

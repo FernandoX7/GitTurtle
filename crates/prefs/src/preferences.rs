@@ -375,6 +375,9 @@ pub struct AppSettings {
     /// Show the project list on the far left of the window.
     pub project_pane: bool,
     pub project_pane_width: f32,
+    /// Linux: user dismissed the one-time informational note about a passwordless
+    /// `Default_keyring.keyring` in the GitHub connection pane.
+    pub linux_plaintext_keyring_note_dismissed: bool,
 }
 
 impl Default for AppSettings {
@@ -404,6 +407,7 @@ impl Default for AppSettings {
             default_branch: "main".into(),
             project_pane: false,
             project_pane_width: 240.,
+            linux_plaintext_keyring_note_dismissed: false,
         }
     }
 }

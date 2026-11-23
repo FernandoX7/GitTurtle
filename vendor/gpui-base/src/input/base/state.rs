@@ -511,6 +511,10 @@ pub struct InputBaseState<M: InputModeKind> {
     /// The current edit batch, copied into an event when a change is emitted.
     pub(super) last_input_edits: Vec<(InputEdit, Rope)>,
     pub(super) selecting: bool,
+    /// GitTurtle patch: suppress automatic Linux PRIMARY copy when the caller
+    /// writes a transformed selection (such as split-diff source lines without
+    /// synthetic alignment filler newlines).
+    pub(super) suppress_primary_selection: bool,
     /// Anchor point of an in-progress columnar (block) selection.
     pub(super) column_select_start: Option<ColumnarPoint>,
     /// The selection a long press made, with its handles and edit menu.
@@ -1119,6 +1123,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             ime_original_text: None,
             input_bounds: Bounds::default(),
             selecting: false,
+            suppress_primary_selection: false,
             touch_selection: Default::default(),
             disabled: false,
             readonly: false,
@@ -2999,6 +3004,22 @@ impl<M: InputModeKind> InputBaseState<M> {
         let (offset, line_end_affinity, columns_past_line_end) =
             self.resolve_mouse_position(event.position);
 
+        #[cfg(target_os = "linux")]
+        if event.button == MouseButton::Middle {
+            self.selecting = false;
+            if !self.is_editable() {
+                return;
+            }
+            if !self.active_selection().contains(offset) {
+                self.move_to_with_affinity(offset, None, line_end_affinity, cx);
+            }
+            if let Some(primary) = cx.read_from_primary() {
+                self.insert_clipboard(primary, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+
         if M::on_click(self, event, offset, window, cx) {
             return;
         }
@@ -3086,10 +3107,38 @@ impl<M: InputModeKind> InputBaseState<M> {
         if self.active_selection().is_empty() {
             self.active_selection_mut().reversed = false;
         }
+        let was_selecting = self.selecting;
         self.selecting = false;
         self.selected_word_range = None;
         self.column_select_start = None;
         self.auto_scroll.stop();
+        #[cfg(target_os = "linux")]
+        if event.button == MouseButton::Left && was_selecting {
+            self.write_selection_to_primary(cx);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = was_selecting;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn write_selection_to_primary(&self, cx: &mut Context<Self>) {
+        if self.suppress_primary_selection
+            || !self.is_copyable()
+            || self.selections.iter().all(|sel| sel.is_empty())
+        {
+            return;
+        }
+        let joined = self.selected_texts().join("\n");
+        if !joined.is_empty() {
+            cx.write_to_primary(ClipboardItem::new_string(joined));
+        }
+    }
+
+    /// Suppress automatic Linux PRIMARY selection updates when a caller owns a
+    /// transformed selection (for example split-diff panes excluding alignment filler lines).
+    pub fn suppress_primary_selection(mut self, suppress: bool) -> Self {
+        self.suppress_primary_selection = suppress;
+        self
     }
 
     /// GitTurtle patch: a press that begins outside this input, or a left
@@ -4327,11 +4376,15 @@ impl<M: InputModeKind> InputBaseState<M> {
             && window.is_window_active()
     }
 
-    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // GitTurtle patch: focus reported back ends a blur held back while
         // a menu was open; the start below blinks the caret as any focus
         // does.
         self.held_blur = None;
+        #[cfg(target_os = "linux")]
+        super::native::set_text_content_type(window, self.masked.then_some("password"));
+        #[cfg(not(target_os = "linux"))]
+        let _ = window;
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.start(cx);
         });
@@ -4341,6 +4394,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_mouse_gesture(cx);
         self.revealed_viewport = None;
+        #[cfg(target_os = "linux")]
+        if self.masked {
+            super::native::set_text_content_type(window, None);
+        }
         // GitTurtle patch: a right-press pending here ends once this input
         // loses focus, as GPUI reports when another element takes it, the
         // input leaves the drawn frame or the window goes inactive.
@@ -5723,6 +5780,12 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                 MouseButton::Right,
                 window.listener_for(&entity, InputBaseState::on_mouse_down),
             )
+            .when(cfg!(target_os = "linux"), |this| {
+                this.on_mouse_down(
+                    MouseButton::Middle,
+                    window.listener_for(&entity, InputBaseState::on_mouse_down),
+                )
+            })
             .on_mouse_up(
                 MouseButton::Left,
                 window.listener_for(&entity, InputBaseState::on_mouse_up),

@@ -16,10 +16,13 @@ use super::*;
 use futures::future::{Either, select};
 use oo7::{Secret, dbus::Error};
 use std::{
-    cell::Cell,
     future::Future,
+    panic::{AssertUnwindSafe, catch_unwind},
     pin::pin,
-    sync::{Mutex, MutexGuard, TryLockError},
+    sync::{
+        Mutex, MutexGuard, TryLockError,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// The macOS item's service and account, so `secret-tool` and other Secret Service
@@ -122,18 +125,37 @@ pub trait Backend {
 /// The desktop keyring through oo7's D-Bus client, never its `Keyring` wrapper (which
 /// creates the default collection on open, through a prompt) or GPUI's credential API
 /// (which unlocks before every read).
-pub struct DesktopKeyring(());
+pub struct DesktopKeyring {
+    window_id: Option<String>,
+}
 impl DesktopKeyring {
     /// A test build refuses, before any bus call, unless a test started a private bus
     /// for it (`private_test_bus`).
     pub fn new() -> Result<Self> {
+        Self::with_window_id(None)
+    }
+
+    /// Connects with an optional parent `WindowIdentifier` string (`x11:<hex>` or
+    /// `wayland:<handle>`) so Secret Service unlock/create/delete prompts stay attached
+    /// to the triggering window.
+    pub fn with_window_id(window_id: Option<String>) -> Result<Self> {
         #[cfg(any(test, feature = "test-support"))]
         ensure!(
             on_private_test_bus(),
             "A test reaches a desktop keyring only on a private bus named by {FIXTURE_BUS}"
         );
-        Ok(Self(()))
+        Ok(Self { window_id })
     }
+
+    fn parsed_window_id(&self) -> Option<ashpd::WindowIdentifier> {
+        parse_window_identifier(self.window_id.as_deref()?)
+    }
+}
+
+fn parse_window_identifier(raw: &str) -> Option<ashpd::WindowIdentifier> {
+    raw.parse::<ashpd::WindowIdentifierType>()
+        .ok()
+        .map(ashpd::WindowIdentifier::from)
 }
 /// Checked again before each connection, since zbus reads the session bus address anew
 /// for every one.
@@ -201,13 +223,19 @@ impl Backend for DesktopKeyring {
             .await
     }
     async fn default_collection(&self, session: &Self::Session) -> Result<Self::Collection, Error> {
-        session.default_collection().await
+        session
+            .with_alias_or_create(
+                oo7::dbus::Service::DEFAULT_COLLECTION,
+                "Default",
+                self.parsed_window_id(),
+            )
+            .await
     }
     async fn collection_locked(&self, collection: &Self::Collection) -> Result<bool, Error> {
         collection.is_locked().await
     }
     async fn unlock(&self, collection: &Self::Collection) -> Result<(), Error> {
-        collection.unlock(None).await
+        collection.unlock(self.parsed_window_id()).await
     }
     async fn search_items(
         &self,
@@ -224,7 +252,7 @@ impl Backend for DesktopKeyring {
         secret: Secret,
     ) -> Result<(), Error> {
         collection
-            .create_item(label, &attributes, secret, true, None)
+            .create_item(label, &attributes, secret, true, self.parsed_window_id())
             .await
             .map(drop)
     }
@@ -235,7 +263,7 @@ impl Backend for DesktopKeyring {
         item.secret().await
     }
     async fn delete(&self, item: &Self::Item) -> Result<(), Error> {
-        item.delete(None).await
+        item.delete(self.parsed_window_id()).await
     }
 }
 
@@ -409,7 +437,7 @@ async fn save_flow<B: Backend>(
     backend: &B,
     credential: &Credential,
     control: &OperationControl,
-    sent: &Cell<bool>,
+    sent: &AtomicBool,
 ) -> Result<()> {
     let session = backend.connect().await.map_err(save_failure)?;
     let collection = backend
@@ -427,7 +455,7 @@ async fn save_flow<B: Backend>(
     // nothing even when the person completes the prompt afterwards.
     ensure!(!control.is_cancelled(), CONNECT_CANCELLED);
     let secret = secret_text(credential)?;
-    sent.set(true);
+    sent.store(true, Ordering::Release);
     // Once the write went out, only a dismissed prompt (which stores nothing, per the
     // specification) says nothing was stored: an unanswered call (oo7's 30 s method
     // timeout) or a refused one may still have stored it.
@@ -449,21 +477,21 @@ async fn save_flow<B: Backend>(
     );
     Ok(())
 }
-async fn save_within<B: Backend>(
+async fn save_within_tracking<B: Backend>(
     backend: &B,
     credential: &Credential,
     control: &OperationControl,
     deadline: impl Future<Output = ()>,
     cancelled: impl Future<Output = ()>,
+    sent: &AtomicBool,
 ) -> Result<()> {
-    let sent = Cell::new(false);
     let ended = race(
-        save_flow(backend, credential, control, &sent),
+        save_flow(backend, credential, control, sent),
         deadline,
         cancelled,
     )
     .await;
-    match (ended, sent.get()) {
+    match (ended, sent.load(Ordering::Acquire)) {
         (Ended::Done(result), _) => result,
         (Ended::Deadline, false) => bail!(CONNECT_DEADLINE),
         (Ended::Deadline, true) => bail!(CONNECT_DEADLINE_SENT),
@@ -471,13 +499,24 @@ async fn save_within<B: Backend>(
         (Ended::Cancelled, true) => bail!(CONNECT_CANCELLED_SENT),
     }
 }
+#[cfg(test)]
+async fn save_within<B: Backend>(
+    backend: &B,
+    credential: &Credential,
+    control: &OperationControl,
+    deadline: impl Future<Output = ()>,
+    cancelled: impl Future<Output = ()>,
+) -> Result<()> {
+    let sent_out = AtomicBool::new(false);
+    save_within_tracking(backend, credential, control, deadline, cancelled, &sent_out).await
+}
 
 /// `sent` records that a delete went out, after which a stopped Disconnect cannot say
 /// nothing was removed.
 async fn remove_flow<B: Backend>(
     backend: &B,
     control: &OperationControl,
-    sent: &Cell<bool>,
+    sent: &AtomicBool,
 ) -> Result<()> {
     let session = backend.connect().await.map_err(remove_failure)?;
     let Some(collection) = backend
@@ -500,7 +539,7 @@ async fn remove_flow<B: Backend>(
         .await
         .map_err(remove_failure)?;
     for item in &items {
-        sent.set(true);
+        sent.store(true, Ordering::Release);
         backend.delete(item).await.map_err(remove_failure)?;
     }
     ensure!(
@@ -513,15 +552,15 @@ async fn remove_flow<B: Backend>(
     );
     Ok(())
 }
-async fn remove_within<B: Backend>(
+async fn remove_within_tracking<B: Backend>(
     backend: &B,
     control: &OperationControl,
     deadline: impl Future<Output = ()>,
     cancelled: impl Future<Output = ()>,
+    sent: &AtomicBool,
 ) -> Result<()> {
-    let sent = Cell::new(false);
-    let ended = race(remove_flow(backend, control, &sent), deadline, cancelled).await;
-    match (ended, sent.get()) {
+    let ended = race(remove_flow(backend, control, sent), deadline, cancelled).await;
+    match (ended, sent.load(Ordering::Acquire)) {
         (Ended::Done(result), _) => result,
         (Ended::Deadline, false) => bail!(DISCONNECT_DEADLINE),
         (Ended::Deadline, true) => bail!(DISCONNECT_DEADLINE_SENT),
@@ -529,12 +568,28 @@ async fn remove_within<B: Backend>(
         (Ended::Cancelled, true) => bail!(DISCONNECT_CANCELLED_SENT),
     }
 }
+#[cfg(test)]
+async fn remove_within<B: Backend>(
+    backend: &B,
+    control: &OperationControl,
+    deadline: impl Future<Output = ()>,
+    cancelled: impl Future<Output = ()>,
+) -> Result<()> {
+    let sent_out = AtomicBool::new(false);
+    remove_within_tracking(backend, control, deadline, cancelled, &sent_out).await
+}
 
 /// The stored authorization, for Refresh and opening a pull request: never a prompt,
 /// and an answer within [`READ_LIMIT`].
 pub fn load(backend: &impl Backend) -> Result<Option<Credential>> {
     let _access = access()?;
-    futures::executor::block_on(read_within(backend, deadline(READ_LIMIT)))
+    // Guard against upstream oo7 0.6.0 prompt/D-Bus panics if the keyring daemon exits mid-call.
+    match catch_unwind(AssertUnwindSafe(|| {
+        futures::executor::block_on(read_within(backend, deadline(READ_LIMIT)))
+    })) {
+        Ok(result) => result,
+        Err(_) => bail!(READ_FAILED),
+    }
 }
 /// Connect's write: the keyring may prompt to create or unlock its default collection.
 /// It ends within [`PROMPT_LIMIT`] or soon after `control` is cancelled, and succeeds
@@ -545,24 +600,40 @@ pub fn save(
     control: &OperationControl,
 ) -> Result<()> {
     let _access = access()?;
-    futures::executor::block_on(save_within(
-        backend,
-        credential,
-        control,
-        deadline(PROMPT_LIMIT),
-        cancellation(control),
-    ))
+    let sent_out = AtomicBool::new(false);
+    match catch_unwind(AssertUnwindSafe(|| {
+        futures::executor::block_on(save_within_tracking(
+            backend,
+            credential,
+            control,
+            deadline(PROMPT_LIMIT),
+            cancellation(control),
+            &sent_out,
+        ))
+    })) {
+        Ok(result) => result,
+        Err(_) if sent_out.load(Ordering::Acquire) => bail!(SENT_UNCONFIRMED),
+        Err(_) => bail!(SAVE_REFUSED),
+    }
 }
 /// Disconnect: removes every GitTurtle item, unlocking through the keyring's prompt
 /// when needed, then checks that none remains. Bounded as [`save`] is.
 pub fn remove(backend: &impl Backend, control: &OperationControl) -> Result<()> {
     let _access = access()?;
-    futures::executor::block_on(remove_within(
-        backend,
-        control,
-        deadline(PROMPT_LIMIT),
-        cancellation(control),
-    ))
+    let sent_out = AtomicBool::new(false);
+    match catch_unwind(AssertUnwindSafe(|| {
+        futures::executor::block_on(remove_within_tracking(
+            backend,
+            control,
+            deadline(PROMPT_LIMIT),
+            cancellation(control),
+            &sent_out,
+        ))
+    })) {
+        Ok(result) => result,
+        Err(_) if sent_out.load(Ordering::Acquire) => bail!(REMAINS),
+        Err(_) => bail!(REMOVE_FAILED),
+    }
 }
 
 #[cfg(test)]
@@ -1911,5 +1982,125 @@ mod tests {
                 .map(|version| version.trim_matches('"').to_owned())
                 .unwrap_or_default()
         }
+    }
+
+    #[test]
+    fn window_id_parser_accepts_x11_and_wayland_handles_and_rejects_junk() {
+        assert_eq!(
+            parse_window_identifier("x11:1a00001").map(|id| id.to_string()),
+            Some("x11:1a00001".to_owned())
+        );
+        assert_eq!(
+            parse_window_identifier("wayland:abc123handle").map(|id| id.to_string()),
+            Some("wayland:abc123handle".to_owned())
+        );
+        assert!(parse_window_identifier("").is_none());
+        assert!(parse_window_identifier("unknown:123").is_none());
+        assert!(parse_window_identifier("x11:not-hex").is_none());
+    }
+
+    struct PanickingBackend {
+        panic_at: &'static str,
+    }
+
+    impl Backend for PanickingBackend {
+        type Session = ();
+        type Collection = ();
+        type Item = ();
+
+        async fn connect(&self) -> Result<Self::Session, Error> {
+            if self.panic_at == "connect" {
+                panic!("simulated oo7 daemon exit during connect");
+            }
+            Ok(())
+        }
+        async fn stored_collection(
+            &self,
+            _session: &Self::Session,
+        ) -> Result<Option<Self::Collection>, Error> {
+            Ok(Some(()))
+        }
+        async fn default_collection(
+            &self,
+            _session: &Self::Session,
+        ) -> Result<Self::Collection, Error> {
+            Ok(())
+        }
+        async fn collection_locked(&self, _collection: &Self::Collection) -> Result<bool, Error> {
+            Ok(self.panic_at == "unlock")
+        }
+        async fn unlock(&self, _collection: &Self::Collection) -> Result<(), Error> {
+            if self.panic_at == "unlock" {
+                panic!("simulated oo7 daemon exit mid-unlock prompt");
+            }
+            Ok(())
+        }
+        async fn search_items(
+            &self,
+            _collection: &Self::Collection,
+            _attributes: &[(&str, &str)],
+        ) -> Result<Vec<Self::Item>, Error> {
+            Ok(vec![()])
+        }
+        async fn create_item(
+            &self,
+            _collection: &Self::Collection,
+            _label: &str,
+            _attributes: &[(&str, &str)],
+            _secret: Secret,
+        ) -> Result<(), Error> {
+            if self.panic_at == "create_item" {
+                panic!("simulated oo7 daemon exit mid-create prompt");
+            }
+            Ok(())
+        }
+        async fn item_locked(&self, _item: &Self::Item) -> Result<bool, Error> {
+            Ok(false)
+        }
+        async fn secret(&self, _item: &Self::Item) -> Result<Secret, Error> {
+            if self.panic_at == "secret" {
+                panic!("simulated oo7 daemon exit during secret read");
+            }
+            Ok(Secret::text("{}"))
+        }
+        async fn delete(&self, _item: &Self::Item) -> Result<(), Error> {
+            if self.panic_at == "delete" {
+                panic!("simulated oo7 daemon exit mid-delete prompt");
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn daemon_exit_panic_is_caught_with_honest_sent_status() {
+        let _serial = serial();
+        let control = OperationControl::default();
+        let cred = Credential {
+            login: "reviewer".into(),
+            token: "tok_secret_value".into(),
+        };
+
+        let load_err = load(&PanickingBackend { panic_at: "secret" }).unwrap_err();
+        assert_eq!(load_err.to_string(), READ_FAILED);
+
+        let save_before =
+            save(&PanickingBackend { panic_at: "unlock" }, &cred, &control).unwrap_err();
+        assert_eq!(save_before.to_string(), SAVE_REFUSED);
+
+        let save_after = save(
+            &PanickingBackend {
+                panic_at: "create_item",
+            },
+            &cred,
+            &control,
+        )
+        .unwrap_err();
+        assert_eq!(save_after.to_string(), SENT_UNCONFIRMED);
+
+        let remove_before = remove(&PanickingBackend { panic_at: "unlock" }, &control).unwrap_err();
+        assert_eq!(remove_before.to_string(), REMOVE_FAILED);
+
+        let remove_after = remove(&PanickingBackend { panic_at: "delete" }, &control).unwrap_err();
+        assert_eq!(remove_after.to_string(), REMAINS);
     }
 }

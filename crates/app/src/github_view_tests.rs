@@ -24427,3 +24427,196 @@ async fn inspecting_pr_and_closing_panel_does_not_save_empty_review_draft(cx: &m
         });
     });
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_passwordless_keyring_note_wording_and_file_detection() {
+    assert!(!misnames_the_linux_store(LINUX_PLAINTEXT_KEYRING_NOTE));
+
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("Default_keyring.keyring");
+    std::fs::write(&plain, "[keyring]\ndisplay-name=Default keyring\n").unwrap();
+    assert!(is_passwordless_gnome_keyring_file(&plain));
+
+    let encrypted = dir.path().join("Encrypted.keyring");
+    std::fs::write(&encrypted, b"GnomeKeyring\n\r\0\n\x00\x00").unwrap();
+    assert!(!is_passwordless_gnome_keyring_file(&encrypted));
+
+    let subdir = dir.path().join("not-a-file");
+    std::fs::create_dir(&subdir).unwrap();
+    assert!(!is_passwordless_gnome_keyring_file(&subdir));
+    assert!(!is_passwordless_gnome_keyring_file(
+        &dir.path().join("missing.keyring")
+    ));
+
+    let link = dir.path().join("link.keyring");
+    std::os::unix::fs::symlink(&plain, &link).unwrap();
+    assert!(!is_passwordless_gnome_keyring_file(&link));
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn linux_primary_selection_copies_non_masked_and_middle_click_pastes(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::{
+        Modifiers, MouseButton, ParentElement as _, Render, Styled as _,
+        component::input::{Input, InputState},
+        div, point, px,
+    };
+
+    struct PrimarySelectionHarness {
+        plain: Entity<InputState>,
+        secret: Entity<InputState>,
+        target: Entity<InputState>,
+    }
+
+    impl Render for PrimarySelectionHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .p(px(12.0))
+                .child(
+                    div()
+                        .debug_selector(|| "plain-wrap".into())
+                        .w(px(220.0))
+                        .child(Input::new(&self.plain)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "secret-wrap".into())
+                        .w(px(220.0))
+                        .child(Input::new(&self.secret)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "target-wrap".into())
+                        .w(px(220.0))
+                        .child(Input::new(&self.target)),
+                )
+        }
+    }
+
+    crate::views::tests::init_app(cx);
+    let harness: Rc<RefCell<Option<Entity<PrimarySelectionHarness>>>> = Default::default();
+    let captured = harness.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let view = cx.new(|cx| PrimarySelectionHarness {
+            plain: cx.new(|cx| InputState::new(window, cx).default_value("selected_token")),
+            secret: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .default_value("super_secret_pw")
+            }),
+            target: cx.new(|cx| InputState::new(window, cx)),
+        });
+        *captured.borrow_mut() = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    cx.run_until_parked();
+    let view = harness.borrow().as_ref().unwrap().clone();
+
+    let plain_bounds = cx
+        .debug_bounds("plain-wrap")
+        .expect("plain input bounds should be laid out");
+    let secret_bounds = cx
+        .debug_bounds("secret-wrap")
+        .expect("secret input bounds should be laid out");
+    let target_bounds = cx
+        .debug_bounds("target-wrap")
+        .expect("target input bounds should be laid out");
+
+    // Drag-select plain input and release left mouse button -> writes PRIMARY selection.
+    let plain_left = point(plain_bounds.origin.x + px(14.0), plain_bounds.center().y);
+    let plain_right = point(
+        plain_bounds.origin.x + plain_bounds.size.width - px(14.0),
+        plain_bounds.center().y,
+    );
+    cx.simulate_mouse_down(plain_left, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(plain_right, Some(MouseButton::Left), Modifiers::none());
+    cx.simulate_mouse_up(plain_right, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    let plain_selected =
+        cx.update(|_, cx| view.read(cx).plain.read(cx).selected_text().to_string());
+    assert!(
+        !plain_selected.is_empty(),
+        "drag across plain input should select text"
+    );
+    let primary_text = cx.update(|_, cx| cx.read_from_primary().and_then(|item| item.text()));
+    assert_eq!(primary_text.as_deref(), Some(plain_selected.as_str()));
+
+    // Drag-select masked input -> PRIMARY must NEVER receive the secret password.
+    let secret_left = point(secret_bounds.origin.x + px(14.0), secret_bounds.center().y);
+    let secret_right = point(
+        secret_bounds.origin.x + secret_bounds.size.width - px(14.0),
+        secret_bounds.center().y,
+    );
+    cx.simulate_mouse_down(secret_left, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(secret_right, Some(MouseButton::Left), Modifiers::none());
+    cx.simulate_mouse_up(secret_right, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    let primary_after_secret =
+        cx.update(|_, cx| cx.read_from_primary().and_then(|item| item.text()));
+    assert_eq!(
+        primary_after_secret.as_deref(),
+        Some(plain_selected.as_str()),
+        "masked inputs must never overwrite PRIMARY selection"
+    );
+
+    // Middle-click inside editable target input -> pastes PRIMARY selection.
+    let target_pt = target_bounds.center();
+    cx.simulate_mouse_down(target_pt, MouseButton::Middle, Modifiers::none());
+    cx.simulate_mouse_up(target_pt, MouseButton::Middle, Modifiers::none());
+    cx.run_until_parked();
+    let target_value = cx.update(|_, cx| view.read(cx).target.read(cx).value().to_string());
+    assert_eq!(target_value, plain_selected);
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn linux_plaintext_keyring_note_dismisses_persists_and_restores_focus(
+    cx: &mut TestAppContext,
+) {
+    let (_fixture, app, cx) = repository_window(cx);
+    let panel = closed_panel(&app, cx);
+    open_panel(&app, cx).await;
+    cx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.review.connection_open = true;
+            panel.plaintext_keyring_note = true;
+            cx.notify();
+        });
+        window.refresh();
+    });
+    cx.run_until_parked();
+
+    assert!(
+        cx.debug_bounds("github-plaintext-keyring-note").is_some(),
+        "keyring note should render when connection pane is expanded"
+    );
+    let dismiss_bounds = cx
+        .debug_bounds("github-plaintext-keyring-dismiss")
+        .expect("dismiss button should be rendered");
+    cx.simulate_click(dismiss_bounds.center(), gpui_kit::Modifiers::none());
+    cx.run_until_parked();
+
+    assert!(
+        cx.debug_bounds("github-plaintext-keyring-note").is_none(),
+        "keyring note should disappear after dismissal"
+    );
+    let (dismissed, note_flag, connection_focused) = cx.update(|window, cx| {
+        (
+            app.read(cx).settings.linux_plaintext_keyring_note_dismissed,
+            panel.read(cx).plaintext_keyring_note,
+            panel.read(cx).review.connection_focus.is_focused(window),
+        )
+    });
+    assert!(dismissed, "dismissal must persist to AppSettings");
+    assert!(!note_flag);
+    assert!(
+        connection_focused,
+        "dismissing the keyring note must return focus to connection_focus"
+    );
+}

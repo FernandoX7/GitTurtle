@@ -1,0 +1,63 @@
+# Prep-only Flatpak manifest for GitTurtle.
+#
+# Not published yet. Release archive URLs and SHA-256 values are placeholders
+# until v0.1.0 is published; see packaging/flatpak/README.md for the live
+# Flatpak Bubblewrap + seccomp verification steps required before submission.
+app-id: com.gitturtle.GitTurtle
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: gitturtle
+finish-args:
+  # Prefer native Wayland; fall back to X11 when WAYLAND_DISPLAY is unavailable.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # Vulkan / OpenGL GPU rendering.
+  - --device=dri
+  # Explicit user-triggered Git network actions and GitHub PR review.
+  - --share=network
+  # Desktop Secret Service (gnome-keyring / KWallet) for GitHub authorization.
+  - --talk-name=org.freedesktop.secrets
+  # User repositories across the home directory.
+  - --filesystem=home
+modules:
+  - name: gitturtle
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/gitturtle /app/bin/gitturtle
+      - install -Dm644 README.md /app/share/doc/gitturtle/README.md
+      - |
+        for size in 16 24 32 48 64 128 256 512; do
+          install -Dm644 "icons/hicolor/${size}x${size}/apps/com.gitturtle.GitTurtle.png" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/com.gitturtle.GitTurtle.png"
+        done
+      - install -Dm644 com.gitturtle.GitTurtle.metainfo.xml /app/share/metainfo/com.gitturtle.GitTurtle.metainfo.xml
+      - |
+        install -Dm644 /dev/stdin /app/share/applications/com.gitturtle.GitTurtle.desktop <<'EOF'
+        [Desktop Entry]
+        Type=Application
+        Name=GitTurtle
+        Comment=Browse Git history and manage local repositories
+        Exec=gitturtle %f
+        Icon=com.gitturtle.GitTurtle
+        Terminal=false
+        Categories=Development;RevisionControl;
+        Keywords=Git;VersionControl;VCS;Repository;Commit;Diff;Branch;PR;Merge;
+        SingleMainWindow=true
+        StartupWMClass=com.gitturtle.GitTurtle
+        EOF
+      - |
+        mkdir -p /app/share/licenses/gitturtle
+        cp -a licenses/. /app/share/licenses/gitturtle/
+    sources:
+      - type: archive
+        only-arches: [x86_64]
+        url: https://github.com/FernandoX7/GitTurtle/releases/download/v0.1.0/GitTurtle-0.1.0-000000000000-linux-x86_64-release.tar.gz
+        sha256: not-released
+      - type: archive
+        only-arches: [aarch64]
+        url: https://github.com/FernandoX7/GitTurtle/releases/download/v0.1.0/GitTurtle-0.1.0-000000000000-linux-aarch64-release.tar.gz
+        sha256: not-released
+      - type: file
+        path: com.gitturtle.GitTurtle.metainfo.xml

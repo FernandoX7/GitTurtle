@@ -29,6 +29,8 @@ rustix = { version = "1.1", features = ["event", "fs", "process"] }
 security-framework = { version = "=3.7.0", features = ["OSX_10_15"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# WindowIdentifier parsing for Secret Service prompt parenting; matches oo7's locked ashpd.
+ashpd = { version = "=0.13.13", default-features = false, features = ["async-io"] }
 futures = "0.3"
 # The version and features match the toolkit's own oo7 client, so the shipped
 # binary carries one copy of oo7 and its D-Bus stack.

@@ -908,12 +908,33 @@ fn read_macos_system_accent() -> Option<u32> {
     })
 }
 
-/// Refreshes the cached macOS system accent color in the GPUI global store.
+/// Reads the current Linux XDG portal accent color (`org.freedesktop.appearance accent-color`)
+/// as sRGB `0xRRGGBB`, when the desktop portal provides one.
+#[cfg(target_os = "linux")]
+fn read_linux_portal_accent() -> Option<u32> {
+    let [r, g, b] = gpui_linux::portal_accent_color()?;
+    let channel = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
+    Some((channel(r) << 16) | (channel(g) << 8) | channel(b))
+}
+
+/// Whether the Linux desktop portal currently reports an accent color.
+#[cfg(target_os = "linux")]
+pub fn has_linux_portal_accent(cx: &App) -> bool {
+    cx.try_global::<MacSystemAccent>()
+        .and_then(|g| g.0)
+        .is_some()
+        || read_linux_portal_accent().is_some()
+}
+
+/// Refreshes the cached system accent color (macOS `NSColor.controlAccentColor`
+/// or Linux XDG portal `accent-color`) in the GPUI global store.
 /// Returns whether the stored value changed.
 pub fn sync_macos_system_accent(cx: &mut App) -> bool {
     #[cfg(target_os = "macos")]
     let next = read_macos_system_accent();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    let next = read_linux_portal_accent();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let next = None;
     let current = cx.try_global::<MacSystemAccent>().and_then(|g| g.0);
     if current == next {

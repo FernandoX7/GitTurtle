@@ -52,3 +52,59 @@ pub fn current_platform(headless: bool) -> Rc<dyn gpui::Platform> {
 pub fn linux_platform(allowed_modes: WindowingModes) -> Rc<dyn gpui::Platform> {
     Rc::new(LinuxPlatform::new(allowed_modes))
 }
+
+/// Updates the active Wayland `zwp_text_input_v3` content type between password
+/// (`ContentHint::SensitiveData` + `ContentPurpose::Password`) and normal text.
+/// No-op on X11 or headless connections.
+pub fn set_wayland_ime_password(password: bool) {
+    #[cfg(feature = "wayland")]
+    wayland::set_wayland_ime_password(password);
+    #[cfg(not(feature = "wayland"))]
+    let _ = password;
+}
+
+/// Applies a forwarded `XDG_ACTIVATION_TOKEN` to the active Wayland surface via
+/// `xdg_activation_v1` so focus-stealing-preventing compositors raise the window.
+pub fn activate_wayland_window_with_token(token: String) -> bool {
+    #[cfg(feature = "wayland")]
+    {
+        wayland::activate_wayland_window_with_token(token)
+    }
+    #[cfg(not(feature = "wayland"))]
+    {
+        let _ = token;
+        false
+    }
+}
+
+/// Resolves an `ashpd::WindowIdentifier` for the active Wayland or X11 window
+/// so desktop portal and Secret Service prompts attach to the triggering window.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub fn active_window_identifier() -> futures::future::BoxFuture<'static, Option<ashpd::WindowIdentifier>>
+{
+    #[cfg(feature = "wayland")]
+    if let Some(future) = wayland::active_wayland_window_identifier() {
+        return future;
+    }
+    #[cfg(feature = "x11")]
+    if let Some(future) = x11::active_x11_window_identifier() {
+        return future;
+    }
+    Box::pin(std::future::ready(None))
+}
+
+/// Waits at most `timeout` for the initial Linux desktop appearance to be
+/// resolved and applied on the active display connection.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub fn wait_initial_portal_appearance(
+    timeout: std::time::Duration,
+) -> futures::future::BoxFuture<'static, Option<gpui::WindowAppearance>> {
+    xdg_desktop_portal::wait_initial_portal_appearance(timeout)
+}
+
+/// Returns the latest sRGB accent color (`[r, g, b]` in `0.0..=1.0`) reported by
+/// `org.freedesktop.appearance accent-color`, if available.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub fn portal_accent_color() -> Option<[f64; 3]> {
+    xdg_desktop_portal::portal_accent_color()
+}

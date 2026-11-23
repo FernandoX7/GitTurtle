@@ -153,10 +153,12 @@ impl Clipboard {
     }
 
     pub fn set(&mut self, item: ClipboardItem) {
+        self.cached_read = None;
         self.contents = Some(item);
     }
 
     pub fn set_primary(&mut self, item: ClipboardItem) {
+        self.cached_primary_read = None;
         self.primary_contents = Some(item);
     }
 

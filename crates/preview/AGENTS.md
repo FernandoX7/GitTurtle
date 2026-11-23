@@ -10,8 +10,9 @@ These instructions supplement root [AGENTS.md](../../AGENTS.md) for `crates/prev
 | Raster/SVG decode, alpha, and orientation | [src/lib.rs](src/lib.rs); [src/svg_limits.rs](src/svg_limits.rs) for SVG preflight |
 | Composited GIF animation and budgets | [src/animation.rs](src/animation.rs) |
 | Supplied-byte ImageIO/PDF pages and text (macOS) | [src/native.rs](src/native.rs), [src/jpeg2000.rs](src/jpeg2000.rs) (unconfined JP2/J2K box/SIZ dimension reader on both platforms), [src/native/pdf_text.rs](src/native/pdf_text.rs) |
-| Linux confined PDF helper (hayro) | [src/pdf_hayro.rs](src/pdf_hayro.rs), [src/pdf_helper.rs](src/pdf_helper.rs); [architecture](../../docs/development/2026-11-02-linux-pdf-pages-architecture.md) |
-| Linux confined AVIF & JPEG 2000 helper | [src/image_helper.rs](src/image_helper.rs), [src/avif.rs](src/avif.rs), [src/jpeg2000_hayro.rs](src/jpeg2000_hayro.rs), [src/jpeg2000.rs](src/jpeg2000.rs); [fixtures](tests/fixtures/README.md); [architecture](../../docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md) |
+| Linux confined PDF helper (hayro) | [src/pdf_hayro.rs](src/pdf_hayro.rs), [src/pdf_helper.rs](src/pdf_helper.rs) (`PROTOCOL_VERSION = 4`); [architecture](../../docs/development/2026-11-02-linux-pdf-pages-architecture.md) |
+| Linux confined AVIF & JPEG 2000 helper | [src/image_helper.rs](src/image_helper.rs), [src/avif.rs](src/avif.rs), [src/dav1d_dlopen.rs](src/dav1d_dlopen.rs), [src/jpeg2000_hayro.rs](src/jpeg2000_hayro.rs), [src/jpeg2000.rs](src/jpeg2000.rs); [fixtures](tests/fixtures/README.md); [architecture](../../docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md) |
+| Linux confined 3D native helper (`ufbx` / `meshopt`) | [src/mesh_helper.rs](src/mesh_helper.rs), [src/pdf_helper.rs](src/pdf_helper.rs) (`GTMq`/`GTMr`, `GTXq`/`GTXr`), [crates/app/src/mesh_helper.rs](../app/src/mesh_helper.rs), [crates/app/tests/mesh_helper.rs](../app/tests/mesh_helper.rs) |
 | Container signatures and transformed text | [src/metadata.rs](src/metadata.rs) |
 | Static Mermaid | [src/mermaid.rs](src/mermaid.rs) |
 | Mesh decoding and retained camera/raster views | [src/model3d.rs](src/model3d.rs), [src/model3d/camera.rs](src/model3d/camera.rs), [src/model3d/tests.rs](src/model3d/tests.rs) |
@@ -48,11 +49,15 @@ Keep format parsing, validation, and optional resource handling inside the ownin
 ### Linux confined AVIF & JPEG 2000 helper (`image_helper` / `avif` / `jpeg2000_hayro`)
 
 - Confined routing: `confined_image_format` is the single router (AVIF, JP2, J2K; never HEIF); `decode_image` keeps refusing all three (and HEIF separately) in-process on Linux.
-- Safety & version floor: decoding modules carry `#![forbid(unsafe_code)]`; `libdav1d_version` in `src/lib.rs` is the sole `unsafe` call, rejecting `libdav1d < 1.4.1` before `mp4parse` runs. Request framing validates header, version, format, edge (`1..=1600`), length, and 4,096-byte prefix sniff before allocating the body.
+- Safety & version floor: decoding modules (`avif.rs`, `image_helper.rs`, `mesh_helper.rs`, `pdf_helper.rs`) carry `#![forbid(unsafe_code)]`; `src/dav1d_dlopen.rs` is the sole Linux `unsafe` module, preloading `libdav1d.so.7` via `dlopen` before `RLIMIT_NOFILE = 3` and seccomp confinement, resolving only the 10 reviewed C ABI 7 symbols, verifying `DAV1D_API_MAJOR == 7`, and rejecting absent or `< 1.4.1` `libdav1d` with `ImageErrorKind::Dav1dTooOld` before `mp4parse` runs (so GitTurtle starts normally when `libdav1d.so.7` is not installed). Request framing validates header, version (`PROTOCOL_VERSION = 4`), format, edge (`1..=1600`), length, and 4,096-byte prefix sniff before allocating the body.
 - `dav1d` contract: fresh `Settings` (`n_threads = 1`, `max_frame_delay = 1`, `frame_size_limit = ispe` area, operating point 0, layers off, film grain on, invisible frames off), one decoder per item, bounded send/get loop, primary decoded and freed before alpha so at most one picture lives beside RGBA output.
 - Color profiles (`moxcms`): bounded RGB ICC profile (`<= 4 MiB`) converts RGBA to sRGB in place via `image_helper` (`moxcms` is confined to `image_helper.rs`, enforced by the source test in `avif.rs`); malformed, oversized, or non-RGB profiles draw without conversion and flag `"color profile not applied"`.
 - JPEG 2000 preflight & budget: validate JP2 box structure, `ihdr`/SIZ agreement, origins, `<= 65,535` tiles, `1..=4` components (`<= 16` bits), unsigned `pclr` columns, `cmap`/`cdef`, and 256 MiB plane budget (`profile_planes` / `cmyk_planes`), selecting the deepest resolution level within budget via `jpeg2000_hayro::open`.
-- Source-boundary test (`avif.rs`): verifies the exact pinned `dav1d` (`=0.11.1`), `dav1d-sys` (`=0.8.3`), and `moxcms` (`=0.8.1`) crates.io dependencies in `Cargo.toml`/`Cargo.lock`, enforces the `dav1d-rs` call allowlist, forbids `include*`/`#[path]`/`macro_rules!` and build scripts in `crates/preview`, and checks ABI + CPU feature flags via the libdav1d ABI probe. Fixtures come from `scripts/create-image-codec-fixtures.py`.
+- Source-boundary test (`avif.rs`): forbids `dav1d`/`dav1d-sys` crates in `Cargo.toml`/`Cargo.lock`, verifies pinned `moxcms` (`=0.8.1`), enforces the `dav1d` call allowlist, forbids `include*`/`#[path]`/`macro_rules!` and build scripts in `crates/preview`, and checks exact C ABI 7 struct sizes/offsets via `libdav1d_layouts_match_the_binding`. Fixtures come from `scripts/create-image-codec-fixtures.py`.
+
+### Linux confined 3D native helper (`mesh_helper`)
+
+- On Linux x86-64 and AArch64 production builds, `.obj`/`.fbx` (`ufbx`, `GTMq`/`GTMr`) and batched GLB `EXT_meshopt_compression` views (`meshopt`, `GTXq`/`GTXr`) run inside the same seccomp-confined helper process (`PROTOCOL_VERSION = 4`, two shared slots, 10 s deadline) and fail closed without in-process native fallback. Pure-Rust GLB, STL, 3MF, and STEP stay in-process.
 
 ### Mermaid and 3D / CAD (`model3d`)
 

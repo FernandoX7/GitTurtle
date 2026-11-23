@@ -1421,11 +1421,19 @@ impl LaunchEnvironment {
         ));
         #[cfg(not(target_os = "macos"))]
         let path = std::env::var_os("PATH");
+        let xdg_data_omarchy = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join("omarchy/bin"));
+        let home_omarchy = home
+            .map(|home| home.join(".local/share/omarchy/bin"))
+            .filter(|path| xdg_data_omarchy.as_ref() != Some(path));
         Self {
             path,
             terminal: std::env::var_os("TERMINAL").filter(|value| !value.is_empty()),
             omarchy: std::iter::once(PathBuf::from("/usr/share/omarchy/bin"))
-                .chain(home.map(|home| home.join(".local/share/omarchy/bin")))
+                .chain(xdg_data_omarchy)
+                .chain(home_omarchy)
                 .collect(),
         }
     }

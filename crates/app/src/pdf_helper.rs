@@ -254,6 +254,9 @@ fn confine(parent: Pid) -> Result<Option<MappedInput>, i32> {
         libc::alarm(ALARM_SECONDS);
     }
     close_inherited()?;
+    // Preload optional libdav1d.so.7 before lowering RLIMIT_NOFILE to 3 and
+    // installing seccomp; absence is non-fatal so PDF/JP2/mesh continue working.
+    gitturtle_preview::preload_libdav1d();
     for (resource, soft, hard) in LIMITS {
         tighten(resource, soft, hard)?;
     }

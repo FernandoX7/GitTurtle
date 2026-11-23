@@ -73,19 +73,19 @@ DAV1D_SYS_UNIT = "dav1d_sys.66874b14c357f7fb-cgu.0"
 
 
 def dynamic_executable(interpreter: Path, defines: tuple[str, ...] = (),
-                       symbol_table: bool = True) -> bytes:
+                       symbol_table: bool = True,
+                       need_dav1d: bool = False,
+                       imports: tuple[str, ...] = ()) -> bytes:
     """A dynamically linked ELF executable for the host, as the packager's
     readelf checks see one: PT_INTERP names `interpreter`, which the kernel
-    runs in its place; PT_DYNAMIC lists NEEDED libdav1d.so.7; .dynsym imports
-    dav1d_close and dav1d_get_picture. Its .symtab holds those imports and two
-    local symbols that define neither code nor data: the FILE symbol of
-    dav1d-sys's codegen unit and the SECTION symbol of a section named
-    dav1d_tables. Each name in `defines` adds a global function defined in that
-    section, as a static copy of dav1d has. Without `symbol_table` the file has
-    no .symtab or .strtab, as `strip --strip-all` leaves it. One read-only
-    PT_LOAD maps the whole file at address 0, so every address is its file
-    offset."""
-    imports = ("dav1d_close", "dav1d_get_picture")
+    runs in its place; PT_DYNAMIC lists NEEDED libc.so.6 (and optionally
+    libdav1d.so.7 when `need_dav1d` is True); .dynsym holds any `imports`. Its
+    .symtab holds those imports and two local symbols that define neither code
+    nor data: the FILE symbol of dav1d-sys's codegen unit and the SECTION symbol
+    of a section named dav1d_tables. Each name in `defines` adds a global
+    function defined in that section, as a static copy of dav1d has. Without
+    `symbol_table` the file has no .symtab or .strtab, as `strip --strip-all`
+    leaves it."""
 
     def strings(*names):
         table, offsets = bytearray(b"\0"), {}
@@ -99,7 +99,8 @@ def dynamic_executable(interpreter: Path, defines: tuple[str, ...] = (),
 
     tables = 5  # the dav1d_tables section's index
     local, func, section_symbol, file_symbol = 0x00, 0x12, 0x03, 0x04  # binding << 4 | type
-    dynstr, dynamic_names = strings("libdav1d.so.7", *imports)
+    needed_lib = "libdav1d.so.7" if need_dav1d else "libc.so.6"
+    dynstr, dynamic_names = strings(needed_lib, *imports)
     strtab, names = strings(DAV1D_SYS_UNIT, *imports, *defines)
     dynsym = symbol(0, local, 0) + b"".join(symbol(dynamic_names[name], func, 0) for name in imports)
     symtab = (symbol(0, local, 0) + symbol(names[DAV1D_SYS_UNIT], file_symbol, 0xFFF1)  # SHN_ABS
@@ -126,7 +127,7 @@ def dynamic_executable(interpreter: Path, defines: tuple[str, ...] = (),
     section_headers = position + -position % 8
     count = len(layout) + 1  # with the null section header first
     size = section_headers + count * 64
-    contents[3] = struct.pack("<12Q", 1, dynamic_names["libdav1d.so.7"],  # DT_NEEDED
+    contents[3] = struct.pack("<12Q", 1, dynamic_names[needed_lib],  # DT_NEEDED
                               5, offsets[1], 6, offsets[2],  # DT_STRTAB, DT_SYMTAB
                               10, len(dynstr), 11, 24, 0, 0)  # DT_STRSZ, DT_SYMENT, DT_NULL
     header = struct.pack("<4sBBBB8xHHIQQQIHHHHHH", b"\x7fELF", 2, 1, 1, 0, 3, ELF_MACHINE, 1, 0,
@@ -308,12 +309,10 @@ if "--require-complete" in args:
         self.assert_no_output()
 
     def test_system_deps_variable_is_refused_before_any_tool_runs(self):
-        # Any SYSTEM_DEPS_ variable can make dav1d-sys build and statically link
-        # its own libdav1d, so the build must not start.
         self.environment["SYSTEM_DEPS_X"] = "1"
         result = self.run_package(no_build=False)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("GitTurtle links the system libdav1d: SYSTEM_DEPS_X", result.stderr)
+        self.assertIn("Unset these variables before packaging: SYSTEM_DEPS_X", result.stderr)
         self.assertFalse(self.events.exists())
         self.assert_no_output()
 
@@ -376,30 +375,38 @@ if "--require-complete" in args:
         self.assertIn("collector ", self.events.read_text())
         self.assert_no_output()
 
-    def linked_executable(self, defines=(), symbol_table=True):
+    def linked_executable(self, defines=(), symbol_table=True, need_dav1d=False, imports=()):
         # The kernel runs the identity printer as the executable's interpreter,
         # so the real readelf checks its dynamic section and symbol tables.
         interpreter = self.root / "fixture interpreter"
         interpreter.write_bytes(self.identity_printer())
         interpreter.chmod(0o755)
-        self.binary.write_bytes(dynamic_executable(interpreter, defines, symbol_table))
+        self.binary.write_bytes(
+            dynamic_executable(interpreter, defines, symbol_table, need_dav1d, imports)
+        )
 
     def test_file_and_section_symbols_named_for_dav1d_are_not_a_static_copy(self):
-        # The hosted x86-64 link keeps dav1d-sys's codegen unit as an ABS FILE
-        # symbol in .symtab. The check passes and packaging stops only at icon
-        # rendering, which the PIL test double cannot do.
+        # FILE and SECTION symbols do not count as defined functions, and a
+        # dlopen binary carries zero NEEDED libdav1d and zero dav1d_* imports.
         self.linked_executable()
         result = self.run_package()
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("Checked bin/gitturtle: NEEDED libdav1d.so.7, .symtab present, 2 dav1d_* symbols "
+        self.assertIn("Checked bin/gitturtle: no NEEDED libdav1d, .symtab present, 0 dav1d_* symbols "
                       "imported and none defined, no RPATH or RUNPATH", result.stdout)
         self.assertNotIn("static copy", result.stderr)
         self.assert_no_output()
 
+    def test_hard_needed_libdav1d_is_refused(self):
+        self.linked_executable(need_dav1d=True, imports=("dav1d_close",))
+        result = self.run_package()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lists a hard NEEDED libdav1d entry", result.stderr)
+        self.assertNotIn("Checked bin/gitturtle", result.stdout)
+        self.assert_no_output()
+
     def test_a_fully_stripped_executable_is_refused(self):
         # Without .symtab nothing lists a static copy's definitions, so "defines
-        # none" would hold vacuously. Everything else the check reads passes:
-        # NEEDED libdav1d.so.7, two imports in .dynsym and no RPATH.
+        # none" would hold vacuously.
         self.linked_executable(symbol_table=False)
         result = self.run_package()
         self.assertEqual(result.returncode, 1, result.stderr)

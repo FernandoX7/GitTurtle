@@ -19,6 +19,8 @@ pub use camera::{
     render_model,
 };
 pub use glb::ModelAnimationClip;
+pub use glb::compression::{MeshoptFilter, MeshoptMode, MeshoptViewJob, decode_meshopt_job};
+pub type ModelTriangle = [[f64; 3]; 3];
 
 pub const MODEL_VIEW_EDGE: u32 = 720;
 pub const MAX_MODEL_TRIANGLES: usize = 100_000;
@@ -63,45 +65,84 @@ pub fn is_model_path(path: &Path) -> bool {
     })
 }
 
-/// File names are hints only, never paths to open. External geometry, materials,
-/// textures, caches, and scripts are not resolved.
-pub fn decode_geometry(
+/// Decodes `.obj` or `.fbx` bytes into validated world-space triangles using
+/// `ufbx` (used directly inside the confined Linux helper process).
+pub fn decode_ufbx_triangles(
     bytes: &[u8],
-    name: &str,
+    obj: bool,
     check: impl Fn() -> Result<()>,
+) -> Result<Vec<ModelTriangle>> {
+    check()?;
+    ensure!(
+        bytes.len() <= MAX_INPUT_BYTES,
+        "3D source exceeds the 32 MiB preview limit"
+    );
+    fbx_or_obj(bytes, obj, &check)
+}
+
+/// Completes `.obj` or `.fbx` [`ModelGeometry`] assembly from triangles decoded
+/// by [`decode_ufbx_triangles`] (or returned from the confined Linux helper).
+pub fn finish_ufbx_geometry(mesh: Vec<ModelTriangle>, obj: bool) -> Result<ModelGeometry> {
+    for tri in &mesh {
+        for &vertex in tri {
+            valid_point(vertex)?;
+        }
+    }
+    let (format, units, details) = if obj {
+        (
+            "OBJ",
+            ModelUnits::Unknown,
+            vec!["Untextured mesh; OBJ does not define units; material libraries and textures are not loaded".into()],
+        )
+    } else {
+        (
+            "FBX",
+            ModelUnits::Millimeters,
+            vec!["Static mesh at its default pose, Z-up axes; declared FBX units converted to millimeters (FBX defaults to centimeters when unspecified); materials, textures, animation, and external caches are not loaded".into()],
+        )
+    };
+    finish_model_geometry(format, mesh, units, details, None)
+}
+
+/// Decodes a `.glb` model while delegating any `EXT_meshopt_compression` buffer
+/// views in one batch to `batch_decoder` (such as the confined Linux helper).
+pub fn decode_glb_geometry_with_meshopt(
+    bytes: &[u8],
+    check: impl Fn() -> Result<()>,
+    batch_decoder: impl FnOnce(&[MeshoptViewJob]) -> Result<HashMap<usize, Vec<u8>>>,
 ) -> Result<ModelGeometry> {
     check()?;
     ensure!(
         bytes.len() <= MAX_INPUT_BYTES,
         "3D source exceeds the 32 MiB preview limit"
     );
-    let ext = Path::new(name)
-        .extension()
-        .and_then(|v| v.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let mut glb_resources = None;
-    let (format, mesh, units, mut details) = match ext.as_str() {
-        "stl" => ("STL", stl(bytes, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; STL does not define units".into()]),
-        "obj" => ("OBJ", fbx_or_obj(bytes, true, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; OBJ does not define units; material libraries and textures are not loaded".into()]),
-        "fbx" => ("FBX", fbx_or_obj(bytes, false, &check)?, ModelUnits::Millimeters, vec!["Static mesh at its default pose, Z-up axes; declared FBX units converted to millimeters (FBX defaults to centimeters when unspecified); materials, textures, animation, and external caches are not loaded".into()]),
-        "3mf" => {
-            let (mut mesh, unit) = three_mf(bytes, &check)?;
-            let factor = match unit.as_str() { "micron" => 0.001, "centimeter" => 10., "inch" => 25.4, "foot" => 304.8, "meter" => 1000., _ => 1. };
-            for triangle in &mut mesh { check()?; for point in triangle { *point = valid_point(point.map(|v| v * factor))?; } }
-            ("3MF", mesh, ModelUnits::Millimeters, vec![format!("Core build geometry · source units: {unit}, displayed in millimeters; materials and textures are not rendered")])
-        }
-        "step" | "stp" => {
-            let cad = step::decode(bytes, &check)?;
-            ("STEP", cad.mesh, cad.units, cad.details)
-        }
-        "glb" => {
-            let model = glb::decode(bytes, &check)?;
-            glb_resources = Some((model.appearance, model.animation_source, model.reverse_winding));
-            ("GLB", model.mesh, ModelUnits::Millimeters, model.details)
-        }
-        _ => bail!("Unsupported 3D model format"),
-    };
+    let model = glb::decode_with_meshopt(bytes, &check, batch_decoder)?;
+    finish_model_geometry(
+        "GLB",
+        model.mesh,
+        ModelUnits::Millimeters,
+        model.details,
+        Some((
+            model.appearance,
+            model.animation_source,
+            model.reverse_winding,
+        )),
+    )
+}
+
+type GlbResources = (
+    Arc<appearance::SceneAppearance>,
+    Option<Arc<glb::GlbAnimation>>,
+    Vec<bool>,
+);
+
+fn finish_model_geometry(
+    format: &str,
+    mesh: Vec<Triangle>,
+    units: ModelUnits,
+    mut details: Vec<String>,
+    glb_resources: Option<GlbResources>,
+) -> Result<ModelGeometry> {
     ensure!(
         !mesh.is_empty(),
         "The model has no renderable triangle geometry"
@@ -138,6 +179,48 @@ pub fn decode_geometry(
         details,
         scene,
     })
+}
+
+/// File names are hints only, never paths to open. External geometry, materials,
+/// textures, caches, and scripts are not resolved.
+pub fn decode_geometry(
+    bytes: &[u8],
+    name: &str,
+    check: impl Fn() -> Result<()>,
+) -> Result<ModelGeometry> {
+    check()?;
+    ensure!(
+        bytes.len() <= MAX_INPUT_BYTES,
+        "3D source exceeds the 32 MiB preview limit"
+    );
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut glb_resources = None;
+    let (format, mesh, units, details) = match ext.as_str() {
+        "stl" => ("STL", stl(bytes, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; STL does not define units".into()]),
+        "obj" => ("OBJ", fbx_or_obj(bytes, true, &check)?, ModelUnits::Unknown, vec!["Untextured mesh; OBJ does not define units; material libraries and textures are not loaded".into()]),
+        "fbx" => ("FBX", fbx_or_obj(bytes, false, &check)?, ModelUnits::Millimeters, vec!["Static mesh at its default pose, Z-up axes; declared FBX units converted to millimeters (FBX defaults to centimeters when unspecified); materials, textures, animation, and external caches are not loaded".into()]),
+        "3mf" => {
+            let (mut mesh, unit) = three_mf(bytes, &check)?;
+            let factor = match unit.as_str() { "micron" => 0.001, "centimeter" => 10., "inch" => 25.4, "foot" => 304.8, "meter" => 1000., _ => 1. };
+            for triangle in &mut mesh { check()?; for point in triangle { *point = valid_point(point.map(|v| v * factor))?; } }
+            ("3MF", mesh, ModelUnits::Millimeters, vec![format!("Core build geometry · source units: {unit}, displayed in millimeters; materials and textures are not rendered")])
+        }
+        "step" | "stp" => {
+            let cad = step::decode(bytes, &check)?;
+            ("STEP", cad.mesh, cad.units, cad.details)
+        }
+        "glb" => {
+            let model = glb::decode(bytes, &check)?;
+            glb_resources = Some((model.appearance, model.animation_source, model.reverse_winding));
+            ("GLB", model.mesh, ModelUnits::Millimeters, model.details)
+        }
+        _ => bail!("Unsupported 3D model format"),
+    };
+    finish_model_geometry(format, mesh, units, details, glb_resources)
 }
 
 /// Legacy fixed views for secondary static surfaces. Interactive consumers use
@@ -180,9 +263,20 @@ pub fn decode_model(
     })
 }
 
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )),
+    allow(dead_code)
+)]
+pub(crate) const MAX_MODEL_COORD: f64 = 1.0e12;
+
 fn valid_point(point: Point) -> Result<Point> {
     ensure!(
-        point.iter().all(|v| v.is_finite() && v.abs() <= 1.0e12),
+        point
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= MAX_MODEL_COORD),
         "Model contains non-finite or unreasonable coordinates"
     );
     Ok(point)

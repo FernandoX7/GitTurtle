@@ -162,11 +162,7 @@ impl Side {
         } else if gitturtle_preview::model3d::is_model_path(name) {
             side.page_kind = "View";
             side.metadata.format = "3D model".into();
-            match gitturtle_preview::model3d::decode_geometry(
-                &bytes,
-                &name.to_string_lossy(),
-                &check,
-            ) {
+            match crate::mesh_helper::decode_geometry(&bytes, &name.to_string_lossy(), &check) {
                 Ok(model) => {
                     side.metadata.format = model.format;
                     // Successful supplied-byte geometry parsing supersedes the

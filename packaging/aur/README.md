@@ -39,15 +39,16 @@ made by `install.py` stays where it is, and its desktop entry under
 
 | Package | Why |
 | --- | --- |
-| `dav1d`, `glibc`, `libgcc`, `libxcb`, `libxkbcommon`, `libxkbcommon-x11` | The owners (`pacman -Qo`) of the executable's `NEEDED` libraries (`readelf -d`): `libdav1d.so.7`, `libc.so.6`, `libm.so.6` and the loader, `libgcc_s.so.1`, `libxcb.so.1`, `libxkbcommon.so.0`, `libxkbcommon-x11.so.0` |
+| `glibc`, `libgcc`, `libxcb`, `libxkbcommon`, `libxkbcommon-x11` | The owners (`pacman -Qo`) of the executable's `NEEDED` libraries (`readelf -d`): `libc.so.6`, `libm.so.6` and the loader, `libgcc_s.so.1`, `libxcb.so.1`, `libxkbcommon.so.0`, `libxkbcommon-x11.so.0` (`libdav1d.so.7` is loaded dynamically via `dlopen` in the confined helper, so `dav1d` is an optional dependency for AVIF previews) |
 | `wayland`, `vulkan-icd-loader`, `libglvnd` | The owners of the libraries the executable loads by name at run time, which `NEEDED` does not list: `libwayland-client.so.0` and `libwayland-egl.so.1`, `libvulkan.so.1`, `libEGL.so.1` |
 | `vulkan-driver` | The Vulkan loader draws nothing without a driver; each driver package provides this name |
 | `git` | Run for every repository |
 | `hicolor-icon-theme` | Owns the icon theme the icons are installed into |
 
-`optdepends` holds what one feature needs, each with its reason: `git-lfs`,
-`github-cli`, a Secret Service keyring, `xdg-desktop-portal` and a file chooser
-backend, `xdg-utils`, `glib2`, `fontconfig`, `openssh` and `xdg-terminal-exec`.
+`optdepends` holds what one feature needs, each with its reason: `dav1d` (AVIF
+image previews via dynamic `dlopen`), `git-lfs`, `github-cli`, a Secret Service
+keyring, `xdg-desktop-portal` and a file chooser backend, `xdg-utils`, `glib2`,
+`fontconfig`, `openssh` and `xdg-terminal-exec`.
 When a release's executable links or loads something else, change `depends` with it.
 
 ## Test it locally

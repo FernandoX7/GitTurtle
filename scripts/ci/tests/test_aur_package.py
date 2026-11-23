@@ -150,6 +150,8 @@ class AurPackageTests(unittest.TestCase):
         self.assertEqual(re.findall(r"^ *for _size in ([0-9 ]+); do$", self.text, re.M),
                          [" ".join(map(str, installer.ICON_SIZES))])
         self.assertIn('"$pkgdir/usr/share/applications/$_id.desktop"', self.text)
+        self.assertIn("\nSingleMainWindow=true\n", self.text)
+        self.assertIn("\nKeywords=Git;VersionControl;VCS;Repository;Commit;Diff;Branch;PR;Merge;\n", self.text)
         self.assertIn("\nStartupWMClass=$_id\n", self.text)
         # The launcher shows the icon only when the window's Wayland app ID names the desktop file.
         window_ids = {match for path in (ROOT / "crates/app/src").rglob("*.rs")

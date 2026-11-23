@@ -728,18 +728,16 @@ impl RenderOnce for Input {
         let disabled = self.disabled;
         let is_multi_line = presentation.is_multi_line();
         // Without a content type, a masked input is a password field to screen
-        // readers, so they announce it as one.
-        let accessibility_role = accessibility_role(
-            is_multi_line,
-            content_type.or(presentation
-                .is_masked()
-                .then_some(InputContentType::Password)),
-            self.role,
-        );
+        // readers and Wayland IMEs, so they treat it as sensitive.
+        let effective_content_type = content_type.or(presentation
+            .is_masked()
+            .then_some(InputContentType::Password));
+        let accessibility_role =
+            accessibility_role(is_multi_line, effective_content_type, self.role);
         let input_focused =
             presentation.focus_handle().is_focused(window) && !presentation.is_disabled();
         if input_focused {
-            sync_native_content_type(window, content_type, presentation.is_editable());
+            sync_native_content_type(window, effective_content_type, presentation.is_editable());
         }
         let frame_focus_handle = window
             .use_keyed_state(("input-frame-focus", state.entity_id()), cx, |_, cx| {

@@ -363,7 +363,9 @@ def install_bundle(home, data):
         "Comment=Browse Git history and manage local repositories\n"
         f"Exec={desktop_command(binary_destination)} %f\n"
         f"Icon={desktop_string(icon)}\nTerminal=false\n"
-        "Categories=Development;RevisionControl;\nKeywords=Git;History;Diff;\n"
+        "Categories=Development;RevisionControl;\n"
+        "Keywords=Git;VersionControl;VCS;Repository;Commit;Diff;Branch;PR;Merge;\n"
+        "SingleMainWindow=true\n"
         f"StartupWMClass={APP_ID}\n"
     )
     with tempfile.TemporaryDirectory(prefix="gitturtle-install-") as temporary:

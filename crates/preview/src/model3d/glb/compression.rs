@@ -175,6 +175,174 @@ impl DecodedView {
     fn bytes_mut(&mut self) -> &mut [u8] {
         &mut bytemuck::cast_slice_mut(&mut self.words)[..self.length]
     }
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoded = Self {
+            words: zeroed_words(bytes.len().div_ceil(4))?,
+            length: bytes.len(),
+        };
+        decoded.bytes_mut().copy_from_slice(bytes);
+        Ok(decoded)
+    }
+}
+
+/// Wire-safe representation of an `EXT_meshopt_compression` decode mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshoptMode {
+    Attributes,
+    Triangles,
+    Indices,
+}
+
+impl MeshoptMode {
+    fn from_str(mode: &str) -> Result<Self> {
+        match mode {
+            "ATTRIBUTES" => Ok(Self::Attributes),
+            "TRIANGLES" => Ok(Self::Triangles),
+            "INDICES" => Ok(Self::Indices),
+            other => bail!("Unsupported GLB meshopt compression mode {other}"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Attributes => "ATTRIBUTES",
+            Self::Triangles => "TRIANGLES",
+            Self::Indices => "INDICES",
+        }
+    }
+}
+
+/// Wire-safe representation of an `EXT_meshopt_compression` post-decode filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshoptFilter {
+    None,
+    Octahedral,
+    Quaternion,
+    Exponential,
+}
+
+impl MeshoptFilter {
+    fn from_opt(filter: Option<&str>) -> Result<Self> {
+        match filter {
+            None | Some("NONE") => Ok(Self::None),
+            Some("OCTAHEDRAL") => Ok(Self::Octahedral),
+            Some("QUATERNION") => Ok(Self::Quaternion),
+            Some("EXPONENTIAL") => Ok(Self::Exponential),
+            Some(other) => bail!("Unsupported GLB meshopt filter {other}"),
+        }
+    }
+
+    fn as_opt_str(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Octahedral => Some("OCTAHEDRAL"),
+            Self::Quaternion => Some("QUATERNION"),
+            Self::Exponential => Some("EXPONENTIAL"),
+        }
+    }
+}
+
+/// One validated `EXT_meshopt_compression` buffer-view decode job that can run
+/// either in-process or in a confined Linux helper process.
+#[derive(Debug, Clone)]
+pub struct MeshoptViewJob {
+    pub view_index: usize,
+    pub mode: MeshoptMode,
+    pub filter: MeshoptFilter,
+    pub count: usize,
+    pub stride: usize,
+    pub output_len: usize,
+    pub compressed: Vec<u8>,
+}
+
+/// Decodes one validated [`MeshoptViewJob`] into its raw decompressed bytes.
+pub fn decode_meshopt_job(job: &MeshoptViewJob) -> Result<Vec<u8>> {
+    ensure!(
+        job.count > 0 && job.count <= MAX_VERTICES,
+        "GLB meshopt selected view exceeds the 300,000-element preview limit"
+    );
+    ensure!(
+        job.output_len <= MAX_VIEW_BYTES && job.compressed.len() <= MAX_VIEW_BYTES,
+        "GLB meshopt view exceeds the 16 MiB compressed or decompressed preview limit"
+    );
+    let source = Compression {
+        buffer: 0,
+        byte_offset: 0,
+        byte_length: job.compressed.len(),
+        byte_stride: job.stride,
+        count: job.count,
+        mode: job.mode.as_str().to_owned(),
+        filter: job.filter.as_opt_str().map(str::to_owned),
+    };
+    ensure!(
+        source.output_length()? == job.output_len,
+        "GLB meshopt output length disagrees with count and stride"
+    );
+    let decoded = decode_view(&source, &job.compressed, &|| Ok(()))?;
+    Ok(decoded.bytes().to_vec())
+}
+
+pub(super) fn collect_jobs_for_views(
+    document: &Document,
+    bin: Option<&[u8]>,
+    view_indices: &[usize],
+) -> Result<(Vec<MeshoptViewJob>, usize, usize)> {
+    let mut jobs = Vec::new();
+    let mut compressed_bytes = 0usize;
+    let mut decompressed_bytes = 0usize;
+    for &index in view_indices {
+        let source = view(document, index)?;
+        let Some(compressed) = &source.extensions.meshopt else {
+            continue;
+        };
+        compressed.validate_layout()?;
+        let length = compressed.output_length()?;
+        ensure!(
+            compressed.count <= MAX_VERTICES,
+            "GLB meshopt selected view exceeds the 300,000-element preview limit"
+        );
+        ensure!(
+            length <= MAX_VIEW_BYTES && compressed.byte_length <= MAX_VIEW_BYTES,
+            "GLB meshopt view exceeds the 16 MiB compressed or decompressed preview limit"
+        );
+        let allocation = length.next_multiple_of(4);
+        compressed_bytes = compressed_bytes
+            .checked_add(compressed.byte_length)
+            .context("GLB meshopt compressed work overflow")?;
+        decompressed_bytes = decompressed_bytes
+            .checked_add(allocation)
+            .context("GLB meshopt decompressed allocation overflow")?;
+        ensure!(
+            compressed_bytes <= MAX_TOTAL_BYTES && decompressed_bytes <= MAX_TOTAL_BYTES,
+            "GLB meshopt exceeds the 32 MiB cumulative compressed or decompressed preview limit"
+        );
+        let buffer = document
+            .buffers
+            .get(compressed.buffer)
+            .context("GLB meshopt references a missing buffer")?;
+        ensure!(
+            compressed.buffer == 0 && buffer.uri.is_none(),
+            "GLB meshopt compressed data requires the supplied embedded BIN buffer; external resources are never loaded"
+        );
+        let end = compressed
+            .byte_offset
+            .checked_add(compressed.byte_length)
+            .context("GLB meshopt compressed range overflow")?;
+        let bytes = bin
+            .context("GLB meshopt requires a missing BIN chunk")?
+            .get(compressed.byte_offset..end)
+            .context("GLB meshopt compressed range exceeds the supplied BIN chunk")?;
+        jobs.push(MeshoptViewJob {
+            view_index: index,
+            mode: MeshoptMode::from_str(&compressed.mode)?,
+            filter: MeshoptFilter::from_opt(compressed.filter.as_deref())?,
+            count: compressed.count,
+            stride: compressed.byte_stride,
+            output_len: length,
+            compressed: bytes.to_vec(),
+        });
+    }
+    Ok((jobs, compressed_bytes, decompressed_bytes))
 }
 fn zeroed_words(length: usize) -> Result<Vec<u32>> {
     let mut words = Vec::new();
@@ -206,6 +374,10 @@ impl<F: Fn() -> Result<()>> Decoder<'_, F> {
             let Some(compressed) = &source.extensions.meshopt else {
                 continue;
             };
+            ensure!(
+                !self.forbid_inline_meshopt,
+                "GLB meshopt view was not decoded in the confined helper"
+            );
             let length = compressed.output_length()?;
             ensure!(
                 compressed.count <= MAX_VERTICES,

@@ -17,7 +17,6 @@ url='https://github.com/FernandoX7/GitTurtle'
 license=(MIT)
 depends=(
   # NEEDED by the release executable (readelf -d), by owning package.
-  dav1d             # libdav1d.so.7
   glibc             # libc.so.6, libm.so.6 and the loader
   libgcc            # libgcc_s.so.1
   libxcb            # libxcb.so.1
@@ -34,6 +33,7 @@ depends=(
   hicolor-icon-theme
 )
 optdepends=(
+  'dav1d: AVIF image preview decoding (loaded dynamically in the confined helper)'
   'git-lfs: download Git LFS files on request'
   'github-cli: connect a GitHub account and review pull requests'
   'org.freedesktop.secrets: a keyring that holds the GitHub authorization'
@@ -94,7 +94,8 @@ Exec=gitturtle %f
 Icon=$_id
 Terminal=false
 Categories=Development;RevisionControl;
-Keywords=Git;History;Diff;
+Keywords=Git;VersionControl;VCS;Repository;Commit;Diff;Branch;PR;Merge;
+SingleMainWindow=true
 StartupWMClass=$_id
 EOF
 }
