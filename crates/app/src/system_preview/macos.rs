@@ -106,12 +106,13 @@ define_class!(
             index: isize,
         ) -> Option<Retained<GitTurtleQuickLookItem>> {
             if index != 0 {
-                return None;
+                None
+            } else {
+                catch_unwind(AssertUnwindSafe(|| {
+                    PANEL_STATE.with(|state| state.try_borrow().ok().and_then(|s| s.item.clone()))
+                }))
+                .unwrap_or(None)
             }
-            catch_unwind(AssertUnwindSafe(|| {
-                PANEL_STATE.with(|state| state.try_borrow().ok().and_then(|s| s.item.clone()))
-            }))
-            .unwrap_or(None)
         }
     }
 );
